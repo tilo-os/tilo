@@ -1,0 +1,315 @@
+/// Publish through the actual collaboration wire channel with current signed admission
+/// and the host-retained launcher association, pinned to a real kernel socket.
+async fn checkout_channel(
+    workspace: &signed_worker::OriginalWorkspace,
+    peer: u64,
+    attested: bool,
+) -> (
+    runtime_collab::RecordHandle,
+    Option<Arc<native_media::LocalAppConnection>>,
+    signed_worker::Connection,
+) {
+    let (worker, _) = workspace.join_worker(peer).await;
+    let identity = workspace
+        .state
+        .host_workers
+        .lock()
+        .unwrap()
+        .only(peer)
+        .unwrap()
+        .clone();
+    // The actual joined channel supplied the verified identity. Its transport
+    // is retained below independently from this launcher-admitted test channel.
+    let (socket, _peer_socket) = tokio::net::UnixStream::pair().unwrap();
+    let local = attested.then(|| {
+        native_media::LocalAppConnection::attested(
+            workspace.route.app_id.clone(),
+            workspace.route.cluster_id.clone(),
+            native_media::PeerProcess::from_socket(&socket).unwrap(),
+            crate::services::AuthenticatedApplicationLaunch {
+                continuation_instance: Some(73),
+                launch_ticket: None,
+                windowless: false,
+                opened_for: None,
+            },
+        )
+        .unwrap()
+    });
+    let channel = wire_channel(JoinedChannel {
+        committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
+        state: workspace.state.clone(),
+        directories: workspace.directories.clone(),
+        channel_id: workspace.route.channel_key(),
+        peer_id: peer,
+        connection_id: peer,
+        verified_identity: identity,
+        resource_type: None,
+        lease: Some(Rc::new(ConnectionLease {
+            local_media: local.clone(),
+            state: workspace.state.clone(),
+            directories: workspace.directories.clone(),
+            peer_id: peer,
+        })),
+        _hold: None,
+    });
+    channel
+        .publish_action_directory(signed_worker::directory_server(
+            &signed_worker::directory_state("checkout-r1"),
+        ))
+        .await
+        .unwrap();
+    (channel, local, worker)
+}
+
+fn checkout_process() -> (u32, u64) {
+    let pid = std::process::id();
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).unwrap();
+    let start = stat
+        .rsplit_once(") ")
+        .unwrap()
+        .1
+        .split_whitespace()
+        .nth(19)
+        .unwrap()
+        .parse()
+        .unwrap();
+    (pid, start)
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn certified_native_checkout_uses_actual_registered_route_and_rejects_wrong_lifetimes() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let workspace = signed_worker::OriginalWorkspace::new(
+                tilo_user_identity::DeviceCapabilities::primary(),
+                None,
+                None,
+            );
+            let (channel, local, _transport) = checkout_channel(&workspace, 71, true).await;
+            let (pid, start) = checkout_process();
+            let root = workspace
+                .state
+                .native_checkout(
+                    &workspace.route.app_id,
+                    &workspace.route.cluster_id,
+                    73,
+                    pid,
+                    start,
+                )
+                .unwrap();
+            assert_eq!(root.document_id, workspace.route.document_id);
+            assert_ne!(root.document_id, "derived:default@tab:0000000000000049");
+            for (app, cluster, instance, process, began) in [
+                (
+                    "foreign",
+                    workspace.route.cluster_id.as_str(),
+                    73,
+                    pid,
+                    start,
+                ),
+                (workspace.route.app_id.as_str(), "foreign", 73, pid, start),
+                (
+                    workspace.route.app_id.as_str(),
+                    workspace.route.cluster_id.as_str(),
+                    74,
+                    pid,
+                    start,
+                ),
+                (
+                    workspace.route.app_id.as_str(),
+                    workspace.route.cluster_id.as_str(),
+                    73,
+                    u32::MAX,
+                    start,
+                ),
+                (
+                    workspace.route.app_id.as_str(),
+                    workspace.route.cluster_id.as_str(),
+                    73,
+                    pid,
+                    0,
+                ),
+            ] {
+                assert!(
+                    workspace
+                        .state
+                        .native_checkout(app, cluster, instance, process, began)
+                        .is_none()
+                );
+            }
+            local.unwrap().stop();
+            assert!(
+                workspace
+                    .state
+                    .native_checkout(
+                        &workspace.route.app_id,
+                        &workspace.route.cluster_id,
+                        73,
+                        pid,
+                        start
+                    )
+                    .is_none()
+            );
+            drop(channel);
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn certified_native_checkout_refuses_unattested_revoked_and_ambiguous_channels() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for mode in [
+                "unattested",
+                "revoked",
+                "ambiguous",
+                "missing-directory",
+                "replaced-record",
+            ] {
+                let workspace = signed_worker::OriginalWorkspace::new(
+                    tilo_user_identity::DeviceCapabilities::primary(),
+                    None,
+                    None,
+                );
+                let (channel, _, _transport) =
+                    checkout_channel(&workspace, 71, mode != "unattested").await;
+                let second = if mode == "ambiguous" {
+                    Some(checkout_channel(&workspace, 72, true).await)
+                } else {
+                    None
+                };
+                if mode == "revoked" {
+                    *workspace.authority.certificate.lock().unwrap() = None;
+                }
+                if mode == "missing-directory" {
+                    workspace
+                        .state
+                        .action_directory_roots
+                        .lock()
+                        .unwrap()
+                        .remove(&71);
+                }
+                if mode == "replaced-record" {
+                    workspace
+                        .state
+                        .action_directory_roots
+                        .lock()
+                        .unwrap()
+                        .get_mut(&71)
+                        .unwrap()
+                        .document_id = "different-current-record".into();
+                }
+                let (pid, start) = checkout_process();
+                assert!(
+                    workspace
+                        .state
+                        .native_checkout(
+                            &workspace.route.app_id,
+                            &workspace.route.cluster_id,
+                            73,
+                            pid,
+                            start
+                        )
+                        .is_none(),
+                    "{mode} cannot select checkout ownership"
+                );
+                drop(second);
+                drop(channel);
+                // The host closes a dropped channel once its close arrives.
+                tilo_test_env::within("the closed channels release their checkout", async {
+                    while !workspace.state.native_checkouts.lock().unwrap().is_empty() {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await;
+            }
+        })
+        .await;
+}
+
+/// A channel an app holds only to read another app's record changes nothing
+/// on it: neither the document nor what is published for the route. The
+/// route is another app's, so no write reaches it from this launch.
+#[tokio::test(flavor = "current_thread")]
+async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let workspace = signed_worker::OriginalWorkspace::new(
+                tilo_user_identity::DeviceCapabilities::primary(),
+                None,
+                None,
+            );
+            // The device's one reader decides every change of a record, as on a device.
+            workspace.state.serve_records(Arc::new(
+                tilo_workspace_service::workspaces::record_reads::RecordReads::of_device(
+                    None, None,
+                ),
+            ));
+            let peer = 72;
+            let (_worker, _) = workspace.join_worker(peer).await;
+            let identity = workspace
+                .state
+                .host_workers
+                .lock()
+                .unwrap()
+                .only(peer)
+                .unwrap()
+                .clone();
+            // A launch of another app, which declares no read of the route's app: it changes
+            // nothing on the route.
+            let (socket, _peer_socket) = tokio::net::UnixStream::pair().unwrap();
+            let reader = native_media::LocalAppConnection::attested(
+                "test.checkout-reader".into(),
+                workspace.route.cluster_id.clone(),
+                native_media::PeerProcess::from_socket(&socket).unwrap(),
+                crate::services::AuthenticatedApplicationLaunch {
+                    continuation_instance: Some(74),
+                    launch_ticket: None,
+                    windowless: false,
+                    opened_for: None,
+                },
+            )
+            .unwrap();
+            let channel = wire_channel(JoinedChannel {
+                committed_read: Rc::new(RefCell::new(committed_document::Slot::default())),
+                state: workspace.state.clone(),
+                directories: workspace.directories.clone(),
+                channel_id: workspace.route.channel_key(),
+                peer_id: peer,
+                connection_id: peer,
+                verified_identity: identity,
+                resource_type: None,
+                lease: Some(Rc::new(ConnectionLease {
+                    local_media: Some(reader),
+                    state: workspace.state.clone(),
+                    directories: workspace.directories.clone(),
+                    peer_id: peer,
+                })),
+                _hold: None,
+            });
+            let change = serde_json::to_vec(&collab_types::store::wire::Command::RecordChange {
+                changes: collab_types::store::wire::Bytes(automerge::AutoCommit::new().save()),
+                more: false,
+                commit: None,
+                record: None,
+            })
+            .unwrap();
+            let refused = channel
+                .resource_command(&change)
+                .await
+                .expect_err("a write is refused");
+            assert!(
+                refused.to_string().contains("may not change the record")
+                    && refused.to_string().contains("changes nothing"),
+                "{refused}"
+            );
+            let refused = channel
+                .publish_action_directory(signed_worker::directory_server(
+                    &signed_worker::directory_state("read-only-r1"),
+                ))
+                .await
+                .expect_err("a publication is refused");
+            assert!(refused.to_string().contains("changes nothing"), "{refused}");
+        })
+        .await;
+}

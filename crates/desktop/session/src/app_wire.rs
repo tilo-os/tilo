@@ -21,9 +21,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use runtime_collab::wire::{Event, Receipt};
 use serde_json::Map;
 use tilo_actions::ApiError;
+use tilo_app_host::services::{Caller, PublishedResources, Reading, ResourceWatch};
 use tilo_lock::MutexRecover as _;
 use tilo_service::{Services, Started, Wake};
-use tilo_workspace_service::apps::services::{Caller, PublishedResources, Reading, ResourceWatch};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::launches::Launches;

@@ -73,13 +73,13 @@ use tilo_actions::remote::{
     workspace_provider,
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
+use tilo_app_host::agents::{EngineActions, WorkspaceActionProvider, agent_keys};
 use tilo_peer_state::actions::{ActionService, NoActions, RemoteDevice};
 use tilo_runtime::RuntimeServices as _;
 use tilo_runtime::device::services::Daemon;
 use tilo_server_protocol::WorkspaceId;
 use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, StatementSigner as _};
-use tilo_workspace_service::agents::{EngineActions, WorkspaceActionProvider, agent_keys};
 use tilo_workspace_service::workspaces::model_answers::scripted::{Reply, ScriptedProvider};
 use tilo_workspace_service::workspaces::model_answers::{
     ModelDescriptor, ProviderProfile, ProviderProtocol,

@@ -95,7 +95,7 @@ fn connect(socket: &Path) -> CollabClient {
 
 /// The channel key of Files' own route in the workspace.
 fn channel() -> String {
-    tilo_workspace_service::apps::route::CrdtRoute::app(FILES, WORKSPACE).channel_key()
+    tilo_app_host::route::CrdtRoute::app(FILES, WORKSPACE).channel_key()
 }
 
 /// What a person selected in Files, as the app hands it over: the path it is shown at, the

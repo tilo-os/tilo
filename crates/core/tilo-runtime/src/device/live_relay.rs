@@ -858,7 +858,7 @@ impl Live {
     pub(crate) fn new(
         workspaces: &Arc<ServiceWorkspaces>,
         relay: Option<Relay>,
-        fanout: Arc<tilo_workspace_service::apps::collab_broker::FanoutState>,
+        fanout: Arc<tilo_app_host::collab_broker::FanoutState>,
     ) -> Arc<Self> {
         let (changed, _) = tokio::sync::watch::channel(0);
         let shared = Arc::new(Shared {

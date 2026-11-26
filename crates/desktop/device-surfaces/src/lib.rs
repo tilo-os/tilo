@@ -102,7 +102,7 @@ pub fn device_surfaces() -> Vec<Surface> {
         live::surface(),
         overlays::overlays_surface(),
         overlays::power_menu_surface(),
-        tilo_workspace_service::apps::nearby_send::surface(),
+        tilo_app_host::nearby_send::surface(),
         devices::surface(),
         clipboard::surface(),
         // The person's speakers, which the speaker service publishes outside the session.

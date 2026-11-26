@@ -30,8 +30,8 @@ use runtime_collab::file_clipboard::{
     Command, Conflict as Asked, NamedEntry, ObjectIdentity, Reply, SelectedDescriptor,
 };
 use tilo_actions::ActionKind;
+use tilo_app_host::services::{FileClipboardContext, FileClipboardServices};
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::apps::services::{FileClipboardContext, FileClipboardServices};
 use ui::dnd::CopiedFiles;
 
 use crate::clipboard::paste::{self, Conflict};
@@ -490,7 +490,7 @@ impl FileClipboardServices for NativeFileClipboard {
         self: std::sync::Arc<Self>,
         context: &FileClipboardContext,
         command: Command,
-    ) -> tilo_workspace_service::apps::services::ClipboardAnswering {
+    ) -> tilo_app_host::services::ClipboardAnswering {
         let context = context.clone();
         Box::pin(async move {
             tokio::task::spawn_blocking(move || self.command_now(&context, command))

@@ -32,14 +32,14 @@ use tilo_workspace_agent::{Agent, OWNER, WorkspaceAgents};
 
 use super::own_agent_tests::{Answers, PLAN_READY, SCOUT, argument, chat_writes, mentioning};
 use super::{govern, record_route, settled};
-use tilo_workspace_service::agent_shortcuts::{self, CHAT, MESSAGE};
-use tilo_workspace_service::agents::agent_keys::AgentKeys;
-use tilo_workspace_service::agents::ticketed_keys::{
+use tilo_app_host::agents::agent_keys::AgentKeys;
+use tilo_app_host::agents::ticketed_keys::{
     AgentKeyAsk, AgentKeyTicket, AgentKeyTickets, DeviceAgentKeys,
 };
-use tilo_workspace_service::agents::{Model, ServerAgents};
-use tilo_workspace_service::apps::test_support::Started;
-use tilo_workspace_service::apps::triggers::{Runner, StartRun};
+use tilo_app_host::agents::{Model, ServerAgents};
+use tilo_app_host::test_support::Started;
+use tilo_app_host::triggers::{Runner, StartRun};
+use tilo_workspace_service::agent_shortcuts::{self, CHAT, MESSAGE};
 use tilo_workspace_service::work::{Actor, Ineligible, NotTaken, Order, Turn};
 use tilo_workspace_service::workspaces::fixtures::invited;
 use tilo_workspace_service::workspaces::fixtures::{
@@ -623,7 +623,7 @@ async fn the_server_that_keeps_the_workspace_runs_a_members_agent_she_approved()
     assert_eq!(scope.workspace(), Some(*workspace_id.as_uuid().as_bytes()));
 
     // Its reply is Chat's own write on the server, stamped as Scout's `send` for Bea.
-    let context = tilo_workspace_service::apps::services::ResourceRequestContext::authenticated(
+    let context = tilo_app_host::services::ResourceRequestContext::authenticated(
         CHAT, &workspace, caller_bea,
     );
     let deadline = tilo_test_env::hang_deadline();

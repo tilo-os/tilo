@@ -9,7 +9,7 @@ use std::sync::Arc;
 use settings_store::SettingsSource;
 use settings_store::display_control::{DisplayCommand, MAX_DISPLAY_CONTROL_BYTES};
 use settings_store::hardware::DisplayHardwareSnapshot;
-use tilo_workspace_service::apps::services::DisplayControlServices;
+use tilo_app_host::services::DisplayControlServices;
 
 /// The displays' state as the compositor published it.
 type Observed = dyn Fn() -> Option<DisplayHardwareSnapshot> + Send + Sync;
@@ -58,7 +58,7 @@ impl DisplayControl {
 impl DisplayControlServices for DisplayControl {
     fn command(
         &self,
-        _context: &tilo_workspace_service::apps::services::DisplayControlContext,
+        _context: &tilo_app_host::services::DisplayControlContext,
         command: &[u8],
     ) -> Result<Vec<u8>, String> {
         self.answer(command)

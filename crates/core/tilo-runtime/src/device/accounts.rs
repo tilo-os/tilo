@@ -11,7 +11,7 @@
 
 use std::sync::Arc;
 
-use tilo_workspace_service::apps::services::Caller;
+use tilo_app_host::services::Caller;
 
 use super::reading::{Changes, ReadLater, Served};
 

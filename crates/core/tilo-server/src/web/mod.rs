@@ -111,7 +111,7 @@ impl Web {
                     (&self.workspaces, tokio::runtime::Handle::try_current())
                 {
                     let push = push.telling(workspaces.clone());
-                    let teller = tilo_workspace_service::agents::telling::Teller::new(
+                    let teller = tilo_app_host::agents::telling::Teller::new(
                         workspaces.clone(),
                         Arc::new(push),
                     );

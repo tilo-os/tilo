@@ -32,7 +32,7 @@ use super::{ToTell, WeakWorkspaces, Workspaces};
 /// Who asks, as the system names `caller`: its key where its call came in on one, its agent by
 /// the name its key goes by, an app by its id, else the person's own device.
 #[must_use]
-pub(crate) fn asked_by(caller: &Caller) -> AskedBy {
+pub fn asked_by(caller: &Caller) -> AskedBy {
     if let Some(key) = caller.key() {
         return AskedBy::Agent(Named {
             id: key.id().to_owned(),
@@ -56,7 +56,7 @@ pub(crate) fn asked_by(caller: &Caller) -> AskedBy {
     }
 }
 
-pub(crate) use tilo_actions::remote::asked::approved_or_asks;
+pub use tilo_actions::remote::asked::approved_or_asks;
 
 /// The person `caller` asks, as their key.
 fn asked_person(caller: &Caller) -> Option<[u8; 32]> {

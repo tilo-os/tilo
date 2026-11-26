@@ -36,7 +36,7 @@ use crate::workspaces::fixtures::{hosting_device, test_host};
 use crate::workspaces::model_answers::scripted::{Linking, Reply, ScriptedProvider};
 use crate::workspaces::model_answers::{ProviderProtocol, Spender};
 use crate::workspaces::push_addresses::{PushKey, Register};
-use tilo_workspace_service::agents::telling::Teller;
+use tilo_app_host::agents::telling::Teller;
 
 /// A person this server keeps a log for. No device of theirs is on.
 const ADA: [u8; 32] = [8; 32];

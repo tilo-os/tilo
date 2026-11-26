@@ -24,10 +24,8 @@ use super::{
     ServiceWorkspaceActions, TRUSTED_ATTESTORS, UNLIST, VERBS, WAIT_LIST,
 };
 use crate::app_serving::AppActionServer as _;
-use crate::workspaces::tests::{
-    guest_device, hosting_device, is_banned, signed_pre_admission, test_host,
-};
-use crate::workspaces::{PreAdmitRequest, SetMemberRoleRequest, Workspaces};
+use crate::workspaces::tests::{guest_device, hosting_device, is_banned, test_host};
+use crate::workspaces::{SetMemberRoleRequest, Workspaces};
 use tilo_server_protocol::WorkspaceId;
 
 /// `request` again, as its person's approve of it in `workspace` admits it: what only the
@@ -301,91 +299,7 @@ async fn ended_as(
     Ok(state.receipt())
 }
 
-/// What a pending answer comes to, on this runtime.
-pub(super) async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
-    let (sender, receiver) = tokio::sync::oneshot::channel();
-    pending.then(move |value| {
-        let _ = sender.send(value);
-    });
-    tilo_test_env::within("the governance answer", receiver)
-        .await
-        .unwrap()
-        .expect("answered")
-}
-
-/// A new person admitted to `workspace` as an Editor, through the owner's
-/// pre-admission: their device's certificate.
-pub(super) async fn admit(
-    workspaces: &Workspaces,
-    workspace: &str,
-    owner: &DeviceCert,
-    seed: u8,
-) -> DeviceCert {
-    admit_device(workspaces, workspace, owner, seed).await.1
-}
-
-/// [`admit`], with the admitted device's key.
-pub(super) async fn admit_device(
-    workspaces: &Workspaces,
-    workspace: &str,
-    owner: &DeviceCert,
-    seed: u8,
-) -> (ed25519_dalek::SigningKey, DeviceCert) {
-    let token = [seed; 8];
-    let issued = workspaces
-        .pre_admit(
-            owner,
-            PreAdmitRequest {
-                request_id: [seed; 32],
-                grant: signed_pre_admission(workspace, &token),
-                recipient_user_public_key: None,
-                inviter_name: None,
-            },
-        )
-        .await
-        .unwrap();
-    let (key, cert) = guest_device();
-    let reply = workspaces
-        .admit_proven(
-            issued.signed_invitation,
-            (cert.clone(), &key),
-            rand::random(),
-            &format!("Person {seed}"),
-            Some(token.as_slice()),
-        )
-        .await;
-    assert!(matches!(reply, JoinReply::Admitted { .. }), "{reply:?}");
-    ADMITTED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .push((cert.clone(), key.clone()));
-    (key, cert)
-}
-
-/// Every device [`admit_device`] admitted, with its key: what a member's device signs its calls
-/// with.
-static ADMITTED: std::sync::Mutex<Vec<(DeviceCert, ed25519_dalek::SigningKey)>> =
-    std::sync::Mutex::new(Vec::new());
-
-/// The key of `device`, when [`admit_device`] admitted it.
-pub(super) fn admitted_key(device: &DeviceCert) -> Option<ed25519_dalek::SigningKey> {
-    ADMITTED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
-        .find(|(cert, _)| cert.device_public_key == device.device_public_key)
-        .map(|(_, key)| key.clone())
-}
-
-/// A device of `person` (their root key, as hex) that [`admit_device`] admitted, with its key.
-pub(super) fn admitted_device_of(person: &str) -> Option<(DeviceCert, ed25519_dalek::SigningKey)> {
-    ADMITTED
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
-        .iter()
-        .find(|(cert, _)| hex::encode(cert.user_public_key) == person)
-        .cloned()
-}
+pub(super) use crate::workspaces::fixtures::{admit, admitted_device_of, admitted_key, settled};
 
 /// `request` as `caller` sends it from `device` in `workspace`: signed with the device's key when
 /// the caller is its own person, or an agent that device handed its session to, and

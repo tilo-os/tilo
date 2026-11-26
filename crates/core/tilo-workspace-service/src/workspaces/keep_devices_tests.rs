@@ -19,7 +19,7 @@ use tilo_actions::remote::{InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCapabilities;
 
 use super::super::fixtures::device_cert;
-use super::tests::{member_service, shared_with};
+use super::super::fixtures::{member_service, shared_with};
 use crate::work::{HostConnections, Order, Turn, takes_turn_in};
 use crate::workspaces::vault_release::AppProcess;
 

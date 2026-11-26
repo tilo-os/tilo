@@ -15,8 +15,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use futures_util::future::BoxFuture;
 use serde_json::Value;
+use tilo_app_host::services::{Caller, PublishedResources, Reading, ResourceWatch};
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::apps::services::{Caller, PublishedResources, Reading, ResourceWatch};
 use tokio::sync::{mpsc, oneshot, watch};
 
 /// How a published reading is made: the value now, for the caller that reads it, and the

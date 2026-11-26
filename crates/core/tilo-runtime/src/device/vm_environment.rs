@@ -656,7 +656,7 @@ pub(crate) fn serve(daemon: &Arc<super::services::Daemon>, stop: &super::serve::
 /// it, and an agent working a page keeps its session within the idle limit.
 #[cfg(target_os = "linux")]
 fn count_page_actions(daemon: &super::services::Daemon, environment: &Arc<VmEnvironment>) {
-    use tilo_workspace_service::apps::collab_app_broker::ExecutionStatus;
+    use tilo_app_host::collab_app_broker::ExecutionStatus;
     use tokio::sync::broadcast::error::RecvError;
     let Some(mut activity) = daemon.execution_activity() else {
         tracing::warn!("this machine's daemon runs no broker: a page action keeps no session");

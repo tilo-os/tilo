@@ -1,7 +1,7 @@
 //! An agent of this login working on another of the person's devices: a `--connect --device`
 //! client is served MCP here, and every request it makes goes to that device over the one action
 //! frame between devices, signed by the agent's own key this device made for it
-//! ([`tilo_workspace_service::agents::agent_keys`]). The device that answers checks the signature
+//! ([`tilo_app_host::agents::agent_keys`]). The device that answers checks the signature
 //! as that agent's, for the person, under the agent's grants there. The desktop session and the
 //! device's daemon serve such clients alike.
 
@@ -11,9 +11,9 @@ use tilo_socket::Stream;
 
 use collab_types::signer::DeviceSigner;
 use iroh::{EndpointAddr, EndpointId};
+use tilo_app_host::agents::agent_keys::{AgentKeys, AgentSigner, Signed};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::{DeviceCert, RevocationList};
-use tilo_workspace_service::agents::agent_keys::{AgentKeys, AgentSigner, Signed};
 
 use crate::i18n::{t, t_args};
 

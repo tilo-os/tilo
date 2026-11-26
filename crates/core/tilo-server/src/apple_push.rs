@@ -4,7 +4,7 @@
 //! carries it there. A device of a person's hands this server the token
 //! that service gave its app, with a key of the device's own
 //! (`workspaces::push_addresses`). When a thing waits for a person and no
-//! device of theirs is looking, the teller (`tilo_workspace_service::agents::telling::Teller`)
+//! device of theirs is looking, the teller (`tilo_app_host::agents::telling::Teller`)
 //! hands it here as it hands it to the sender for browsers, and one push
 //! goes to each of that person's devices this server keeps an address for.
 //!
@@ -662,7 +662,7 @@ impl ApplePush {
 
 /// What a person's assistant told them, pushed to the apps of theirs that
 /// are closed.
-impl tilo_workspace_service::agents::telling::Outside for ApplePush {
+impl tilo_app_host::agents::telling::Outside for ApplePush {
     fn name(&self) -> &'static str {
         NAME
     }

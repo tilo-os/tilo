@@ -1485,7 +1485,7 @@ tilo_test_env::scenario! {
         });
 
         // The work reaches this device's apps too, as the presence the window on its record draws.
-        let fanout = std::sync::Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new());
+        let fanout = std::sync::Arc::new(tilo_app_host::collab_broker::FanoutState::new());
         let carets = crate::carets::Carets::new(std::sync::Arc::clone(&fanout), std::sync::Arc::new(|| {}));
         let handed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
         let sink = std::sync::Arc::clone(&handed);

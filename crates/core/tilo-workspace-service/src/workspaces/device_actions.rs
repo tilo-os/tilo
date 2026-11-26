@@ -1146,7 +1146,7 @@ impl super::Workspaces {
     }
 
     /// The apps whose connection this device runs ([`Self::run_connections`]).
-    pub(crate) fn host_connections(&self) -> Option<Arc<dyn crate::work::HostConnections>> {
+    pub fn host_connections(&self) -> Option<Arc<dyn crate::work::HostConnections>> {
         self.inner.jobs.connections.read_recover().clone()
     }
 
@@ -1168,7 +1168,7 @@ impl super::Workspaces {
     /// statement, and the key is made from that signature, so the device makes the same key every
     /// time and nothing secret is written down. The key never leaves the device; what it offers
     /// of it is its public key, in the ticket that asks for it to be approved.
-    pub(crate) fn derived_device_key(&self, statement: &[u8]) -> ed25519_dalek::SigningKey {
+    pub fn derived_device_key(&self, statement: &[u8]) -> ed25519_dalek::SigningKey {
         let digest = blake3::hash(statement);
         let signature = ed25519_dalek::Signer::sign(&self.inner.host.key, digest.as_bytes());
         ed25519_dalek::SigningKey::from_bytes(blake3::hash(&signature.to_bytes()).as_bytes())
@@ -1198,7 +1198,7 @@ impl super::Workspaces {
     /// The device whose claims [`Self::write_lease`] writes in `workspace`: the
     /// device its member copy acts as where another device serves it, else this
     /// one.
-    pub(crate) async fn lease_device(&self, workspace: &str) -> [u8; 32] {
+    pub async fn lease_device(&self, workspace: &str) -> [u8; 32] {
         if self.is_member(workspace).await.unwrap_or(false)
             && let Ok(member) = self.member_identity()
         {
@@ -1232,7 +1232,7 @@ impl super::Workspaces {
     /// progress whichever device fires it next carries on from. The trigger
     /// runner is an apps build's with agents, and it is the runner's to ask.
     #[cfg(all(feature = "apps", feature = "agents"))]
-    pub(crate) async fn answer_schedule(
+    pub async fn answer_schedule(
         &self,
         workspace: &str,
         automation: &str,
@@ -1256,7 +1256,7 @@ impl super::Workspaces {
     /// `automation`, marked `mark`, at its last look: what whichever device
     /// looks next carries on from.
     #[cfg(feature = "apps")]
-    pub(crate) async fn keep_trigger_progress(
+    pub async fn keep_trigger_progress(
         &self,
         workspace: &str,
         automation: &str,

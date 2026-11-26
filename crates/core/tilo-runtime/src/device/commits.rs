@@ -3,8 +3,8 @@
 
 use std::sync::Arc;
 
+use tilo_app_host::workspace_commits::{EffectFuture, WorkspaceCommits};
 use tilo_desktop_model::WorkspaceId;
-use tilo_workspace_service::apps::workspace_commits::{EffectFuture, WorkspaceCommits};
 use tilo_workspace_service::service::WorkspaceService;
 use tilo_workspace_service::workspaces::Workspaces;
 

@@ -15,7 +15,7 @@
 //! with each call and each view. A call the dispatch delivers names its invoker, and the
 //! instance's writes for it are that invoker's. A view is opened for the caller the dispatch
 //! admitted, and what the instance writes for it outside a call is that caller's
-//! ([`tilo_workspace_service::apps::services::AuthenticatedApplicationLaunch::opened_for`]):
+//! ([`tilo_app_host::services::AuthenticatedApplicationLaunch::opened_for`]):
 //! stamped as theirs, refused where they may not make it, and reading only what they may read.
 
 #[cfg(target_os = "macos")]
@@ -27,8 +27,8 @@ use std::sync::{Arc, Mutex, OnceLock};
 use runtime_portal::packet::descriptor_of;
 use runtime_portal::process_link::Descriptor;
 use tilo_actions::remote::Caller;
+use tilo_app_host::services::{AuthenticatedApplicationLaunch, WindowlessStart};
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::apps::services::{AuthenticatedApplicationLaunch, WindowlessStart};
 
 use super::OpenedView;
 use crate::device::processes::{Instance, Launcher, Processes};

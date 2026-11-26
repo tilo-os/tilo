@@ -73,7 +73,7 @@ pub fn moderation_shortcut_id(agent: &str) -> String {
 }
 
 /// tilolang Discussion, whose comments an agent answers a task with.
-pub(crate) const DISCUSSION: &str = "so.tilo.lang.discussion";
+pub const DISCUSSION: &str = "so.tilo.lang.discussion";
 
 /// The agent `agent` of `person` as a direct conversation's `people` holds it: a value, not the
 /// JSON text a field keeps.

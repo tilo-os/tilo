@@ -1,5 +1,5 @@
 //! The seat this session holds for its device, served to the device's daemon over the shell link
-//! (`tilo_workspace_service::apps::seat`): the screen and its windows' notes, the sound apps play,
+//! (`tilo_app_host::seat`): the screen and its windows' notes, the sound apps play,
 //! the calls they capture, the person's settings and the displays Settings changes, the board of
 //! live activities, what the session's services publish, the roles that follow records, and the
 //! asks about a workspace's nodes.
@@ -19,9 +19,9 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
 };
-use tilo_workspace_service::apps::collab_app_broker::{AudioOutputServices, NativeMediaServices};
-use tilo_workspace_service::apps::seat::{self, MediaContext, SeatReading, SeatView, calls};
-use tilo_workspace_service::apps::services::{
+use tilo_app_host::collab_app_broker::{AudioOutputServices, NativeMediaServices};
+use tilo_app_host::seat::{self, MediaContext, SeatReading, SeatView, calls};
+use tilo_app_host::services::{
     BrowserServiceSessionServices, DisplayControlContext, DisplayControlServices,
     PublishedResources,
 };
@@ -515,7 +515,7 @@ impl SeatProvider {
                     let context = field::<seat::ClipboardFacts>(&arguments, "context")?;
                     let command = field(&arguments, "command")?;
                     answered(
-                        tilo_workspace_service::apps::services::FileClipboardServices::command(
+                        tilo_app_host::services::FileClipboardServices::command(
                             clipboard,
                             &context.context(selected?),
                             command,
@@ -528,7 +528,7 @@ impl SeatProvider {
                 if let (Some(clipboard), Ok(peer)) =
                     (&parts.file_clipboard, field::<u64>(&arguments, "peer"))
                 {
-                    tilo_workspace_service::apps::services::FileClipboardServices::disconnect(
+                    tilo_app_host::services::FileClipboardServices::disconnect(
                         clipboard.as_ref(),
                         peer,
                     );
@@ -624,7 +624,7 @@ impl SeatProvider {
                 .and_then(|caller| caller.get("workspace"))
                 .and_then(Value::as_str),
         ) {
-            (Some(app_id), Some(workspace)) => tilo_workspace_service::apps::services::Caller {
+            (Some(app_id), Some(workspace)) => tilo_app_host::services::Caller {
                 app_id: app_id.to_owned(),
                 workspace: workspace.to_owned(),
             },
@@ -833,7 +833,7 @@ mod tests {
         );
         {
             let _inside = tilo_rt::app().handle().enter();
-            tilo_workspace_service::apps::seat::tell_record_changes(
+            tilo_app_host::seat::tell_record_changes(
                 daemon.seat(),
                 daemon.workspaces().document_writes(),
             );
@@ -890,7 +890,7 @@ mod tests {
         );
         let agents = {
             let _inside = tilo_rt::app().handle().enter();
-            tilo_workspace_service::apps::seat::SeatAgents::follow(daemon.seat())
+            tilo_app_host::seat::SeatAgents::follow(daemon.seat())
         };
 
         roster.list(

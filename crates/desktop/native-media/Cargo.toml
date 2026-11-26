@@ -12,9 +12,7 @@ name = "tilo_native_media"
 [dependencies]
 # The closed local call controls: requests an app sends, the status it reads.
 runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab" }
-# The broker's trait a call service answers: the app's admitted connection,
-# and the fence that stops its call when that app goes away.
-tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps"] }
+tilo-app-host = { path = "../../core/app-host" }
 tilo-lock = { path = "../../platform/tilo-lock" }
 serde_json.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "rt"] }

@@ -24,14 +24,14 @@ use std::{
         atomic::{AtomicU64, Ordering},
     },
 };
-use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::apps::{
+use tilo_app_host::{
     app_actions::{AppActionAccess, AppActionAccessResolver, AppResourceKindsResolver},
     services::{
         AuthenticatedApplicationLaunch, LaunchContent, LaunchPlace, LaunchableApplication,
         Launched as LaunchOutcome, LauncherServices,
     },
 };
+use tilo_lock::MutexRecover as _;
 
 #[cfg(any(target_os = "macos", windows))]
 mod carried;
@@ -73,7 +73,7 @@ enum Shows {
 
 /// A start that has already happened: the answer a call gets when the process that takes it
 /// runs already.
-fn ready_when_started() -> tilo_workspace_service::apps::services::WindowlessStart {
+fn ready_when_started() -> tilo_app_host::services::WindowlessStart {
     let (started, start) = tokio::sync::oneshot::channel();
     let _ = started.send(Ok(()));
     start
@@ -536,7 +536,7 @@ impl Apps {
             .into_iter()
             .find(|app| app.app_id == app_id)?;
         let bytes = self.signed_surface_of(&app)?;
-        tilo_workspace_service::apps::register_package_surface(app_id, &bytes);
+        tilo_app_host::register_package_surface(app_id, &bytes);
         ui::app_surface::bytes_of(app_id).map(<[u8]>::to_vec)
     }
 
@@ -555,7 +555,7 @@ impl Apps {
     /// signature declares none.
     fn run_with_signed_surface(&self, app: &InstalledApp) {
         if let Some(surface) = self.signed_surface_of(app) {
-            tilo_workspace_service::apps::register_package_surface(&app.app_id, &surface);
+            tilo_app_host::register_package_surface(&app.app_id, &surface);
         }
     }
 
@@ -1157,7 +1157,7 @@ impl LauncherServices for Apps {
         app: &str,
         workspace: &str,
         record: Option<&str>,
-    ) -> Result<Option<tilo_workspace_service::apps::services::WindowlessStart>, String> {
+    ) -> Result<Option<tilo_app_host::services::WindowlessStart>, String> {
         if crate::device::package_runs::runs_in_process(app) {
             let origin = self.origin_connection(app, workspace)?;
             return self

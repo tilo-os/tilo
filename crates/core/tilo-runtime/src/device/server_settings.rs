@@ -31,7 +31,7 @@ use resource::{
 };
 
 use tilo_actions::{ActionOutput, ApiError, ResourceSpec};
-use tilo_workspace_service::apps::services::{Caller, PublishedResources, Reading, ResourceWatch};
+use tilo_app_host::services::{Caller, PublishedResources, Reading, ResourceWatch};
 use tokio::sync::{mpsc, oneshot};
 
 /// Where a device that has no server configuration yet keeps the one its person

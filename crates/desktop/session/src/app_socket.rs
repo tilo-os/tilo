@@ -13,7 +13,7 @@
 
 use std::sync::Arc;
 
-use tilo_workspace_service::apps::collab_app_broker::seat;
+use tilo_app_host::collab_app_broker::seat;
 
 use crate::launches::Launches;
 

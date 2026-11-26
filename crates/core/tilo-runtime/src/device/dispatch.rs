@@ -8,7 +8,7 @@
 
 use std::sync::Arc;
 
-use tilo_workspace_service::apps::route::CrdtRoute;
+use tilo_app_host::route::CrdtRoute;
 use tilo_workspace_service::content::RouteContent;
 use tilo_workspace_service::work::{Job, KeepsContent};
 

@@ -1,0 +1,468 @@
+#[allow(
+    clippy::wildcard_imports,
+    reason = "one part of the broker module: the shared state, its imports and the other parts reach this through the parent glob"
+)]
+use super::*;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct CollabLaunchHandoff {
+    pub(super) protocol: u16,
+    pub(super) app_id: String,
+    pub(super) workspace_id: String,
+    #[serde(default)]
+    pub(super) executing_peer: bool,
+    /// The window a connection the session makes for one of its own windows
+    /// is for (the launcher's `services::write_collab_window_handoff`).
+    #[serde(default)]
+    pub(super) window_instance: Option<u64>,
+    /// The workspace agent the app is launched to act as; `None` for the device's person.
+    #[serde(default)]
+    pub(super) member: Option<String>,
+}
+
+impl CollabLaunchHandoff {
+    /// The launch `service` holds for the process `pid` this handoff came
+    /// from, as the app, workspace and window it names.
+    pub(super) fn authenticated_launch(
+        &self,
+        service: &dyn crate::services::LauncherServices,
+        pid: u32,
+    ) -> Result<Option<crate::services::AuthenticatedApplicationLaunch>, String> {
+        service.authenticated_launch(pid, &self.app_id, &self.workspace_id, self.window_instance)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) struct VerifiedJoinIdentity {
+    pub(super) user_public_key: [u8; 32],
+    pub(super) device_public_key: [u8; 32],
+    /// A foreign device, which the workspace does not admit: its role is capped.
+    pub(super) capped: bool,
+}
+
+impl VerifiedJoinIdentity {
+    pub(super) fn of(cert: &tilo_user_identity::DeviceCert, capped: bool) -> Self {
+        Self {
+            user_public_key: cert.user_public_key,
+            device_public_key: cert.device_public_key,
+            capped,
+        }
+    }
+
+    /// Whether `cluster_id` is this identity's own workspace: the workspace
+    /// every device its root certified owns, and no other device enters.
+    pub(super) fn owns_person_workspace(&self, cluster_id: &str) -> bool {
+        uuid::Uuid::parse_str(cluster_id).is_ok_and(|workspace| {
+            collab_types::is_person_workspace(&self.user_public_key, &workspace)
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AdmittedJoinIdentity {
+    pub(super) worker_registration: Option<PrivateWorkerRegistration>,
+    pub(super) certificate: Option<tilo_user_identity::DeviceCert>,
+    pub(super) verified: VerifiedJoinIdentity,
+    pub(super) actor_key: String,
+    /// Workspace admission role from the live owner/capability roster.
+    /// Certified document operations use this directly instead of requiring
+    /// a second, channel-local role attestation for the same person. For a
+    /// delegated agent it is the agent's role
+    /// ([`roles::agent_policy::role`]): its preset's, capped by its person's.
+    pub(super) role: CapRole,
+    /// Delegated agent actor for this channel. The certified device still
+    /// proves which person launched it, while policy uses this revocable id.
+    pub(super) agent_id: Option<String>,
+    /// The agent is one this person's own device handed the session to (an
+    /// MCP client): it carries the delegation a device gives its agents,
+    /// not grants the workspace holds for it.
+    pub(super) session_delegated: bool,
+}
+
+impl AdmittedJoinIdentity {
+    /// The durable owner of an invocation from a certified caller
+    /// ([`VerifiedActionCaller`]): the person themselves. An admission that
+    /// names an agent is no certified person's, and is refused.
+    pub(super) fn certified_owner(&self) -> Result<InvocationOwner, String> {
+        if self.agent_id.is_some() || self.session_delegated {
+            return Err("admitted caller carries an agent's delegation".into());
+        }
+        Ok(self.person_owner())
+    }
+
+    /// The owner of an invocation by the certified person themselves, never
+    /// an agent acting for them.
+    pub(super) fn person_owner(&self) -> InvocationOwner {
+        InvocationOwner::Certified {
+            root: self.verified.user_public_key,
+            device: self.verified.device_public_key,
+        }
+    }
+
+    pub(super) fn broker_actor(&self) -> BrokerActor {
+        let actor = match &self.agent_id {
+            Some(agent) => {
+                let actor = BrokerActor::agent(agent.clone(), self.actor_key.clone())
+                    .for_person(self.actor_key.clone());
+                if self.session_delegated {
+                    actor.session_delegated()
+                } else {
+                    actor
+                }
+            }
+            None => BrokerActor::person(self.actor_key.clone()),
+        };
+        actor.capped(self.verified.capped)
+    }
+
+    /// The caller this admitted connection is, confined to its workspace.
+    pub(super) fn caller(&self, workspace: &str) -> tilo_actions::remote::Caller {
+        let foreign = self
+            .certificate
+            .as_ref()
+            .is_some_and(|cert| cert.capabilities.foreign);
+        match &self.agent_id {
+            // The agent acts for the person whose device this session is
+            // ([`tilo_actions::remote::Caller::acting_for_person`]): every op it
+            // makes and everything presence says about it names that person.
+            Some(agent) => {
+                tilo_actions::remote::Caller::local_agent(agent.clone(), self.actor_key.clone())
+            }
+            None => tilo_actions::remote::Caller::local_person(self.actor_key.clone()),
+        }
+        .in_workspace(workspace)
+        .from_foreign_device(foreign)
+    }
+
+    /// The caller this certified identity is in `workspace`, from its own
+    /// device: foreign when it was held to the cap there or the host keeps
+    /// a stricter restriction for it.
+    pub(super) fn certified_caller(
+        &self,
+        workspace: &str,
+        restricted: bool,
+    ) -> tilo_actions::remote::Caller {
+        let verified = &self.verified;
+        match &self.agent_id {
+            Some(agent) => {
+                let caller = tilo_actions::remote::Caller::delegated_agent(
+                    agent.clone(),
+                    verified.user_public_key,
+                    verified.device_public_key,
+                );
+                // A member's own session runs this listed agent: that device handed it the
+                // session, so the certificate's delegation reaches it.
+                if self.session_delegated {
+                    caller.session_handed()
+                } else {
+                    caller
+                }
+            }
+            None => tilo_actions::remote::Caller::authenticated(
+                verified.user_public_key,
+                verified.device_public_key,
+            ),
+        }
+        .in_workspace(workspace)
+        .from_foreign_device(verified.capped || restricted)
+    }
+
+    /// Run `decide` with what this identity may do in `workspace_id` (its person workspace, or a
+    /// workspace in `tree`).
+    #[cfg(test)]
+    pub(super) fn with_authority<T>(
+        &self,
+        tree: Option<&Layout>,
+        workspace_id: &str,
+        decide: impl FnOnce(&tilo_action_policy::MemberAccess) -> T,
+    ) -> Result<T, String> {
+        if (self.agent_id.is_none() || self.session_delegated)
+            && self.verified.owns_person_workspace(workspace_id)
+        {
+            // The own workspace's devices are its owner's; a foreign one is
+            // held to the foreign-device bound there as anywhere, and an
+            // agent one of them was handed to, to that delegation too.
+            let policy =
+                tilo_action_policy::WorkspacePolicy::new(workspace_id, self.actor_key.clone());
+            let access =
+                tilo_action_policy::MemberAccess::new(policy, self.broker_actor().acting());
+            return Ok(decide(&access));
+        }
+        let workspace = tree
+            .ok_or("the identity has no workspace authority")?
+            .workspaces
+            .iter()
+            .find(|workspace| workspace.id().to_string() == workspace_id)
+            .ok_or("the identity's workspace is no longer hosted")?;
+        Ok(decide(&self.broker_actor().access_in(workspace)))
+    }
+}
+
+/// Answer a remote-action request with `error`, refusing it.
+/// Whether `evidence` is what the confirmation `policy` asks for. Minting
+/// the grant that binds it to one delivery is
+/// [`AppBrokerState::confirmation_token`]'s job.
+pub(super) fn confirmation_satisfied(
+    policy: &tilo_actions::ConfirmationPolicy,
+    evidence: Option<&tilo_actions::remote::Confirmation>,
+) -> bool {
+    use tilo_actions::remote::Confirmation;
+    match (policy, evidence) {
+        (tilo_actions::ConfirmationPolicy::None, _)
+        | (tilo_actions::ConfirmationPolicy::Confirm, Some(Confirmation::Confirmed))
+        // The person approved the asked record this call was kept as: only the dispatch sets it,
+        // admitting the same call again on their answer.
+        | (_, Some(Confirmation::Asked(_))) => true,
+        (
+            tilo_actions::ConfirmationPolicy::Phrase { phrase: expected },
+            Some(Confirmation::Phrase(phrase)),
+        ) => phrase.len() <= DIRECTORY_MAX_CONFIRMATION_BYTES && phrase == expected,
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+pub(super) fn admit_verified_join(
+    tree: &Layout,
+    route: &CrdtRoute,
+    verified: VerifiedJoinIdentity,
+) -> Result<AdmittedJoinIdentity, String> {
+    admit_verified_join_at(
+        crate::services::workspace_in(tree, &route.cluster_id),
+        route,
+        verified,
+        tilo_clock::try_unix_now().ok_or("legacy clock unavailable")?,
+    )
+}
+
+/// Admit a verified identity into `route`'s workspace. `workspace` is the
+/// committed workspace of exactly `route.cluster_id` from one authority
+/// sample (`None` when this host has none).
+pub(super) fn admit_verified_join_at(
+    workspace: Option<&tilo_desktop_model::Workspace>,
+    route: &CrdtRoute,
+    verified: VerifiedJoinIdentity,
+    now: u64,
+) -> Result<AdmittedJoinIdentity, String> {
+    let actor_key = person_id_for_root(verified.user_public_key);
+    // The person's own workspace's devices are its owner's, by the
+    // workspace id's derivation, exactly the devices this root certified, each
+    // acting as the workspace's owner — a foreign device with the foreign-device
+    // cap's role, there as in any workspace. Any other workspace id is a workspace.
+    if verified.owns_person_workspace(&route.cluster_id) {
+        let role = CapRole::Owner;
+        return Ok(AdmittedJoinIdentity {
+            worker_registration: None,
+            certificate: None,
+            verified,
+            actor_key,
+            role,
+            agent_id: None,
+            session_delegated: false,
+        });
+    }
+    let workspace = workspace
+        .ok_or_else(|| "certified join names a workspace this session does not host".to_string())?;
+    // Taking part is being allowed to read the workspace now: as a member, or
+    // by a grant for a while.
+    if !BrokerActor::person(actor_key.clone()).reads_in(workspace, now) {
+        return Err("certified collaboration identity is not a workspace member".into());
+    }
+    let role = workspace
+        .policy
+        .role_of(&actor_key)
+        .unwrap_or(CapRole::Viewer);
+    Ok(AdmittedJoinIdentity {
+        worker_registration: None,
+        certificate: None,
+        verified,
+        actor_key,
+        role,
+        agent_id: None,
+        session_delegated: false,
+    })
+}
+
+pub(super) fn verify_join_presentation(
+    route: &CrdtRoute,
+    presentation: &runtime_collab::CertifiedJoinIdentity,
+    expected_user_public_key: &[u8; 32],
+    now_ns: u64,
+    revoked: bool,
+    enrolled: bool,
+) -> Result<VerifiedJoinIdentity, String> {
+    if presentation.workspace_id != route.cluster_id {
+        return Err("certified join is scoped to a different workspace".into());
+    }
+    let cert: tilo_user_identity::DeviceCert =
+        serde_json::from_slice(&presentation.device_certificate)
+            .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
+    verify_certificate(&cert, expected_user_public_key, now_ns, revoked, enrolled)?;
+    let proof = <[u8; 64]>::try_from(presentation.proof.as_slice())
+        .map_err(|_| "collaboration join proof must be 64 bytes".to_string())?;
+    let workspace = presentation.workspace_id.as_str();
+    let digest = tilo_identity_client::collaboration_join_digest(workspace)
+        .map_err(|error| format!("collaboration join cannot be encoded: {error}"))?;
+    admission_memo::join_proof_verified(&cert.device_public_key, workspace, &proof, || {
+        VerifyingKey::from_bytes(&cert.device_public_key)
+            .map_err(|_| "device certificate contains an invalid device key".to_string())?
+            .verify(&digest, &Signature::from_bytes(&proof))
+            .map_err(|_| "collaboration join proof was signed by an unknown device".to_string())
+    })?;
+    // Without an authority to ask who hosts the workspace, every foreign device
+    // is held to the cap; the caller refines this where it has one.
+    Ok(VerifiedJoinIdentity::of(&cert, cert.capabilities.foreign))
+}
+
+/// Whether `cert` is in force at `now_ns`, certified by `expected_user_public_key`, and neither
+/// revoked nor unenrolled.
+fn verify_certificate(
+    cert: &tilo_user_identity::DeviceCert,
+    expected_user_public_key: &[u8; 32],
+    now_ns: u64,
+    revoked: bool,
+    enrolled: bool,
+) -> Result<(), String> {
+    tilo_user_identity::verify_device_cert_at(cert, now_ns)
+        .map_err(|error| format!("device certificate was rejected: {error}"))?;
+    if &cert.user_public_key != expected_user_public_key {
+        return Err("device certificate belongs to another workspace identity".into());
+    }
+    if revoked {
+        return Err("certified collaboration device has been revoked".into());
+    }
+    if !enrolled {
+        return Err("certified collaboration device is not enrolled".into());
+    }
+    Ok(())
+}
+
+pub(super) fn verify_join_identity(
+    route: &CrdtRoute,
+    identity_bytes: &[u8],
+    membership: Option<&WorkspaceTreeHandle>,
+    trusted_devices: Option<&[[u8; 32]]>,
+    authority: Option<&dyn crate::certificate_authority::CertificateAuthority>,
+) -> Result<AdmittedJoinIdentity, String> {
+    admit_join_presentation(
+        route,
+        &join_presentation(identity_bytes)?,
+        membership,
+        trusted_devices,
+        authority,
+    )
+}
+
+/// The certified presentation in a join's identity bytes.
+pub(super) fn join_presentation(
+    identity_bytes: &[u8],
+) -> Result<runtime_collab::CertifiedJoinIdentity, String> {
+    runtime_collab::CertifiedJoinIdentity::decode(identity_bytes)
+        .map_err(|error| format!("certified join presentation is malformed: {error}"))?
+        .ok_or_else(|| "collaboration join requires a certified device presentation".into())
+}
+
+pub(super) fn admit_join_presentation(
+    route: &CrdtRoute,
+    presentation: &runtime_collab::CertifiedJoinIdentity,
+    membership: Option<&WorkspaceTreeHandle>,
+    trusted_devices: Option<&[[u8; 32]]>,
+    authority: Option<&dyn crate::certificate_authority::CertificateAuthority>,
+) -> Result<AdmittedJoinIdentity, String> {
+    let cert: tilo_user_identity::DeviceCert =
+        serde_json::from_slice(&presentation.device_certificate)
+            .map_err(|error| format!("device certificate is not valid JSON: {error}"))?;
+    admit_device(
+        route,
+        cert,
+        membership,
+        trusted_devices,
+        authority,
+        |expected, now, revoked, enrolled| {
+            verify_join_presentation(route, presentation, expected, now, revoked, enrolled)
+        },
+    )
+}
+
+/// Admit `cert`, the certificate of this device's own person in `route`'s workspace, which an
+/// app's connection acts under: the device itself vouches for it, so there is no proof to check,
+/// only that the workspace admits the certificate now.
+pub(super) fn admit_device_certificate(
+    route: &CrdtRoute,
+    cert: tilo_user_identity::DeviceCert,
+    membership: Option<&WorkspaceTreeHandle>,
+    trusted_devices: Option<&[[u8; 32]]>,
+    authority: Option<&dyn crate::certificate_authority::CertificateAuthority>,
+) -> Result<AdmittedJoinIdentity, String> {
+    let checked = cert.clone();
+    admit_device(
+        route,
+        cert,
+        membership,
+        trusted_devices,
+        authority,
+        |expected, now, revoked, enrolled| {
+            verify_certificate(&checked, expected, now, revoked, enrolled)?;
+            Ok(VerifiedJoinIdentity::of(
+                &checked,
+                checked.capabilities.foreign,
+            ))
+        },
+    )
+}
+
+/// Admit `cert` into `route`'s workspace once `verify` accepts it, given the root expected to
+/// certify it, the policy time, and whether it is revoked or enrolled.
+fn admit_device(
+    route: &CrdtRoute,
+    cert: tilo_user_identity::DeviceCert,
+    membership: Option<&WorkspaceTreeHandle>,
+    trusted_devices: Option<&[[u8; 32]]>,
+    authority: Option<&dyn crate::certificate_authority::CertificateAuthority>,
+    verify: impl FnOnce(&[u8; 32], u64, bool, bool) -> Result<VerifiedJoinIdentity, String>,
+) -> Result<AdmittedJoinIdentity, String> {
+    let (expected_root, revoked, enrolled) =
+        authorize_join_certificate(route, &cert, trusted_devices, authority)?;
+    let registered = authority.map_or(
+        Ok(None),
+        crate::certificate_authority::CertificateAuthority::policy_time,
+    )?;
+    let now_ns = policy_context::sample(registered.clone(), registered.as_ref())?.1;
+    let verified = VerifiedJoinIdentity {
+        capped: cert.capabilities.foreign,
+        ..verify(&expected_root, now_ns, revoked, enrolled)?
+    };
+    let membership = membership
+        .ok_or_else(|| "certified join has no workspace membership authority".to_string())?;
+    let mut admitted = membership.decide_in_workspace(&route.cluster_id, |workspace| {
+        admit_verified_join_at(workspace, route, verified, now_ns / 1_000_000_000)
+    })??;
+    admitted.certificate = Some(cert);
+    Ok(admitted)
+}
+
+/// Whether `cert` may join `route`: the workspace's certificate authority
+/// (device list, revocations), else the trusted keys.
+/// Answers the root expected to certify it, and whether it is revoked or enrolled.
+pub(super) fn authorize_join_certificate(
+    route: &CrdtRoute,
+    cert: &tilo_user_identity::DeviceCert,
+    trusted_devices: Option<&[[u8; 32]]>,
+    authority: Option<&dyn crate::certificate_authority::CertificateAuthority>,
+) -> Result<([u8; 32], bool, bool), String> {
+    Ok(if let Some(authority) = authority {
+        let workspace =
+            uuid::Uuid::parse_str(&route.cluster_id).map_err(|_| "invalid exact workspace")?;
+        authority.authorize_join(workspace, cert)?;
+        (cert.user_public_key, false, true)
+    } else if let Some(devices) = trusted_devices {
+        (
+            cert.user_public_key,
+            false,
+            devices.contains(&cert.device_public_key),
+        )
+    } else {
+        return Err("no current certificate authority is attached".into());
+    })
+}

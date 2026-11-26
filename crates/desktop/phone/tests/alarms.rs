@@ -28,9 +28,7 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 
 use server::Server;
-use tilo_workspace_service::apps::wakeups::{
-    Notification, Notifier, NotifyError, Scheduled, SystemTime,
-};
+use tilo_app_host::wakeups::{Notification, Notifier, NotifyError, Scheduled, SystemTime};
 use tilolang_workspace::records::{Packages, member, with_tl_record};
 use tilolang_workspace::runtime::{ResourceRef, Value};
 

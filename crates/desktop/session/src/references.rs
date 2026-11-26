@@ -302,7 +302,7 @@ pub(crate) mod testing {
         daemon
             .workspaces()
             .declare_package_surface(NOTES, NOTES_TYPES);
-        tilo_workspace_service::apps::register_package_surface(NOTES, NOTES_TYPES);
+        tilo_app_host::register_package_surface(NOTES, NOTES_TYPES);
         command(
             daemon,
             workspace,

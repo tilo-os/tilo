@@ -1027,6 +1027,7 @@ doc = false
 "tilo-app" = { path = "../../crates/sdk/tilo-app", default-features = false, features = ["broker-transport", "default", "mpris", "native", "test-support"] }
 "tilo-app-builder" = { path = "../../crates/lang/tilo-app-builder", default-features = false, features = [] }
 "tilo-app-fleet" = { path = "../../crates/desktop/app-fleet", default-features = false, features = ["surfaces"] }
+"tilo-app-host" = { path = "../../crates/core/app-host", default-features = false, features = ["agents", "files", "test-support"] }
 "tilo-app-id" = { path = "../../crates/core/tilo-app-id", default-features = false, features = [] }
 "tilo-app-keeper" = { path = "../../crates/desktop/app-keeper", default-features = false, features = ["test-support"] }
 "tilo-app-launch" = { path = "../../crates/desktop/app-launch", default-features = false, features = ["test-support"] }
@@ -3778,7 +3779,7 @@ doc = false
 "tilo-workspace-emoji" = { path = "../../crates/core/tilo-workspace-emoji", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../crates/core/workspace-join", default-features = false, features = ["test-support"] }
 "tilo-workspace-keys" = { path = "../../crates/core/workspace-keys", default-features = false, features = ["test-support"] }
-"tilo-workspace-service" = { path = "../../crates/core/tilo-workspace-service", default-features = false, features = ["agents", "apps", "content", "device-keys", "files", "fixture-servers", "session-pages", "test-support"] }
+"tilo-workspace-service" = { path = "../../crates/core/tilo-workspace-service", default-features = false, features = ["agents", "apps", "content", "device-keys", "files", "session-pages", "test-support"] }
 "tilo-x11-transfer" = { path = "../../crates/desktop/x11-transfer", default-features = false, features = [] }
 "tilo-zone-globe" = { path = "../../crates/sdk/zone-globe", default-features = false, features = [] }
 "tilolang" = { path = "../../crates/lang/tilolang", default-features = false, features = [] }

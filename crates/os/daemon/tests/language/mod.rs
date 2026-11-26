@@ -97,11 +97,11 @@ use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
     RemoteActionTarget,
 };
+use tilo_app_host::services::ResourceRequestContext;
+use tilo_app_host::test_support::Started;
+use tilo_app_host::triggers::{Firing, Runner};
 use tilo_resource_store::Stamp;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::apps::services::ResourceRequestContext;
-use tilo_workspace_service::apps::test_support::Started;
-use tilo_workspace_service::apps::triggers::{Firing, Runner};
 use tilo_workspace_service::service::local_caller;
 use tilo_workspace_service::workspaces::fixtures::{
     TestGroupKeys, TestHost, declare_built_in_app, hosting_device, test_host_holding,
@@ -254,7 +254,7 @@ pub(crate) async fn settled<T: Send + 'static>(pending: Pending<T>) -> T {
 /// The key a device makes for its agents: one fixed key here.
 pub(crate) struct Keys(pub(crate) [u8; 32]);
 
-impl tilo_workspace_service::agents::agent_keys::AgentKeys for Keys {
+impl tilo_app_host::agents::agent_keys::AgentKeys for Keys {
     fn grant(
         &self,
         _: tilo_server_protocol::WorkspaceId,
@@ -315,7 +315,7 @@ impl CertifiedKeys {
     }
 }
 
-impl tilo_workspace_service::agents::agent_keys::AgentKeys for CertifiedKeys {
+impl tilo_app_host::agents::agent_keys::AgentKeys for CertifiedKeys {
     fn grant(
         &self,
         _: tilo_server_protocol::WorkspaceId,

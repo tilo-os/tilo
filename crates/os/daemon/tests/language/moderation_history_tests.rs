@@ -24,7 +24,7 @@ use tilo_model_gateway::host_backend::protocol::{
     Content, Message, ModelError, ModelRequest, ModelResponse, Role, StopReason, ToolCall, Usage,
 };
 
-use tilo_workspace_service::agents::{Model, ServerAgents};
+use tilo_app_host::agents::{Model, ServerAgents};
 use tilo_workspace_service::workspaces::fixtures::answer_grant;
 
 const CHAT: &str = "so.tilo.chat";

@@ -14,13 +14,11 @@ mod session_tests {
         InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, ResourceReads,
     };
     use tilo_actions::{ActionAddress, ActionInvoker, ActionOutput};
+    use tilo_app_host::agents::task_work::{Task, TaskWork, Work, made_by, task, with_place};
+    use tilo_app_host::agents::triggered;
+    use tilo_app_host::agents::{EngineActions, Outcome, WorkspaceActionProvider};
     use tilo_server_protocol::WorkspaceId;
     use tilo_workspace_service::agent_shortcuts::TASKS;
-    use tilo_workspace_service::agents::task_work::{
-        Task, TaskWork, Work, made_by, task, with_place,
-    };
-    use tilo_workspace_service::agents::triggered;
-    use tilo_workspace_service::agents::{EngineActions, Outcome, WorkspaceActionProvider};
     use tilo_workspace_service::workspaces::Workspaces;
     use tilo_workspace_service::workspaces::fixtures::{
         TestGroupKeys, TestHost, hosting_device, test_host_holding,
@@ -241,7 +239,7 @@ mod session_tests {
 
     struct Keys;
 
-    impl tilo_workspace_service::agents::agent_keys::AgentKeys for Keys {
+    impl tilo_app_host::agents::agent_keys::AgentKeys for Keys {
         fn grant(&self, _: WorkspaceId, _: &str, _: &str, _: [u8; 32]) -> Result<[u8; 32], String> {
             Ok([7; 32])
         }

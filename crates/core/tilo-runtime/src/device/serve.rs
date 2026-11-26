@@ -1105,7 +1105,7 @@ mod tests {
         reason = "one key, from its certification to its revocation and the connection's end, read top to bottom"
     )]
     fn an_agent_whose_key_its_person_revokes_is_ended_where_it_is_connected() {
-        use tilo_workspace_service::agents::agent_keys::{REVOKED, this_device};
+        use tilo_app_host::agents::agent_keys::{REVOKED, this_device};
         let Some(root) = super::super::services::tests::isolated_root(REVOKED_TEST) else {
             return;
         };

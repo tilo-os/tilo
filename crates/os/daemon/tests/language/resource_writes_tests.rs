@@ -23,7 +23,7 @@ use tilo_resource_store::{Stamp, Store};
 use tilo_workspace_service::workspaces::fixtures::ContentKeys;
 
 use tilo_actions::remote::CatalogueQuery;
-use tilo_workspace_service::apps::services::ResourceRequestContext;
+use tilo_app_host::services::ResourceRequestContext;
 use tilo_workspace_service::workspaces::fixtures::{
     TestGroupKeys, TestHost, declare_app, guest_device, hosting_device_with, invitation_text,
     member_device,

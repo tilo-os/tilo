@@ -30,9 +30,9 @@ use std::time::Duration;
 
 use server::Server;
 use tilo_actions::remote::person_telling::{self, Kind, Tell};
+use tilo_app_host::agents::telling::{Pace, Teller};
 use tilo_phone::telling::Watching;
 use tilo_phone::unified_push::{Key, Push};
-use tilo_workspace_service::agents::telling::{Pace, Teller};
 use tilo_workspace_service::workspaces::ToTell;
 
 /// The push service on this machine: TLS with a certificate of its own, which the sender is told

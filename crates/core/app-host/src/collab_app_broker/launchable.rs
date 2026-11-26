@@ -1,0 +1,3055 @@
+//! Every application keeps offering its actions while it is closed.
+//!
+//! No action runs out of sight: invoking one makes the app's view live and
+//! runs it there, exactly as a person's click does. So the broker retains
+//! the last tree each app published per workspace and record, on disk, and
+//! a caller can still find and invoke any of its actions after the app
+//! closes or the shell restarts. The retained rows are catalogue state only:
+//! invoking one launches the app and admits the invocation against the
+//! surface the app publishes fresh, never against the retained copy.
+
+use std::collections::{BTreeMap, HashMap};
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use std::thread::JoinHandle;
+use std::time::Duration;
+
+use super::{PublishedAction, PublishedSurface};
+use crate::collab_broker::CrdtRoute;
+use crate::services::LaunchPlace;
+use tilo_action_policy::Actor;
+use tilo_lock::MutexRecover as _;
+
+/// Prefix of the provider token naming a retained launchable surface.
+const LAUNCHABLE_PROVIDER: &str = "launch";
+
+/// How long an invocation waits for the application it launched to publish
+/// the action and its invocation stream.
+const DELIVERY_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Threads the delivery runtime may use to call the host's launcher, which
+/// blocks while it starts the app. Further launches queue behind them.
+const LAUNCH_CALLS: usize = 4;
+
+/// The runtime every launch-then-deliver waits on: one worker for all of
+/// them, since a wait is an event, never a thread, plus a bounded pool for
+/// the blocking launcher calls. It runs beside the broker, never on its
+/// local set, and starts on first use.
+pub(super) fn delivery_runtime() -> Result<&'static tokio::runtime::Runtime, String> {
+    static RUNTIME: std::sync::OnceLock<Result<tokio::runtime::Runtime, String>> =
+        std::sync::OnceLock::new();
+    RUNTIME
+        .get_or_init(|| {
+            tilo_rt::daemon("tilo-launch")
+                .workers(1)
+                .max_blocking(LAUNCH_CALLS)
+                .build()
+                .map_err(|error| error.to_string())
+        })
+        .as_ref()
+        .map_err(Clone::clone)
+}
+
+/// Keep overflow launches in the async task, where cancellation and the
+/// delivery deadline remain observable, rather than in the blocking queue.
+/// The host call owns its permit until it actually returns.
+pub(super) fn launch_permits() -> Arc<tokio::sync::Semaphore> {
+    static PERMITS: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    Arc::clone(PERMITS.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(LAUNCH_CALLS))))
+}
+
+/// `(app_id, cluster_id, document_id)`: one retained surface.
+type SurfaceKey = (String, String, String);
+
+/// The record of a window rather than of something the person keeps: a
+/// window's scratch document (`tab:<id>`) or a record derived from one
+/// (`derived:default@tab:<id>`, Settings' page of that window). Answers the
+/// roles leading to the window and the window's id. The person's own base
+/// (tab 0) names no window.
+fn window_record(document_id: &str) -> Option<(&str, u64)> {
+    let mut rest = document_id;
+    while let Some(derived) = rest.strip_prefix("derived:") {
+        rest = derived.split_once('@')?.1;
+    }
+    let tab = rest.strip_prefix("tab:")?;
+    let tab = u64::from_str_radix(tab, 16).ok().filter(|tab| *tab != 0)?;
+    Some((document_id.strip_suffix(rest)?, tab))
+}
+
+/// Whether `retained` is an older window's record playing the same roles of
+/// the same app in the same workspace as `key`, which replaces it. Every window
+/// of such an app has a record of its own, and invoking a retained action
+/// opens a window anyway: keeping one per window ever opened grew the
+/// catalogue without bound (a Settings window retains some 900 actions).
+fn superseded_by(key: &SurfaceKey, retained: &SurfaceKey) -> bool {
+    key != retained
+        && key.0 == retained.0
+        && key.1 == retained.1
+        && window_record(&key.2)
+            .zip(window_record(&retained.2))
+            .is_some_and(|((roles, _), (retained_roles, _))| roles == retained_roles)
+}
+
+/// Where an app runs with no window in a test, in place of the host's
+/// ([`crate::services::LauncherServices::windowless`]).
+#[cfg(test)]
+pub(super) type WindowlessStarter = Arc<
+    dyn Fn(&str, &str) -> Result<Option<crate::services::WindowlessStart>, String> + Send + Sync,
+>;
+
+/// The host's launcher a test puts in place, starting apps only as its [`WindowlessStarter`] does.
+#[cfg(test)]
+pub(super) struct TestStarts(WindowlessStarter);
+
+#[cfg(test)]
+impl crate::services::LauncherServices for TestStarts {
+    fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+        Vec::new()
+    }
+    fn launch(
+        &self,
+        _: &str,
+        _: &tilo_desktop_model::Workspace,
+        _: Option<&str>,
+        _: &LaunchPlace,
+    ) -> Result<(), String> {
+        Err("a test starts apps only without a window".into())
+    }
+    fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+        false
+    }
+    fn windowless(
+        &self,
+        app: &str,
+        workspace: &str,
+        _: Option<&str>,
+    ) -> Result<Option<crate::services::WindowlessStart>, String> {
+        (self.0)(app, workspace)
+    }
+}
+
+/// Starts `app_id` in a workspace in place of the host's launcher. Tests
+/// stand in for launching the installed app with one.
+pub(super) type AppLauncher = Arc<
+    dyn Fn(&str, &tilo_desktop_model::Workspace, Option<&str>, &LaunchPlace) -> Result<(), String>
+        + Send
+        + Sync,
+>;
+
+/// How many actors' views [`ActorViews`] remembers.
+const REMEMBERED_ACTORS: usize = 1024;
+
+/// The view each actor last worked in, per workspace: the app whose action
+/// it last ran there. A view another of its actions needs opens beside it.
+#[derive(Default)]
+struct ActorViews {
+    /// `(workspace, actor)` → (app, when it was noted).
+    views: HashMap<(String, Actor), (String, u64)>,
+    clock: u64,
+}
+
+impl ActorViews {
+    fn note(&mut self, workspace: &str, actor: &Actor, app_id: &str) {
+        self.clock = self.clock.wrapping_add(1);
+        let key = (workspace.to_owned(), actor.clone());
+        if !self.views.contains_key(&key) && self.views.len() >= REMEMBERED_ACTORS {
+            let oldest = self
+                .views
+                .iter()
+                .min_by_key(|(_, (_, at))| *at)
+                .map(|(key, _)| key.clone());
+            if let Some(oldest) = oldest {
+                self.views.remove(&oldest);
+            }
+        }
+        self.views.insert(key, (app_id.to_owned(), self.clock));
+    }
+
+    fn of(&self, workspace: &str, actor: &Actor) -> Option<&str> {
+        self.views
+            .get(&(workspace.to_owned(), actor.clone()))
+            .map(|(app, _)| app.as_str())
+    }
+}
+
+/// The provider token a catalogue issues for a retained surface's actions.
+pub fn launchable_provider(surface: &PublishedSurface) -> String {
+    format!(
+        "{LAUNCHABLE_PROVIDER}:{}:{}:{}",
+        surface.route.cluster_id, surface.app_id, surface.route.document_id
+    )
+}
+
+/// Whether `provider` names a retained launchable surface.
+pub(super) fn is_launchable_provider(provider: &str) -> bool {
+    provider
+        .strip_prefix(LAUNCHABLE_PROVIDER)
+        .is_some_and(|rest| rest.starts_with(':'))
+}
+
+/// One retained surface as saved on disk. Connection identity is not
+/// saved: it means nothing to the next connection.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct StoredSurface {
+    app_id: String,
+    cluster_id: String,
+    document_id: String,
+    actions: Vec<PublishedAction>,
+}
+
+impl StoredSurface {
+    fn into_surface(self) -> Option<(SurfaceKey, PublishedSurface)> {
+        let actions = launchable_actions(&self.actions);
+        if actions.is_empty() || self.app_id.is_empty() || self.cluster_id.is_empty() {
+            return None;
+        }
+        let key = (
+            self.app_id.clone(),
+            self.cluster_id.clone(),
+            self.document_id.clone(),
+        );
+        Some((
+            key,
+            PublishedSurface {
+                peer_id: 0,
+                app_id: self.app_id.clone(),
+                route: CrdtRoute {
+                    app_id: self.app_id,
+                    cluster_id: self.cluster_id,
+                    document_id: self.document_id,
+                },
+                actions,
+                live: false,
+            },
+        ))
+    }
+}
+
+fn launchable_actions(actions: &[PublishedAction]) -> Vec<PublishedAction> {
+    actions
+        .iter()
+        .filter(|action| action.contract.validate_declaration().is_empty())
+        .cloned()
+        .collect()
+}
+
+/// Saves the catalogue off the broker's thread. Saves coalesce: a burst of
+/// changes writes the latest catalogue once.
+struct CatalogueStore {
+    saves: Option<std::sync::mpsc::Sender<Vec<u8>>>,
+    writer: Option<JoinHandle<()>>,
+}
+
+impl CatalogueStore {
+    fn open(path: PathBuf) -> std::io::Result<Self> {
+        let (saves, pending) = std::sync::mpsc::channel::<Vec<u8>>();
+        let writer = std::thread::Builder::new()
+            .name("tilo-launchable-actions".into())
+            .spawn(move || {
+                while let Ok(mut bytes) = pending.recv() {
+                    while let Ok(newer) = pending.try_recv() {
+                        bytes = newer;
+                    }
+                    if let Err(error) = tilo_files::native::atomic::write_private(&path, &bytes) {
+                        tracing::warn!(
+                            %error,
+                            path = %path.display(),
+                            "could not save the launchable action catalogue"
+                        );
+                    }
+                }
+            })?;
+        Ok(Self {
+            saves: Some(saves),
+            writer: Some(writer),
+        })
+    }
+
+    fn save(&self, bytes: Vec<u8>) {
+        if let Some(saves) = &self.saves {
+            let _ = saves.send(bytes);
+        }
+    }
+}
+
+impl Drop for CatalogueStore {
+    fn drop(&mut self) {
+        // Closing the channel lets the writer finish the last save and exit.
+        self.saves.take();
+        if let Some(writer) = self.writer.take() {
+            let _ = writer.join();
+        }
+    }
+}
+
+/// The retained launchable surfaces, and how long an invocation of one waits
+/// for the application it launched. The host's launcher starts the app.
+pub(super) struct LaunchableCatalogue {
+    surfaces: Mutex<BTreeMap<SurfaceKey, PublishedSurface>>,
+    store: Mutex<Option<CatalogueStore>>,
+    launcher: Mutex<Option<AppLauncher>>,
+    #[cfg(test)]
+    windowless: Mutex<Option<WindowlessStarter>>,
+    delivery_timeout: Mutex<Duration>,
+    views: Mutex<ActorViews>,
+}
+
+impl LaunchableCatalogue {
+    pub(super) fn new() -> Self {
+        Self {
+            surfaces: Mutex::new(BTreeMap::new()),
+            store: Mutex::new(None),
+            launcher: Mutex::new(None),
+            #[cfg(test)]
+            windowless: Mutex::new(None),
+            delivery_timeout: Mutex::new(DELIVERY_TIMEOUT),
+            views: Mutex::new(ActorViews::default()),
+        }
+    }
+
+    /// `actor` just ran an action of `app_id` in `workspace`: that view is
+    /// where it works now.
+    pub(super) fn note_view(&self, workspace: &str, actor: &Actor, app_id: &str) {
+        self.views.lock_recover().note(workspace, actor, app_id);
+    }
+
+    /// The app whose view `actor` last worked in, in `workspace`.
+    pub(super) fn view_of(&self, workspace: &str, actor: &Actor) -> Option<String> {
+        self.views
+            .lock_recover()
+            .of(workspace, actor)
+            .map(str::to_owned)
+    }
+
+    /// Load the catalogue saved at `path` and keep saving changes there. A
+    /// missing or unreadable file is an empty catalogue.
+    pub(super) fn persist_at(&self, path: &Path) {
+        let stored: Vec<StoredSurface> = tilo_files::native::atomic::json::load_or_default(path);
+        let store = match CatalogueStore::open(path.to_path_buf()) {
+            Ok(store) => store,
+            Err(error) => {
+                tracing::warn!(%error, "launchable actions will not survive a restart");
+                return;
+            }
+        };
+        let Ok(mut surfaces) = self.surfaces.lock() else {
+            return;
+        };
+        for (key, surface) in stored.into_iter().filter_map(StoredSurface::into_surface) {
+            // What an application published this session is newer, and so
+            // is a later window's record: window ids only grow.
+            let newer = surfaces.keys().any(|kept| {
+                superseded_by(kept, &key)
+                    && window_record(&kept.2).map(|(_, tab)| tab)
+                        > window_record(&key.2).map(|(_, tab)| tab)
+            });
+            if newer {
+                continue;
+            }
+            surfaces.retain(|kept, _| !superseded_by(&key, kept));
+            surfaces.entry(key).or_insert(surface);
+        }
+        if let Ok(mut slot) = self.store.lock() {
+            *slot = Some(store);
+        }
+        self.save(&surfaces);
+    }
+
+    /// Every retained surface.
+    pub(super) fn surfaces(&self) -> Vec<PublishedSurface> {
+        self.surfaces
+            .lock()
+            .map(|surfaces| surfaces.values().cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub(super) fn action_for(
+        &self,
+        route: &CrdtRoute,
+        resource: &str,
+        action: &str,
+    ) -> Option<(PublishedSurface, PublishedAction)> {
+        self.surfaces
+            .lock()
+            .ok()?
+            .get(&(
+                route.app_id.clone(),
+                route.cluster_id.clone(),
+                route.document_id.clone(),
+            ))?
+            .action_projection(resource, action)
+    }
+
+    /// The retained surface `provider` names.
+    pub(super) fn surface_for(&self, provider: &str) -> Option<PublishedSurface> {
+        self.surfaces.lock().ok().and_then(|surfaces| {
+            surfaces
+                .values()
+                .find(|surface| launchable_provider(surface) == provider)
+                .cloned()
+        })
+    }
+
+    /// Retain the surface a live application just published, replacing what
+    /// that app, workspace and record offered before. A surface offering
+    /// nothing forgets the old one.
+    pub(super) fn retain(&self, published: &PublishedSurface) {
+        let key = (
+            published.app_id.clone(),
+            published.route.cluster_id.clone(),
+            published.route.document_id.clone(),
+        );
+        let actions = launchable_actions(&published.actions);
+        let Ok(mut surfaces) = self.surfaces.lock() else {
+            return;
+        };
+        let changed = if actions.is_empty() {
+            surfaces.remove(&key).is_some()
+        } else if surfaces.get(&key).is_some_and(|retained| {
+            retained.actions == actions && retained.route == published.route
+        }) {
+            false
+        } else {
+            surfaces.retain(|retained, _| !superseded_by(&key, retained));
+            surfaces.insert(
+                key,
+                PublishedSurface {
+                    peer_id: 0,
+                    app_id: published.app_id.clone(),
+                    route: published.route.clone(),
+                    actions,
+                    live: false,
+                },
+            );
+            true
+        };
+        if changed {
+            self.save(&surfaces);
+        }
+    }
+
+    fn save(&self, surfaces: &BTreeMap<SurfaceKey, PublishedSurface>) {
+        let Ok(store) = self.store.lock() else {
+            return;
+        };
+        let Some(store) = store.as_ref() else {
+            return;
+        };
+        let mut stored = surfaces
+            .values()
+            .map(|surface| StoredSurface {
+                app_id: surface.app_id.clone(),
+                cluster_id: surface.route.cluster_id.clone(),
+                document_id: surface.route.document_id.clone(),
+                actions: surface.actions.clone(),
+            })
+            .collect::<Vec<_>>();
+        stored.sort_by(|a, b| {
+            (&a.app_id, &a.cluster_id, &a.document_id).cmp(&(
+                &b.app_id,
+                &b.cluster_id,
+                &b.document_id,
+            ))
+        });
+        match serde_json::to_vec(&stored) {
+            Ok(bytes) => store.save(bytes),
+            Err(error) => {
+                tracing::warn!(%error, "could not encode the launchable action catalogue");
+            }
+        }
+    }
+
+    /// The launcher in place of the host's, if one was installed.
+    pub(super) fn launcher(&self) -> Option<AppLauncher> {
+        self.launcher.lock_recover().clone()
+    }
+
+    /// Where apps run with no window, in place of the host's, if a test
+    /// installed one.
+    #[cfg(test)]
+    pub(super) fn windowless(&self) -> Option<TestStarts> {
+        self.windowless.lock_recover().clone().map(TestStarts)
+    }
+
+    #[cfg(test)]
+    pub(super) fn replace_windowless_for_test(&self, windowless: WindowlessStarter) {
+        *self.windowless.lock_recover() = Some(windowless);
+    }
+
+    pub(super) fn delivery_timeout(&self) -> Duration {
+        self.delivery_timeout
+            .lock()
+            .map_or(DELIVERY_TIMEOUT, |timeout| *timeout)
+    }
+
+    #[cfg(test)]
+    pub(super) fn replace_launcher_for_test(&self, launcher: AppLauncher, timeout: Duration) {
+        if let Ok(mut slot) = self.launcher.lock() {
+            *slot = Some(launcher);
+        }
+        if let Ok(mut slot) = self.delivery_timeout.lock() {
+            *slot = timeout;
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Weak;
+
+    use tilo_actions::remote::asked::{AskedBy, AskedFacts, Named};
+    use tilo_actions::remote::{
+        ActionCallError, Caller, CatalogueQuery, Confirmation, InvokeArgument, InvokeRequest,
+        RemoteActionTarget,
+    };
+
+    use super::super::{
+        AppBrokerState, BrokerChannels, FanoutState, InvocationEnvelope, PeerPublisher,
+        PublishedInput,
+    };
+    use super::*;
+    use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
+
+    const APP: &str = "so.tilo.files";
+
+    /// The card a call of the fixture app's `verb` on its files waits on its person's yes
+    /// with, asked by `by`: what it is on, what the app's declaration is able to do with it,
+    /// and whether it reaches outside the files Undo puts back.
+    fn card(by: AskedBy, verb: &str, destructive: bool) -> ActionCallError {
+        ActionCallError::asks(AskedFacts {
+            on: Some("Files".into()),
+            verb: verb.into(),
+            destructive,
+            plural: Some("Files".into()),
+            kind: "files.app".into(),
+            effect: Some(if destructive {
+                tilo_actions::ActionKind::Outside
+            } else {
+                tilo_actions::ActionKind::Undoable
+            }),
+            ..AskedFacts::by(by)
+        })
+    }
+
+    /// Who asks when the fixture's agent calls.
+    fn scribe() -> AskedBy {
+        AskedBy::Agent(Named {
+            id: "scribe".into(),
+            name: "scribe".into(),
+        })
+    }
+
+    fn action(name: &str, confirmation: tilo_actions::ConfirmationPolicy) -> PublishedAction {
+        PublishedAction {
+            did: None,
+            state: tilo_actions::ActionState::default(),
+            semantic_identity: None,
+            resource: "files.app".into(),
+            action: name.into(),
+            resource_kind: "files.app".into(),
+            resource_label: "Files".into(),
+            action_label: name.into(),
+            keywords: Vec::new(),
+            icon: None,
+            description: None,
+            operation_kind: tilo_actions::OperationKind::Effect,
+            params: Vec::new(),
+            contract: tilo_actions::ActionContract {
+                risk: if confirmation == tilo_actions::ConfirmationPolicy::None {
+                    tilo_actions::RiskLevel::Low
+                } else {
+                    tilo_actions::RiskLevel::Destructive
+                },
+                confirmation,
+                ..tilo_actions::ActionContract::default()
+            },
+            view: None,
+            input: PublishedInput::None,
+        }
+    }
+
+    fn surface(peer_id: u64, workspace: &str) -> PublishedSurface {
+        PublishedSurface {
+            peer_id,
+            app_id: APP.into(),
+            route: CrdtRoute::app(APP, workspace),
+            actions: vec![
+                action("new-window", tilo_actions::ConfirmationPolicy::None),
+                action("empty-trash", tilo_actions::ConfirmationPolicy::Confirm),
+                open_link(),
+            ],
+            live: true,
+        }
+    }
+
+    /// A view the app publishes on a row of its own for one person, as Chat
+    /// does for the conversation with them.
+    fn open_person() -> PublishedAction {
+        PublishedAction {
+            resource: "files.person:ada".into(),
+            resource_kind: "files.person".into(),
+            operation_kind: tilo_actions::OperationKind::View,
+            ..action("open-person", tilo_actions::ConfirmationPolicy::None)
+        }
+    }
+
+    /// The `open-link` every framework app publishes: a view, taking the link to show.
+    fn open_link() -> PublishedAction {
+        let mut open = action(
+            tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+            tilo_actions::ConfirmationPolicy::None,
+        );
+        open.operation_kind = tilo_actions::OperationKind::View;
+        open.contract.kind = tilo_actions::ActionKind::Read;
+        open.contract.risk = tilo_actions::RiskLevel::None;
+        open.params = vec![tilo_actions::ActionParam::required_owned(
+            tilo_actions::remote::OPEN_LINK_PARAM,
+            tilo_actions::ParamType::Text,
+            "The link to show",
+        )];
+        open
+    }
+
+    /// `up` connects: it publishes its surface and opens its invocation
+    /// stream, whose reading end this is.
+    fn serve(
+        state: &AppBrokerState,
+        up: PublishedSurface,
+    ) -> tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope> {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        (state.publishers.streams.lock().expect("subscribers")).insert(up.peer_id, tx);
+        state
+            .publishers
+            .surfaces
+            .lock()
+            .expect("surfaces")
+            .insert(up.peer_id, up);
+        rx
+    }
+
+    /// `surface(7, workspace)` for the record `record`.
+    fn surface_of(workspace: &str, record: &str) -> PublishedSurface {
+        let mut surface = surface(7, workspace);
+        surface.route.document_id = record.into();
+        surface
+    }
+
+    /// The folder entry `surface_with_an_entry` publishes as its own resource.
+    const ENTRY: &str = "7d2b";
+
+    /// A surface publishing one of the record's collection's entries as the
+    /// resource its own actions are offered on, beside the record's copy of
+    /// them addressed by the entry's id.
+    fn surface_with_an_entry(peer_id: u64, workspace: &str) -> PublishedSurface {
+        let name = || {
+            tilo_actions::ActionParam::required_owned(
+                "name",
+                tilo_actions::ParamType::Text,
+                "Its new name",
+            )
+        };
+        let mut rename = action("rename", tilo_actions::ConfirmationPolicy::None);
+        rename.params = vec![
+            tilo_actions::ActionParam::required_owned(
+                "entry",
+                tilo_actions::ParamType::Text,
+                "Which entry",
+            ),
+            name(),
+        ];
+        let entry = PublishedAction {
+            resource: format!("files.app/entries/{ENTRY}"),
+            resource_kind: "files.app.entries".into(),
+            resource_label: "Harbour plan".into(),
+            params: vec![name()],
+            ..rename.clone()
+        };
+        PublishedSurface {
+            peer_id,
+            app_id: APP.into(),
+            route: CrdtRoute::app(APP, workspace),
+            actions: vec![rename, entry],
+            live: true,
+        }
+    }
+
+    fn retained_documents(catalogue: &LaunchableCatalogue) -> Vec<(String, String)> {
+        let mut records = catalogue
+            .surfaces()
+            .into_iter()
+            .map(|surface| (surface.route.cluster_id, surface.route.document_id))
+            .collect::<Vec<_>>();
+        records.sort();
+        records
+    }
+
+    tilo_test_env::scenario! {
+        fn the_retained_catalogue_keeps_what_apps_offered;
+
+        phase a_window_record_replaces_an_older_windows_surface;
+        // Each window of an app with a record per window (Settings) retains
+        // the newest window's surface only, per workspace and role; the records a
+        // person keeps (a document, the person's own base) each stay.
+        {
+            let catalogue = LaunchableCatalogue::new();
+            let first = "derived:default@tab:0000000000000003";
+            let later = "derived:default@tab:0000000000000006";
+            catalogue.retain(&surface_of("workspace-a", first));
+            catalogue.retain(&surface_of("workspace-a", later));
+            catalogue.retain(&surface_of(
+                "workspace-a",
+                "derived:notes@tab:0000000000000003",
+            ));
+            catalogue.retain(&surface_of("workspace-a", "tab:0000000000000004"));
+            catalogue.retain(&surface_of("workspace-a", "tab:0000000000000009"));
+            catalogue.retain(&surface_of(
+                "workspace-a",
+                "derived:default@tab:0000000000000000",
+            ));
+            catalogue.retain(&surface_of(
+                "workspace-a",
+                "uuid:7f9c8d63-0a43-4d0e-9a5b-0b6a6f2ff001",
+            ));
+            catalogue.retain(&surface_of(
+                "workspace-a",
+                "uuid:7f9c8d63-0a43-4d0e-9a5b-0b6a6f2ff002",
+            ));
+            catalogue.retain(&surface_of("workspace-b", first));
+            let workspace = |workspace: &str, record: &str| (workspace.to_owned(), record.to_owned());
+            assert_eq!(
+                retained_documents(&catalogue),
+                [
+                    workspace("workspace-a", "derived:default@tab:0000000000000000"),
+                    workspace("workspace-a", later),
+                    workspace("workspace-a", "derived:notes@tab:0000000000000003"),
+                    workspace("workspace-a", "tab:0000000000000009"),
+                    workspace("workspace-a", "uuid:7f9c8d63-0a43-4d0e-9a5b-0b6a6f2ff001"),
+                    workspace("workspace-a", "uuid:7f9c8d63-0a43-4d0e-9a5b-0b6a6f2ff002"),
+                    workspace("workspace-b", first),
+                ]
+            );
+        }
+
+        phase a_saved_catalogue_loads_the_newest_window_record_only;
+        // A catalogue saved with one surface per window ever opened loads with
+        // the newest window's only.
+        {
+            let directory = tempfile::tempdir().expect("directory");
+            let path = directory.path().join("launchable.json");
+            let action = action("new-window", tilo_actions::ConfirmationPolicy::None);
+            let stored = [
+                "0000000000000009",
+                "0000000000000003",
+                "000000000000000f",
+                "0000000000000006",
+            ]
+            .map(|tab| StoredSurface {
+                app_id: APP.into(),
+                cluster_id: "workspace-a".into(),
+                document_id: format!("derived:default@tab:{tab}"),
+                actions: vec![action.clone()],
+            });
+            std::fs::write(&path, serde_json::to_vec(&stored).expect("encode")).expect("write");
+            let catalogue = LaunchableCatalogue::new();
+            catalogue.persist_at(&path);
+            assert_eq!(
+                retained_documents(&catalogue),
+                [(
+                    "workspace-a".to_owned(),
+                    "derived:default@tab:000000000000000f".to_owned()
+                )]
+            );
+        }
+
+        phase launchable_actions_survive_a_broker_restart;
+        {
+            let dir = tempfile::tempdir().expect("state dir");
+            let path = dir.path().join("actions/launchable.json");
+            let workspace = workspace();
+            let (state, workspace_id) = broker(&workspace);
+            state.launchable.persist_at(&path);
+            state.launchable.retain(&surface(7, &workspace_id));
+            drop(state);
+
+            let (restarted, _) = broker(&workspace);
+            restarted.launchable.persist_at(&path);
+            let retained = restarted.launchable.surfaces();
+            assert_eq!(retained.len(), 1);
+            assert!(!retained[0].live);
+
+            let (streams, _) = app_comes_up_as(&restarted, 3);
+            let owner = Caller::local_person("owner").in_workspace(&workspace_id);
+            let provider = offered_provider(&restarted, &owner, "new-window")
+                .expect("the action is still offered after a restart");
+            invoke(&restarted, &owner, &provider, "new-window", None)
+                .expect("admitted after a restart");
+            let mut stream = streams.try_recv().expect("the app came up");
+            assert_eq!(stream.try_recv().expect("delivered").action, "new-window");
+        }
+
+        phase a_surface_offering_nothing_forgets_the_retained_one;
+        {
+            let (state, workspace) = broker(&workspace());
+            state.launchable.retain(&surface(7, &workspace));
+            let mut empty = surface(7, &workspace);
+            empty.actions.clear();
+            state.launchable.retain(&empty);
+            assert!(state.launchable.surfaces().is_empty());
+        }
+
+        phase every_published_action_stays_offered_once_the_app_closes;
+        {
+            let (state, workspace) = broker(&workspace());
+            let mut published = surface(7, &workspace);
+            published.actions.push(PublishedAction {
+                state: tilo_actions::ActionState::default(),
+                operation_kind: tilo_actions::OperationKind::Document,
+                contract: tilo_actions::ActionContract::default(),
+                ..action("rename", tilo_actions::ConfirmationPolicy::None)
+            });
+            state.launchable.retain(&published);
+            let retained = state.launchable.surfaces();
+            assert_eq!(retained.len(), 1);
+            assert_eq!(
+                retained[0]
+                    .actions
+                    .iter()
+                    .map(|action| action.action.as_str())
+                    .collect::<Vec<_>>(),
+                ["new-window", "empty-trash", "open-link", "rename"],
+                "no action needs to opt in to being reachable while its app is closed"
+            );
+        }
+    }
+
+    fn workspace() -> Workspace {
+        let mut workspace = Workspace::new(WorkspaceId::from_u128(51), "Launch workspace");
+        workspace.policy.set_owner("owner");
+        workspace
+    }
+
+    /// An agent acting for the workspace owner in `workspace`.
+    fn agent_of(workspace: &str) -> Caller {
+        Caller::local_person("owner")
+            .delegated_to("scribe")
+            .in_workspace(workspace.to_owned())
+    }
+
+    /// A broker session hosting `workspace`, and its workspace.
+    fn broker(workspace: &Workspace) -> (Arc<AppBrokerState>, String) {
+        let (state, workspace, _) = broker_with_fanout(workspace);
+        (state, workspace)
+    }
+
+    /// [`broker`], with the fanout local subscribers hear the workspace on.
+    fn broker_with_fanout(
+        workspace: &Workspace,
+    ) -> (Arc<AppBrokerState>, String, Arc<FanoutState>) {
+        let workspace_id = workspace.id().to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace.clone());
+        let tree = tree.shared();
+        let fanout = Arc::new(FanoutState::new());
+        let (state, _bridge) = AppBrokerState::new_configured(
+            &fanout,
+            Arc::new(Mutex::new(BrokerChannels::default())),
+            PeerPublisher::disabled(),
+            Some(tree.authority()),
+            None,
+            None,
+            tree.services(),
+        );
+        (state, workspace_id, fanout)
+    }
+
+    type Streams =
+        std::sync::mpsc::Receiver<tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope>>;
+
+    /// Stand in for launching the app: it connects as `peer_id`, publishes
+    /// its surface and opens its invocation stream, which the returned
+    /// receiver hands over. Each launch is recorded.
+    fn app_comes_up_as(
+        state: &Arc<AppBrokerState>,
+        peer_id: u64,
+    ) -> (Streams, Arc<Mutex<Vec<String>>>) {
+        let (streams, launches, _) = app_comes_up_placed_publishing(state, peer_id, Vec::new());
+        (streams, launches)
+    }
+
+    /// The record each launch opened, and where it was placed.
+    type Places = Arc<Mutex<Vec<(Option<String>, LaunchPlace)>>>;
+
+    /// [`app_comes_up_as`], also recording which record each launch opened
+    /// and where it was placed. The app comes up on the record it was asked
+    /// for, else its workspace record.
+    fn app_comes_up_placed(
+        state: &Arc<AppBrokerState>,
+        peer_id: u64,
+    ) -> (Streams, Arc<Mutex<Vec<String>>>, Places) {
+        app_comes_up_placed_publishing(state, peer_id, Vec::new())
+    }
+
+    /// [`app_comes_up_placed`], its window also publishing `also`.
+    fn app_comes_up_placed_publishing(
+        state: &Arc<AppBrokerState>,
+        peer_id: u64,
+        also: Vec<PublishedAction>,
+    ) -> (Streams, Arc<Mutex<Vec<String>>>, Places) {
+        let (streams, stream) = std::sync::mpsc::channel();
+        let launches = Arc::new(Mutex::new(Vec::new()));
+        let places = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&launches);
+        let noted = Arc::clone(&places);
+        let weak: Weak<AppBrokerState> = Arc::downgrade(state);
+        state.launchable.replace_launcher_for_test(
+            Arc::new(move |app_id, workspace, record, place| {
+                recorded.lock().expect("launches").push(app_id.to_string());
+                noted
+                    .lock()
+                    .expect("places")
+                    .push((record.map(str::to_owned), place.clone()));
+                let state = weak.upgrade().ok_or("the broker is gone")?;
+                let mut up = surface(peer_id, &workspace.id().to_string());
+                up.actions.extend(also.iter().cloned());
+                if let Some(record) = record {
+                    up.route.document_id = record.to_owned();
+                }
+                streams
+                    .send(serve(&state, up))
+                    .map_err(|error| error.to_string())
+            }),
+            tilo_test_env::hang_bound(),
+        );
+        (stream, launches, places)
+    }
+
+    /// The provider the catalogue offers `action` under, for `caller`.
+    fn offered_provider(
+        host: &Arc<AppBrokerState>,
+        caller: &Caller,
+        action: &str,
+    ) -> Option<String> {
+        let page = host
+            .action_query(
+                caller,
+                &CatalogueQuery {
+                    max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                    ..CatalogueQuery::default()
+                },
+            )
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()?
+            .ok()?;
+        page.rows
+            .into_iter()
+            .find_map(|row| (row.action.as_ref()?.address.action == action).then_some(row.provider))
+    }
+
+    fn invoke(
+        host: &Arc<AppBrokerState>,
+        caller: &Caller,
+        provider: &str,
+        action: &str,
+        confirmation: Option<Confirmation>,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
+        invoke_with(
+            host,
+            caller,
+            provider,
+            &tilo_actions::ActionAddress::new("files.app", action),
+            InvokeArgument::None,
+            confirmation,
+        )
+    }
+
+    /// [`invoke`], on the `address` and with the `argument` the caller names.
+    fn invoke_with(
+        host: &Arc<AppBrokerState>,
+        caller: &Caller,
+        provider: &str,
+        address: &tilo_actions::ActionAddress,
+        argument: InvokeArgument,
+        confirmation: Option<Confirmation>,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
+        host.action_invoke(
+            caller,
+            None,
+            None,
+            &InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: provider.to_string(),
+                    address: address.clone(),
+                },
+                argument,
+                context: None,
+                confirmation,
+                revision: None,
+                wait_ms: None,
+                appearance: None,
+                signed: None,
+            },
+        )
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| {
+            Err(ActionCallError::Unavailable {
+                reason: format!("the admission of {address:?} never arrived"),
+            })
+        })
+    }
+
+    /// An app acting by itself, with nobody behind it, is decided by the grants that name it and
+    /// is the author of what it does: the app it calls is handed the call as the app's, which the
+    /// change it makes records, and the invocation is the app's own to follow, nobody else's.
+    #[test]
+    fn an_app_acting_by_itself_is_the_author_of_its_own_call() {
+        let chat = tilo_app_id::AppId::new("so.tilo.chat");
+        let ungranted = workspace();
+        let (state, workspace_id) = broker(&ungranted);
+        let mut stream = serve(&state, surface(7, &workspace_id));
+        let app = Caller::launched(chat.as_str()).in_workspace(&workspace_id);
+        assert!(
+            invoke(&state, &app, "7", "new-window", None).is_err(),
+            "granted nothing, the app takes nothing"
+        );
+        assert!(stream.try_recv().is_err(), "nothing reached Files");
+
+        let mut granted = workspace();
+        {
+            use crate::test_support::{Grants as _, KindSet};
+            granted.allow_app(
+                tilo_action_policy::Grantee::app(chat.as_str()),
+                APP,
+                KindSet::ALL,
+            );
+        }
+        let (state, workspace_id) = broker(&granted);
+        let mut stream = serve(&state, surface(7, &workspace_id));
+        let app = Caller::launched(chat.as_str()).in_workspace(&workspace_id);
+        // Naming the app is not being it: a caller this device's daemon did not attest to be
+        // the app it launched, such as one restored from what a host kept, borrows none of its
+        // grants and owns nothing as it.
+        for unattested in [
+            app.kept().restored(),
+            Caller::local_app(chat.as_str()).in_workspace(&workspace_id),
+        ] {
+            assert!(
+                invoke(&state, &unattested, "7", "new-window", None).is_err(),
+                "a caller that only names the app is refused"
+            );
+        }
+        assert!(
+            stream.try_recv().is_err(),
+            "nothing unattested reached Files"
+        );
+        let receipt =
+            invoke(&state, &app, "7", "new-window", None).expect("the grant names the app");
+        let delivered = stream.try_recv().expect("the call reached Files");
+        assert_eq!(delivered.actor, tilo_actions::Actor::App(chat.clone()));
+        let own = state.invocation_statuses(&tilo_actions::Actor::App(chat));
+        assert!(
+            own.iter()
+                .any(|(_, update)| update.invocation() == receipt.invocation),
+            "the app follows its own invocation: {own:?}"
+        );
+        assert!(
+            state
+                .invocation_statuses(&tilo_actions::MemberId::person("owner").into())
+                .is_empty(),
+            "the workspace's person owns nothing the app did by itself"
+        );
+    }
+
+    tilo_test_env::scenario! {
+        fn a_closed_apps_action_launches_it_where_its_actor_is;
+
+        phase invoking_a_closed_apps_launchable_action_launches_it_and_delivers;
+        {
+            let (state, workspace) = broker(&workspace());
+            state.launchable.retain(&surface(7, &workspace));
+            let (streams, launches) = app_comes_up_as(&state, 8);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+
+            let provider = offered_provider(&state, &owner, "new-window")
+                .expect("the closed app's launchable action is offered");
+            assert!(is_launchable_provider(&provider));
+            invoke(&state, &owner, &provider, "new-window", None).expect("admitted once launched");
+
+            assert_eq!(*launches.lock().expect("launches"), [APP]);
+            let mut stream = streams.try_recv().expect("the app came up");
+            let delivered = stream.try_recv().expect("the invocation reached the app");
+            assert_eq!(delivered.action, "new-window");
+            assert_eq!(delivered.actor, tilo_actions::Actor::Member(tilo_actions::MemberId::person("owner")));
+            assert_eq!(
+                offered_provider(&state, &owner, "new-window").as_deref(),
+                Some("8"),
+                "once the app is live its action is offered on its own connection"
+            );
+        }
+
+        phase a_launched_view_opens_where_its_actor_is;
+        // A person's own invocation opens the view where they are looking; an
+        // agent's opens beside the view it already works in, on whichever strip
+        // holds that, so neither loses their place.
+        {
+            use crate::test_support::{Grantee, Grants as _, KindSet};
+            const NOTES: &str = "so.tilo.notes";
+            let mut workspace = workspace();
+            workspace.allow_agent("scribe", KindSet::READ);
+            for app in [APP, NOTES] {
+                workspace.allow_app(Grantee::agent("scribe", "owner"), app, KindSet::ALL);
+            }
+            let (state, workspace) = broker(&workspace);
+            state.launchable.retain(&surface(7, &workspace));
+            let mut notes = surface(5, &workspace);
+            notes.app_id = NOTES.into();
+            notes.route = CrdtRoute::app(NOTES, &workspace);
+            notes.actions = vec![action("write", tilo_actions::ConfirmationPolicy::None)];
+            state.publishers.surfaces.lock().expect("surfaces").insert(5, notes);
+            let mut notes_stream = state.capture_invocations_for_test(5);
+            let (streams, launches, places) = app_comes_up_placed(&state, 8);
+
+            let agent = agent_of(&workspace);
+            invoke(&state, &agent, "5", "write", None).expect("the agent works in Notes");
+            assert_eq!(
+                notes_stream.try_recv().expect("delivered").actor,
+                tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "owner"))
+            );
+            let provider = offered_provider(&state, &agent, "new-window")
+                .expect("the closed app's action is offered to the agent");
+            invoke(&state, &agent, &provider, "new-window", None).expect("admitted once launched");
+            assert_eq!(*launches.lock().expect("launches"), [APP]);
+            assert_eq!(
+                *places.lock().expect("places"),
+                [(
+                    None,
+                    LaunchPlace::Beside {
+                        app_id: NOTES.into()
+                    }
+                )],
+                "the agent's view opens beside the one it works in"
+            );
+            let mut stream = streams.try_recv().expect("the app came up");
+            assert_eq!(stream.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "owner")));
+
+            state.publishers.surfaces.lock().expect("surfaces").remove(&8);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let provider = offered_provider(&state, &owner, "new-window")
+                .expect("offered again once the app closed");
+            invoke(&state, &owner, &provider, "new-window", None).expect("admitted once launched");
+            assert_eq!(
+                places.lock().expect("places").last(),
+                Some(&(None, LaunchPlace::Focus)),
+                "a person's own invocation opens where they are"
+            );
+        }
+
+        phase an_agents_first_view_opens_aside_without_taking_the_persons_focus;
+        {
+            use crate::test_support::{Grantee, Grants as _, KindSet};
+            let mut workspace = workspace();
+            workspace.allow_agent("scribe", KindSet::READ);
+            workspace.allow_app(Grantee::agent("scribe", "owner"), APP, KindSet::ALL);
+            let (state, workspace) = broker(&workspace);
+            state.launchable.retain(&surface(7, &workspace));
+            let (streams, launches, places) = app_comes_up_placed(&state, 8);
+
+            let agent = agent_of(&workspace);
+            let provider = offered_provider(&state, &agent, "new-window")
+                .expect("the closed app's action is offered to the agent");
+            invoke(&state, &agent, &provider, "new-window", None).expect("admitted once launched");
+            assert_eq!(*launches.lock().expect("launches"), [APP]);
+            assert_eq!(
+                *places.lock().expect("places"),
+                [(None, LaunchPlace::Aside)],
+                "the agent's first view opens aside"
+            );
+            let mut stream = streams.try_recv().expect("the app came up");
+            assert_eq!(stream.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "owner")));
+        }
+
+        phase a_persons_call_opens_where_they_are_and_an_apps_beside_it;
+        // A call the person's press admitted runs as the person, whichever app asked: their view
+        // is where it opens. A call made by an app acting for the person opens beside that app
+        // instead, not where the person looks: being the person's app is not being the person.
+        {
+            let workspace = workspace();
+            let workspace_id = workspace.id().to_string();
+            let mut tree = WorkspaceTree::default();
+            tree.desktop.workspaces.push(workspace);
+            let tree = tree.shared();
+            let (state, _bridge) = AppBrokerState::test_state(Some(tree.authority()), tree.services());
+            let person = Caller::local_person("owner").in_workspace(&workspace_id);
+            assert_eq!(
+                state.launch_place(&person, &workspace_id, None),
+                LaunchPlace::Focus,
+                "a link clicked in Chat, run as the person, opens where they are"
+            );
+            let chat = Caller::local_app("so.tilo.chat").in_workspace(&workspace_id);
+            let beside_chat = LaunchPlace::Beside {
+                app_id: "so.tilo.chat".into(),
+            };
+            assert_eq!(
+                state.launch_place(&chat, &workspace_id, None),
+                beside_chat,
+                "Chat's own call opens beside it"
+            );
+            // Chat asking for its person is still Chat, so its view stands beside it rather
+            // than moving theirs: being the person's app is not being the person.
+            let chat_for_the_person = chat.clone().acting_for("owner");
+            assert_eq!(
+                state.launch_place(&chat_for_the_person, &workspace_id, None),
+                beside_chat,
+                "an app's call for its person opens beside the app, not where the person looks"
+            );
+            let scope = crate::services::LaunchScope {
+                app_id: "so.tilo.chat".into(),
+                workspace_id: workspace_id.clone(),
+            };
+            assert_eq!(
+                state.launch_place(&chat, &workspace_id, Some(&scope)),
+                beside_chat,
+                "the view an app's own action opens stands beside it"
+            );
+            let agent = agent_of(&workspace_id);
+            assert_eq!(
+                state.launch_place(&agent, &workspace_id, None),
+                LaunchPlace::Aside,
+                "an agent's open never takes the person's view"
+            );
+        }
+
+        phase a_closed_records_action_launches_the_app_on_that_record;
+        // An action of a record the app does not open by default launches the
+        // app on that record, and runs in its view.
+        {
+            let (state, workspace) = broker(&workspace());
+            let mut draft = surface(7, &workspace);
+            draft.route.document_id = "draft-record".into();
+            state.launchable.retain(&draft);
+            let (streams, _, places) = app_comes_up_placed(&state, 8);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let provider = offered_provider(&state, &owner, "new-window")
+                .expect("the closed record's action is offered");
+            invoke(&state, &owner, &provider, "new-window", None).expect("admitted once launched");
+            assert_eq!(
+                *places.lock().expect("places"),
+                [(Some("draft-record".to_owned()), LaunchPlace::Focus)]
+            );
+            let mut stream = streams.try_recv().expect("the app came up on the record");
+            assert_eq!(stream.try_recv().expect("delivered").action, "new-window");
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn an_agents_launchable_action_asks_and_is_attributed;
+
+        phase a_field_edit_asks_only_when_it_removes_from_a_loud_collection;
+        // The broker reads a field edit without the app's code: only removing
+        // an item of a collection not published as quiet asks for confirmation;
+        // sets and an outbox's settle do not.
+        {
+            let workspace = workspace();
+            let (state, workspace) = broker(&workspace);
+            let mut edits = surface(5, &workspace);
+            let mut field_edit = action("field-edit", tilo_actions::ConfirmationPolicy::None);
+            // A loud collection's item is not Undo's to put back, so removing one
+            // asks: the app publishes this edit reaching outside.
+            field_edit.contract.kind = tilo_actions::ActionKind::Outside;
+            field_edit.contract.tags = vec![
+                tilo_actions::ARGUMENT_RISK_TAG.to_owned(),
+                tilo_action_policy::edits::FIELD_EDIT_TAG.to_owned(),
+                format!("{}drafts", tilo_action_policy::edits::QUIET_REMOVAL_TAG),
+            ];
+            edits.actions = vec![field_edit];
+            state.publishers.surfaces.lock().expect("surfaces").insert(5, edits);
+            let mut app = state.capture_invocations_for_test(5);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let edit = |edit: serde_json::Value| {
+                state
+                    .action_invoke(
+                        &owner,
+                        None,
+                        None,
+                        &InvokeRequest {
+                            on_behalf_of: None,
+                            invocation: tilo_actions::InvocationId::new(),
+                            target: RemoteActionTarget {
+                                provider: "5".into(),
+                                address: tilo_actions::ActionAddress::new("files.app", "field-edit"),
+                            },
+                            argument: InvokeArgument::Json(
+                                serde_json::json!({ "edit": edit })
+                                    .as_object()
+                                    .cloned()
+                                    .expect("an object"),
+                            ),
+                            context: None,
+                            confirmation: None,
+                            revision: None,
+                            wait_ms: None,
+                            appearance: None,
+                            signed: None,
+                        },
+                    )
+                    .wait_timeout(tilo_test_env::hang_bound())
+                    .ok()
+                    .flatten()
+                    .expect("answered")
+            };
+            edit(serde_json::json!({"path": [{"field": "title"}], "op": "set", "value": "Plan"}))
+                .expect("a set asks nothing");
+            edit(serde_json::json!({"path": [{"field": "outbox"}], "op": "settle", "id": "e1", "outcome": {}}))
+                .expect("settling asks nothing");
+            edit(serde_json::json!({"path": [{"field": "drafts"}], "op": "remove-item", "id": "d1"}))
+                .expect("a quiet collection's removal asks nothing");
+            assert_eq!(app.try_recv().expect("delivered").action, "field-edit");
+            assert_eq!(
+                edit(
+                    serde_json::json!({"path": [{"field": "notes"}], "op": "remove-item", "id": "n1"})
+                )
+                .err(),
+                Some(card(AskedBy::default(), "field-edit", true)),
+                "removing a note asks, as a delete verb does"
+            );
+        }
+
+        phase an_agent_asked_first_acts_only_on_the_persons_approved_confirmation;
+        // An action the workspace's grants let an agent take only after asking is
+        // offered to it marked as asking for confirmation. The agent's own word
+        // does not confirm it; the person's answer, approved on their device,
+        // does, for that one invocation.
+        {
+            use crate::test_support::{Answer, Grantee, Grants as _, KindSet, TreePath};
+            use tilo_actions::remote::CatalogueQuery;
+            let mut workspace = workspace();
+            workspace.allow_agent("scribe", KindSet::READ);
+            workspace.answer(
+                Grantee::agent("scribe", "owner"),
+                &TreePath::root().app(APP),
+                KindSet::UNDOABLE,
+                Answer::Ask,
+            );
+            let (state, workspace) = broker(&workspace);
+            state
+                .publishers.surfaces
+                .lock()
+                .expect("surfaces")
+                .insert(5, surface(5, &workspace));
+            let mut app = state.capture_invocations_for_test(5);
+            let agent = agent_of(&workspace);
+
+            let page = state
+                .action_query(&agent, &CatalogueQuery::default())
+                .wait_timeout(tilo_test_env::hang_bound())
+                .ok()
+                .flatten()
+                .expect("answered")
+                .expect("the agent may read the catalogue");
+            let offered = page
+                .rows
+                .iter()
+                .filter_map(|row| row.action.as_ref())
+                .find(|descriptor| descriptor.address.action == "new-window")
+                .expect("an action asking first is offered");
+            assert_eq!(
+                offered.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::Confirm,
+                "marked as asking for confirmation"
+            );
+
+            assert_eq!(
+                invoke(&state, &agent, "5", "new-window", None).err(),
+                Some(card(scribe(), "new-window", false))
+            );
+            assert_eq!(
+                invoke(
+                    &state,
+                    &agent,
+                    "5",
+                    "new-window",
+                    Some(Confirmation::Confirmed)
+                )
+                .err(),
+                Some(card(scribe(), "new-window", false)),
+                "an agent never confirms by its own word"
+            );
+            assert!(app.try_recv().is_err(), "nothing ran");
+
+            let mut request = InvokeRequest {
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider: "5".into(),
+                    address: tilo_actions::ActionAddress::new("files.app", "new-window"),
+                },
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: None,
+                appearance: None,
+                on_behalf_of: None,
+                signed: None,
+            };
+            request.confirmation = Some(crate::collab_app_broker::person_approved(&workspace, request.invocation));
+            let call = |request: &InvokeRequest| {
+                state
+                    .action_invoke(&agent, None, None, request)
+                    .wait_timeout(tilo_test_env::hang_bound())
+                    .ok()
+                    .flatten()
+                    .unwrap()
+            };
+            let first = call(&request).expect("the person's confirmation admits the call");
+            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "owner")));
+            assert_eq!(
+                call(&request).unwrap(),
+                first,
+                "exact retry returns the same receipt"
+            );
+            assert!(
+                app.try_recv().is_err(),
+                "an exact retry never dispatches twice"
+            );
+            request.invocation = tilo_actions::InvocationId::new();
+            // A confirmation another device forwarded here answers for nobody: no host placed a
+            // window on this device to answer for its person.
+            request.confirmation = Some(Confirmation::Confirmed);
+            assert_eq!(
+                state
+                    .action_invoke(&agent.clone().forwarded_by([9; 32]), None, None, &request)
+                    .wait_timeout(tilo_test_env::hang_bound())
+                    .ok()
+                    .flatten()
+                    .unwrap()
+                    .err(),
+                Some(ActionCallError::NotPermitted)
+            );
+            assert!(app.try_recv().is_err(), "nothing ran");
+        }
+
+        phase an_agents_step_on_an_item_names_the_item;
+        // An agent renaming one of a record's items names that item's own resource
+        // in the view it acts in, labelled with what its app published for it, so
+        // the mark lands on the item's row and reads "Editing Harbour plan".
+        {
+            use crate::test_support::{Grantee, Grants as _, KindSet};
+            let mut workspace = workspace();
+            workspace.allow_agent("scribe", KindSet::UNDOABLE);
+            workspace.allow_app(Grantee::agent("scribe", "owner"), APP, KindSet::UNDOABLE);
+            let (state, workspace, fanout) = broker_with_fanout(&workspace);
+            state
+                .publishers.surfaces
+                .lock()
+                .expect("surfaces")
+                .insert(5, surface_with_an_entry(5, &workspace));
+            let mut app = state.capture_invocations_for_test(5);
+            let (seen, mut heard) = tokio::sync::mpsc::unbounded_channel();
+            let _subscription = fanout.subscribe_workspaces(
+                vec![workspace.clone()],
+                Box::new(move |event, _| {
+                    let _ = seen.send(event.clone());
+                }),
+            );
+
+            // The item is addressed by its id, on the record's own copy of the
+            // item's action, as an agent addresses it.
+            let agent = Caller::local_person("owner")
+                .in_workspace(&workspace)
+                .delegated_to("scribe");
+            invoke_with(
+                &state,
+                &agent,
+                "5",
+                &tilo_actions::ActionAddress::new("files.app", "rename"),
+                InvokeArgument::Json(
+                    serde_json::json!({"entry": ENTRY, "name": "Harbour plan for Friday"})
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default(),
+                ),
+                None,
+            )
+            .expect("the agent acts");
+            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "owner")));
+            let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
+                payload: collaboration::PresencePayload::Interaction(interaction),
+                ..
+            }) = heard.try_recv()
+            else {
+                panic!("the agent's step shows in its view");
+            };
+            assert_eq!(interaction.action.id, "rename");
+            assert_eq!(
+                interaction.resource.id,
+                format!("files.app/entries/{ENTRY}"),
+                "the item it acts on, as its app published it"
+            );
+            assert_eq!(
+                interaction.resource.label, "Harbour plan",
+                "the item it acts on, by the label its app published"
+            );
+        }
+
+        phase an_agents_action_is_present_in_the_view_it_runs_in;
+        // An agent's action shows in the view it runs in, named with the
+        // person it acts for; a person's own action on this device does not
+        // put a second marker on what their view already shows.
+        {
+            use crate::test_support::{Grantee, Grants as _, KindSet};
+            let mut workspace = workspace();
+            workspace.allow_agent("scribe", KindSet::UNDOABLE);
+            workspace.allow_app(Grantee::agent("scribe", "owner"), APP, KindSet::UNDOABLE);
+            let (state, workspace, fanout) = broker_with_fanout(&workspace);
+            state
+                .publishers.surfaces
+                .lock()
+                .expect("surfaces")
+                .insert(5, surface(5, &workspace));
+            let mut app = state.capture_invocations_for_test(5);
+            let (seen, mut heard) = tokio::sync::mpsc::unbounded_channel();
+            let _subscription = fanout.subscribe_workspaces(
+                vec![workspace.clone()],
+                Box::new(move |event, _| {
+                    let _ = seen.send(event.clone());
+                }),
+            );
+
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            invoke(&state, &owner, "5", "new-window", None).expect("the person acts");
+            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::person("owner")));
+            assert!(
+                heard.try_recv().is_err(),
+                "a person's own view already shows them"
+            );
+
+            let agent = Caller::local_person("owner")
+                .in_workspace(&workspace)
+                .delegated_to("scribe");
+            invoke(&state, &agent, "5", "new-window", None).expect("the agent acts");
+            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("scribe", "owner")));
+            let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
+                member,
+                key,
+                payload: collaboration::PresencePayload::Interaction(interaction),
+            }) = heard.try_recv()
+            else {
+                panic!("the agent's action shows in its view");
+            };
+            assert_eq!(member, collab_types::MemberId::agent("scribe", "owner"));
+            assert_eq!(
+                key,
+                collab_types::presence::PresenceKey::resource(APP, "files.app", "files.app")
+            );
+            assert_eq!(
+                interaction.actor,
+                tilo_actions::Acting::agent("scribe", "owner")
+                    .handed()
+                    .acting_for(tilo_actions::Acting::person("owner"))
+            );
+            assert_eq!(interaction.phase, tilo_actions::InteractionPhase::Applying);
+            assert_eq!(interaction.action.id, "new-window");
+
+            // A Shortcut's step keeps the person's authority, yet the view shows
+            // the Shortcut acting for them.
+            let shortcut = Caller::local_person("owner")
+                .in_workspace(&workspace)
+                .running_shortcut("morning");
+            invoke(&state, &shortcut, "5", "new-window", None).expect("the step runs");
+            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::person("owner")));
+            let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
+                payload: collaboration::PresencePayload::Interaction(interaction),
+                ..
+            }) = heard.try_recv()
+            else {
+                panic!("the Shortcut's step shows in its view");
+            };
+            assert_eq!(
+                interaction.actor,
+                tilo_actions::Acting::automation("morning")
+                .acting_for(tilo_actions::Acting::person("owner"))
+            );
+        }
+
+        phase a_client_the_person_delegates_to_acts_as_their_agent;
+        // An MCP client on the person's device is an agent acting for them,
+        // bounded by the delegation a device gives its agents: it does what the
+        // person may do in the document, an outside action stays the person's to
+        // allow, and the view shows the agent, for the person.
+        {
+            let (state, workspace, fanout) = broker_with_fanout(&workspace());
+            let mut published = surface(5, &workspace);
+            let mut send = action("send", tilo_actions::ConfirmationPolicy::None);
+            send.contract.kind = tilo_actions::ActionKind::Outside;
+            published.actions.push(send);
+            state
+                .publishers.surfaces
+                .lock()
+                .expect("surfaces")
+                .insert(5, published);
+            let mut app = state.capture_invocations_for_test(5);
+            let (seen, mut heard) = tokio::sync::mpsc::unbounded_channel();
+            let _subscription = fanout.subscribe_workspaces(
+                vec![workspace.clone()],
+                Box::new(move |event, _| {
+                    let _ = seen.send(event.clone());
+                }),
+            );
+            let client = Caller::local_person("owner")
+                .in_workspace(&workspace)
+                .in_new_execution()
+                .delegated_to("mcp-1");
+
+            invoke(&state, &client, "5", "new-window", None).expect("within the delegation");
+            let delivered = app.try_recv().expect("delivered");
+            assert_eq!(delivered.actor, tilo_actions::Actor::Member(tilo_actions::MemberId::agent("mcp-1", "owner")));
+            let invoker = delivered
+                .context()
+                .and_then(|context| context.invoker.clone())
+                .expect("the host records the invoker");
+            assert!(invoker.acting.is_agent());
+            assert_eq!(invoker.acting.acted_for_person(), Some("owner"));
+            let Ok(runtime_collab::event::CollabEvent::RemotePresenceUpdate {
+                payload: collaboration::PresencePayload::Interaction(interaction),
+                ..
+            }) = heard.try_recv()
+            else {
+                panic!("the agent shows in the view");
+            };
+            assert_eq!(
+                interaction.actor,
+                tilo_actions::Acting::agent("mcp-1", "owner")
+                    .handed()
+                    .acting_for(tilo_actions::Acting::person("owner"))
+            );
+
+            assert!(
+                invoke(&state, &client, "5", "send", None).is_err(),
+                "an outside action is the person's to allow"
+            );
+            assert!(app.try_recv().is_err(), "nothing outside ran");
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            invoke(&state, &owner, "5", "send", None).expect("the person may");
+            assert_eq!(app.try_recv().expect("delivered").actor, tilo_actions::Actor::Member(tilo_actions::MemberId::person("owner")));
+        }
+    }
+
+    #[tokio::test]
+    async fn retiring_a_delegated_run_preserves_its_running_actions_view() {
+        use super::super::ExecutionStatus;
+        use collab_types::presence::PresencePayload;
+        use runtime_collab::event::CollabEvent;
+        let (state, workspace, fanout) = broker_with_fanout(&workspace());
+        state
+            .publishers
+            .surfaces
+            .lock()
+            .unwrap()
+            .insert(5, surface(5, &workspace));
+        let mut app = state.capture_invocations_for_test(5);
+        let (seen, mut heard) = tokio::sync::mpsc::unbounded_channel();
+        let _subscription = fanout.subscribe_workspaces(
+            vec![workspace.clone()],
+            Box::new(move |event, _| {
+                let _ = seen.send(event.clone());
+            }),
+        );
+        let mut events = state.subscribe_execution_activity();
+        let owner = Caller::local_person("owner")
+            .in_workspace(&workspace)
+            .in_new_execution();
+        let client = owner.clone().delegated_to("mcp-1");
+        invoke(&state, &client, "5", "new-window", None).unwrap();
+        let delivered = app.try_recv().unwrap();
+        let accepted = events.try_recv().unwrap();
+        assert_eq!(
+            accepted.actor,
+            tilo_actions::Actor::from(tilo_actions::MemberId::agent("mcp-1", "owner"))
+        );
+        assert!(matches!(
+            heard.try_recv().unwrap(),
+            CollabEvent::RemotePresenceUpdate {
+                payload: PresencePayload::Interaction(interaction), ..
+            } if interaction.phase == tilo_actions::InteractionPhase::Applying
+        ));
+
+        // Certified runtime sessions retain the person's admitted caller,
+        // while their app work runs as the delegated agent on the same lease.
+        state.retire_execution(&owner);
+        let ended = events.try_recv().unwrap();
+        assert_eq!(ended.status, ExecutionStatus::Ended);
+        assert_eq!(ended.execution, owner.execution_id().unwrap());
+        assert!(!accepted.execution_is_live());
+        assert!(!client.execution_is_live());
+        assert!(heard.try_recv().is_err(), "retirement is not a job outcome");
+        state.retire_execution(&client);
+        assert!(events.try_recv().is_err(), "retirement is idempotent");
+        state
+            .apply_invocation_update(
+                5,
+                delivered.id,
+                tilo_actions::InvocationUpdate::Succeeded {
+                    invocation: delivered.invocation,
+                    output: tilo_actions::ActionOutput::default(),
+                },
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(events.try_recv().is_err(), "the transport run stays ended");
+        assert!(
+            matches!(
+                heard.try_recv().unwrap(),
+                CollabEvent::RemotePresenceUpdate {
+                    payload: PresencePayload::Interaction(interaction), ..
+                } if interaction.invocation == delivered.invocation
+                    && interaction.actor.by == tilo_actions::Actor::member(tilo_actions::MemberId::agent("mcp-1", "owner"))
+                    && interaction.phase == tilo_actions::InteractionPhase::Committed
+            ),
+            "the view receives the running action's actual outcome"
+        );
+    }
+
+    tilo_test_env::scenario! {
+        fn an_application_target_reaches_or_launches_the_right_instance;
+
+        phase an_application_target_launches_an_app_that_never_ran_and_delivers;
+        // An application target reaches an app that never ran in the workspace:
+        // it launches the app and delivers once the app offers the action, and
+        // reaches the running app without launching it again.
+        {
+            let (state, workspace) = broker(&workspace());
+            let (streams, launches) = app_comes_up_as(&state, 8);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let target = tilo_actions::remote::application_action_target(
+                &workspace,
+                APP,
+                "files.app",
+                "new-window",
+            );
+            assert!(state.launchable.surfaces().is_empty(), "nothing retained");
+
+            invoke(&state, &owner, &target.provider, "new-window", None)
+                .expect("admitted once launched");
+            assert_eq!(*launches.lock().expect("launches"), [APP]);
+            let mut stream = streams.try_recv().expect("the app came up");
+            let delivered = stream.try_recv().expect("the invocation reached the app");
+            assert_eq!(delivered.action, "new-window");
+            assert_eq!(delivered.actor, tilo_actions::Actor::Member(tilo_actions::MemberId::person("owner")));
+
+            invoke(&state, &owner, &target.provider, "new-window", None)
+                .expect("the running app takes it");
+            assert_eq!(
+                launches.lock().expect("launches").len(),
+                1,
+                "a running app is not launched again"
+            );
+            assert_eq!(
+                stream.try_recv().expect("delivered again").action,
+                "new-window"
+            );
+            assert_eq!(
+                invoke(&state, &owner, &target.provider, "empty-trash", None),
+                Err(card(AskedBy::default(), "empty-trash", false)),
+                "the app's own contract admits what it offers"
+            );
+        }
+
+        phase an_application_record_target_opens_in_that_record;
+        // A reference opens in the record that keeps it: a window of the app
+        // on another record is left alone, the app is launched on the record,
+        // and the window showing it then takes the next one without another
+        // launch. A caller who may not launch the app opens nothing.
+        {
+            let (state, workspace) = broker(&workspace());
+            let (streams, launches, places) = app_comes_up_placed(&state, 8);
+            let mut elsewhere = serve(&state, surface_of(&workspace, "uuid:other"));
+            let target = tilo_actions::remote::application_resource_target(
+                &workspace,
+                APP,
+                "uuid:plan",
+                "files.app",
+                "new-window",
+            );
+
+            assert_eq!(
+                invoke(
+                    &state,
+                    &Caller::local_person("stranger").in_workspace(&workspace),
+                    &target.provider,
+                    "new-window",
+                    None,
+                ),
+                Err(ActionCallError::NotPermitted),
+            );
+            assert!(launches.lock().expect("launches").is_empty());
+
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            invoke(&state, &owner, &target.provider, "new-window", None).expect("admitted");
+            assert_eq!(
+                places
+                    .lock()
+                    .expect("places")
+                    .first()
+                    .map(|(record, _)| record.clone()),
+                Some(Some("uuid:plan".to_owned())),
+                "launched on the record the reference names"
+            );
+            let mut stream = streams.try_recv().expect("the app came up");
+            assert_eq!(stream.try_recv().expect("delivered").action, "new-window");
+            assert!(
+                elsewhere.try_recv().is_err(),
+                "another record's window is left alone"
+            );
+
+            invoke(&state, &owner, &target.provider, "new-window", None).expect("admitted");
+            assert_eq!(launches.lock().expect("launches").len(), 1);
+            assert_eq!(
+                stream.try_recv().expect("delivered again").action,
+                "new-window"
+            );
+        }
+
+        phase an_action_that_shows_nothing_runs_without_a_window;
+        // An action of a closed app that shows nothing (Tasks taking an ask,
+        // a run reporting to its issue) runs in an instance of the app with no
+        // window: nothing is launched, the host is asked once, and the action
+        // reaches that instance; while it runs, it takes the next one too.
+        {
+            let (state, workspace) = broker(&workspace());
+            let launches = app_comes_up_later(&state);
+            let (mut windowless, asked) = app_starts_windowless(&state, 9);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let target = tilo_actions::remote::application_action_target(
+                &workspace,
+                APP,
+                "files.app",
+                "new-window",
+            );
+
+            invoke(&state, &owner, &target.provider, "new-window", None)
+                .expect("admitted where the app runs without a window");
+            assert!(
+                launches.lock().expect("launches").is_empty(),
+                "no window was launched"
+            );
+            assert_eq!(*asked.lock().expect("asked"), [(APP.to_owned(), workspace)]);
+            let delivered = windowless
+                .try_recv()
+                .expect("the windowless instance took it");
+            assert_eq!(delivered.action, "new-window");
+            assert_eq!(delivered.actor, tilo_actions::Actor::Member(tilo_actions::MemberId::person("owner")));
+
+            invoke(&state, &owner, &target.provider, "new-window", None)
+                .expect("the running instance takes it");
+            assert_eq!(asked.lock().expect("asked").len(), 1, "asked for once");
+            assert_eq!(
+                windowless.try_recv().expect("delivered again").action,
+                "new-window"
+            );
+        }
+
+        phase a_view_action_never_goes_to_an_instance_without_a_window;
+        // A view action (an issue's page, its chat) shows something too: an
+        // instance with no window is no publisher of it, and no closed app is
+        // run without a window for it.
+        {
+            let (state, workspace) = broker(&workspace());
+            let mut up = surface(9, &workspace);
+            let mut page = action("show-page", tilo_actions::ConfirmationPolicy::None);
+            page.operation_kind = tilo_actions::OperationKind::View;
+            up.actions.push(page);
+            state
+                .publishers
+                .windowless
+                .lock()
+                .expect("windowless")
+                .insert(9);
+            let _windowless = serve(&state, up);
+            let shows = tilo_actions::ActionAddress::new("files.app", "show-page");
+            assert!(state.action_shows(APP, &workspace, &shows));
+            assert_eq!(state.ready_peer(APP, &workspace, None, &shows), None);
+            let changes = tilo_actions::ActionAddress::new("files.app", "new-window");
+            assert!(!state.action_shows(APP, &workspace, &changes));
+            assert_eq!(
+                state.ready_peer(APP, &workspace, None, &changes),
+                Some(9),
+                "it takes what shows nothing"
+            );
+        }
+
+        phase an_application_target_reaches_an_instance_publishing_an_alias;
+        // A component surface publishes its resources under its instance's
+        // alias (as the session's windowless Tasks does): an application target
+        // written with the app's own resource id reaches it, handed over under
+        // the alias it published, rather than waiting for a publisher of the
+        // plain id that never comes; so does one naming the alias of a window
+        // of the app that closed.
+        {
+            let (state, workspace) = broker(&workspace());
+            let launches = app_comes_up_later(&state);
+            let (mut windowless, _) = app_starts_windowless(&state, 9);
+            let alias = format!(
+                "{}5de7eba4-60d5-41f3-bd8a-2c4e5d8d9dd2:464da94a-e962-41ee-b1bf-498c32006984:{}",
+                tilo_actions::BOUND_RESOURCE_PREFIX,
+                hex::encode("files.app")
+            );
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let target = tilo_actions::remote::application_action_target(
+                &workspace,
+                APP,
+                "files.app",
+                "new-window",
+            );
+            // The instance comes up on the first ask; from then on it publishes
+            // the alias only.
+            invoke(&state, &owner, &target.provider, "new-window", None).expect("admitted");
+            windowless
+                .try_recv()
+                .expect("the first ask came up the instance");
+            for action in &mut state
+                .publishers.surfaces
+                .lock()
+                .expect("surfaces")
+                .get_mut(&9)
+                .expect("the windowless instance publishes")
+                .actions
+            {
+                action.resource.clone_from(&alias);
+            }
+
+            assert_eq!(
+                state.ready_delivery(
+                    APP,
+                    &workspace,
+                    None,
+                    &tilo_actions::ActionAddress::new("files.app", "new-window"),
+                ),
+                Some((9, tilo_actions::ActionAddress::new(&alias, "new-window"))),
+                "the instance publishing the alias is the one ready"
+            );
+            // A target kept from a window of the app that has since closed names
+            // that window's alias; the running instance takes it under its own.
+            let ended = format!(
+                "{}0b7c4e52-1f0a-4d7e-9a43-6c1d2e8f7a90:{}",
+                tilo_actions::BOUND_RESOURCE_PREFIX,
+                hex::encode("files.app")
+            );
+            assert_eq!(
+                state.ready_delivery(
+                    APP,
+                    &workspace,
+                    None,
+                    &tilo_actions::ActionAddress::new(&ended, "new-window"),
+                ),
+                Some((9, tilo_actions::ActionAddress::new(&alias, "new-window"))),
+                "an alias of an instance that ended reaches the one running"
+            );
+            invoke(&state, &owner, &target.provider, "new-window", None)
+                .expect("the instance publishing the alias takes it");
+            let delivered = windowless.try_recv().expect("delivered");
+            assert_eq!(delivered.action, "new-window");
+            assert_eq!(delivered.resource, alias, "handed over as it was published");
+            assert!(launches.lock().expect("launches").is_empty());
+        }
+
+        phase an_open_launches_a_window_past_an_instance_without_one;
+        // Opening shows what it opens: an `open` never goes to an instance with
+        // no window, even one that publishes it, and launches a window instead.
+        {
+            let (state, workspace) = broker(&workspace());
+            let (mut windowless, _) = app_starts_windowless(&state, 9);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let shows_nothing = tilo_actions::remote::application_action_target(
+                &workspace,
+                APP,
+                "files.app",
+                "new-window",
+            );
+            invoke(&state, &owner, &shows_nothing.provider, "new-window", None)
+                .expect("the windowless instance runs");
+            windowless.try_recv().expect("delivered without a window");
+
+            let open = tilo_actions::remote::APPLICATION_OPEN_ACTION;
+            // A window of the app comes up as peer 8, offering `open` too.
+            let (stream, streams) = std::sync::mpsc::channel();
+            let launches = Arc::new(Mutex::new(Vec::new()));
+            let recorded = Arc::clone(&launches);
+            let weak: Weak<AppBrokerState> = Arc::downgrade(&state);
+            state.launchable.replace_launcher_for_test(
+                Arc::new(move |app_id, workspace, _, _| {
+                    recorded.lock().expect("launches").push(app_id.to_string());
+                    let state = weak.upgrade().ok_or("the broker is gone")?;
+                    let mut up = surface(8, &workspace.id().to_string());
+                    up.actions
+                        .push(action(open, tilo_actions::ConfirmationPolicy::None));
+                    stream
+                        .send(serve(&state, up))
+                        .map_err(|error| error.to_string())
+                }),
+                tilo_test_env::hang_bound(),
+            );
+            assert_eq!(
+                state.ready_peer(
+                    APP,
+                    &workspace,
+                    None,
+                    &tilo_actions::ActionAddress::new("files.app", open),
+                ),
+                None,
+                "an instance with no window is no publisher of `open`"
+            );
+            let target =
+                tilo_actions::remote::application_action_target(&workspace, APP, "files.app", open);
+            invoke(&state, &owner, &target.provider, open, None).expect("opened in a window");
+            assert_eq!(
+                *launches.lock().expect("launches"),
+                [APP],
+                "a window was launched"
+            );
+            let mut window = streams.try_recv().expect("the window came up");
+            assert_eq!(window.try_recv().expect("the window took it").action, open);
+            assert!(
+                windowless.try_recv().is_err(),
+                "the windowless instance took no open"
+            );
+        }
+    }
+
+    mod stream_end;
+
+    /// What the windowless instance of `APP` is handed, and each app and workspace the host was
+    /// asked to run without a window.
+    type Windowless = (
+        tokio::sync::mpsc::UnboundedReceiver<InvocationEnvelope>,
+        Arc<Mutex<Vec<(String, String)>>>,
+    );
+
+    /// The host runs `APP` with no window when asked: it comes up as
+    /// `peer_id`, marked as having no window, publishes `surface(peer_id)`
+    /// plus an `open`, and opens its invocation stream. Each ask is recorded.
+    fn app_starts_windowless(state: &Arc<AppBrokerState>, peer_id: u64) -> Windowless {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&asked);
+        let weak: Weak<AppBrokerState> = Arc::downgrade(state);
+        let stream = Mutex::new(Some(tx));
+        state
+            .launchable
+            .replace_windowless_for_test(Arc::new(move |app_id, workspace| {
+                recorded
+                    .lock()
+                    .expect("asked")
+                    .push((app_id.to_owned(), workspace.to_owned()));
+                if app_id != APP {
+                    return Ok(None);
+                }
+                let state = weak.upgrade().ok_or("the broker is gone")?;
+                let first = stream.lock().expect("stream").take();
+                if let Some(tx) = first {
+                    state
+                        .publishers
+                        .windowless
+                        .lock()
+                        .expect("windowless")
+                        .insert(peer_id);
+                    state
+                        .publishers
+                        .streams
+                        .lock()
+                        .expect("subscribers")
+                        .insert(peer_id, tx);
+                    let mut up = surface(peer_id, workspace);
+                    up.actions.push(action(
+                        tilo_actions::remote::APPLICATION_OPEN_ACTION,
+                        tilo_actions::ConfirmationPolicy::None,
+                    ));
+                    state
+                        .publishers
+                        .surfaces
+                        .lock()
+                        .expect("surfaces")
+                        .insert(peer_id, up);
+                }
+                Ok(Some(started(Ok(()))))
+            }));
+        (rx, asked)
+    }
+
+    /// The workspace's `start` of `APP`, as `caller` asks it: its answer.
+    fn start(
+        state: &Arc<AppBrokerState>,
+        caller: &Caller,
+        workspace: &str,
+    ) -> Result<tilo_actions::remote::InvocationReceipt, ActionCallError> {
+        state
+            .action_invoke(
+                caller,
+                None,
+                None,
+                &InvokeRequest {
+                    on_behalf_of: None,
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: RemoteActionTarget {
+                        provider: tilo_actions::remote::workspace_provider(workspace),
+                        address: tilo_actions::ActionAddress::new(
+                            format!("{}{APP}", tilo_actions::remote::APPLICATION_RESOURCE_PREFIX),
+                            tilo_actions::remote::APPLICATION_START_ACTION,
+                        ),
+                    },
+                    argument: InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    wait_ms: None,
+                    appearance: None,
+                    signed: None,
+                },
+            )
+            .wait_timeout(tilo_test_env::hang_bound())
+            .ok()
+            .flatten()
+            .unwrap_or_else(|| {
+                Err(ActionCallError::Unavailable {
+                    reason: "the start never answered".into(),
+                })
+            })
+    }
+
+    /// The peer an app's `start` answered with.
+    fn started_peer(receipt: &tilo_actions::remote::InvocationReceipt) -> Option<u64> {
+        match &receipt.status {
+            tilo_actions::remote::ReceiptStatus::Completed { output } => output
+                .value
+                .as_ref()?
+                .get(super::super::workspace_open::OPENED_PEER_FIELD)?
+                .as_u64(),
+            _ => None,
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_start_runs_an_app_without_a_window;
+
+        phase a_start_runs_the_app_without_a_window_and_names_that_instance;
+        // A workspace's `start` of a closed app (an agent's step that shows
+        // nothing, asking for the app first) runs it with no window and answers
+        // with that instance; asked again while it runs, it answers with the
+        // same one and starts nothing.
+        {
+            let (state, workspace) = broker(&workspace());
+            let launches = app_comes_up_later(&state);
+            let (_windowless, asked) = app_starts_windowless(&state, 9);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+
+            let receipt = start(&state, &owner, &workspace).expect("started");
+            assert_eq!(started_peer(&receipt), Some(9), "{receipt:?}");
+            assert!(
+                launches.lock().expect("launches").is_empty(),
+                "no window was launched"
+            );
+            assert_eq!(
+                *asked.lock().expect("asked"),
+                [(APP.to_owned(), workspace.clone())]
+            );
+
+            let again = start(&state, &owner, &workspace).expect("running");
+            assert_eq!(started_peer(&again), Some(9));
+            assert_eq!(asked.lock().expect("asked").len(), 1, "asked for once");
+        }
+
+        phase a_start_where_nothing_runs_without_a_window_launches_as_before;
+        // Where the host runs no app without a window, its `start` launches a
+        // window as an action of it would, and names that.
+        {
+            let (state, workspace) = broker(&workspace());
+            let (_streams, launches) = app_comes_up_as(&state, 8);
+            state
+                .launchable
+                .replace_windowless_for_test(Arc::new(|_, _| Ok(None)));
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let receipt = start(&state, &owner, &workspace).expect("launched");
+            assert_eq!(*launches.lock().expect("launches"), [APP]);
+            assert_eq!(started_peer(&receipt), Some(8), "{receipt:?}");
+        }
+
+        phase an_app_without_a_windowless_instance_launches_as_before;
+        // An app the host runs no windowless instance of launches as before.
+        {
+            let (state, workspace) = broker(&workspace());
+            let (_, asked) = app_starts_windowless(&state, 9);
+            let (streams, launches) = app_comes_up_as(&state, 8);
+            state
+                .launchable
+                .replace_windowless_for_test(Arc::new(|_, _| Ok(None)));
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let target = tilo_actions::remote::application_action_target(
+                &workspace,
+                APP,
+                "files.app",
+                "new-window",
+            );
+            invoke(&state, &owner, &target.provider, "new-window", None).expect("launched");
+            assert_eq!(*launches.lock().expect("launches"), [APP]);
+            assert!(asked.lock().expect("asked").is_empty());
+            let mut window = streams.try_recv().expect("came up");
+            assert_eq!(window.try_recv().expect("delivered").action, "new-window");
+        }
+
+        phase a_windowless_instance_that_failed_refuses_with_its_reason;
+        // The host's failure to run an app without a window is the action's
+        // refusal, with its reason, and launches no window in its place.
+        {
+            let (state, workspace) = broker(&workspace());
+            let launches = app_comes_up_later(&state);
+            state
+                .launchable
+                .replace_windowless_for_test(Arc::new(|_, _| Err("no broker".into())));
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let target = tilo_actions::remote::application_action_target(
+                &workspace,
+                APP,
+                "files.app",
+                "new-window",
+            );
+            match invoke(&state, &owner, &target.provider, "new-window", None) {
+                Err(ActionCallError::Unavailable { reason }) => {
+                    assert!(
+                        reason.contains("no broker") && reason.contains(APP),
+                        "{reason}"
+                    );
+                }
+                other => panic!("expected the failure's reason, got {other:?}"),
+            }
+            assert!(
+                launches.lock().expect("launches").is_empty(),
+                "no window instead"
+            );
+        }
+
+        phase a_windowless_start_that_fails_refuses_at_once_with_its_reason;
+        // An instance with no window that fails to start after it was asked
+        // for answers the action at once, with why, rather than leaving it to
+        // wait out the delivery deadline for a publisher that never comes.
+        {
+            let (state, workspace) = broker(&workspace());
+            let launches = app_comes_up_later(&state);
+            state
+                .launchable
+                .replace_windowless_for_test(Arc::new(|_, _| {
+                    Ok(Some(started(Err("the record did not open".into()))))
+                }));
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let target = tilo_actions::remote::application_action_target(
+                &workspace,
+                APP,
+                "files.app",
+                "new-window",
+            );
+            match invoke(&state, &owner, &target.provider, "new-window", None) {
+                Err(ActionCallError::Unavailable { reason }) => assert!(
+                    reason.contains("the record did not open") && reason.contains(APP),
+                    "{reason}"
+                ),
+                other => panic!("expected the start's failure, got {other:?}"),
+            }
+            assert!(launches.lock().expect("launches").is_empty());
+        }
+    }
+
+    /// A start that ended as `ended`.
+    fn started(ended: Result<(), String>) -> crate::services::WindowlessStart {
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        tx.send(ended).expect("the receiver is here");
+        rx
+    }
+
+    /// What an installed app's signed manifest offers while it is closed.
+    fn offer(
+        action: &str,
+        kind: tilo_app_package::manifest::OfferKind,
+        confirm: bool,
+    ) -> tilo_app_package::manifest::OfferedAction {
+        tilo_app_package::manifest::OfferedAction {
+            resource: "files.app".into(),
+            resource_kind: None,
+            action: action.into(),
+            label: format!("Label of {action}"),
+            description: None,
+            kind,
+            operation: tilo_app_package::manifest::OfferOperation::Effect,
+            confirm,
+            asks: None,
+            keywords: Vec::new(),
+            icon: None,
+        }
+    }
+
+    /// The host's installed applications: Files, with what its manifest
+    /// offers. Launches go through the test's stand-in launcher.
+    struct Installed(Vec<crate::services::LaunchableApplication>);
+
+    impl crate::services::LauncherServices for Installed {
+        fn applications(&self) -> Vec<crate::services::LaunchableApplication> {
+            self.0.clone()
+        }
+        fn launch(
+            &self,
+            _: &str,
+            _: &tilo_desktop_model::Workspace,
+            _: Option<&str>,
+            _: &LaunchPlace,
+        ) -> Result<(), String> {
+            Err("the test's stand-in launcher starts apps".into())
+        }
+        fn attest_process(&self, _: u32, _: &str, _: &str) -> bool {
+            false
+        }
+    }
+
+    /// [`broker`], on a host where Files is installed and its manifest
+    /// offers `new-window`, `empty-trash` (confirmed), and an action the
+    /// app never publishes.
+    fn broker_with_installed_files(workspace: &Workspace) -> (Arc<AppBrokerState>, String) {
+        use tilo_app_package::manifest::OfferKind;
+        let workspace_id = workspace.id().to_string();
+        let mut tree = WorkspaceTree::default();
+        tree.desktop.workspaces.push(workspace.clone());
+        let tree = tree.shared();
+        let installed = Installed(vec![crate::services::LaunchableApplication {
+            capabilities: Vec::new(),
+            package_id: APP.into(),
+            display_name: "Files".into(),
+            unconfined: false,
+            offers: vec![
+                offer("new-window", OfferKind::Undoable, false),
+                offer("empty-trash", OfferKind::Undoable, true),
+                offer("never-published", OfferKind::Read, false),
+                tilo_app_package::manifest::OfferedAction {
+                    operation: tilo_app_package::manifest::OfferOperation::View,
+                    ..offer(
+                        tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+                        OfferKind::Read,
+                        false,
+                    )
+                },
+            ],
+            surface: None,
+        }]);
+        let (state, _bridge) = AppBrokerState::test_state(
+            Some(tree.authority()),
+            crate::services::ProcessServices {
+                launcher: Some(Arc::new(installed)),
+                ..tree.services()
+            },
+        );
+        (state, workspace_id)
+    }
+
+    /// The catalogue rows `caller` is offered for `action`: provider and
+    /// descriptor.
+    fn offered_rows(
+        host: &Arc<AppBrokerState>,
+        caller: &Caller,
+        action: &str,
+    ) -> Vec<(String, tilo_actions::ActionDescriptor)> {
+        host.action_query(
+            caller,
+            &CatalogueQuery {
+                max_results: tilo_actions::remote::MAX_CATALOGUE_PAGE,
+                ..CatalogueQuery::default()
+            },
+        )
+        .wait_timeout(tilo_test_env::hang_bound())
+        .ok()
+        .flatten()
+        .and_then(Result::ok)
+        .map(|page| page.rows)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|row| {
+            let descriptor = row.action?;
+            (descriptor.address.action == action).then_some((row.provider, descriptor))
+        })
+        .collect()
+    }
+
+    tilo_test_env::scenario! {
+        fn a_closed_apps_manifest_offers;
+
+        phase a_closed_apps_manifest_offers_are_listed_and_invoking_one_launches_it;
+        // An app that never ran in the workspace still lists what its manifest
+        // offers; invoking one launches it and runs the action there, and once
+        // it runs its own published action is what is offered.
+        {
+            let (state, workspace) = broker_with_installed_files(&workspace());
+            let (streams, launches) = app_comes_up_as(&state, 8);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            assert!(state.launchable.surfaces().is_empty(), "it never ran here");
+
+            let rows = offered_rows(&state, &owner, "new-window");
+            let [(provider, descriptor)] = rows.as_slice() else {
+                panic!("the manifest's action is offered once: {rows:?}");
+            };
+            assert_eq!(
+                tilo_actions::remote::application_provider(provider),
+                Some((workspace.as_str(), APP)),
+                "offered as the app in this workspace, whether or not it runs"
+            );
+            assert_eq!(descriptor.action_label, "Label of new-window");
+            assert_eq!(descriptor.resource_label, "Files");
+            assert_eq!(descriptor.contract.kind, tilo_actions::ActionKind::Undoable);
+            assert!(launches.lock().expect("launches").is_empty());
+
+            invoke(&state, &owner, provider, "new-window", None).expect("admitted once launched");
+            assert_eq!(*launches.lock().expect("launches"), [APP]);
+            let mut stream = streams.try_recv().expect("the app came up");
+            let delivered = stream.try_recv().expect("the invocation reached the app");
+            assert_eq!(delivered.action, "new-window");
+            assert_eq!(delivered.actor, tilo_actions::Actor::Member(tilo_actions::MemberId::person("owner")));
+
+            let rows = offered_rows(&state, &owner, "new-window");
+            assert_eq!(
+                rows.iter()
+                    .map(|(provider, _)| provider.as_str())
+                    .collect::<Vec<_>>(),
+                ["8"],
+                "the running app's own action supersedes the manifest's"
+            );
+            assert!(
+                offered_rows(&state, &owner, "never-published").is_empty(),
+                "a running app offers only what it publishes"
+            );
+        }
+
+        phase a_link_reaches_a_closed_app_through_its_offered_open_link;
+        // A link for an app that is not running starts it through the `open-link` its manifest
+        // offers, and the app is handed the link the caller named: the manifest's offer takes no
+        // parameters, and the running app's own action is what admits the link.
+        {
+            let (state, workspace) = broker_with_installed_files(&workspace());
+            let (streams, launches) = app_comes_up_as(&state, 8);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let target = tilo_actions::remote::application_action_target(
+                &workspace,
+                APP,
+                "files.app",
+                tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION,
+            );
+            invoke_with(
+                &state,
+                &owner,
+                &target.provider,
+                &target.address,
+                InvokeArgument::Json(tilo_actions::remote::open_link_arguments("files:/notes/a.md")),
+                None,
+            )
+            .expect("admitted once launched");
+            assert_eq!(*launches.lock().expect("launches"), [APP], "the app was started");
+            let mut stream = streams.try_recv().expect("the app came up");
+            let delivered = stream.try_recv().expect("the link reached the app");
+            assert_eq!(delivered.action, tilo_actions::remote::APPLICATION_OPEN_LINK_ACTION);
+            let argument: serde_json::Value = serde_json::from_str(
+                delivered
+                    .argument
+                    .as_deref()
+                    .and_then(|slot| slot.strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX))
+                    .expect("the link rides along as the action's arguments"),
+            )
+            .expect("JSON arguments");
+            assert_eq!(argument["link"], "files:/notes/a.md");
+        }
+
+        phase a_retained_action_supersedes_the_manifest_offer;
+        // What an app published in the workspace before, retained while it is
+        // closed, is offered in place of the manifest's copy of that action.
+        {
+            let (state, workspace) = broker_with_installed_files(&workspace());
+            state.launchable.retain(&surface(7, &workspace));
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+
+            let rows = offered_rows(&state, &owner, "new-window");
+            let [(provider, _)] = rows.as_slice() else {
+                panic!("offered once: {rows:?}");
+            };
+            assert!(is_launchable_provider(provider), "{provider}");
+            let rows = offered_rows(&state, &owner, "never-published");
+            let [(provider, _)] = rows.as_slice() else {
+                panic!("an action only the manifest names is still offered: {rows:?}");
+            };
+            assert!(tilo_actions::remote::application_provider(provider).is_some());
+        }
+
+        phase a_manifest_offer_is_admitted_like_a_published_action;
+        // A manifest offer takes every check a published action takes: a
+        // caller who may not launch the app is neither offered nor starts it,
+        // and a confirmed action asks before anything launches.
+        {
+            let (state, workspace) = broker_with_installed_files(&workspace());
+            let (_streams, launches) = app_comes_up_as(&state, 8);
+            let provider =
+                tilo_actions::remote::application_action_target(&workspace, APP, "", "").provider;
+
+            let stranger = Caller::local_person("stranger").in_workspace(&workspace);
+            assert!(offered_rows(&state, &stranger, "new-window").is_empty());
+            assert_eq!(
+                invoke(&state, &stranger, &provider, "new-window", None),
+                Err(ActionCallError::NotPermitted),
+            );
+
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let rows = offered_rows(&state, &owner, "empty-trash");
+            let [(_, descriptor)] = rows.as_slice() else {
+                panic!("offered once: {rows:?}");
+            };
+            assert_eq!(
+                descriptor.contract.confirmation,
+                tilo_actions::ConfirmationPolicy::Confirm
+            );
+            assert_eq!(
+                invoke(&state, &owner, &provider, "empty-trash", None),
+                Err(card(AskedBy::default(), "Label of empty-trash", false)),
+                "the manifest's confirmation is asked for before the launch"
+            );
+            assert!(
+                launches.lock().expect("launches").is_empty(),
+                "a refusal never costs a launch"
+            );
+        }
+
+        phase a_manifest_offer_the_launched_app_does_not_publish_says_so;
+        // An action the manifest offers that the launched app does not publish
+        // ends with a refusal naming the app and the action, not a hang.
+        {
+            let (state, workspace) = broker_with_installed_files(&workspace());
+            let (_streams, launches) = app_comes_up_as(&state, 8);
+            // The app comes up at once in this test; the wait it then makes for
+            // the missing action is the only thing this bound shortens.
+            if let Some(launcher) = state.launchable.launcher() {
+                state
+                    .launchable
+                    .replace_launcher_for_test(launcher, Duration::from_millis(300));
+            }
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let rows = offered_rows(&state, &owner, "never-published");
+            let [(provider, _)] = rows.as_slice() else {
+                panic!("offered once: {rows:?}");
+            };
+
+            let refused = invoke(&state, &owner, provider, "never-published", None);
+            assert_eq!(*launches.lock().expect("launches"), [APP]);
+            match refused {
+                Err(ActionCallError::Unavailable { reason }) => assert!(
+                    reason.contains(APP) && reason.contains("did not offer \"never-published\""),
+                    "{reason}"
+                ),
+                other => panic!("expected a refusal naming the action, got {other:?}"),
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_launch_that_is_refused_or_never_answered;
+
+        phase an_application_target_is_refused_before_anything_launches;
+        {
+            let (state, workspace) = broker(&workspace());
+            let (_streams, launches) = app_comes_up_as(&state, 8);
+            let target = tilo_actions::remote::application_action_target(
+                &workspace,
+                APP,
+                "files.app",
+                "new-window",
+            );
+            assert_eq!(
+                invoke(
+                    &state,
+                    &Caller::local_person("stranger").in_workspace(&workspace),
+                    &target.provider,
+                    "new-window",
+                    None,
+                ),
+                Err(ActionCallError::NotPermitted),
+                "a caller who may not launch the app does not start it"
+            );
+            assert_eq!(
+                invoke(
+                    &state,
+                    &Caller::authenticated([0xA1; 32], [0xA2; 32]),
+                    &target.provider,
+                    "new-window",
+                    None,
+                ),
+                Err(ActionCallError::UnknownAction),
+                "a remote device does not launch apps on this desktop"
+            );
+            let elsewhere = tilo_actions::remote::application_action_target(
+                "no-such-workspace",
+                APP,
+                "files.app",
+                "x",
+            );
+            assert_eq!(
+                invoke(
+                    &state,
+                    &Caller::local_person("owner").in_workspace(&workspace),
+                    &elsewhere.provider,
+                    "new-window",
+                    None,
+                ),
+                Err(ActionCallError::UnknownAction),
+                "a workspace the caller is not in launches nothing"
+            );
+            assert!(launches.lock().expect("launches").is_empty());
+        }
+
+        phase a_launchable_invocation_is_refused_before_anything_launches;
+        {
+            let (state, workspace) = broker(&workspace());
+            state.launchable.retain(&surface(7, &workspace));
+            let (_streams, launches) = app_comes_up_as(&state, 8);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let provider = offered_provider(&state, &owner, "empty-trash").expect("offered");
+
+            assert_eq!(
+                invoke(&state, &owner, &provider, "empty-trash", None),
+                Err(card(AskedBy::default(), "empty-trash", false))
+            );
+            assert_eq!(
+                invoke(
+                    &state,
+                    &Caller::local_person("stranger").in_workspace(&workspace),
+                    &provider,
+                    "new-window",
+                    None,
+                ),
+                Err(ActionCallError::NotPermitted),
+                "a caller who may not launch the app does not start it"
+            );
+            assert_eq!(
+                invoke(
+                    &state,
+                    &Caller::authenticated([0xA1; 32], [0xA2; 32]),
+                    &provider,
+                    "new-window",
+                    None,
+                ),
+                Err(ActionCallError::UnknownAction),
+                "a remote device does not launch apps on this desktop"
+            );
+            assert!(launches.lock().expect("launches").is_empty());
+
+            invoke(
+                &state,
+                &owner,
+                &provider,
+                "empty-trash",
+                Some(Confirmation::Confirmed),
+            )
+            .expect("confirmed evidence is bound to the relaunched app");
+        }
+
+        phase an_app_that_never_offers_the_action_times_out_with_a_clear_error;
+        {
+            let (state, workspace) = broker(&workspace());
+            state.launchable.retain(&surface(7, &workspace));
+            state
+                .launchable
+                .replace_launcher_for_test(Arc::new(|_, _, _, _| Ok(())), Duration::from_millis(200));
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let provider = offered_provider(&state, &owner, "new-window").expect("offered");
+
+            match invoke(&state, &owner, &provider, "new-window", None) {
+                Err(ActionCallError::Unavailable { reason }) => assert!(
+                    reason.contains(APP) && reason.contains("did not offer"),
+                    "the timeout names the app and what it failed to do: {reason}"
+                ),
+                other => panic!("expected a timeout, got {other:?}"),
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        fn a_view_the_surface_declares_opens_a_closed_app_with_a_window;
+
+        phase a_row_view_launches_the_app_windowed_and_its_window_answers;
+        // An action the app's surface says it shows, asked on a row the app
+        // publishes only once it is open (Chat's conversation with one
+        // person), launches the closed app with a window: no instance without
+        // one is started for it, and the window answers.
+        {
+            collab_types::app_surface::register_package(
+                APP,
+                "{\"resources\":[{\"kind\":\"files.app\",\"label\":\"Files\",\"shows\":[\"open-person\"],\"version\":1}]}"
+                    .as_bytes(),
+            );
+            let (state, workspace) = broker(&workspace());
+            let (_windowless, asked) = app_starts_windowless(&state, 9);
+            let (came_up, launches, _) = app_comes_up_placed_publishing(&state, 8, vec![open_person()]);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let target = tilo_actions::remote::application_action_target(
+                &workspace,
+                APP,
+                "files.person:ada",
+                "open-person",
+            );
+
+            invoke_with(&state, &owner, &target.provider, &target.address, InvokeArgument::None, None)
+                .expect("answered by the window it launched");
+            assert_eq!(*launches.lock().expect("launches"), [APP], "launched with a window");
+            assert!(asked.lock().expect("asked").is_empty(), "nothing ran without a window");
+            let mut window = came_up.try_recv().expect("the window came up");
+            let delivered = window.try_recv().expect("the window took it");
+            assert_eq!(delivered.action, "open-person");
+        }
+    }
+
+    /// Stand in for a launcher whose app comes up only later, when the
+    /// test publishes it; each launch is recorded.
+    fn app_comes_up_later(state: &Arc<AppBrokerState>) -> Arc<Mutex<Vec<String>>> {
+        let launches = Arc::new(Mutex::new(Vec::new()));
+        let recorded = Arc::clone(&launches);
+        state.launchable.replace_launcher_for_test(
+            Arc::new(move |app_id, _, _, _| {
+                recorded.lock().expect("launches").push(app_id.to_string());
+                Ok(())
+            }),
+            tilo_test_env::hang_bound(),
+        );
+        launches
+    }
+
+    /// Invoke `action` on `provider` from its own thread, as a caller that
+    /// waits for the admission does.
+    fn invoke_in_background(
+        state: &Arc<AppBrokerState>,
+        caller: &Caller,
+        provider: &str,
+        action: &'static str,
+    ) -> std::thread::JoinHandle<Result<tilo_actions::remote::InvocationReceipt, ActionCallError>>
+    {
+        let state = Arc::clone(state);
+        let caller = caller.clone();
+        let provider = provider.to_string();
+        std::thread::spawn(move || invoke(&state, &caller, &provider, action, None))
+    }
+
+    /// Wait until the app's one launch started.
+    fn wait_for_the_launch(launches: &Arc<Mutex<Vec<String>>>) {
+        tilo_test_env::wait_until("the app to be launched", || {
+            !launches.lock().expect("launches").is_empty()
+        });
+    }
+
+    tilo_test_env::scenario! {
+        fn launch_then_deliver_waits_on_the_apps_publication;
+
+        phase launch_then_deliver_wakes_on_publication_without_polling;
+        // A launch waits on the broker's publication signal, not on a timer:
+        // the app publishing its action and opening its stream once it was
+        // launched admits the invocation. The delivery timeout is the
+        // hang bound, so nothing but the publication can end the wait in time.
+        {
+            let (state, workspace) = broker(&workspace());
+            state.launchable.retain(&surface(7, &workspace));
+            let launches = app_comes_up_later(&state);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let provider = offered_provider(&state, &owner, "new-window").expect("offered");
+
+            let invoking = invoke_in_background(&state, &owner, &provider, "new-window");
+            wait_for_the_launch(&launches);
+            let mut stream = state.capture_invocations_for_test(8);
+            state.replace_published_surfaces_for_test(vec![surface(8, &workspace)]);
+
+            invoking
+                .join()
+                .expect("invoking thread")
+                .expect("admitted once the app publishes");
+            assert_eq!(
+                stream.try_recv().expect("delivered to the app").action,
+                "new-window"
+            );
+            tilo_test_env::wait_until("the finished wait to drop its receiver", || {
+                state.publishers.changes.receiver_count() == 0
+            });
+        }
+
+        phase launch_then_deliver_handles_publish_before_subscribe_and_reverse;
+        // Readiness needs both the action and the invocation stream, and the
+        // app may offer them in either order; the wait wakes on each and
+        // delivers once both exist, never before.
+        {
+            for surface_first in [true, false] {
+                let (state, workspace) = broker(&workspace());
+                state.launchable.retain(&surface(7, &workspace));
+                let launches = app_comes_up_later(&state);
+                let owner = Caller::local_person("owner").in_workspace(&workspace);
+                let provider = offered_provider(&state, &owner, "new-window").expect("offered");
+
+                let invoking = invoke_in_background(&state, &owner, &provider, "new-window");
+                wait_for_the_launch(&launches);
+                let mut stream = if surface_first {
+                    state.replace_published_surfaces_for_test(vec![surface(8, &workspace)]);
+                    assert!(
+                        !invoking.is_finished(),
+                        "an action without an invocation stream is not delivered"
+                    );
+                    state.capture_invocations_for_test(8)
+                } else {
+                    let stream = state.capture_invocations_for_test(8);
+                    assert!(
+                        !invoking.is_finished(),
+                        "a stream without the action is not delivered"
+                    );
+                    state.replace_published_surfaces_for_test(vec![surface(8, &workspace)]);
+                    stream
+                };
+
+                invoking
+                    .join()
+                    .expect("invoking thread")
+                    .unwrap_or_else(|error| {
+                        panic!("surface first: {surface_first}: not admitted: {error:?}")
+                    });
+                assert_eq!(
+                    stream.try_recv().expect("delivered to the app").action,
+                    "new-window"
+                );
+                assert_eq!(launches.lock().expect("launches").len(), 1);
+            }
+        }
+
+        phase concurrent_launch_waiters_all_wake_on_one_publication;
+        // Many invocations of a closed app wait at once without a thread
+        // each: one launch of the app runs for all of them, and one
+        // publication admits them all, also when the app publishes before
+        // every ask has begun to wait for it.
+        {
+            const WAITERS: usize = 16;
+            let (state, workspace) = broker(&workspace());
+            state.launchable.retain(&surface(7, &workspace));
+            let launches = app_comes_up_later(&state);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let provider = offered_provider(&state, &owner, "new-window").expect("offered");
+
+            let invoking = (0..WAITERS)
+                .map(|_| invoke_in_background(&state, &owner, &provider, "new-window"))
+                .collect::<Vec<_>>();
+            wait_for_the_launch(&launches);
+            let mut stream = state.capture_invocations_for_test(8);
+            state.replace_published_surfaces_for_test(vec![surface(8, &workspace)]);
+
+            for invocation in invoking {
+                invocation
+                    .join()
+                    .expect("invoking thread")
+                    .expect("every waiter is admitted");
+            }
+            let mut delivered = 0_usize;
+            while let Ok(envelope) = stream.try_recv() {
+                assert_eq!(envelope.action, "new-window");
+                delivered = delivered.saturating_add(1);
+            }
+            assert_eq!(delivered, WAITERS);
+            assert_eq!(launches.lock().expect("launches").len(), 1);
+        }
+
+        phase launch_then_deliver_stops_when_caller_abandons;
+        // A caller that drops its answer while the app is still starting ends
+        // the wait then — long before the delivery timeout — and the app that
+        // comes up afterwards receives nothing.
+        {
+            let (state, workspace) = broker(&workspace());
+            state.launchable.retain(&surface(7, &workspace));
+            let launches = app_comes_up_later(&state);
+            let owner = Caller::local_person("owner").in_workspace(&workspace);
+            let provider = offered_provider(&state, &owner, "new-window").expect("offered");
+
+            let answer = state.action_invoke(
+                &owner,
+                None,
+                None,
+                &InvokeRequest {
+                    on_behalf_of: None,
+                    invocation: tilo_actions::InvocationId::new(),
+                    target: RemoteActionTarget {
+                        provider,
+                        address: tilo_actions::ActionAddress::new("files.app", "new-window"),
+                    },
+                    argument: InvokeArgument::None,
+                    context: None,
+                    confirmation: None,
+                    revision: None,
+                    wait_ms: None,
+                    appearance: None,
+                    signed: None,
+                },
+            );
+            wait_for_the_launch(&launches);
+            drop(answer);
+            tilo_test_env::wait_until("the abandoned wait to end", || {
+                state.publishers.changes.receiver_count() == 0
+            });
+
+            let mut stream = state.capture_invocations_for_test(8);
+            state.replace_published_surfaces_for_test(vec![surface(8, &workspace)]);
+            assert!(
+                stream.try_recv().is_err(),
+                "an abandoned invocation is not delivered"
+            );
+        }
+    }
+
+    type AdmissionAnswer = tilo_actions::remote::Pending<
+        Result<tilo_actions::remote::InvocationReceipt, ActionCallError>,
+    >;
+
+    fn launch_answer(state: &Arc<AppBrokerState>, workspace: &str) -> AdmissionAnswer {
+        let caller = Caller::local_person("owner").in_workspace(workspace);
+        let provider = offered_provider(state, &caller, "new-window").expect("offered");
+        state.action_invoke(
+            &caller,
+            None,
+            None,
+            &InvokeRequest {
+                on_behalf_of: None,
+                invocation: tilo_actions::InvocationId::new(),
+                target: RemoteActionTarget {
+                    provider,
+                    address: tilo_actions::ActionAddress::new("files.app", "new-window"),
+                },
+                argument: InvokeArgument::None,
+                context: None,
+                confirmation: None,
+                revision: None,
+                wait_ms: None,
+                appearance: None,
+                signed: None,
+            },
+        )
+    }
+
+    struct OccupiedLaunchPool {
+        _serial: std::sync::MutexGuard<'static, ()>,
+        release: Arc<(Mutex<bool>, std::sync::Condvar)>,
+        _answers: Vec<(Arc<AppBrokerState>, AdmissionAnswer)>,
+    }
+
+    impl Drop for OccupiedLaunchPool {
+        fn drop(&mut self) {
+            let (released, wake) = &*self.release;
+            *released.lock().expect("release") = true;
+            wake.notify_all();
+        }
+    }
+
+    /// Occupy the production delivery pool with four authorized host calls,
+    /// each of its own broker: one broker launches an app in a workspace once
+    /// at a time. The guard releases them even when the regression assertion
+    /// panics.
+    fn occupy_launch_pool() -> OccupiedLaunchPool {
+        static SATURATION: Mutex<()> = Mutex::new(());
+        let serial = SATURATION.lock().expect("saturation fixture");
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let (started, launches) = std::sync::mpsc::channel();
+        let answers = (0..LAUNCH_CALLS)
+            .map(|_| {
+                let (state, workspace) = broker(&workspace());
+                state.launchable.retain(&surface(7, &workspace));
+                let (held, started) = (release.clone(), started.clone());
+                state.launchable.replace_launcher_for_test(
+                    Arc::new(move |_, _, _, _| {
+                        started.send(()).expect("launch started");
+                        let (released, wake) = &*held;
+                        let guard = released.lock().expect("release");
+                        drop(
+                            wake.wait_while(guard, |released| !*released)
+                                .expect("release wait"),
+                        );
+                        Ok(())
+                    }),
+                    tilo_test_env::hang_bound(),
+                );
+                let answer = launch_answer(&state, &workspace);
+                (state, answer)
+            })
+            .collect();
+        let pool = OccupiedLaunchPool {
+            _serial: serial,
+            release,
+            _answers: answers,
+        };
+        for _ in 0..LAUNCH_CALLS {
+            tilo_test_env::recv("every launcher worker to enter the host call", &launches);
+        }
+        pool
+    }
+
+    fn drain_launch_queue() {
+        // A following blocking job is a queue drain fence: a cancelled host
+        // call must not execute later when the occupied workers are released.
+        let (done, drained) = std::sync::mpsc::channel();
+        delivery_runtime()
+            .expect("runtime")
+            .spawn_blocking(move || {
+                done.send(()).expect("drained");
+            });
+        tilo_test_env::recv("the launch queue to drain", &drained);
+    }
+
+    tilo_test_env::scenario! {
+        fn a_queued_launch_ends_before_a_launcher_worker_is_free;
+
+        phase queued_launch_stops_before_submission_when_caller_abandons;
+        {
+            let pool = occupy_launch_pool();
+            let (state, workspace) = broker(&workspace());
+            state.launchable.retain(&surface(7, &workspace));
+            let (_streams, launches) = app_comes_up_as(&state, 8);
+            let answer = launch_answer(&state, &workspace);
+            tilo_test_env::wait_until("the queued launch to subscribe", || {
+                state.publishers.changes.receiver_count() == 1
+            });
+            drop(answer);
+            tilo_test_env::wait_until(
+                "queued abandonment before a launcher worker is free",
+                || state.publishers.changes.receiver_count() == 0,
+            );
+            drop(pool);
+            drain_launch_queue();
+            assert!(
+                launches.lock().expect("launches").is_empty(),
+                "an abandoned queued invocation must never launch the app"
+            );
+        }
+
+        phase queued_launch_reports_deadline_before_a_launcher_worker_is_free;
+        {
+            let pool = occupy_launch_pool();
+            let (state, workspace) = broker(&workspace());
+            state.launchable.retain(&surface(7, &workspace));
+            let (_streams, launches) = app_comes_up_as(&state, 8);
+            *state.launchable.delivery_timeout.lock().expect("timeout") = Duration::from_millis(200);
+            let answer = launch_answer(&state, &workspace);
+            let result = answer
+                .wait_timeout(tilo_test_env::hang_bound())
+                .ok()
+                .flatten();
+            assert!(
+                matches!(result, Some(Err(ActionCallError::Unavailable { ref reason }))
+                if reason.contains("within 0.2 s")),
+                "the queued invocation must report its delivery deadline before pool release: {result:?}"
+            );
+            drop(pool);
+            drain_launch_queue();
+            assert!(
+                launches.lock().expect("launches").is_empty(),
+                "an expired queued invocation cannot launch the app"
+            );
+        }
+    }
+}

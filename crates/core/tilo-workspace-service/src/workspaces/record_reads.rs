@@ -173,7 +173,7 @@ fn device_refused() -> ActionCallError {
 /// What an app reaches of a record by what its signed manifest declares, whatever its person's
 /// grants there allow ([`app_reach`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum AppReach {
+pub enum AppReach {
     /// Its own records, the workspace's (a record of no app) and a record every app of the
     /// workspace opens: it reads and changes them as its caller's grants decide.
     Changes,
@@ -191,7 +191,7 @@ pub(crate) enum AppReach {
 /// records besides: an app reaches one only where its manifest declares its kind, and one of the
 /// workspace's records only where it is the record's app or reads that app's kinds. Anything else
 /// is refused, saying why.
-pub(crate) fn app_reach(
+pub fn app_reach(
     app: &str,
     address: &ResourceAddress,
     own_workspace: bool,
@@ -267,7 +267,7 @@ impl RecordReads {
 
     /// The reader of a device's action service: the workspaces it holds, and the app action
     /// server it was given.
-    pub(crate) fn of_device(
+    pub fn of_device(
         workspaces: Option<WeakWorkspaces>,
         served: Option<Arc<dyn ResourceReads>>,
     ) -> Self {
@@ -711,7 +711,7 @@ impl RecordReads {
 
     /// `bytes`, the copy of `address` read for `caller`, handed out only once the workspace
     /// decided again that the caller may read it: a grant revoked while it was read cuts it.
-    async fn hand_out(
+    pub async fn hand_out(
         &self,
         workspaces: &Workspaces,
         caller: &Caller,
@@ -1280,10 +1280,6 @@ impl ResourceReads for RecordReads {
 #[cfg(test)]
 #[path = "jobs_reads_tests.rs"]
 mod jobs_reads_tests;
-
-#[cfg(test)]
-#[path = "record_reads_tests.rs"]
-mod tests;
 
 #[cfg(test)]
 #[path = "app_reach_tests.rs"]

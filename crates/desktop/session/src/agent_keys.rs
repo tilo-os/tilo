@@ -6,10 +6,10 @@
 
 use runtime_collab::wire::shell::{AgentKeyAnswer, AgentKeyCall, ShellCall, ShellReply};
 use tilo_actions::remote::InvokeRequest;
+use tilo_app_host::agents::agent_keys::AgentKeys;
 use tilo_desktop_model::WorkspaceId;
 use tilo_session_client::daemon_documents::DaemonShell;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
-use tilo_workspace_service::agents::agent_keys::AgentKeys;
 
 /// The agents' keys the device's daemon keeps, reached over the shell link.
 pub(crate) struct AtDaemon(pub(crate) DaemonShell);

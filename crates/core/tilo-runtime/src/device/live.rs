@@ -8,8 +8,8 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use tilo_app_host::services::{Caller, PublishedResources, Reading, ResourceWatch};
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::apps::services::{Caller, PublishedResources, Reading, ResourceWatch};
 use tilo_workspace_service::live::{LiveRows, RESOURCE};
 use tokio::sync::{mpsc, oneshot};
 

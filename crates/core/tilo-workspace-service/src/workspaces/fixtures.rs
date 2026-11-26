@@ -4,6 +4,7 @@
     clippy::expect_used,
     clippy::unwrap_used,
     clippy::panic,
+    clippy::unreachable,
     reason = "a fixture failing is its test failing"
 )]
 
@@ -1506,4 +1507,340 @@ pub async fn list_itself_on_link(
     })
     .await;
     running
+}
+
+/// A device serving workspace `name`, the device it invited, and the
+/// invitation that device redeems.
+pub async fn shared(
+    serving_state: &std::path::Path,
+    name: &str,
+    seed: u8,
+) -> (TestHost, (SigningKey, DeviceCert), WorkspaceSummary, String) {
+    shared_with(serving_state, name, seed, laptop(seed)).await
+}
+
+thread_local! {
+    /// The keys of the workspaces' every-member groups, as the devices of one test hold them: a
+    /// group hands a device it admits the keys its other devices seal with. Each device holding
+    /// keys of its own would seal what the others cannot open.
+    static GROUP_KEYS: Arc<TestGroupKeys> = Arc::default();
+}
+
+/// The group keys the devices of this test share.
+pub fn group_keys() -> Arc<TestGroupKeys> {
+    GROUP_KEYS.with(Arc::clone)
+}
+
+/// The laptop of the person of `seed`.
+pub fn laptop(seed: u8) -> (SigningKey, DeviceCert) {
+    device_cert(
+        &SigningKey::from_bytes(&[seed; 32]),
+        "laptop",
+        DeviceCapabilities::member(),
+    )
+}
+
+/// [`shared`], inviting `device`.
+pub async fn shared_with(
+    serving_state: &std::path::Path,
+    name: &str,
+    seed: u8,
+    device: (SigningKey, DeviceCert),
+) -> (TestHost, (SigningKey, DeviceCert), WorkspaceSummary, String) {
+    let (serving_key, serving_cert) = hosting_device();
+    let serving = test_host_holding(serving_state, &serving_key, &serving_cert, group_keys()).await;
+    invited(serving, &serving_cert, name, seed, device).await
+}
+
+/// A service on `state`, serving the member copies of `(key, cert)` from the moment it opens.
+pub async fn member_service(
+    state: &std::path::Path,
+    (key, cert): (SigningKey, DeviceCert),
+) -> TestHost {
+    test_host_holding_as_member(state, &key, &cert, group_keys()).await
+}
+
+/// What a pending answer comes to, on this runtime.
+pub async fn settled<T: Send + 'static>(pending: tilo_actions::remote::Pending<T>) -> T {
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    pending.then(move |value| {
+        let _ = sender.send(value);
+    });
+    tilo_test_env::within("the governance answer", receiver)
+        .await
+        .unwrap()
+        .expect("answered")
+}
+
+/// A new person admitted to `workspace` as an Editor, through the owner's
+/// pre-admission: their device's certificate.
+pub async fn admit(
+    workspaces: &Workspaces,
+    workspace: &str,
+    owner: &DeviceCert,
+    seed: u8,
+) -> DeviceCert {
+    admit_device(workspaces, workspace, owner, seed).await.1
+}
+
+/// [`admit`], with the admitted device's key.
+pub async fn admit_device(
+    workspaces: &Workspaces,
+    workspace: &str,
+    owner: &DeviceCert,
+    seed: u8,
+) -> (ed25519_dalek::SigningKey, DeviceCert) {
+    let token = [seed; 8];
+    let issued = workspaces
+        .pre_admit(
+            owner,
+            PreAdmitRequest {
+                request_id: [seed; 32],
+                grant: signed_pre_admission(workspace, &token),
+                recipient_user_public_key: None,
+                inviter_name: None,
+            },
+        )
+        .await
+        .unwrap();
+    let (key, cert) = guest_device();
+    let reply = workspaces
+        .admit_proven(
+            issued.signed_invitation,
+            (cert.clone(), &key),
+            rand::random(),
+            &format!("Person {seed}"),
+            Some(token.as_slice()),
+        )
+        .await;
+    assert!(
+        matches!(
+            reply,
+            tilo_server_protocol::workspaces::JoinReply::Admitted { .. }
+        ),
+        "{reply:?}"
+    );
+    ADMITTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .push((cert.clone(), key.clone()));
+    (key, cert)
+}
+
+/// Every device [`admit_device`] admitted, with its key: what a member's device signs its calls
+/// with.
+static ADMITTED: std::sync::Mutex<Vec<(DeviceCert, ed25519_dalek::SigningKey)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The key of `device`, when [`admit_device`] admitted it.
+pub fn admitted_key(device: &DeviceCert) -> Option<ed25519_dalek::SigningKey> {
+    ADMITTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(cert, _)| cert.device_public_key == device.device_public_key)
+        .map(|(_, key)| key.clone())
+}
+
+/// A device of `person` (their root key, as hex) that [`admit_device`] admitted, with its key.
+pub fn admitted_device_of(person: &str) -> Option<(DeviceCert, ed25519_dalek::SigningKey)> {
+    ADMITTED
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .find(|(cert, _)| hex::encode(cert.user_public_key) == person)
+        .cloned()
+}
+
+/// Each agent the workspace's record names, by id: its name and whether it still works.
+pub async fn agents_listed(
+    workspaces: &Workspaces,
+    workspace: &str,
+) -> Vec<(String, String, bool)> {
+    workspaces
+        .read_resource::<tilo_workspace_agent::WorkspaceAgents>(
+            workspace,
+            (
+                tilo_workspace_agent::OWNER,
+                &collab_types::workspace_document_id(tilo_workspace_agent::KIND),
+            ),
+        )
+        .await
+        .expect("the record reads")
+        .map(|state| {
+            state
+                .agents
+                .iter()
+                .map(|agent| (agent.id.0.clone(), agent.name.clone(), agent.is_active()))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// `operation` of `workspace`'s agents with `arguments`, asked by the device `device` over this
+/// device's dispatch, as every caller asks it: what it answered, or why not.
+pub async fn ask_governance(
+    workspaces: &Workspaces,
+    workspace: &str,
+    device: &DeviceCert,
+    (operation, arguments): (&str, serde_json::Value),
+) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
+    use tilo_actions::remote::ActionProvider as _;
+    let serde_json::Value::Object(arguments) = arguments else {
+        panic!("arguments are an object");
+    };
+    let request = tilo_actions::remote::InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: tilo_actions::remote::RemoteActionTarget::workspace_governance(
+            workspace, operation,
+        ),
+        argument: tilo_actions::remote::InvokeArgument::Json(arguments),
+        context: None,
+        confirmation: None,
+        revision: None,
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    };
+    let caller = crate::service::local_caller(device).in_workspace(workspace);
+    let receipt = settled(workspaces.device_actions().invoke(&caller, request)).await?;
+    match receipt.status {
+        tilo_actions::remote::ReceiptStatus::Completed { output } => {
+            Ok(output.value.unwrap_or(serde_json::Value::Null))
+        }
+        tilo_actions::remote::ReceiptStatus::Rejected { error } => Err(error),
+        other => panic!("an agent's change completes at once: {other:?}"),
+    }
+}
+
+/// The agents' operations the catalogue offers `device` in `workspace`.
+pub async fn offered_agents(
+    workspaces: &Workspaces,
+    workspace: &str,
+    device: &DeviceCert,
+) -> Vec<String> {
+    let query = tilo_actions::remote::CatalogueQuery {
+        provider: Some(tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER.into()),
+        parent_resource: Some(tilo_actions::remote::workspace_governance_resource(
+            workspace,
+        )),
+        max_results: 100,
+        ..tilo_actions::remote::CatalogueQuery::default()
+    };
+    let page = workspaces
+        .catalogue(
+            tilo_server_protocol::WorkspaceId::parse(workspace),
+            &crate::service::local_caller(device),
+            Some(device),
+            &query,
+        )
+        .await;
+    let mut offered: Vec<String> = page
+        .rows
+        .into_iter()
+        .filter_map(|row| row.action)
+        .filter_map(|action| {
+            tilo_actions::remote::workspace_governance_operation(&action.address)
+                .map(|(_, granted)| granted.to_owned())
+        })
+        .filter(|operation| super::actions::is_agents_operation(operation))
+        .collect();
+    offered.sort();
+    offered
+}
+
+/// A new workspace of `workspaces`, its governance served as actions: its name.
+pub async fn hosted(workspaces: &Workspaces) -> String {
+    let summary = needed(workspaces.create("Team").await, "a new workspace");
+    if workspaces.inner.jobs.governance().is_none() {
+        super::ServiceWorkspaceActions::new().attach(workspaces);
+    }
+    summary.workspace
+}
+
+/// The agent `scribe` of the person both devices are of, admitted to `workspace` with its own
+/// key and let run the bridge's actions there.
+pub async fn admit_scribe(workspaces: &Workspaces, workspace: &str) -> (SigningKey, DeviceCert) {
+    let root = persons_root();
+    let (key, mut cert) = device_cert(&root, "Agent: Scribe", DeviceCapabilities::nothing());
+    if tilo_user_identity::sign_device_cert(&mut cert, &root).is_err() {
+        unreachable!("a fixture's agent certificate signs");
+    }
+    let now = tilo_clock::unix_now_ns();
+    let Some(workspace_id) = tilo_server_protocol::WorkspaceId::parse(workspace) else {
+        unreachable!("the workspace the devices share parses as an id")
+    };
+    let Ok(delegation) = tilo_server_protocol::delegation::Delegation::sign(
+        &root,
+        cert.device_public_key,
+        tilo_server_protocol::delegation::Delegate::Agent {
+            agent_id: "scribe".into(),
+        },
+        "Scribe",
+        [10, 20, 30],
+        tilo_server_protocol::delegation::DelegateScope {
+            workspaces: vec![workspace_id],
+            apps: Vec::new(),
+        },
+        now.saturating_sub(1_000_000_000),
+        now.saturating_add(3_600_000_000_000),
+    ) else {
+        unreachable!("a fixture's agent delegation signs")
+    };
+    {
+        let Ok(state) = workspaces.workspace(workspace).await else {
+            unreachable!("the workspace the devices share is held")
+        };
+        let hosted = state.lock().await;
+        if hosted
+            .peer()
+            .governance_mut()
+            .admit_agent(cert.clone(), delegation, &key, tilo_clock::wall())
+            .is_err()
+        {
+            unreachable!("the agent is admitted to the workspace");
+        }
+    }
+    let person = hex::encode(root.verifying_key().to_bytes());
+    record_grants(
+        workspaces,
+        workspace,
+        &[tilo_action_policy::Grant::new(
+            "scribe-bridges",
+            tilo_action_policy::Grantee::agent("scribe", person.as_str()),
+            tilo_action_policy::TreePath::workspace(workspace).rest(),
+            tilo_action_policy::KindSet::ALL,
+            tilo_action_policy::Answer::Allow,
+            tilo_action_policy::Grantee::person(person),
+        )],
+    )
+    .await;
+    (key, cert)
+}
+
+/// The actions of `device`, as `workspaces`' device reaches it: over the link `device` keeps open
+/// to it, or dialled by its key.
+pub fn reach_device(
+    workspaces: &Workspaces,
+    device: [u8; 32],
+    workspace: &str,
+) -> tilo_peer_state::actions::RemoteDevice {
+    let Ok(endpoint) = iroh_base::EndpointId::from_bytes(&device) else {
+        unreachable!("a device's key is an endpoint id")
+    };
+    let service = workspaces.action_service();
+    service.remote_held(device, workspace).unwrap_or_else(|| {
+        service.remote(
+            &workspaces.inner.host.endpoint,
+            &iroh_base::EndpointAddr::new(endpoint),
+            workspace,
+        )
+    })
+}
+
+/// The root of the person both devices are of: the one the first device's fixture is
+/// certified by.
+pub fn persons_root() -> SigningKey {
+    SigningKey::from_bytes(&[1; 32])
 }

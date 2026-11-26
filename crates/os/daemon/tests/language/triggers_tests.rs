@@ -9,11 +9,11 @@ use std::time::Duration;
 
 use serde_json::json;
 use tilo_actions::remote::ActionCallError;
+use tilo_app_host::test_support::Started;
+use tilo_app_host::triggers::{Runner, StartRun};
 use tilo_automation::TriggerSpec;
 use tilo_automation::dispatch::DocumentEvent;
 use tilo_workspace_service::agent_shortcuts;
-use tilo_workspace_service::apps::test_support::Started;
-use tilo_workspace_service::apps::triggers::{Runner, StartRun};
 use tilo_workspace_service::work::Order;
 use tilo_workspace_service::workspaces::fixtures::{
     ActsAsScout, declare_app, on_issue_change, save_signed,
@@ -176,8 +176,8 @@ async fn a_record_written_right_after_its_shortcut_is_saved_fires_it() {
 async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
     use collab_types::store::wire::{Command, Edit};
     use collab_types::store::{Cell, Resource, Value};
+    use tilo_app_host::agents::triggered::{MayRead, unreadable};
     use tilo_resource_store::Stamp;
-    use tilo_workspace_service::agents::triggered::{MayRead, unreadable};
     use tilo_workspace_service::work::Where;
 
     struct Allows;
@@ -343,7 +343,7 @@ async fn a_turn_that_cannot_read_what_triggered_it_is_refused() {
 )]
 async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answer() {
     use tilo_action_policy::{Actor as Who, MemberId};
-    use tilo_workspace_service::agents::triggered;
+    use tilo_app_host::agents::triggered;
     use tilo_workspace_service::work::Where;
 
     const CHAT: &str = "so.tilo.chat";
@@ -676,9 +676,9 @@ async fn an_agents_triggers_start_one_turn_per_message_and_never_on_its_own_answ
 )]
 async fn an_agents_new_mail_trigger_starts_one_turn_on_mail_that_arrived() {
     use tilo_action_policy::Actor as Who;
+    use tilo_app_host::agents::triggered;
     use tilo_app_id::AppId;
     use tilo_resource_store::Stamp;
-    use tilo_workspace_service::agents::triggered;
     use tilo_workspace_service::work::Where;
 
     const MAIL: &str = "so.tilo.mail";
@@ -1093,9 +1093,9 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
     use collab_types::store::Resource;
     use collab_types::store::wire::{Command, Edit};
     use tilo_action_policy::{Actor as Who, MemberId};
+    use tilo_app_host::agents::triggered;
     use tilo_resource_store::Stamp;
     use tilo_workspace_service::agent_shortcuts::{CHAT, MESSAGE, MODERATION};
-    use tilo_workspace_service::agents::triggered;
     use tilo_workspace_service::work::Where;
 
     let device = Device::start("Moderation", Some(CHAT)).await;
@@ -1219,11 +1219,10 @@ async fn a_moderation_trigger_fires_once_on_a_members_message_and_not_on_the_age
             cert.device_public_key,
         )
         .in_workspace(&workspace);
-        let context =
-            tilo_workspace_service::apps::services::ResourceRequestContext::authenticated(
-                CHAT, &workspace, caller,
-            )
-            .serving(vec![(invocation, by.clone())]);
+        let context = tilo_app_host::services::ResourceRequestContext::authenticated(
+            CHAT, &workspace, caller,
+        )
+        .serving(vec![(invocation, by.clone())]);
         workspaces
             .resource_command(&context, commands)
             .await
@@ -1468,13 +1467,12 @@ async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
                 stamp,
             },
         ];
-        let context =
-            tilo_workspace_service::apps::services::ResourceRequestContext::authenticated(
-                CHAT,
-                &workspace,
-                caller.clone(),
-            )
-            .serving(vec![(invocation, by.clone())]);
+        let context = tilo_app_host::services::ResourceRequestContext::authenticated(
+            CHAT,
+            &workspace,
+            caller.clone(),
+        )
+        .serving(vec![(invocation, by.clone())]);
         workspaces
             .resource_command(&context, Command::Batch(commands))
             .await
@@ -1489,13 +1487,12 @@ async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
             at: jiff::Timestamp::now().to_string(),
             ..Stamp::default()
         };
-        let context =
-            tilo_workspace_service::apps::services::ResourceRequestContext::authenticated(
-                CHAT,
-                &workspace,
-                caller.clone(),
-            )
-            .serving(vec![(invocation, Who::member(MemberId::person(&person)))]);
+        let context = tilo_app_host::services::ResourceRequestContext::authenticated(
+            CHAT,
+            &workspace,
+            caller.clone(),
+        )
+        .serving(vec![(invocation, Who::member(MemberId::person(&person)))]);
         workspaces
             .resource_command(
                 &context,

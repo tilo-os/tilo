@@ -7,7 +7,7 @@
 //! person hands over — which it stages on the device's one content shelf, where its Files grants
 //! let it read them — and the receiver no device of theirs is. It reads the daemon's resource over
 //! the shell link and invokes its actions there, so the resource's own shape and its actions live
-//! in one place ([`tilo_workspace_service::apps::nearby_send`]) and a call is checked by the same
+//! in one place ([`tilo_app_host::nearby_send`]) and a call is checked by the same
 //! code whether Files, the panel or a script made it.
 
 use std::cell::RefCell;
@@ -19,6 +19,9 @@ use collab_types::caps::{Access, CapDecision, CapOverride, ResourceRef, Scope};
 use serde_json::{Map, Value, json};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget};
 use tilo_actions::{ActionAddress, ApiError, InvocationId, ResourceSpec};
+use tilo_app_host::nearby_send::{
+    AirDrops, HELPER_TIMEOUT, Host, NearbySendAction, Reading, TransferState,
+};
 use tilo_capture_studio::{Refusal, Sent};
 use tilo_lock::MutexRecover as _;
 use tilo_resource::Effect as _;
@@ -26,9 +29,6 @@ use tilo_service::{Service, Started, Wake, reading};
 use tilo_session_client::daemon_documents::{DaemonShell, whole};
 use tilo_session_client::workspace_view::WorkspaceView;
 use tilo_session_core::desktop::state::DesktopHandle;
-use tilo_workspace_service::apps::nearby_send::{
-    AirDrops, HELPER_TIMEOUT, Host, NearbySendAction, Reading, TransferState,
-};
 use ui::widget::ScreenshotSendDevice;
 
 use crate::platform::fabric::Continuity;
@@ -235,8 +235,9 @@ impl Inner {
                 runtime_collab::NearbyTransferPhase::Failed => TransferState::Failed,
                 _ => TransferState::Sending,
             };
-            reading.transfers.push(
-                tilo_workspace_service::apps::nearby_send::NearbyTransferRow {
+            reading
+                .transfers
+                .push(tilo_app_host::nearby_send::NearbyTransferRow {
                     state,
                     progress: if state == TransferState::Done { 100 } else { 0 },
                     peer: attempt.endpoint.clone(),
@@ -245,8 +246,7 @@ impl Inner {
                     incoming: false,
                     name: attempt.name.clone(),
                     handle: hex(&attempt.id),
-                },
-            );
+                });
         }
         *self.last.borrow_mut() = reading.clone();
         reading
@@ -430,9 +430,9 @@ impl Inner {
 
 impl Service for Served {
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![tilo_workspace_service::apps::nearby_send::resource(
-            crate::i18n::t("session-nearby-send"),
-        )]
+        vec![tilo_app_host::nearby_send::resource(crate::i18n::t(
+            "session-nearby-send",
+        ))]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
@@ -690,7 +690,7 @@ fn air_drops(
     let permitting = continuity.clone();
     let changing = wake.clone();
     Arc::new(AirDrops::new(Host {
-        enabled: tilo_workspace_service::apps::nearby_send::lab(),
+        enabled: tilo_app_host::nearby_send::lab(),
         open: Box::new(move |workspace, requested| {
             let granted = grants_of.folders(workspace);
             let path = std::fs::canonicalize(requested)

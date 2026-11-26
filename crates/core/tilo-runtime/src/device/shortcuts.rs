@@ -10,12 +10,10 @@
 use std::sync::Arc;
 
 use collab_types::signer::DeviceSigner;
+use tilo_app_host::automation::{ShortcutChange, validate_trigger};
+use tilo_app_host::services::{ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore};
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::apps::automation::{ShortcutChange, validate_trigger};
-use tilo_workspace_service::apps::services::{
-    ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore,
-};
 use tilo_workspace_service::workspaces::Workspaces;
 
 /// The person's saved shortcuts, as a device's broker keeps and runs them.
@@ -146,8 +144,14 @@ async fn store_shortcut(
             match (&agent, still_proven) {
                 (_, true) => {}
                 (Some((agent, root)), false) => {
-                    held.sign_shortcut_as_agent(&request.workspace, agent, root, &mut shortcut)
-                        .await?;
+                    tilo_app_host::agents::agent_keys::sign_shortcut_as_agent(
+                        &held,
+                        &request.workspace,
+                        agent,
+                        root,
+                        &mut shortcut,
+                    )
+                    .await?;
                 }
                 (None, false) => tilo_peer_state::workspace::sign_saved_shortcut(
                     &request.workspace,

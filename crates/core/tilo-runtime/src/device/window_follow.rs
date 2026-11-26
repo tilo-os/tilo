@@ -16,7 +16,7 @@ use tilo_actions::remote::window_follow as wire;
 use tilo_actions::remote::{
     Admits, Admitted, Caller, InvokeArgument, InvokeRequest, Outcome, Pending,
 };
-use tilo_workspace_service::apps::collab_broker::{FanoutState, SessionFollowDispatcher};
+use tilo_app_host::collab_broker::{FanoutState, SessionFollowDispatcher};
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
 /// The shell's window steps, carried out on this daemon's fan-out.
@@ -168,7 +168,7 @@ mod tests {
     use runtime_collab::event::CollabEvent;
     use tilo_actions::remote::window_follow as wire;
     use tilo_actions::remote::{ActionCallError, ActionProvider, Caller, ReceiptStatus};
-    use tilo_workspace_service::apps::collab_broker::FanoutState;
+    use tilo_app_host::collab_broker::FanoutState;
 
     use super::*;
 

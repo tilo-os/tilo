@@ -356,7 +356,7 @@ impl Workspaces {
     /// for the person who asked it: each one it would not be refused before anything is opened,
     /// read anew at every listing, so a connection its person added a moment ago is in it. A
     /// caller that is no agent in its workspace's list is offered nothing.
-    pub(crate) async fn turn_rows(&self, caller: &Caller, provider: &str) -> Vec<CatalogueRow> {
+    pub async fn turn_rows(&self, caller: &Caller, provider: &str) -> Vec<CatalogueRow> {
         let Some(kept) = self.kept_turn(caller).await else {
             return Vec::new();
         };
@@ -380,7 +380,7 @@ impl Workspaces {
     /// # Errors
     /// As [`Self::may_fill_pages`], and [`UnknownAction`] for a caller that is no agent in its
     /// workspace's list.
-    pub(crate) async fn may_fill_pages_for(&self, caller: &Caller) -> Result<(), ActionCallError> {
+    pub async fn may_fill_pages_for(&self, caller: &Caller) -> Result<(), ActionCallError> {
         let kept = self.kept_turn(caller).await.ok_or(UnknownAction)?;
         self.may_fill_pages(&kept.of(caller)).await
     }
@@ -393,7 +393,7 @@ impl Workspaces {
     /// # Errors
     /// As [`Self::release_for_turn`], and [`UnknownAction`] for a caller that is no agent in
     /// its workspace's list.
-    pub(crate) async fn release_for(
+    pub async fn release_for(
         &self,
         caller: &Caller,
         fill: &FillPage,
@@ -995,7 +995,7 @@ impl Workspaces {
     ///
     /// # Errors
     /// [`UnknownAction`] for every other caller.
-    pub(crate) async fn asked_turn_of(
+    pub async fn asked_turn_of(
         &self,
         workspace: WorkspaceId,
         caller: &Caller,

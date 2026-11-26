@@ -493,7 +493,7 @@ fn open_member_service(
         endpoint.clone(),
     );
     let groups = tilo_workspace_service::own_device::key_groups(
-        tilo_workspace_service::apps::workspace_keys::KeyProvider::default(),
+        tilo_app_host::workspace_keys::KeyProvider::default(),
         None,
         None,
         None,

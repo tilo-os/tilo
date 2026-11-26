@@ -14,7 +14,7 @@ use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 use super::super::Workspaces;
 use super::super::fixtures::{TestHost, device_cert};
-use super::tests::{member_service, shared_with};
+use super::super::fixtures::{member_service, persons_root, shared_with};
 use crate::work::{Actor, AgentEngine, Ineligible, NotTaken, Turn, takes_turn};
 
 const CHAT: &str = "so.tilo.chat";
@@ -30,12 +30,6 @@ impl AgentEngine for Keys {
     ) -> std::pin::Pin<Box<dyn std::future::Future<Output = bool> + Send + 'a>> {
         Box::pin(std::future::ready(self.0))
     }
-}
-
-/// The root of the person both devices are of: the one the first device's fixture is
-/// certified by.
-fn persons_root() -> SigningKey {
-    SigningKey::from_bytes(&[1; 32])
 }
 
 /// The agent's turn on what somebody wrote in Chat's `part`, and the lease it is claimed under.

@@ -106,6 +106,7 @@ tilo-surface-compile = { version = "0.1.0", path = "../tilo-surface-compile" }
 # The page holder a test reads a peer's workspace through: the workspace service's document
 # core over the replica the peer's session admits into, as a page reads it.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["device-keys", "session-pages", "test-support"] }
+tilo-app-host = { path = "../app-host", features = ["test-support"] }
 # An invitation read as a device that follows its link reads it: the server it names, from it alone.
 tilo-workspace-join = { path = "../workspace-join" }
 # A synced folder's tree written through a session, as a computer's folder writes it.

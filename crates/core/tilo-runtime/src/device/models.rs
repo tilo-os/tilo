@@ -19,11 +19,9 @@ pub use tilo_actions::remote::model_providers::RESOURCE as MODELS;
 pub fn published(workspaces: &Arc<crate::device::workspaces::ServiceWorkspaces>) -> Served {
     let reading = Arc::clone(workspaces);
     let changing = Arc::clone(workspaces);
-    let read: Arc<Read> = Arc::new(
-        move |caller: &tilo_workspace_service::apps::services::Caller| {
-            reading.copies().models_reading(&caller.workspace)
-        },
-    );
+    let read: Arc<Read> = Arc::new(move |caller: &tilo_app_host::services::Caller| {
+        reading.copies().models_reading(&caller.workspace)
+    });
     let changes: Arc<Changes> = Arc::new(move || changing.copies().person_settings_changes());
     Served::new(MODELS, read, changes)
 }

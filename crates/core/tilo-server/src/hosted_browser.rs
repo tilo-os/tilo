@@ -95,11 +95,11 @@ use tilo_actions::remote::{
     provider_workspace, workspace_provider,
 };
 use tilo_actions::{ActionFailure, InvocationUpdate, ResourceSpec};
-use tilo_lock::MutexRecover as _;
-use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::agents::windows::{
+use tilo_app_host::agents::windows::{
     Ends, Releasing, TurnFill, Windows, opened_resource, page_action,
 };
+use tilo_lock::MutexRecover as _;
+use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::app_serving::opens_browser_at;
 use tilo_workspace_service::workspaces::providers::{Providers, Reach};
 
@@ -2561,7 +2561,7 @@ mod tests {
     use tilo_actions::ActionAddress;
     use tilo_actions::ActionOutput;
     use tilo_actions::remote::RemoteActionTarget;
-    use tilo_workspace_service::agents::windows::PAGE_RESOURCE;
+    use tilo_app_host::agents::windows::PAGE_RESOURCE;
 
     fn page(provider: &str, resource: &str) -> RemoteActionTarget {
         RemoteActionTarget {

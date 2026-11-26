@@ -342,7 +342,7 @@ pub(crate) fn start_collaboration(
 /// How the person's workspaces stand, as the device's daemon publishes them, and the actions that
 /// change them: `None` when the session reaches no daemon, or this computer has no identity.
 pub(crate) fn open_view(
-    link: &tilo_workspace_service::apps::services::DeviceDaemon,
+    link: &tilo_app_host::services::DeviceDaemon,
     options: &Options,
 ) -> Option<std::sync::Arc<tilo_session_client::workspace_view::WorkspaceView>> {
     crate::device_shell::open(link.clone().ok()?, options.wake.handle())

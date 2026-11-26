@@ -44,9 +44,7 @@ fn run() -> io::Result<()> {
     // the apps this runtime hosts keep their content in.
     {
         let content = tilo_content_device::for_app();
-        tilo_workspace_service::apps::decide_receipt_against_surfaces(move |_, hash| {
-            content.read(hash)
-        });
+        tilo_app_host::decide_receipt_against_surfaces(move |_, hash| content.read(hash));
     }
     let arguments: Vec<OsString> = std::env::args_os().skip(1).collect();
     // The tools a hosted workspace offers an agent, without a workspace or a session:

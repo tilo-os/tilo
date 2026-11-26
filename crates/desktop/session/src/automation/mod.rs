@@ -6,9 +6,9 @@
 //! asked record and the run starts once they approve. A trigger every device of the workspace can
 //! see (a
 //! schedule, a record changing, a folder, a workspace joined) is the device's daemon's to watch
-//! ([`tilo_workspace_service::apps::triggers`]), which places each firing on one device.
+//! ([`tilo_app_host::triggers`]), which places each firing on one device.
 //! Only the person this device acts for has armed shortcuts
-//! ([`tilo_workspace_service::apps::triggers::armed`]).
+//! ([`tilo_app_host::triggers::armed`]).
 
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -21,11 +21,11 @@ use settings_store::notification_policy::NotificationPolicy;
 use tilo_actions::InvocationId;
 use tilo_actions::api::ActionAddress;
 use tilo_actions::remote::{ActionProvider, InvokeRequest, RemoteActionTarget};
+use tilo_app_host::automation::{chord_target, fired_context};
+use tilo_app_host::triggers::{Armed, Firing, armed, seen_here};
 use tilo_automation::{FOCUS_DO_NOT_DISTURB, FOCUS_SCHEDULE, FocusTransition, TriggerSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::desktop::state::DesktopHandle;
-use tilo_workspace_service::apps::automation::{chord_target, fired_context};
-use tilo_workspace_service::apps::triggers::{Armed, Firing, armed, seen_here};
 
 /// How often the apps running and the focus modes are looked at.
 const TICK_INTERVAL: Duration = Duration::from_millis(500);

@@ -100,14 +100,6 @@ tilo-devices-admit-speaker-playback = Die Wiedergabe einer Gruppe auf einem Mitg
 tilo-devices-refuse-speaker-playback = Die Wiedergabe einer Gruppe auf einem Mitgliedsgerät ablehnen
 tilo-devices-stop-speaker-playback = Die Wiedergabe einer Gruppe beenden
 
-## Nearby Send
-
-so-tilo-device-nearby-send-send = Dateien an ein Gerät in der Nähe senden
-so-tilo-device-nearby-send-accept = Eine angebotene Datei behalten
-so-tilo-device-nearby-send-decline = Eine angebotene Datei ablehnen
-so-tilo-device-nearby-send-cancel = Eine Übertragung stoppen
-so-tilo-device-nearby-send-retry-transfer = Eine fehlgeschlagene Übertragung erneut anbieten
-so-tilo-device-nearby-send-invite-people = Eine Ressource mit anderen teilen und die Einladung öffnen
 # What a turn says it is doing, as the person reads it on its reply: one line per step, what is
 # being done and what app it is about.
 agent-step-searching = Sucht im Netz nach „{ $what }“…
@@ -154,14 +146,7 @@ passwords-workspace-vault-remove-sealed = Verschlüsselten Tresoreintrag lösche
 passwords-workspace-vault-keep-uses = Festhalten, wo ein Eintrag verwendet wurde
 browser-environment = Einstellungen des Arbeitsbereichsrechners
 
-## App Store
-store-catalog = Store-Katalog
-store-report-create = Bericht erstellen
-store-catalog-record-moderation-case = Moderationsfall festhalten
 
-# Die Aktionen des Tresor-Pakets, die eine Codegenerator-App über ihre Adresse aufruft.
-so-tilo-vault-keep = Einen Seed aufbewahren
-so-tilo-vault-forget = Einen Seed vergessen
 tilo-servers-floor = Rollback-Grenze
 tilo-servers-floor-set-floor-key = Grenzschlüssel festlegen
 tilo-servers-floor-request-floor-advance = Anheben der Grenze erbitten

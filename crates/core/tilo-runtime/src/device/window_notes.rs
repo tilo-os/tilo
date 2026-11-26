@@ -9,10 +9,10 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
+use tilo_app_host::collab_broker::FanoutState;
+use tilo_app_host::services::{Caller, PublishedResources, Reading, ResourceWatch};
+use tilo_app_host::window_notes::{RESOURCE, WindowNotes};
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::apps::collab_broker::FanoutState;
-use tilo_workspace_service::apps::services::{Caller, PublishedResources, Reading, ResourceWatch};
-use tilo_workspace_service::window_notes::{RESOURCE, WindowNotes};
 use tokio::sync::{mpsc, oneshot};
 
 /// One desktop following the windows, and the task that sends it each change.
@@ -42,7 +42,7 @@ fn refused() -> String {
 
 /// The rows' reading as the wire carries it: what the broker shows now, and the generation that
 /// grows when it changes.
-fn encoded(state: &tilo_workspace_service::apps::collab_app_broker::AppBrokerState) -> Reading {
+fn encoded(state: &tilo_app_host::collab_app_broker::AppBrokerState) -> Reading {
     (
         state.windows_generation(),
         Some(WindowNotes::of(&state.window_resources()).reading()),
@@ -141,7 +141,7 @@ impl PublishedResources for Published {
 /// listening or the broker goes.
 async fn follow(
     fanout: std::sync::Weak<FanoutState>,
-    state: Arc<tilo_workspace_service::apps::collab_app_broker::AppBrokerState>,
+    state: Arc<tilo_app_host::collab_app_broker::AppBrokerState>,
     sink: mpsc::UnboundedSender<runtime_collab::wire::Event>,
 ) {
     let mut state = state;
@@ -170,7 +170,7 @@ async fn follow(
 
 /// Send what `state`'s windows hold now.
 fn send(
-    state: &tilo_workspace_service::apps::collab_app_broker::AppBrokerState,
+    state: &tilo_app_host::collab_app_broker::AppBrokerState,
     sink: &mpsc::UnboundedSender<runtime_collab::wire::Event>,
 ) -> Result<(), ()> {
     let (revision, reading) = encoded(state);

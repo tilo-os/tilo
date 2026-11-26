@@ -28,10 +28,10 @@ use runtime_collab::{
     BrowserServiceSessionCommand as Command, BrowserServiceSessionReply as Reply,
 };
 use std::sync::Arc;
-use tilo_desktop_model::WorkspaceId;
-use tilo_workspace_service::apps::services::{
+use tilo_app_host::services::{
     BrowserServiceSessionRequestContext as Context, BrowserServiceSessionServices, ItemAnswering,
 };
+use tilo_desktop_model::WorkspaceId;
 
 const UNAVAILABLE: &str = "Selected website session unavailable";
 use ui::apps::BROWSER;

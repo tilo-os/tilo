@@ -483,7 +483,7 @@ tilo_test_env::scenario! {
             surface("person-forged"),
         )
         .unwrap();
-        let declared = |app: &str| tilo_workspace_service::apps::SurfacePersonDocuments.person_resource_types(app);
+        let declared = |app: &str| tilo_app_host::SurfacePersonDocuments.person_resource_types(app);
         assert!(declared(KEEPER).is_empty(), "nothing before it is launched");
 
         // This builder has no launcher: the launch stops there, after the

@@ -1603,11 +1603,11 @@ mod tests {
             // The automation armed a shortcut on that chord: the session answers it, and hands the
             // press on once.
             let mut table = shortcuts.borrow().clone();
-            assert!(tilo_workspace_service::apps::automation::replace_trigger_chords(
+            assert!(tilo_app_host::automation::replace_trigger_chords(
                 &mut table,
                 vec![settings_store::hardware::ActionChord {
                     chord: chord.clone(),
-                    target: tilo_workspace_service::apps::automation::chord_target("workspace", "tidy"),
+                    target: tilo_app_host::automation::chord_target("workspace", "tidy"),
                     label: "Run Tidy".into(),
                 }],
             ));

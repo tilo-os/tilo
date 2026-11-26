@@ -20,10 +20,8 @@ use super::mount;
 use tilolang_workspace::records::{Packages, member, with_tl_record};
 use tilolang_workspace::runtime::{ResourceRef, Value};
 
-use tilo_workspace_service::apps::served_notices::ServedNotices;
-use tilo_workspace_service::apps::wakeups::{
-    Notification, Notifier, NotifyError, Scheduled, SystemTime, Wakeups,
-};
+use tilo_app_host::served_notices::ServedNotices;
+use tilo_app_host::wakeups::{Notification, Notifier, NotifyError, Scheduled, SystemTime, Wakeups};
 use tilo_workspace_service::tl_records::{Compiled, Package};
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::fixtures::{

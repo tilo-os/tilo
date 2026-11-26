@@ -1499,7 +1499,7 @@ impl PackageCache {
                 // What the package publishes is known here from now on, as it is for a package
                 // installed before this device started: its types and actions.
                 if let Some((_, file)) = &surface {
-                    tilo_workspace_service::apps::register_package_surface(&release.app, file);
+                    tilo_app_host::register_package_surface(&release.app, file);
                 }
                 tracing::info!(app = %release.app, version = %release.version, "installed the version a workspace runs");
                 true

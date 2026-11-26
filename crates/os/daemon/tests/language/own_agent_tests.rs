@@ -30,10 +30,10 @@ use tilo_resource_store::Stamp;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 use tilo_workspace_agent::{OWNER, WorkspaceAgents};
 
+use tilo_app_host::agents::{Model, ServerAgents};
+use tilo_app_host::test_support::Started;
+use tilo_app_host::triggers::{Runner, StartRun};
 use tilo_workspace_service::agent_shortcuts::{self, CHAT, MESSAGE};
-use tilo_workspace_service::agents::{Model, ServerAgents};
-use tilo_workspace_service::apps::test_support::Started;
-use tilo_workspace_service::apps::triggers::{Runner, StartRun};
 use tilo_workspace_service::work::Order;
 use tilo_workspace_service::workspaces::fixtures::answer_grant;
 use tilo_workspace_service::workspaces::fixtures::{
@@ -128,7 +128,7 @@ pub(super) async fn chat_writes(
             stamp,
         });
     }
-    let context = tilo_workspace_service::apps::services::ResourceRequestContext::authenticated(
+    let context = tilo_app_host::services::ResourceRequestContext::authenticated(
         CHAT,
         workspace,
         caller.clone(),
@@ -451,7 +451,7 @@ async fn a_member_makes_their_own_agent_and_it_answers_their_mention() {
 
     // Its reply is Chat's own write: a message of the channel, to her message, stamped as Scout's
     // `send` for Bea.
-    let context = tilo_workspace_service::apps::services::ResourceRequestContext::authenticated(
+    let context = tilo_app_host::services::ResourceRequestContext::authenticated(
         CHAT, &workspace, caller_bea,
     );
     let deadline = tilo_test_env::hang_deadline();
@@ -615,7 +615,7 @@ async fn an_agent_added_to_someone_elses_conversation_stays_its_persons() {
     )
     .await
     .expect("Ada writes in her conversation");
-    let context = tilo_workspace_service::apps::services::ResourceRequestContext::authenticated(
+    let context = tilo_app_host::services::ResourceRequestContext::authenticated(
         CHAT, &workspace, caller_ada,
     );
     let content = Command::Content {

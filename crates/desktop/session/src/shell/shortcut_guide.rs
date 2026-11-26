@@ -90,7 +90,7 @@ impl ShortcutGuide {
     /// workspaces they are saved in, and the table is what shows them.
     pub(crate) fn follow_trigger_chords(&self, chords: Vec<ActionChord>) {
         let mut table = self.state.table().borrow().clone();
-        if !tilo_workspace_service::apps::automation::replace_trigger_chords(&mut table, chords) {
+        if !tilo_app_host::automation::replace_trigger_chords(&mut table, chords) {
             return;
         }
         self.state.set_table(table);

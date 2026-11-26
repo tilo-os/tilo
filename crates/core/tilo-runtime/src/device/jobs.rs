@@ -72,7 +72,7 @@ pub struct ProcessKey {
     pub generation: u64,
 }
 
-pub use tilo_workspace_service::apps::collab_app_broker::JobEffects;
+pub use tilo_app_host::collab_app_broker::JobEffects;
 
 /// The processes that run this device's jobs: what a job cancelled with its invocation is told.
 pub trait JobProcesses: Send + Sync {

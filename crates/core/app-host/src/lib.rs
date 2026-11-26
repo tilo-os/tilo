@@ -1,0 +1,262 @@
+//! The apps a device's workspace service serves: the app wire its apps call on, their launch,
+//! the actions they publish and invoke, the journal those invocations are kept in, and the
+//! person's consent to each. A server holds workspaces without apps and builds without it.
+//!
+//! The agents a device runs for the workspaces it holds ([`agents`]) are served here too: their
+//! turns write tilolang records through the store an app's window writes through.
+#![cfg(not(target_arch = "wasm32"))]
+#![deny(rust_2018_idioms)]
+#![cfg_attr(
+    test,
+    allow(
+        clippy::string_slice,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
+
+/// The agents a device runs for the workspaces it holds, and the events and look-rounds
+/// their turns reach.
+#[cfg(feature = "agents")]
+pub mod agents;
+pub mod app_actions;
+pub mod automation;
+mod broker_error;
+pub mod certificate_authority;
+/// The notices an app raises on a device with no session, carried into the record of the
+/// person's devices so every device of theirs and every page raises them.
+#[cfg(feature = "agents")]
+pub mod served_notices;
+/// What starts a saved shortcut without anyone invoking it: a firing is a turn of work, so the
+/// runner is an agents build's.
+#[cfg(feature = "agents")]
+pub mod triggers;
+pub mod vault_actions;
+pub mod wakeups;
+pub mod webhooks;
+pub mod window_notes;
+/// The channel engine every host runs: its groups, the governance that settles them, and the
+/// keys an endpoint reads a sealed record with.
+pub use tilo_workspace_keys as workspace_keys;
+/// When a re-check of what was already admitted is due, and the announcements it waits on.
+pub use tilo_workspace_keys::schedule as policy_schedule;
+pub mod collab_app_broker;
+pub mod collab_broker;
+/// The workspaces' governance state and their durable op history, held on every host.
+pub use tilo_broker_core::{collab_core, collab_history};
+pub mod collab_inbound;
+pub mod collab_outbound;
+pub mod commits;
+pub mod local_document_action;
+/// Nearby Send published as a resource: the devices in reach, the offers another
+/// device made, and the actions that answer them.
+pub mod nearby_send;
+/// What a host answers for this device's writes, shared with the hosts that run the broker.
+pub use tilo_broker_core::workspace_commits;
+pub mod policy_clock;
+pub mod published_authorization;
+pub mod seat;
+/// The route an app's traffic is addressed on, the same on every host.
+pub use tilo_broker_core::route;
+pub mod service_reads;
+pub mod service_resources;
+pub mod service_writes;
+pub mod services;
+pub mod shell;
+
+pub use broker_error::{BrokerError, BrokerErrorKind};
+pub use certificate_authority::CertificateAuthority;
+pub use collab_broker::NativePeerBrokerConfig;
+#[cfg(any(test, feature = "test-support"))]
+pub use policy_clock::PolicyClockTestControl;
+pub use policy_clock::{OwnerPolicyClock, PolicyClockError, PolicyOrigin, PolicyTime};
+#[cfg(all(test, feature = "agents"))]
+mod agent_record_tests;
+#[cfg(all(test, feature = "agents"))]
+mod connection_turn_tests;
+#[cfg(test)]
+mod joined_workspace_tests;
+#[cfg(all(test, feature = "agents"))]
+mod record_reads_tests;
+#[cfg(test)]
+mod test_owner;
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support;
+
+/// The person-record kinds an app's surface declares, as this process holds
+/// the surfaces of the apps it runs: what the identity service signs for an
+/// app in the person's own workspace, and the broker admits it to there.
+pub struct SurfacePersonDocuments;
+
+impl tilo_identity::broker::PersonResourceTypes for SurfacePersonDocuments {
+    fn person_resource_types(&self, app_id: &str) -> Vec<String> {
+        collab_types::app_surface::person_resource_types(app_id)
+    }
+
+    fn reads_documents_of(&self, reader: &str, owner: &str) -> bool {
+        collab_types::app_surface::reads_app(reader, owner)
+    }
+}
+
+/// Run the signed package `app_id` with `surface`, the `surface.toml` it
+/// ships: the person-record kinds it declares work as a built-in app's, and
+/// the changes it signs name that surface. A host calls it as it launches
+/// the package.
+pub fn register_package_surface(app_id: &str, surface: &[u8]) {
+    collab_types::app_surface::register_package(app_id, surface);
+}
+
+/// Run `app_id` with `surface` as [`register_package_surface`] does, and
+/// hold the surfaces of the other installed packages it declares it reads.
+/// The broker admits a read-only join to another app's records by both
+/// surfaces, the reader's `reads` and the owner's resource kinds, and the
+/// owner need not be running: `installed` yields each installed package's
+/// id and signed surface, and is asked only when `surface` reads anything.
+pub fn register_package_surface_and_reads<I>(
+    app_id: &str,
+    surface: &[u8],
+    installed: impl FnOnce() -> I,
+) where
+    I: IntoIterator<Item = (String, Vec<u8>)>,
+{
+    register_package_surface(app_id, surface);
+    let reader = match collab_types::surface::SurfaceFile::compiled(surface) {
+        Ok(reader) => reader,
+        Err(error) => {
+            // What it reads is then nothing.
+            tracing::warn!(app = app_id, %error, "package surface does not decode; it reads no other app");
+            return;
+        }
+    };
+    if reader.reads.is_empty() {
+        return;
+    }
+    for (owner, bytes) in installed() {
+        if owner == app_id {
+            continue;
+        }
+        match collab_types::surface::SurfaceFile::compiled(&bytes) {
+            Ok(surface) if reader.reads_any_of(&surface) => {
+                register_package_surface(&owner, &bytes);
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::warn!(app = app_id, owner = %owner, %error, "installed package surface does not decode; its records cannot be read");
+            }
+        }
+    }
+}
+
+/// Decide every change this process's workspaces receive by its claim against
+/// the app surface its op names, and name in the changes the process signs
+/// for an app the surface that app runs with. A host calls it once, before
+/// it opens its workspaces.
+///
+/// The surface is the one this process runs the app with when the op names
+/// that one, and otherwise what `read` finds (the host's content store, in
+/// the record's workspace and app). The process's own writes name the surface it
+/// runs, and nothing puts that file in the content store, so without the
+/// first source every change a host signs for a package that ships a surface
+/// would wait for it forever, its first record included.
+pub fn decide_receipt_against_surfaces(
+    read: impl Fn(&collab_types::WrittenDocument<'_>, &str) -> Option<Vec<u8>> + Send + Sync + 'static,
+) {
+    tilo_peer_state::decide_with_surfaces(
+        collab_types::Surfaces::from_source(std::sync::Arc::new(
+            collab_types::surface::ContentSurfaces::new(move |record, hash| {
+                running_surface(record.app, hash).or_else(|| read(record, hash))
+            }),
+        )),
+        collab_types::app_surface::hash_of,
+    );
+}
+
+/// The surface `hash` of `app`, when it is the one this process runs `app`
+/// with. The bytes are addressed by their hash, which the reader checks
+/// again, so where they come from does not change what they mean.
+fn running_surface(app: &str, hash: &str) -> Option<Vec<u8>> {
+    let running = collab_types::app_surface::hash_of(app)?;
+    (hex::encode(running) == hash)
+        .then(|| collab_types::app_surface::bytes_of(app).map(<[u8]>::to_vec))
+        .flatten()
+}
+
+#[cfg(test)]
+mod read_surface_tests {
+    tilo_test_env::scenario! {
+        fn a_package_surface_holds_only_the_surfaces_it_reads;
+
+        phase a_reader_holds_the_surface_of_an_installed_app_it_reads_that_is_not_running;
+        {
+            let reader = "{\"reads\":[\"so.tilo.test.owner.note\"],\"resources\":[{\"fields\":[],\"kind\":\"so.tilo.test.reader\",\"label\":\"Reader\",\"version\":1}]}";
+            let owner = "{\"resources\":[{\"fields\":[],\"kind\":\"so.tilo.test.owner.note\",\"label\":\"Note\",\"version\":1}]}";
+            let other = "{\"resources\":[{\"fields\":[],\"kind\":\"so.tilo.test.unread.item\",\"label\":\"Item\",\"version\":1}]}";
+            assert!(!collab_types::app_surface::reads_app(
+                "so.tilo.test.reader",
+                "so.tilo.test.owner"
+            ));
+            super::register_package_surface_and_reads("so.tilo.test.reader", reader.as_bytes(), || {
+                [
+                    ("so.tilo.test.owner".to_string(), owner.as_bytes().to_vec()),
+                    ("so.tilo.test.unread".to_string(), other.as_bytes().to_vec()),
+                ]
+            });
+            assert!(
+                collab_types::app_surface::reads_app("so.tilo.test.reader", "so.tilo.test.owner"),
+                "the read the reader declares is decided by the owner's installed surface"
+            );
+            assert_eq!(
+                collab_types::app_surface::bytes_of("so.tilo.test.unread"),
+                None,
+                "a package the reader does not read stays unknown here"
+            );
+        }
+
+        phase a_surface_that_reads_nothing_never_lists_the_installed_packages;
+        {
+            let surface = "{\"resources\":[{\"fields\":[],\"kind\":\"so.tilo.test.alone\",\"label\":\"Alone\",\"version\":1}]}";
+            super::register_package_surface_and_reads(
+                "so.tilo.test.alone",
+                surface.as_bytes(),
+                || -> Vec<(String, Vec<u8>)> {
+                    panic!("listed the installed packages for a surface that reads nothing")
+                },
+            );
+        }
+    }
+}
+
+#[cfg(test)]
+mod running_surface_tests {
+    use super::running_surface;
+
+    #[test]
+    fn a_package_surface_this_process_runs_is_served_by_its_hash_only() {
+        let app = "so.tilo.test.running-surface";
+        // A package ships its surface compiled, so the bytes registered and hashed are canonical JSON.
+        let file = "{\"resources\":[{\"fields\":[],\"kind\":\"so.tilo.test.running-surface.note\",\"label\":\"Note\",\"version\":1}]}";
+        assert!(tilo_surface_compile::is_canonical(file));
+        let file = file.as_bytes();
+        let hash = hex::encode(blake3::hash(file).as_bytes());
+        assert_eq!(running_surface(app, &hash), None);
+        super::register_package_surface(app, file);
+        assert_eq!(
+            running_surface(app, &hash).as_deref(),
+            Some(file),
+            "the change this process signs names this surface, so it must decide it"
+        );
+        assert_eq!(
+            running_surface(
+                app,
+                &hex::encode(blake3::hash(b"another surface").as_bytes())
+            ),
+            None,
+            "a surface the process does not run is the content store's to serve"
+        );
+        assert_eq!(
+            running_surface("so.tilo.test.other-app", &hash),
+            None,
+            "a surface is served only for the app that runs it"
+        );
+    }
+}

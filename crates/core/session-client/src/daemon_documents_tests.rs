@@ -11,15 +11,13 @@
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::{Arc, Mutex};
 
+use tilo_app_host::services::{
+    Caller, ProcessServices, PublishedResources, Reading, ResourceWatch,
+};
+use tilo_app_host::shell::{ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices};
 use tilo_peer_state::owner::WriteRefusal;
 use tilo_peer_state::workspace_documents::{
     DeviceWrites, DocumentRead, DocumentServing, DocumentWrite, DocumentWriting,
-};
-use tilo_workspace_service::apps::services::{
-    Caller, ProcessServices, PublishedResources, Reading, ResourceWatch,
-};
-use tilo_workspace_service::apps::shell::{
-    ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices,
 };
 use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
 use tilo_workspace_service::workspaces::ResourceWrite;
@@ -116,7 +114,7 @@ impl PublishedResources for NoStanding {
 struct Daemon {
     _dir: tempfile::TempDir,
     host: tilo_workspace_service::workspaces::fixtures::TestHost,
-    _dispatch: tilo_workspace_service::apps::collab_broker::BrokerHandle,
+    _dispatch: tilo_app_host::collab_broker::BrokerHandle,
     socket: std::path::PathBuf,
     links: Arc<ShellLinks>,
     kept: Arc<Kept>,
@@ -208,14 +206,14 @@ fn daemon(runtime: &tokio::runtime::Runtime) -> Daemon {
         })),
         ..ProcessServices::default()
     };
-    let dispatch = tilo_workspace_service::apps::collab_broker::spawn_with_services(
+    let dispatch = tilo_app_host::collab_broker::spawn_with_services(
         socket.clone(),
         None,
-        tilo_workspace_service::apps::collab_outbound::PeerPublisher::disabled(),
+        tilo_app_host::collab_outbound::PeerPublisher::disabled(),
         None,
         services,
         Arc::default(),
-        Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new()),
+        Arc::new(tilo_app_host::collab_broker::FanoutState::new()),
     )
     .unwrap();
     Daemon {

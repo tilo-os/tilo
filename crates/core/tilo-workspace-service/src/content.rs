@@ -1164,5 +1164,7 @@ impl ContentKeeper for MemberContent {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixtures;
 #[cfg(test)]
-pub(crate) mod tests;
+mod tests;

@@ -7,7 +7,7 @@ use std::sync::Arc;
 /// keeps them, and answers on the shell `link` it handed this session; and each write the daemon
 /// takes, which the desktop reads its layouts again by.
 pub(crate) fn session_documents(
-    link: tilo_workspace_service::apps::services::DeviceDaemon,
+    link: tilo_app_host::services::DeviceDaemon,
     runtime: tokio::runtime::Handle,
 ) -> (
     Arc<dyn tilo_peer_state::workspace_documents::DeviceDocuments>,

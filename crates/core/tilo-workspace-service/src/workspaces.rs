@@ -147,7 +147,7 @@ pub use person_telling::{Spenders, ToTell};
 #[cfg(not(target_arch = "wasm32"))]
 pub use person_telling::addresses as push_addresses;
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) mod asking;
+pub mod asking;
 // What the person keeps to sign in with, in that same vault of theirs.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) mod person_vault;
@@ -193,7 +193,7 @@ pub mod hosted_use;
 pub mod app_invocations;
 #[cfg(feature = "agents")]
 pub mod machine_secrets;
-pub(crate) mod record_reads;
+pub mod record_reads;
 pub use record_reads::{DeviceJobReads, OtherDeviceReads, RecordReads};
 mod personal;
 pub use personal::{PresentDevices, on_presence_change, presence_changed, present_on};
@@ -248,9 +248,6 @@ mod shares;
 pub mod standing;
 #[cfg(test)]
 pub(crate) mod tests;
-/// A fixture workspace with its governance as actions, for tests outside this module.
-#[cfg(all(test, feature = "agents", not(target_arch = "wasm32")))]
-pub(crate) use actions::tests::hosted;
 mod unattended;
 #[cfg(feature = "agents")]
 mod views;
@@ -274,7 +271,7 @@ use tokio::sync::Mutex as AsyncMutex;
 use web_time::SystemTime;
 
 #[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-pub(crate) use actions::ADD_MEMBER as ADD_MEMBER_ACTION;
+pub use actions::ADD_MEMBER as ADD_MEMBER_ACTION;
 pub(crate) use actions::{HostActionServer, ServiceWorkspaceActions};
 pub(crate) use admissions::DEFAULT_MAX_PRE_ADMISSIONS;
 pub use collaboration::{AddMemberRequest, CollaborationError, GovernanceCompletion, MemberPlace};
@@ -1470,7 +1467,7 @@ impl Workspaces {
     /// Make this keeper advertise its site at `origin`, as a deployment's
     /// [`crate::service::ServiceConfig::origin`] does, so the public addresses it mints for its
     /// members' pictures point there.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn advertises_at(&self, origin: &str) {
         self.inner
             .host

@@ -34,13 +34,13 @@ use tilo_actions::remote::{
     asked,
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
+use tilo_app_host::nearby_send::{
+    DeviceKind, NearbyDestination, NearbyDevice, NearbyTransferRow, Reading, TransferState,
+};
+use tilo_app_host::services::Caller as ServiceCaller;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::FOLLOW_DEADLINE;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::apps::nearby_send::{
-    DeviceKind, NearbyDestination, NearbyDevice, NearbyTransferRow, Reading, TransferState,
-};
-use tilo_workspace_service::apps::services::Caller as ServiceCaller;
 use tilo_workspace_service::content::ContentScope;
 use tilo_workspace_service::workspaces::PersonResources;
 use tilo_workspace_service::workspaces::person_workspace::devices::KeyKind;
@@ -55,7 +55,7 @@ pub const PROVIDER: &str = "so.tilo.nearby";
 /// The application whose grants decide the calls: the files being handed over are Files'.
 pub const APP: &str = tilo_app_id::apps::FILE_EXPLORER;
 /// The resource the shell reads, as the workspace service's Nearby Send host declares it.
-pub const RESOURCE: &str = tilo_workspace_service::apps::nearby_send::RESOURCE;
+pub const RESOURCE: &str = tilo_app_host::nearby_send::RESOURCE;
 
 /// Offer files to another of the person's devices.
 pub const SEND: &str = "send";

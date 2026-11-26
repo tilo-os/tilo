@@ -3,7 +3,7 @@
 //!
 //! A window's app holds the record it shows, and the session's broker knows
 //! every record each window holds, by the window instance the shell launched
-//! it for ([`tilo_workspace_service::apps::collab_broker::AppActionBroker::window_resources`]).
+//! it for ([`tilo_app_host::collab_broker::AppActionBroker::window_resources`]).
 //! A window's instance is the id of its tab — the session tells the app so
 //! when it starts it — so a note is about a tab, and every place that names a
 //! window can read it.

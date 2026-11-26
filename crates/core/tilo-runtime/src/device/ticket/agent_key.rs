@@ -40,11 +40,11 @@ impl Tickets {
 
 /// The daemon's tickets are where its agents' keys are asked for: the engine that runs the
 /// agents of other people asks with one of them for each such agent.
-impl tilo_workspace_service::agents::ticketed_keys::AgentKeyTickets for Tickets {
+impl tilo_app_host::agents::ticketed_keys::AgentKeyTickets for Tickets {
     fn ask(
         &self,
-        ask: &tilo_workspace_service::agents::ticketed_keys::AgentKeyAsk,
-    ) -> Result<tilo_workspace_service::agents::ticketed_keys::AgentKeyTicket, String> {
+        ask: &tilo_app_host::agents::ticketed_keys::AgentKeyAsk,
+    ) -> Result<tilo_app_host::agents::ticketed_keys::AgentKeyTicket, String> {
         let tab = Tab {
             device_public_key: hex::encode(ask.key),
             label: ask.label.clone(),
@@ -54,11 +54,9 @@ impl tilo_workspace_service::agents::ticketed_keys::AgentKeyTickets for Tickets 
             })),
         };
         let (ticket, certified) = self.serve_key(tab).map_err(|error| format!("{error:#}"))?;
-        Ok(
-            tilo_workspace_service::agents::ticketed_keys::AgentKeyTicket {
-                ticket: ticket.encode(),
-                certified,
-            },
-        )
+        Ok(tilo_app_host::agents::ticketed_keys::AgentKeyTicket {
+            ticket: ticket.encode(),
+            certified,
+        })
     }
 }

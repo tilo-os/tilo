@@ -28,9 +28,6 @@
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod app_serving;
-/// The apps this device serves, on the devices that have any.
-#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-pub mod apps;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod authority_epoch;
@@ -39,13 +36,9 @@ pub mod authority_epoch;
 pub mod own_device;
 // The services a person connected by their address: a server calls out
 // for them, which a page cannot.
-/// The agents a device runs for the workspaces it holds, and the events and look-rounds
-/// their turns reach.
 /// The shortcut a new agent comes with, which starts its turn.
 #[cfg(feature = "agents")]
 pub mod agent_shortcuts;
-#[cfg(all(feature = "agents", not(target_arch = "wasm32")))]
-pub mod agents;
 /// What changed in the records of the workspaces a device holds.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod change_feed;
@@ -79,7 +72,7 @@ pub mod handshake;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod history_move;
 #[cfg(not(target_arch = "wasm32"))]
-mod i18n;
+pub mod i18n;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod live;
 #[cfg(not(target_arch = "wasm32"))]
@@ -112,11 +105,6 @@ pub mod surfaces;
 pub mod timing;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tl_records;
-
-#[cfg(all(feature = "apps", not(target_arch = "wasm32")))]
-pub mod vault_actions;
-
-pub mod window_notes;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod work;

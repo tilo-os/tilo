@@ -2702,7 +2702,7 @@ impl Workspaces {
     /// # Errors
     /// The workspace is not held here, or this service serves no device.
     #[cfg(feature = "apps")]
-    pub(crate) async fn open_resources(
+    pub async fn open_resources(
         &self,
         context: &tilo_broker_core::services::ResourceRequestContext,
         query: collab_types::store::Query,

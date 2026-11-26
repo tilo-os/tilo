@@ -1102,7 +1102,7 @@ heavy = true
 [[check]]
 name = "workspace-service-features"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "for features in '' device-keys apps agents apps,agents apps,test-support agents,test-support; do\n    cargo check --locked -p tilo-workspace-service --all-targets ${features:+--features \"$features\"} || exit 1\ndone\n"
+run = "for features in '' device-keys apps agents apps,agents apps,test-support agents,test-support; do\n    cargo check --locked -p tilo-workspace-service --all-targets ${features:+--features \"$features\"} || exit 1\ndone\nfor features in '' agents files agents,files test-support agents,test-support; do\n    cargo check --locked -p tilo-app-host --all-targets ${features:+--features \"$features\"} || exit 1\ndone\n"
 
 [[check]]
 name = "android"

@@ -1,5 +1,5 @@
 //! The person's shell, as this device's daemon answers it on its dispatch
-//! (`tilo_workspace_service::apps::shell`): the desktop session of the person signed in on this
+//! (`tilo_app_host::shell`): the desktop session of the person signed in on this
 //! computer, which reaches their workspaces through the daemon and never on its own.
 //!
 //! - Who a shell is: the process the daemon started as the shell, holding the link it made for it
@@ -27,15 +27,13 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
 };
+use tilo_app_host::services::{PublishedResources, Reading, ResourceWatch};
+use tilo_app_host::shell::{ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices};
 use tilo_desktop_model::WorkspaceId;
 use tilo_peer_state::workspace_view::{
     BRANCH, CREATE, DELETE, JOIN, LIST, Listed, MEMBERSHIP, Part, part as part_resource, resource,
 };
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::apps::services::{PublishedResources, Reading, ResourceWatch};
-use tilo_workspace_service::apps::shell::{
-    ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices,
-};
 use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::standing;
@@ -50,8 +48,8 @@ use super::workspaces::ServiceWorkspaces;
 /// connections for, its live links, and what it says of what it speaks.
 pub(crate) struct Serving {
     pub identity: Arc<dyn Fn(tilo_socket::Stream) + Send + Sync>,
-    pub live: Option<tilo_workspace_service::apps::shell::LiveLinks>,
-    pub speaking: Arc<dyn tilo_workspace_service::apps::shell::ShellSpeaking>,
+    pub live: Option<tilo_app_host::shell::LiveLinks>,
+    pub speaking: Arc<dyn tilo_app_host::shell::ShellSpeaking>,
 }
 
 pub(crate) fn services(
@@ -60,7 +58,7 @@ pub(crate) fn services(
     socket: std::path::PathBuf,
     dispatching: Arc<Dispatching>,
     published: Arc<dyn PublishedResources>,
-    processes: Option<tilo_workspace_service::apps::shell::ShellProcesses>,
+    processes: Option<tilo_app_host::shell::ShellProcesses>,
     serving: Serving,
 ) -> ShellServices {
     let Serving {
@@ -701,13 +699,11 @@ impl Standing {
             }
         });
         let (written, lagged) = (tell(&self.changed), tell(&self.changed));
-        tilo_rt::app().spawn(
-            tilo_workspace_service::apps::collab_inbound::follow_admitted_writes(
-                &copies,
-                move |_| written(),
-                lagged,
-            ),
-        );
+        tilo_rt::app().spawn(tilo_app_host::collab_inbound::follow_admitted_writes(
+            &copies,
+            move |_| written(),
+            lagged,
+        ));
         {
             let taken = copies.members_held();
             let took = tell(&self.changed);
@@ -827,7 +823,7 @@ impl Standing {
 impl PublishedResources for Standing {
     fn snapshot(
         &self,
-        _caller: &tilo_workspace_service::apps::services::Caller,
+        _caller: &tilo_app_host::services::Caller,
         resource: &str,
     ) -> oneshot::Receiver<Result<Reading, String>> {
         let (answer, answered) = oneshot::channel();
@@ -838,7 +834,7 @@ impl PublishedResources for Standing {
 
     fn watch(
         &self,
-        _caller: &tilo_workspace_service::apps::services::Caller,
+        _caller: &tilo_app_host::services::Caller,
         resource: &str,
         sink: mpsc::UnboundedSender<Event>,
     ) -> Result<ResourceWatch, String> {
@@ -865,7 +861,7 @@ impl PublishedResources for Standing {
 
     fn invoke(
         &self,
-        _caller: &tilo_workspace_service::apps::services::Caller,
+        _caller: &tilo_app_host::services::Caller,
         resource: &str,
         action: &str,
         _arguments: Vec<u8>,

@@ -17,7 +17,7 @@ use super::mount;
 use tilolang_workspace::records::{Packages, member, with_tl_record};
 use tilolang_workspace::runtime::Value;
 
-use tilo_workspace_service::apps::served_notices::ServedNotices;
+use tilo_app_host::served_notices::ServedNotices;
 use tilo_workspace_service::tl_records::{Compiled, Package};
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::fixtures::{

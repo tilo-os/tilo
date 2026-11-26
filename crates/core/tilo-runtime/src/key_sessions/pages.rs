@@ -248,7 +248,7 @@ impl Inner {
             .ok_or_else(|| unavailable("this device shows no app's window on a page"))?;
         let desktop = address.app == DESKTOP;
         let app_id = if desktop {
-            tilo_workspace_service::apps::shell::SHELL_APP.to_owned()
+            tilo_app_host::shell::SHELL_APP.to_owned()
         } else {
             app_named(&dispatch, caller, &address.app)?
         };

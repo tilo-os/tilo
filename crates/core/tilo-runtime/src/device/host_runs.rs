@@ -16,8 +16,8 @@ use collab_types::WorkspaceId;
 use std::sync::{Arc, OnceLock};
 use tilo_actions::remote::Caller;
 use tilo_actions::remote::invocation_record::Invocations;
+use tilo_app_host::collab_broker::AppActionBroker;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::apps::collab_broker::AppActionBroker;
 
 /// The workspace a computer that founds its person's workspace answers: its keys' runs and
 /// its pages, all in that one workspace.
@@ -35,7 +35,7 @@ pub(super) struct HostRuns {
     /// The person's workspace, by its UUID.
     pub(super) workspace: String,
     pub(super) actor: String,
-    pub(super) policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
+    pub(super) policy_time: tilo_app_host::policy_clock::PolicyTime,
 }
 
 impl HostRuns {
@@ -136,7 +136,7 @@ pub(super) struct KeptRuns {
     pub(super) apps: Arc<crate::apps::Apps>,
     pub(super) invocations: Arc<Invocations>,
     pub(super) actor: String,
-    pub(super) policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
+    pub(super) policy_time: tilo_app_host::policy_clock::PolicyTime,
 }
 
 impl KeptRuns {
@@ -188,10 +188,7 @@ fn key_run(
     provider: &RuntimeActionProvider,
     workspace: &str,
     (key, whose): (&DeviceCert, Whose),
-    (actor, policy_time): (
-        &str,
-        &tilo_workspace_service::apps::policy_clock::PolicyTime,
-    ),
+    (actor, policy_time): (&str, &tilo_app_host::policy_clock::PolicyTime),
 ) -> Result<(crate::key_sessions::SessionHost, Caller), String> {
     let (run, caller) = match whose {
         Whose::Own => provider

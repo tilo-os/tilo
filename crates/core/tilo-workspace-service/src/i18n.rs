@@ -23,7 +23,7 @@ pub(crate) fn workspace_name(language: Option<&str>) -> String {
 
 /// The message `key` of this host's catalogue with `args`, in `language` (a
 /// BCP 47 tag; the source language for one this host has no catalogue of).
-pub(crate) fn message(language: Option<&str>, key: &str, args: &FluentArgs<'_>) -> String {
+pub fn message(language: Option<&str>, key: &str, args: &FluentArgs<'_>) -> String {
     let shipped: Vec<&str> = std::iter::once(SOURCE.0)
         .chain(TRANSLATIONS.iter().map(|(tag, _)| *tag))
         .collect();

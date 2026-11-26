@@ -737,7 +737,7 @@ impl Processes {
         self: &Arc<Self>,
         has: Box<Has>,
         origins: Arc<dyn Origins>,
-    ) -> tilo_workspace_service::apps::shell::ShellProcesses {
+    ) -> tilo_app_host::shell::ShellProcesses {
         let (processes, has) = (Arc::clone(self), Arc::<Has>::from(has));
         Arc::new(move |connection: Descriptor| {
             let (processes, has, origins) = (

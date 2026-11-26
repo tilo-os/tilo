@@ -1,0 +1,971 @@
+// Uses the real signed authority, private worker, RPC directory and original lookup above.
+include!("native_facade_tests.rs");
+fn local_host_evidence(env: &Environment) -> (tilo_actions::remote::Caller, Vec<u8>) {
+    member_device_evidence(env, 93, false)
+}
+
+/// A member device `seed` of the host's person, foreign or not, that the
+/// host's authority currently accepts.
+fn member_device_evidence(
+    env: &Environment,
+    seed: u8,
+    foreign: bool,
+) -> (tilo_actions::remote::Caller, Vec<u8>) {
+    let key = SigningKey::from_bytes(&[seed; 32]);
+    let cert = member_device_certificate(env, seed, foreign);
+    let caller =
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(&env.route.cluster_id)
+            .in_new_execution();
+    (caller, presentation(&env.route.cluster_id, &cert, &key))
+}
+
+/// The certificate of another device of `env`'s person, made from `seed` (a foreign one when
+/// `foreign`), which `env`'s host admits.
+fn member_device_certificate(
+    env: &Environment,
+    seed: u8,
+    foreign: bool,
+) -> tilo_user_identity::DeviceCert {
+    let key = SigningKey::from_bytes(&[seed; 32]);
+    let mut cert = env.cert.clone();
+    cert.device_public_key = key.verifying_key().to_bytes();
+    cert.capabilities = tilo_user_identity::DeviceCapabilities::member();
+    cert.capabilities.foreign = foreign;
+    cert.expires_at_ns = Some(cert.issued_at_ns + 6_000_000_000);
+    tilo_user_identity::sign_device_cert(&mut cert, &env.person).unwrap();
+    env.authority
+        .additional_certificates
+        .lock()
+        .unwrap()
+        .push(cert.clone());
+    cert
+}
+
+fn local_host_request(directory: bool) -> tilo_actions::remote::InvokeRequest {
+    tilo_actions::remote::InvokeRequest {
+        invocation: tilo_actions::InvocationId::new(),
+        target: tilo_actions::remote::RemoteActionTarget {
+            provider: "903".into(),
+            address: tilo_actions::ActionAddress::new("workspace:atlas", "open"),
+        },
+        argument: tilo_actions::remote::InvokeArgument::None,
+        context: None,
+        confirmation: None,
+        revision: directory.then(|| "original-r1".into()),
+        on_behalf_of: None,
+        wait_ms: None,
+        appearance: None,
+        signed: None,
+    }
+}
+
+async fn local_host_answer<T>(mut pending: tilo_actions::remote::Pending<T>) -> T {
+    tilo_test_env::within("actual broker admission completes", async {
+        loop {
+            match pending.poll_ready() {
+                tilo_actions::remote::PendingPoll::Ready(value) => return Some(value),
+                tilo_actions::remote::PendingPoll::Waiting => tokio::task::yield_now().await,
+                tilo_actions::remote::PendingPoll::Abandoned => return None,
+            }
+        }
+    })
+    .await
+    .expect("actual broker admission remains open")
+}
+
+async fn local_host_original(
+    rig: &Rig,
+    caller: &tilo_actions::remote::Caller,
+    invocation: tilo_actions::InvocationId,
+) -> std::sync::Arc<crate::collab_app_broker::OriginalInvocation> {
+    let delivered =
+        tilo_test_env::within("the admitted delivery", rig.stream.as_ref().unwrap().read())
+            .await
+            .unwrap();
+    assert_eq!(delivered.invocation_uuid, *invocation.0.as_bytes());
+    let request = crate::collab_app_broker::InvocationRequest {
+        wire_id: delivered.id,
+        invocation,
+        address: tilo_actions::ActionAddress::new(delivered.resource, delivered.action),
+        argument: delivered.argument,
+        actor: delivered.actor,
+        presence: Some(tilo_actions::PresenceId::for_execution(
+            caller.execution_id().unwrap(),
+        )),
+    };
+    let original_call =
+        (rig.originals)(&request).expect("actual worker receives original ownership");
+    original_call.check_lifecycle().unwrap();
+    original_call
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn certified_local_host_preserves_eager_and_directory_original_ownership() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for (directory, member_worker) in [(false, false), (true, false), (true, true)] {
+                let mut env = Environment::new();
+                if member_worker {
+                    // Existing ordinary-member private registration: no host promotion.
+                    env.cert.capabilities = tilo_user_identity::DeviceCapabilities::member();
+                    env.cert.capabilities.foreign = true;
+                    let person = env.person.clone();
+                    tilo_user_identity::sign_device_cert(&mut env.cert, &person).unwrap();
+                    env.authority = CurrentHost::new(
+                        &env.route,
+                        &env.cert,
+                        Some(env.origin.capture().unwrap()),
+                    );
+                }
+                let rig = Rig::new(&env).await;
+                if member_worker {
+                    let workers = rig.state.host_workers.lock().unwrap();
+                    let admitted = workers.only(903).unwrap();
+                    assert!(admitted.worker_registration.is_some());
+                }
+                if !directory {
+                    let row = directory_state("original-r1").borrow().row();
+                    rig.worker
+                        .handle
+                        .publish_actions(&[row.descriptor.unwrap()])
+                        .await
+                        .unwrap();
+                }
+                let (caller, evidence) = local_host_evidence(&env);
+                let facade =
+                    crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+                let host = facade
+                    .certified_local_action_provider(&caller, &evidence, false)
+                    .unwrap();
+                let request = local_host_request(directory);
+                let mut events = rig.state.subscribe_execution_activity();
+                let pending = host.invoke(&caller, request.clone());
+                rig.state.take_turn(&rig.directories);
+                let receipt = local_host_answer(pending).await.unwrap();
+                assert_eq!(receipt.invocation, request.invocation);
+                let event = events.try_recv().unwrap();
+                assert_eq!(event.invocation, request.invocation);
+                assert_eq!(event.execution, caller.execution_id().unwrap());
+                let retry = local_host_answer(host.invoke(&caller, request.clone()))
+                    .await
+                    .unwrap();
+                assert_eq!(retry, receipt);
+                let original_call = local_host_original(&rig, &caller, request.invocation).await;
+                no_delivery(&rig).await;
+                assert!(events.try_recv().is_err(), "retry is not new execution");
+                // Rollback cannot keep the original caller certificate alive.
+                env.control.set_wall_ns(1);
+                env.control.advance_monotonic(Duration::from_secs(7));
+                assert!(original_call.check_lifecycle().is_err());
+                assert!(host.observe(&caller, &request.invocation).is_none());
+                assert!(
+                    local_host_answer(host.invoke(&caller, request))
+                        .await
+                        .is_err()
+                );
+                no_delivery(&rig).await;
+                rig.stop().await;
+            }
+        })
+        .await;
+}
+
+/// One failed policy clock reading refuses only the calls made on it: the host admits the next
+/// call again, at a policy time no earlier than the one it admitted before the failure.
+#[tokio::test(flavor = "current_thread")]
+async fn certified_local_host_admits_again_after_a_failed_clock_reading() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let row = directory_state("original-r1").borrow().row();
+            rig.worker
+                .handle
+                .publish_actions(&[row.descriptor.unwrap()])
+                .await
+                .unwrap();
+            let (caller, evidence) = local_host_evidence(&env);
+            let facade =
+                crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+            let host = facade
+                .certified_local_action_provider(&caller, &evidence, false)
+                .unwrap();
+            let time = env.origin.capture().unwrap();
+            let call = |request: tilo_actions::remote::InvokeRequest| {
+                let pending = host.invoke(&caller, request);
+                rig.state.take_turn(&rig.directories);
+                local_host_answer(pending)
+            };
+            env.control.advance_monotonic(Duration::from_secs(1));
+            let request = local_host_request(false);
+            assert_eq!(
+                call(request.clone()).await.unwrap().invocation,
+                request.invocation
+            );
+            local_host_original(&rig, &caller, request.invocation).await;
+            let before = time.now_ns().unwrap();
+            // The monotonic clock reads behind its last reading, once.
+            env.control.rewind_monotonic(Duration::from_millis(500));
+            assert!(
+                call(local_host_request(false)).await.is_err(),
+                "a call on the failed reading is refused"
+            );
+            no_delivery(&rig).await;
+            env.control.set_wall_ns(1);
+            let request = local_host_request(false);
+            assert_eq!(
+                call(request.clone()).await.unwrap().invocation,
+                request.invocation,
+                "the next call is admitted again"
+            );
+            local_host_original(&rig, &caller, request.invocation).await;
+            assert!(
+                time.now_ns().unwrap() >= before,
+                "policy time never runs back across the failure"
+            );
+            env.origin.invalidate();
+            assert!(
+                call(local_host_request(false)).await.is_err(),
+                "a retired origin still refuses"
+            );
+            no_delivery(&rig).await;
+            rig.stop().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn certified_local_host_refuses_forged_or_rebound_admission() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let (caller, evidence) = local_host_evidence(&env);
+            let facade =
+                crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+            let host = facade
+                .certified_local_action_provider(&caller, &evidence, false)
+                .unwrap();
+            let mut forged = evidence.clone();
+            *forged.last_mut().unwrap() ^= 1;
+            assert!(
+                facade
+                    .certified_local_action_provider(&caller, &forged, false)
+                    .is_err()
+            );
+            assert!(
+                facade
+                    .certified_local_action_provider(&caller, &vec![0; 16 * 1024 + 1], false)
+                    .is_err()
+            );
+            let other_workspace = caller
+                .clone()
+                .in_workspace(uuid::Uuid::new_v4().to_string());
+            assert!(
+                facade
+                    .certified_local_action_provider(&other_workspace, &evidence, false)
+                    .is_err()
+            );
+            let other_device = tilo_actions::remote::Caller::authenticated(
+                env.cert.user_public_key,
+                env.cert.device_public_key,
+            )
+            .in_workspace(&env.route.cluster_id)
+            .in_new_execution();
+            assert!(
+                facade
+                    .certified_local_action_provider(&other_device, &evidence, false)
+                    .is_err()
+            );
+            let keyless = tilo_actions::remote::Caller::local_person(person_id_for_root(
+                env.cert.user_public_key,
+            ))
+            .in_workspace(&env.route.cluster_id)
+            .in_new_execution();
+            assert!(
+                facade
+                    .certified_local_action_provider(&keyless, &evidence, false)
+                    .is_err()
+            );
+            let other_run = caller.clone().in_new_execution();
+            assert!(
+                local_host_answer(host.invoke(&other_run, local_host_request(true)))
+                    .await
+                    .is_err()
+            );
+            let other_person = tilo_actions::remote::Caller::authenticated([3; 32], [4; 32])
+                .in_workspace(&env.route.cluster_id)
+                .in_new_execution();
+            assert!(
+                facade
+                    .certified_local_action_provider(&other_person, &evidence, false)
+                    .is_err()
+            );
+            env.authority
+                .additional_certificates
+                .lock()
+                .unwrap()
+                .clear();
+            assert!(
+                local_host_answer(host.invoke(&caller, local_host_request(true)))
+                    .await
+                    .is_err()
+            );
+            no_delivery(&rig).await;
+            rig.stop().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn certified_local_host_directory_wait_cannot_refresh_original_authority() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            for lapse in ["execution", "certificate", "clock"] {
+                let env = Environment::new();
+                let rig = Rig::new(&env).await;
+                let (caller, evidence) = local_host_evidence(&env);
+                let facade =
+                    crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+                let host = facade
+                    .certified_local_action_provider(&caller, &evidence, false)
+                    .unwrap();
+                let mut pending = host.invoke(&caller, local_host_request(true));
+                assert!(matches!(
+                    pending.poll_ready(),
+                    tilo_actions::remote::PendingPoll::Waiting
+                ));
+                match lapse {
+                    "execution" => caller.retire_execution(),
+                    "certificate" => env
+                        .authority
+                        .additional_certificates
+                        .lock()
+                        .unwrap()
+                        .clear(),
+                    "clock" => env.origin.invalidate(),
+                    _ => unreachable!(),
+                }
+                rig.state.take_turn(&rig.directories);
+                assert!(
+                    local_host_answer(pending).await.is_err(),
+                    "{lapse} cannot rebind queued work"
+                );
+                no_delivery(&rig).await;
+                rig.stop().await;
+            }
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn execution_uuid_requires_stable_delivery_and_preserves_unscoped_requests() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let row = directory_state("original-r1").borrow().row();
+            rig.worker
+                .handle
+                .publish_actions(&[row.descriptor.unwrap()])
+                .await
+                .unwrap();
+            let (caller, _) = local_host_evidence(&env);
+            let mut events = rig.state.subscribe_execution_activity();
+            let request = local_host_request(false);
+            let receipt = local_host_answer(rig.state.action_invoke(&caller, None, None, &request))
+                .await
+                .unwrap();
+            let delivered = tilo_test_env::within(
+                "the scoped stable delivery",
+                rig.stream.as_ref().unwrap().read(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(delivered.invocation_uuid, *request.invocation.0.as_bytes());
+            assert_eq!(receipt.invocation, request.invocation);
+            assert_eq!(events.try_recv().unwrap().invocation, request.invocation);
+            assert_eq!(
+                local_host_answer(rig.state.action_invoke(&caller, None, None, &request))
+                    .await
+                    .unwrap(),
+                receipt
+            );
+            no_delivery(&rig).await;
+            let legacy = tilo_actions::remote::Caller::authenticated(
+                env.cert.user_public_key,
+                *caller.device_public_key().unwrap(),
+            )
+            .in_workspace(&env.route.cluster_id);
+            let legacy_request = local_host_request(false);
+            let legacy_receipt =
+                local_host_answer(
+                    rig.state
+                        .action_invoke(&legacy, None, None, &legacy_request),
+                )
+                .await
+                .unwrap();
+            let delivered = tilo_test_env::within(
+                "the unscoped legacy delivery",
+                rig.stream.as_ref().unwrap().read(),
+            )
+            .await
+            .unwrap();
+            assert_eq!(
+                delivered.invocation_uuid,
+                *legacy_request.invocation.0.as_bytes(),
+                "an explicit request identity is independent of execution authority"
+            );
+            assert_eq!(legacy_receipt.invocation, legacy_request.invocation);
+            assert_ne!(
+                legacy_request.invocation.0.as_u128(),
+                u128::from(delivered.id)
+            );
+            // A legacy subscriber can still complete using its numeric wire
+            // handle. The broker maps it to the original lifecycle identity.
+            rig.worker
+                .handle
+                .complete_invocation(delivered.id, "", "")
+                .await
+                .unwrap();
+            assert!(matches!(
+                rig.state.invocation_status(delivered.id),
+                Some(tilo_actions::InvocationUpdate::Succeeded { invocation, .. })
+                    if invocation == legacy_request.invocation
+            ));
+            rig.stop().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn certified_local_host_requires_a_registered_policy_origin() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut env = Environment::new();
+            env.authority = CurrentHost::new(&env.route, &env.cert, None);
+            let (caller, evidence) = local_host_evidence(&env);
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _) = AppBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                env.publisher.clone(),
+                Some(env.membership.clone()),
+                None,
+            );
+            assert!(
+                state
+                    .certificate_authority
+                    .set(env.authority.clone())
+                    .is_ok()
+            );
+            let error = state
+                .certified_local_action_provider(&caller, &evidence, false)
+                .err()
+                .expect("a legacy wall clock is not original ownership");
+            assert_eq!(error, "original policy clock unavailable");
+            state.stop();
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn retired_execution_cannot_receive_a_queued_directory_query() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let (caller, _) = local_host_evidence(&env);
+            let query = tilo_actions::remote::CatalogueQuery {
+                provider: Some("903".into()),
+                ..Default::default()
+            };
+            let mut answer = rig.state.action_query(&caller, &query);
+            assert!(matches!(
+                answer.poll_ready(),
+                tilo_actions::remote::PendingPoll::Waiting
+            ));
+            caller.retire_execution();
+            rig.state.take_turn(&rig.directories);
+            let error = local_host_answer(answer).await.unwrap_err();
+            assert!(error.to_string().contains("execution session ended"));
+            no_delivery(&rig).await;
+            rig.stop().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_continuing_certified_caller_keeps_its_foreign_device_cap() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            use crate::collab_app_broker::{
+                ContinuingCaller, published_invocation::InvocationCaller,
+            };
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let workspace = env.route.cluster_id.clone();
+            for (seed, foreign, restricted) in [(94, true, false), (95, false, true)] {
+                let (_, evidence) = member_device_evidence(&env, seed, foreign);
+                let verified = rig
+                    .state
+                    .verify_action_caller(&workspace, &evidence)
+                    .unwrap();
+                assert_eq!(verified.admitted.broker_actor().capped, foreign);
+                let continued = ContinuingCaller::from_origin(&InvocationCaller::Certified {
+                    caller: Box::new(verified),
+                    foreign_restriction: restricted,
+                })
+                .current(&rig.state)
+                .expect("the caller still verifies");
+                assert!(
+                    rig.state.caller_actor(&continued).capped,
+                    "a foreign device (certified {foreign}, restricted {restricted}) stays capped"
+                );
+            }
+            // The control: a device that is not foreign is not capped.
+            let (_, evidence) = member_device_evidence(&env, 96, false);
+            let verified = rig
+                .state
+                .verify_action_caller(&workspace, &evidence)
+                .unwrap();
+            let continued = ContinuingCaller::from_origin(&InvocationCaller::Certified {
+                caller: Box::new(verified),
+                foreign_restriction: false,
+            })
+            .current(&rig.state)
+            .unwrap();
+            assert!(!rig.state.caller_actor(&continued).capped);
+            rig.stop().await;
+        })
+        .await;
+}
+
+/// The certified local API's effect edits are admitted for its caller only
+/// while that caller's certificate still verifies: revoked mid-run, the
+/// running effect continues nothing, as the caller's own invoke would fail.
+#[tokio::test(flavor = "current_thread")]
+async fn a_certified_local_continuation_ends_with_its_certificate() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let row = directory_state("original-r1").borrow().row();
+            rig.worker
+                .handle
+                .publish_actions(&[row.descriptor.unwrap()])
+                .await
+                .unwrap();
+            let (caller, evidence) = local_host_evidence(&env);
+            let facade =
+                crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+            let host = facade
+                .certified_local_action_provider(&caller, &evidence, false)
+                .unwrap();
+            let request = local_host_request(false);
+            local_host_answer(host.invoke(&caller, request.clone()))
+                .await
+                .unwrap();
+            let _original_call = local_host_original(&rig, &caller, request.invocation).await;
+            let continued = rig
+                .state
+                .continuing_caller(903, request.invocation)
+                .expect("the running invocation continues for its caller");
+            assert_eq!(continued.execution_id(), caller.execution_id());
+            env.authority
+                .additional_certificates
+                .lock()
+                .unwrap()
+                .clear();
+            assert!(
+                rig.state
+                    .continuing_caller(903, request.invocation)
+                    .is_none(),
+                "a revoked certificate continues nothing"
+            );
+            rig.stop().await;
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn certified_person_context_uses_signed_owner_device_and_current_execution() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut env = Environment::new();
+            env.rehome_personal();
+            env.authority =
+                CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
+            let fanout = Arc::new(FanoutState::new());
+            let (state, _) = AppBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                env.publisher.clone(),
+                Some(env.membership.clone()),
+                None,
+            );
+            assert!(
+                state
+                    .certificate_authority
+                    .set(env.authority.clone())
+                    .is_ok()
+            );
+            let (caller, evidence) = local_host_evidence(&env);
+            let context = state.certified_person_context(&caller, &evidence).unwrap();
+            assert_eq!(context.actor(), hex::encode(env.cert.user_public_key));
+            assert_eq!(
+                context.device(),
+                hex::encode(caller.device_public_key().unwrap())
+            );
+            context.revalidate().unwrap();
+            let forged = tilo_actions::remote::Caller::local_person(context.actor())
+                .in_workspace(&env.route.cluster_id)
+                .in_new_execution();
+            assert!(state.certified_person_context(&forged, &evidence).is_err());
+            assert!(
+                state
+                    .certified_person_context(&caller.clone().from_foreign_device(true), &evidence)
+                    .is_err()
+            );
+            caller.retire_execution();
+            assert!(context.revalidate().is_err());
+            let (fresh, evidence) = member_device_evidence(&env, 94, false);
+            let context = state.certified_person_context(&fresh, &evidence).unwrap();
+            context.revalidate().unwrap();
+            env.authority
+                .additional_certificates
+                .lock()
+                .unwrap()
+                .clear();
+            assert!(context.revalidate().is_err());
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn certified_person_context_refuses_other_workspaces_and_expired_original_policy() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let mut env = Environment::new();
+            env.rehome(&uuid::Uuid::new_v4().to_string());
+            env.authority =
+                CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
+
+            let fanout = Arc::new(FanoutState::new());
+            let (ordinary, _) = AppBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                env.publisher.clone(),
+                Some(env.membership.clone()),
+                None,
+            );
+            assert!(
+                ordinary
+                    .certificate_authority
+                    .set(env.authority.clone())
+                    .is_ok()
+            );
+            let (caller, evidence) = local_host_evidence(&env);
+            ordinary
+                .certified_local_action_provider(&caller, &evidence, false)
+                .unwrap();
+            assert!(
+                ordinary
+                    .certified_person_context(&caller, &evidence)
+                    .is_err()
+            );
+            env.rehome_personal();
+            env.authority =
+                CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
+            let (state, _) = AppBrokerState::new(
+                &fanout,
+                Arc::new(Mutex::new(BrokerChannels::default())),
+                env.publisher.clone(),
+                Some(env.membership.clone()),
+                None,
+            );
+            assert!(
+                state
+                    .certificate_authority
+                    .set(env.authority.clone())
+                    .is_ok()
+            );
+            let (caller, evidence) = member_device_evidence(&env, 95, false);
+            let context = state.certified_person_context(&caller, &evidence).unwrap();
+            context.revalidate().unwrap();
+            env.control.advance_monotonic(Duration::from_secs(7));
+            assert!(context.revalidate().is_err());
+            assert!(state.certified_person_context(&caller, &evidence).is_err());
+        })
+        .await;
+}
+
+/// Opening verifies the presentation once; one listing and one invocation
+/// admission each verify it once more, the invocation's dispatch reusing the
+/// admission its own check just made. Anything later verifies again, so a
+/// revoked device still fails the very next call.
+#[tokio::test(flavor = "current_thread")]
+async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
+    use crate::collab_app_broker::admission_memo::verifications;
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let row = directory_state("original-r1").borrow().row();
+            rig.worker
+                .handle
+                .publish_actions(&[row.descriptor.unwrap()])
+                .await
+                .unwrap();
+            let (caller, evidence) = local_host_evidence(&env);
+            let facade =
+                crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+
+            let before = verifications();
+            let host = facade
+                .certified_local_action_provider(&caller, &evidence, false)
+                .unwrap();
+            assert_eq!(
+                verifications().saturating_sub(before),
+                1,
+                "opening verifies once"
+            );
+
+            let before = verifications();
+            let page = local_host_answer(host.query(
+                &caller,
+                tilo_actions::remote::CatalogueQuery {
+                    max_results: 0,
+                    ..tilo_actions::remote::CatalogueQuery::default()
+                },
+            ))
+            .await
+            .unwrap();
+            assert!(!page.revision.is_empty());
+            assert_eq!(
+                verifications().saturating_sub(before),
+                1,
+                "a listing verifies once"
+            );
+
+            let request = local_host_request(false);
+            let before = verifications();
+            let pending = host.invoke(&caller, request.clone());
+            assert_eq!(
+                verifications(),
+                before,
+                "UI enqueue retains inert ownership without certificate work"
+            );
+            let receipt = local_host_answer(pending).await.unwrap();
+            assert_eq!(
+                verifications().saturating_sub(before),
+                1,
+                "the queued invocation admission and its dispatch verify once"
+            );
+            assert_eq!(receipt.invocation, request.invocation);
+            let _original_call = local_host_original(&rig, &caller, request.invocation).await;
+
+            let before = verifications();
+            local_host_answer(host.query(
+                &caller,
+                tilo_actions::remote::CatalogueQuery {
+                    max_results: 0,
+                    ..tilo_actions::remote::CatalogueQuery::default()
+                },
+            ))
+            .await
+            .unwrap();
+            assert_eq!(
+                verifications().saturating_sub(before),
+                1,
+                "a later check verifies again"
+            );
+
+            env.authority
+                .additional_certificates
+                .lock()
+                .unwrap()
+                .clear();
+            assert!(
+                local_host_answer(host.invoke(&caller, local_host_request(false)))
+                    .await
+                    .is_err(),
+                "an unenrolled device fails the very next invocation"
+            );
+            assert!(
+                facade
+                    .certified_local_action_provider(
+                        &caller.clone().in_new_execution(),
+                        &evidence,
+                        false
+                    )
+                    .is_err(),
+                "and the very next open"
+            );
+            no_delivery(&rig).await;
+            rig.stop().await;
+        })
+        .await;
+}
+
+/// The real signer waits for a separate UI thread to perform its ordinary
+/// lookup, cancellation and enqueue calls. A log held across signing would
+/// deadlock that thread before it can acknowledge the check.
+#[tokio::test(flavor = "current_thread")]
+async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let row = directory_state("original-r1").borrow().row();
+            rig.worker
+                .handle
+                .publish_actions(&[row.descriptor.unwrap()])
+                .await
+                .unwrap();
+            let (caller, evidence) = local_host_evidence(&env);
+            let facade =
+                crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+            let host = facade
+                .certified_local_action_provider(&caller, &evidence, false)
+                .unwrap();
+            let request = local_host_request(false);
+            let mut refused = request.clone();
+            refused.target.address.action = "missing".into();
+            assert!(
+                local_host_answer(host.invoke(&caller, refused))
+                    .await
+                    .is_err(),
+                "failed admission must abandon its UUID reservation"
+            );
+            let fresh = local_host_request(false);
+            let state = rig.state.clone();
+            let ui_caller = caller.clone();
+            let ui_request = request.clone();
+            let ui_fresh = fresh.clone();
+            let (send, receive) = std::sync::mpsc::channel();
+            let (done, completed) = std::sync::mpsc::channel();
+            let ui = std::thread::spawn(move || {
+                let facade =
+                    crate::collab_broker::AppActionBroker::from_state_for_test(state.clone());
+                let host = facade
+                    .certified_local_action_provider(&ui_caller, &evidence, false)
+                    .unwrap();
+                receive.recv().unwrap();
+                assert!(
+                    state
+                        .remote_job(&ui_caller, &ui_request.invocation)
+                        .is_none()
+                );
+                assert!(matches!(
+                    host.cancel(&ui_caller, &ui_request.invocation).poll_ready(),
+                    tilo_actions::remote::PendingPoll::Ready(Err(
+                        tilo_actions::remote::ActionCallError::UnknownInvocation
+                    ))
+                ));
+                // Keep both pending answers alive: the duplicate must reuse the
+                // eventual job; the fresh UUID must enqueue without waiting.
+                let retry = host.invoke(&ui_caller, ui_request);
+                let next = host.invoke(&ui_caller, ui_fresh);
+                done.send((retry, next)).unwrap();
+            });
+            let (answers, queued) = std::sync::mpsc::channel();
+            *tilo_invocation_journal::BEFORE_SIGN.lock() = Some(Box::new(move || {
+                send.send(()).unwrap();
+                let pending = tilo_test_env::recv(
+                    "UI lookup/cancel/enqueue to finish while signing is stalled",
+                    &completed,
+                );
+                answers.send(pending).unwrap();
+            }));
+            let original = local_host_answer(host.invoke(&caller, request.clone()))
+                .await
+                .unwrap();
+            let (retry, next) = queued.recv().unwrap();
+            ui.join().unwrap();
+            // The duplicate was enqueued while the first admission was still
+            // signing: the broker may tell it to ask again, and asking again
+            // then answers with the same invocation.
+            let retried = match local_host_answer(retry).await {
+                Ok(retried) => retried,
+                Err(error) => {
+                    assert!(
+                        matches!(&error, tilo_actions::remote::ActionCallError::Unanswered),
+                        "{error:?}"
+                    );
+                    local_host_answer(host.invoke(&caller, request.clone()))
+                        .await
+                        .unwrap()
+                }
+            };
+            assert_eq!(original, retried);
+            assert_eq!(
+                local_host_answer(next).await.unwrap().invocation,
+                fresh.invocation
+            );
+            let _first = local_host_original(&rig, &caller, request.invocation).await;
+            let _second = local_host_original(&rig, &caller, fresh.invocation).await;
+            no_delivery(&rig).await;
+            assert!(rig.state.remote_job(&caller, &request.invocation).is_some());
+            assert!(rig.state.remote_job(&caller, &fresh.invocation).is_some());
+            rig.stop().await;
+        })
+        .await;
+}
+
+/// A tampered proof is never mistaken for the one that verified before.
+#[tokio::test(flavor = "current_thread")]
+async fn certified_local_host_remembers_only_the_exact_verified_proof() {
+    tokio::task::LocalSet::new()
+        .run_until(async {
+            let env = Environment::new();
+            let rig = Rig::new(&env).await;
+            let (caller, evidence) = local_host_evidence(&env);
+            let facade =
+                crate::collab_broker::AppActionBroker::from_state_for_test(rig.state.clone());
+            for _ in 0..2 {
+                facade
+                    .certified_local_action_provider(
+                        &caller.clone().in_new_execution(),
+                        &evidence,
+                        false,
+                    )
+                    .unwrap();
+            }
+            let presentation = runtime_collab::CertifiedJoinIdentity::decode(&evidence)
+                .unwrap()
+                .unwrap();
+            for byte in [0, 31, 63] {
+                let mut forged = presentation.clone();
+                forged.proof[byte] ^= 0x01;
+                assert!(
+                    facade
+                        .certified_local_action_provider(
+                            &caller.clone().in_new_execution(),
+                            &forged.encode().unwrap(),
+                            false,
+                        )
+                        .is_err(),
+                    "proof byte {byte} flipped"
+                );
+            }
+            let mut other_workspace = presentation;
+            other_workspace.workspace_id = uuid::Uuid::new_v4().to_string();
+            assert!(
+                facade
+                    .certified_local_action_provider(
+                        &caller
+                            .clone()
+                            .in_workspace(&other_workspace.workspace_id)
+                            .in_new_execution(),
+                        &other_workspace.encode().unwrap(),
+                        false,
+                    )
+                    .is_err(),
+                "a proof for one workspace never admits another"
+            );
+            rig.stop().await;
+        })
+        .await;
+}

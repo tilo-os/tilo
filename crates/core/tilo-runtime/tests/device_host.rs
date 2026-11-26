@@ -893,7 +893,7 @@ struct TestKeys {
     made: Mutex<Vec<([u8; 32], DeviceCert, SigningKey)>>,
 }
 
-impl tilo_workspace_service::agents::agent_keys::AgentKeys for TestKeys {
+impl tilo_app_host::agents::agent_keys::AgentKeys for TestKeys {
     fn grant(
         &self,
         workspace: tilo_server_protocol::WorkspaceId,

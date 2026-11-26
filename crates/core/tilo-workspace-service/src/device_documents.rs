@@ -40,7 +40,7 @@ impl Held {
 /// Wait for `future` with this thread, or on a thread of its own where this one already drives a
 /// runtime: what a read that must not jam its caller's executor waits with.
 #[cfg(not(target_arch = "wasm32"))]
-pub(crate) fn on_its_own<F>(future: F) -> F::Output
+pub fn on_its_own<F>(future: F) -> F::Output
 where
     F: std::future::Future + Send,
     F::Output: Send,
@@ -56,7 +56,7 @@ where
 
 /// Wait for `future` with this thread: a page drives no runtime beside it.
 #[cfg(target_arch = "wasm32")]
-pub(crate) fn on_its_own<F>(future: F) -> F::Output
+pub fn on_its_own<F>(future: F) -> F::Output
 where
     F: std::future::Future,
 {

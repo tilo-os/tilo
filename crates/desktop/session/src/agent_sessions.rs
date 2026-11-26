@@ -308,16 +308,14 @@ impl AgentSessions {
 
     /// Every admitted session while it goes, with what its person allowed it, as the device's
     /// daemon is handed them.
-    pub(crate) fn seat_sessions(
-        &self,
-    ) -> Vec<tilo_workspace_service::apps::seat::SeatAgentSession> {
+    pub(crate) fn seat_sessions(&self) -> Vec<tilo_app_host::seat::SeatAgentSession> {
         self.inner
             .lock_recover()
             .sessions
             .iter()
             .filter(|(_, connection)| !connection.agent.is_empty())
             .map(
-                |(session, connection)| tilo_workspace_service::apps::seat::SeatAgentSession {
+                |(session, connection)| tilo_app_host::seat::SeatAgentSession {
                     session: session.0.clone(),
                     workspace: connection.workspace.clone(),
                     agent: connection.agent.clone(),

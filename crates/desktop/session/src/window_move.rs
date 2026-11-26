@@ -908,7 +908,7 @@ verbs = [
                     .map(|(workspace, owner)| (workspace.as_str(), *owner)),
                 Some(std::sync::Arc::clone(&launches)
                     as std::sync::Arc<
-                        dyn tilo_workspace_service::apps::services::LauncherServices,
+                        dyn tilo_app_host::services::LauncherServices,
                     >),
             );
             let control = home.home().join("app.sock");

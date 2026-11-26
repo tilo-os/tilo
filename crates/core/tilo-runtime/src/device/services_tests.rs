@@ -5,9 +5,9 @@ use std::{
     time::{Duration, Instant},
 };
 use tilo_actions::remote::{InvokeArgument, PendingPoll, RemoteActionTarget};
+use tilo_app_host::services::WorkspaceGrants;
 use tilo_desktop_model::WorkspaceId;
 use tilo_test_env::SpawnUnderEnvLock as _;
-use tilo_workspace_service::apps::services::WorkspaceGrants;
 use tilo_workspace_service::workspaces::app_invocations::AppInvocations as _;
 
 /// The test whose phase runs in a fresh process; libtest selects it by this
@@ -21,15 +21,11 @@ const APP_HELPER: &str = "TILO_DAEMON_APP_HELPER";
 struct FixtureAuthority {
     workspace: uuid::Uuid,
     cert: tilo_user_identity::DeviceCert,
-    time: tilo_workspace_service::apps::policy_clock::PolicyTime,
+    time: tilo_app_host::policy_clock::PolicyTime,
 }
 
-impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority
-    for FixtureAuthority
-{
-    fn policy_time(
-        &self,
-    ) -> Result<Option<tilo_workspace_service::apps::policy_clock::PolicyTime>, String> {
+impl tilo_app_host::certificate_authority::CertificateAuthority for FixtureAuthority {
+    fn policy_time(&self) -> Result<Option<tilo_app_host::policy_clock::PolicyTime>, String> {
         self.time.now_ns().map_err(|error| error.to_string())?;
         Ok(Some(self.time.clone()))
     }
@@ -51,7 +47,7 @@ impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority
         &self,
         workspace: uuid::Uuid,
         cert: &tilo_user_identity::DeviceCert,
-        time: &tilo_workspace_service::apps::policy_clock::PolicyTime,
+        time: &tilo_app_host::policy_clock::PolicyTime,
     ) -> Result<(), String> {
         if !time.same_origin(&self.time) {
             return Err("runtime origin changed".into());
@@ -115,7 +111,7 @@ impl tilo_actions::remote::ActionProvider for AsksFirst {
 )]
 #[allow(clippy::too_many_lines, reason = "one end-to-end ownership scenario")]
 async fn runtime_invocation_ownership_survives_device_normalization() {
-    use tilo_workspace_service::apps::{
+    use tilo_app_host::{
         collab_app_broker::{AppBrokerState, PublishedAction, PublishedInput, PublishedSurface},
         collab_broker::CrdtRoute,
         test_support::{Workspace, WorkspaceId, WorkspaceTree},
@@ -132,7 +128,7 @@ async fn runtime_invocation_ownership_survives_device_normalization() {
 
     let placed = WorkspaceId::new();
     let (workspaces, directory) = ServiceWorkspaces::test_hosting(placed).await;
-    let actor = tilo_workspace_service::apps::collab_app_broker::person_id_for_root(
+    let actor = tilo_app_host::collab_app_broker::person_id_for_root(
         workspaces.device_cert().user_public_key,
     );
     let mut workspace = Workspace::new(placed, "Execution isolation");
@@ -929,7 +925,7 @@ tilo_test_env::scenario! {
 
     phase a_certificate_holds_where_the_member_list_admits_its_device;
     {
-        use tilo_workspace_service::apps::certificate_authority::CertificateAuthority as _;
+        use tilo_app_host::certificate_authority::CertificateAuthority as _;
         let placed = WorkspaceId::new();
         #[allow(
             clippy::significant_drop_tightening,
@@ -938,7 +934,7 @@ tilo_test_env::scenario! {
         let (workspaces, _directory) = tilo_rt::app()
             .block_on(ServiceWorkspaces::test_hosting(placed))
             .unwrap();
-        let origin = tilo_workspace_service::apps::policy_clock::OwnerPolicyClock::new()
+        let origin = tilo_app_host::policy_clock::OwnerPolicyClock::new()
             .unwrap()
             .new_origin();
         let certificates = Certificates {
@@ -985,9 +981,9 @@ tilo_test_env::scenario! {
 
     phase runtime_original_policy_time_cannot_survive_origin_retirement;
     {
-        use tilo_workspace_service::apps::certificate_authority::CertificateAuthority as _;
+        use tilo_app_host::certificate_authority::CertificateAuthority as _;
         let origin = Arc::new(
-            tilo_workspace_service::apps::policy_clock::OwnerPolicyClock::new()
+            tilo_app_host::policy_clock::OwnerPolicyClock::new()
                 .unwrap()
                 .new_origin(),
         );
@@ -1000,7 +996,7 @@ tilo_test_env::scenario! {
         assert!(certificates.policy_time().is_err());
         drop(certificates);
         assert!(retained.now_ns().is_err());
-        let replacement = tilo_workspace_service::apps::policy_clock::OwnerPolicyClock::new()
+        let replacement = tilo_app_host::policy_clock::OwnerPolicyClock::new()
             .unwrap()
             .new_origin();
         assert!(!retained.same_origin(&replacement.capture().unwrap()));
@@ -1417,7 +1413,7 @@ fn a_shell_links_secret_admits_one_connection() {
     let socket = session.broker.app_socket().to_path_buf();
     let secret = session
         .shell_links()
-        .make(tilo_workspace_service::apps::shell::ShellCaller {
+        .make(tilo_app_host::shell::ShellCaller {
             person: session.workspaces.device_cert().user_public_key,
         });
     let runtime = tokio::runtime::Builder::new_current_thread()
@@ -1476,7 +1472,7 @@ fn the_desktop_keeps_what_its_next_session_opens_on_as_the_devices_records() {
     let desktop = || {
         let secret = session
             .shell_links()
-            .make(tilo_workspace_service::apps::shell::ShellCaller { person });
+            .make(tilo_app_host::shell::ShellCaller { person });
         let link = runtime.block_on(async {
             let mut stream = tokio::net::UnixStream::connect(&socket).await.unwrap();
             stream.write_all(SHELL_MAGIC).await.unwrap();
@@ -1590,7 +1586,7 @@ fn the_desktop_keeps_what_its_device_says_of_itself_in_the_devices_record() {
     );
     let secret = session
         .shell_links()
-        .make(tilo_workspace_service::apps::shell::ShellCaller {
+        .make(tilo_app_host::shell::ShellCaller {
             person: cert.user_public_key,
         });
     let link = runtime.block_on(async {
@@ -3310,7 +3306,7 @@ fn a_secret_argument_is_kept_out_of_every_invocation_record() {
     // What the device was handed at its start: the one decision every record of a call reads.
     // The vault's own actions are served where the vault is, once the person's agents run.
     let _ = tilo_rt::app().block_on(async {
-        tilo_workspace_service::vault_actions::register(daemon.workspaces());
+        tilo_app_host::vault_actions::register(daemon.workspaces());
     });
     let secrets = daemon.workspaces().secret_parameters();
     assert_eq!(

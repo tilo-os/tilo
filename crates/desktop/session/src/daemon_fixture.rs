@@ -13,16 +13,14 @@
 use std::os::unix::fs::PermissionsExt as _;
 use std::sync::Arc;
 
-use tilo_desktop_model::WorkspaceId;
-use tilo_peer_state::workspace_documents::{DeviceDocuments, DeviceWrites};
-use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::apps::services::{
+use tilo_app_host::services::{
     AuthenticatedApplicationLaunch, LaunchPlace, LaunchableApplication, LauncherServices,
     ProcessServices,
 };
-use tilo_workspace_service::apps::shell::{
-    ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices,
-};
+use tilo_app_host::shell::{ShellActions, ShellCaller, ShellDispatch, ShellLinks, ShellServices};
+use tilo_desktop_model::WorkspaceId;
+use tilo_peer_state::workspace_documents::{DeviceDocuments, DeviceWrites};
+use tilo_user_identity::DeviceCert;
 use tilo_workspace_service::device_documents::{ServiceDocuments, ServiceWrites};
 use tilo_workspace_service::workspaces::Workspaces;
 use tilo_workspace_service::workspaces::fixtures::{
@@ -37,7 +35,7 @@ use crate::workspace_view::WorkspaceView;
 /// own certificate in every workspace it holds, and admits no other.
 struct ThisDevice(DeviceCert);
 
-impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority for ThisDevice {
+impl tilo_app_host::certificate_authority::CertificateAuthority for ThisDevice {
     fn authorize(&self, _: uuid::Uuid, certificate: &DeviceCert) -> Result<(), String> {
         (certificate == &self.0)
             .then_some(())
@@ -53,7 +51,7 @@ impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority f
 /// answers the session on.
 pub(crate) struct TestDaemon {
     host: TestHost,
-    _dispatch: tilo_workspace_service::apps::collab_broker::BrokerHandle,
+    _dispatch: tilo_app_host::collab_broker::BrokerHandle,
     key: ed25519_dalek::SigningKey,
     cert: DeviceCert,
     reads: Arc<dyn DeviceDocuments>,
@@ -210,7 +208,7 @@ impl TestDaemon {
             // authority answers for each workspace.
             native_certificates: launcher_present.then(|| {
                 Arc::new(ThisDevice(cert.clone()))
-                    as Arc<dyn tilo_workspace_service::apps::certificate_authority::CertificateAuthority>
+                    as Arc<dyn tilo_app_host::certificate_authority::CertificateAuthority>
             }),
             launcher,
             ..ProcessServices::default()
@@ -218,17 +216,16 @@ impl TestDaemon {
         // The apps it admits are checked against the workspaces it holds, as a device's daemon
         // checks them.
         let membership = launcher_present.then(|| {
-            Arc::new(workspaces.clone())
-                as tilo_workspace_service::apps::services::WorkspaceAuthorityHandle
+            Arc::new(workspaces.clone()) as tilo_app_host::services::WorkspaceAuthorityHandle
         });
-        let fanout = Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new());
+        let fanout = Arc::new(tilo_app_host::collab_broker::FanoutState::new());
         tilo_runtime::device::provide_window_steps(Arc::clone(&fanout), &workspaces.providers());
         let dispatch = runtime
             .block_on(async {
-                tilo_workspace_service::apps::collab_broker::spawn_with_services(
+                tilo_app_host::collab_broker::spawn_with_services(
                     socket.clone(),
                     membership,
-                    tilo_workspace_service::apps::collab_outbound::PeerPublisher::disabled(),
+                    tilo_app_host::collab_outbound::PeerPublisher::disabled(),
                     None,
                     services,
                     Arc::default(),
@@ -447,8 +444,8 @@ impl TestDaemon {
     }
 
     /// The seat as the daemon's broker reaches it, while a shell serves it.
-    pub(crate) fn seat(&self) -> tilo_workspace_service::apps::seat::Seat {
-        tilo_workspace_service::apps::seat::Seat::new(
+    pub(crate) fn seat(&self) -> tilo_app_host::seat::Seat {
+        tilo_app_host::seat::Seat::new(
             self.workspaces().providers(),
             tilo_rt::app().handle().clone(),
         )

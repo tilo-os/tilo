@@ -10,7 +10,7 @@ use tilo_service::Started;
 use tilo_session_core::surfaces::{Published, Surfaces};
 use ui::host_operation::ResourceOperationStart;
 
-use tilo_workspace_service::apps::collab_broker::FanoutState;
+use tilo_app_host::collab_broker::FanoutState;
 
 use crate::app_wire::AppWire;
 use crate::{
@@ -142,7 +142,7 @@ impl Published for ServiceSurface {
 pub(crate) struct Collaboration<'a> {
     pub sync: Option<&'a crate::sync::Client>,
     /// The shell link the device's daemon handed this session, or why it has none.
-    pub daemon: tilo_workspace_service::apps::services::DeviceDaemon,
+    pub daemon: tilo_app_host::services::DeviceDaemon,
     /// How the person's workspaces stand, as the device's daemon publishes them, and the actions
     /// that change them.
     pub view: Option<std::sync::Arc<crate::workspace_view::WorkspaceView>>,
@@ -342,8 +342,7 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
     let display_control = settings.as_ref().map(|source| {
         std::sync::Arc::new(crate::display_control::DisplayControl::native(
             std::sync::Arc::clone(source),
-        ))
-            as std::sync::Arc<dyn tilo_workspace_service::apps::services::DisplayControlServices>
+        )) as std::sync::Arc<dyn tilo_app_host::services::DisplayControlServices>
     });
     crate::seat_services::SeatParts {
         #[cfg(target_os = "linux")]
@@ -354,7 +353,7 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
         audio_output: None,
         native_media: calls_service.map(|media| {
             std::sync::Arc::new(media.clone())
-                as std::sync::Arc<dyn tilo_workspace_service::apps::services::NativeMediaServices>
+                as std::sync::Arc<dyn tilo_app_host::services::NativeMediaServices>
         }),
         continuations: options.launches.notes(),
         records,
@@ -374,9 +373,7 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
                     tilo_rt::app().handle().clone(),
                 ),
             ))
-                as std::sync::Arc<
-                    dyn tilo_workspace_service::apps::services::BrowserServiceSessionServices,
-                >
+                as std::sync::Arc<dyn tilo_app_host::services::BrowserServiceSessionServices>
         }),
         file_clipboard: Some(std::sync::Arc::clone(file_clipboard)),
         agents,

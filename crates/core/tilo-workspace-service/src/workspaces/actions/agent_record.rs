@@ -101,7 +101,7 @@ fn delete_params() -> Vec<ActionParam> {
 }
 
 /// Whether `operation` is one of the agents' actions.
-pub(super) fn is_agents_operation(operation: &str) -> bool {
+pub(in crate::workspaces) fn is_agents_operation(operation: &str) -> bool {
     VERBS.iter().any(|verb| verb.id == operation)
 }
 
@@ -411,7 +411,7 @@ impl Workspaces {
     /// The workspace's grants do not let this device's person change its agents, or the record
     /// did not take it.
     #[cfg(feature = "agents")]
-    pub(crate) async fn wait_to_run_agent(
+    pub async fn wait_to_run_agent(
         &self,
         workspace: &str,
         agent: &str,
@@ -433,7 +433,7 @@ impl Workspaces {
     /// # Errors
     /// As [`Self::wait_to_run_agent`], or the certificate does not encode.
     #[cfg(feature = "agents")]
-    pub(crate) async fn run_agent_on(
+    pub async fn run_agent_on(
         &self,
         workspace: &str,
         agent: &str,

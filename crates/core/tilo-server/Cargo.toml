@@ -19,7 +19,7 @@ path = "src/lib.rs"
 test-support = ["tilo-workspace-service/test-support"]
 # The workspaces' records and roster agents on the host (the daemon's `agents` build):
 # tilo-agent-session, which links every web app, as the app-serving protocol.
-agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/files", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-workspace-emoji", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs", "dep:tilo-sheets"]
+agents = ["web", "tilo-workspace-service/agents", "tilo-workspace-service/files", "dep:tilo-app-host", "dep:tilo-agent-session", "dep:tilo-session-client", "dep:tilo-secrets", "dep:tilo-workspace-emoji", "dep:discord", "dep:tilo-connector", "dep:tilo-automation", "dep:tilo-bot-directory", "dep:app-cli", "dep:linux-vm", "dep:tilo-server-account", "dep:tilo-mcp", "dep:tilo-workspace-agent", "dep:tilo-web-search", "dep:feed-rs", "dep:tilo-sheets"]
 web = ["tilo-workspace-service/device-keys", "dep:tilo-font-catalog", "dep:tilo-live", "dep:tilo-net", "dep:base64", "dep:hyper", "dep:hyper-util", "dep:http-body", "dep:http-body-util", "dep:tokio-rustls", "dep:rustls", "dep:rcgen", "dep:sha2", "dep:bytes", "dep:futures", "dep:hmac", "dep:ring"]
 
 # The host / server daemon.
@@ -243,6 +243,8 @@ tilo-workspace-keys = { path = "../workspace-keys" }
 # follows the sealed records of the workspaces it hosts and opens them with
 # the channels' keys it holds there, whether or not it serves pages.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["device-keys"] }
+# The apps and agents this server runs on its workspace service.
+tilo-app-host = { path = "../app-host", optional = true, features = ["agents", "files"] }
 # Waiting for this machine to be reached through a relay before it says it is.
 tilo-endpoint-reachability = { path = "../endpoint-reachability" }
 # Retained-store primitives the workspace store keeps its retained data with.
@@ -282,6 +284,7 @@ rcgen.workspace = true
 # keeps them building on their own, rather than only when another crate in the
 # same build turns it on.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["test-support", "agents", "session-pages"] }
+tilo-app-host = { path = "../app-host", features = ["agents", "test-support"] }
 install-plan = { path = "../../os/install-plan" }
 tilo-desktop-model = { path = "../../desktop/desktop-model" }
 tokio = { workspace = true, features = ["test-util"] }

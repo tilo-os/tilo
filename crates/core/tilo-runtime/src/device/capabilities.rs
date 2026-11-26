@@ -57,8 +57,8 @@ pub struct Capabilities {
     pub radio_wakes: Option<RadioWakes>,
     /// The platform's notifications, which keep a notification for a later moment and show it
     /// whether or not this program runs then: a moment an app's trigger lands on this device is
-    /// armed there ([`tilo_workspace_service::apps::wakeups`]). A phone's app mounts its own.
-    pub alarms: Option<Arc<dyn tilo_workspace_service::apps::wakeups::Notifier>>,
+    /// armed there ([`tilo_app_host::wakeups`]). A phone's app mounts its own.
+    pub alarms: Option<Arc<dyn tilo_app_host::wakeups::Notifier>>,
 }
 
 static MOUNTED: OnceLock<Capabilities> = OnceLock::new();
@@ -93,7 +93,7 @@ pub(crate) fn tilolang() -> Option<tilo_workspace_service::tl_records::Tilolang>
 }
 
 /// The platform's notifications the program mounted for this device's wakeups, where it did.
-pub(crate) fn alarms() -> Option<Arc<dyn tilo_workspace_service::apps::wakeups::Notifier>> {
+pub(crate) fn alarms() -> Option<Arc<dyn tilo_app_host::wakeups::Notifier>> {
     mounted()?.alarms.clone()
 }
 

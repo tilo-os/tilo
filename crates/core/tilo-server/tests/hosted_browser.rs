@@ -38,8 +38,8 @@ use collab_types::CommitNamed as _;
 use crate::common::{
     Linked, TestDevice, TestServer, TestUser, spawn_server, spawn_server_serving_apps,
 };
+use tilo_app_host::agents::windows::PAGE_RESOURCE;
 use tilo_server::hosted_browser::APP;
-use tilo_workspace_service::agents::windows::PAGE_RESOURCE;
 use tilo_workspace_service::environment::vm_placed_records;
 use tilo_workspace_service::workspaces::person_workspace::devices;
 

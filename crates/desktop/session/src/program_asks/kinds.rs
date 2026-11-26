@@ -362,7 +362,7 @@ pub(crate) fn put(question: &Question, retry: Option<Retry>) -> Option<Put> {
         crate::network::DEVICE_UNLOCK => device_unlock(details)?,
         crate::network_reach::KIND => reach(&who, details)?,
         #[cfg(target_os = "linux")]
-        tilo_workspace_service::apps::nearby_send::VERIFY_QUESTION => receiver(details)?,
+        tilo_app_host::nearby_send::VERIFY_QUESTION => receiver(details)?,
         _ => return None,
     };
     if matches!(facts.by, AskedBy::Program { .. }) || facts.by == AskedBy::default() {
@@ -561,8 +561,7 @@ fn admitted(who: &str, details: Value) -> Kind {
 #[cfg(target_os = "linux")]
 fn receiver(details: Value) -> Kind {
     use ui::i18n::ArgValue;
-    let asked: tilo_workspace_service::apps::nearby_send::VerifyQuestion =
-        serde_json::from_value(details).ok()?;
+    let asked: tilo_app_host::nearby_send::VerifyQuestion = serde_json::from_value(details).ok()?;
     let mut facts = asking(
         crate::i18n::t("airdrop-verify-title"),
         Some(crate::i18n::t_args(

@@ -528,13 +528,13 @@ pub(crate) fn devices_seen(workspaces: &ServiceWorkspaces) -> tilo_identity::sou
 }
 
 /// What certifies this device's agents' keys for the workspace service
-/// ([`tilo_workspace_service::agents::agent_keys::AgentGrants`]): this daemon's root, and the
+/// ([`tilo_app_host::agents::agent_keys::AgentGrants`]): this daemon's root, and the
 /// workspaces whose record it keeps the certificates in.
 pub(crate) struct GrantsOf {
     pub(crate) workspaces: Weak<ServiceWorkspaces>,
 }
 
-impl tilo_workspace_service::agents::agent_keys::AgentGrants for GrantsOf {
+impl tilo_app_host::agents::agent_keys::AgentGrants for GrantsOf {
     fn certify(
         &self,
         person: [u8; 32],

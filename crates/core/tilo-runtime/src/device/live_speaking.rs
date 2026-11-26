@@ -28,12 +28,12 @@ use tilo_actions::{
     ActionContract, ActionDescriptor, ActionKind, ActionOutput, ExecutionLocus, OperationKind,
     ResultSpec,
 };
+use tilo_app_host::collab_broker::{FanoutState, WorkspaceSubscription};
+use tilo_app_host::shell::ShellSpeaking;
 use tilo_desktop_model::WorkspaceId;
 use tilo_live::presence::Own;
 use tilo_live::speaker::Speaker;
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::apps::collab_broker::{FanoutState, WorkspaceSubscription};
-use tilo_workspace_service::apps::shell::ShellSpeaking;
 
 use super::live_relay::Live;
 

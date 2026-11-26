@@ -100,14 +100,6 @@ tilo-devices-admit-speaker-playback = Admit a group's playback on a member devic
 tilo-devices-refuse-speaker-playback = Refuse a group's playback on a member device
 tilo-devices-stop-speaker-playback = End a group's playback
 
-## Nearby Send
-
-so-tilo-device-nearby-send-send = Send files to a nearby device
-so-tilo-device-nearby-send-accept = Keep a file a nearby device offered
-so-tilo-device-nearby-send-decline = Turn down a file a nearby device offered
-so-tilo-device-nearby-send-cancel = Stop a transfer, sent or received
-so-tilo-device-nearby-send-retry-transfer = Offer again a transfer that failed
-so-tilo-device-nearby-send-invite-people = Share a resource with people, opening the invitation sheet
 # What a turn says it is doing, as the person reads it on its reply: one line per step, what is
 # being done and what app it is about.
 agent-step-searching = Searching the web for “{ $what }”…
@@ -154,14 +146,7 @@ passwords-workspace-vault-remove-sealed = Delete encrypted vault entry
 passwords-workspace-vault-keep-uses = Record where an entry was used
 browser-environment = Workspace computer settings
 
-## App Store
-store-catalog = Store catalogue
-store-report-create = Create report
-store-catalog-record-moderation-case = Record moderation case
 
-# The vault package's own actions, which a code generator app calls by address.
-so-tilo-vault-keep = Keep a seed
-so-tilo-vault-forget = Forget a seed
 tilo-servers-floor = Rollback floor
 tilo-servers-floor-set-floor-key = Set the floor key
 tilo-servers-floor-request-floor-advance = Ask to raise the floor

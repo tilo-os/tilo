@@ -1570,7 +1570,7 @@ readers = [
 ]
 
 [[cargo]]
-package = "tilo-workspace-service"
+package = "tilo-app-host"
 # The web-search tests answer from the pages a real answer was saved as, the
 # nearby-send test runs the sender script the image ships, and the vault tests
 # read the app's own manifest and surface.
@@ -1582,9 +1582,9 @@ inputs = [
   "apps/tl/vault/surface.json",
 ]
 readers = [
-  "crates/core/tilo-workspace-service/src/vault_actions.rs",
-  "crates/core/tilo-workspace-service/src/apps/collab_app_broker/web_search_tests.rs",
-  "crates/core/tilo-workspace-service/src/apps/nearby_send/airdrop.rs",
+  "crates/core/app-host/src/vault_actions.rs",
+  "crates/core/app-host/src/collab_app_broker/web_search_tests.rs",
+  "crates/core/app-host/src/nearby_send/airdrop.rs",
 ]
 
 [[cargo]]

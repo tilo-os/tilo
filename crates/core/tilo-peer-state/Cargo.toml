@@ -105,6 +105,7 @@ tempfile.workspace = true
 tilo-server = { path = "../tilo-server" }
 # A device's workspace service and the key service beside it, opened as every device opens them.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["apps", "device-keys"] }
+tilo-app-host = { path = "../app-host" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
 iroh-base = { workspace = true, features = ["key"] }
 tilo-test-env = { path = "../../../tools/test-env" }

@@ -263,6 +263,7 @@ tilo-network-actor = { path = "../network-actor" }
 # This device's own workspace service: the one a server runs, holding the workspaces this
 # device founds.
 tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["agents", "apps", "files"] }
+tilo-app-host = { path = "../../core/app-host", features = ["agents", "files"] }
 # The device's search index the palette reads.
 tilo-workspace-search = { path = "../../core/workspace-search" }
 # A host's own questions to a member, asked on the collaboration endpoint:
@@ -574,6 +575,7 @@ test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 # The broker's certified-connection context, for driving a service the way
 # the broker admits Files.
 tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["apps", "content", "test-support"] }
+tilo-app-host = { path = "../../core/app-host", features = ["test-support"] }
 # A site's workspace as a site runs it: the host on this machine that
 # serves the workspace a join enrolls into, folding what its pages write,
 # and the page of its person that recorded there first.

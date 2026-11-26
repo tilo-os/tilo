@@ -15,9 +15,7 @@ use media::audio_output::{CHANNELS, MAX_SAMPLES, RATE};
 use media::pw_stream::{AudioStreams, PlaybackConfig, PlaybackSource, PlaybackStream};
 use media::sync_playout::ChannelRole;
 use runtime_collab::audio_output::{Command, Snapshot};
-use tilo_workspace_service::apps::services::{
-    AudioOutputFuture, AudioOutputServices, NativeMediaRequestContext,
-};
+use tilo_app_host::services::{AudioOutputFuture, AudioOutputServices, NativeMediaRequestContext};
 
 /// How many apps may sound at once on one desktop.
 const MAX_OUTPUTS: usize = 8;

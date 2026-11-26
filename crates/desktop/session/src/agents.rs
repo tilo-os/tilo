@@ -85,7 +85,7 @@ impl Roster {
     }
 
     /// Every agent listed, with what it may spend, as the device's daemon is handed them.
-    pub(crate) fn seat_agents(&self) -> Vec<tilo_workspace_service::apps::seat::SeatAgent> {
+    pub(crate) fn seat_agents(&self) -> Vec<tilo_app_host::seat::SeatAgent> {
         let listed = self
             .listed
             .lock()
@@ -103,16 +103,14 @@ impl Roster {
                     .into_iter()
                     .map(move |agent| (workspace.clone(), agent))
             })
-            .map(
-                |(workspace, agent)| tilo_workspace_service::apps::seat::SeatAgent {
-                    spend: spend.get(&(workspace.clone(), agent.id.clone())).cloned(),
-                    workspace,
-                    id: agent.id,
-                    name: agent.name,
-                    avatar: agent.avatar,
-                    acts_for: agent.acts_for,
-                },
-            )
+            .map(|(workspace, agent)| tilo_app_host::seat::SeatAgent {
+                spend: spend.get(&(workspace.clone(), agent.id.clone())).cloned(),
+                workspace,
+                id: agent.id,
+                name: agent.name,
+                avatar: agent.avatar,
+                acts_for: agent.acts_for,
+            })
             .collect()
     }
 

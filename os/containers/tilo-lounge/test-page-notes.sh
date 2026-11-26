@@ -20,7 +20,7 @@ mkdir -p "$work"
 trap stop_lounge EXIT
 # Why the server did or did not act on what the page asked: a page that shows
 # what a person typed but keeps none of it says why nowhere else.
-export LOUNGE_LOG=tilo_agent_session=debug,tilo_server=info,tilo_workspace_service::agents=info,warn
+export LOUNGE_LOG=tilo_agent_session=debug,tilo_server=info,tilo_app_host::agents=info,warn
 start_lounge "$bundle" "$work"
 # What the site beside this page loads first, for the page's own numbers to be
 # read against: the page fetches none of it.

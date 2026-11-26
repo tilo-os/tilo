@@ -17,13 +17,14 @@ use super::super::Workspaces;
 use super::super::fixtures::{
     TestHost, device_cert, hosting_device, invitation, test_host_holding,
 };
+use super::super::fixtures::{group_keys, member_service};
 use super::super::person_workspace::{
     self, apply_on,
     devices::{DEVICES, Devices, OwnerSession, UnlockAnswer},
     read_on,
     wake::{self, Ipv4Subnet, WAKE_FACT, WakeInterfaceKind, WakeRoute, WakeState},
 };
-use super::tests::{catching_up, group_keys, member_service};
+use super::tests::catching_up;
 
 /// The person's desktop, which founded their own workspace and keeps itself in the record of
 /// their devices, its certificate, their laptop, which took the workspace in, and the workspace.

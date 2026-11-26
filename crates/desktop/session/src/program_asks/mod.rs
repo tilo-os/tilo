@@ -118,7 +118,7 @@ impl ProgramAsks {
     /// Serve [`PROVIDER`] on the device's dispatch over the shell's link `link`, and raise the
     /// questions through that dispatch from then on. Without a link nobody here can be asked, and
     /// the questions wait unraised.
-    pub(crate) fn serve_on(&self, link: &tilo_workspace_service::apps::services::DeviceDaemon) {
+    pub(crate) fn serve_on(&self, link: &tilo_app_host::services::DeviceDaemon) {
         let shell = match link {
             Ok(shell) => shell.clone(),
             Err(reason) => {

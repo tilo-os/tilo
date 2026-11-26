@@ -177,7 +177,7 @@ pub fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
 
 /// The action at `address` of a resource of `resource_kind`, called `resource_label`, as its
 /// provider publishes it.
-pub(crate) fn published(
+pub fn published(
     address: ActionAddress,
     (resource_kind, resource_label): (&str, &str),
     label: &str,
@@ -363,7 +363,7 @@ impl Workspaces {
     /// # Errors
     /// [`UnknownAction`] for no action of the provider, an invalid request for arguments it does
     /// not take, or a refusal in words: no such fact of theirs, or what the resource refused.
-    pub(crate) fn learned_invoke(
+    pub fn learned_invoke(
         &self,
         person: &[u8; 32],
         workspace: &str,

@@ -14,10 +14,10 @@ use std::path::Path;
 use std::sync::{Arc, OnceLock};
 
 use tilo_actions::remote::{Caller, ResourceAddress, ResourceReads as _};
+use tilo_app_host::services::SearchIndexServices;
 use tilo_desktop_model::WorkspaceId;
 use tilo_workspace_search::records::{RecordIndex, RecordReader, StoreReader};
 use tilo_workspace_search::{AppContentIndex, IndexKey, IndexSearch, ReadDecision};
-use tilo_workspace_service::apps::services::SearchIndexServices;
 use tilo_workspace_service::workspaces::{RecordReads, Workspaces};
 
 /// Where under the daemon's profile the index is kept.

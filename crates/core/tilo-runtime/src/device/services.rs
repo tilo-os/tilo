@@ -42,6 +42,19 @@ use tilo_api::daemon::DaemonPlace;
 use tilo_api::grant_key::GrantKey;
 use tilo_api::server::ServerError;
 use tilo_api::session::AccountAnswer;
+use tilo_app_host::agents::agent_keys::{AgentSigner, Signed, this_device};
+use tilo_app_host::agents::events::WorkspaceEvents;
+use tilo_app_host::agents::initiative::Initiative;
+use tilo_app_host::{
+    collab_broker::{AppActionBroker, BrokerHandle, FanoutState},
+    collab_core::{BrokerChannels, BrokerSealChecks},
+    collab_history::CollabHistoryStore,
+    collab_outbound::PeerPublisher,
+    services::{
+        HostedWorkspaces, LauncherServices, ProcessServices, PublishedResources,
+        ShortcutLibraryServices, WorkspaceAuthority,
+    },
+};
 use tilo_desktop_model::WorkspaceId;
 use tilo_device_identity::login::Device;
 use tilo_identity::broker::{IdentityBrokerHandle, WorkspaceMembership};
@@ -53,19 +66,6 @@ use tilo_server_protocol::workspaces::{
     DELETE_WORKSPACE, LIST_WEBHOOKS, REVOKE_KEY, RUN_UNATTENDED, WorkspaceLabels, WorkspaceListing,
 };
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed, this_device};
-use tilo_workspace_service::agents::events::WorkspaceEvents;
-use tilo_workspace_service::agents::initiative::Initiative;
-use tilo_workspace_service::apps::{
-    collab_broker::{AppActionBroker, BrokerHandle, FanoutState},
-    collab_core::{BrokerChannels, BrokerSealChecks},
-    collab_history::CollabHistoryStore,
-    collab_outbound::PeerPublisher,
-    services::{
-        HostedWorkspaces, LauncherServices, ProcessServices, PublishedResources,
-        ShortcutLibraryServices, WorkspaceAuthority,
-    },
-};
 use tilo_workspace_service::service::ServiceConfig;
 use tilo_workspace_service::workspaces::Refusal;
 use tilo_workspace_service::workspaces::person_workspace;
@@ -104,10 +104,10 @@ pub const SET_UP_FIRST: &str = "This computer has no Tilo identity yet: set it u
 pub struct Daemon {
     // Retired before broker fields: retained original ownership cannot survive
     // replacement of the runtime that supplied its policy time.
-    policy_origin: tilo_workspace_service::apps::policy_clock::PolicyOrigin,
+    policy_origin: tilo_app_host::policy_clock::PolicyOrigin,
     broker: BrokerHandle,
     /// The links of the shells this daemon starts ([`Self::start_shell`]).
-    shell_links: Arc<tilo_workspace_service::apps::shell::ShellLinks>,
+    shell_links: Arc<tilo_app_host::shell::ShellLinks>,
     workspaces: Arc<ServiceWorkspaces>,
     /// The device's live session: the one place this device is in each workspace's call and
     /// presence, which an app's call lane joins through ([`Self::app_call_setup`]).
@@ -1235,10 +1235,9 @@ impl Daemon {
     /// The one-use secret a shell redeems for its link: what this daemon gives the shell it starts
     /// and what root's sign-in answers, and what the shell asks `shells#link` with.
     pub fn shell_token(&self) -> [u8; 32] {
-        self.shell_links
-            .make(tilo_workspace_service::apps::shell::ShellCaller {
-                person: self.workspaces.device_cert().user_public_key,
-            })
+        self.shell_links.make(tilo_app_host::shell::ShellCaller {
+            person: self.workspaces.device_cert().user_public_key,
+        })
     }
 
     /// The secret a new link for `person`'s shell on `seat` is made with, refused while the seat
@@ -1250,10 +1249,9 @@ impl Daemon {
         if self.shell_links.live(seat) {
             return Err(io::Error::other("this seat's shell is linked already"));
         }
-        Ok(self.shell_links.make_for(
-            tilo_workspace_service::apps::shell::ShellCaller { person },
-            Some(seat),
-        ))
+        Ok(self
+            .shell_links
+            .make_for(tilo_app_host::shell::ShellCaller { person }, Some(seat)))
     }
 
     /// The connection `secret` admits on this daemon's dispatch: the shell's end of a link the
@@ -1339,9 +1337,7 @@ impl Daemon {
     pub(crate) fn execution_activity(
         &self,
     ) -> Option<
-        tokio::sync::broadcast::Receiver<
-            Arc<tilo_workspace_service::apps::collab_app_broker::ExecutionActivity>,
-        >,
+        tokio::sync::broadcast::Receiver<Arc<tilo_app_host::collab_app_broker::ExecutionActivity>>,
     > {
         self.broker
             .app_action_broker()
@@ -1351,7 +1347,7 @@ impl Daemon {
     /// The links this daemon made, for a test that shows a secret admits one connection and no
     /// second: [`Self::shell_link`] takes its own secret as it connects.
     #[cfg(test)]
-    pub(crate) fn shell_links(&self) -> &Arc<tilo_workspace_service::apps::shell::ShellLinks> {
+    pub(crate) fn shell_links(&self) -> &Arc<tilo_app_host::shell::ShellLinks> {
         &self.shell_links
     }
 
@@ -1395,7 +1391,7 @@ impl Daemon {
     #[cfg(feature = "test-support")]
     pub(crate) fn search_index_services(
         &self,
-    ) -> Option<Arc<dyn tilo_workspace_service::apps::services::SearchIndexServices>> {
+    ) -> Option<Arc<dyn tilo_app_host::services::SearchIndexServices>> {
         self.workspaces.search_index_services()
     }
 
@@ -2448,7 +2444,7 @@ impl Daemon {
             }
         }
         // The keys this computer's agents sign with are certified here, with the root it keeps.
-        tilo_workspace_service::agents::agent_keys::install_grants(std::sync::Arc::new(
+        tilo_app_host::agents::agent_keys::install_grants(std::sync::Arc::new(
             super::signing::GrantsOf {
                 workspaces: std::sync::Arc::downgrade(&workspaces),
             },
@@ -2579,9 +2575,9 @@ impl Daemon {
             );
             // A job's invocation runs the app's handlers through this same dispatch, is never
             // expired as idle while the job runs, and is cancelled through the daemon.
-            jobs.serve_effects(
-                tilo_workspace_service::apps::collab_app_broker::JobHandlers::new(broker.state()),
-            );
+            jobs.serve_effects(tilo_app_host::collab_app_broker::JobHandlers::new(
+                broker.state(),
+            ));
             let cancelling = Arc::clone(&jobs);
             broker.state().serve_job_canceller(Arc::new(
                 move |invocation: &tilo_actions::InvocationId| {
@@ -2665,7 +2661,7 @@ impl Daemon {
         });
         // What posts an account webhook's deliveries: a webhook is a shortcut of the workspace,
         // and its run posts one event through this provider, from the device that keeps it.
-        match tilo_workspace_service::apps::webhooks::Poster::new(
+        match tilo_app_host::webhooks::Poster::new(
             workspaces.copies().clone(),
             Arc::clone(&invocations),
         ) {
@@ -3213,7 +3209,7 @@ struct BrokerParts<'a> {
     sockets: &'a crate::daemon::Sockets,
     apps: &'a Arc<apps::Apps>,
     workspaces: &'a Arc<ServiceWorkspaces>,
-    keys: &'a tilo_workspace_service::apps::workspace_keys::KeyProvider,
+    keys: &'a tilo_app_host::workspace_keys::KeyProvider,
     creation: Arc<RecordCreation>,
     /// The files daemons mounting this device's workspaces, whose stores keep their files' bytes.
     files: Arc<tilo_workspace_service::files::socket::Daemons>,
@@ -3221,7 +3217,7 @@ struct BrokerParts<'a> {
     /// answers.
     nearby: Arc<super::nearby::Nearby>,
     /// The links of the shells this daemon starts.
-    shell_links: &'a Arc<tilo_workspace_service::apps::shell::ShellLinks>,
+    shell_links: &'a Arc<tilo_app_host::shell::ShellLinks>,
     /// The person's key sessions, which serve the workspaces' apps as pages: a page's view's
     /// call is the browser's that shows it.
     key_sessions: Option<&'a Arc<crate::key_sessions::KeySessions>>,
@@ -3240,9 +3236,7 @@ struct BrokerParts<'a> {
 }
 
 /// What carries a shell's live links: `live`, for as long as each link lasts.
-fn live_links(
-    live: &Arc<super::live_relay::Live>,
-) -> tilo_workspace_service::apps::shell::LiveLinks {
+fn live_links(live: &Arc<super::live_relay::Live>) -> tilo_app_host::shell::LiveLinks {
     let live = Arc::clone(live);
     Arc::new(move |stream| {
         let live = Arc::clone(&live);
@@ -3255,19 +3249,16 @@ fn start_broker(
     parts: BrokerParts<'_>,
     channels: Arc<Mutex<BrokerChannels>>,
     fanout: Arc<FanoutState>,
-) -> io::Result<(
-    tilo_workspace_service::apps::policy_clock::PolicyOrigin,
-    BrokerHandle,
-)> {
+) -> io::Result<(tilo_app_host::policy_clock::PolicyOrigin, BrokerHandle)> {
     let (policy_origin, policy_time) = execution_policy_clock()?;
     // A check's commands are ush's, which runs only on Linux: elsewhere a host approves none.
     #[cfg(target_os = "linux")]
     approved_checks(&parts)?;
-    let broker = tilo_workspace_service::apps::collab_broker::spawn_with_services(
+    let broker = tilo_app_host::collab_broker::spawn_with_services(
         parts.sockets.collab.clone(),
         Some(Arc::new(parts.workspaces.copies().clone()) as Arc<dyn WorkspaceAuthority>),
         PeerPublisher::with_commits(ServiceCommits::new(parts.workspaces)
-            as Arc<dyn tilo_workspace_service::apps::workspace_commits::WorkspaceCommits>),
+            as Arc<dyn tilo_app_host::workspace_commits::WorkspaceCommits>),
         None,
         broker_services(parts, policy_time),
         channels,
@@ -3279,8 +3270,8 @@ fn start_broker(
 /// What this device publishes to the apps attached to it, and to the person's shell: the seat
 /// that serves the desktop session's services, and the two bundles of what this device keeps.
 struct PublishedHere {
-    seat: tilo_workspace_service::apps::seat::Seat,
-    forwarded: tilo_workspace_service::apps::seat::Forwarders,
+    seat: tilo_app_host::seat::Seat,
+    forwarded: tilo_app_host::seat::Forwarders,
     /// What the person's shell reads and changes over its link: what the daemon keeps, never what
     /// the seat publishes.
     shell: Arc<dyn PublishedResources>,
@@ -3299,14 +3290,14 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
     // What only the desktop session signed in here holds (the screen and its windows, the sound,
     // capture, the person's settings, Nearby Send's spool, the speaker groups),
     // reached through the seat its shell serves: while none does, those calls say so.
-    let seat = tilo_workspace_service::apps::seat::Seat::new(
+    let seat = tilo_app_host::seat::Seat::new(
         parts.workspaces.copies().providers(),
         tilo_rt::app().handle().clone(),
     );
     let forwarded = seat.forwarders();
     // The session's roles that follow records hear of every record the workspaces took a change
     // of, as the store commits it.
-    tilo_workspace_service::apps::seat::tell_record_changes(
+    tilo_app_host::seat::tell_record_changes(
         seat.clone(),
         parts.workspaces.copies().document_writes(),
     );
@@ -3343,7 +3334,7 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
     // The code of this moment a vault item's seed makes, which an app that shows one-time codes
     // follows as the item's reading: read here, where the seed is.
     let vault_codes: Arc<dyn PublishedResources> =
-        Arc::new(tilo_workspace_service::vault_actions::VaultPublished::new(
+        Arc::new(tilo_app_host::vault_actions::VaultPublished::new(
             parts.workspaces.copies().clone(),
             tilo_rt::app().handle().clone(),
         ));
@@ -3357,7 +3348,7 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
             .serving(&[super::nearby::RESOURCE], Arc::clone(&nearby))
             .serving(&[tilo_workspace_service::live::RESOURCE], Arc::clone(&live))
             .serving(
-                &[tilo_workspace_service::window_notes::RESOURCE],
+                &[tilo_app_host::window_notes::RESOURCE],
                 Arc::clone(&window_notes),
             )
             .serving(&[super::mcp_server::SERVER], Arc::clone(&mcp_server))
@@ -3377,7 +3368,7 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
     // would never start.
     let shell: Arc<dyn PublishedResources> = Arc::new(kept_here());
     let apps: Arc<dyn PublishedResources> = Arc::new(kept_here().serving_the_rest(Arc::new(
-        tilo_workspace_service::apps::seat::SeatPublished::new(seat.clone()),
+        tilo_app_host::seat::SeatPublished::new(seat.clone()),
     )));
     PublishedHere {
         seat,
@@ -3425,8 +3416,8 @@ fn approved_checks(parts: &BrokerParts<'_>) -> io::Result<()> {
 fn seat_services(
     services: &mut ProcessServices,
     parts: &BrokerParts<'_>,
-    seat: tilo_workspace_service::apps::seat::Seat,
-    forwarded: tilo_workspace_service::apps::seat::Forwarders,
+    seat: tilo_app_host::seat::Seat,
+    forwarded: tilo_app_host::seat::Forwarders,
 ) {
     services.audio_output = Some(forwarded.audio_output);
     // A page's view's call is the browser's that shows it; the seat carries every other.
@@ -3435,7 +3426,7 @@ fn seat_services(
             pages: sessions.pages_served().clone(),
             seat: forwarded.native_media,
         })
-            as Arc<dyn tilo_workspace_service::apps::collab_app_broker::NativeMediaServices>,
+            as Arc<dyn tilo_app_host::collab_app_broker::NativeMediaServices>,
         None => forwarded.native_media,
     });
     services.continuations = Some(forwarded.continuations);
@@ -3447,12 +3438,10 @@ fn seat_services(
     services.file_clipboard = Some(forwarded.file_clipboard);
     // An app's window opens in the person's desktop session while one serves the seat; the
     // instances that show nothing, and the processes it starts, are this daemon's.
-    services.launcher = Some(Arc::new(
-        tilo_workspace_service::apps::seat::SeatLauncher::new(
-            seat,
-            Arc::clone(parts.apps) as Arc<dyn LauncherServices>,
-        ),
-    ));
+    services.launcher = Some(Arc::new(tilo_app_host::seat::SeatLauncher::new(
+        seat,
+        Arc::clone(parts.apps) as Arc<dyn LauncherServices>,
+    )));
     // The agents each workspace's own record names, read here, so an agent is admitted with
     // or without a desktop session; what each spent, and the agent sessions the person
     // admitted, are the desktop session's, which the daemon hands each agent's connection.
@@ -3469,22 +3458,18 @@ fn seat_services(
 fn record_services(
     services: &mut ProcessServices,
     parts: &BrokerParts<'_>,
-    policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
+    policy_time: tilo_app_host::policy_clock::PolicyTime,
 ) {
     // The records of the workspaces this device keeps, read for the apps, agents and programs
     // it serves: each capture opens the record's document here, and counts it.
-    services.committed_documents = Some(Arc::new(
-        tilo_workspace_service::apps::service_reads::ServiceReads::new(
-            parts.workspaces.copies().clone(),
-            parts.workspaces.service().metrics_counter(),
-        ),
-    )
-        as Arc<dyn tilo_workspace_service::apps::services::NativeDocumentReads>);
+    services.committed_documents = Some(Arc::new(tilo_app_host::service_reads::ServiceReads::new(
+        parts.workspaces.copies().clone(),
+        parts.workspaces.service().metrics_counter(),
+    ))
+        as Arc<dyn tilo_app_host::services::NativeDocumentReads>);
     // The device's one store, which the apps it serves write and read their resources in.
     services.resources = Some(Arc::new(
-        tilo_workspace_service::apps::service_resources::ServiceResources::of(
-            parts.workspaces.service(),
-        ),
+        tilo_app_host::service_resources::ServiceResources::of(parts.workspaces.service()),
     ));
     services.native_certificates = Some(Arc::new(Certificates {
         policy_time,
@@ -3506,8 +3491,8 @@ fn record_services(
         tilo_workspace_service::workspaces::ProfileMemberships::new(
             parts.workspaces.copies().clone(),
             Arc::new(parts.workspaces.copies().clone())
-                as tilo_workspace_service::apps::services::WorkspaceAuthorityHandle,
-        ) as Arc<dyn tilo_workspace_service::apps::services::WorkspaceMemberships>,
+                as tilo_app_host::services::WorkspaceAuthorityHandle,
+        ) as Arc<dyn tilo_app_host::services::WorkspaceMemberships>,
     );
     services.journal_root = Some(parts.root.join(INVOCATION_JOURNAL));
     // What a caller puts into a workspace here is kept on the shelf its records' content is.
@@ -3521,7 +3506,7 @@ fn record_services(
         Arc::new(tilo_workspace_service::files::OpenedFiles::new(
             parts.workspaces.copies().clone(),
             shelf,
-        )) as Arc<dyn tilo_workspace_service::apps::services::FilesTreePuts>
+        )) as Arc<dyn tilo_app_host::services::FilesTreePuts>
     });
     // Who is present on which device, as this device's workspaces hear it: their links, and
     // the agent sessions this daemon serves.
@@ -3564,8 +3549,7 @@ fn shell_services(
         super::shell::Serving {
             identity: Arc::clone(&parts.identity),
             live: Some(live_links(parts.live)),
-            speaking: Arc::clone(parts.live)
-                as Arc<dyn tilo_workspace_service::apps::shell::ShellSpeaking>,
+            speaking: Arc::clone(parts.live) as Arc<dyn tilo_app_host::shell::ShellSpeaking>,
         },
     )));
     // A workspace placed on a host has its records changed there: the person's actions on
@@ -3585,7 +3569,7 @@ fn shell_services(
 /// so their other devices have them.
 fn broker_services(
     parts: BrokerParts<'_>,
-    policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
+    policy_time: tilo_app_host::policy_clock::PolicyTime,
 ) -> ProcessServices {
     let document_content = super::content::document_content(
         parts.workspaces,
@@ -3652,7 +3636,7 @@ fn broker_services(
 fn shell_processes(
     apps: &Arc<apps::Apps>,
     workspaces: &Arc<ServiceWorkspaces>,
-) -> Option<tilo_workspace_service::apps::shell::ShellProcesses> {
+) -> Option<tilo_app_host::shell::ShellProcesses> {
     #[cfg(target_os = "linux")]
     {
         use tilo_peer_state::workspace_documents::DeviceDocuments as _;
@@ -3759,10 +3743,10 @@ fn follow_content_changes(
 }
 
 fn execution_policy_clock() -> io::Result<(
-    tilo_workspace_service::apps::policy_clock::PolicyOrigin,
-    tilo_workspace_service::apps::policy_clock::PolicyTime,
+    tilo_app_host::policy_clock::PolicyOrigin,
+    tilo_app_host::policy_clock::PolicyTime,
 )> {
-    let origin = tilo_workspace_service::apps::policy_clock::OwnerPolicyClock::new()
+    let origin = tilo_app_host::policy_clock::OwnerPolicyClock::new()
         .map_err(io::Error::other)?
         .new_origin();
     let time = origin.capture().map_err(io::Error::other)?;
@@ -3962,7 +3946,7 @@ pub(super) struct PersonDispatch {
     actor: String,
     broker: AppActionBroker,
     apps: Arc<apps::Apps>,
-    policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
+    policy_time: tilo_app_host::policy_clock::PolicyTime,
     tickets: Arc<Tickets>,
     invocations: Arc<Invocations>,
     /// The calls the device took before this person's services ran, which they answer too.
@@ -5162,7 +5146,7 @@ impl tilo_actions::remote::ChangeFeed for DeviceChanges {
 }
 
 struct AdmittedRuntimeSession {
-    policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
+    policy_time: tilo_app_host::policy_clock::PolicyTime,
     provider: Arc<dyn ActionProvider + Send + Sync>,
     admission: Arc<tilo_workspace_service::workspaces::SessionAdmission>,
     /// The agent this run is, under a key of its own: who its calls go as.
@@ -5665,7 +5649,7 @@ impl RuntimeActionProvider {
         self,
         workspace: String,
         actor: String,
-        policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
+        policy_time: tilo_app_host::policy_clock::PolicyTime,
     ) -> tilo_mcp::SessionFactory<Self> {
         let provider = self;
         Arc::new(move || {
@@ -5703,7 +5687,7 @@ impl RuntimeActionProvider {
         &self,
         workspace: &str,
         actor: &str,
-        policy_time: &tilo_workspace_service::apps::policy_clock::PolicyTime,
+        policy_time: &tilo_app_host::policy_clock::PolicyTime,
         agent: impl FnOnce(&[u8; 32]) -> (String, String),
     ) -> io::Result<(Self, Caller, DeviceCert)> {
         let workspaces = Arc::clone(&self.workspaces);
@@ -5722,7 +5706,7 @@ impl RuntimeActionProvider {
     pub(super) fn agent_session_of(
         &self,
         admission: Arc<tilo_workspace_service::workspaces::SessionAdmission>,
-        policy_time: &tilo_workspace_service::apps::policy_clock::PolicyTime,
+        policy_time: &tilo_app_host::policy_clock::PolicyTime,
         agent: impl FnOnce(&[u8; 32]) -> (String, String),
     ) -> io::Result<(Self, Caller, DeviceCert)> {
         let caller = admission.caller().clone();
@@ -5759,8 +5743,7 @@ impl RuntimeActionProvider {
             let Some(id) = WorkspaceId::parse(&named) else {
                 return;
             };
-            tilo_workspace_service::agents::workspace_agent(record.copies(), id, &listed, &person)
-                .await;
+            tilo_app_host::agents::workspace_agent(record.copies(), id, &listed, &person).await;
         });
         // The key enters the workspace as every key of its person's does, by the admission it
         // signs itself, so the workspace reads it as that agent, with its person's grants.
@@ -5830,7 +5813,7 @@ impl RuntimeActionProvider {
         &self,
         workspace: &str,
         key: &DeviceCert,
-        policy_time: &tilo_workspace_service::apps::policy_clock::PolicyTime,
+        policy_time: &tilo_app_host::policy_clock::PolicyTime,
     ) -> io::Result<(Self, Caller)> {
         let (copies, named, cert) = (
             self.workspaces.copies().clone(),
@@ -6342,7 +6325,7 @@ impl ActionProvider for RuntimeActionProvider {
             let Some(workspace) = WorkspaceId::parse(&workspace) else {
                 return;
             };
-            if let Err(error) = tilo_workspace_service::agents::rename_agent(
+            if let Err(error) = tilo_app_host::agents::rename_agent(
                 workspaces.copies(),
                 workspace,
                 (&agent_id, &client),
@@ -6918,7 +6901,7 @@ impl tilo_actions::remote::ContentGets for AdmittedContent<dyn tilo_actions::rem
 /// The device-certificate checks the broker asks: a certificate is in force in a workspace
 /// while the workspace's member list, as this device holds it, admits its device.
 struct Certificates {
-    policy_time: tilo_workspace_service::apps::policy_clock::PolicyTime,
+    policy_time: tilo_app_host::policy_clock::PolicyTime,
     workspaces: std::sync::Weak<ServiceWorkspaces>,
 }
 
@@ -6985,10 +6968,8 @@ fn confined_admits(
     Ok(())
 }
 
-impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority for Certificates {
-    fn policy_time(
-        &self,
-    ) -> Result<Option<tilo_workspace_service::apps::policy_clock::PolicyTime>, String> {
+impl tilo_app_host::certificate_authority::CertificateAuthority for Certificates {
+    fn policy_time(&self) -> Result<Option<tilo_app_host::policy_clock::PolicyTime>, String> {
         self.policy_time
             .now_ns()
             .map_err(|error| error.to_string())?;
@@ -6999,7 +6980,7 @@ impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority f
         &self,
         workspace: uuid::Uuid,
         cert: &DeviceCert,
-        time: &tilo_workspace_service::apps::policy_clock::PolicyTime,
+        time: &tilo_app_host::policy_clock::PolicyTime,
     ) -> Result<(), String> {
         if !time.same_origin(&self.policy_time) {
             return Err("original runtime policy origin changed".into());
@@ -7214,7 +7195,7 @@ impl Daemon {
 /// answers a triggered agent gives, and the tools an agent in a process of its own works through.
 /// Each reads the workspaces this daemon holds, so they answer with no desktop session open.
 fn serve_agent_steps(workspaces: &ServiceWorkspaces, fanout: &Arc<FanoutState>) {
-    use tilo_workspace_service::agents;
+    use tilo_app_host::agents;
     let providers = workspaces.copies().providers();
     let service = tilo_workspace_service::service::ServiceSlot::default();
     service.install(Arc::clone(workspaces.service()));
@@ -7247,7 +7228,7 @@ fn start_agents(
     };
     tilo_rt::app()
         .handle()
-        .spawn(tilo_workspace_service::agents::run_on_device(
+        .spawn(tilo_app_host::agents::run_on_device(
             workspaces.copies().clone(),
             broker.device_host(),
             Some(Arc::clone(tickets) as _),
@@ -7284,13 +7265,13 @@ fn start_triggers(
         tracing::warn!("this device's broker is not up, so it starts no shortcut's trigger");
         return;
     };
-    tilo_rt::app().handle().spawn(
-        tilo_workspace_service::apps::triggers::run_on_device_watching_invocations(
+    tilo_rt::app()
+        .handle()
+        .spawn(tilo_app_host::triggers::run_on_device_watching_invocations(
             workspaces.copies().clone(),
             std::sync::Arc::new(broker),
             Arc::clone(invocations),
-        ),
-    );
+        ));
 }
 
 /// How often the daemon looks for what its apps raised, and for the answers to what it showed,
@@ -7310,15 +7291,15 @@ fn start_notices(
     workspaces: &Arc<ServiceWorkspaces>,
     apps: &Arc<apps::Apps>,
     serves_pages: bool,
-    alarms: Option<Arc<dyn tilo_workspace_service::apps::wakeups::Notifier>>,
+    alarms: Option<Arc<dyn tilo_app_host::wakeups::Notifier>>,
 ) {
-    use tilo_workspace_service::apps::wakeups::{self, Wakeups};
+    use tilo_app_host::wakeups::{self, Wakeups};
     let copies = workspaces.copies().clone();
     let cert = workspaces.device_cert();
     let apps = Arc::clone(apps);
     tilo_rt::app().handle().spawn(async move {
         let mut notices = serves_pages.then(|| {
-            tilo_workspace_service::apps::served_notices::ServedNotices::new(
+            tilo_app_host::served_notices::ServedNotices::new(
                 copies.clone(),
                 cert.device_public_key,
                 cert.user_public_key,
@@ -7450,8 +7431,8 @@ async fn answer_a_record(
     packages: &mut Packages,
     copies: &tilo_workspace_service::workspaces::Workspaces,
     apps: &apps::Apps,
-    wakeups: Option<&mut tilo_workspace_service::apps::wakeups::Wakeups>,
-    notices: Option<&mut tilo_workspace_service::apps::served_notices::ServedNotices>,
+    wakeups: Option<&mut tilo_app_host::wakeups::Wakeups>,
+    notices: Option<&mut tilo_app_host::served_notices::ServedNotices>,
     now: i64,
 ) {
     use tilo_workspace_service::tl_records::Package;
@@ -7514,7 +7495,7 @@ fn serve_key_sessions(
     workspaces: &Arc<ServiceWorkspaces>,
     (actor, founded, serving): (&str, Option<collab_types::WorkspaceId>, bool),
     (policy_origin, first): (
-        &tilo_workspace_service::apps::policy_clock::PolicyOrigin,
+        &tilo_app_host::policy_clock::PolicyOrigin,
         &Arc<super::first_workspace::FirstWorkspace>,
     ),
 ) -> io::Result<()> {
@@ -7824,7 +7805,7 @@ impl tilo_identity::broker::PersonResourceTypes for AttachedSurfaces {
                 tracing::warn!(%error, app_id, "the development surface could not be stored");
                 return;
             }
-            tilo_workspace_service::apps::register_package_surface(app_id, surface);
+            tilo_app_host::register_package_surface(app_id, surface);
         }
     }
 }
@@ -7849,7 +7830,7 @@ fn other_devices(
         }
         revocations
     };
-    let keys = tilo_workspace_service::agents::agent_keys::this_device().ok()?;
+    let keys = tilo_app_host::agents::agent_keys::this_device().ok()?;
     Some(crate::other_devices::OtherDevices::new(
         runtime,
         (cert.user_public_key, cert.device_public_key),

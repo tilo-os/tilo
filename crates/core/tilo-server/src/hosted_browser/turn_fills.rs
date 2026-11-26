@@ -34,8 +34,8 @@ use tilo_actions::remote::{
     RemoteActionMessage, RemoteActionTarget, pending,
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
+use tilo_app_host::agents::windows::{PAGE_RESOURCE, Release, Releasing, TurnFill};
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::agents::windows::{PAGE_RESOURCE, Release, Releasing, TurnFill};
 
 use super::{HostedBrowsers, Window};
 use crate::WorkspaceId;

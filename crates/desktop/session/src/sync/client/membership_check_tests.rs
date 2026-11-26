@@ -15,11 +15,11 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ed25519_dalek::SigningKey;
+use tilo_app_host::collab_outbound::PeerPublisher;
+use tilo_app_host::commits::ServiceCommits;
+use tilo_app_host::workspace_commits::WorkspaceCommits;
 use tilo_desktop_model::WorkspaceId;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
-use tilo_workspace_service::apps::collab_outbound::PeerPublisher;
-use tilo_workspace_service::apps::commits::ServiceCommits;
-use tilo_workspace_service::apps::workspace_commits::WorkspaceCommits;
 use tilo_workspace_service::service::ServiceSlot;
 use tilo_workspace_service::workspaces::MemberDevice;
 use tilo_workspace_service::workspaces::fixtures::{TestHost, test_host_in_the_clear};

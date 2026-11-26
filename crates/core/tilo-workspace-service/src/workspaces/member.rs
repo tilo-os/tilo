@@ -625,7 +625,7 @@ impl Workspaces {
     /// The device this service signs its own roles' writes as: the device its member copies
     /// act as where its embedder keeps one, else this device itself, which hosts the
     /// workspaces it serves.
-    pub(crate) fn signing_device(&self) -> Arc<MemberDevice> {
+    pub fn signing_device(&self) -> Arc<MemberDevice> {
         if let Some(device) = self.inner.member.device.get().cloned() {
             return device;
         }
@@ -2569,10 +2569,6 @@ mod agent_turn_tests;
 #[cfg(test)]
 #[path = "person_devices_tests.rs"]
 mod person_devices_tests;
-
-#[cfg(all(test, feature = "agents"))]
-#[path = "connection_turn_tests.rs"]
-mod connection_turn_tests;
 
 #[cfg(all(test, feature = "agents"))]
 #[path = "keep_devices_tests.rs"]

@@ -26,10 +26,10 @@ use std::sync::{Arc, Mutex, Weak};
 use iroh::{EndpointAddr, EndpointId};
 
 use tilo_actions::remote::ActionProvider;
+use tilo_app_host::services::{ConnectionActions, HostedWorkspaces};
 use tilo_desktop_model::WorkspaceId;
 use tilo_lock::MutexRecover as _;
 use tilo_peer_state::actions::RemoteDevice;
-use tilo_workspace_service::apps::services::{ConnectionActions, HostedWorkspaces};
 use tilo_workspace_service::work::{self, ConnectionCall};
 use tilo_workspace_service::workspaces::providers::HostsAnswer;
 use tilo_workspace_service::workspaces::standing;

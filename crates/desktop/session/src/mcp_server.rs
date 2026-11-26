@@ -43,13 +43,13 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer, ContentPuts,
     InvocationReceipt, InvocationState, InvokeRequest, Pending,
 };
+use tilo_app_host::agents::agent_keys::{AgentSigner, Signed};
 use tilo_compositor::ReadableWatch;
 use tilo_lock::MutexRecover as _;
 use tilo_mcp::session_api::{Consent, Hello};
 use tilo_service::{Answer, AskSender, Asked, Question, Wake};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_sheets::{word, words};
-use tilo_workspace_service::agents::agent_keys::{AgentSigner, Signed};
 
 use crate::Shared;
 use crate::agent_sessions::{AgentSessions, Doing};
@@ -1159,7 +1159,7 @@ pub(crate) struct SessionServices {
     processes: std::sync::OnceLock<runtime_portal::device_processes::Device>,
     /// The keys of the agents the person admits here, which the device's daemon makes, certifies
     /// and signs with ([`crate::agent_keys::AtDaemon`]): none on a session that reaches no daemon.
-    agent_keys: std::sync::OnceLock<Arc<dyn tilo_workspace_service::agents::agent_keys::AgentKeys>>,
+    agent_keys: std::sync::OnceLock<Arc<dyn tilo_app_host::agents::agent_keys::AgentKeys>>,
     /// How the person's workspaces stand, to tell a workspace this device holds from one it is
     /// founding even between passes (a founding is under way while the loop waits for it).
     view: std::sync::OnceLock<Arc<crate::workspace_view::WorkspaceView>>,
@@ -1333,15 +1333,13 @@ impl SessionServices {
     /// now on.
     pub(crate) fn keep_agent_keys(
         &self,
-        keys: Arc<dyn tilo_workspace_service::agents::agent_keys::AgentKeys>,
+        keys: Arc<dyn tilo_app_host::agents::agent_keys::AgentKeys>,
     ) {
         let _ = self.agent_keys.set(keys);
     }
 
     /// The keys of the agents the person admits here, or why there are none.
-    fn agent_keys(
-        &self,
-    ) -> Result<Arc<dyn tilo_workspace_service::agents::agent_keys::AgentKeys>, String> {
+    fn agent_keys(&self) -> Result<Arc<dyn tilo_app_host::agents::agent_keys::AgentKeys>, String> {
         self.agent_keys
             .get()
             .cloned()

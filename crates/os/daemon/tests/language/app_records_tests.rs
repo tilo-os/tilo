@@ -235,8 +235,8 @@ async fn installing_an_app_gives_it_its_own_records_until_a_member_takes_them_ba
 #[tokio::test]
 async fn a_native_apps_own_write_is_the_apps_and_stops_when_its_grant_is_taken_back() {
     use collab_types::store::{Cell, Resource, Value, wire::Command};
+    use tilo_app_host::services::ResourceRequestContext;
     use tilo_resource_store::Stamp;
-    use tilo_workspace_service::apps::services::ResourceRequestContext;
 
     let dir = tempfile::tempdir().unwrap();
     let (key, cert) = hosting_device();

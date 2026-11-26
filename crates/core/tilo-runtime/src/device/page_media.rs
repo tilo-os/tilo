@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use runtime_collab::native_media::{REPLY_TIMEOUT, Request, Snapshot};
 use tilo_actions::remote::{Caller, Pending};
-use tilo_workspace_service::apps::collab_app_broker::{
+use tilo_app_host::collab_app_broker::{
     NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
 };
 

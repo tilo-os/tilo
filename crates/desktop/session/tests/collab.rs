@@ -1134,7 +1134,7 @@ fn following_someone_brings_forward_the_window_of_the_app_they_work_in() {
 
 /// The route the Notes window's app holds in the workspace.
 fn notes_route() -> String {
-    tilo_workspace_service::apps::route::CrdtRoute::app("so.tilo.notes", WORKSPACE).channel_key()
+    tilo_app_host::route::CrdtRoute::app("so.tilo.notes", WORKSPACE).channel_key()
 }
 
 /// The app of the Notes window: it joins the workspace's route, and says whom each follow event

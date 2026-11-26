@@ -503,7 +503,7 @@ async fn the_asker_going_away_withdraws_its_record() {
 #[cfg(target_os = "linux")]
 #[tokio::test(flavor = "multi_thread")]
 async fn a_long_name_and_an_ipv6_receiver_fit_the_verification_card() {
-    use tilo_workspace_service::apps::nearby_send::{VERIFY_QUESTION, VerifyQuestion};
+    use tilo_app_host::nearby_send::{VERIFY_QUESTION, VerifyQuestion};
     let (sender, device) = session();
     let name = format!("{}.txt", "contract".repeat(30));
     let endpoint = format!("AirDrop · [2001:db8:{}]:443", "ab".repeat(24));

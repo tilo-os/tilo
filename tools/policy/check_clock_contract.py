@@ -61,7 +61,7 @@ SCOPES = (
     Path("crates/core/tilo-peer-state"),
     Path("crates/core/collab-types"),
     Path("crates/core/workspace-join"),
-    Path("crates/core/tilo-workspace-service/src/apps"),
+    Path("crates/core/app-host/src"),
     Path("crates/core/session-client"),
     Path("crates/desktop/session/src/sync"),
     Path("crates/core/tilo-workspace-service"),
@@ -96,16 +96,16 @@ TIMER_REASON = (
 # admits, expires or signs anything by that reading.
 TIMERS = {
     Path(
-        "crates/core/tilo-workspace-service/src/apps/collab_app_broker.rs"
+        "crates/core/app-host/src/collab_app_broker.rs"
     ): TIMER_REASON,
     Path(
-        "crates/core/tilo-workspace-service/src/apps/collab_app_broker/socket.rs"
+        "crates/core/app-host/src/collab_app_broker/socket.rs"
     ): TIMER_REASON,
     Path(
-        "crates/core/tilo-workspace-service/src/apps/collab_app_broker/action_provider.rs"
+        "crates/core/app-host/src/collab_app_broker/action_provider.rs"
     ): TIMER_REASON,
     Path(
-        "crates/core/tilo-workspace-service/src/apps/collab_app_broker/committed_document.rs"
+        "crates/core/app-host/src/collab_app_broker/committed_document.rs"
     ): TIMER_REASON,
     Path("crates/core/tilo-workspace-service/src/peer/arriving.rs"): TIMER_REASON,
     Path("crates/core/tilo-workspace-service/src/peer/access_audit.rs"): TIMER_REASON,
@@ -113,7 +113,7 @@ TIMERS = {
     Path("crates/core/tilo-workspace-service/src/peer/session.rs"): TIMER_REASON,
     Path("crates/core/tilo-workspace-service/src/presence_mailbox.rs"): TIMER_REASON,
     Path("crates/core/tilo-workspace-service/src/workspace.rs"): TIMER_REASON,
-    Path("crates/core/tilo-workspace-service/src/agents.rs"): TIMER_REASON,
+    Path("crates/core/app-host/src/agents.rs"): TIMER_REASON,
 }
 
 DIRECT = {

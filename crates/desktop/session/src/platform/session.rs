@@ -686,8 +686,7 @@ impl Session {
             );
         }
         // What the broker shows the apps that hold a record's route open.
-        let channels_fanout =
-            std::sync::Arc::new(tilo_workspace_service::apps::collab_broker::FanoutState::new());
+        let channels_fanout = std::sync::Arc::new(tilo_app_host::collab_broker::FanoutState::new());
         changes.waking(options.wake.handle());
         let resource_index = view.as_ref().map(|view| {
             crate::resource_index::RecordChanges::start(&document_reads, view, changes.clone())

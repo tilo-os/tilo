@@ -34,8 +34,8 @@ use tilo_actions::remote::{
     Pending, pending,
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
+use tilo_app_host::route::CrdtRoute;
 use tilo_peer_state::actions::{ActionService, FOLLOW_DEADLINE, RemoteDevice};
-use tilo_workspace_service::apps::route::CrdtRoute;
 use tilo_workspace_service::content::{ContentState, RouteContent};
 use tilo_workspace_service::work::Job;
 

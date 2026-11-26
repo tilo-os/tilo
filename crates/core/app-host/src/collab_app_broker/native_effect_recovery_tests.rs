@@ -1,0 +1,332 @@
+use super::{
+    AppBrokerState, BrokerChannels, DurableInvocation, FanoutState, InvocationJournal,
+    InvocationKey, PeerPublisher, ProcessServices, VerifiedActionCaller, person_id_for_root,
+};
+use ed25519_dalek::{Signer as _, SigningKey};
+use std::{
+    sync::{Arc, Mutex},
+    time::SystemTime,
+};
+use tilo_broker_core::workspace_commits::{EffectFuture, WorkspaceCommits};
+
+struct NativeEffects {
+    owner: Arc<tilo_peer_state::owner::DeviceWorkspaces>,
+    held: Arc<tokio::sync::Semaphore>,
+    submitted: Arc<tokio::sync::Notify>,
+}
+impl WorkspaceCommits for NativeEffects {
+    fn projects_workspace(&self, _: tilo_desktop_model::WorkspaceId) -> bool {
+        true
+    }
+
+    fn health(&self) -> Result<(), String> {
+        let workspace =
+            tilo_desktop_model::WorkspaceId::parse(tilo_peer_state::owner::testing::WORKSPACE)
+                .unwrap();
+        self.owner.with_current(workspace, |_| Ok(()))
+    }
+
+    fn effect(&self, workspace: String, redacted: Vec<u8>) -> EffectFuture {
+        let owner = self.owner.clone();
+        let held = self.held.clone();
+        let submitted = self.submitted.clone();
+        Box::pin(async move {
+            submitted.notify_one();
+            let permit = held
+                .acquire()
+                .await
+                .map_err(|_| "the record's test was retired")?;
+            let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace)
+                .ok_or_else(|| "invalid workspace".to_owned())?;
+            let (device, receipt) = owner.with_current(workspace, |view| {
+                let receipt: tilo_actions::receipt::WorkspaceEffectReceipt =
+                    serde_json::from_slice(&redacted).map_err(|error| error.to_string())?;
+                Ok((view.device().clone(), receipt))
+            })?;
+            let recorded = owner.record_effect(workspace, &device, &receipt, SystemTime::now());
+            drop(permit);
+            recorded
+        })
+    }
+}
+struct NativeAuthority(Arc<tilo_peer_state::owner::DeviceWorkspaces>);
+impl crate::certificate_authority::CertificateAuthority for NativeAuthority {
+    fn authorize(
+        &self,
+        workspace: uuid::Uuid,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        let workspace = tilo_desktop_model::WorkspaceId::parse(&workspace.to_string())
+            .ok_or("invalid workspace")?;
+        self.0.with_current(workspace, |view| {
+            if !view.peer().certificates().contains(certificate) {
+                return Err("native certificate no longer admitted".into());
+            }
+            view.peer()
+                .permissions(certificate.device_public_key, SystemTime::now())
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        })
+    }
+}
+struct Fixture {
+    directory: tempfile::TempDir,
+    owner: Arc<tilo_peer_state::owner::DeviceWorkspaces>,
+    state: Arc<AppBrokerState>,
+    caller: VerifiedActionCaller,
+    membership: crate::test_support::WorkspaceTreeHandle,
+    held: Arc<tokio::sync::Semaphore>,
+    submitted: Arc<tokio::sync::Notify>,
+    _fanout: Arc<FanoutState>,
+}
+fn fixture() -> Fixture {
+    let directory = tempfile::tempdir().unwrap();
+    let owner =
+        Arc::new(tilo_peer_state::owner::open_file(&directory.path().join("native.json")).unwrap());
+    let key = SigningKey::from_bytes(&[92; 32]);
+    let certificate = tilo_peer_state::owner::testing::certificate(
+        &SigningKey::from_bytes(&[91; 32]),
+        &key,
+        "Host",
+    );
+    tilo_peer_state::owner::testing::add_interactive_device(&owner, &key, &certificate).unwrap();
+    let workspace_id = tilo_peer_state::owner::testing::WORKSPACE;
+    let mut workspace = crate::test_support::Workspace::new(
+        uuid::Uuid::parse_str(workspace_id).unwrap().into(),
+        "Native recovery",
+    );
+    workspace
+        .policy
+        .set_owner(person_id_for_root(certificate.user_public_key));
+    let mut tree = crate::test_support::WorkspaceTree::default();
+    tree.workspaces.push(workspace);
+    let membership = tree.shared();
+    let held = Arc::new(tokio::sync::Semaphore::new(1));
+    let submitted = Arc::new(tokio::sync::Notify::new());
+    let publisher = PeerPublisher::with_commits(Arc::new(NativeEffects {
+        owner: owner.clone(),
+        held: held.clone(),
+        submitted: submitted.clone(),
+    }));
+    let config = crate::NativePeerBrokerConfig {
+        journal_root: directory.path().join("journal"),
+        certificate_authority: Arc::new(NativeAuthority(owner.clone())),
+    };
+    let fanout = Arc::new(FanoutState::new());
+    let (state, _) = AppBrokerState::new_configured(
+        &fanout,
+        Arc::new(Mutex::new(BrokerChannels::default())),
+        publisher,
+        Some(membership.authority()),
+        None,
+        Some(&config),
+        ProcessServices::default(),
+    );
+    let presentation = runtime_collab::CertifiedJoinIdentity {
+        workspace_id: workspace_id.into(),
+        device_certificate: serde_json::to_vec(&certificate).unwrap(),
+        proof: key
+            .sign(&tilo_identity_client::collaboration_join_digest(workspace_id).unwrap())
+            .to_bytes()
+            .to_vec(),
+    }
+    .encode()
+    .unwrap();
+    let caller = state
+        .verify_action_caller(workspace_id, &presentation)
+        .unwrap();
+    Fixture {
+        directory,
+        owner,
+        state,
+        caller,
+        membership,
+        held,
+        submitted,
+        _fanout: fanout,
+    }
+}
+
+/// The owner's record at `path`, as the store's own reader gives it back: the
+/// record is an index and one file per workspace beside it.
+fn document_at(path: &std::path::Path) -> serde_json::Value {
+    serde_json::to_value(tilo_peer_state::owner::read_file(path).unwrap()).unwrap()
+}
+
+fn prepare(f: &Fixture) -> DurableInvocation {
+    let key = f
+        .state
+        .caller_key(&f.caller, tilo_actions::InvocationId::new())
+        .unwrap();
+    let actor = f.caller.admitted.broker_actor().actor().clone();
+    let context = tilo_actions::ActionContext::default();
+    let contract = tilo_actions::ActionContract {
+        kind: tilo_actions::ActionKind::Undoable,
+        ..Default::default()
+    };
+    let intent = serde_json::json!({"operation_kind":tilo_actions::OperationKind::Effect,"actor":actor,"context":context,"contract":contract,"app_id":"so.tilo.chat","resource":"app.so.tilo.chat","resource_kind":"app","action":"test-effect"});
+    let update = tilo_actions::InvocationUpdate::Succeeded {
+        invocation: key.invocation,
+        output: tilo_actions::ActionOutput::default(),
+    };
+    let mut receipt = tilo_actions::receipt::WorkspaceEffectReceipt::redacted(
+        key.invocation,
+        &actor,
+        context,
+        tilo_actions::EffectReceiptStatus::Succeeded,
+        tilo_clock::unix_now_i64(),
+    );
+    receipt.completed_at = 100;
+    let redacted = serde_json::to_vec(&receipt).unwrap();
+    let mut guard = f.state.journal.lock().unwrap();
+    let journal = guard.as_mut().unwrap().as_mut().unwrap();
+    journal.admit(key.clone(), intent, 1).unwrap();
+    journal
+        .prepare_effect(&key, update, &key.workspace, key.invocation.0, &redacted)
+        .unwrap();
+    let record = journal.lookup(&key).unwrap().unwrap();
+    drop(guard);
+    record
+}
+fn restart_journal(f: &Fixture, key: &InvocationKey) -> DurableInvocation {
+    let previous = f
+        .state
+        .journal
+        .lock()
+        .unwrap()
+        .as_mut()
+        .unwrap()
+        .take()
+        .unwrap();
+    drop(previous);
+    *f.state.journal.lock().unwrap() = Ok(Some(
+        InvocationJournal::open(&f.directory.path().join("journal")).unwrap(),
+    ));
+    f.state
+        .verified_invocation_status(&f.caller, key.invocation)
+        .unwrap()
+        .unwrap()
+}
+#[tokio::test(flavor = "current_thread")]
+async fn prepared_effect_native_owner_crash_gap_keeps_exact_history() {
+    let f = fixture();
+    let record = prepare(&f);
+    let prepared = record.prepared_effect.as_ref().unwrap().clone();
+    let (receipt_workspace, receipt_bytes) = prepared.receipt();
+    f.state
+        .publisher
+        .record_effect(receipt_workspace.to_owned(), receipt_bytes.to_vec())
+        .await
+        .unwrap();
+    let path = f.directory.path().join("native.json");
+    let stored = document_at(&path);
+    let record = restart_journal(&f, &record.key);
+    assert!(record.uncertain);
+    let invocation = record.key.invocation;
+    let terminal = f
+        .state
+        .reconcile_prepared_effect(record, || {
+            f.state.verified_invocation_status(&f.caller, invocation)?;
+            Ok(())
+        })
+        .await
+        .unwrap();
+    assert!(!terminal.uncertain);
+    assert_eq!(terminal.update, prepared.update);
+    assert_eq!(
+        document_at(&path),
+        stored,
+        "the exact retry leaves the owner's record as it was"
+    );
+    let key = terminal.key.clone();
+    assert_eq!(restart_journal(&f, &key), terminal);
+    let workspace = tilo_desktop_model::WorkspaceId::parse(&key.workspace).unwrap();
+    f.owner
+        .with_current(workspace, |view| {
+            let effects = tilo_desktop_model::projection::workspace_effect_receipts_of(
+                view.peer().admitted_workspace().unwrap(),
+            );
+            assert_eq!(effects.len(), 1);
+            assert_eq!(effects[0].completed_at, 100);
+            Ok(())
+        })
+        .unwrap();
+    assert!(f.state.pending_invocations.lock().unwrap().is_empty());
+    drop(f);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn prepared_effect_native_recovery_rechecks_authority_and_failed_ownership() {
+    for scenario in ["before", "after", "refused"] {
+        let f = fixture();
+        let record = prepare(&f);
+        let key = record.key.clone();
+        let record = restart_journal(&f, &key);
+        if scenario == "before" {
+            f.membership.write().workspaces[0]
+                .policy
+                .set_owner("another person");
+        }
+        if scenario == "refused" {
+            f.held.close();
+        }
+        let permit = if scenario == "after" {
+            Some(f.held.acquire().await.unwrap())
+        } else {
+            None
+        };
+        let result = {
+            let reconciliation = f.state.reconcile_prepared_effect(record, || {
+                f.state
+                    .verified_invocation_status(&f.caller, key.invocation)?;
+                Ok(())
+            });
+            tokio::pin!(reconciliation);
+            if scenario == "after" {
+                tokio::select! {
+                    _ = &mut reconciliation => panic!("held owner must block terminal disclosure"),
+                    () = f.submitted.notified() => {}
+                }
+                f.membership.write().workspaces[0]
+                    .policy
+                    .set_owner("another person");
+            }
+            drop(permit);
+            reconciliation.await
+        };
+        if scenario == "refused" {
+            assert!(result.unwrap().uncertain);
+        } else {
+            assert!(
+                result.is_err(),
+                "current caller authority precedes recovery disclosure"
+            );
+        }
+        let retained = {
+            let guard = f.state.journal.lock().unwrap();
+            let retained = guard
+                .as_ref()
+                .unwrap()
+                .as_ref()
+                .unwrap()
+                .lookup(&key)
+                .unwrap()
+                .unwrap();
+            drop(guard);
+            retained
+        };
+        assert!(retained.uncertain);
+        assert!(matches!(
+            retained.update,
+            tilo_actions::InvocationUpdate::Accepted { .. }
+        ));
+        assert!(f.state.pending_invocations.lock().unwrap().is_empty());
+        if scenario == "before" {
+            assert!(
+                futures::FutureExt::now_or_never(f.submitted.notified()).is_none(),
+                "refused caller must not submit an inert receipt either"
+            );
+        }
+        drop(f);
+    }
+}

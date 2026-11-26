@@ -26,7 +26,7 @@ impl Workspaces {
     ///
     /// This service holds no such workspace, this device may not read the resource, it is sealed
     /// and this device holds no keys of it, its history does not open, or it exceeds `maximum`.
-    pub(crate) async fn own_read(
+    pub async fn own_read(
         &self,
         workspace: &str,
         (app, resource): (&str, &str),
@@ -191,7 +191,7 @@ impl Workspaces {
     /// # Errors
     ///
     /// This service holds no such workspace.
-    pub(crate) fn own_documents(&self, workspace: &str) -> Result<Vec<ListedResource>, String> {
+    pub fn own_documents(&self, workspace: &str) -> Result<Vec<ListedResource>, String> {
         let held = self
             .inner
             .readings
@@ -240,7 +240,7 @@ impl Workspaces {
     }
 
     /// The workspaces this service holds, by their ids.
-    pub(crate) fn held_workspaces(&self) -> Vec<String> {
+    pub fn held_workspaces(&self) -> Vec<String> {
         self.inner.readings.workspaces()
     }
 
@@ -253,7 +253,7 @@ impl Workspaces {
     /// Whether `workspace` seals every write of its resources: its device takes part in the
     /// workspace's key group and holds its keys.
     #[cfg(feature = "apps")]
-    pub(crate) fn seals_resources(&self, workspace: &str) -> bool {
+    pub fn seals_resources(&self, workspace: &str) -> bool {
         self.inner
             .readings
             .held(workspace)
@@ -261,7 +261,7 @@ impl Workspaces {
     }
 
     /// Whether `workspace`'s store holds `app`'s record `resource`, whoever may read it.
-    pub(crate) fn holds_resource(&self, workspace: &str, app: &str, resource: &str) -> bool {
+    pub fn holds_resource(&self, workspace: &str, app: &str, resource: &str) -> bool {
         self.inner.readings.held(workspace).is_some_and(|held| {
             let store = held.store.lock_recover();
             self.inner
@@ -280,7 +280,7 @@ impl Workspaces {
     /// # Errors
     /// The service holds no copy of the workspace.
     #[cfg(feature = "apps")]
-    pub(crate) fn resource_revision(
+    pub fn resource_revision(
         &self,
         workspace: &str,
         (app, resource): (&str, &str),
@@ -296,7 +296,7 @@ impl Workspaces {
     /// workspace certifies, a current member, and the resource's Read permission as its governance
     /// grants it.
     #[cfg(feature = "apps")]
-    pub(crate) fn authorizes_resource_read(
+    pub fn authorizes_resource_read(
         &self,
         workspace: &str,
         certificate: &DeviceCert,
@@ -333,7 +333,7 @@ impl Workspaces {
     /// # Errors
     /// The service holds no copy, the record's document does not read, or it exceeds `maximum`.
     #[cfg(feature = "apps")]
-    pub(crate) fn capture_resource(
+    pub fn capture_resource(
         &self,
         workspace: &str,
         (app, resource): (&str, &str),
@@ -509,13 +509,13 @@ fn stored_capture_in(
 
 /// A record of a workspace's store as one read of it captured it.
 #[cfg(feature = "apps")]
-pub(crate) struct StoredCapture {
+pub struct StoredCapture {
     /// What the record stands at: equal revisions at two moments mean it took no write between.
-    pub(crate) revision: [u8; 32],
+    pub revision: [u8; 32],
     /// Its heads.
-    pub(crate) heads: Vec<automerge::ChangeHash>,
+    pub heads: Vec<automerge::ChangeHash>,
     /// The record saved with all of its history.
-    pub(crate) bytes: Vec<u8>,
+    pub bytes: Vec<u8>,
 }
 
 /// The revision a record whose document stands at `heads` is at: any write to it moves it.

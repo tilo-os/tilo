@@ -1,0 +1,938 @@
+//! Original invocation ownership, minted only by dispatch and an actual private worker.
+use super::{
+    AdmittedJoinIdentity, AppBrokerState, Arc, CrdtRoute, PrivateWorkerRegistration,
+    PublishedAction, VerifiedActionCaller, Weak,
+};
+
+/// What the daemon delivered to the app for one admitted invocation. It is
+/// built only from what admission decided, never from a caller's envelope.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InvocationRequest {
+    pub wire_id: u64,
+    pub invocation: tilo_actions::InvocationId,
+    pub address: tilo_actions::ActionAddress,
+    pub argument: Option<String>,
+    pub actor: tilo_actions::Actor,
+    /// Whose view this invocation resolves against, set by the device that
+    /// admitted `actor`. It routes to view state and is never authority.
+    pub presence: Option<tilo_actions::PresenceId>,
+}
+
+#[derive(Clone)]
+pub(super) enum InvocationCaller {
+    NativePerson {
+        invocation: tilo_actions::InvocationId,
+        workspace: String,
+        certificate: Box<tilo_user_identity::DeviceCert>,
+        time: crate::policy_clock::PolicyTime,
+    },
+    Certified {
+        caller: Box<VerifiedActionCaller>,
+        // A host-owned restriction may be stricter than the signed certificate.
+        // Retain it as a restriction, never by modifying certificate evidence.
+        foreign_restriction: bool,
+    },
+    Local {
+        route: CrdtRoute,
+        admitted: Box<AdmittedJoinIdentity>,
+        // Captured at request ownership, never rebound at admission or effect.
+        time: Option<crate::policy_clock::PolicyTime>,
+        /// The app's call of its own action that the person's own press in
+        /// its window made ([`AppBrokerState::pressed_own_call`]): theirs, not
+        /// the app's, so what its code asks while it runs is decided as them.
+        pressed: bool,
+    },
+}
+#[derive(Clone)]
+pub(super) struct OriginalInvocationData {
+    request: InvocationRequest,
+    route: CrdtRoute,
+    kind: tilo_actions::OperationKind,
+    contract: tilo_actions::ActionContract,
+    resource_identity: Option<tilo_actions::ResourceSemanticIdentity>,
+    /// The kind of the resource the action is published on: where it sits
+    /// in the tree the grants decide over.
+    resource_kind: String,
+    caller: InvocationCaller,
+    time: crate::policy_clock::PolicyTime,
+    execution: Option<tilo_actions::remote::ExecutionLease>,
+}
+impl OriginalInvocationData {
+    /// The app the invocation was delivered to, and the resource its action acts on.
+    pub(super) fn acts_on(&self) -> (&str, &str) {
+        (&self.route.app_id, &self.request.address.resource)
+    }
+
+    pub(super) fn display_caller(
+        self: &Arc<Self>,
+        state: &Arc<AppBrokerState>,
+        peer: u64,
+        worker: &PrivateWorkerRegistration,
+        mutates: bool,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        if self.route != worker.route
+            || self.contract.kind
+                < if mutates {
+                    tilo_actions::ActionKind::Outside
+                } else {
+                    tilo_actions::ActionKind::Read
+                }
+        {
+            return Err("The original invocation does not admit display administration.".into());
+        }
+        let original = OriginalInvocation {
+            broker: Arc::downgrade(state),
+            peer,
+            worker: TargetOwnership::Registered(Box::new(worker.clone())),
+            data: self.clone(),
+        };
+        original.check_lifecycle()?;
+        if mutates && original.agent_id().is_some() {
+            return Err("An Agent invocation cannot administer device displays.".into());
+        }
+        let caller = original.certificate()?.clone();
+        drop(original);
+        if mutates
+            && (caller.user_public_key != worker.certificate.user_public_key
+                || caller.device_public_key != worker.certificate.device_public_key)
+        {
+            return Err("The original caller does not own this Settings device channel.".into());
+        }
+        Ok(caller)
+    }
+
+    pub(super) fn permits_clipboard_command(
+        &self,
+        command: &runtime_collab::file_clipboard::Command,
+    ) -> bool {
+        use runtime_collab::file_clipboard::Command;
+        let action = self.request.address.action.as_str();
+        match command {
+            Command::Publish { cut: false, .. } => {
+                self.kind == tilo_actions::OperationKind::Effect
+                    && matches!(action, "copy" | "copy-selection")
+            }
+            Command::Publish { cut: true, .. } => {
+                self.kind == tilo_actions::OperationKind::Effect
+                    && matches!(action, "cut" | "cut-selection")
+            }
+            Command::Paste { .. } => {
+                self.kind == tilo_actions::OperationKind::Effect && action == "paste"
+            }
+            Command::RestoreTrash { .. } => {
+                self.kind == tilo_actions::OperationKind::Effect && action == "restore"
+            }
+            Command::Observe { .. } | Command::Cancel { .. } => {
+                matches!(
+                    action,
+                    "paste" | "restore" | "undo" | "redo" | "recover-clipboard-transfers"
+                )
+            }
+            Command::Undo { .. } => self.clipboard_compensation() && action == "undo",
+            Command::Redo { .. } => self.clipboard_compensation() && action == "redo",
+            Command::Recover { .. } => {
+                self.kind == tilo_actions::OperationKind::Effect
+                    && action == "recover-clipboard-transfers"
+            }
+            Command::Capture { .. } | Command::CaptureNamed { .. } | Command::Release { .. } => {
+                self.kind == tilo_actions::OperationKind::Effect
+                    && matches!(
+                        action,
+                        "copy" | "copy-selection" | "cut" | "cut-selection" | "paste"
+                    )
+            }
+            Command::Snapshot => true,
+        }
+    }
+
+    pub(super) fn clipboard_compensation(&self) -> bool {
+        self.kind == tilo_actions::OperationKind::Document
+            && matches!(self.request.address.action.as_str(), "undo" | "redo")
+    }
+
+    pub(super) fn clipboard_action(&self) -> &str {
+        &self.request.address.action
+    }
+    pub(super) fn clipboard_resource(&self) -> &str {
+        &self.request.address.resource
+    }
+    pub(super) fn clipboard_resource_kind(&self) -> &str {
+        &self.resource_kind
+    }
+
+    pub(super) fn revalidate_clipboard_origin(&self, state: &AppBrokerState) -> Result<(), String> {
+        state.checked_policy_time(Some(&self.time))?;
+        match &self.caller {
+            InvocationCaller::NativePerson {
+                workspace,
+                certificate,
+                ..
+            } => {
+                if workspace != &self.route.cluster_id {
+                    return Err("original native caller route changed".into());
+                }
+                state.current_native_person(workspace, certificate)?;
+            }
+            InvocationCaller::Certified { caller, .. } => {
+                state.current_action_caller(caller)?;
+            }
+            InvocationCaller::Local {
+                route,
+                admitted,
+                time,
+                ..
+            } => {
+                state.checked_policy_time(time.as_ref())?;
+                state
+                    .revalidate_admission(route, admitted)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        Ok(())
+    }
+    pub(super) fn permits_clipboard(&self, needed: tilo_actions::ActionKind) -> bool {
+        self.contract.kind >= needed
+            && self
+                .execution
+                .as_ref()
+                .is_none_or(tilo_actions::remote::ExecutionLease::is_live)
+    }
+
+    fn current_person_certificate(
+        &self,
+        state: &AppBrokerState,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        if self
+            .execution
+            .as_ref()
+            .is_some_and(|lease| !lease.is_live())
+        {
+            return Err("original invocation execution session ended".into());
+        }
+        let (_, now) = state.checked_policy_time(Some(&self.time))?;
+        let certificate = match &self.caller {
+            InvocationCaller::NativePerson {
+                workspace,
+                certificate,
+                ..
+            } => {
+                if workspace != &self.route.cluster_id {
+                    return Err("original native caller route changed".into());
+                }
+                state.current_native_person(workspace, certificate)?;
+                (**certificate).clone()
+            }
+            InvocationCaller::Certified { caller, .. } => {
+                let admitted = state.current_action_caller(caller)?;
+                if admitted.agent_id.is_some() {
+                    return Err("this action requires an authenticated person".into());
+                }
+                admitted
+                    .certificate
+                    .ok_or("original person certificate unavailable")?
+            }
+            InvocationCaller::Local {
+                route,
+                admitted,
+                time,
+                ..
+            } => {
+                state.checked_policy_time(time.as_ref())?;
+                if route != &self.route {
+                    return Err("original local caller route changed".into());
+                }
+                if admitted.agent_id.is_some() {
+                    return Err("this action requires an authenticated person".into());
+                }
+                admitted
+                    .certificate
+                    .clone()
+                    .ok_or("original person certificate unavailable")?
+            }
+        };
+        tilo_user_identity::verify_device_cert_at(&certificate, now)
+            .map_err(|_| "original invocation certificate expired")?;
+        let mut person = AppBrokerState::certified_person(&certificate);
+        if let InvocationCaller::Certified {
+            foreign_restriction,
+            ..
+        } = &self.caller
+        {
+            person.capped |= *foreign_restriction;
+        }
+        let seconds = now / 1_000_000_000;
+        state
+            .membership
+            .as_ref()
+            .ok_or("workspace authority unavailable")?
+            .decide_in_workspace(&self.route.cluster_id, |workspace| {
+                let workspace = workspace.ok_or("original invocation workspace unavailable")?;
+                if !person.may_in(
+                    workspace,
+                    &self.node(workspace),
+                    self.contract.need().kind,
+                    seconds,
+                ) {
+                    return Err("original invocation caller is no longer authorized");
+                }
+                Ok(())
+            })??;
+        Ok(certificate)
+    }
+
+    /// Recover a person's original certified ownership for a native owner turn.
+    /// This is not an allow decision: the owner rechecks current workspace rights.
+    pub(super) fn owner_person_certificate(
+        &self,
+        state: &AppBrokerState,
+        workspace: &str,
+        envelope: &super::InvocationEnvelope,
+    ) -> Result<tilo_user_identity::DeviceCert, String> {
+        if self.route.cluster_id != workspace
+            || self.request.wire_id != envelope.id
+            || self.request.invocation != envelope.invocation
+            || self.request.address.resource != envelope.resource
+            || self.request.address.action != envelope.action
+            || self.request.argument != envelope.argument
+            || self
+                .execution
+                .as_ref()
+                .is_some_and(|lease| !lease.is_live())
+        {
+            return Err("owner invocation original binding changed".into());
+        }
+        self.current_person_certificate(state)
+    }
+
+    /// Where the original action sits in `workspace`'s tree.
+    fn node(&self, workspace: &tilo_desktop_model::Workspace) -> tilo_action_policy::TreePath {
+        tilo_actions::action_node(
+            &workspace.policy.node(),
+            &self.route.app_id,
+            &self.resource_kind,
+            &self.request.address.resource,
+            self.contract.field.as_deref(),
+            &self.request.address.action,
+        )
+    }
+
+    /// Retain the caller's ownership for a host-minted launch child. Native
+    /// admission binds its UUID as well as its original certificate and time.
+    pub(super) fn launch_child_caller(
+        &self,
+        invocation: tilo_actions::InvocationId,
+    ) -> InvocationCaller {
+        let mut caller = self.caller.clone();
+        if let InvocationCaller::NativePerson { invocation: id, .. } = &mut caller {
+            *id = invocation;
+        }
+        caller
+    }
+
+    /// Whether an application invoked this itself on its own connection, as
+    /// the person who admitted it, with no press of theirs behind it, rather
+    /// than the person (at one of the host's apis, or by their own press in
+    /// the app's window), an agent or another member asking for it.
+    pub(super) fn through_app_api(&self) -> bool {
+        matches!(&self.caller, InvocationCaller::Local { admitted, pressed: false, .. } if admitted.agent_id.is_none())
+    }
+
+    /// Whether application `app` invoked this itself through its own api,
+    /// as [`Self::through_app_api`], rather than the person on a
+    /// connection of their own.
+    pub(super) fn through_api_of(&self, app: &str) -> bool {
+        self.through_app_api()
+            && matches!(&self.caller, InvocationCaller::Local { route, .. } if route.app_id == app)
+    }
+
+    /// Whether this was delivered to application `app` in `workspace`.
+    pub(super) fn delivered_to(&self, app: &str, workspace: &str) -> bool {
+        self.route.app_id == app && self.route.cluster_id == workspace
+    }
+
+    pub(super) fn permits_launch_in(&self, workspace: &str) -> bool {
+        self.route.cluster_id == workspace
+            && self.contract.kind >= tilo_actions::ActionKind::Undoable
+            && self
+                .execution
+                .as_ref()
+                .is_none_or(tilo_actions::remote::ExecutionLease::is_live)
+    }
+
+    pub(super) fn capture(
+        request: InvocationRequest,
+        route: CrdtRoute,
+        offered: &PublishedAction,
+        caller: Option<InvocationCaller>,
+        time: Option<crate::policy_clock::PolicyTime>,
+        execution: Option<tilo_actions::remote::ExecutionLease>,
+    ) -> Option<Arc<Self>> {
+        Some(Arc::new(Self {
+            request,
+            route,
+            kind: offered.operation_kind,
+            contract: offered.contract.clone(),
+            resource_identity: offered.semantic_identity.clone(),
+            resource_kind: offered.resource_kind.clone(),
+            caller: caller?,
+            time: time?,
+            execution,
+        }))
+    }
+}
+
+enum TargetOwnership {
+    Registered(Box<PrivateWorkerRegistration>),
+    Native {
+        connection: Arc<super::native_media::LocalAppConnection>,
+        admitted: Box<AdmittedJoinIdentity>,
+    },
+}
+
+/// Immutable original facts; there is no public constructor or deserializer.
+/// This token is not an allow decision. The final owner must recheck its current
+/// certificate, membership and policy under its held guard.
+pub struct OriginalInvocation {
+    broker: Weak<AppBrokerState>,
+    peer: u64,
+    worker: TargetOwnership,
+    data: Arc<OriginalInvocationData>,
+}
+impl OriginalInvocation {
+    pub(super) fn resource_identity(
+        &self,
+    ) -> Result<&tilo_actions::ResourceSemanticIdentity, String> {
+        self.data
+            .resource_identity
+            .as_ref()
+            .filter(|identity| identity.is_valid())
+            .ok_or_else(|| "accepted resource semantic identity unavailable".into())
+    }
+    pub(super) fn check_resource_publication(&self, state: &AppBrokerState) -> Result<(), String> {
+        let identity = self.resource_identity()?;
+        let (surface, offered) = state
+            .published_action(
+                &self.data.route,
+                &self.data.request.address.resource,
+                &self.data.request.address.action,
+            )
+            .ok_or("accepted resource publication retired")?;
+        if !surface.live
+            || surface.peer_id != self.peer
+            || offered.semantic_identity.as_ref() != Some(identity)
+        {
+            return Err(
+                "accepted resource semantic identity changed or publication replaced".into(),
+            );
+        }
+        Ok(())
+    }
+    pub fn request(&self) -> &InvocationRequest {
+        &self.data.request
+    }
+    pub fn route(&self) -> &CrdtRoute {
+        &self.data.route
+    }
+    pub fn contract(&self) -> &tilo_actions::ActionContract {
+        &self.data.contract
+    }
+    pub fn operation_kind(&self) -> tilo_actions::OperationKind {
+        self.data.kind
+    }
+    pub fn policy_time(&self) -> &crate::policy_clock::PolicyTime {
+        &self.data.time
+    }
+    pub fn certificate(&self) -> Result<&tilo_user_identity::DeviceCert, String> {
+        match &self.data.caller {
+            InvocationCaller::Certified { caller, .. } => caller.admitted.certificate.as_ref(),
+            InvocationCaller::Local { admitted, .. } => admitted.certificate.as_ref(),
+            InvocationCaller::NativePerson { certificate, .. } => Some(&**certificate),
+        }
+        .ok_or_else(|| "original invocation certificate unavailable".into())
+    }
+    pub fn agent_id(&self) -> Option<&str> {
+        match &self.data.caller {
+            InvocationCaller::Certified { caller, .. } => caller.admitted.agent_id.as_deref(),
+            InvocationCaller::Local { admitted, .. } => admitted.agent_id.as_deref(),
+            InvocationCaller::NativePerson { .. } => None,
+        }
+    }
+    /// Pure ownership check: no owner callback, workspace snapshot or Store open.
+    /// Its returned sample belongs to the original registered clock and origin.
+    pub fn check_ownership(&self) -> Result<u64, String> {
+        if self
+            .data
+            .execution
+            .as_ref()
+            .is_some_and(|lease| !lease.is_live())
+        {
+            return Err("original invocation execution session ended".into());
+        }
+        let now = self.data.time.now_ns().map_err(|error| error.to_string())?;
+        let state = self
+            .broker
+            .upgrade()
+            .ok_or("original invocation broker retired")?;
+        if !state.is_accepting() {
+            return Err("original invocation broker retired".into());
+        }
+        match &self.worker {
+            TargetOwnership::Registered(worker) => {
+                let workers = state
+                    .host_workers
+                    .lock()
+                    .map_err(|_| "worker registry unavailable")?;
+                if workers
+                    .get(self.peer, &worker.route)
+                    .and_then(|entry| entry.worker_registration.as_ref())
+                    != Some(worker)
+                {
+                    return Err("original invocation worker connection retired or replaced".into());
+                }
+            }
+            TargetOwnership::Native { connection, .. } => {
+                if !connection.current()
+                    || connection.app_id != self.data.route.app_id
+                    || connection.workspace_id != self.data.route.cluster_id
+                {
+                    return Err("original native target connection retired or replaced".into());
+                }
+            }
+        }
+        // Ownership is only who holds the target, and the policy on top of it
+        // is the operation's, the same for every holder: an execution lease
+        // keeps its captured facts through cooperative cancellation, while
+        // outside effects (external moderation, approved checks, private
+        // drafts) also run `check_execution_frontier` on every recheck.
+        drop(state);
+        tilo_user_identity::verify_device_cert_at(self.certificate()?, now)
+            .map_err(|_| "original invocation certificate expired")?;
+        self.data.time.now_ns().map_err(|error| error.to_string())
+    }
+    pub(super) fn check_execution_frontier(&self, state: &AppBrokerState) -> Result<(), String> {
+        let pending = state
+            .pending_invocations
+            .lock()
+            .map_err(|_| "invocation registry unavailable")?;
+        let retained = pending
+            .get(&self.data.request.wire_id)
+            .ok_or("original invocation no longer retained")?;
+        let invalid = retained.peer_id != self.peer
+            || retained.update.is_terminal()
+            || retained.cancellation_requested_at.is_some()
+            || retained
+                .original
+                .as_ref()
+                .is_none_or(|data| !Arc::ptr_eq(data, &self.data));
+        drop(pending);
+        if invalid {
+            return Err("original invocation execution frontier retired or cancelled".into());
+        }
+        Ok(())
+    }
+
+    /// The invocation `invocation` the broker delivered to `channel`'s connection and still
+    /// runs, as it delivered it: what a call that connection makes for it is the work of.
+    ///
+    /// # Errors
+    /// The connection runs no such invocation, two share the id, its target no longer holds
+    /// it, or its caller no longer stands.
+    pub(super) fn served(
+        channel: &super::JoinedChannel,
+        invocation: tilo_actions::InvocationId,
+    ) -> Result<Arc<Self>, String> {
+        let route = channel.route();
+        let admitted = channel
+            .state
+            .revalidate_admission(&route, &channel.verified_identity)
+            .map_err(|error| error.to_string())?;
+        let data = {
+            let pending = channel
+                .state
+                .pending_invocations
+                .lock()
+                .map_err(|_| "invocation registry unavailable")?;
+            let mut matches = pending.values().filter(|pending| {
+                pending.peer_id == channel.peer_id && pending.update.invocation() == invocation
+            });
+            let selected = matches
+                .next()
+                .ok_or("the connection was delivered no such invocation")?;
+            if matches.next().is_some() {
+                return Err("two invocations the connection was delivered share an id".into());
+            }
+            let original = selected
+                .original
+                .clone()
+                .ok_or("original invocation authority unavailable")?;
+            drop(pending);
+            original
+        };
+        if data.route != route {
+            return Err("the invocation was delivered for another record".into());
+        }
+        let worker = if let Some(worker) = admitted.worker_registration.clone() {
+            TargetOwnership::Registered(Box::new(worker))
+        } else {
+            let connection = channel
+                .lease
+                .as_ref()
+                .and_then(|lease| lease.local_media.as_ref())
+                .filter(|connection| connection.current())
+                .cloned()
+                .ok_or("native target process ownership unavailable")?;
+            admitted
+                .certificate
+                .as_ref()
+                .ok_or("native target certificate unavailable")?;
+            TargetOwnership::Native {
+                connection,
+                admitted: Box::new(admitted),
+            }
+        };
+        let original = Arc::new(Self {
+            broker: Arc::downgrade(&channel.state),
+            peer: channel.peer_id,
+            worker,
+            data,
+        });
+        original.check_execution_frontier(&channel.state)?;
+        original.check_lifecycle()?;
+        Ok(original)
+    }
+
+    pub(super) fn for_external_moderation(
+        channel: &super::JoinedChannel,
+        request: &runtime_collab::external_moderation::Request,
+    ) -> Result<Arc<Self>, String> {
+        request.validate()?;
+        let invocation = request
+            .invocation
+            .parse::<tilo_actions::InvocationId>()
+            .map_err(|_| "external moderation names no invocation")?;
+        let original = Self::served(channel, invocation)?;
+        let data = &original.data;
+        if data.route.app_id != "so.tilo.store"
+            || data.kind != tilo_actions::OperationKind::Effect
+            || data.contract.kind != tilo_actions::ActionKind::Outside
+        {
+            return Err("external moderation target action or contract mismatch".into());
+        }
+        // An Outside grant authorizes a capability, not an exact signed
+        // assertion. Admission of a Confirm contract consumes the host's
+        // one-use token bound to this actor, action and exact arguments.
+        // Refuse a Store publication that tries to remove that policy.
+        if data.contract.confirmation != tilo_actions::ConfirmationPolicy::Confirm {
+            return Err("external moderation requires exact system confirmation".into());
+        }
+        let argument = data
+            .request
+            .argument
+            .as_deref()
+            .ok_or("external moderation arguments absent")?;
+        runtime_collab::external_moderation::validate_action(
+            &data.request.address.action,
+            argument
+                .strip_prefix(tilo_actions::ARGUMENTS_JSON_PREFIX)
+                .unwrap_or(argument),
+            &request.operation,
+        )?;
+        original.check_resource_publication(&channel.state)?;
+        Ok(original)
+    }
+
+    /// The original person caller, decided while `state` can still say who
+    /// hosts the workspace; `None` for an agent caller.
+    fn original_person(&self) -> Result<Option<super::BrokerActor>, String> {
+        if self.agent_id().is_some() {
+            return Ok(None);
+        }
+        let certificate = self.certificate()?;
+        let mut person = AppBrokerState::certified_person(certificate);
+        if let InvocationCaller::Certified {
+            foreign_restriction,
+            ..
+        } = &self.data.caller
+        {
+            // Never let a weaker certificate erase the host's retained restriction.
+            person.capped |= *foreign_restriction;
+        }
+        Ok(Some(person))
+    }
+    fn original_actor(
+        &self,
+        person: Option<super::BrokerActor>,
+        workspace: &tilo_desktop_model::Workspace,
+        seconds: u64,
+    ) -> Result<super::BrokerActor, String> {
+        if let Some(person) = person {
+            return Ok(person);
+        }
+        let agent = self
+            .agent_id()
+            .ok_or("original invocation caller unavailable")?;
+        let actor = agent_actor(agent, self.certificate())?;
+        if !actor.reads_in(workspace, seconds) {
+            return Err("original agent membership expired".into());
+        }
+        Ok(actor)
+    }
+    pub(crate) fn check_lifecycle(&self) -> Result<(), String> {
+        self.check_ownership()?;
+        let state = self
+            .broker
+            .upgrade()
+            .ok_or("original invocation broker retired")?;
+        state.checked_policy_time(Some(&self.data.time))?;
+        match &self.worker {
+            TargetOwnership::Registered(worker) => {
+                let admitted = state
+                    .host_workers
+                    .lock()
+                    .map_err(|_| "worker registry unavailable")?
+                    .get(self.peer, &worker.route)
+                    .cloned()
+                    .ok_or("original worker connection retired")?;
+                if admitted.worker_registration.as_ref() != Some(worker) {
+                    return Err("original worker connection replaced".into());
+                }
+                state
+                    .revalidate_admission(&worker.route, &admitted)
+                    .map_err(|error| error.to_string())?;
+            }
+            TargetOwnership::Native { admitted, .. } => {
+                state
+                    .revalidate_admission(&self.data.route, admitted)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        match &self.data.caller {
+            InvocationCaller::NativePerson {
+                workspace,
+                certificate,
+                ..
+            } => {
+                state.current_native_person(workspace, certificate)?;
+            }
+            InvocationCaller::Certified { caller, .. } => {
+                state.current_action_caller(caller)?;
+            }
+            InvocationCaller::Local {
+                route,
+                admitted,
+                time,
+                ..
+            } => {
+                state.checked_policy_time(time.as_ref())?;
+                state
+                    .revalidate_admission(route, admitted)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
+        let membership = state
+            .membership
+            .clone()
+            .ok_or("workspace authority unavailable")?;
+        let person = self.original_person()?;
+        drop(state);
+        let seconds = self.data.time.now_ns().map_err(|error| error.to_string())? / 1_000_000_000;
+        membership.decide_in_workspace(&self.data.route.cluster_id, |workspace| {
+            let workspace = workspace.ok_or("original invocation workspace unavailable")?;
+            let actor = self.original_actor(person, workspace, seconds)?;
+            if !actor.may_in(
+                workspace,
+                &self.data.node(workspace),
+                self.data.contract.need().kind,
+                seconds,
+            ) {
+                return Err("original invocation caller is no longer authorized".to_string());
+            }
+            Ok(())
+        })??;
+        self.check_ownership()?;
+
+        Ok(())
+    }
+}
+impl tilo_actions::remote::Serving for OriginalInvocation {
+    fn invocation(&self) -> tilo_actions::InvocationId {
+        self.data.request.invocation
+    }
+    fn app(&self) -> &str {
+        &self.data.route.app_id
+    }
+    fn workspace(&self) -> &str {
+        &self.data.route.cluster_id
+    }
+    fn record(&self) -> &str {
+        &self.data.route.document_id
+    }
+    fn address(&self) -> &tilo_actions::ActionAddress {
+        &self.data.request.address
+    }
+    fn kind(&self) -> tilo_actions::OperationKind {
+        self.data.kind
+    }
+    fn contract(&self) -> &tilo_actions::ActionContract {
+        &self.data.contract
+    }
+    fn argument(&self) -> Option<&str> {
+        self.data.request.argument.as_deref()
+    }
+    fn resource_identity(&self) -> Result<&tilo_actions::ResourceSemanticIdentity, String> {
+        Self::resource_identity(self)
+    }
+    fn recheck(&self) -> Result<(), String> {
+        let state = self
+            .broker
+            .upgrade()
+            .ok_or("original invocation broker retired")?;
+        self.check_execution_frontier(&state)?;
+        self.check_resource_publication(&state)?;
+        drop(state);
+        self.check_lifecycle()?;
+        let state = self
+            .broker
+            .upgrade()
+            .ok_or("original invocation broker retired")?;
+        self.check_execution_frontier(&state)
+    }
+}
+
+/// What a test asks for the original invocation a worker was delivered.
+#[cfg(test)]
+pub(crate) type OriginalLookup =
+    Arc<dyn Fn(&InvocationRequest) -> Result<Arc<OriginalInvocation>, String> + Send + Sync>;
+
+#[cfg(test)]
+impl AppBrokerState {
+    /// Connect one local host worker, with a lookup of the original
+    /// invocation a delivered request belongs to on that very connection: the
+    /// facts the daemon's rechecks read. A second socket with an equal
+    /// route and certificate is another registration.
+    pub(crate) fn connect_local_worker_with_originals(
+        self: &Arc<Self>,
+        route: CrdtRoute,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(tilo_socket::Stream, OriginalLookup), String> {
+        let registration = uuid::Uuid::new_v4();
+        let stream =
+            self.connect_local_worker_registered(route.clone(), certificate, Some(registration))?;
+        let daemon = Arc::downgrade(self);
+        let worker = PrivateWorkerRegistration {
+            route,
+            certificate: certificate.clone(),
+            identity: registration,
+        };
+        let lookup = Arc::new(move |request: &InvocationRequest| {
+            let state = daemon.upgrade().ok_or("original invocation retired")?;
+            let (peer, data) = {
+                let registry = state
+                    .pending_invocations
+                    .lock()
+                    .map_err(|_| "invocation registry unavailable")?;
+                let pending = registry
+                    .get(&request.wire_id)
+                    .ok_or("original invocation is not retained")?;
+                let data = pending
+                    .original
+                    .clone()
+                    .ok_or("original invocation authority was not captured")?;
+                if data.request != *request
+                    || data.route != worker.route
+                    || pending.update.invocation() != request.invocation
+                {
+                    return Err(
+                        "delivered invocation differs from original request or worker route"
+                            .to_string(),
+                    );
+                }
+                let peer = pending.peer_id;
+                drop(registry);
+                (peer, data)
+            };
+            let original = Arc::new(OriginalInvocation {
+                broker: daemon.clone(),
+                peer,
+                worker: TargetOwnership::Registered(Box::new(worker.clone())),
+                data,
+            });
+            original.check_lifecycle()?;
+            Ok(original)
+        });
+        Ok((stream, lookup))
+    }
+}
+
+/// The actor an agent's request runs as: the agent, tied to the person whose
+/// certificate it presented.
+///
+/// An agent a person delegated acts for them, never beyond them. An agent
+/// whose certificate cannot be read cannot be tied to its person at all, so
+/// its work is refused for that reason rather than checked against the agent
+/// alone, where the refusal would read as a lack of rights instead of a
+/// broken certificate: [`agent_actor`] is where that reason is made.
+fn agent_actor(
+    agent: &str,
+    certificate: Result<&tilo_user_identity::DeviceCert, String>,
+) -> Result<super::BrokerActor, String> {
+    let certificate = certificate
+        .map_err(|error| format!("the agent's person could not be verified: {error}"))?;
+    let person = super::person_id_for_root(certificate.user_public_key);
+    Ok(super::BrokerActor::agent(agent, person.clone()).for_person(person))
+}
+
+#[cfg(test)]
+mod agent_actor_tests {
+    use super::super::{BrokerActor, person_id_for_root};
+    use super::agent_actor;
+
+    /// A certificate issued by a person to a device of theirs.
+    fn certificate(user: u8, device: u8) -> tilo_user_identity::DeviceCert {
+        let person = ed25519_dalek::SigningKey::from_bytes(&[user; 32]);
+        let this = ed25519_dalek::SigningKey::from_bytes(&[device; 32]);
+        let mut cert = tilo_user_identity::DeviceCert {
+            user_public_key: person.verifying_key().to_bytes(),
+            device_public_key: this.verifying_key().to_bytes(),
+            device_label: "an agent".to_owned(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 0,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut cert, &person).expect("a certified device");
+        cert
+    }
+
+    tilo_test_env::scenario! {
+        fn an_agents_request_acts_for_its_certified_person;
+
+        phase an_agents_request_acts_for_its_person;
+        // An agent whose certificate reads is tied to the person who delegated
+        // it: it acts for them, never on its own.
+        {
+            let cert = certificate(1, 2);
+            let actor = agent_actor("one", Ok(&cert)).expect("the agent's person is verified");
+            assert_eq!(
+                actor,
+                BrokerActor::agent("one", person_id_for_root(cert.user_public_key)).for_person(person_id_for_root(cert.user_public_key))
+            );
+        }
+
+        phase an_agent_without_its_persons_certificate_is_refused_for_that_reason;
+        // An agent whose certificate does not read is refused for that reason,
+        // which is what the person reads on the action they took.
+        {
+            let refusal = agent_actor(
+                "one",
+                Err("original invocation certificate unavailable".into()),
+            )
+            .expect_err("an agent nobody can verify is refused");
+            assert_eq!(
+                refusal,
+                "the agent's person could not be verified: original invocation certificate unavailable"
+            );
+        }
+    }
+}

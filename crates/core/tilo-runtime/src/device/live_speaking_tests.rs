@@ -746,8 +746,8 @@ fn app_connection(
 #[test]
 fn a_shell_that_ends_leaves_the_person_out_of_the_call() {
     use collab_types::presence::CallPresence;
+    use tilo_app_host::shell::ShellSpeaking as _;
     use tilo_live::presence::Call;
-    use tilo_workspace_service::apps::shell::ShellSpeaking as _;
 
     let Some(root) = isolated_root(SHELL_ENDED_TEST) else {
         return;

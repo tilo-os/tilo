@@ -22,11 +22,7 @@ path = "src/lib.rs"
 # device's installed packages and identity through, exactly as a dev build of
 # the desktop does. NEVER SHIP THIS: it accepts fixed credentials from the
 # environment (tools/policy/check_dev_overrides_contract.py).
-dev-overrides = [
-  "tilo-identity/throwaway-test-identity",
-  "package-store/dev-overrides",
-  "launcher/dev-overrides",
-]
+dev-overrides = ["tilo-identity/throwaway-test-identity", "package-store/dev-overrides", "launcher/dev-overrides"]
 # A machine that keeps a public workspace runs the apps and agents that answer in
 # it: the server's agent session, which links every web app.
 agents = ["tilo-server/agents"]
@@ -134,6 +130,7 @@ neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
 # The workspace host every device runs, which the profile's own workspace is placed on. Its agents
 # are the ones this machine runs for the workspaces it holds, on every platform it serves.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["agents", "apps", "device-keys", "files"] }
+tilo-app-host = { path = "../app-host", features = ["agents", "files"] }
 # The device's search index, which `search#find` is answered from.
 tilo-workspace-search = { path = "../workspace-search" }
 # The host services the broker is built with, the person's own devices among them.
@@ -250,6 +247,7 @@ tilo-mcp = { path = "../tilo-mcp", features = ["test-support"] }
 tilo-actions = { path = "../actions", features = ["test-support"] }
 # The channel fixtures owner tests seal writes with.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["apps", "device-keys", "files", "test-support"] }
+tilo-app-host = { path = "../app-host", features = ["agents", "files", "test-support"] }
 # The join protocol a runtime joins workspaces over.
 # The host whose workspaces a runtime joins.
 tilo-peer-state = { path = "../tilo-peer-state", features = ["test-support"] }

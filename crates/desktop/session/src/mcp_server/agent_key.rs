@@ -277,7 +277,7 @@ impl AgentKey {
                 // The person may have revoked it since, from their device list: their
                 // revocations, as this device reads them, say.
                 if let Some(person) = &self.person
-                    && let Ok(keys) = tilo_workspace_service::agents::agent_keys::this_device()
+                    && let Ok(keys) = tilo_app_host::agents::agent_keys::this_device()
                     && matches!(keys.revocation(person, &self.grant), Ok(Some(_)))
                 {
                     self.state = GrantState::Revoked;
@@ -345,7 +345,7 @@ fn certify(grant: [u8; 32]) -> Certified {
         .transpose()?;
     // Every device of the person's lists it among their keys, as an agent's.
     if let Some(cert) = &cert
-        && let Ok(keys) = tilo_workspace_service::agents::agent_keys::this_device()
+        && let Ok(keys) = tilo_app_host::agents::agent_keys::this_device()
     {
         keys.keep_key(cert);
     }

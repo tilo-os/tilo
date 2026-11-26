@@ -93,7 +93,7 @@ pub(crate) fn follow_window_notes(
             let read = tilo_actions::remote::ResourceReadRequest {
                 workspace: workspace.clone(),
                 app: tilo_desktop_model::commands::APP_ID.to_owned(),
-                record: tilo_workspace_service::window_notes::RESOURCE.to_owned(),
+                record: tilo_app_host::window_notes::RESOURCE.to_owned(),
                 joined: false,
                 wait_ms: after.is_some().then_some(FOLLOW_WAIT_MS),
                 after: after.clone(),
@@ -106,8 +106,7 @@ pub(crate) fn follow_window_notes(
                     .and_then(|first| first.get("value"))
                     .ok_or_else(|| "the reading holds no record".to_owned())?;
                 let reading = serde_json::to_vec(raw).map_err(|error| error.to_string())?;
-                let notes =
-                    tilo_workspace_service::window_notes::WindowNotes::take_reading(&reading)?;
+                let notes = tilo_app_host::window_notes::WindowNotes::take_reading(&reading)?;
                 *routes.lock_recover() = notes.routes();
                 Ok(readings
                     .get("revision")
@@ -456,9 +455,10 @@ impl Sources {
                 subtitle: summary.subtitle,
                 icon: summary.icon,
                 value: summary.value,
-                playing: summary.controls.iter().any(|c| {
-                    c.transport() == Some(TransportControl::PlayPause { playing: true })
-                }),
+                playing: summary
+                    .controls
+                    .iter()
+                    .any(|c| c.transport() == Some(TransportControl::PlayPause { playing: true })),
                 controls: summary
                     .controls
                     .into_iter()

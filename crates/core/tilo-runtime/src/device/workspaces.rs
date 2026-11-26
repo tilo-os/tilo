@@ -19,13 +19,13 @@ use std::{
 
 use ed25519_dalek::SigningKey;
 use tilo_actions::remote::invocation_record::Invocations;
+use tilo_app_host::services::WorkspaceGrants;
 use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_identity::broker::WorkspaceMembership;
 use tilo_identity::identity_store::DeviceIdentity;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ReadFuture, Workspaces as PeerWorkspaces};
 use tilo_session_client::device::Device as Entered;
-use tilo_workspace_service::apps::services::WorkspaceGrants;
 use tilo_workspace_service::content::{ContentShelf, RouteContent};
 use tilo_workspace_service::own_device::{self, KeyService};
 use tilo_workspace_service::service::{ServiceConfig, WorkspaceService};
@@ -495,7 +495,7 @@ impl ServiceWorkspaces {
     }
 
     /// The device's key service.
-    pub(crate) fn keys(&self) -> tilo_workspace_service::apps::workspace_keys::KeyProvider {
+    pub(crate) fn keys(&self) -> tilo_app_host::workspace_keys::KeyProvider {
         self.keys.as_ref().map(KeyService::keys).unwrap_or_default()
     }
 
@@ -883,24 +883,18 @@ impl ServiceWorkspaces {
     /// this device's own writes reach the workspace's other devices.
     pub(crate) fn follow_admitted_writes(
         &self,
-        brokers: Arc<Mutex<tilo_workspace_service::apps::collab_core::BrokerChannels>>,
-        fanout: Arc<tilo_workspace_service::apps::collab_broker::FanoutState>,
+        brokers: Arc<Mutex<tilo_app_host::collab_core::BrokerChannels>>,
+        fanout: Arc<tilo_app_host::collab_broker::FanoutState>,
     ) {
         let delivering = Arc::clone(&fanout);
-        tilo_rt::app().spawn(
-            tilo_workspace_service::apps::collab_inbound::follow_workspace_writes(
-                self.copies(),
-                fanout,
-                move |document| {
-                    tilo_workspace_service::apps::collab_inbound::deliver(
-                        &brokers,
-                        &delivering,
-                        document,
-                    );
-                },
-                || {},
-            ),
-        );
+        tilo_rt::app().spawn(tilo_app_host::collab_inbound::follow_workspace_writes(
+            self.copies(),
+            fanout,
+            move |document| {
+                tilo_app_host::collab_inbound::deliver(&brokers, &delivering, document);
+            },
+            || {},
+        ));
     }
 
     /// The record content service of these workspaces, once it is made.
@@ -916,7 +910,7 @@ impl ServiceWorkspaces {
     /// Where an app's search entries are published, once the daemon keeps the index.
     pub(crate) fn search_index_services(
         &self,
-    ) -> Option<Arc<dyn tilo_workspace_service::apps::services::SearchIndexServices>> {
+    ) -> Option<Arc<dyn tilo_app_host::services::SearchIndexServices>> {
         Some(self.search.get()?.publications())
     }
 
@@ -997,7 +991,7 @@ impl WorkspaceGrants for MemberListGrants {
 /// or not a desktop session runs. What each spent is counted by the desktop session.
 pub(crate) struct RecordedAgents {
     workspaces: std::sync::Weak<ServiceWorkspaces>,
-    session: Arc<tilo_workspace_service::apps::seat::SeatAgents>,
+    session: Arc<tilo_app_host::seat::SeatAgents>,
     /// Each workspace's agents as its list was last read, followed from its writes: what the
     /// app runtime's own thread is answered from, since it never waits on the workspaces.
     followed: Arc<tilo_workspace_service::workspaces::FollowedAgents>,
@@ -1007,7 +1001,7 @@ impl RecordedAgents {
     /// The agents `workspaces` record, followed from now on the app runtime.
     pub(crate) fn new(
         workspaces: &Arc<ServiceWorkspaces>,
-        session: Arc<tilo_workspace_service::apps::seat::SeatAgents>,
+        session: Arc<tilo_app_host::seat::SeatAgents>,
     ) -> Self {
         let followed = tilo_workspace_service::workspaces::FollowedAgents::new(workspaces.copies());
         tilo_rt::app().spawn(Arc::clone(&followed).follow());
@@ -1019,8 +1013,8 @@ impl RecordedAgents {
     }
 }
 
-impl tilo_workspace_service::apps::services::AgentRoster for RecordedAgents {
-    fn listed(&self, workspace: &str) -> Vec<tilo_workspace_service::apps::services::ListedAgent> {
+impl tilo_app_host::services::AgentRoster for RecordedAgents {
+    fn listed(&self, workspace: &str) -> Vec<tilo_app_host::services::ListedAgent> {
         let Some(workspaces) = self.workspaces.upgrade() else {
             return Vec::new();
         };
@@ -1195,7 +1189,7 @@ impl ServiceWorkspaces {
             },
             endpoint.clone(),
             tilo_workspace_service::own_device::key_groups(
-                tilo_workspace_service::apps::workspace_keys::KeyProvider::default(),
+                tilo_app_host::workspace_keys::KeyProvider::default(),
                 None,
                 None,
                 None,

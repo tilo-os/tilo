@@ -9,8 +9,8 @@ use std::collections::HashMap;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use tilo_app_host::services::{Caller, PublishedResources, Reading, ResourceWatch};
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::apps::services::{Caller, PublishedResources, Reading, ResourceWatch};
 use tokio::sync::{mpsc, oneshot};
 
 /// The providers a daemon publishes through, by the resources each answers.

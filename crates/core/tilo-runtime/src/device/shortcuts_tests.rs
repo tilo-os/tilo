@@ -5,11 +5,11 @@
 use std::sync::Arc;
 
 use tilo_action_policy::MemberId;
-use tilo_desktop_model::WorkspaceId;
-use tilo_workspace_service::apps::automation::ShortcutChange;
-use tilo_workspace_service::apps::services::{
+use tilo_app_host::automation::ShortcutChange;
+use tilo_app_host::services::{
     ShortcutLibraryRequest, ShortcutLibraryServices, WorkspaceAuthority,
 };
+use tilo_desktop_model::WorkspaceId;
 
 use super::Shortcuts;
 use crate::device::workspaces::ServiceWorkspaces;

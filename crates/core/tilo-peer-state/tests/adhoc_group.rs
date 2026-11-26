@@ -97,7 +97,7 @@ impl Desktop {
             },
             own_device::vault_key(&key),
             endpoint.clone(),
-            Arc::new(tilo_workspace_service::apps::workspace_keys::NoSealChecks),
+            Arc::new(tilo_app_host::workspace_keys::NoSealChecks),
             // Every device of the workspace holds the keys its members seal under, as the
             // devices of a real workspace do: the fixture writes with those same keys, so the
             // service opens what it takes in and hands over.

@@ -37,6 +37,7 @@ use std::{
 };
 
 use iroh_blobs::Hash;
+use tilo_app_host::route::CrdtRoute;
 use tilo_fs::{
     hydration::{FileKeys, Hydrator},
     identity::PeerCredentials,
@@ -44,7 +45,6 @@ use tilo_fs::{
     tree_sync::{FILES_APP, TreeSync},
 };
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::apps::route::CrdtRoute;
 use tilo_workspace_service::content::RouteContent;
 use tilo_workspace_service::files::WorkspaceSource;
 use tilo_workspace_service::workspaces::Workspaces;

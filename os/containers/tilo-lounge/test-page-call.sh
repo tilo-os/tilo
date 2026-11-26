@@ -21,7 +21,7 @@ mkdir -p "$work"
 trap stop_lounge EXIT
 # What the server said of the page's asks, when a call step did not land: a
 # page that shows a call no one is in says why nowhere else.
-export LOUNGE_LOG=${LOUNGE_LOG:-tilo_agent_session=debug,tilo_server=info,tilo_workspace_service::agents=info,warn}
+export LOUNGE_LOG=${LOUNGE_LOG:-tilo_agent_session=debug,tilo_server=info,tilo_app_host::agents=info,warn}
 start_lounge "$bundle" "$work"
 keep_page_lines() {
   [[ -s ${log:-} ]] || return 0

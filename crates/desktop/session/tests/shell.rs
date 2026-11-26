@@ -3809,14 +3809,11 @@ struct Nearby {
 
 impl tilo_session::Service for Nearby {
     fn resources(&self) -> Vec<tilo_actions::ResourceSpec> {
-        vec![tilo_workspace_service::apps::nearby_send::resource(
-            "Nearby Send",
-        )]
+        vec![tilo_app_host::nearby_send::resource("Nearby Send")]
     }
 
     fn read(&self, resource: &str) -> Option<serde_json::Value> {
-        (resource == tilo_workspace_service::apps::nearby_send::RESOURCE)
-            .then(|| self.reading.clone())
+        (resource == tilo_app_host::nearby_send::RESOURCE).then(|| self.reading.clone())
     }
 
     fn invoke(
@@ -3825,7 +3822,7 @@ impl tilo_session::Service for Nearby {
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
     ) -> Result<tilo_service::Started, tilo_actions::ApiError> {
-        if resource != tilo_workspace_service::apps::nearby_send::RESOURCE {
+        if resource != tilo_app_host::nearby_send::RESOURCE {
             return Err(tilo_actions::ApiError::Unknown(
                 tilo_actions::ActionAddress::new(resource, action),
             ));

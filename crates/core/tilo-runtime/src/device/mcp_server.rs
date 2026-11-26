@@ -17,11 +17,8 @@ pub use tilo_actions::remote::mcp_server::RESOURCE as SERVER;
 pub fn published(workspaces: &Arc<crate::device::workspaces::ServiceWorkspaces>) -> Served {
     let reading = Arc::clone(workspaces);
     let changing = Arc::clone(workspaces);
-    let read: Arc<Read> = Arc::new(
-        move |_caller: &tilo_workspace_service::apps::services::Caller| {
-            reading.copies().mcp_reading()
-        },
-    );
+    let read: Arc<Read> =
+        Arc::new(move |_caller: &tilo_app_host::services::Caller| reading.copies().mcp_reading());
     let changes: Arc<Changes> = Arc::new(move || changing.copies().mcp_changes());
     Served::new(SERVER, read, changes)
 }
@@ -31,7 +28,7 @@ mod tests {
     use std::sync::Mutex as StdMutex;
 
     use serde_json::Value;
-    use tilo_workspace_service::apps::services::{Caller, PublishedResources};
+    use tilo_app_host::services::{Caller, PublishedResources};
     use tokio::sync::{mpsc, watch};
 
     use super::*;

@@ -13,10 +13,10 @@ use tilo_actions::remote::{
     RESOURCE_PROVIDER, ReadAnswer, ReceiptStatus, RemoteActionMessage, RemoteActionTarget,
     ResourceReadRequest,
 };
+use tilo_app_host::services::HostedWorkspaces as _;
 use tilo_desktop_model::WorkspaceId;
 use tilo_identity::sources::{DeviceTrust as _, DevicesTrust};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, PlacedRecords};
-use tilo_workspace_service::apps::services::HostedWorkspaces as _;
 use tilo_workspace_service::environment::{
     ENVIRONMENT_RECORD, SETTINGS, VM_APP, VM_RECORD, document_channel, vm_placed_records,
 };

@@ -559,7 +559,7 @@ impl Workspaces {
     /// # Errors
     /// The vault does not open here, `change` refused, or what it changed was not written: then
     /// nothing it released is answered.
-    pub(crate) async fn changing_vault<T>(
+    pub async fn changing_vault<T>(
         &self,
         workspace: &str,
         (acting, call): (Option<&Acting>, Option<&InvokeRequest>),

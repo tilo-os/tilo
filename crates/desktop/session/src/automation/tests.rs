@@ -108,7 +108,7 @@ fn a_pressed_chord_runs_its_shortcut_through_the_dispatch_as_its_saver() {
     assert_eq!(calls.len(), 1, "one press, one call");
     let (caller, call) = &calls[0];
     assert_eq!(
-        tilo_workspace_service::apps::automation::run_target(&call.target.address),
+        tilo_app_host::automation::run_target(&call.target.address),
         Some("tidy"),
         "the shortcut's run"
     );
@@ -123,7 +123,7 @@ fn a_pressed_chord_runs_its_shortcut_through_the_dispatch_as_its_saver() {
     }))
     .expect("shortcut JSON");
     assert_eq!(
-        tilo_workspace_service::apps::automation::run_trigger(call.context.as_ref(), &shortcut),
+        tilo_app_host::automation::run_trigger(call.context.as_ref(), &shortcut),
         tilo_automation::InvocationTrigger::Fired(pressed),
         "the key that started it, chord and all"
     );

@@ -229,6 +229,7 @@ members = [
     "crates/core/tilo-server-client",
     "crates/core/tilo-server-protocol",
     "crates/core/tilo-workspace-service",
+    "crates/core/app-host",
     "crates/core/workspace-search",
     "crates/core/invocation-journal",
 
