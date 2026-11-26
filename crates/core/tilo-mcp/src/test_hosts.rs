@@ -238,18 +238,6 @@ pub fn run<F: std::future::Future>(future: F) -> F::Output {
         .block_on(future)
 }
 
-/// Run `future` on a current-thread runtime whose clock moves only when
-/// every task waits, so "time passed and nothing happened" is exact: every
-/// piece of work that could happen first has.
-pub fn run_paused<F: std::future::Future>(future: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
-        .enable_all()
-        .start_paused(true)
-        .build()
-        .unwrap()
-        .block_on(future)
-}
-
 /// One `tools/call` of `server`, answering with its `result`.
 pub async fn tool<H: ActionProvider + Send + Sync + 'static>(
     server: &McpServer<H>,

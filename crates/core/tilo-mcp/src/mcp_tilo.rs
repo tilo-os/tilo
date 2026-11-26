@@ -837,24 +837,6 @@ pub struct PersonStep {
     pub answer: Value,
 }
 
-impl PersonStep {
-    /// What the task's host answered with, as a step of the person's: what the API read the
-    /// answer as (`text`, the step's account of what it changed included), its output's lines,
-    /// and whether it ran to its end.
-    #[must_use]
-    pub fn of(text: String, answer: Value) -> Self {
-        let failed = !matches!(
-            answer.get("state").and_then(Value::as_str),
-            Some("done" | "preview" | "suspended")
-        );
-        Self {
-            text,
-            failed,
-            answer,
-        }
-    }
-}
-
 /// Every resource literal (`@app.Type:id`) `text` names, in the order it names them.
 pub fn literals_in(text: &str) -> Vec<String> {
     let mut found = Vec::new();
@@ -1413,32 +1395,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             failed,
             answer,
         })
-    }
-
-    /// Run `source` as the caller this connection acts as, on the program connection `fd` into
-    /// the task host already going (shell.md §8.1: a person's line in a run's conversation): the
-    /// same host and `let` scope as the agent's own `tilo` calls, each on a connection of its
-    /// own. What the program reads and changes comes back on `fd` and is done here as that
-    /// caller, exactly as a `tilo` call's is.
-    ///
-    /// # Errors
-    /// The connection is unusable, or the host answered nothing.
-    pub async fn program_on(
-        &self,
-        connection: tilo_socket::Stream,
-        source: &str,
-    ) -> Result<PersonStep, String> {
-        let mut task = TaskLink::new(connection).map_err(|error| error.to_string())?;
-        let author = self.program_author();
-        let resolved = {
-            let programs = self.programs.lock_recover();
-            resolve_placed(source, &programs)?
-        };
-        let source = resolved.source.clone();
-        let mut answer = Box::pin(self.serve_run(&mut task, &source, Go::Run, &author)).await?;
-        resolved.place_detail(&mut answer, &mut self.programs.lock_recover());
-        let text = self.answered(&source, &answer).text;
-        Ok(PersonStep::of(text, answer))
     }
 
     /// Run `source` in the task's host as `author`, read back: its text, its host answer and

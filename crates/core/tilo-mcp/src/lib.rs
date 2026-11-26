@@ -110,7 +110,7 @@ pub struct McpServer<H> {
     invoking: InFlight,
     /// The short names compact pages gave long resource ids.
     handles: std::sync::Mutex<page::Handles>,
-    open_files: std::sync::Arc<OpenFiles>,
+    open_files: OpenFiles,
     /// Where answers read the content an action produced, to show it.
     media: Option<std::sync::Arc<dyn crate::MediaReader>>,
     /// The app each of this session's invocations went to, so a later
@@ -270,11 +270,11 @@ fn mark_untrusted(value: &mut Value) {
 }
 
 /// The instance each file last went to through the action its app declares
-/// as opening paths, shared by every session of an endpoint: opening
-/// that file again returns that instance instead of starting another that
-/// opens it a second time.
+/// as opening paths, as this session sent it there: opening that file again
+/// returns that instance instead of starting another that opens it a second
+/// time.
 #[derive(Default)]
-pub struct OpenFiles(std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, u64>>);
+struct OpenFiles(std::sync::Mutex<std::collections::HashMap<std::path::PathBuf, u64>>);
 
 impl OpenFiles {
     const MAX: usize = 1024;
@@ -662,7 +662,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             detail: std::sync::Mutex::new(Detail::Compact),
             invoking: InFlight::default(),
             handles: std::sync::Mutex::default(),
-            open_files: std::sync::Arc::default(),
+            open_files: OpenFiles::default(),
             media: None,
             produced_by: std::sync::Mutex::default(),
             produced_effect: std::sync::Mutex::default(),
@@ -960,13 +960,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         {
             fields.insert(IMAGES.into(), Value::Array(read));
         }
-    }
-    /// Share which instance holds which file with the endpoint's other
-    /// sessions.
-    #[must_use]
-    pub fn with_open_files(mut self, open_files: std::sync::Arc<OpenFiles>) -> Self {
-        self.open_files = open_files;
-        self
     }
     fn handles(&self) -> std::sync::MutexGuard<'_, page::Handles> {
         self.handles.lock_recover()
