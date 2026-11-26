@@ -594,61 +594,96 @@ fn scrolled(case: &Case, peer: Option<(f64, f64)>, screens: &mut Screens) -> Vec
     .unwrap()
 }
 
-/// Every case presents what a full render shows ([`scroll`] holds each
-/// checked frame to it), and scrolls as its row says.
-#[test]
-fn a_scrolled_window_presents_what_a_full_render_shows() {
+/// Case `index` of [`cases`] and [`edge_cases`] presents what a full render shows
+/// ([`scroll`] holds each checked frame to it), and scrolls as its row says.
+fn presents_what_a_full_render_shows(index: usize) {
     let mut screens = Screens::new();
-    for case in cases() {
-        let name = &case.name;
-        let runs = scrolled(&case, case.surface.peer, &mut screens);
-        let alone = case
-            .surface
-            .peer
-            .map(|_| scrolled(&case, None, &mut screens));
-        eprintln!("{name}: {runs:?}; without the peer {alone:?}");
-        let scale = case.surface.scale;
-        let window = 800.0 * 600.0 * scale * scale;
-        for (run, (step, _)) in runs.iter().zip(case.scrolls) {
-            let direction = if *step > 0.0 { "down" } else { "up" };
-            if case.expect.never_whole {
-                assert_eq!(run.whole, 0, "{name}, scrolling {direction}: {run:?}");
-            }
-            match case.expect.copies {
-                Copies::Most => assert!(
-                    run.copied_frames * 4 >= run.frames * 3,
-                    "{name}: most frames scrolling {direction} copy ({run:?})"
-                ),
-                Copies::None => assert_eq!(
-                    run.copied_frames, 0,
-                    "{name}: no frame scrolling {direction} copies ({run:?})"
-                ),
-                Copies::Any => {}
-            }
-            if case.expect.a_strip {
-                let per_frame = run.repainted / run.copied_frames.max(1) as f64;
-                assert!(
-                    per_frame < window * 0.3,
-                    "{name}: a frame scrolling {direction} that copies repaints the exposed \
-                     strip, its surroundings and a peer's mark, not the list ({per_frame} px, \
-                     {run:?})"
-                );
-            }
+    let case = cases().swap_remove(index);
+    let name = &case.name;
+    let runs = scrolled(&case, case.surface.peer, &mut screens);
+    let alone = case
+        .surface
+        .peer
+        .map(|_| scrolled(&case, None, &mut screens));
+    eprintln!("{name}: {runs:?}; without the peer {alone:?}");
+    let scale = case.surface.scale;
+    let window = 800.0 * 600.0 * scale * scale;
+    for (run, (step, _)) in runs.iter().zip(case.scrolls) {
+        let direction = if *step > 0.0 { "down" } else { "up" };
+        if case.expect.never_whole {
+            assert_eq!(run.whole, 0, "{name}, scrolling {direction}: {run:?}");
         }
-        // The mark costs its own pixels, where it is and where a copy took
-        // it, not the list's.
-        if let Some(alone) = alone {
-            let (down, alone) = (&runs[0], &alone[0]);
-            let with_peer = down.repainted / down.copied_frames.max(1) as f64;
-            let without = alone.repainted / alone.copied_frames.max(1) as f64;
+        match case.expect.copies {
+            Copies::Most => assert!(
+                run.copied_frames * 4 >= run.frames * 3,
+                "{name}: most frames scrolling {direction} copy ({run:?})"
+            ),
+            Copies::None => assert_eq!(
+                run.copied_frames, 0,
+                "{name}: no frame scrolling {direction} copies ({run:?})"
+            ),
+            Copies::Any => {}
+        }
+        if case.expect.a_strip {
+            let per_frame = run.repainted / run.copied_frames.max(1) as f64;
             assert!(
-                with_peer < without + window * 0.05,
-                "{name}: the peer's mark costs {} px a frame ({with_peer} with, {without} \
-                 without)",
-                with_peer - without
+                per_frame < window * 0.3,
+                "{name}: a frame scrolling {direction} that copies repaints the exposed \
+                 strip, its surroundings and a peer's mark, not the list ({per_frame} px, \
+                 {run:?})"
             );
         }
     }
+    // The mark costs its own pixels, where it is and where a copy took
+    // it, not the list's.
+    if let Some(alone) = alone {
+        let (down, alone) = (&runs[0], &alone[0]);
+        let with_peer = down.repainted / down.copied_frames.max(1) as f64;
+        let without = alone.repainted / alone.copied_frames.max(1) as f64;
+        assert!(
+            with_peer < without + window * 0.05,
+            "{name}: the peer's mark costs {} px a frame ({with_peer} with, {without} \
+             without)",
+            with_peer - without
+        );
+    }
+}
+
+/// One test a case, so each window is scrolled on its own thread of the run, not
+/// one after another in one test.
+macro_rules! scroll_cases {
+    ($($name:ident = $index:literal,)*) => {
+        $(
+            #[test]
+            fn $name() {
+                presents_what_a_full_render_shows($index);
+            }
+        )*
+
+        /// A case added to [`cases`] needs its test above.
+        #[test]
+        fn every_case_has_its_test() {
+            assert_eq!(cases().len(), [$($index),*].len());
+        }
+    };
+}
+
+scroll_cases! {
+    a_long_list_in_the_dark = 0,
+    a_long_list_in_the_light = 1,
+    a_long_list_in_high_contrast = 2,
+    a_peers_pointer_in_the_dark_at_1x = 3,
+    a_peers_pointer_in_the_dark_at_2x = 4,
+    a_peers_pointer_in_the_light_at_1x = 5,
+    a_peers_pointer_in_the_light_at_2x = 6,
+    a_peers_pointer_in_high_contrast_at_1x = 7,
+    a_peers_pointer_in_high_contrast_at_2x = 8,
+    half_a_device_pixel_step_at_1x = 9,
+    half_a_device_pixel_step_at_2x = 10,
+    a_short_list_scrolled_past_its_end = 11,
+    a_host_that_does_not_copy = 12,
+    a_long_list_at_150_percent = 13,
+    a_short_list_scrolled_past_its_end_and_back = 14,
 }
 
 /// What each step left the History bar saying.

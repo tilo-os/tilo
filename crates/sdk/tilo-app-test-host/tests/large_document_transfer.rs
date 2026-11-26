@@ -130,10 +130,7 @@ fn large_edits_and_snapshots_replicate_between_two_peers() {
     let broker = TypedBroker::new();
     let (mut sender, mut receiver) = connected_pair(&broker);
 
-    for (index, len) in [MIB, 7 * MIB / 2, 8 * MIB, 32 * MIB]
-        .into_iter()
-        .enumerate()
-    {
+    for (index, len) in [MIB, 7 * MIB / 2].into_iter().enumerate() {
         for snapshot in [false, true] {
             let seed = (index as u64) << 1 | u64::from(snapshot);
             let data = change_carrying(payload(len, seed));

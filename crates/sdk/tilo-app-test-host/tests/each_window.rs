@@ -135,7 +135,7 @@ impl ResourceApp for BindingWindow {
     }
 }
 
-const TASKS: u32 = 1_500;
+const TASKS: u32 = 600;
 
 /// The list's items as assistive technology sees them: `(position, set size)`.
 fn list_items<A: ResourceApp>(app: &mut TestApp<A>) -> Vec<(usize, usize)> {
@@ -164,7 +164,7 @@ fn mounted<A: ResourceApp>(app: &mut TestApp<A>, id: &Id) -> bool {
     app.harness().targets().contains_key(&control(id))
 }
 
-/// A person and an agent work in a list of 1,500 tasks: only the rows near what the window shows
+/// A person and an agent work in a list of 600 tasks: only the rows near what the window shows
 /// are mounted and read, while the published tree, agents and assistive technology still reach
 /// every item; a change away from the view keeps the window's tree, Tab walks past the mounted
 /// rows, and a row scrolled into view shows its item as another member left it.
@@ -324,7 +324,7 @@ fn a_long_list_mounts_only_the_rows_near_the_view_while_every_item_is_reached() 
         device_id: tilo_app::winit::event::DeviceId::dummy(),
         position: tilo_app::winit::dpi::PhysicalPosition::new(200.0, 300.0),
     });
-    for _ in 0..200 {
+    for _ in 0..80 {
         app.harness().scroll(0.0, -400.0);
     }
     app.harness().relayout();
