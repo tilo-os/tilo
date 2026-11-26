@@ -115,16 +115,6 @@ impl Web {
                         workspaces.clone(),
                         Arc::new(push),
                     );
-                    // An app of theirs that is closed hears of it through
-                    // Apple's push service, where this server was given a
-                    // key for that at its start.
-                    let named = self.context.closed_apps.get();
-                    let apple = crate::apple_push::ApplePush::open(named, workspaces.clone());
-                    let teller = if let Some(apple) = apple {
-                        teller.also(Arc::new(apple))
-                    } else {
-                        teller
-                    };
                     runtime.spawn(teller.run());
                 }
             }

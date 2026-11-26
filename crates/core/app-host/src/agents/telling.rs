@@ -121,14 +121,6 @@ impl Teller {
         }
     }
 
-    /// This teller, telling through `outside` as well: a thing that is
-    /// due is told every way the teller has.
-    #[must_use]
-    pub fn also(mut self, outside: Arc<dyn Outside>) -> Self {
-        self.outside.push(outside);
-        self
-    }
-
     /// This teller, telling at `pace`.
     #[must_use]
     pub const fn pacing(mut self, pace: Pace) -> Self {
