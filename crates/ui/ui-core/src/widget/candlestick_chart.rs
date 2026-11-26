@@ -433,23 +433,70 @@ impl PlotMarks for CandlestickMarks {
                 );
             }
         }
-        let label_step = (self.candles.len() / 6).max(1);
-        for (index, candle) in self.candles.iter().enumerate().step_by(label_step) {
-            let x = self.center_x(index);
-            let (width, _) = tr.measure_style(&candle.label, None, &theme.text(TextRole::Caption));
+        for label in self.axis_labels(tr, theme) {
+            let (width, _) = tr.measure_style(&label.text, None, &theme.text(TextRole::Caption));
             tr.draw_style(
                 scene,
-                &candle.label,
+                &label.text,
                 theme.tokens.colors.text_dim,
                 transform
                     * Affine::translate((
-                        x - f64::from(width) / 2.0,
-                        self.frame.inside().y1 + crate::widget::plot::step(theme),
+                        label.rect.center().x - f64::from(width) / 2.0,
+                        label.rect.y0,
                     )),
-                Some(crate::num::f32_of_f64(self.slot_width().max(0.0))),
+                None,
                 &theme.text(TextRole::Caption),
             );
         }
+    }
+}
+
+/// One period's name under the candles: the words as drawn and the box they fill.
+#[derive(Clone, Debug, PartialEq)]
+struct AxisLabel {
+    text: String,
+    rect: Rect,
+}
+
+impl CandlestickMarks {
+    /// Where the x axis names its periods: thinned to every period whose own share of the
+    /// width holds a name, and each name shortened at a word where its share is short, so
+    /// two names never touch and none runs past the chart. A name with no readable short
+    /// form left is left out, its period still named by the tooltip and the accessible name.
+    fn axis_labels(&self, tr: &mut TextRenderer, theme: &Theme) -> Vec<AxisLabel> {
+        use crate::widget::chart_labels::{label_stride, min_label_width, shortened_labels};
+        let style = theme.text(TextRole::Caption);
+        let slot = self.slot_width();
+        let gap = f64::from(theme.tokens.spacing.s1);
+        // The stride is the one at which the shortest readable name fits its share, so a chart
+        // with many periods names some of them rather than losing the axis to collisions.
+        let every = label_stride(min_label_width(tr, &style) + gap, slot);
+        let room = slot * crate::num::f64_of_usize(every) - gap;
+        let last = self.candles.len().saturating_sub(1);
+        let mut labels = Vec::new();
+        for (index, candle) in self.candles.iter().enumerate() {
+            if !(last - index).is_multiple_of(every) || candle.label.trim().is_empty() {
+                continue;
+            }
+            let (width, height) = tr.measure_style(&candle.label, None, &style);
+            let shown = if f64::from(width) <= room {
+                Some((candle.label.clone(), f64::from(width), f64::from(height)))
+            } else {
+                shortened_labels(tr, &candle.label, &style)
+                    .into_iter()
+                    .find(|(_, width, _)| *width <= room)
+            };
+            let Some((text, width, height)) = shown else {
+                continue;
+            };
+            let x = self.center_x(index);
+            let y = self.frame.inside().y1 + crate::widget::plot::step(theme);
+            labels.push(AxisLabel {
+                text,
+                rect: Rect::new(x - width / 2.0, y, x + width / 2.0, y + height),
+            });
+        }
+        labels
     }
 }
 
@@ -471,5 +518,76 @@ mod tests {
 
         impossible_ohlc_is_rejected();
         flat_data_gets_a_safe_price_range();
+    }
+
+    /// Two weeks of prices, the last period named by the week it covers.
+    fn two_weeks() -> Vec<Candle> {
+        [
+            ("Mon", 82.4, 88.1, 80.2, 86.9, 1240.0),
+            ("Tue", 86.9, 91.4, 85.0, 90.2, 1580.0),
+            ("Wed", 90.2, 90.8, 84.6, 85.3, 1360.0),
+            ("Thu", 85.3, 89.7, 83.9, 89.1, 1120.0),
+            ("Fri", 89.1, 93.5, 88.4, 92.8, 1710.0),
+            ("Week of 12 October 2026", 92.8, 96.2, 90.1, 91.4, 6240.0),
+        ]
+        .into_iter()
+        .map(|(label, open, high, low, close, volume)| {
+            Candle::new(label, label, open, high, low, close).with_volume(volume)
+        })
+        .collect()
+    }
+
+    fn overlaps(a: Rect, b: Rect) -> bool {
+        a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
+    }
+
+    /// The last period's name is a whole sentence, and on a phone a chart cannot show it
+    /// whole beside the day before it: neither name may print over the other, and both stay
+    /// in the chart. The full name still reaches the tooltip and the accessible tree.
+    #[test]
+    fn a_period_name_never_touches_its_neighbour_and_stays_in_the_chart() {
+        let week = "Week of 12 October 2026";
+        for theme in [Theme::light(), Theme::dark()] {
+            for (width, whole_name) in [(358.0, false), (1000.0, true)] {
+                let mut chart =
+                    CandlestickChart::new(two_weeks()).titled("Closing price, last two weeks");
+                crate::testing::lay_out_in(&mut chart, width, 160.0, &theme)
+                    .expect("the chart lays out");
+                let labels = crate::text_render::with_layout_renderer(&theme, |tr| {
+                    chart.marks.axis_labels(tr, &theme)
+                });
+                assert!(!labels.is_empty(), "the axis names its periods");
+                let chart_rect = chart.marks.frame.rect;
+                for (index, label) in labels.iter().enumerate() {
+                    assert!(
+                        label.rect.x0 >= chart_rect.x0 - 0.5
+                            && label.rect.x1 <= chart_rect.x1 + 0.5
+                            && label.rect.y0 >= chart_rect.y0 - 0.5
+                            && label.rect.y1 <= chart_rect.y1 + 0.5,
+                        "{label:?} stands outside {chart_rect:?}"
+                    );
+                    for other in labels.iter().skip(index + 1) {
+                        assert!(
+                            !overlaps(label.rect, other.rect),
+                            "{label:?} prints over {other:?} at {width} px"
+                        );
+                    }
+                }
+                let shown: Vec<&str> = labels.iter().map(|label| label.text.as_str()).collect();
+                assert_eq!(
+                    labels.iter().any(|label| label.text == week),
+                    whole_name,
+                    "at {width} px the names read {shown:?}"
+                );
+                if !whole_name {
+                    assert!(
+                        shown
+                            .iter()
+                            .any(|text| text.starts_with("Week") && text.contains('\u{2026}')),
+                        "at {width} px the week reads {shown:?}"
+                    );
+                }
+            }
+        }
     }
 }

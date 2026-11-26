@@ -13,6 +13,7 @@ use crate::text_render::TextRenderer;
 use crate::theme::Theme;
 use crate::tokens::TextRole;
 use crate::widget::cartesian_plot::{AxisLabelFormat, format_axis_tick, format_axis_value};
+use crate::widget::chart_labels::label_stride;
 use crate::widget::chart_legend;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::chart_readout::{Highlight, Readout};
@@ -527,15 +528,6 @@ impl CategoryMarks {
         }
         bars
     }
-}
-
-/// Label every how many categories, so labels `needed` wide fit categories
-/// `spare` wide.
-fn label_stride(needed: f64, spare: f64) -> usize {
-    if spare <= 0.0 || !needed.is_finite() {
-        return 1;
-    }
-    crate::num::usize_of_f64((needed / spare).ceil()).max(1)
 }
 
 impl CategoryMarks {

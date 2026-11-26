@@ -19,7 +19,7 @@ use crate::paint::with_alpha;
 use crate::text_render::{TextRenderer, TextWeight};
 use crate::theme::Theme;
 use crate::tokens::TextRole;
-use crate::widget::chart_labels::format_compact;
+use crate::widget::chart_labels::{LabelPlacer, format_compact, shortened_labels};
 use crate::widget::chart_legend;
 use crate::widget::chart_readout::{Highlight, Readout};
 use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
@@ -610,6 +610,19 @@ struct AnnotationPaintContext<'a> {
     x_domain: Domain,
     y_domain: Domain,
 }
+
+/// An annotation's label where it fits: what it reads, the ink of the mark it names, and the
+/// box it covers. Where none of its readings fit inside the plot, the annotation keeps its
+/// shape and its name lives in the tooltip and the accessible tree.
+#[derive(Clone, Debug, PartialEq)]
+struct PlacedAnnotationLabel {
+    text: String,
+    color: Color,
+    rect: Rect,
+}
+
+/// What a label keeps around its words: a step either side and a little over and under them.
+const ANNOTATION_LABEL_PAD: (f64, f64) = (8.0, 5.0);
 
 #[derive(Clone, Debug)]
 struct DomainCache {
@@ -1705,6 +1718,8 @@ impl CartesianMarks {
         .filter(|point| plot.contains(*point))
     }
 
+    /// Paint the axes' rules and words, and answer the boxes the words fill: the annotations'
+    /// labels keep clear of them.
     fn draw_axes(
         &self,
         scene: &mut Scene,
@@ -1714,9 +1729,10 @@ impl CartesianMarks {
         plot: Rect,
         xd: Domain,
         yd: Domain,
-    ) {
+    ) -> Vec<Rect> {
         let grid = with_alpha(theme.tokens.colors.border_standard, 100);
         let size = theme.text(TextRole::Caption);
+        let mut words = Vec::new();
         for tick in Self::ticks(&self.style.y_axis, yd, plot.height()) {
             let Some(y) = Self::project(
                 tick.value,
@@ -1737,18 +1753,22 @@ impl CartesianMarks {
                 );
             }
             let (width, height) = tr.measure_style(&tick.label, None, &size);
+            let left = plot.x0 - f64::from(width) - self.bands.gap;
+            let top = y - f64::from(height) / 2.0;
             tr.draw_style(
                 scene,
                 &tick.label,
                 theme.tokens.colors.text_dim,
-                transform
-                    * Affine::translate((
-                        plot.x0 - f64::from(width) - self.bands.gap,
-                        y - f64::from(height) / 2.0,
-                    )),
+                transform * Affine::translate((left, top)),
                 None,
                 &size,
             );
+            words.push(Rect::new(
+                left,
+                top,
+                left + f64::from(width),
+                top + f64::from(height),
+            ));
         }
         for tick in Self::ticks(&self.style.x_axis, xd, plot.width()) {
             let Some(x) = Self::project(
@@ -1769,16 +1789,23 @@ impl CartesianMarks {
                     &Line::new((x, plot.y0), (x, plot.y1)),
                 );
             }
-            let (width, _) = tr.measure_style(&tick.label, None, &size);
+            let (width, height) = tr.measure_style(&tick.label, None, &size);
+            let left = x - f64::from(width) / 2.0;
+            let top = plot.y1 + self.bands.gap;
             tr.draw_style(
                 scene,
                 &tick.label,
                 theme.tokens.colors.text_dim,
-                transform
-                    * Affine::translate((x - f64::from(width) / 2.0, plot.y1 + self.bands.gap)),
+                transform * Affine::translate((left, top)),
                 None,
                 &size,
             );
+            words.push(Rect::new(
+                left,
+                top,
+                left + f64::from(width),
+                top + f64::from(height),
+            ));
         }
         let title_style = theme
             .text(TextRole::Caption)
@@ -1790,36 +1817,46 @@ impl CartesianMarks {
                 &title_style,
             );
             let (width, _) = tr.measure_style(&title, None, &title_style);
+            let left = plot.center().x - f64::from(width) / 2.0;
+            let top = plot.y1 + self.bands.gap + self.bands.tick_line + self.bands.gap / 2.0;
             tr.draw_style(
                 scene,
                 &title,
                 theme.tokens.colors.text_dim,
-                transform
-                    * Affine::translate((
-                        plot.center().x - f64::from(width) / 2.0,
-                        plot.y1 + self.bands.gap + self.bands.tick_line + self.bands.gap / 2.0,
-                    )),
+                transform * Affine::translate((left, top)),
                 None,
                 &title_style,
             );
+            words.push(Rect::new(
+                left,
+                top,
+                left + f64::from(width),
+                top + self.bands.tick_line,
+            ));
         }
         let lines = Self::axis_title_lines(tr, theme, &self.style.y_axis.title, plot.height());
         for (index, line) in lines.iter().enumerate() {
             let (width, _) = tr.measure_style(line, None, &title_style);
+            let left = self.frame.rect.x0 + crate::num::f64_of_usize(index) * self.bands.tick_line;
             tr.draw_style(
                 scene,
                 line,
                 theme.tokens.colors.text_dim,
                 transform
-                    * Affine::translate((
-                        self.frame.rect.x0 + crate::num::f64_of_usize(index) * self.bands.tick_line,
-                        plot.center().y + f64::from(width) / 2.0,
-                    ))
+                    * Affine::translate((left, plot.center().y + f64::from(width) / 2.0))
                     * Affine::rotate(-std::f64::consts::FRAC_PI_2),
                 None,
                 &title_style,
             );
+            // The words stand on their side: their box runs up the plot.
+            words.push(Rect::new(
+                left,
+                plot.center().y - f64::from(width) / 2.0,
+                left + self.bands.tick_line,
+                plot.center().y + f64::from(width) / 2.0,
+            ));
         }
+        words
     }
 
     /// The most lines an axis title takes before what is left of it is elided.
@@ -2295,12 +2332,13 @@ impl CartesianMarks {
         }
     }
 
-    fn draw_annotations(&self, context: &mut AnnotationPaintContext<'_>) {
+    fn draw_annotations(&self, context: &mut AnnotationPaintContext<'_>, blocked: &[Rect]) {
+        // Every shape first, so a label never has to share its place with a mark drawn after it.
         for (index, annotation) in self.annotations.iter().enumerate() {
             let hovered = self.hovered_annotation() == Some(index);
-            let anchor = self.draw_annotation_shape(context, annotation, hovered);
-            Self::draw_annotation_label(context, annotation, anchor);
+            let _ = self.draw_annotation_shape(context, annotation, hovered);
         }
+        self.draw_annotation_labels(context, blocked);
     }
 
     fn draw_annotation_shape(
@@ -2480,48 +2518,212 @@ impl CartesianMarks {
         Some(Point::new(x + 8.0, y - 28.0))
     }
 
-    fn draw_annotation_label(
-        context: &mut AnnotationPaintContext<'_>,
-        annotation: &CartesianAnnotation,
-        anchor: Option<Point>,
-    ) {
-        let Some(anchor) = anchor.filter(|_| !annotation.label.is_empty()) else {
-            return;
-        };
+    fn draw_annotation_labels(&self, context: &mut AnnotationPaintContext<'_>, blocked: &[Rect]) {
+        let labels = self.annotation_labels(context.text, context.theme, context.plot, blocked);
         let style = context.theme.text(TextRole::Caption);
-        let (width, height) = context.text.measure_style(&annotation.label, None, &style);
-        let width = f64::from(width) + 16.0;
-        let height = f64::from(height) + 10.0;
-        let plot = context.plot;
-        let x = anchor
-            .x
-            .clamp(plot.x0 + 4.0, (plot.x1 - width - 4.0).max(plot.x0 + 4.0));
-        let y = anchor
-            .y
-            .clamp(plot.y0 + 4.0, (plot.y1 - height - 4.0).max(plot.y0 + 4.0));
-        let rect = RoundedRect::from_rect(Rect::new(x, y, x + width, y + height), 5.0);
-        context.scene.fill(
-            Fill::NonZero,
-            context.transform,
-            context.theme.tokens.colors.surfaces.overlay,
-            None,
-            &rect,
+        for label in labels {
+            let rect = RoundedRect::from_rect(label.rect, 5.0);
+            context.scene.fill(
+                Fill::NonZero,
+                context.transform,
+                context.theme.tokens.colors.surfaces.overlay,
+                None,
+                &rect,
+            );
+            context.scene.stroke(
+                &Stroke::new(1.0),
+                context.transform,
+                with_alpha(label.color, 160),
+                None,
+                &rect,
+            );
+            context.text.draw_style(
+                context.scene,
+                &label.text,
+                context.theme.tokens.colors.text_primary,
+                context.transform
+                    * Affine::translate((
+                        label.rect.x0 + ANNOTATION_LABEL_PAD.0,
+                        label.rect.y0 + ANNOTATION_LABEL_PAD.1,
+                    )),
+                None,
+                &style,
+            );
+        }
+    }
+
+    /// Place every annotation's label inside `plot`, clear of `blocked` (the axes' and the
+    /// title's words) and of the labels placed before it: at the mark's own side first, then on
+    /// the other side of its line, its words shortened at a word where that room is short, and
+    /// left to the tooltip and the accessible name where not even a short reading fits.
+    fn annotation_labels(
+        &self,
+        tr: &mut TextRenderer,
+        theme: &Theme,
+        plot: Rect,
+        blocked: &[Rect],
+    ) -> Vec<PlacedAnnotationLabel> {
+        let style = theme.text(TextRole::Caption);
+        let mut placer = LabelPlacer::new(plot, theme);
+        for rect in blocked {
+            placer.block(*rect);
+        }
+        let mut labels = Vec::new();
+        for annotation in &self.annotations {
+            let text = annotation.label.trim();
+            if text.is_empty() {
+                continue;
+            }
+            let (width, height) = tr.measure_style(text, None, &style);
+            let padded = |text: String, width: f64, height: f64| {
+                (
+                    text,
+                    width + 2.0 * ANNOTATION_LABEL_PAD.0,
+                    height + 2.0 * ANNOTATION_LABEL_PAD.1,
+                )
+            };
+            let mut ways = vec![padded(text.to_owned(), f64::from(width), f64::from(height))];
+            ways.extend(
+                shortened_labels(tr, text, &style)
+                    .into_iter()
+                    .map(|(text, width, height)| padded(text, width, height)),
+            );
+            let placed = ways.into_iter().find_map(|(text, width, height)| {
+                self.annotation_label_seats(annotation, plot, (width, height))
+                    .into_iter()
+                    .map(|seat| Self::clamped_label(seat, plot))
+                    .find(|rect| placer.place(*rect))
+                    .map(|rect| (text, rect))
+            });
+            if let Some((text, rect)) = placed {
+                labels.push(PlacedAnnotationLabel {
+                    text,
+                    color: annotation.color,
+                    rect,
+                });
+            }
+        }
+        labels
+    }
+
+    /// The boxes an annotation's label may take at `size`, in the order to try them: beside the
+    /// mark over the plot, then on the other side of its line, at the band's start and then its
+    /// end, and under all of those.
+    fn annotation_label_seats(
+        &self,
+        annotation: &CartesianAnnotation,
+        plot: Rect,
+        (width, height): (f64, f64),
+    ) -> Vec<Rect> {
+        let gap = 6.0;
+        let xd = self.domain(&self.style.x_axis, true);
+        let yd = self.domain(&self.style.y_axis, false);
+        let seat = |x: f64, y: f64| Rect::new(x, y, x + width, y + height);
+        let over = |x: f64| seat(x, plot.y0 + gap);
+        let under = |x: f64| seat(x, plot.y1 - gap - height);
+        let beside = |y: f64| seat(plot.x0 + gap, y);
+        let past = |y: f64| seat(plot.x1 - gap - width, y);
+        match annotation.kind {
+            CartesianAnnotationKind::XLine(value) => {
+                let Some(x) =
+                    Self::project(value, xd, self.style.x_axis.scale, plot.x0, plot.width())
+                else {
+                    return Vec::new();
+                };
+                if !(plot.x0..=plot.x1).contains(&x) {
+                    return Vec::new();
+                }
+                vec![
+                    over(x + gap),
+                    over(x - gap - width),
+                    under(x + gap),
+                    under(x - gap - width),
+                ]
+            }
+            CartesianAnnotationKind::YLine(value) => {
+                let Some(y) =
+                    Self::project(value, yd, self.style.y_axis.scale, plot.y1, -plot.height())
+                else {
+                    return Vec::new();
+                };
+                if !(plot.y0..=plot.y1).contains(&y) {
+                    return Vec::new();
+                }
+                vec![
+                    beside(y - gap - height),
+                    past(y - gap - height),
+                    beside(y + gap),
+                    past(y + gap),
+                ]
+            }
+            CartesianAnnotationKind::XBand { start, end } => {
+                let (Some(a), Some(b)) = (
+                    Self::project(start, xd, self.style.x_axis.scale, plot.x0, plot.width()),
+                    Self::project(end, xd, self.style.x_axis.scale, plot.x0, plot.width()),
+                ) else {
+                    return Vec::new();
+                };
+                let (a, b) = (
+                    a.min(b).clamp(plot.x0, plot.x1),
+                    a.max(b).clamp(plot.x0, plot.x1),
+                );
+                vec![
+                    over(a + gap),
+                    over(b - gap - width),
+                    under(a + gap),
+                    under(b - gap - width),
+                ]
+            }
+            CartesianAnnotationKind::YBand { start, end } => {
+                let (Some(a), Some(b)) = (
+                    Self::project(start, yd, self.style.y_axis.scale, plot.y1, -plot.height()),
+                    Self::project(end, yd, self.style.y_axis.scale, plot.y1, -plot.height()),
+                ) else {
+                    return Vec::new();
+                };
+                let (a, b) = (
+                    a.min(b).clamp(plot.y0, plot.y1),
+                    a.max(b).clamp(plot.y0, plot.y1),
+                );
+                vec![
+                    beside(a + gap),
+                    beside(b - gap - height),
+                    past(a + gap),
+                    past(b - gap - height),
+                ]
+            }
+            CartesianAnnotationKind::Point { x, y } => {
+                let (Some(x), Some(y)) = (
+                    Self::project(x, xd, self.style.x_axis.scale, plot.x0, plot.width()),
+                    Self::project(y, yd, self.style.y_axis.scale, plot.y1, -plot.height()),
+                ) else {
+                    return Vec::new();
+                };
+                if !plot.contains(Point::new(x, y)) {
+                    return Vec::new();
+                }
+                vec![
+                    seat(x + gap, y - gap - height),
+                    seat(x + gap, y + gap),
+                    seat(x - gap - width, y - gap - height),
+                    seat(x - gap - width, y + gap),
+                ]
+            }
+        }
+    }
+
+    /// `seat` slid inside `plot`, so a label's box stands whole in the chart.
+    fn clamped_label(seat: Rect, plot: Rect) -> Rect {
+        let inset = 4.0;
+        let x = seat.x0.clamp(
+            plot.x0 + inset,
+            (plot.x1 - seat.width() - inset).max(plot.x0 + inset),
         );
-        context.scene.stroke(
-            &Stroke::new(1.0),
-            context.transform,
-            with_alpha(annotation.color, 160),
-            None,
-            &rect,
+        let y = seat.y0.clamp(
+            plot.y0 + inset,
+            (plot.y1 - seat.height() - inset).max(plot.y0 + inset),
         );
-        context.text.draw_style(
-            context.scene,
-            &annotation.label,
-            context.theme.tokens.colors.text_primary,
-            context.transform * Affine::translate((x + 8.0, y + 5.0)),
-            None,
-            &style,
-        );
+        Rect::new(x, y, x + seat.width(), y + seat.height())
     }
 
     fn legend_area(&self) -> Option<Rect> {
@@ -3068,17 +3270,29 @@ impl PlotMarks for CartesianMarks {
             self.frame.rect,
             &self.frame.title,
         );
-        self.draw_axes(scene, transform, tr, theme, plot, xd, yd);
+        let mut blocked = self.draw_axes(scene, transform, tr, theme, plot, xd, yd);
+        let title_band = crate::widget::chart_navigation::title_band(theme, &self.frame.title);
+        if title_band > 0.0 {
+            blocked.push(Rect::new(
+                self.frame.rect.x0,
+                self.frame.rect.y0,
+                self.frame.rect.x1,
+                self.frame.rect.y0 + title_band,
+            ));
+        }
         scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &plot);
-        self.draw_annotations(&mut AnnotationPaintContext {
-            scene,
-            transform,
-            text: tr,
-            theme,
-            plot,
-            x_domain: xd,
-            y_domain: yd,
-        });
+        self.draw_annotations(
+            &mut AnnotationPaintContext {
+                scene,
+                transform,
+                text: tr,
+                theme,
+                plot,
+                x_domain: xd,
+                y_domain: yd,
+            },
+            &blocked,
+        );
         self.draw_series(scene, transform, theme, plot, xd, yd, now);
         if let Some(brush) = self.brush_rect() {
             scene.fill(
@@ -3149,6 +3363,92 @@ mod tests {
             theme,
             PresenceCtx::default().draw_env(),
         ));
+    }
+
+    fn overlaps(a: Rect, b: Rect) -> bool {
+        a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1
+    }
+
+    /// An annotation's label stands inside the plot, clear of the axes' own words and of the
+    /// other annotations' labels, at a phone's width as at a laptop's; where its whole reading
+    /// does not fit, it is shortened at a word rather than printed over anything. Its whole
+    /// reading stays in the tooltip and the accessible tree either way.
+    #[test]
+    fn annotation_labels_keep_clear_of_the_axes_and_of_each_other() {
+        let long = "Migration of every cluster to the new release during the long weekend";
+        for theme in [Theme::light(), Theme::dark()] {
+            for (width, whole) in [(358.0, false), (1000.0, true)] {
+                let mut chart = CartesianPlot::new(vec![PlotSeries::new(
+                    "storage",
+                    "Storage",
+                    Color::WHITE,
+                    vec![PlotDatum::new("a", 1.0, 2.0), PlotDatum::new("b", 9.0, 6.0)],
+                )])
+                .titled("Capacity")
+                .with_height(300.0)
+                .with_annotations([
+                    CartesianAnnotation::x_line("floor", 2.0, Color::WHITE)
+                        .labelled("Capacity floor"),
+                    CartesianAnnotation::x_band("migration", 5.0, 7.0, Color::WHITE).labelled(long),
+                ]);
+                crate::testing::lay_out_in(&mut chart, width, 300.0, &theme)
+                    .expect("the plot lays out");
+                let plot = chart.marks.plot_rect();
+                let xd = chart.marks.domain(&chart.marks.style.x_axis, true);
+                let yd = chart.marks.domain(&chart.marks.style.y_axis, false);
+                let mut words = Vec::new();
+                let mut scene = Scene::new();
+                let mut text = TextRenderer::new();
+                text.set_text_scale(theme.text_scale);
+                words.extend(chart.marks.draw_axes(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    &mut text,
+                    &theme,
+                    plot,
+                    xd,
+                    yd,
+                ));
+                let labels = chart
+                    .marks
+                    .annotation_labels(&mut text, &theme, plot, &words);
+                assert_eq!(labels.len(), 2, "{labels:?} at {width} px");
+                for (index, label) in labels.iter().enumerate() {
+                    assert!(
+                        label.rect.x0 >= plot.x0 - 0.5
+                            && label.rect.x1 <= plot.x1 + 0.5
+                            && label.rect.y0 >= plot.y0 - 0.5
+                            && label.rect.y1 <= plot.y1 + 0.5,
+                        "{label:?} stands outside the plot {plot:?}"
+                    );
+                    for word in &words {
+                        assert!(
+                            !overlaps(label.rect, *word),
+                            "{label:?} prints over the axis words {word:?}"
+                        );
+                    }
+                    for other in labels.iter().skip(index + 1) {
+                        assert!(
+                            !overlaps(label.rect, other.rect),
+                            "{label:?} prints over {other:?} at {width} px"
+                        );
+                    }
+                }
+                let migration = labels
+                    .iter()
+                    .find(|label| label.text.starts_with("Migration"))
+                    .expect("the band keeps a label");
+                assert_eq!(
+                    migration.text == long,
+                    whole,
+                    "at {width} px the band reads {:?}",
+                    migration.text
+                );
+                if !whole {
+                    assert!(migration.text.contains('\u{2026}'));
+                }
+            }
+        }
     }
 
     tilo_test_env::scenario! {

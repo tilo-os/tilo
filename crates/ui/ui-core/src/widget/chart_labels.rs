@@ -60,6 +60,15 @@ pub(crate) fn min_label_width(tr: &mut TextRenderer, style: &TextStyle) -> f64 {
     3.0 * f64::from(tr.measure_style("M", None, style).0)
 }
 
+/// Label every how many categories, so labels `needed` wide fit categories
+/// `spare` wide.
+pub(crate) fn label_stride(needed: f64, spare: f64) -> usize {
+    if spare <= 0.0 || !needed.is_finite() {
+        return 1;
+    }
+    crate::num::usize_of_f64((needed / spare).ceil()).max(1)
+}
+
 /// `label` shortened with an ellipsis to `spare`, or `None` where not even
 /// [`min_label_width`] is left or nothing but the ellipsis would show.
 pub(crate) fn fit_label(
