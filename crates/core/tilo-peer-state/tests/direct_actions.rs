@@ -22,12 +22,9 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, Bounds, RemoteDevice};
 use tilo_peer_state::direct::Replica;
-use tilo_peer_state::join::{
-    InviteGrant, JoinChallenge, Role, VerifiedRedemption, decode_and_verify_invitation,
-    issue_invitation, sign_join_proof, verify_join_proof,
-};
+
 use tilo_user_identity::{
-    AgentScope, DeviceCapabilities, DeviceCert, RevocationEntry, RevocationList, RevocationReason,
+    AgentScope, DeviceCapabilities, DeviceCert, RevocationEntry, RevocationReason,
     sign_device_cert, sign_revocation_entry,
 };
 use tilo_workspace_join::delegation::{Delegate, DelegateScope, Delegation};
@@ -483,34 +480,76 @@ async fn a_device_that_is_not_the_sender_is_refused() {
     c_endpoint.close().await;
 }
 
+/// A device asks only while the workspace admits it: one its roster never
+/// named asks nothing, and a device of the owner's revoked before it asks or
+/// while it is served, or a guest's once the guest is removed, is refused from
+/// that moment on with the reason, before its request reaches the dispatcher.
 #[tokio::test(flavor = "multi_thread")]
-async fn a_revoked_device_is_refused_from_that_moment_on() {
+async fn a_device_is_refused_once_the_workspace_no_longer_admits_it() {
+    use tilo_peer_state::fixture::{invitation, redeem};
     let root = SigningKey::from_bytes(&[1; 32]);
     let a = device(&root, 2);
     let b = device(&root, 3);
-    let roster = vec![a.1.clone(), b.1.clone()];
+    let outsider = device(&root, 9);
+    let lost = device(&root, 6);
+    let guest_root = SigningKey::from_bytes(&[4; 32]);
+    let g = device(&guest_root, 5);
+    let roster = vec![a.1.clone(), b.1.clone(), lost.1.clone()];
     let dispatcher = Arc::new(TestProvider::new());
+    let now = tilo_clock::wall();
+    let mut peer = workspace(WORKSPACE, &a, &roster);
+    let signed = invitation(&peer, &a.0, now, |grant| {
+        grant.nonce = [43; 16];
+        grant.recipient_user_public_key = Some(g.1.user_public_key);
+    });
+    assert!(
+        peer.governance_mut()
+            .admit_invited_member(&redeem(&signed, (&g.0, &g.1), 44, now), &g.0, now)
+            .unwrap()
+    );
+    let entry = revocation(&lost.1);
+    peer.governance_mut()
+        .publish_member_revocations(std::slice::from_ref(&entry), &a.0, now)
+        .unwrap();
     let engine = Engine::serving(
-        Replica::new(workspace(WORKSPACE, &a, &roster)),
+        Replica::new(peer),
         a.0.clone(),
         dispatcher.clone(),
         Bounds::default(),
     )
     .await;
-    let (b_endpoint, b_action_service) = asking(&b.0).await;
-    let remote = b_action_service.remote(&b_endpoint, &engine.addr(), WORKSPACE);
-    let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
-    assert_eq!(queried(&remote, &caller).await, Ok(()));
-
-    let mut entry = RevocationEntry {
-        user_public_key: root.verifying_key().to_bytes(),
-        revoked_device_public_key: b.1.device_public_key,
-        revoked_at_ns: 1,
-        reason: RevocationReason::Lost,
-        signature: [0; 64],
+    let mut endpoints = Vec::new();
+    let mut asker = async |(key, cert): &(SigningKey, DeviceCert)| {
+        let (endpoint, service) = asking(key).await;
+        let remote = service.remote(&endpoint, &engine.addr(), WORKSPACE);
+        endpoints.push(endpoint);
+        (
+            remote,
+            Caller::authenticated(cert.user_public_key, cert.device_public_key),
+        )
     };
-    sign_revocation_entry(&mut entry, &root).unwrap();
-    let now = tilo_clock::wall();
+    let (outsider, outsider_caller) = asker(&outsider).await;
+    let (lost, lost_caller) = asker(&lost).await;
+    let (own, own_caller) = asker(&b).await;
+    let (guest, guest_caller) = asker(&g).await;
+
+    assert!(
+        queried(&outsider, &outsider_caller).await.is_err(),
+        "a device the roster does not name asks nothing"
+    );
+    // A device revoked before anything asked: its signature verifies, and the workspace refuses it.
+    let refused = query_error(&lost, &lost_caller).await;
+    assert_eq!(refusal(&refused), "the device is revoked");
+    assert_eq!(queried(&own, &own_caller).await, Ok(()));
+    assert_eq!(queried(&guest, &guest_caller).await, Ok(()));
+    assert_eq!(
+        dispatcher.callers()[1].user_public_key(),
+        Some(&guest_root.verifying_key().to_bytes()),
+        "an admitted guest acts as their own person"
+    );
+
+    // A device revoked while it is served is refused from the moment the revocation is known.
+    let entry = revocation(&b.1);
     assert!(
         engine
             .replica
@@ -519,127 +558,32 @@ async fn a_revoked_device_is_refused_from_that_moment_on() {
                 .publish_member_revocations(&[entry], &a.0, now))
             .unwrap()
     );
-
-    let refused = queried(&remote, &caller).await.unwrap_err();
+    let refused = query_error(&own, &own_caller).await;
     assert_eq!(refusal(&refused), "the device is revoked");
-    assert_eq!(
-        dispatcher.callers().len(),
-        1,
-        "the revoked device's next request never reaches the dispatcher"
-    );
 
-    engine.close().await;
-    b_endpoint.close().await;
-}
-
-#[tokio::test(flavor = "multi_thread")]
-async fn a_person_who_left_the_workspace_is_refused() {
-    let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let guest_root = SigningKey::from_bytes(&[3; 32]);
-    let g = device(&guest_root, 5);
-    let roster = vec![a.1.clone()];
-    let dispatcher = Arc::new(TestProvider::new());
-    let engine = Engine::serving(
-        Replica::new(workspace(WORKSPACE, &a, &roster)),
-        a.0.clone(),
-        dispatcher.clone(),
-        Bounds::default(),
-    )
-    .await;
-
-    // The guest joins through an invitation the workspace's authority issues.
-    let now = tilo_clock::wall();
-    let redemption = guest(&a, &guest_root, &g, now);
     assert!(
         engine
             .replica
             .write(|peer| peer
                 .governance_mut()
-                .admit_invited_member(&redemption, &g.0, now))
+                .remove_member(g.1.user_public_key, &a.0, now))
             .unwrap()
     );
-
-    let (g_endpoint, g_action_service) = asking(&g.0).await;
-    let remote = g_action_service.remote(&g_endpoint, &engine.addr(), WORKSPACE);
-    let caller =
-        Caller::authenticated(guest_root.verifying_key().to_bytes(), g.1.device_public_key);
-    assert_eq!(queried(&remote, &caller).await, Ok(()));
-    assert_eq!(
-        dispatcher.callers()[0].user_public_key(),
-        Some(&guest_root.verifying_key().to_bytes()),
-        "an admitted guest acts as their own person"
-    );
-
-    // Once they are no longer a member, their device is nobody here.
-    assert!(
-        engine
-            .replica
-            .write(|peer| peer.governance_mut().remove_member(
-                guest_root.verifying_key().to_bytes(),
-                &a.0,
-                now
-            ))
-            .unwrap()
-    );
-    let refused = queried(&remote, &caller).await.unwrap_err();
+    let refused = query_error(&guest, &guest_caller).await;
     assert_eq!(
         refusal(&refused),
         "the person is not a member of this workspace"
     );
-    assert_eq!(dispatcher.callers().len(), 1);
+    assert_eq!(
+        dispatcher.callers().len(),
+        2,
+        "no refused request reaches the dispatcher"
+    );
 
     engine.close().await;
-    g_endpoint.close().await;
-}
-
-/// The redemption of an invitation the workspace's authority issued to
-/// `guest`, as its device proves it is the invited one.
-fn guest(
-    a: &(SigningKey, DeviceCert),
-    guest_root: &SigningKey,
-    guest: &(SigningKey, DeviceCert),
-    now: SystemTime,
-) -> VerifiedRedemption {
-    let issued = issue_invitation(
-        InviteGrant {
-            workspace_id: WorkspaceId::parse(WORKSPACE).unwrap(),
-            issuer: a.1.clone(),
-            role: Role::Editor,
-            nonce: [43; 16],
-            recipient_user_public_key: Some(guest_root.verifying_key().to_bytes()),
-            invitee_name: Some("Guest".into()),
-            expires_at_ns: ns(now).saturating_add(10_000_000_000),
-            transport: Vec::new(),
-        },
-        &a.0,
-    )
-    .unwrap();
-    let join = decode_and_verify_invitation(
-        &issued,
-        Some(guest_root.verifying_key().to_bytes()),
-        &RevocationList::new(),
-        ns(now),
-    )
-    .unwrap();
-    let challenge = JoinChallenge::new(
-        &join,
-        &guest.1,
-        [44; 32],
-        [45; 32],
-        ns(now).saturating_add(1_000_000_000),
-        ns(now),
-    )
-    .unwrap();
-    let proof = sign_join_proof(challenge.clone(), &guest.0).unwrap();
-    verify_join_proof(
-        &proof,
-        &challenge,
-        &guest.1,
-        &RevocationList::new(),
-        ns(now),
-    )
-    .unwrap()
+    for endpoint in endpoints {
+        endpoint.close().await;
+    }
 }
 
 /// How long the root delegates the agent for: it acts inside this window and
@@ -1746,12 +1690,24 @@ async fn a_device_signs_only_its_persons_own_calls_as_theirs() {
 
     // Nobody else's call does, whoever it names.
     let others = [
-        ("a caller the device admitted", Caller::local_person(person.clone())),
+        (
+            "a caller the device admitted",
+            Caller::local_person(person.clone()),
+        ),
         ("an app", Caller::local_app("so.tilo.chat")),
-        ("the person's call through an app", own.clone().through_app("so.tilo.chat")),
+        (
+            "the person's call through an app",
+            own.clone().through_app("so.tilo.chat"),
+        ),
         ("a shortcut's run", own.clone().running_shortcut("weekly")),
-        ("an agent of the person's", Caller::local_agent("scribe", person.clone())),
-        ("an agent the person handed their session", own.clone().delegated_to("scribe")),
+        (
+            "an agent of the person's",
+            Caller::local_agent("scribe", person.clone()),
+        ),
+        (
+            "an agent the person handed their session",
+            own.clone().delegated_to("scribe"),
+        ),
     ];
     for (who, caller) in others {
         let caller = caller.in_workspace(WORKSPACE);
@@ -1760,7 +1716,10 @@ async fn a_device_signs_only_its_persons_own_calls_as_theirs() {
             other => panic!("{who}'s call runs as the device, got {other:?}"),
         }
         let ran = dispatcher.asked().pop().unwrap();
-        assert!(ran.signed.is_none(), "{who}'s call is not signed as the person");
+        assert!(
+            ran.signed.is_none(),
+            "{who}'s call is not signed as the person"
+        );
     }
 
     // A device answering under no certificate cannot sign as its person: it says so, and sends
@@ -1884,60 +1843,18 @@ async fn an_invocation_runs_as_the_key_that_signed_it() {
     b_endpoint.close().await;
 }
 
-/// A key the workspace does not admit runs nothing, and a key its person revoked
-/// is refused from the moment the revocation is known.
-#[tokio::test(flavor = "multi_thread")]
-async fn a_device_the_workspace_no_longer_admits_runs_nothing() {
+/// `cert`'s revocation by the root of its person, `[1; 32]`, for a lost device.
+fn revocation(cert: &DeviceCert) -> RevocationEntry {
     let root = SigningKey::from_bytes(&[1; 32]);
-    let a = device(&root, 2);
-    let b = device(&root, 3);
-    let outsider = device(&root, 9);
-    let roster = vec![a.1.clone(), b.1.clone()];
-    let dispatcher = Arc::new(TestProvider::new());
-    // B is revoked in the workspace before anything asks.
-    let mut peer = workspace(WORKSPACE, &a, &roster);
     let mut entry = RevocationEntry {
         user_public_key: root.verifying_key().to_bytes(),
-        revoked_device_public_key: b.1.device_public_key,
+        revoked_device_public_key: cert.device_public_key,
         revoked_at_ns: 1,
         reason: RevocationReason::Lost,
         signature: [0; 64],
     };
     sign_revocation_entry(&mut entry, &root).unwrap();
-    peer.governance_mut()
-        .publish_member_revocations(std::slice::from_ref(&entry), &a.0, tilo_clock::wall())
-        .unwrap();
-    let engine = Engine::serving(
-        Replica::new(peer),
-        a.0.clone(),
-        dispatcher.clone(),
-        Bounds::default(),
-    )
-    .await;
-
-    // A certified device the workspace's roster does not name.
-    let (outsider_endpoint, outsider_service) = asking(&outsider.0).await;
-    let outsider_key = outsider_service.remote(&outsider_endpoint, &engine.addr(), WORKSPACE);
-    let outsider_caller = Caller::authenticated(
-        root.verifying_key().to_bytes(),
-        outsider.1.device_public_key,
-    );
-    assert!(
-        queried(&outsider_key, &outsider_caller).await.is_err(),
-        "a device the roster does not name asks nothing"
-    );
-
-    // A revoked device: its signature verifies, and the workspace refuses it.
-    let (b_endpoint, b_service) = asking(&b.0).await;
-    let revoked = b_service.remote(&b_endpoint, &engine.addr(), WORKSPACE);
-    let caller = Caller::authenticated(root.verifying_key().to_bytes(), b.1.device_public_key);
-    let refused = query_error(&revoked, &caller).await;
-    assert!(refusal(&refused).contains("revoked"), "{refused:?}");
-    assert!(dispatcher.callers().is_empty(), "nothing ran");
-
-    engine.close().await;
-    outsider_endpoint.close().await;
-    b_endpoint.close().await;
+    entry
 }
 
 /// What `remote` refused a catalogue query with, as `caller`.
