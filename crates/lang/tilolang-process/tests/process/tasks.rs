@@ -243,7 +243,7 @@ tilo_test_env::scenario! {
         };
         choose_place(&mut host, &mut window, "Today");
         assert_eq!(
-            shown_title(&window).as_deref(),
+            shown_place(&window).as_deref(),
             Some("Today"),
             "the window stands on Today"
         );
@@ -306,7 +306,7 @@ tilo_test_env::scenario! {
             answered(&sent, 42)
         );
         assert_eq!(
-            shown_title(&window).as_deref(),
+            shown_place(&window).as_deref(),
             Some("Inbox"),
             "the task has no day: the window shows it in the Inbox"
         );
@@ -353,15 +353,22 @@ tilo_test_env::scenario! {
     }
 }
 
-/// The title the window's shell heads what it shows with: the place, the page.
-fn shown_title(window: &Window) -> Option<String> {
+/// The place the window's shell heads what it shows with: its overview's title, falling back to
+/// its title. A shell whose content column holds an opened task gives that column the task's own
+/// name and keeps the place holding it in `overview_title`.
+fn shown_place(window: &Window) -> Option<String> {
     fn shell(node: &patch::Node) -> Option<&patch::Node> {
         if node.kind.ends_with("NavShell") {
             return Some(node);
         }
         node.children.iter().find_map(shell)
     }
-    match shell(window.root.as_ref()?)?.props.get("title")? {
+    let shell = shell(window.root.as_ref()?)?;
+    match shell
+        .props
+        .get("overview_title")
+        .or_else(|| shell.props.get("title"))?
+    {
         patch::Value::Text(title) => Some(title.clone()),
         _ => None,
     }
@@ -515,6 +522,9 @@ struct Shell {
     tasks: Window,
     today: Window,
     tasks_inbox: Inbox,
+    /// What Tasks sent its broker: how each invocation it ran ended, which the dispatch answers
+    /// the call's invoker with.
+    tasks_sent: Sent,
     today_sent: Sent,
     today_inbox: Inbox,
     bus: Rc<Bus>,
@@ -522,6 +532,10 @@ struct Shell {
     written: Option<String>,
     /// How many of Today's requests the broker took.
     taken: usize,
+    /// How many of Today's requests the dispatch took, a press of the person's among them.
+    dispatched: usize,
+    /// How many of Tasks' answers the dispatch carried to their caller.
+    answered: usize,
     /// The invocations the broker delivered.
     delivered: u64,
 }
@@ -532,7 +546,7 @@ impl Shell {
         let bus = Rc::new(Bus::default());
         let mut host = TilolangProcess::new(wake());
         let tasks_route = RouteSpec::app(TASKS, workspace);
-        let (tasks, _, tasks_inbox) = instance_on(
+        let (tasks, tasks_sent, tasks_inbox) = instance_on(
             &mut host,
             spec(1, "ada", &tasks_route),
             shipped(&shipped_dir().join("tasks")).1,
@@ -563,11 +577,14 @@ impl Shell {
             tasks,
             today,
             tasks_inbox,
+            tasks_sent,
             today_sent,
             today_inbox,
             bus,
             written: None,
             taken: 0,
+            dispatched: 0,
+            answered: 0,
             delivered: 0,
         }
     }
@@ -589,7 +606,9 @@ impl Shell {
             self.tasks.take();
             self.today.take();
             changed |= self.carry_workspace();
+            changed |= self.carry_presses();
             changed |= self.carry_asks();
+            changed |= self.carry_answers();
             let woken = WOKEN.swap(false, std::sync::atomic::Ordering::SeqCst);
             if !changed && !woken && !self.host.owes_work() {
                 return;
@@ -623,6 +642,44 @@ impl Shell {
         true
     }
 
+    /// Hand Today's presses back to it, as the dispatch does once it has taken them: the calls a
+    /// press made wait until the dispatch knows the press they continue, and go with this.
+    /// Whether there were any.
+    fn carry_presses(&mut self) -> bool {
+        let presses: Vec<tilo_actions::remote::InvokeRequest> = self
+            .today_sent
+            .borrow()
+            .get(self.dispatched..)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|request| match request {
+                CollabRequest::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Invoke(invoke),
+                    ..
+                } if invoke.target.provider == tilo_actions::remote::OWN_PROVIDER => {
+                    Some(invoke.clone())
+                }
+                _ => None,
+            })
+            .collect();
+        self.dispatched = self.today_sent.borrow().len();
+        for press in &presses {
+            self.delivered = self.delivered.saturating_add(1);
+            self.today_inbox
+                .borrow_mut()
+                .push_back(CollabEvent::Invocation {
+                    id: self.delivered,
+                    invocation: press.invocation,
+                    resource: press.target.address.resource.clone(),
+                    action: press.target.address.action.clone(),
+                    argument: press.argument.to_slot(),
+                    actor: tilo_actions::MemberId::person("ada").into(),
+                    context: None,
+                });
+        }
+        !presses.is_empty()
+    }
+
     /// Deliver to Tasks what Today asked of its API since the last call, as the person's
     /// invocation. Whether there was any.
     fn carry_asks(&mut self) -> bool {
@@ -642,19 +699,62 @@ impl Shell {
             .collect();
         self.taken = self.today_sent.borrow().len();
         for invoke in &asks {
-            self.deliver(&invoke.target.address, invoke.argument.to_slot());
+            self.deliver(
+                invoke.invocation,
+                &invoke.target.address,
+                invoke.argument.to_slot(),
+            );
         }
         !asks.is_empty()
     }
 
-    /// Deliver the action `address` with `argument` to Tasks, as ada's invocation.
-    fn deliver(&mut self, address: &tilo_actions::ActionAddress, argument: Option<String>) {
+    /// Carry the answers Tasks gave, as the dispatch carries an app's answer to the caller that
+    /// waits on it: Today's call goes on, and the calls after it go out. Whether there were any.
+    fn carry_answers(&mut self) -> bool {
+        let updates: Vec<tilo_actions::InvocationUpdate> = self
+            .tasks_sent
+            .borrow()
+            .get(self.answered..)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|request| match request {
+                CollabRequest::UpdateInvocation { update, .. } => Some(update.clone()),
+                _ => None,
+            })
+            .collect();
+        self.answered = self.tasks_sent.borrow().len();
+        for update in &updates {
+            let invocation = update.invocation();
+            self.today_inbox
+                .borrow_mut()
+                .push_back(CollabEvent::RemoteAction {
+                    message: tilo_actions::remote::RemoteActionMessage::Update {
+                        invocation,
+                        state: Some(tilo_actions::remote::InvocationState::new(
+                            invocation,
+                            update.clone(),
+                        )),
+                        correlation: None,
+                    },
+                });
+        }
+        !updates.is_empty()
+    }
+
+    /// Deliver the action `address` with `argument` to Tasks as the invocation `invocation`, by
+    /// ada: a call of Today's continues that call, so its answer reaches Today.
+    fn deliver(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        address: &tilo_actions::ActionAddress,
+        argument: Option<String>,
+    ) {
         self.delivered = self.delivered.saturating_add(1);
         self.tasks_inbox
             .borrow_mut()
             .push_back(CollabEvent::Invocation {
                 id: self.delivered,
-                invocation: tilo_actions::InvocationId::new(),
+                invocation,
                 resource: address.resource.clone(),
                 action: address.action.clone(),
                 argument,
@@ -738,6 +838,7 @@ fn today_reads_tasks_from_the_workspace_and_clears_it_at_its_api() {
         .to_string();
     arguments.insert("due".to_owned(), today.into());
     shell.deliver(
+        tilo_actions::InvocationId::new(),
         &new_task,
         tilo_actions::remote::InvokeArgument::Json(arguments).to_slot(),
     );
@@ -750,7 +851,7 @@ fn today_reads_tasks_from_the_workspace_and_clears_it_at_its_api() {
     );
 
     let complete = shell.tasks_action("Complete", |resource| resource.contains('/'));
-    shell.deliver(&complete, None);
+    shell.deliver(tilo_actions::InvocationId::new(), &complete, None);
     shell.settle();
     assert!(
         !shell.today_shows("Water the plants"),
