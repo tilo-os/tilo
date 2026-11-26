@@ -903,12 +903,16 @@ impl Apps {
             launch.kill();
             return Err(format!("could not let {app_id}'s launcher go on: {error}"));
         }
-        // The start answers once the app is up: its launcher has connected, as the broker
-        // attests it. A process that ends first ends the start, with what it said, never
-        // answering that it started; one that stays alive without connecting is waited for, not
-        // cut off at a time this code invented, and said so in the log while it waits. Where no
-        // connection is expected (a test's launch), a process still running after the start
-        // grace is taken as started.
+        self.started(launch, app_id)
+    }
+
+    /// The start answers once the app is up: its launcher has connected, as the broker
+    /// attests it. A process that ends first ends the start, with what it said, never answering
+    /// that it started; one that stays alive without connecting is waited for, not cut off at a
+    /// time this code invented, and said so in the log while it waits. Where no connection is
+    /// expected (a test's launch), a process still running after the start grace is taken as
+    /// started.
+    fn started(&self, mut launch: Launch, app_id: &str) -> Result<Launch, String> {
         let started = std::time::Instant::now();
         let mut warned = started;
         loop {
@@ -1507,6 +1511,7 @@ impl Launched {
             return false;
         }
         record.connected = true;
+        drop(launches);
         true
     }
 

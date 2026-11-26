@@ -739,10 +739,7 @@ pub(crate) fn renew_certificates(uid: u32, device: [u8; 32]) -> Result<u64, Stri
     let paths = tilo_identity::provisioning::collaboration_identity_paths();
     let now = tilo_clock::unix_now_ns();
     let mut due: Vec<(std::path::PathBuf, DeviceCert)> = Vec::new();
-    for path in [
-        paths.device_cert_for_user(&person),
-        paths.device_cert.clone(),
-    ] {
+    for path in [paths.device_cert_for_user(&person), paths.device_cert] {
         let Ok(cert) = persist::read_device_cert(&path) else {
             continue;
         };
