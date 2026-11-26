@@ -500,8 +500,8 @@ fn answers(socket: &Path) -> bool {
 
 /// Ask the daemon at `socket` one line, and read its answer.
 fn ask(socket: &Path, line: &str, within: Duration) -> Result<String, String> {
-    let mut stream = std::os::unix::net::UnixStream::connect(socket)
-        .map_err(|error| format!("{}: {error}", socket.display()))?;
+    let mut stream =
+        tilo_socket::connect(socket).map_err(|error| format!("{}: {error}", socket.display()))?;
     stream
         .set_read_timeout(Some(within))
         .map_err(|error| error.to_string())?;
@@ -527,8 +527,8 @@ fn ask(socket: &Path, line: &str, within: Duration) -> Result<String, String> {
 /// founded before refuses the call, and is kept.
 fn founded(socket: &Path) -> Result<bool, String> {
     let began = Instant::now();
-    let stream = std::os::unix::net::UnixStream::connect(socket)
-        .map_err(|error| format!("{}: {error}", socket.display()))?;
+    let stream =
+        tilo_socket::connect(socket).map_err(|error| format!("{}: {error}", socket.display()))?;
     stream
         .set_read_timeout(Some(FOUNDING))
         .map_err(|error| error.to_string())?;
