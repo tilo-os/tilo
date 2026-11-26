@@ -306,7 +306,9 @@ impl Tickets {
         }
         let address = info.address.as_ref().ok_or(Refusal::Malformed)?;
         let reached = reached_of(address);
-        let (ticket, slot) = match mint.direction {
+        let ticket = Ticket::in_direction(mint.direction, reached.clone())
+            .with_issuer_device(info.server_cert.device_public_key);
+        let slot = match mint.direction {
             Direction::Login => {
                 let user: [u8; 32] = mint
                     .user
@@ -324,11 +326,10 @@ impl Tickets {
                     workspace,
                     workspace_name: mint.name.clone(),
                     server_cert: info.server_cert.clone(),
-                    server: reached.clone(),
+                    server: reached,
                     site: mint.site.clone().unwrap_or_else(|| host_origin.clone()),
                     host_origin,
                 };
-                let ticket = Ticket::in_direction(Direction::Login, reached);
                 let slot = Arc::new(Slot {
                     secret: ticket.secret_hex(),
                     direction: Direction::Login,
@@ -353,13 +354,12 @@ impl Tickets {
                 );
                 *slot.served.lock_recover() = Some(served.clone());
                 self.watch_certified(Arc::clone(&slot), &served);
-                (ticket, slot)
+                slot
             }
             Direction::SignIn => {
                 let mut invite = [0u8; 16];
                 getrandom::fill(&mut invite).map_err(|_| Refusal::Malformed)?;
-                let ticket = Ticket::in_direction(Direction::SignIn, reached);
-                let slot = Arc::new(Slot {
+                Arc::new(Slot {
                     secret: ticket.secret_hex(),
                     direction: Direction::SignIn,
                     served: Mutex::default(),
@@ -372,8 +372,7 @@ impl Tickets {
                     expires_at_ns: tilo_clock::unix_now_ns().saturating_add(TICKET_LIFETIME_NS),
                     invite: Some(invite),
                     signing: Mutex::default(),
-                });
-                (ticket, slot)
+                })
             }
         };
         let mut id = [0u8; 32];

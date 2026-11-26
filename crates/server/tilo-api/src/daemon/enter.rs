@@ -198,6 +198,28 @@ pub fn reached_of(addr: &iroh::EndpointAddr) -> Reached {
     }
 }
 
+/// Reach the action device a ticket names, signing as this computer's own key. A host may
+/// serve actions signed by its certified device at a separately keyed transport endpoint.
+///
+/// # Errors
+/// The ticket's transport endpoint is not a public key.
+pub fn ticket_issuer(
+    key: SigningKey,
+    endpoint: &iroh::Endpoint,
+    ticket: &tilo_device_identity::login::Ticket,
+    workspace: &str,
+) -> Result<Arc<tilo_peer_state::actions::RemoteDevice>> {
+    use tilo_peer_state::actions::{ActionService, NoActions};
+    let dialed = tilo_server_client::ServerAddress::at(address_of(&ticket.issuer)?);
+    let service = ActionService::new(key, Arc::new(NoActions));
+    service.reach_device_at(ticket.issuer_device(), ticket.issuer.endpoint);
+    Ok(Arc::new(service.remote(
+        endpoint,
+        &dialed.addr(),
+        workspace,
+    )))
+}
+
 /// The login `answer` makes of this computer, for `agent`.
 #[must_use]
 pub fn device_of(answer: CertifyAnswer, agent: &str) -> Device {
@@ -334,8 +356,6 @@ async fn certified_with(
     use tilo_device_identity::login::{
         CERTIFY, CertifyInput, PROVIDER, RESOURCE, SCOPE, TICKET_LIFETIME_NS,
     };
-    let issuer = address_of(&ticket.issuer)?;
-    let dialed = tilo_server_client::ServerAddress::at(issuer);
     let input = CertifyInput {
         secret: ticket.secret_hex(),
         device_public_key: hex::encode(key.verifying_key().to_bytes()),
@@ -347,13 +367,7 @@ async fn certified_with(
     };
     // Asked as this computer's own key, the one the certificate is for: a daemon's shared action
     // service signs as its workspace service instead.
-    let device = Arc::new(
-        tilo_peer_state::actions::ActionService::new(
-            key.clone(),
-            Arc::new(tilo_peer_state::actions::NoActions),
-        )
-        .remote(endpoint, &dialed.addr(), SCOPE),
-    );
+    let device = ticket_issuer(key.clone(), endpoint, ticket, SCOPE)?;
     let request = InvokeRequest {
         on_behalf_of: None,
         invocation: tilo_actions::InvocationId::new(),

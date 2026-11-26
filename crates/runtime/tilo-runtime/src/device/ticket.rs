@@ -32,7 +32,7 @@ use tilo_device_identity::login::{
 };
 use tilo_enrollment::root::PersonSigner;
 use tilo_lock::MutexRecover as _;
-use tilo_peer_state::actions::{ActionService, NoActions};
+use tilo_peer_state::actions::ActionService;
 use tilo_peer_state::new_device::ServedTicket;
 use tilo_session_client::device::Device as Entered;
 use tilo_user_identity::{DeviceCert, RevocationList, StatementSigner};
@@ -650,7 +650,8 @@ impl Tickets {
             }
             None => None,
         };
-        let ticket = Ticket::new(tilo_api::daemon::enter::reached_of(&self.0.endpoint.addr()));
+        let ticket = Ticket::new(tilo_api::daemon::enter::reached_of(&self.0.endpoint.addr()))
+            .with_issuer_device(self.0.service.device());
         let served = ServedTicket::new(
             ticket.clone(),
             user,
@@ -790,10 +791,8 @@ impl Tickets {
         use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
         let (key, here) = tilo_device_identity::login::load(&self.0.place)?
             .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
-        let issuer = tilo_api::daemon::enter::address_of(&ticket.issuer)?;
-        let dialed = tilo_server_client::ServerAddress::at(issuer);
-        let service = ActionService::new(key, Arc::new(NoActions));
-        let device = Arc::new(service.remote(&self.0.endpoint, &dialed.addr(), &here.workspace));
+        let device =
+            tilo_api::daemon::enter::ticket_issuer(key, &self.0.endpoint, ticket, &here.workspace)?;
         let Value::Object(argument) = argument else {
             bail!("a device action asks with its arguments");
         };

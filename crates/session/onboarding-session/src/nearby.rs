@@ -772,7 +772,7 @@ pub(crate) mod tests {
         let cert = super::testing::cert_for(&root, &device, "the person's laptop");
         let endpoint = runtime.block_on(async {
             iroh::Endpoint::builder(iroh::endpoint::presets::Minimal)
-                .secret_key(iroh::SecretKey::from_bytes(&device.to_bytes()))
+                .secret_key(iroh::SecretKey::from_bytes(&[0x44; 32]))
                 .relay_mode(iroh::RelayMode::Disabled)
                 .bind_addr((std::net::Ipv4Addr::LOCALHOST, 0))
                 .expect("a loopback address")
@@ -781,7 +781,8 @@ pub(crate) mod tests {
                 .expect("the laptop's endpoint")
         });
         let reached = tilo_api::daemon::enter::reached_of(&endpoint.addr());
-        let ticket = Ticket::new(reached.clone());
+        assert_ne!(reached.endpoint, cert.device_public_key);
+        let ticket = Ticket::new(reached.clone()).with_issuer_device(cert.device_public_key);
         let router = {
             let _entered = runtime.enter();
             tilo_api::daemon::enter::issuing_for_test(
@@ -809,6 +810,23 @@ pub(crate) mod tests {
         assert!(
             !tilo_device_identity::login::claimed(&place, &key.verifying_key().to_bytes()),
             "no person's certificate names this computer yet"
+        );
+
+        let wrong_device = ticket
+            .clone()
+            .with_issuer_device(root.verifying_key().to_bytes());
+        let refusal = runtime
+            .block_on(tilo_api::daemon::enter::log_in_here(
+                &key,
+                &place,
+                &wrong_device.encode(),
+                AGENT,
+                Some("the kitchen computer"),
+            ))
+            .expect_err("the laptop refuses a request addressed to another device");
+        assert_eq!(
+            refusal.to_string(),
+            "Your device didn't take this ticket: the request names another device."
         );
 
         let mut join = NearbyJoin::start(

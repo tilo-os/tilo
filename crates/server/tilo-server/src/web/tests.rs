@@ -1433,13 +1433,10 @@ async fn answer_setup_once(
     use ed25519_dalek::Signer as _;
     use tilo_actions::remote::{ActionProvider as _, Caller, InvokeRequest, RemoteActionTarget};
     use tilo_device_identity::login::{Approved, Asked, CERTIFY, PROVIDER, RESOURCE};
+    let answer =
+        async |body: &serde_json::Value| call_json(addr, tickets::ANSWER_ROUTE, body, None).await.0;
     let decline = serde_json::json!({"id": id, "declined": "Do not add it"});
-    assert_eq!(
-        call_json(addr, tickets::ANSWER_ROUTE, &decline, None)
-            .await
-            .0,
-        409
-    );
+    assert_eq!(answer(&decline).await, 409);
 
     let computer = SigningKey::from_bytes(&[153; 32])
         .verifying_key()
@@ -1457,7 +1454,8 @@ async fn answer_setup_once(
     router
         .invoke(&Caller::visitor(computer), request)
         .await
-        .unwrap();
+        .expect("the router answered the computer")
+        .expect("the host accepted its certification request");
     let status = ticket_showing(addr, id, "asked").await;
     let asked: Asked = serde_json::from_value(status["asked"].clone()).unwrap();
     let mut cert = asked.cert;
@@ -1468,27 +1466,14 @@ async fn answer_setup_once(
         signature: [0; 64],
     };
     let unsigned = serde_json::json!({"id": id, "approved": approved});
-    assert_eq!(
-        call_json(addr, tickets::ANSWER_ROUTE, &unsigned, None)
-            .await
-            .0,
-        400
-    );
+    assert_eq!(answer(&unsigned).await, 400);
 
     approved.signature = keeper.key.sign(&asked.digest).to_bytes();
     let yes = serde_json::json!({"id": id, "approved": approved});
     for _ in 0..2 {
-        assert_eq!(
-            call_json(addr, tickets::ANSWER_ROUTE, &yes, None).await.0,
-            204
-        );
+        assert_eq!(answer(&yes).await, 204);
     }
-    assert_eq!(
-        call_json(addr, tickets::ANSWER_ROUTE, &decline, None)
-            .await
-            .0,
-        409
-    );
+    assert_eq!(answer(&decline).await, 409);
     let final_status = ticket_showing(addr, id, "certified").await;
     assert_eq!(
         serde_json::from_str::<DeviceCert>(final_status["certified"].as_str().unwrap()).unwrap(),
@@ -1508,9 +1493,10 @@ async fn a_page_asks_its_host_for_the_ticket_its_agent_works_with() {
     let state = tempfile::tempdir().unwrap();
     let server = server_at(&state, keeper.identity(), ServerConfig::default()).await;
     let mut web = web_of(&server, &keeper);
-    let endpoint = iroh::EndpointId::from_bytes(&keeper.cert.device_public_key).unwrap();
+    let endpoint = server.node_addr();
+    assert_ne!(endpoint.id.as_bytes(), &keeper.cert.device_public_key);
     web.server_info.address = Some(ServerAddress {
-        endpoint_addr: iroh::EndpointAddr::new(endpoint),
+        endpoint_addr: endpoint.clone(),
         relay_url: None,
         web: None,
     });
@@ -1534,6 +1520,8 @@ async fn a_page_asks_its_host_for_the_ticket_its_agent_works_with() {
     let ticket = tilo_device_identity::login::Ticket::parse(minted["ticket"].as_str().unwrap())
         .expect("the page is shown a ticket");
     assert_eq!(ticket.direction, Direction::Login);
+    assert_eq!(ticket.issuer.endpoint, *endpoint.id.as_bytes());
+    assert_eq!(ticket.issuer_device(), keeper.cert.device_public_key);
     let (code, _, asked) = call_json(
         addr,
         tickets::ASKED_ROUTE,
@@ -1565,6 +1553,8 @@ async fn a_page_asks_its_host_for_the_ticket_its_agent_works_with() {
     let ticket = tilo_device_identity::login::Ticket::parse(minted["ticket"].as_str().unwrap())
         .expect("the page is shown a ticket");
     assert_eq!(ticket.direction, Direction::SignIn);
+    assert_eq!(ticket.issuer.endpoint, *endpoint.id.as_bytes());
+    assert_eq!(ticket.issuer_device(), keeper.cert.device_public_key);
     let answer = serde_json::json!({"id": minted["id"], "declined": "wrong direction"});
     assert_eq!(
         call_json(addr, tickets::ANSWER_ROUTE, &answer, None)

@@ -88,6 +88,10 @@ pub struct Ticket {
     /// ticket's shape: `tilo login` and `tilo device add` each take their own.
     pub direction: Direction,
     pub secret: [u8; 32],
+    /// The action device reached at the issuer's endpoint, when keyed separately. Kept last
+    /// so readers of the original postcard record can still read the route and secret.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    action_device: Option<[u8; 32]>,
 }
 
 /// Why a string is not a ticket.
@@ -256,7 +260,21 @@ impl Ticket {
             issuer,
             direction,
             secret,
+            action_device: None,
         }
+    }
+
+    /// Address signed requests to `device` at the issuer's transport endpoint.
+    #[must_use]
+    pub fn with_issuer_device(mut self, device: [u8; 32]) -> Self {
+        self.action_device = (device != self.issuer.endpoint).then_some(device);
+        self
+    }
+
+    /// The action device this ticket names. A personal device normally keys its endpoint itself.
+    #[must_use]
+    pub fn issuer_device(&self) -> [u8; 32] {
+        self.action_device.unwrap_or(self.issuer.endpoint)
     }
 
     /// The ticket as the one string a person hands on.
@@ -283,7 +301,27 @@ impl Ticket {
             .strip_prefix(PREFIX)
             .and_then(|rest| hex::decode(rest).ok())
             .ok_or(NotATicket)?;
-        postcard::from_bytes(&bytes).map_err(|_| NotATicket)
+        // Postcard has no end-of-record marker. The original ticket ends after its secret;
+        // only a separately keyed issuer adds the optional device field.
+        let ((issuer, direction, secret), tail) =
+            postcard::take_from_bytes::<(Reached, Direction, [u8; 32])>(&bytes)
+                .map_err(|_| NotATicket)?;
+        let action_device = if tail.is_empty() {
+            None
+        } else {
+            match postcard::take_from_bytes::<Option<[u8; 32]>>(tail) {
+                Ok((Some(key), [])) if ed25519_dalek::VerifyingKey::from_bytes(&key).is_ok() => {
+                    Some(key)
+                }
+                _ => return Err(NotATicket),
+            }
+        };
+        Ok(Self {
+            issuer,
+            direction,
+            secret,
+            action_device,
+        })
     }
 
     /// Whether `text` looks like a ticket rather than another thing `tilo login` takes.
@@ -665,6 +703,50 @@ mod tests {
             Ticket::parse(text.get(..text.len() - 4).unwrap()),
             Err(NotATicket)
         );
+    }
+
+    #[test]
+    fn old_and_separately_keyed_tickets_keep_the_same_route_direction_and_secret() {
+        // The installed earlier reader used postcard::from_bytes on exactly these fields.
+        #[derive(Deserialize)]
+        struct EarlierTicket {
+            issuer: Reached,
+            direction: Direction,
+            secret: [u8; 32],
+        }
+
+        // A login ticket from the original encoder: endpoint, no relay or direct routes,
+        // direction, secret.
+        let original = concat!(
+            "tilo1",
+            "1212121212121212121212121212121212121212121212121212121212121212",
+            "000000",
+            "3434343434343434343434343434343434343434343434343434343434343434"
+        );
+        let historic = Ticket::parse(original).unwrap();
+        assert_eq!(historic.issuer_device(), [0x12; 32]);
+        assert_eq!(historic.encode(), original);
+        let device = ed25519_dalek::SigningKey::from_bytes(&[0x56; 32])
+            .verifying_key()
+            .to_bytes();
+        let separate = historic.clone().with_issuer_device(device);
+        let text = separate.encode();
+        assert_eq!(Ticket::parse(&text).unwrap().issuer_device(), device);
+        assert_eq!(Ticket::parse(&text).unwrap().encode(), text);
+
+        let bytes = hex::decode(text.strip_prefix(PREFIX).unwrap()).unwrap();
+        let earlier: EarlierTicket = postcard::from_bytes(&bytes).unwrap();
+        assert_eq!(earlier.issuer, historic.issuer);
+        assert_eq!(earlier.direction, historic.direction);
+        assert_eq!(earlier.secret, historic.secret);
+        assert_eq!(Ticket::parse(&text[..text.len() - 2]), Err(NotATicket));
+        for invalid in [
+            format!("{original}02"),
+            format!("{original}00"),
+            format!("{text}ff"),
+        ] {
+            assert_eq!(Ticket::parse(&invalid), Err(NotATicket));
+        }
     }
 
     #[test]
