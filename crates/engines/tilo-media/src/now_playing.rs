@@ -73,3 +73,18 @@ impl NowPlayingSession {
         let _ = (now, state);
     }
 }
+
+impl NowPlayingAction {
+    /// The action a page's media element names: `play`, `pause`, `stop`, `next` or `previous`.
+    #[cfg(web_page)]
+    pub(crate) fn from_page(name: &str) -> Option<Self> {
+        Some(match name {
+            "play" => Self::Play,
+            "pause" => Self::Pause,
+            "stop" => Self::Stop,
+            "next" => Self::Next,
+            "previous" => Self::Previous,
+            _ => return None,
+        })
+    }
+}
