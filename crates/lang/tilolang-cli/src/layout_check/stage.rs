@@ -668,6 +668,62 @@ mod tests {
         ))
     }
 
+    /// The app `name`'s window staged at `scenario` and `size`, in the light theme: its packages
+    /// and the staged window.
+    fn staged_over(name: &str, scenario: &str, size: (u32, u32)) -> (Rc<Packages>, Staged) {
+        tilo_app_window::i18n::ensure();
+        let packages = app_packages(name);
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
+        let staged = Staged::over(
+            &app,
+            &packages,
+            scenario,
+            size,
+            ui::Theme::light(),
+            None,
+            &[],
+        )
+        .expect("the scenario stages");
+        (packages, staged)
+    }
+
+    /// An agent's invocation of `descriptor` lands on `control`, where the app binds the action,
+    /// and its marker comes to rest there (captured as `name`): where the marker drew.
+    fn agent_acts_at(
+        staged: &mut Staged,
+        descriptor: &tilo_actions::ActionDescriptor,
+        control: ui::kurbo::Rect,
+        width: u32,
+        name: &str,
+    ) -> (u32, u32, u32, u32) {
+        let event = interaction(descriptor);
+        let locus = staged
+            .harness()
+            .semantic_locus(&event)
+            .expect("the control the app binds the action to");
+        assert!(
+            control.contains(locus.center()),
+            "the agent acts at the control: {locus:?} vs {control:?}"
+        );
+        let (before, after) = capture_agent(staged, &event, name);
+        changed_pixels(&before, &after, width, pixels(control))
+            .expect("the agent's marker rests on the control the app binds")
+    }
+
+    /// The press just made ran `descriptor`'s action, once.
+    fn ran_once(staged: &mut Staged, descriptor: &tilo_actions::ActionDescriptor) {
+        let chosen = staged.window.instance.take_chosen();
+        assert_eq!(
+            chosen.as_ref().map(|(_press, address, _argument)| address),
+            Some(&descriptor.address),
+            "one press runs the action once"
+        );
+        assert!(
+            staged.window.instance.take_chosen().is_none(),
+            "the press runs one action, not two"
+        );
+    }
+
     /// The actions the app publishes at its window, offered the way its host offers them: the
     /// window's palette, action directory and agents read them off it from then on.
     fn publish_actions(staged: &mut Staged) -> Vec<tilo_actions::ActionDescriptor> {
@@ -777,20 +833,8 @@ mod tests {
     /// offers none of them again: what does not fit the row goes behind the row's one overflow button.
     #[test]
     fn the_window_shows_each_control_once() {
-        tilo_app_window::i18n::ensure();
-        let packages = app_packages("tasks");
-        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let (width, height) = (960, 1080);
-        let mut staged = Staged::over(
-            &app,
-            &packages,
-            "a busy week",
-            (width, height),
-            ui::Theme::light(),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
+        let (_, mut staged) = staged_over("tasks", "a busy week", (width, height));
         staged
             .lay_out(
                 (width, height),
@@ -1070,20 +1114,8 @@ mod tests {
     /// instead.
     #[test]
     fn a_press_on_the_button_an_app_binds_runs_its_action_once_through_the_api() {
-        tilo_app_window::i18n::ensure();
-        let packages = app_packages("counter");
-        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let (width, height) = (900, 600);
-        let mut staged = Staged::over(
-            &app,
-            &packages,
-            "a busy morning",
-            (width, height),
-            ui::Theme::light(),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
+        let (_, mut staged) = staged_over("counter", "a busy morning", (width, height));
         staged.window.harness.relayout();
         let descriptors = publish_actions(&mut staged);
         let increment = descriptors
@@ -1098,34 +1130,11 @@ mod tests {
             );
         };
         let control = route.bounds.expect("the button is laid out");
-        let event = interaction(increment);
-        let locus = staged
-            .harness()
-            .semantic_locus(&event)
-            .expect("the button the app binds the action to");
-        assert!(
-            control.contains(locus.center()),
-            "the agent acts at the button: {locus:?} vs {control:?}"
-        );
-        let (before, after) = capture_agent(&mut staged, &event, "counter-tilolang");
-        assert!(
-            changed_pixels(&before, &after, width, pixels(control)).is_some(),
-            "the agent's marker rests on the button the app binds"
-        );
-
+        agent_acts_at(&mut staged, increment, control, width, "counter-tilolang");
         staged
             .press(&route.control_id, false)
             .expect("the button presses");
-        let chosen = staged.window.instance.take_chosen();
-        assert_eq!(
-            chosen.as_ref().map(|(_press, address, _argument)| address),
-            Some(&increment.address),
-            "one press runs the action once"
-        );
-        assert!(
-            staged.window.instance.take_chosen().is_none(),
-            "the press runs one action, not two"
-        );
+        ran_once(&mut staged, increment);
     }
 
     /// The nodes of the window `node`, each before what it holds.
@@ -1243,20 +1252,8 @@ mod tests {
     /// closes with the task reminded, with nothing else to press.
     #[test]
     fn a_quick_choice_answers_a_one_question_form_in_one_press() {
-        tilo_app_window::i18n::ensure();
-        let packages = app_packages("tasks");
-        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let (width, height) = (390, 844);
-        let mut staged = Staged::over(
-            &app,
-            &packages,
-            "a busy week",
-            (width, height),
-            ui::Theme::light(),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
+        let (packages, mut staged) = staged_over("tasks", "a busy week", (width, height));
         staged
             .lay_out(
                 (width, height),
@@ -1265,6 +1262,7 @@ mod tests {
                 1.0,
             )
             .expect("the window lies out for a finger");
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let before = reminded(&staged, &app);
         open_reminder_form(&mut staged, &packages);
         let choice = {
@@ -1304,20 +1302,8 @@ mod tests {
     /// confirm button stands beside Cancel for the moment typed, and pressing it reminds.
     #[test]
     fn a_moment_typed_into_the_form_is_confirmed_by_its_button() {
-        tilo_app_window::i18n::ensure();
-        let packages = app_packages("tasks");
-        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let (width, height) = (390, 844);
-        let mut staged = Staged::over(
-            &app,
-            &packages,
-            "a busy week",
-            (width, height),
-            ui::Theme::light(),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
+        let (packages, mut staged) = staged_over("tasks", "a busy week", (width, height));
         staged
             .lay_out(
                 (width, height),
@@ -1326,6 +1312,7 @@ mod tests {
                 1.0,
             )
             .expect("the window lies out for a finger");
+        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let before = reminded(&staged, &app);
         open_reminder_form(&mut staged, &packages);
         staged.harness_mut().type_text("tomorrow 9:30");
@@ -1403,42 +1390,23 @@ mod tests {
     /// person's press is the action's own route.
     #[test]
     fn a_press_on_a_menu_row_the_app_binds_runs_its_action_once_through_the_api() {
-        tilo_app_window::i18n::ensure();
-        let packages = app_packages("tasks");
-        let app = packages.compiled.last().expect("the app").meta.app.clone();
-        let task_type = packages
-            .compiled
-            .last()
-            .expect("the app's meta")
-            .meta
+        let (width, height) = (1280, 800);
+        let (packages, mut staged) = staged_over("tasks", "a busy week", (width, height));
+        let meta = &packages.compiled.last().expect("the app's meta").meta;
+        let task_type = meta
             .types
             .iter()
             .find(|ty| ty.name == "Task")
             .expect("a task type")
             .id
             .clone();
-        let page_view = packages
-            .compiled
-            .last()
-            .expect("the app's meta")
-            .meta
+        let page_view = meta
             .views
             .iter()
             .find(|view| view.name == "task_page")
             .expect("a task page")
             .id
             .clone();
-        let (width, height) = (1280, 800);
-        let mut staged = Staged::over(
-            &app,
-            &packages,
-            "a busy week",
-            (width, height),
-            ui::Theme::light(),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
         staged.window.harness.relayout();
         // A task outside the inbox: its page offers the menu that files it back into it.
         let task = staged
@@ -1479,54 +1447,21 @@ mod tests {
             .unwrap_or_else(|| {
                 panic!("the app binds one row to Inbox: {rows:?}");
             });
-        let event = interaction(unfile);
-        let locus = staged
-            .harness()
-            .semantic_locus(&event)
-            .expect("the row the app binds the action to");
-        assert!(
-            control.contains(locus.center()),
-            "the agent acts at the row: {locus:?} vs {control:?}"
-        );
-        let (before, after) = capture_agent(&mut staged, &event, "tasks-menu-tilolang");
-        let marked = changed_pixels(before.as_slice(), after.as_slice(), width, pixels(control));
-        let mark = marked.expect("the agent's marker rests on the row");
+        let mark = agent_acts_at(&mut staged, unfile, control, width, "tasks-menu-tilolang");
         assert!(
             control.contains(ui::kurbo::Point::new(f64::from(mark.0), f64::from(mark.1))),
             "the marker is drawn inside the row the action lands on"
         );
-
         press_at(&mut staged, control);
-        let chosen = staged.window.instance.take_chosen();
-        assert_eq!(
-            chosen.as_ref().map(|(_press, address, _argument)| address),
-            Some(&unfile.address),
-            "one press runs the row's action once"
-        );
-        assert!(
-            staged.window.instance.take_chosen().is_none(),
-            "the press runs one action, not two"
-        );
+        ran_once(&mut staged, unfile);
     }
 
     /// A section's add the app binds to a published action runs it once, through the same actior: the
     /// heading's button is a part of the list, and the person's press is the action's own route.
     #[test]
     fn a_press_on_a_sections_add_the_app_binds_runs_its_action_once_through_the_api() {
-        tilo_app_window::i18n::ensure();
-        let packages = app_packages("tasks");
-        let app = packages.compiled.last().expect("the app").meta.app.clone();
         let (width, height) = (1280, 800);
-        let mut staged = Staged::over(
-            &app,
-            &packages,
-            "a busy week",
-            (width, height),
-            ui::Theme::light(),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
+        let (_, mut staged) = staged_over("tasks", "a busy week", (width, height));
         staged.window.harness.relayout();
         let descriptors = publish_actions(&mut staged);
         let (add, control) = descriptors
@@ -1543,30 +1478,15 @@ mod tests {
                 ))
             })
             .expect("the app binds its section's add to the action it publishes");
-        let event = interaction(add);
-        let locus = staged
-            .harness()
-            .semantic_locus(&event)
-            .expect("the button the app binds the action to");
-        assert!(
-            control.contains(locus.center()),
-            "the agent acts at the heading's add: {locus:?} vs {control:?}"
+        agent_acts_at(
+            &mut staged,
+            add,
+            control,
+            width,
+            "tasks-section-add-tilolang",
         );
-        let (before, after) = capture_agent(&mut staged, &event, "tasks-section-add-tilolang");
-        let marked = changed_pixels(before.as_slice(), after.as_slice(), width, pixels(control));
-        assert!(marked.is_some(), "the agent's marker rests on the add");
-
         press_at(&mut staged, control);
-        let chosen = staged.window.instance.take_chosen();
-        assert_eq!(
-            chosen.as_ref().map(|(_press, address, _argument)| address),
-            Some(&add.address),
-            "one press runs the add once"
-        );
-        assert!(
-            staged.window.instance.take_chosen().is_none(),
-            "the press runs one action, not two"
-        );
+        ran_once(&mut staged, add);
     }
 
     /// A row's check box runs the check action the app binds to it, once,
@@ -1575,19 +1495,7 @@ mod tests {
     /// own.
     #[test]
     fn a_press_on_a_rows_check_box_runs_the_actions_the_app_binds_to_it() {
-        tilo_app_window::i18n::ensure();
-        let packages = app_packages("tasks");
-        let app = packages.compiled.last().expect("the app").meta.app.clone();
-        let mut staged = Staged::over(
-            &app,
-            &packages,
-            "a busy week",
-            (1280, 800),
-            ui::Theme::light(),
-            None,
-            &[],
-        )
-        .expect("the scenario stages");
+        let (_, mut staged) = staged_over("tasks", "a busy week", (1280, 800));
         staged.window.harness.relayout();
         let descriptors = publish_actions(&mut staged);
         let (row, check) = descriptors
@@ -1600,16 +1508,7 @@ mod tests {
 
         // The box itself, where a person clicks it: the rest of the row is the row's own press.
         press_at(&mut staged, check);
-        let chosen = staged.window.instance.take_chosen();
-        assert_eq!(
-            chosen.as_ref().map(|(_press, address, _argument)| address),
-            Some(&row.address),
-            "one press runs the check's action once"
-        );
-        assert!(
-            staged.window.instance.take_chosen().is_none(),
-            "the press runs one action, not two"
-        );
+        ran_once(&mut staged, &row);
     }
 
     #[test]
