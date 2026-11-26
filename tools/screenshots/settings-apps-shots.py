@@ -50,6 +50,11 @@ tapps = tl_packages(STATE, OUT, ["settings", "mail"])
 
 session = Session(STATE).start(apps="terminal", fresh=True, tapps=tapps)
 try:
+    # A headless session rasterizes frames as it draws, so its control answers can wait behind a
+    # frame on a first start: give every request the room a cold desktop needs.
+    control = session.control
+    session.control = lambda payload, timeout=120.0: control(payload, timeout)
+
     # The ready handshake comes before the daemon and shell a fresh home starts: the desktop
     # answers the control socket once it draws, which takes a few seconds on a scratch profile.
     def answered() -> bool:
@@ -59,7 +64,12 @@ try:
             return False
 
     until("the desktop to answer", answered, 180)
-    session.launch("so.tilo.settings")
+    session.open("so.tilo.settings")
+    until(
+        "Settings' window",
+        lambda: any(window.get("app_id") == "so.tilo.settings" for window in session.windows()),
+        180,
+    )
     row = until(
         "the App page's own action",
         lambda: next(
