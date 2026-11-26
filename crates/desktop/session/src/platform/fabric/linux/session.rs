@@ -20,9 +20,8 @@ use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
 use super::live::Live;
 use super::store;
 use super::{
-    ClipboardEntry, DeviceAbout, DeviceKind, FabricCapabilities, FabricLink, MediaSourceLocator,
-    PersonDevices, PersonalFabricAction, PersonalFabricActionEnvelope, PersonalFabricSendError,
-    SharedLink, clock,
+    DeviceAbout, DeviceKind, FabricCapabilities, FabricLink, MediaSourceLocator, PersonDevices,
+    PersonalFabricAction, PersonalFabricActionEnvelope, PersonalFabricSendError, SharedLink, clock,
 };
 use crate::platform::fabric::{DeviceId, nonzero};
 /// Where this session's frames leave for the person's other devices.
@@ -120,9 +119,6 @@ pub(crate) struct SessionFabric {
     /// The person's devices as the record last read, and its reading then: read again only when
     /// it moved.
     kept: Mutex<Option<(u64, PersonDevices)>>,
-    /// Whether the copies this device offers moved since the person's other devices were last
-    /// told.
-    offered_moved: AtomicBool,
     label: String,
     outgoing: Outbox,
     /// The person's root key: a frame goes only to the devices that proved a certificate of it.
@@ -193,7 +189,6 @@ impl SessionFabric {
             live: Mutex::new(Live::new(device)),
             personal,
             kept: Mutex::new(None),
-            offered_moved: AtomicBool::new(false),
             label,
             outgoing: reach.outgoing,
             user_public_key: reach.user_public_key,
@@ -214,17 +209,15 @@ impl SessionFabric {
         certs: &[tilo_user_identity::DeviceCert],
         revocations: &[tilo_user_identity::RevocationEntry],
     ) {
-        let clipboard = {
-            let mut live = self.live.lock_recover();
-            if live.sibling(peer, certs, revocations).is_none() {
-                return;
-            }
-            live.own_clipboard().to_vec()
-        };
-        self.publish(Some(peer), PersonalFabricPayload::Here);
-        if !clipboard.is_empty() {
-            self.publish(Some(peer), PersonalFabricPayload::Clipboard(clipboard));
+        if self
+            .live
+            .lock_recover()
+            .sibling(peer, certs, revocations)
+            .is_none()
+        {
+            return;
         }
+        self.publish(Some(peer), PersonalFabricPayload::Here);
     }
 
     /// The session with one of the person's devices ended: it is no longer here.
@@ -245,12 +238,6 @@ impl SessionFabric {
                 let proved = self.live.lock_recover().here(peer);
                 if let Err(error) = proved {
                     tracing::warn!(%error, %peer, "an endpoint said it is there that proved no device of the person's");
-                }
-            }
-            PersonalFabricPayload::Clipboard(entries) => {
-                let taken = self.live.lock_recover().clipboard(peer, entries.clone());
-                if let Err(error) = taken {
-                    tracing::warn!(%error, %peer, "a device offered copies this session does not take");
                 }
             }
             PersonalFabricPayload::Action(bytes) => {
@@ -279,17 +266,10 @@ impl SessionFabric {
             PersonalFabricPayload::Document { .. }
             | PersonalFabricPayload::DocumentContentWants { .. }
             | PersonalFabricPayload::DocumentContentPieces { .. }
-            | PersonalFabricPayload::DocumentContentLacks { .. } => {}
-        }
-    }
-
-    /// Tell the person's other devices the copies this device offers, when they moved since they
-    /// were last told: the session's pass calls this once it offered the clipboard, so a copy
-    /// leaves on the pass that made it.
-    pub(crate) fn announce(&self) {
-        if self.offered_moved.swap(false, Ordering::Relaxed) {
-            let clipboard = self.live.lock_recover().own_clipboard().to_vec();
-            self.publish(None, PersonalFabricPayload::Clipboard(clipboard));
+            | PersonalFabricPayload::DocumentContentLacks { .. }
+            // A copy's frame from an earlier build: clipboard continuity is the daemon's now,
+            // and this session routes none of it.
+            | PersonalFabricPayload::RetiredClipboard => {}
         }
     }
 
@@ -419,15 +399,6 @@ impl FabricLink for SessionFabric {
             .media_permitted()
             .then_some(())
             .ok_or_else(|| "media continuity is turned off in this device's settings".to_owned())
-    }
-
-    fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
-        let offered = self.live.lock_recover().offer(entries);
-        match offered {
-            Ok(true) => self.offered_moved.store(true, Ordering::Relaxed),
-            Ok(false) => {}
-            Err(error) => tracing::warn!(%error, "the clipboard is not shared"),
-        }
     }
 }
 

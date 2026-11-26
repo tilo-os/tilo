@@ -619,15 +619,6 @@ impl Local {
         }
     }
 
-    /// Tell the person's other devices what this device says of itself and the copies it offers,
-    /// when either moved since they last heard: the session's pass calls this once it offered the
-    /// clipboard, so a copy leaves on the pass that made it.
-    pub(crate) fn announce_fabric(&self) {
-        if let Some(fabric) = &self.fabric {
-            fabric.announce();
-        }
-    }
-
     /// This device's fabric, when the person certified it: the link the session's services act on.
     #[must_use]
     pub(crate) fn fabric(&self) -> Option<crate::platform::fabric::SharedLink> {
@@ -1005,9 +996,6 @@ impl Host for Hosting {
         let local = &self.local;
         local.keep_desktop_events(client);
         let moved = local.hear_live(client);
-        // What arrived moved this device's fabric — a copy from another device, a device that is
-        // gone: the person's other devices hear so on the same pass.
-        local.announce_fabric();
         // The clock of every peer something holds in sync: its probes leave here, so the audio
         // timed against them can play in time.
         if let Some(fabric) = &local.fabric {
@@ -1610,12 +1598,6 @@ impl Client {
     /// The person's presence as the surfaces here read it.
     pub fn here(&self) -> &Here {
         &self.hosting.roster.here
-    }
-
-    /// Tell the person's other devices what this device says of itself, when that moved.
-    #[cfg(target_os = "linux")]
-    pub fn announce_fabric(&self) {
-        self.hosting.local.announce_fabric();
     }
 
     /// This device's fabric, when the person certified it.

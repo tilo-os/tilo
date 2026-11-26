@@ -5,7 +5,7 @@
 //! ([`tilo_workspace_service::workspaces::person_workspace::speaker`]), and what its daemon keeps
 //! of its disk unlock.
 //! What holds only while a device is there is said on its session with each of the others and kept
-//! nowhere: that it is there, and what was copied on it.
+//! nowhere: that it is there.
 //!
 //! [`PersonDevices`] is the two read together: each device the person's store lists, with what it
 //! wrote there and what it last said live.
@@ -14,9 +14,7 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::fabric::{
-    ClipboardEntry, ClipboardHistory, DeviceId, DeviceKind, FabricCapabilities, FabricError,
-};
+use crate::fabric::{DeviceId, DeviceKind, FabricCapabilities, FabricError};
 
 /// What a device says it is, in its own part of the person's store: the name the person knows it
 /// by, what kind of device it is, and what it does for their other devices.
@@ -59,8 +57,6 @@ pub struct PersonDevice {
     pub online: bool,
     /// When it last said anything live.
     pub last_seen_unix_ms: u64,
-    /// The copies it offers, as it last offered them.
-    pub clipboard: Vec<ClipboardEntry>,
 }
 
 impl PersonDevice {
@@ -72,7 +68,6 @@ impl PersonDevice {
             about,
             online: false,
             last_seen_unix_ms: 0,
-            clipboard: Vec::new(),
         }
     }
 }
@@ -117,28 +112,4 @@ impl PersonDevices {
     pub fn online_devices(&self) -> impl Iterator<Item = &PersonDevice> {
         self.devices.values().filter(|device| device.online)
     }
-
-    /// Every copy the person's devices offer, newest first, as one bounded history.
-    #[must_use]
-    pub fn merged_clipboard(&self) -> ClipboardHistory {
-        let mut items: Vec<_> = self
-            .devices
-            .values()
-            .flat_map(|device| device.clipboard.iter().cloned())
-            .collect();
-        // Oldest first: each copy goes in front of the ones before it, and a full history lets
-        // the oldest go.
-        items.sort_by(|a, b| (a.created_unix_ms, &a.stamp).cmp(&(b.created_unix_ms, &b.stamp)));
-        let mut history = ClipboardHistory::default();
-        for item in items {
-            if history.push(item).is_err() {
-                break;
-            }
-        }
-        history
-    }
 }
-
-#[cfg(test)]
-#[path = "devices_tests.rs"]
-mod tests;

@@ -8,7 +8,7 @@ use tilo_workspace_service::workspaces::person_workspace::devices::Devices;
 
 use crate::fabric::DeviceId;
 
-use crate::fabric::{ClipboardEntry, PersonDevices, PersonalFabricAction};
+use crate::fabric::{PersonDevices, PersonalFabricAction};
 
 /// Why a personal fabric action did not reach the transport.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -78,12 +78,6 @@ pub trait FabricLink {
     /// # Errors
     /// Why media continuity is off.
     fn require_media(&self) -> Result<(), String>;
-    /// Offer what this device copies to the person's other devices that are there now. A
-    /// link whose transport does not carry the clipboard ignores the offer; what their
-    /// devices offer is in [`Self::devices`].
-    fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
-        let _ = entries;
-    }
 }
 
 /// A link a service keeps beyond one call, for work it finishes later.
@@ -128,9 +122,5 @@ impl<T: FabricLink + ?Sized> FabricLink for std::sync::Arc<T> {
 
     fn require_media(&self) -> Result<(), String> {
         (**self).require_media()
-    }
-
-    fn share_clipboard(&self, entries: Vec<ClipboardEntry>) {
-        (**self).share_clipboard(entries);
     }
 }

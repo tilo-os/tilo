@@ -4,13 +4,11 @@
 //! applies one policy model to media, clipboard, roaming preferences and secret
 //! references.
 
-use std::collections::VecDeque;
-
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::fabric::DeviceId;
 use crate::fabric::MAX_FABRIC_ACTION_BYTES;
-use crate::fabric::{DeviceId, FabricStamp};
 
 /// Locally derived focus identity of a physical gamepad's target. None of
 /// these fields are accepted from a remote peer or an untrusted application.
@@ -22,8 +20,6 @@ pub struct PhysicalGamepadBinding {
 }
 
 pub const MAX_DEVICES: usize = 64;
-pub const MAX_CLIPBOARD_ITEMS: usize = 50;
-pub const MAX_CLIPBOARD_ITEM_BYTES: usize = 256 * 1024;
 pub const MAX_FABRIC_ACTION_AGE_MS: u64 = 2 * 60 * 1000;
 /// Versioned remote-audio wire contract. Unknown versions fail closed instead
 /// of being interpreted as raw PCM with potentially incompatible framing.
@@ -489,164 +485,12 @@ impl PersonalFabricActionEnvelope {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ClipboardPayload {
-    Text(String),
-    Binary { mime: String, bytes: Vec<u8> },
-}
-
-impl ClipboardPayload {
-    pub fn byte_len(&self) -> usize {
-        match self {
-            Self::Text(value) => value.len(),
-            Self::Binary { bytes, .. } => bytes.len(),
-        }
-    }
-
-    fn validate(&self) -> Result<(), FabricError> {
-        if self.byte_len() > MAX_CLIPBOARD_ITEM_BYTES {
-            return Err(FabricError::ClipboardItemTooLarge);
-        }
-        if let Self::Binary { mime, .. } = self
-            && (!valid_mime(mime) || mime == ui::clipboard::SECRET_MIME)
-        {
-            return Err(FabricError::InvalidClipboardMime);
-        }
-        Ok(())
-    }
-}
-
-/// Content-addressed clipboard item. Secret fields and primary-selection churn
-/// do not construct this type; a caller must explicitly classify a copy as
-/// shareable before it reaches the person's private device connection.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ClipboardEntry {
-    pub id: [u8; 32],
-    pub payload: ClipboardPayload,
-    pub origin: DeviceId,
-    pub created_unix_ms: u64,
-    pub pinned: bool,
-    pub stamp: FabricStamp,
-}
-
-impl ClipboardEntry {
-    /// Construct a content-addressed item the caller has classified as safe to leave the
-    /// originating device.
-    /// # Errors
-    /// An oversized or invalid payload, or a foreign stamp.
-    pub fn shareable(
-        payload: ClipboardPayload,
-        origin: DeviceId,
-        created_unix_ms: u64,
-        stamp: FabricStamp,
-    ) -> Result<Self, FabricError> {
-        payload.validate()?;
-        if stamp.device != origin {
-            return Err(FabricError::ForeignAuthorship);
-        }
-        let mut material = Vec::with_capacity(payload.byte_len().saturating_add(128));
-        material.extend_from_slice(origin.as_str().as_bytes());
-        match &payload {
-            ClipboardPayload::Text(value) => {
-                material.extend_from_slice(b"text\0");
-                material.extend_from_slice(value.as_bytes());
-            }
-            ClipboardPayload::Binary { mime, bytes } => {
-                material.extend_from_slice(mime.as_bytes());
-                material.push(0);
-                material.extend_from_slice(bytes);
-            }
-        }
-        Ok(Self {
-            id: *blake3::hash(&material).as_bytes(),
-            payload,
-            origin,
-            created_unix_ms,
-            pinned: false,
-            stamp,
-        })
-    }
-
-    /// Whether this is a copy `owner` made, as it made it.
-    /// # Errors
-    /// A copy another device made, or one whose content is not what its id names.
-    pub fn validate(&self, owner: &DeviceId) -> Result<(), FabricError> {
-        if &self.origin != owner || &self.stamp.device != owner {
-            return Err(FabricError::ForeignAuthorship);
-        }
-        let rebuilt = Self::shareable(
-            self.payload.clone(),
-            self.origin.clone(),
-            self.created_unix_ms,
-            self.stamp.clone(),
-        )?;
-        if rebuilt.id != self.id {
-            return Err(FabricError::ClipboardHashMismatch);
-        }
-        Ok(())
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct ClipboardHistory {
-    entries: VecDeque<ClipboardEntry>,
-}
-
-impl ClipboardHistory {
-    pub fn entries(&self) -> impl Iterator<Item = &ClipboardEntry> {
-        self.entries.iter()
-    }
-
-    /// Add or promote an item, enforcing the bounded history policy.
-    /// # Errors
-    /// An invalid item, or every history slot pinned.
-    pub fn push(&mut self, entry: ClipboardEntry) -> Result<bool, FabricError> {
-        entry.payload.validate()?;
-        if let Some(index) = self.entries.iter().position(|item| item.id == entry.id) {
-            let Some(mut prior) = self.entries.remove(index) else {
-                return Ok(false);
-            };
-            if entry.stamp.is_newer_than(&prior.stamp) {
-                prior.stamp = entry.stamp;
-                prior.pinned = entry.pinned;
-            }
-            self.entries.push_front(prior);
-            return Ok(false);
-        }
-        while self.entries.len() >= MAX_CLIPBOARD_ITEMS {
-            let Some(index) = self.entries.iter().rposition(|item| !item.pinned) else {
-                return Err(FabricError::ClipboardHistoryFull);
-            };
-            self.entries.remove(index);
-        }
-        self.entries.push_front(entry);
-        Ok(true)
-    }
-
-    pub fn remove(&mut self, id: [u8; 32]) -> bool {
-        let Some(index) = self.entries.iter().position(|entry| entry.id == id) else {
-            return false;
-        };
-        self.entries.remove(index);
-        true
-    }
-}
-
 pub(crate) fn valid_fabric_identifier(value: &str, max: usize) -> bool {
     !value.is_empty()
         && value.len() <= max
         && value
             .chars()
             .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_' | ':' | '/'))
-}
-
-pub(crate) fn valid_mime(value: &str) -> bool {
-    value.len() <= 128
-        && value.contains('/')
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '-' | '+' | '_'))
 }
 
 fn valid_media_locator(locator: &MediaSourceLocator) -> bool {
@@ -717,14 +561,6 @@ pub enum FabricError {
     InvalidLabel,
     #[error("invalid identifier")]
     InvalidIdentifier,
-    #[error("clipboard item exceeds the sync limit")]
-    ClipboardItemTooLarge,
-    #[error("clipboard MIME type is invalid or secret-only")]
-    InvalidClipboardMime,
-    #[error("clipboard content hash does not match its payload")]
-    ClipboardHashMismatch,
-    #[error("clipboard history is full of pinned entries")]
-    ClipboardHistoryFull,
     #[error("a device says one thing twice")]
     DuplicateItem,
     #[error("unknown target device")]

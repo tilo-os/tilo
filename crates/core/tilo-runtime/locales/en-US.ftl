@@ -84,6 +84,11 @@ nearby-send-piece = Read a piece of an offered file
 nearby-send-piece-detail = Reads one piece of a file this device offered, for the device taking it.
 nearby-send-keep-question = Keep “{ $name }” from { $device }?
 
+## The copies the person's devices carry between them
+
+so-tilo-clipboard-share = Share what this device copied
+so-tilo-clipboard-receive = Take what another device copied
+
 ## The actions of this device's server settings
 
 so-tilo-device-server-set-service = Offer or withdraw a service

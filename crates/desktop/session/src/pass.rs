@@ -846,10 +846,11 @@ impl Session {
             self.shared.notifications.borrow().tell(&notice);
         }
         // What was copied here reaches the person's other devices, and what they copied there joins
-        // the clipboard here.
+        // the clipboard here: the device's daemon carries both, and this session shares and reads
+        // them over its link to it.
+        self.shared.clipboard.sync_continuity();
         if let Some(fabric) = &self.shared.fabric {
             let media_enabled = fabric.require_media().is_ok();
-            self.shared.clipboard.sync_fabric(fabric.as_ref());
             // What the person's devices sent this one, before this pass's pumps: a route they asked
             // for starts on the same pass it was asked for on.
             if let Some(sync) = &self.shared.sync {
@@ -869,11 +870,6 @@ impl Session {
             // How the wakes of the person's sleeping devices this device asked ended.
             self.shared.waking.follow(&self.shared);
             self.shared.follow_device_vpn(fabric);
-            // What this pass offered the clipboard, and what the pumps just changed, is this
-            // device's next word to its other devices.
-            if let Some(sync) = &self.shared.sync {
-                sync.announce_fabric();
-            }
         }
         // The keyboard and pointer of the person's other devices that drive this one, on the pass
         // their actions were routed in.

@@ -99,9 +99,11 @@ pub enum PersonalFabricPayload {
     /// That the sending device is there: sent when its session with another device of the
     /// person's starts, and never kept.
     Here,
-    /// The copies the sending device offers, as it offers them now: sent when
-    /// its session with a sibling starts and whenever they change.
-    Clipboard(Vec<crate::fabric::ClipboardEntry>),
+    /// Retired: clipboard continuity is carried by the person's device daemons, over the action
+    /// service each already serves, and this session sends no copy between devices any more. Kept
+    /// in its place so the variants after it keep the numbers a frame names them by; a frame of
+    /// the old payload does not read, and is dropped.
+    RetiredClipboard,
     /// Ephemeral, exact-target command encoded independently of snapshot
     /// schema so it is never persisted or relayed through workspace history.
     Action(Vec<u8>),

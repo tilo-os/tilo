@@ -47,8 +47,8 @@ use tilo_compositor::OutputConfig;
 use tilo_nm::{ActiveState, ActiveVpn, VpnReading, VpnWatch};
 use tilo_session::platform::fabric::Continuity;
 use tilo_session::platform::fabric::{
-    ClipboardEntry, DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, PersonDevice,
-    PersonDevices, PersonalFabricAction,
+    DeviceAbout, DeviceId, DeviceKind, FabricCapabilities, PersonDevice, PersonDevices,
+    PersonalFabricAction,
 };
 use tilo_session::platform::fabric::{FabricLink, PersonalFabricSendError, SharedLink};
 use tilo_session::sync::{Client, Entry, OwnPresence};
@@ -477,8 +477,6 @@ impl FabricLink for KnownDevices {
     fn require_media(&self) -> Result<(), String> {
         Ok(())
     }
-
-    fn share_clipboard(&self, _: Vec<ClipboardEntry>) {}
 }
 
 /// Step the session until `done` holds, or fail saying what was waited for.

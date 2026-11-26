@@ -2,6 +2,11 @@
 //! person's device panel, and pasting a chosen copy back into the app in
 //! front.
 //!
+//! What the person copies continues on their other devices through this
+//! device's daemon ([`remote`]): the session shares each copy with it and
+//! reads what their other devices offered from it, so a copy made on one of
+//! their devices is there on the next.
+//!
 //! A copy is kept as one format's bytes, content-addressed, and written
 //! through the device's settings document, so it survives the session: what
 //! the person pinned is still there tomorrow, and nothing lives in a file
@@ -21,12 +26,12 @@
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeSet;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 use std::path::Path;
 
-use crate::platform::fabric::FabricLink;
-use crate::platform::fabric::{ClipboardEntry, ClipboardPayload, DeviceId, FabricStamp};
 use serde_json::{Map, Value};
 use settings_store::clipboard_history::{ENABLED, HISTORY, StoredCopy, StoredHistory};
 use settings_store::paste_shortcut::{self, PasteShortcut};
@@ -37,13 +42,16 @@ use tilo_compositor::clipboard_history::{
 use tilo_compositor::{Compositor, InputEvent, Selection};
 
 use crate::hosted::ClipboardCopy;
+use tilo_app_host::clipboard_continuity::RemoteCopy;
 use tilo_service::{Service, Started, decode, offer, reading};
 use tilo_ui_base::dnd::CopiedFiles;
 
 pub(crate) mod paste;
+mod remote;
 mod surface;
 use crate::controls::CLIPBOARD_RESOURCE;
 use crate::i18n::t;
+use remote::Remote;
 pub(crate) use surface::SurfaceClipboard;
 
 /// The clipboard's history and the read of the selection filling it.
@@ -73,12 +81,16 @@ pub(crate) struct Clipboard {
     /// behind to be undone.
     paste: RefCell<Option<paste::Paste>>,
     /// Whether what was copied here since the last share still has to be offered to the person's
-    /// other devices.
-    unshared: Cell<bool>,
-    /// When the fabric was last read. The fabric is a whole snapshot of every device, so it is read
-    /// a few times a second rather than every turn of the loop, and at once when something was
-    /// copied here.
+    /// other devices. Shared with the thread that shares it, which puts it back when the daemon
+    /// could not be asked.
+    unshared: Arc<AtomicBool>,
+    /// When the copies the person's other devices offer were last read. The daemon reads them for
+    /// this session, so they are taken a few times a second rather than every turn of the loop,
+    /// and at once when something was copied here.
     synced_at: Cell<Option<Instant>>,
+    /// This session's link to its device daemon for the clipboard, when it has one: what shares a
+    /// copy and reads the copies another device offers.
+    remote: RefCell<Option<Remote>>,
     /// What wakes the session's loop when a paste on its own thread is over.
     wake: tilo_service::Wake,
     /// The clipboard the session's own surfaces copy to and paste from.
@@ -141,8 +153,9 @@ impl Clipboard {
             files: RefCell::new(None),
             // A paste the last session was in the middle of is undone here.
             paste: RefCell::new(paste::Paste::unfinished(&wake)),
-            unshared: Cell::new(true),
+            unshared: Arc::new(AtomicBool::new(true)),
             synced_at: Cell::new(None),
+            remote: RefCell::default(),
             shell: SurfaceClipboard::new(wake.clone()),
             wake,
             partners: RefCell::default(),
@@ -413,12 +426,24 @@ impl Clipboard {
             .collect()
     }
 
-    /// Share what was copied here with the person's other devices, and take what they copied there:
-    /// `link` is the fabric, when this session runs on one. Returns whether the history changed.
-    /// What another device shared joins the history marked with the device it came from, and is
-    /// never offered back: a copy belongs to the device it was made on.
-    pub(crate) fn sync_fabric(&self, link: &dyn FabricLink) -> bool {
-        let Some((local, _)) = link.local_device_fabric_identity() else {
+    /// This session's link to its device daemon for the clipboard: from now on what is copied
+    /// here is shared through it, and the copies the person's other devices offer are read from
+    /// it.
+    pub(crate) fn attach_daemon(
+        &self,
+        daemon: &tilo_session_client::daemon_documents::DaemonShell,
+        person: [u8; 32],
+    ) {
+        *self.remote.borrow_mut() = Some(Remote::attach(daemon, person, Arc::clone(&self.wake)));
+    }
+
+    /// Share what was copied here with the person's other devices, and take what they copied
+    /// there, through the device's daemon. Returns whether the history changed. What another
+    /// device shared joins the history marked with the device it came from, and is never offered
+    /// back: a copy belongs to the device it was made on.
+    pub(crate) fn sync_continuity(&self) -> bool {
+        let remote = self.remote.borrow();
+        let Some(remote) = remote.as_ref() else {
             return false;
         };
         let now = Instant::now();
@@ -426,30 +451,36 @@ impl Clipboard {
             .synced_at
             .get()
             .is_none_or(|at| now.duration_since(at) >= SYNC_EVERY);
-        if !due && !self.unshared.get() {
+        if !due && !self.unshared.load(Ordering::Relaxed) {
             return false;
         }
         self.synced_at.set(Some(now));
-        let shared: Vec<ClipboardEntry> = link
-            .devices()
-            .merged_clipboard()
-            .entries()
-            .cloned()
-            .collect();
+        let changed = self.import_offered(&remote.reading().copies);
+        if self.unshared.swap(false, Ordering::Relaxed) {
+            let entries = self.shareable();
+            if !entries.is_empty() {
+                remote.share(entries, Arc::clone(&self.unshared), Arc::clone(&self.wake));
+            }
+        }
+        changed
+    }
+
+    /// Take `copies`, what the person's other devices offer, into the history: newest first, each
+    /// saying the device it came from. Returns whether the history changed.
+    fn import_offered(&self, copies: &[RemoteCopy]) -> bool {
         let mut changed = false;
         {
             let partners = self.partners.borrow();
             let mut history = self.history.borrow_mut();
             // Newest first, so the front of the history is what was copied last there too.
-            for entry in shared.iter().rev() {
-                if entry.origin == local {
+            for entry in copies.iter().rev() {
+                let Ok(bytes) = hex::decode(&entry.bytes) else {
                     continue;
-                }
-                let (mime, bytes) = payload_of(&entry.payload);
-                let mut copy = Copy::new(&mime, bytes, entry.created_unix_ms);
+                };
+                let mut copy = Copy::new(&entry.mime, bytes, entry.created_unix_ms);
                 copy.pinned = entry.pinned;
-                copy.from = Some(entry.origin.as_str().to_owned());
-                let partner = partners.contains(entry.origin.as_str());
+                copy.from = Some(entry.origin.clone());
+                let partner = partners.contains(&entry.origin);
                 let imported = history.import(copy);
                 changed |= imported;
                 if imported && partner {
@@ -463,47 +494,32 @@ impl Clipboard {
         if self.place.get() {
             (self.wake)();
         }
-        if self.unshared.replace(false) {
-            let entries = self.shareable(&local);
-            if !entries.is_empty() {
-                link.share_clipboard(entries);
-            }
-        }
         changed
     }
 
-    /// What was copied here, as entries the fabric carries: a copy that came from another device is
+    /// What was copied here, as copies the daemon carries: a copy that came from another device is
     /// theirs, and a list of files names paths that only mean something on this device.
-    fn shareable(&self, local: &DeviceId) -> Vec<ClipboardEntry> {
+    fn shareable(&self) -> Vec<remote::Shared> {
         let mut entries = Vec::new();
         for copy in self.history.borrow().copies() {
             if copy.from.is_some() {
                 continue;
             }
-            let payload = match copy.mime.as_str() {
-                TEXT_MIME => match copy.text() {
-                    Some(text) => ClipboardPayload::Text(text.to_owned()),
-                    None => continue,
-                },
-                mime if SHARED_MIMES.contains(&mime) => ClipboardPayload::Binary {
-                    mime: copy.mime.clone(),
-                    bytes: copy.bytes.clone(),
-                },
+            match copy.mime.as_str() {
+                TEXT_MIME => {
+                    if copy.text().is_none() {
+                        continue;
+                    }
+                }
+                mime if SHARED_MIMES.contains(&mime) => {}
                 _ => continue,
-            };
-            let Ok(mut entry) = ClipboardEntry::shareable(
-                payload,
-                local.clone(),
-                copy.created_ms,
-                FabricStamp {
-                    counter: copy.created_ms,
-                    device: local.clone(),
-                },
-            ) else {
-                continue;
-            };
-            entry.pinned = copy.pinned;
-            entries.push(entry);
+            }
+            entries.push(remote::Shared {
+                mime: copy.mime.clone(),
+                bytes: copy.bytes.clone(),
+                created_unix_ms: copy.created_ms,
+                pinned: copy.pinned,
+            });
         }
         entries
     }
@@ -732,7 +748,7 @@ impl Clipboard {
                 })
                 .collect(),
         };
-        self.unshared.set(true);
+        self.unshared.store(true, Ordering::Relaxed);
         self.generation.set(self.generation.get().wrapping_add(1));
         if let Err(error) = HISTORY.set(stored) {
             tracing::warn!(%error, "the clipboard history was not saved");
@@ -837,20 +853,12 @@ fn clipboard_resource() -> ResourceSpec {
 #[row(kind = "session", label = "Clipboard", effects = ClipboardAction)]
 pub(crate) struct ClipboardRoot;
 
-/// How often the fabric is read when nothing was copied here.
+/// How often the copies the person's other devices offer are read when nothing was copied here.
 const SYNC_EVERY: Duration = Duration::from_millis(500);
 
 /// The formats that mean the same thing on every device: pictures and formatted text. A file list
 /// is a copy of paths, which a paste on another device could not open.
 const SHARED_MIMES: [&str; 4] = ["image/png", "image/jpeg", "image/webp", "text/html"];
-
-/// What a shared item's format and bytes are here.
-fn payload_of(payload: &ClipboardPayload) -> (String, Vec<u8>) {
-    match payload {
-        ClipboardPayload::Text(text) => (TEXT_MIME.to_owned(), text.as_bytes().to_vec()),
-        ClipboardPayload::Binary { mime, bytes } => (mime.clone(), bytes.clone()),
-    }
-}
 
 /// The first file a copy of files names.
 fn first_name(copy: &Copy) -> Option<String> {
@@ -899,5 +907,60 @@ pub(crate) fn offer_files(compositor: &mut Compositor, files: &CopiedFiles) {
     ];
     if let Err(error) = compositor.set_selection(Selection::Clipboard, offer) {
         tracing::warn!(%error, "the copied files could not be put on the clipboard");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A copy another of the person's devices made.
+    fn offered(origin: &str, text: &str, created_unix_ms: u64) -> RemoteCopy {
+        RemoteCopy {
+            origin: origin.to_owned(),
+            mime: TEXT_MIME.to_owned(),
+            bytes: hex::encode(text.as_bytes()),
+            created_unix_ms,
+            pinned: false,
+        }
+    }
+
+    /// What the person copied on another device joins the history newest first, saying which
+    /// device it came from, and is never offered back: a copy belongs to the device it was made
+    /// on.
+    #[test]
+    fn a_copy_from_another_device_joins_the_history_and_is_never_shared_back() {
+        let _home = tilo_test_env::TestHome::new().expect("a home");
+        let clipboard = Clipboard::new(Arc::new(|| {}));
+        let copies = vec![
+            offered("laptop", "made there", 20),
+            offered("desk", "made before", 10),
+        ];
+        assert!(
+            clipboard.import_offered(&copies),
+            "the copies are new to the history"
+        );
+        let listed: Vec<(Option<String>, Option<String>)> = clipboard
+            .history
+            .borrow()
+            .copies()
+            .map(|copy| (copy.text().map(str::to_owned), copy.from.clone()))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                (Some("made there".to_owned()), Some("laptop".to_owned())),
+                (Some("made before".to_owned()), Some("desk".to_owned())),
+            ],
+            "newest first, each saying the device it came from"
+        );
+        assert!(
+            !clipboard.import_offered(&copies),
+            "the same copies are not taken twice"
+        );
+        assert!(
+            clipboard.shareable().is_empty(),
+            "a copy from another device is never offered back"
+        );
     }
 }

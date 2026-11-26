@@ -1733,6 +1733,14 @@ impl Session {
         );
         let directory_store = Rc::new(crate::directory::Store::default());
         let clipboard = Rc::new(crate::clipboard::Clipboard::new(options.wake.handle()));
+        // What the person copies here continuing on their other devices is their daemon's: the
+        // session shares each copy with it and reads what their other devices offer from it,
+        // over the one link it already has.
+        if daemon.link().is_ok()
+            && let Some(identity) = crate::sync::device_identity()
+        {
+            clipboard.attach_daemon(&daemon, identity.device_cert.user_public_key);
+        }
         // The shell's own fields copy and paste through the shell's clipboard, as apps do.
         ui::process::install_default(
             ui::process::ProcessServices::null().with_clipboard(Arc::new(clipboard.shell())),

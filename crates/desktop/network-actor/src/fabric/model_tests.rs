@@ -1,4 +1,5 @@
 use super::*;
+use crate::fabric::{DeviceId, FabricStamp};
 
 fn id(value: &str) -> DeviceId {
     DeviceId::new(value).unwrap()
@@ -100,54 +101,6 @@ fn media_handoff_and_media_actions_are_capability_and_locator_checked() {
 
     media_action_locators_reject_host_paths_and_url_credentials();
     media_terminal_actions_require_exact_nonzero_request_and_session();
-}
-
-#[test]
-#[allow(
-    clippy::too_many_lines,
-    reason = "one scenario test keeps each merged phase and its fresh fixture visible"
-)]
-fn clipboard_payloads_are_bounded_and_tamper_checked() {
-    fn clipboard_is_deduplicated_and_bounded() {
-        let mut history = ClipboardHistory::default();
-        for n in 0..=MAX_CLIPBOARD_ITEMS {
-            history
-                .push(
-                    ClipboardEntry::shareable(
-                        ClipboardPayload::Text(format!("item-{n}")),
-                        id("laptop"),
-                        n as u64,
-                        stamp("laptop", n as u64),
-                    )
-                    .unwrap(),
-                )
-                .unwrap();
-        }
-        assert_eq!(history.entries().count(), MAX_CLIPBOARD_ITEMS);
-    }
-
-    fn clipboard_hash_tampering_is_rejected() {
-        let mut entry = ClipboardEntry::shareable(
-            ClipboardPayload::Text("safe".into()),
-            id("phone"),
-            1,
-            stamp("phone", 1),
-        )
-        .unwrap();
-        entry.payload = ClipboardPayload::Text("changed".into());
-        assert_eq!(
-            entry.validate(&id("phone")),
-            Err(FabricError::ClipboardHashMismatch)
-        );
-        assert_eq!(
-            entry.validate(&id("laptop")),
-            Err(FabricError::ForeignAuthorship),
-            "another device's copy is not this one's to validate"
-        );
-    }
-
-    clipboard_is_deduplicated_and_bounded();
-    clipboard_hash_tampering_is_rejected();
 }
 
 #[test]

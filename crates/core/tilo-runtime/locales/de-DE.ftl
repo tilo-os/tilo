@@ -89,6 +89,11 @@ so-tilo-device-server-set-work = Wessen Arbeit dieses Gerät annimmt
 so-tilo-device-server-set-work-room = Einen Teil des Rechners freihalten
 so-tilo-device-server-set-work-while-charging = Arbeit nur beim Laden annehmen
 
+## Die Kopien, die die Geräte der Person füreinander tragen
+
+so-tilo-clipboard-share = Teilen, was dieses Gerät kopiert hat
+so-tilo-clipboard-receive = Annehmen, was ein anderes Gerät kopiert hat
+
 ## Wo dieses Gerät ist
 
 so-tilo-device-location-locate = Wo dieses Gerät gerade ist, als Breiten- und Längengrad

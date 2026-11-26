@@ -1,6 +1,6 @@
 //! What the person's devices say live, as one session keeps it: which of their devices is on a
-//! session with this one and on which endpoint, whether each said it is there and the copies each
-//! offers, and the actions addressed to it. Nothing here is kept beyond the session: a device that went away is
+//! session with this one and on which endpoint, whether each said it is there, and the actions
+//! addressed to it. Nothing here is kept beyond the session: a device that went away is
 //! gone until it says itself again, and what lasts of the person's devices is in their store
 //! ([`super::store`]).
 //!
@@ -14,7 +14,7 @@ use iroh::EndpointId;
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 use super::{
-    ClipboardEntry, DeviceAbout, FabricError, PersonDevice, PersonDevices, PersonalFabricAction,
+    DeviceAbout, FabricError, PersonDevice, PersonDevices, PersonalFabricAction,
     PersonalFabricActionEnvelope,
 };
 use crate::platform::fabric::DeviceId;
@@ -34,8 +34,6 @@ struct Sibling {
     present: bool,
     /// It said it is there on this session.
     here: bool,
-    /// The copies it offers.
-    clipboard: Vec<ClipboardEntry>,
     /// When it last said anything.
     last_seen_unix_ms: u64,
     /// The name its certificate gives it, for while the person's store has not listed it yet.
@@ -47,8 +45,6 @@ struct Sibling {
 pub(crate) struct Live {
     /// This device.
     local: DeviceId,
-    /// The copies this device offers.
-    clipboard: Vec<ClipboardEntry>,
     /// The person's other devices heard on a session, by device id.
     siblings: BTreeMap<DeviceId, Sibling>,
     /// Request ids of the actions delivered already, oldest first.
@@ -63,7 +59,6 @@ impl Live {
     pub(crate) fn new(local: DeviceId) -> Self {
         Self {
             local,
-            clipboard: Vec::new(),
             siblings: BTreeMap::new(),
             delivered: VecDeque::new(),
             delivered_ids: BTreeSet::new(),
@@ -115,7 +110,6 @@ impl Live {
             if sibling.endpoint == Some(peer) {
                 sibling.present = false;
                 sibling.here = false;
-                sibling.clipboard.clear();
                 tilo_workspace_service::workspaces::presence_changed();
             }
         }
@@ -134,30 +128,6 @@ impl Live {
             tilo_workspace_service::workspaces::presence_changed();
         }
         Ok(arrived)
-    }
-
-    /// Take the copies the device behind `peer` offers now, replacing what it offered before. A
-    /// copy is that device's own: one it says another device made is refused.
-    /// # Errors
-    /// Why the copies are not that device's own valid ones.
-    pub(crate) fn clipboard(
-        &mut self,
-        peer: EndpointId,
-        entries: Vec<ClipboardEntry>,
-    ) -> Result<bool, FabricError> {
-        let Some(source) = self.device_behind(peer) else {
-            return Err(FabricError::UnknownDevice);
-        };
-        if entries.len() > super::MAX_CLIPBOARD_ITEMS {
-            return Err(FabricError::TooLarge);
-        }
-        for entry in &entries {
-            entry.validate(&source)?;
-        }
-        let sibling = self.heard(peer)?;
-        let changed = sibling.clipboard != entries;
-        sibling.clipboard = entries;
-        Ok(changed)
     }
 
     /// Take one action a device addressed to this one. It counts only when the device that sent it
@@ -197,28 +167,6 @@ impl Live {
         std::mem::take(&mut self.actions)
     }
 
-    /// The copies this device offers.
-    pub(crate) fn own_clipboard(&self) -> &[ClipboardEntry] {
-        &self.clipboard
-    }
-
-    /// Offer `entries`, replacing what this device offered before. Returns whether they changed.
-    /// # Errors
-    /// Why they are not this device's own valid copies; nothing changes then.
-    pub(crate) fn offer(&mut self, entries: Vec<ClipboardEntry>) -> Result<bool, FabricError> {
-        if entries.len() > super::MAX_CLIPBOARD_ITEMS {
-            return Err(FabricError::TooLarge);
-        }
-        for entry in &entries {
-            entry.validate(&self.local)?;
-        }
-        if entries == self.clipboard {
-            return Ok(false);
-        }
-        self.clipboard = entries;
-        Ok(true)
-    }
-
     /// `kept`, the person's devices as their store holds them, with what each said live here put
     /// in: this device as it is, the others as they last were on a session with this one. A device that was on a session here and that the store does not list yet is
     /// the person's all the same: it proved a certificate of theirs, under the name that names it.
@@ -237,11 +185,9 @@ impl Live {
             if device.device == self.local {
                 device.online = true;
                 device.last_seen_unix_ms = now;
-                device.clipboard.clone_from(&self.clipboard);
             } else if let Some(sibling) = self.siblings.get(&device.device) {
                 device.online = sibling.present && sibling.here;
                 device.last_seen_unix_ms = sibling.last_seen_unix_ms;
-                device.clipboard.clone_from(&sibling.clipboard);
             }
             kept.insert(device);
         }

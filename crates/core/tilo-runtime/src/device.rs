@@ -41,6 +41,8 @@ mod call_media;
 mod carry;
 // What the daemon's program mounts beside the core: services, and the machine's own hooks.
 pub mod capabilities;
+/// What the person copies on one device continuing on their others: the daemon carries it.
+pub mod clipboard;
 mod commits;
 mod compiled;
 mod content;

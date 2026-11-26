@@ -10,7 +10,6 @@ use std::time::Instant;
 
 use tilo_network_actor::PersonalFabricPayload;
 use tilo_network_actor::fabric::link::FabricLink as _;
-use tilo_network_actor::fabric::{ClipboardPayload, FabricStamp};
 use tilo_user_identity::{DeviceCert, RevocationEntry};
 
 use super::super::{Continuity, Reach, SessionFabric};
@@ -91,9 +90,6 @@ fn a_device_is_online_while_its_session_lasts() {
     let there = seen.get(&laptop.id).expect("the desktop knows the laptop");
     assert!(there.online);
     assert_eq!(there.about.label, "Laptop");
-    // Nothing changed: nothing more is said.
-    laptop.link.announce();
-    assert!(laptop.sent().is_empty());
 
     desktop.link.sibling_left(laptop.endpoint);
     let seen = desktop.link.devices();
@@ -117,51 +113,6 @@ fn a_stranger_says_nothing_of_the_persons_devices() {
 
     assert!(desktop.link.devices().get(&stranger.id).is_none());
     assert!(desktop.link.online_device_ids().is_empty());
-}
-
-/// The copies a device offers reach the person's other device, and a copy it says another device
-/// made is refused.
-#[test]
-fn a_copy_reaches_the_persons_other_device_and_a_forged_one_does_not() {
-    let mut laptop = Device::new(0x21, "Laptop");
-    let desktop = Device::new(0x22, "Desktop");
-    desktop.meets(&laptop);
-    let copy = |origin: &DeviceId, text: &str| {
-        ClipboardEntry::shareable(
-            ClipboardPayload::Text(text.to_owned()),
-            origin.clone(),
-            5,
-            FabricStamp {
-                counter: 1,
-                device: origin.clone(),
-            },
-        )
-        .expect("a shareable copy")
-    };
-
-    laptop.link.share_clipboard(vec![copy(&laptop.id, "hello")]);
-    laptop.link.announce();
-    desktop.hears(&mut laptop);
-    let history = desktop.link.devices().merged_clipboard();
-    let copies: Vec<_> = history.entries().map(|entry| &entry.payload).collect();
-    assert_eq!(copies, vec![&ClipboardPayload::Text("hello".to_owned())]);
-
-    // The laptop's link refuses to offer the desktop's copy as its own; a frame that does is
-    // refused where it arrives.
-    let forged = vec![copy(&desktop.id, "not the laptop's")];
-    desktop.link.arrived(
-        laptop.endpoint,
-        &PersonalFabricPayload::Clipboard(forged),
-        Instant::now(),
-    );
-    assert_eq!(
-        desktop
-            .link
-            .devices()
-            .get(&laptop.id)
-            .map(|device| device.clipboard.len()),
-        Some(1)
-    );
 }
 
 /// An action reaches the device it is addressed to once: the same envelope again is refused.

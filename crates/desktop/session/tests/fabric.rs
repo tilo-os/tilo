@@ -22,14 +22,13 @@ use std::time::{Duration, Instant};
 
 use tilo_network_actor::DeviceIdentity;
 use tilo_session::platform::fabric::Continuity;
+use tilo_session::platform::fabric::SharedLink;
 use tilo_session::platform::fabric::clock::{
     ClockSyncState, fabric_monotonic_us, hold_fabric_clock_sync,
 };
 use tilo_session::platform::fabric::{
-    ClipboardEntry, ClipboardPayload, DeviceId, FabricStamp, PersonalFabricAction,
-    PersonalFabricActionEnvelope,
+    DeviceId, PersonalFabricAction, PersonalFabricActionEnvelope,
 };
-use tilo_session::platform::fabric::{FabricLink as _, SharedLink};
 use tilo_session::sync::{Client, Entry, OwnPresence};
 use tilo_user_identity::DeviceCapabilities;
 
@@ -183,10 +182,10 @@ fn a_remote_audio_route_gets_the_clock_it_plays_the_other_device_by() {
 }
 
 /// Two of the person's devices on one local network, whose server is unreachable and which ask no
-/// directory: each is told only the other's key, finds it on the network, and what is copied on one
-/// reaches the other. Each lists the other as nearby; a device of someone else's, heard on the same
-/// network, is neither dialled nor named. The three discover on this machine's loopback, so the
-/// test hears only them and needs no multicast on the network it runs on.
+/// directory: each is told only the other's key and finds it on the network. Each lists the other
+/// as nearby; a device of someone else's, heard on the same network, is neither dialled nor named.
+/// The three discover on this machine's loopback, so the test hears only them and needs no
+/// multicast on the network it runs on.
 #[test]
 fn the_persons_devices_on_one_network_sync_without_a_relay() {
     let unreachable = || {
@@ -225,30 +224,6 @@ fn the_persons_devices_on_one_network_sync_without_a_relay() {
             &laptop, &session
         )),
         "the two devices found each other on the local network"
-    );
-    let now = tilo_clock::unix_now_ms();
-    let text = "copied with no server";
-    let copy = ClipboardEntry::shareable(
-        ClipboardPayload::Text(text.to_owned()),
-        laptop.id.clone(),
-        now,
-        FabricStamp {
-            counter: now,
-            device: laptop.id.clone(),
-        },
-    )
-    .expect("a shareable copy");
-    laptop.fabric().share_clipboard(vec![copy]);
-    assert!(
-        until(&[&laptop, &session, &stranger], || {
-            session
-                .fabric()
-                .devices()
-                .merged_clipboard()
-                .entries()
-                .any(|entry| entry.payload == ClipboardPayload::Text(text.to_owned()))
-        }),
-        "the copy reached the session over the local network"
     );
     assert!(
         until(&[&laptop, &session, &stranger], || {

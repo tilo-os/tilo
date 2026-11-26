@@ -934,17 +934,17 @@ async fn a_placed_device_is_refused(
 /// A daemon of the person's device with no login, governing the workspace it founded, whose
 /// certificate is the foreign device its person's root placed for it: its tickets, and the endpoint
 /// they are asked on.
-struct Issuing {
-    workspace: tilo_desktop_model::WorkspaceId,
-    issuer: Arc<super::workspaces::ServiceWorkspaces>,
-    state: tempfile::TempDir,
-    issuer_cert: DeviceCert,
-    tickets: Tickets,
-    router: iroh::protocol::Router,
+pub(super) struct Issuing {
+    pub(super) workspace: tilo_desktop_model::WorkspaceId,
+    pub(super) issuer: Arc<super::workspaces::ServiceWorkspaces>,
+    pub(super) state: tempfile::TempDir,
+    pub(super) issuer_cert: DeviceCert,
+    pub(super) tickets: Tickets,
+    pub(super) router: iroh::protocol::Router,
 }
 
 /// [`Issuing`], serving its tickets on its own endpoint.
-async fn issuing() -> Issuing {
+pub(super) async fn issuing() -> Issuing {
     let workspace = tilo_desktop_model::WorkspaceId::new();
     let (issuer, state, issuer_key, issuer_cert, _paths) =
         super::workspaces::ServiceWorkspaces::test_hosting_person(workspace).await;

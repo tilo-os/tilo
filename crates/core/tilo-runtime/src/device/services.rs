@@ -2551,6 +2551,11 @@ impl Daemon {
             identity.place.dir().join("nearby"),
         );
         nearby.register(&workspaces.copies().providers());
+        // Clipboard continuity between the person's devices: what their session here copies is
+        // shared over the action service this daemon already serves, and what their other devices
+        // copied is kept here, where their shell reads it as the copies another device offers.
+        let clipboard = super::clipboard::Clipboard::new(&workspaces, personal.clone());
+        clipboard.register(&workspaces.copies().providers());
         // The interfaces this computer wakes through are kept there too, and the wakes of the
         // person's devices asked there are answered from here: the packets for a device on one
         // of this computer's networks, and the word that this computer is back.
@@ -2675,6 +2680,7 @@ impl Daemon {
                 files: Arc::clone(&files_daemons),
                 key_sessions: key_sessions.as_ref(),
                 nearby: Arc::clone(&nearby),
+                clipboard: Arc::clone(&clipboard),
                 shell_links: &shell_links,
                 shell_dispatch: &shell_dispatch,
                 identity: identity_broker.handover(),
@@ -3407,6 +3413,8 @@ struct BrokerParts<'a> {
     /// Nearby Send's offers and transfers, which this device's shell reads and its person
     /// answers.
     nearby: Arc<super::nearby::Nearby>,
+    /// The copies the person's other devices offer, which this device's shell reads.
+    clipboard: Arc<super::clipboard::Clipboard>,
     /// The links of the shells this daemon starts.
     shell_links: &'a Arc<tilo_app_host::shell::ShellLinks>,
     /// The person's key sessions, which serve the workspaces' apps as pages: a page's view's
@@ -3517,6 +3525,8 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
         Arc::new(super::accounts::published(parts.workspaces));
     // Nearby Send's offers and transfers, read by the person's shell over the shell link.
     let nearby: Arc<dyn PublishedResources> = Arc::new(parts.nearby.published());
+    // The copies the person's other devices offer, read by their shell over the shell link.
+    let clipboard: Arc<dyn PublishedResources> = Arc::new(parts.clipboard.published());
     // What is live in the workspaces this device keeps, which the desktop shows.
     let live: Arc<dyn PublishedResources> = super::live::Published::of(parts.workspaces.copies());
     // The record each window this device runs holds, which its desktop notes beside the window.
@@ -3554,6 +3564,7 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
             Arc::clone(&server_settings),
         )
         .serving(&[super::nearby::RESOURCE], Arc::clone(&nearby))
+        .serving(&[super::clipboard::RESOURCE], Arc::clone(&clipboard))
         .serving(&[tilo_workspace_service::live::RESOURCE], Arc::clone(&live))
         .serving(
             &[tilo_app_host::window_notes::RESOURCE],
