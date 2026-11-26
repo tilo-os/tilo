@@ -1685,6 +1685,51 @@ impl ViewInstance {
         }
     }
 
+    /// The resource whose field the control `key` edits, as the view draws it now: the binding a
+    /// `begin` handler made counts, as [`Self::edit_in`] counts it. `None` for a control the
+    /// view draws no such node for, or one bound to the view's own state.
+    ///
+    /// A control the view draws for an item it shows still names that item's field, so a
+    /// window's edit of it lands in the item it was made in whatever the view shows by the time
+    /// it arrives.
+    pub fn bound_field_target(&self, key: &str) -> Option<ResourceRef> {
+        let node = self.live.find(key)?;
+        let binding = node.binding.clone().or_else(|| self.begun_binding(key))?;
+        binding.field().map(|(at, _)| at.clone())
+    }
+
+    /// Whether the control `key` is the view's own state: it holds no resource's field, and is
+    /// the view's wherever the view draws it.
+    pub fn bound_state(&self, key: &str) -> bool {
+        self.live
+            .find(key)
+            .and_then(|node| node.binding.as_ref())
+            .is_some_and(|binding| binding.field().is_none())
+    }
+
+    /// The text the control `key` holds for the resource `target`: the field it edits, read at
+    /// `target`, which the view need not be drawing now, or the view's own state's text. `None`
+    /// when it edits no text.
+    ///
+    /// A window sends what a person typed into a field of the item they typed it in, and the
+    /// app lays it over that item's text, never over the text of whatever the page shows when
+    /// the typing arrives.
+    pub fn text_shown(&self, key: &str, target: &ResourceRef) -> Option<String> {
+        let node = self.live.find(key)?;
+        let binding = node.binding.clone().or_else(|| self.begun_binding(key))?;
+        let Some((_, field)) = binding.field() else {
+            return match self.bound_value(key)? {
+                Value::Text(text) => Some(text),
+                _ => None,
+            };
+        };
+        let (_, f) = self.bound_field(target, field).ok()?;
+        match self.core.read_value(target, &f, None).ok()? {
+            Value::Text(text) => Some(text),
+            _ => None,
+        }
+    }
+
     /// An edit of a control bound to view state: the slot changes, nothing is recorded. Text
     /// typed into a number's input is read as that number.
     fn edit_state(

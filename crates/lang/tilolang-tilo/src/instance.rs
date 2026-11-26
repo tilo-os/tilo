@@ -2518,10 +2518,21 @@ impl Instance {
     /// `target` applies.
     fn edited(&self, level: Level, target: &ui::ResourceRef, key: &str) -> Result<Place, Words> {
         if let Some(shown) = self.level(level) {
-            // The level's own view, showing the item the edit was made in, or drawing the
-            // control itself: a row of its list open into its item where it stands holds the
-            // item's page, whose controls are the view's own and bound to the item.
-            if wire::resource(&shown.target) == *target || shown.view.borrow().find(key).is_some() {
+            // The level's own view, showing the item the edit was made in: its own page and the
+            // rows of its list, which the window names by the level's resource, or the item a
+            // control the view draws names. A control the view draws for another item than the
+            // one the window named is not this edit's: what the window named is the item the
+            // typing was made in, whatever the view shows by the time it arrives. A control of
+            // the view's own state is the view's wherever it draws it.
+            let here = {
+                let view = shown.view.borrow();
+                wire::resource(&shown.target) == *target
+                    || view.bound_state(key)
+                    || view
+                        .bound_field_target(key)
+                        .is_some_and(|bound| wire::resource(&bound) == *target)
+            };
+            if here {
                 return Ok(Place::Here(Rc::clone(&shown.view)));
             }
             // The window draws its page beside its list for the item it shows: the edit is the
@@ -2549,7 +2560,8 @@ impl Instance {
     }
 
     /// Apply a splice of the bound text control `key` of the view of `target` in `level`:
-    /// `delete` bytes at `at` replaced by `insert`, against the text it shows.
+    /// `delete` bytes at `at` replaced by `insert`, against the text the control holds for
+    /// `target`, which the view need not be showing when it arrives.
     fn splice(
         &mut self,
         level: Level,
@@ -2566,10 +2578,9 @@ impl Instance {
             let acked = level.acked.entry(key.to_owned()).or_default();
             *acked = (*acked).max(seq);
         }
-        let current = match place.view().borrow().bound_value(key) {
-            Some(Value::Text(text)) => text,
-            _ => String::new(),
-        };
+        let current = wire::runtime_resource(target)
+            .and_then(|at| place.view().borrow().text_shown(key, &at))
+            .unwrap_or_default();
         let text = spliced(&current, at as usize, delete as usize, insert);
         self.edit_at(level, target, place, key, Value::Text(text), None)
     }
@@ -2632,6 +2643,10 @@ impl Instance {
             }
             outcome?;
             self.send_open(level, None);
+            // The edit is in the store now, as any write is: the next frame reads again what the
+            // instance publishes of it (a note's label, while its title has none, is what its
+            // body says) and what the rest of the window shows of it.
+            self.moved = true;
             return Ok(());
         }
         let view = place.into_view();
@@ -2639,6 +2654,7 @@ impl Instance {
         if shown {
             self.shown_by_window(level, key);
         }
+        self.moved = true;
         Ok(())
     }
 

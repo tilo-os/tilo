@@ -4546,9 +4546,10 @@ impl Hosted {
     ///
     /// Nothing is validated again: no rule reads a label. A change no label moved with is done
     /// here too when it read nothing an action offered on the window's rows reads either (a note's
-    /// body typed into): otherwise the caller reads what the app says of those actions again,
-    /// since that is not a label and the change may have moved it (a task checked off, and
-    /// `Clear done` can run now).
+    /// body typed into). When it did reach one, what the app says of those actions — what it is
+    /// called there, the icon beside it and whether it can run — is read again and patched into
+    /// the descriptors held here, since that is not a label and the change may have moved it (a
+    /// task checked off, and `Clear done` can run now): the notebook is not read again for it.
     fn relabel(&mut self, surface: &Rc<Surface>, inputs: SurfaceInputs) -> bool {
         let Some((from, taken)) = &self.published_from else {
             return false;
@@ -4559,30 +4560,24 @@ impl Hosted {
         let Some(labels) = surface.publications.borrow().labels_since(taken.0) else {
             return false;
         };
-        // What the app says of an action on a resource the surface holds — what it is called
-        // there, the icon beside it and whether it can run — is read again when a change reached
-        // it: a change the surface shows nothing of (a task checked off, and `Clear done` can run
-        // now) moves that and no label.
         let answered = self.forget_answers();
-        if labels.is_empty() {
-            if answered {
-                return false;
-            }
+        if labels.is_empty() && !answered {
             self.published_from = Some((Rc::clone(surface), inputs));
             return true;
         }
-        if answered {
-            return false;
-        }
-        let Some((descriptors, state)) = &mut self.published else {
+        let Some((held, mut state)) = self.published.take() else {
             return false;
         };
         if labels
             .iter()
             .any(|(resource, _)| state.indices(resource).is_none())
         {
+            self.published = Some((held, state));
             return false;
         }
+        let mut descriptors = held;
+        // What the answers were read of, to send only the resources whose descriptors moved.
+        let before = answered.then(|| descriptors.clone());
         let _phase = tilo_resource::profiling::Phase::start("tl.host.relabel");
         for (resource, label) in &labels {
             for index in state.indices(resource).unwrap_or_default() {
@@ -4592,11 +4587,30 @@ impl Hosted {
             }
         }
         self.directory_behind = true;
-        let changed: Vec<&str> = labels
-            .iter()
-            .map(|(resource, _)| resource.as_str())
-            .collect();
-        let Some(delta) = state.relabel(descriptors, &changed) else {
+        if answered {
+            self.answer_what_the_window_shows(&mut descriptors);
+            // What a document's own rules deny the person is read again with them, as a
+            // surface read whole reads it.
+            self.apply_document_grants(&mut descriptors);
+        }
+        let published = if let Some(before) = &before {
+            let (delta, state) =
+                SurfacePublication::next(Some((&state, before.as_slice())), &descriptors);
+            Some((delta, state))
+        } else {
+            let changed: Vec<&str> = labels
+                .iter()
+                .map(|(resource, _)| resource.as_str())
+                .collect();
+            state
+                .relabel(&descriptors, &changed)
+                .map(|delta| (delta, state))
+        };
+        let Some((delta, state)) = published else {
+            // What the broker holds of these resources is unknown: the caller reads the surface
+            // whole this turn, as a reset.
+            self.published = None;
+            self.published_from = None;
             return false;
         };
         if !delta.is_empty() && !self.send_surface(delta) {
@@ -4606,6 +4620,7 @@ impl Hosted {
             self.published_from = None;
             return true;
         }
+        self.published = Some((descriptors, state));
         self.published_from = Some((Rc::clone(surface), inputs));
         true
     }

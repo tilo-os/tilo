@@ -812,8 +812,10 @@ tilo_test_env::scenario! {
             other => panic!("undo was answered {other:?}"),
         }
 
-        // Ada's one step is the counter she created. Grace counted in it, but took that back, so
-        // nothing of anyone's holds the counter any more: ada's Undo takes it away whole.
+        // A record's making is no one's step: the counter was made when the window opened, as
+        // housekeeping about the record. Grace counted in it and took that back, so ada has no
+        // step of her own to take back, and her Undo says so. What a person's undo takes back is
+        // what they did, never the record the whole workspace reads.
         let root = process
             .instances()
             .next()
@@ -826,26 +828,26 @@ tilo_test_env::scenario! {
         deliver(&inbox, 3, &undo, "ada");
         settle(&mut process, &mut window);
         match answered(&sent, 3) {
-            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
-                let value = output.value.expect("undo says what it took back");
-                assert_eq!(value["undone"], 1, "{value}");
+            Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
+                assert!(
+                    error.message.contains("nothing to undo"),
+                    "ada's undo says there is nothing of hers to take back: {error:?}"
+                );
             }
-            other => panic!("ada's undo is never refused: {other:?}"),
+            other => panic!("ada's undo says there is nothing to take back: {other:?}"),
         }
-        // Read what the store holds: asking the instance for the root would make a new one in its
-        // place.
         assert!(
-            !process
+            process
                 .instances()
                 .next()
                 .unwrap()
                 .store()
                 .contains(&root),
-            "ada's undo took the counter away"
+            "the counter stays: its making is no one's step"
         );
 
-        // Grace's redo brings back what ada's undo took away: the counter, with nothing counted in
-        // it.
+        // Grace's redo brings back what her undo took back: her count, with the counter standing
+        // where it was.
         deliver(&inbox, 4, &redo, "grace");
         settle(&mut process, &mut window);
         assert!(
@@ -855,12 +857,12 @@ tilo_test_env::scenario! {
                 .unwrap()
                 .store()
                 .contains(&root),
-            "the counter is back"
+            "the counter is still there"
         );
         assert_eq!(
             value_of(process.instances().next().unwrap()),
-            0,
-            "what was taken back is back, and what grace took back stays back"
+            1,
+            "the count grace took back is back, and nothing of ada's went with it"
         );
         match answered(&sent, 4) {
             Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
@@ -922,6 +924,8 @@ tilo_test_env::scenario! {
         let (mut host, mut window, sent, inbox, _route) = running("ada");
         settle(&mut host, &mut window);
         let hosted = host.instances().next().unwrap();
+        // Each view is published with the action that opens it, under the words the app calls
+        // it: a view's label is the app's own word for it, as every label the app publishes is.
         let opens = |label: &str| {
             hosted
                 .published()
@@ -930,7 +934,7 @@ tilo_test_env::scenario! {
                 .unwrap_or_else(|| panic!("the view `{label}` is published with its open action"))
                 .clone()
         };
-        let (counter, controls) = (opens("counter"), opens("controls"));
+        let (counter, controls) = (opens("Counter"), opens("Controls"));
         assert!(counter.view.as_ref().unwrap().primary);
         assert_eq!(counter.address.action, "open");
         assert_ne!(
