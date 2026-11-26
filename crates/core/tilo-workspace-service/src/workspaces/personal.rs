@@ -508,19 +508,16 @@ impl Workspaces {
         let Some(session) = self.inner.agent_sessions.0.lock_recover().remove(execution) else {
             return;
         };
-        self.agent_session_ended(&session);
+        if let Some(cert) = &session.cert {
+            self.agent_session_ended(cert, &session.stop);
+        }
         presence_changed();
     }
 
-    /// The person's MCP server and the device's record say `session`'s run ended: the session
-    /// leaves the listing, and the device's record says when it was here last.
-    fn agent_session_ended(&self, session: &AgentSession) {
-        let Some(cert) = &session.cert else {
-            return;
-        };
-        self.inner
-            .mcp_server
-            .ended(&cert.device_public_key, &session.stop);
+    /// The person's MCP server and the device's record say the run `stop` ends has ended: the
+    /// session leaves the listing, and the device's record says when it was here last.
+    fn agent_session_ended(&self, cert: &DeviceCert, stop: &Arc<tokio::sync::Notify>) {
+        self.inner.mcp_server.ended(&cert.device_public_key, stop);
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             let workspaces = self.clone();
             let cert = cert.clone();
@@ -528,10 +525,12 @@ impl Workspaces {
         }
     }
 
-    /// The person stopped the agent session called `name` in `workspace`: it leaves who is here
-    /// and stays ended. Whether a session that name was here.
+    /// The person stopped the agent session called `name` in `workspace`: its run ends as the
+    /// connection ending ends it — it leaves the person's MCP server's listing, and stays
+    /// ended — while the connection stays held for the person to let it go on. Whether a
+    /// session that name was here.
     pub fn stop_agent(&self, workspace: &str, name: &str) -> bool {
-        {
+        let ended = {
             let mut sessions = self.inner.agent_sessions.0.lock_recover();
             let Some(session) = sessions.values_mut().find(|session| {
                 session.workspace == workspace && session.name == name && !session.stopped
@@ -539,7 +538,15 @@ impl Workspaces {
                 return false;
             };
             session.stopped = true;
+            let ended = session
+                .cert
+                .clone()
+                .map(|cert| (cert, Arc::clone(&session.stop)));
             drop(sessions);
+            ended
+        };
+        if let Some((cert, stop)) = ended {
+            self.agent_session_ended(&cert, &stop);
         }
         presence_changed();
         true
@@ -556,9 +563,10 @@ impl Workspaces {
     }
 
     /// The person lets the agent session called `name` go on in `workspace`: its calls are
-    /// answered again. Whether a session that name was here.
+    /// answered again, and the person's MCP server lists its run again. Whether a session that
+    /// name was here.
     pub fn let_agent_go_on(&self, workspace: &str, name: &str) -> bool {
-        {
+        let listed = {
             let mut sessions = self.inner.agent_sessions.0.lock_recover();
             let Some(session) = sessions
                 .values_mut()
@@ -570,7 +578,16 @@ impl Workspaces {
                 return true;
             }
             session.stopped = false;
+            let listed = session
+                .cert
+                .clone()
+                .map(|cert| (cert, Arc::clone(&session.stop)));
             drop(sessions);
+            listed
+        };
+        // The run the stop took out of the listing is open again.
+        if let Some((cert, stop)) = listed {
+            self.inner.mcp_server.note(&cert, name, &stop);
         }
         presence_changed();
         true
