@@ -614,6 +614,20 @@ impl<'a> Caller<'a> {
                 "the arguments are a JSON object, `{}` for none",
             ));
         }
+        if let Some(here) = &self.server.here
+            && let Some(action) = tilo_device_identity::login::CertifiedAction::at(
+                self.params.get("path"),
+                self.params.get("action"),
+            )
+            && let Some(pending) =
+                here.signed_ticket(&ws, &self.session.caller(), action, args.clone())
+        {
+            let result = pending
+                .await
+                .ok_or_else(|| ApiError::new("unavailable", "the device's ticket action ended"))?
+                .map_err(|error| ApiError::new(error.code(), error.to_string()))?;
+            return action_answer(json!({"status": "ok", "path": path, "result": result}), &ws);
+        }
         let call = with(
             json!({"path": path, "args": args, "wait_ms": self.wait_ms(DEFAULT_WAIT_SECONDS)}),
             "invocation_id",

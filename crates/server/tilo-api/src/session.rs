@@ -112,6 +112,19 @@ pub trait Here: Send + Sync {
     /// It holds no such workspace, or cannot serve it now.
     fn enter(&self, workspace: &str) -> Result<Reached, String>;
 
+    /// A certified action at the issuer of a device ticket. A logged-in daemon can serve it
+    /// over its admitted session before it holds a local copy of the workspace.
+    fn signed_ticket(
+        &self,
+        _workspace: &str,
+        _caller: &tilo_actions::remote::Caller,
+        _action: tilo_device_identity::login::CertifiedAction,
+        _arguments: Value,
+    ) -> Option<tilo_actions::remote::Pending<Result<Value, tilo_actions::remote::ActionCallError>>>
+    {
+        None
+    }
+
     /// The connection the account's own actions go over, when this host forwards them to the
     /// server its login reaches: `None` for a desktop, which answers no account action itself.
     fn connection(&self) -> Option<Arc<crate::server::Connection>> {

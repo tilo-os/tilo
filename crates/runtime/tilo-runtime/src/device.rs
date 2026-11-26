@@ -582,6 +582,13 @@ fn account_call(request: Value) -> Result<Value, Value> {
 
 /// The peer's answer to [`PEER_STATUS`].
 pub(crate) async fn peer_status<E: Enter>(shared: &Shared<E>) -> Value {
+    let (mut mounted, failed, workspaces, complete) = match serve::PEER.get() {
+        Some(peer) => {
+            let (workspaces, complete) = peer.workspaces().await;
+            (peer.mounted().await, peer.failures(), workspaces, complete)
+        }
+        None => (Vec::new(), Vec::new(), Vec::new(), false),
+    };
     let device = shared.device.as_ref().ok();
     let session = shared.session.lock().await.clone();
     let phase = session.as_ref().map_or_else(
@@ -591,14 +598,14 @@ pub(crate) async fn peer_status<E: Enter>(shared: &Shared<E>) -> Value {
     let connected = session
         .as_ref()
         .is_some_and(|session| session.device.is_live());
-    drop(session);
-    let (mut mounted, failed, workspaces, complete) = match serve::PEER.get() {
-        Some(peer) => {
-            let (workspaces, complete) = peer.workspaces().await;
-            (peer.mounted().await, peer.failures(), workspaces, complete)
+    let admitted = session.as_ref().and_then(|session| {
+        let login = device?;
+        if session.device.cert() != &login.cert {
+            return None;
         }
-        None => (Vec::new(), Vec::new(), Vec::new(), false),
-    };
+        session.device.admitted_workspace()
+    });
+    drop(session);
     for folder in &mut mounted {
         folder.connected = connected;
     }
@@ -606,9 +613,10 @@ pub(crate) async fn peer_status<E: Enter>(shared: &Shared<E>) -> Value {
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
         .clone();
-    json!({
+    let mut status = json!({
         "pid": std::process::id(),
         "device": device.map(Device::label),
+        "device_public_key": device.map(|device| hex::encode(device.cert.device_public_key)),
         "person": device.map(Device::user),
         "host": device.map(|device| &device.host_origin),
         "session": phase,
@@ -617,7 +625,11 @@ pub(crate) async fn peer_status<E: Enter>(shared: &Shared<E>) -> Value {
         "workspaces": workspaces,
         "workspaces_complete": complete,
         "failed": failed.into_iter().map(|(workspace, why)| json!({"workspace": workspace, "why": why})).collect::<Vec<_>>(),
-    })
+    });
+    if let Some(workspace) = admitted {
+        status["admitted_workspace"] = json!(workspace.to_string());
+    }
+    status
 }
 
 #[cfg(test)]
@@ -627,6 +639,13 @@ pub(crate) async fn peer_status<E: Enter>(shared: &Shared<E>) -> Value {
 )]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_daemon_without_a_session_reports_no_admitted_workspace() {
+        let answer = peer_status(&connection().shared).await;
+        assert_eq!(answer["session"], "entering");
+        assert!(answer.get("admitted_workspace").is_none());
+    }
 
     fn connection_saying(why: &str) -> Connection<LoggedIn> {
         Connection::new(Arc::new(Shared::new(

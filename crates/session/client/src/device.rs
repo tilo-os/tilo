@@ -250,6 +250,15 @@ impl Device {
         self.workspace_id
     }
 
+    /// The workspace this live authenticated connection entered, after its host answered Ready.
+    #[must_use]
+    pub fn admitted_workspace(&self) -> Option<WorkspaceId> {
+        self.peer
+            .status()
+            .ready_in(self.workspace_id)
+            .then_some(self.workspace_id)
+    }
+
     /// What this device calls itself.
     #[must_use]
     pub fn label(&self) -> &str {

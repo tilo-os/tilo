@@ -1429,7 +1429,7 @@ async fn answer_setup_once(
     ticket: &tilo_device_identity::login::Ticket,
     root: &SigningKey,
     keeper: &Host,
-) {
+) -> DeviceCert {
     use ed25519_dalek::Signer as _;
     use tilo_actions::remote::{ActionProvider as _, Caller, InvokeRequest, RemoteActionTarget};
     use tilo_device_identity::login::{Approved, Asked, CERTIFY, PROVIDER, RESOURCE};
@@ -1480,6 +1480,69 @@ async fn answer_setup_once(
         cert
     );
     assert!(final_status.get("declined").is_none(), "{final_status}");
+    cert
+}
+
+/// Follow the page's public status while its enrolled computer reports through the same
+/// provider the host serves to authenticated workspace peers.
+async fn setup_progress(
+    addr: SocketAddr,
+    provider: tickets::Certified,
+    id: &str,
+    ticket: &tilo_device_identity::login::Ticket,
+    workspace: &str,
+    cert: &DeviceCert,
+) {
+    use tilo_actions::remote::{
+        ActionCallError, ActionProvider as _, Caller, InvokeRequest, ReceiptStatus,
+        RemoteActionTarget,
+    };
+    use tilo_device_identity::login::{PROVIDER, REPORTED, RESOURCE};
+    let request = |step: &str| {
+        let body = serde_json::json!({"ticket": ticket.encode(), "step": step, "agent": "Tilo", "detail": "setup halted"});
+        InvokeRequest::plain(
+            RemoteActionTarget {
+                provider: PROVIDER.to_owned(),
+                address: tilo_actions::ActionAddress::new(RESOURCE, REPORTED),
+            },
+            body.as_object().unwrap().clone(),
+        )
+    };
+    let device = Caller::authenticated(cert.user_public_key, cert.device_public_key);
+    let here = device.clone().in_workspace(workspace);
+    let logged_in = request("logged-in");
+    let receipt = provider
+        .invoke(&here, logged_in.clone())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(receipt.status, ReceiptStatus::Completed { .. }));
+    let before = ticket_showing(addr, id, "certified").await;
+    assert_eq!(before["steps"], serde_json::json!(["logged-in"]));
+
+    let wrong_callers = [
+        device.in_workspace("2b075594-9457-40a8-98bb-0fd459a87713"),
+        Caller::authenticated([13; 32], cert.device_public_key).in_workspace(workspace),
+        Caller::authenticated(cert.user_public_key, [14; 32]).in_workspace(workspace),
+    ];
+    for wrong in wrong_callers {
+        let refused = provider
+            .invoke(&wrong, request("failed"))
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(refused.status, ReceiptStatus::Failed { .. }));
+        assert!(provider.observe(&wrong, &logged_in.invocation).is_none());
+        assert!(matches!(
+            provider.invoke(&wrong, logged_in.clone()).await,
+            Some(Err(ActionCallError::NotPermitted))
+        ));
+    }
+    assert_eq!(ticket_showing(addr, id, "certified").await, before);
+    assert_eq!(
+        provider.invoke(&here, logged_in).await.unwrap().unwrap(),
+        receipt
+    );
 }
 
 /// A page asks its host for the ticket its agent works with, follows it, and gets a ticket for
@@ -1501,15 +1564,17 @@ async fn a_page_asks_its_host_for_the_ticket_its_agent_works_with() {
         web: None,
     });
     let router = tickets::Router::new(web.tickets.clone());
+    let progress = tickets::Certified::new(web.tickets.clone());
     let (addr, serving) = serve_web(Arc::new(web)).await;
 
     // Setting up: the ticket names the person and the workspace their computer enters.
+    let workspace = "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0";
     let (code, _, minted) = call_json(
         addr,
         tickets::MINT_ROUTE,
         &serde_json::json!({
             "user": hex::encode(root.verifying_key().to_bytes()),
-            "workspace": "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0",
+            "workspace": workspace,
             "name": "Studio",
         }),
         None,
@@ -1539,7 +1604,8 @@ async fn a_page_asks_its_host_for_the_ticket_its_agent_works_with() {
         "{asked}"
     );
 
-    answer_setup_once(addr, router, &id, &ticket, &root, &keeper).await;
+    let computer = answer_setup_once(addr, router, &id, &ticket, &root, &keeper).await;
+    setup_progress(addr, progress, &id, &ticket, workspace, &computer).await;
 
     // Signing a browser in: the ticket names no person, and no workspace.
     let (code, _, minted) = call_json(

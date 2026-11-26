@@ -561,8 +561,8 @@ enum DeviceCmd {
     /// Make this ticket action through the local device, with its typed arguments on stdin.
     #[command(hide = true)]
     TicketAction {
-        #[arg(value_enum)]
-        action: ticket_action::Action,
+        #[arg(value_parser = ticket_action::parse)]
+        action: tilo_device_identity::login::CertifiedAction,
     },
     /// Which account on this device is the person its identity belongs to: the one whose
     /// proof, signed by the identity's key, names its uid. Prints `NAME UID:GID`; exits 2 when
@@ -1645,7 +1645,7 @@ fn run_system(cmd: DeviceCmd) -> Result<ExitCode> {
             yes,
         } => device::revoke(&which, reason, yes),
         DeviceCmd::PublicKey => login::print_public_key(),
-        DeviceCmd::TicketAction { action } => action.serve(),
+        DeviceCmd::TicketAction { action } => ticket_action::serve(action),
         DeviceCmd::LocalPerson {
             identity_root,
             passwd,

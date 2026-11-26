@@ -314,15 +314,16 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
     let keys = tilo_device_identity::IdentityPaths::under(state.path().join("desk-keys"));
     tilo_device_identity::persist::adopt_device_key(&keys, &desk_key.to_bytes()).unwrap();
     let place = tilo_device_identity::login::Place::at(state.path().join("desk"), keys);
+    let desk_actions = ActionService::new(desk_key.clone(), Arc::new(NoActions));
     let desk = Tickets::new(
         (desk_key.clone(), desk_cert),
-        desk_endpoint,
+        desk_endpoint.clone(),
         None,
         no_root(),
         None,
         None,
         place.clone(),
-        ActionService::new(desk_key.clone(), Arc::new(NoActions)),
+        desk_actions.clone(),
     );
 
     // A wrong secret is refused.
@@ -361,9 +362,13 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
         "the ticket is spent: {spent:?}"
     );
 
+    let lent = tilo_session_client::Lent {
+        endpoint: Some(Arc::new(std::sync::OnceLock::from(desk_endpoint.clone()))),
+        ..Default::default()
+    };
     let desk_session = tilo_test_env::within(
         "the desk enters",
-        tilo_api::daemon::enter::connect(&desk_key, &desk_login, None),
+        tilo_api::daemon::enter::connect(&desk_key, &desk_login, Some(lent)),
     )
     .await
     .expect("the desk enters as the person's device");
@@ -390,9 +395,110 @@ async fn a_computer_logged_in_with_a_ticket_enters_as_the_persons_device() {
         listed.workspaces
     );
 
-    desk_session.close();
+    // Its daemon now runs under the certificate the laptop gave it. The desk holds no local
+    // replica and reaches the host from the very endpoint its authenticated session uses.
+    let holder = Tickets::new(
+        (desk_key.clone(), desk_login.cert.clone()),
+        desk_endpoint.clone(),
+        Some((desk_key, desk_login)),
+        no_root(),
+        None,
+        None,
+        place,
+        desk_actions,
+    );
+    let page_ticket = Ticket::new(tilo_api::daemon::enter::reached_of(&server.node_addr()))
+        .with_issuer_device(server_cert.device_public_key);
+    assert_ne!(page_ticket.issuer.endpoint, page_ticket.issuer_device());
+    report_from_the_desk(&hosted, &holder, &desk_session, &page_ticket, &ticket).await;
+    desk_endpoint.close().await;
     let _ = router.shutdown().await;
     server.shutdown().await;
+}
+
+/// A report from the admitted desk reaches the page's host with its certified identity,
+/// workspace and original arguments. Closing the session ends that authority.
+async fn report_from_the_desk(
+    hosted: &tilo_workspace_service::workspaces::Workspaces,
+    holder: &Tickets,
+    entered: &tilo_session_client::device::Device,
+    page_ticket: &Ticket,
+    laptop_ticket: &Ticket,
+) {
+    use tilo_actions::remote::{Caller, InvocationReceipt, Pending, ReceiptStatus, TestProvider};
+    use tilo_device_identity::login::{CertifiedAction, REPORTED};
+
+    let cert = entered.cert();
+    let workspace = entered.workspace_id().to_string();
+    let person = Caller::authenticated(cert.user_public_key, cert.device_public_key);
+    let arguments = |ticket: &Ticket| {
+        json!({
+            "ticket": ticket.encode(), "step": "failed", "agent": "Codex", "detail": "setup interrupted"
+        })
+    };
+    let Value::Object(object) = arguments(page_ticket) else {
+        panic!("the report arguments are an object");
+    };
+    let caller_at_host = person.clone().in_workspace(&workspace);
+    let argument_at_host = InvokeArgument::Json(object);
+    let reports = Arc::new(TestProvider::new().answering(move |caller, request| {
+        if caller != &caller_at_host
+            || request.target.provider != PROVIDER
+            || request.target.address != tilo_actions::ActionAddress::new(RESOURCE, REPORTED)
+            || request.argument != argument_at_host
+        {
+            return Pending::ready(Err(ActionCallError::NotPermitted));
+        }
+        Pending::ready(Ok(InvocationReceipt {
+            invocation: request.invocation,
+            status: ReceiptStatus::Completed {
+                output: tilo_actions::ActionOutput::default(),
+            },
+        }))
+    }));
+    hosted.provide(PROVIDER, reports.clone());
+    let report = |workspace: &str, caller: &Caller, ticket: &Ticket| {
+        holder.from_entered(
+            entered,
+            workspace,
+            caller,
+            CertifiedAction::Reported,
+            arguments(ticket),
+        )
+    };
+    let denied = Some(Err(ActionCallError::NotPermitted));
+    let other_workspace = tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key);
+    assert_eq!(report(&other_workspace, &person, page_ticket).await, denied);
+    let laptop = Caller::authenticated(cert.user_public_key, laptop_ticket.issuer_device());
+    assert_eq!(report(&workspace, &laptop, page_ticket).await, denied);
+    let wrong_signer = page_ticket
+        .clone()
+        .with_issuer_device(laptop_ticket.issuer_device());
+    assert_eq!(report(&workspace, &person, &wrong_signer).await, denied);
+    let wrong_transport = laptop_ticket
+        .clone()
+        .with_issuer_device(page_ticket.issuer_device());
+    assert_eq!(report(&workspace, &person, &wrong_transport).await, denied);
+    assert!(reports.asked().is_empty());
+
+    assert_eq!(
+        report(&workspace, &person, page_ticket).await,
+        Some(Ok(json!({})))
+    );
+    assert_eq!(reports.asked().len(), 1);
+    entered.close();
+    entered
+        .session()
+        .until(Duration::from_secs(10), |status| {
+            (status.phase == tilo_session_client::TransportPhase::Closed).then_some(())
+        })
+        .await
+        .expect("the desk's session closes");
+    assert_eq!(
+        report(&workspace, &person, page_ticket).await,
+        Some(Err(ActionCallError::NotReady))
+    );
+    assert_eq!(reports.asked().len(), 1);
 }
 
 /// No root on this computer: a test whose daemon holds none.

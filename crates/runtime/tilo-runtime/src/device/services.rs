@@ -926,6 +926,40 @@ impl tilo_api::session::Here for Daemon {
         })
     }
 
+    fn signed_ticket(
+        &self,
+        workspace: &str,
+        caller: &Caller,
+        action: tilo_device_identity::login::CertifiedAction,
+        arguments: serde_json::Value,
+    ) -> Option<Pending<Result<serde_json::Value, ActionCallError>>> {
+        let (_, login) = self.login.as_ref()?;
+        // A held workspace already has its governed device provider, including for logins
+        // that predate the separate action key and for tickets from another enrolled peer.
+        if tilo_api::session::Here::workspaces(self)
+            .iter()
+            .any(|held| held.id == workspace)
+        {
+            return None;
+        }
+        if workspace != login.workspace
+            || caller
+                != &Caller::authenticated(login.cert.user_public_key, login.cert.device_public_key)
+        {
+            return Some(Pending::ready(Err(ActionCallError::NotPermitted)));
+        }
+        let Some(connection) = self.connection() else {
+            return Some(Pending::ready(Err(ActionCallError::NotReady)));
+        };
+        if connection.key.cert() != &login.cert {
+            return Some(Pending::ready(Err(ActionCallError::NotPermitted)));
+        }
+        Some(
+            self.tickets
+                .from_entered(&connection.device, workspace, caller, action, arguments),
+        )
+    }
+
     fn connection(&self) -> Option<Arc<tilo_api::server::Connection>> {
         self.account
             .lock()

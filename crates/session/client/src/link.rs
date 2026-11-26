@@ -147,6 +147,13 @@ pub struct PeerStatus {
 }
 
 impl PeerStatus {
+    /// The authenticated connection has a current Ready for this workspace.
+    pub(crate) fn ready_in(&self, workspace: WorkspaceId) -> bool {
+        self.authenticated
+            && self.phase == TransportPhase::Connected
+            && self.workspaces.get(&workspace) == Some(&true)
+    }
+
     /// A session of `device` that has not connected yet.
     #[must_use]
     pub fn connecting(device: [u8; 32]) -> Self {
@@ -1048,6 +1055,25 @@ impl tilo_session_actions::RemoteSession for Asking {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_workspace_is_ready_only_on_its_current_authenticated_connection() {
+        let workspace = WorkspaceId::new();
+        let mut status = PeerStatus::connecting([1; 32]);
+        status.workspaces.insert(workspace, true);
+        status.phase = TransportPhase::Connected;
+        assert!(!status.ready_in(workspace));
+        status.authenticated = true;
+        assert!(status.ready_in(workspace));
+        assert!(!status.ready_in(WorkspaceId::new()));
+        status.phase = TransportPhase::Reconnecting;
+        assert!(!status.ready_in(workspace));
+        status.phase = TransportPhase::Connected;
+        status.workspaces.insert(workspace, false);
+        assert!(!status.ready_in(workspace));
+        status.workspaces.remove(&workspace);
+        assert!(!status.ready_in(workspace));
+    }
 
     fn failure(code: &'static str, kind: FailureKind) -> Failure {
         Failure {

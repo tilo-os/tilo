@@ -130,8 +130,8 @@ fn answer_alone(line: &str, problem: &str) -> Option<String> {
 pub(crate) fn ask_peer() -> Option<Value> {
     use std::io::{BufRead as _, Write as _};
     let login = crate::login::Place::here(crate::identity::paths()).ok()?;
-    let (key, _) = crate::login::load(&login).ok()??;
-    let place = DaemonPlace::of(login.dir(), &key.verifying_key().to_bytes()).ok()?;
+    let device = crate::login::load_public(&login).ok()??;
+    let place = DaemonPlace::of(login.dir(), &device.cert.device_public_key).ok()?;
     let mut stream = place.connect()?;
     stream.set_read_timeout(Some(Duration::from_secs(5))).ok()?;
     writeln!(

@@ -228,6 +228,8 @@ struct Slot {
     decision: tokio::sync::watch::Sender<Option<Result<Approved, Declined>>>,
     /// Setting up: the certificate the host answered the computer with.
     certified: Mutex<Option<DeviceCert>>,
+    /// Setting up: the workspace the host put in the computer's entry.
+    workspace: Option<String>,
     /// The latest failure a computer reported, for the page to say.
     detail: Mutex<Option<String>>,
     /// The steps the computer reported.
@@ -266,8 +268,35 @@ impl Slot {
     }
 }
 
-/// The invocations a certified device took on this host, by id, with the device that took each.
-type Calls = Arc<Mutex<HashMap<InvocationId, ([u8; 32], InvocationState)>>>;
+/// A setup receipt belongs to the certified computer acting for the person in the workspace
+/// it entered. A returning browser's ticket names no workspace.
+enum CallOwner {
+    Device([u8; 32]),
+    Setup {
+        device: [u8; 32],
+        person: [u8; 32],
+        workspace: String,
+    },
+}
+
+impl CallOwner {
+    fn permits(&self, caller: &Caller) -> bool {
+        match self {
+            Self::Device(device) => caller.device_public_key() == Some(device),
+            Self::Setup {
+                device,
+                person,
+                workspace,
+            } => {
+                caller.device_public_key() == Some(device)
+                    && caller.user_public_key() == Some(person)
+                    && caller.workspace() == Some(workspace.as_str())
+            }
+        }
+    }
+}
+
+type Calls = Arc<Mutex<HashMap<InvocationId, (CallOwner, InvocationState)>>>;
 
 /// The tickets a host serves for its pages, by the id each page keeps.
 #[derive(Clone)]
@@ -337,6 +366,7 @@ impl Tickets {
                     asked: Mutex::default(),
                     decision: tokio::sync::watch::Sender::new(None),
                     certified: Mutex::default(),
+                    workspace: Some(entry.workspace.clone()),
                     detail: Mutex::default(),
                     steps: Mutex::default(),
                     agent: Mutex::default(),
@@ -366,6 +396,7 @@ impl Tickets {
                     asked: Mutex::default(),
                     decision: tokio::sync::watch::Sender::new(None),
                     certified: Mutex::default(),
+                    workspace: None,
                     detail: Mutex::default(),
                     steps: Mutex::default(),
                     agent: Mutex::default(),
@@ -538,14 +569,12 @@ impl Tickets {
     fn settle(
         &self,
         invocation: InvocationId,
-        device: [u8; 32],
+        owner: CallOwner,
         update: InvocationUpdate,
     ) -> InvocationReceipt {
         let state = InvocationState::new(invocation, update);
         let receipt = state.receipt();
-        self.calls
-            .lock_recover()
-            .insert(invocation, (device, state));
+        self.calls.lock_recover().insert(invocation, (owner, state));
         receipt
     }
 }
@@ -774,7 +803,9 @@ impl Certified {
                 )),
             };
             let (receipt, state) = receipt_of(invocation, answer);
-            calls.lock_recover().insert(invocation, (device, state));
+            calls
+                .lock_recover()
+                .insert(invocation, (CallOwner::Device(device), state));
             completer.complete(Ok(receipt));
         });
         pending
@@ -887,9 +918,14 @@ impl Certified {
             .by_secret(&ticket.secret_hex())
             .filter(|slot| slot.direction == Direction::Login)
             .ok_or_else(|| Self::refused(Refusal::Unknown.message()))?;
-        // Only the computer this ticket certified reports against it.
+        // The signed caller must be the computer, person and workspace this setup admitted.
         let certified = slot.certified.lock_recover().clone();
-        if certified.is_none_or(|cert| cert.device_public_key != device) {
+        if slot.workspace.as_deref() != caller.workspace()
+            || certified.is_none_or(|cert| {
+                cert.device_public_key != device
+                    || caller.user_public_key() != Some(&cert.user_public_key)
+            })
+        {
             return Err(ActionCallError::NotPermitted);
         }
         slot.report(
@@ -928,9 +964,8 @@ impl ActionProvider for Certified {
         request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let invocation = request.invocation;
-        if let Some((from, state)) = self.tickets.calls.lock_recover().get(&invocation) {
-            let device = caller.device_public_key().copied();
-            return if device.is_some_and(|device| device == *from) {
+        if let Some((owner, state)) = self.tickets.calls.lock_recover().get(&invocation) {
+            return if owner.permits(caller) {
                 Pending::ready(Ok(state.receipt()))
             } else {
                 Pending::ready(Err(ActionCallError::NotPermitted))
@@ -950,9 +985,21 @@ impl ActionProvider for Certified {
         if request.target.address.action == PENDING {
             return self.pending(caller, invocation, argument);
         }
-        let answer = match request.target.address.action.as_str() {
-            APPROVE => self.approve(caller, argument),
-            REPORTED => self.reported(caller, argument),
+        let (owner, answer) = match request.target.address.action.as_str() {
+            APPROVE => (CallOwner::Device(device), self.approve(caller, argument)),
+            REPORTED => {
+                let (Some(person), Some(workspace)) =
+                    (caller.user_public_key(), caller.workspace())
+                else {
+                    return Pending::ready(Err(ActionCallError::NotPermitted));
+                };
+                let owner = CallOwner::Setup {
+                    device,
+                    person: *person,
+                    workspace: workspace.to_owned(),
+                };
+                (owner, self.reported(caller, argument))
+            }
             _ => return Pending::ready(Err(ActionCallError::UnknownAction)),
         };
         let update = match answer {
@@ -973,16 +1020,15 @@ impl ActionProvider for Certified {
                 },
             },
         };
-        Pending::ready(Ok(self.tickets.settle(invocation, device, update)))
+        Pending::ready(Ok(self.tickets.settle(invocation, owner, update)))
     }
 
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
-        let device = caller.device_public_key()?;
         self.tickets
             .calls
             .lock_recover()
             .get(id)
-            .filter(|(from, _)| from == device)
+            .filter(|(owner, _)| owner.permits(caller))
             .map(|(_, state)| state.clone())
     }
 

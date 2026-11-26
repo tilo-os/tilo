@@ -26,9 +26,9 @@ use tilo_actions::{
     ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind, ParamType,
 };
 use tilo_device_identity::login::{
-    APPROVE, Approval, Approved, Approver, Asked, Declined, Device, Direction, Entry, ISSUE,
-    LOG_IN, PENDING, PROVIDER, Place, REPORTED, RESOURCE, Report, SCOPE, TICKET_LIFETIME_NS,
-    Ticket,
+    APPROVE, Approval, Approved, Approver, Asked, CertifiedAction, Declined, Device, Direction,
+    Entry, ISSUE, LOG_IN, PENDING, PROVIDER, Place, REPORTED, RESOURCE, Report, SCOPE,
+    TICKET_LIFETIME_NS, Ticket,
 };
 use tilo_enrollment::root::PersonSigner;
 use tilo_lock::MutexRecover as _;
@@ -550,12 +550,10 @@ impl Tickets {
         self.0.calls.lock_recover().insert(invocation, accepted);
         let served = self.clone();
         self.0.runtime.spawn(async move {
-            let answer = match action.as_str() {
-                LOG_IN => served.log_in(&args).await,
-                PENDING => served.pending(&args).await,
-                APPROVE => served.approve(&args).await,
-                REPORTED => served.report(&args).await,
-                _ => served.waited().await,
+            let answer = match CertifiedAction::at(RESOURCE, &action) {
+                Some(action) => served.certified(action, &args).await,
+                None if action == LOG_IN => served.log_in(&args).await,
+                None => served.waited().await,
             };
             let update = match answer {
                 Ok(value) => succeeded(invocation, value),
@@ -787,12 +785,20 @@ impl Tickets {
 
     /// Call `action` on the host `ticket` names, as this computer's login, in the workspace that
     /// login enters: what a device of the person's does on the host that served a ticket.
-    async fn at_host(&self, ticket: &Ticket, action: &str, argument: Value) -> Result<Value> {
+    async fn at_host(
+        &self,
+        here: &Device,
+        ticket: &Ticket,
+        action: &str,
+        argument: Value,
+    ) -> Result<Value> {
         use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
-        let (key, here) = tilo_device_identity::login::load(&self.0.place)?
-            .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
-        let device =
-            tilo_api::daemon::enter::ticket_issuer(key, &self.0.endpoint, ticket, &here.workspace)?;
+        let device = tilo_api::daemon::enter::ticket_issuer(
+            self.0.key.clone(),
+            &self.0.endpoint,
+            ticket,
+            &here.workspace,
+        )?;
         let Value::Object(argument) = argument else {
             bail!("a device action asks with its arguments");
         };
@@ -826,24 +832,107 @@ impl Tickets {
         }
     }
 
+    /// Send the person's ticket action to its issuer over the device endpoint shared by the
+    /// live session. Before the local replica exists, only the exact workspace the host admitted
+    /// this device into can carry these actions.
+    pub(crate) fn from_entered(
+        &self,
+        device: &Entered,
+        workspace: &str,
+        caller: &tilo_actions::remote::Caller,
+        action: CertifiedAction,
+        arguments: Value,
+    ) -> Pending<Result<Value, ActionCallError>> {
+        let denied = || Pending::ready(Err(ActionCallError::NotPermitted));
+        let Some((_, login)) = &self.0.login else {
+            return denied();
+        };
+        let id = device.workspace_id();
+        if workspace != login.workspace
+            || id.to_string() != workspace
+            || device.cert() != &login.cert
+            || caller
+                != &tilo_actions::remote::Caller::authenticated(
+                    login.cert.user_public_key,
+                    login.cert.device_public_key,
+                )
+            || login.cert.capabilities.agent.is_some()
+            || login.cert.capabilities.stand_in
+            || login.cert.capabilities.server_key
+        {
+            return denied();
+        }
+        let ticket = arguments
+            .get("ticket")
+            .and_then(Value::as_str)
+            .and_then(|text| Ticket::parse(text).ok());
+        let Some(ticket) = ticket else {
+            return denied();
+        };
+        if ticket.issuer_device() != login.server_cert.device_public_key
+            || !login
+                .server_address
+                .as_ref()
+                .is_some_and(|server| server.endpoint_addr.id.as_bytes() == &ticket.issuer.endpoint)
+        {
+            return denied();
+        }
+        let tickets = self.clone();
+        let device = device.clone();
+        let (complete, pending) = tilo_actions::remote::pending();
+        self.0.runtime.spawn(async move {
+            if device.admitted_workspace() != Some(id) {
+                complete.complete(Err(ActionCallError::NotReady));
+                return;
+            }
+            complete.complete(tickets.certified(action, &arguments).await.map_err(|why| {
+                ActionCallError::Refused {
+                    reason: why.to_string(),
+                }
+            }));
+        });
+        pending
+    }
+
+    /// Send one of the certified actions from this daemon's device endpoint. A replaced login
+    /// never supplies a different person, workspace or key to an action already in progress.
+    pub(crate) async fn certified(&self, action: CertifiedAction, args: &Value) -> Result<Value> {
+        // load also rejects an on-disk device key that no longer matches its kept certificate.
+        let (_, here) = tilo_device_identity::login::load(&self.0.place)?
+            .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
+        if here.cert != self.0.cert || self.0.login.as_ref().is_some_and(|(_, kept)| kept != &here)
+        {
+            bail!("this computer's login changed; use its current login");
+        }
+        match action {
+            CertifiedAction::Pending => self.pending(&here, args).await,
+            CertifiedAction::Approve => self.approve(&here, args).await,
+            CertifiedAction::Reported => self.report(&here, args).await,
+        }
+    }
+
     /// The browser a sign-in `ticket` waits for, as the host sees it.
-    async fn pending(&self, args: &Value) -> Result<Value> {
+    async fn pending(&self, here: &Device, args: &Value) -> Result<Value> {
         let ticket = Self::ticket_in(args, Direction::SignIn)?;
-        self.at_host(&ticket, PENDING, json!({"secret": ticket.secret_hex()}))
-            .await
+        self.at_host(
+            here,
+            &ticket,
+            PENDING,
+            json!({"secret": ticket.secret_hex()}),
+        )
+        .await
     }
 
     /// Sign the browser's certificate for the sign-in `ticket`, so it is signed in.
-    async fn approve(&self, args: &Value) -> Result<Value> {
+    async fn approve(&self, here: &Device, args: &Value) -> Result<Value> {
         let ticket = Self::ticket_in(args, Direction::SignIn)?;
         let cert: Option<tilo_user_identity::DeviceCert> = args
             .get("cert")
             .cloned()
             .and_then(|cert| serde_json::from_value(cert).ok());
-        let (_key, here) = tilo_device_identity::login::load(&self.0.place)?
-            .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
         let answer = self
             .at_host(
+                here,
                 &ticket,
                 APPROVE,
                 json!({
@@ -863,13 +952,14 @@ impl Tickets {
     }
 
     /// Tell the browser that showed `ticket` what this computer did as it logged in.
-    async fn report(&self, args: &Value) -> Result<Value> {
+    async fn report(&self, here: &Device, args: &Value) -> Result<Value> {
         let ticket = Self::ticket_in(args, Direction::Login)?;
         let report: Report =
             serde_json::from_value(Value::Object(args.as_object().cloned().unwrap_or_default()))
                 .map_err(|_| anyhow!("a report names its ticket and step"))?;
         let step = serde_json::to_value(report.step)?;
         self.at_host(
+            here,
             &ticket,
             REPORTED,
             json!({

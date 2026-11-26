@@ -221,8 +221,8 @@ pub fn add(
     reason = "one command: the browser's request, the root's signature, and what the person reads"
 )]
 fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
-    use crate::ticket_action::Action;
-    use tilo_device_identity::login::Direction;
+    use crate::ticket_action;
+    use tilo_device_identity::login::{CertifiedAction, Direction};
 
     login::trust_test_certificates()?;
     crate::identity::convert_earlier()?;
@@ -247,7 +247,7 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
         .map_err(anyhow::Error::msg)?;
     login::ensure_daemon(&place)?;
     let text = parsed.encode();
-    let waiting = Action::Pending.call(&json!({"ticket": text}))?;
+    let waiting = ticket_action::call(CertifiedAction::Pending, &json!({"ticket": text}))?;
     let device = waiting["device"]
         .as_str()
         .context("this computer's daemon answered no browser")?;
@@ -276,8 +276,10 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
         }
         None => None,
     };
-    Action::Approve
-        .call(&json!({"ticket": text, "cert": cert, "label": here.cert.device_label}))?;
+    ticket_action::call(
+        CertifiedAction::Approve,
+        &json!({"ticket": text, "cert": cert, "label": here.cert.device_label}),
+    )?;
     if json {
         println!("{}", json!({"label": label, "device": device}));
     } else if cert.is_some() {

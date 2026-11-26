@@ -556,6 +556,10 @@ impl crate::client::Client {
 }
 
 #[cfg(test)]
+#[path = "direct/ticket_tests.rs"]
+mod ticket_tests;
+
+#[cfg(test)]
 mod tests {
     use super::{Answer, AnswerBody, Direct};
     use http_body_util::{BodyExt as _, StreamBody};

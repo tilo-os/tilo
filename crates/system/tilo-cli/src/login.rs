@@ -22,7 +22,7 @@ use ed25519_dalek::SigningKey;
 use serde_json::json;
 use tilo_api::daemon::DaemonPlace;
 use tilo_api::server::ServerAddress;
-use tilo_device_identity::login::{Direction, Step, Ticket};
+use tilo_device_identity::login::{CertifiedAction, Direction, Step, Ticket};
 use tilo_server_client::CertifyError;
 use tilo_server_client::LinkError;
 use tilo_session_client::Outbox as _;
@@ -478,7 +478,11 @@ pub fn login_invited(link: &str, name: Option<&str>, agent: Option<&str>) -> Res
         device.label(),
         which_agent(&agent.name)
     );
-    entered_after_login(&runtime, &key, &device, false)?;
+    let entered = runtime
+        .block_on(connect_retrying(&key, &device))
+        .map(|entered| entered.close())
+        .map_err(|error| enter_said(&error));
+    entered_after_login(&device, false, entered)?;
     Ok(ExitCode::SUCCESS)
 }
 
@@ -635,6 +639,7 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
     if claimed {
         ensure_daemon(&place)?;
         asked_daemon(&runtime, ticket, &agent, &said)?;
+        restart_after_login(&place)?;
     } else {
         let key = this_device_key()?;
         runtime.block_on(tilo_api::daemon::enter::log_in_here(
@@ -648,7 +653,7 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
         ensure_daemon(&place)?;
     }
     // The login is kept; the daemon serving it hands this computer its workspace.
-    let (key, device) = load(&login_place)?.ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
+    let device = load_public(&login_place)?.ok_or_else(|| anyhow!(LOGIN_DAMAGED))?;
     let days = device.cert.expires_at_ns.map_or(0, |end| {
         end.saturating_sub(device.cert.issued_at_ns) / (24 * 3600 * 1_000_000_000)
     });
@@ -656,7 +661,7 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
     let text = parsed.encode();
     report(&text, Step::LoggedIn, &agent, None);
     let added = add_and_report(&text, &agent);
-    let entered = entered_after_login(&runtime, &key, &device, added)?;
+    let entered = entered_after_login(&device, added, wait_for_daemon_entry(&device))?;
     if entered {
         report(&text, Step::Entered, &agent, None);
     } else {
@@ -666,9 +671,6 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
             &agent,
             Some("this computer could not enter your workspace"),
         );
-    }
-    if claimed {
-        restart_after_login(&place)?;
     }
     Ok(ExitCode::SUCCESS)
 }
@@ -723,7 +725,7 @@ fn report(ticket: &str, step: Step, agent: &Agent, detail: Option<&str>) {
         agent: Some(agent.name.clone()),
         detail: detail.map(str::to_owned),
     };
-    if let Err(error) = crate::ticket_action::Action::Reported.call(&report) {
+    if let Err(error) = crate::ticket_action::call(CertifiedAction::Reported, &report) {
         debug_why("reporting a login's step", &error);
     }
 }
@@ -784,34 +786,43 @@ fn restart_after_login(place: &DaemonPlace) -> Result<()> {
     crate::mcp::held::ensure(place).map_err(|why| anyhow!(why))
 }
 
-fn entered_after_login(
-    runtime: &tokio::runtime::Runtime,
-    key: &SigningKey,
-    device: &Device,
-    added: bool,
-) -> Result<bool> {
+/// Whether the daemon's present session has entered the workspace of this retained login.
+fn daemon_entered(status: &serde_json::Value, device: &Device) -> bool {
+    status.get("answered_ago_s").is_none()
+        && status["not_in"].is_null()
+        && status["session"] == "connected"
+        && status["admitted_workspace"] == device.workspace
+        && status["person"] == device.user()
+        && status["device_public_key"] == hex::encode(device.cert.device_public_key)
+        && status["host"] == device.host_origin
+}
+
+/// Wait for the one session the daemon is bringing up. Opening another here would take
+/// the daemon's connection away from it.
+fn wait_for_daemon_entry(device: &Device) -> Result<(), String> {
+    use std::time::{Duration, Instant};
+    const WAIT: Duration = Duration::from_secs(30);
+    let start = Instant::now();
+    while start.elapsed() < WAIT {
+        if crate::mcp::ask_peer().is_some_and(|peer| daemon_entered(&peer, device)) {
+            return Ok(());
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    Err("Tilo's background sync hasn't confirmed entry yet. Run `tilo status` to check.".to_owned())
+}
+
+fn entered_after_login(device: &Device, added: bool, entered: Result<(), String>) -> Result<bool> {
     let tilo = std::env::current_exe().context("finding this program")?;
     let place = format!(
         "{} on {}",
         device.workspace_name.as_deref().unwrap_or("the workspace"),
         host_of(&device.host_origin)
     );
-    let entered = runtime.block_on(async {
-        match connect_retrying(key, device).await {
-            Ok(entered) => {
-                println!("Entered {place}.");
-                entered.close();
-                true
-            }
-            Err(error) => {
-                println!(
-                    "Logged in, but this computer can't open {place} yet: {}",
-                    enter_said(&error)
-                );
-                false
-            }
-        }
-    });
+    match &entered {
+        Ok(()) => println!("Entered {place}."),
+        Err(why) => println!("Logged in, but this computer can't open {place} yet: {why}"),
+    }
     match crate::folders::after_login(&device.workspace, device.workspace_name.as_deref()) {
         Ok(folder) => println!(
             "Its files are in {}, kept in sync both ways (`tilo folders` lists every workspace's \
@@ -827,7 +838,7 @@ fn entered_after_login(
     }
     println!();
     println!("{}", next_steps(&tilo, http_mcp(device).as_deref(), added));
-    Ok(entered)
+    Ok(entered.is_ok())
 }
 
 /// A member device certificate for `key`, signed by the person's root.
@@ -925,6 +936,33 @@ mod tests {
             made_at_ms: Some(made_at_ms),
             unattended: false,
             enter_at: None,
+        }
+    }
+
+    #[test]
+    fn only_a_fresh_admission_of_this_login_confirms_entry() {
+        let (_, _, device) = device();
+        let ready = json!({
+            "session": "connected",
+            "person": device.user(),
+            "host": device.host_origin,
+            "device_public_key": hex::encode(device.cert.device_public_key),
+            "admitted_workspace": device.workspace,
+        });
+        assert!(daemon_entered(&ready, &device));
+        for (field, value) in [
+            ("answered_ago_s", json!(0)),
+            ("session", json!("reconnecting")),
+            ("not_in", json!("device revoked")),
+            ("admitted_workspace", serde_json::Value::Null),
+            ("admitted_workspace", json!("another workspace")),
+            ("device_public_key", json!(hex::encode([0; 32]))),
+            ("person", json!(hex::encode([0; 32]))),
+            ("host", json!("https://another.test")),
+        ] {
+            let mut other = ready.clone();
+            other[field] = value;
+            assert!(!daemon_entered(&other, &device), "{field}");
         }
     }
 

@@ -45,6 +45,38 @@ pub const APPROVE: &str = "approve";
 /// The action a certified computer calls on the host that served its ticket: what it did as it
 /// logged in, step by step.
 pub const REPORTED: &str = "reported";
+
+/// The actions for an already certified computer at the issuer of a page's ticket.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CertifiedAction {
+    Reported,
+    Pending,
+    Approve,
+}
+
+impl CertifiedAction {
+    /// The action's published name on the devices resource.
+    #[must_use]
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Reported => REPORTED,
+            Self::Pending => PENDING,
+            Self::Approve => APPROVE,
+        }
+    }
+
+    /// The certified action published at this resource and name, if any.
+    #[must_use]
+    pub fn at(resource: &str, action: &str) -> Option<Self> {
+        match (resource, action) {
+            (RESOURCE, REPORTED) => Some(Self::Reported),
+            (RESOURCE, PENDING) => Some(Self::Pending),
+            (RESOURCE, APPROVE) => Some(Self::Approve),
+            _ => None,
+        }
+    }
+}
+
 /// The scope a request names when it is that one call: no workspace, since the computer is in
 /// none yet.
 pub const SCOPE: &str = "tilo.new-device";
