@@ -97,10 +97,10 @@ under their own numbers:
 | `BASE+10` | the API server (MCP, `/v1`, keys, OAuth) |
 | `BASE` | the server's public origin (which the page dials) |
 | `BASE+6` | the live origin |
-| `BASE+1`, `BASE+3` | the server's plain and route listeners |
+| `BASE+5` | the server's own web listener (HTTPS) |
 | `BASE+21`, `BASE+22`, `BASE+23` | the web entry, the releases, the mail sink |
 | `BASE+40`…`BASE+42` | the fake Discord (`up --discord`) |
-| `BASE+2`, `BASE+4`, `BASE+8` (UDP) | the page's QUIC: the packet relay, iroh, WebTransport |
+| `BASE+2`, `BASE+4`, `BASE+5` (UDP) | the page's QUIC: the packet relay, iroh, and WebTransport to the server's own web listener |
 
 A page reaches its relay over QUIC, which SSH cannot carry, so the drop-in
 carries UDP through the build server's own helper: one channel per client that

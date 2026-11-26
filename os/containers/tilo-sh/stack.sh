@@ -281,10 +281,9 @@ base=${TILO_SH_PORT_BASE:-24100}
 server_port=$base               # Caddy: the server's public origin (eu1.tilo.sh)
 packet_port=$((base + 2))      # the relay's packet relay (8443)
 iroh_port=$((base + 4))        # the server's iroh endpoint, UDP (7704)
-server_web_port=$((base + 5))   # the daemon's own HTTPS listener: its pages, /mode and install
+server_web_port=$((base + 5))   # the daemon's own HTTPS listener (its pages, /mode and install), and its WebTransport listener on that UDP port: how pages reach it
 live_port=$((base + 6))        # Caddy: the live session's origin (live-eu1.tilo.sh)
 caddy_http_port=$((base + 7))  # Caddy's HTTP port, which serves nothing here
-link_port=$((base + 8))        # the server's WebTransport listener, UDP: how pages reach it
 api_port=$((base + 10))       # the API server (mcp.tilo.sh)
 site_port=$((base + 20))       # Caddy: the site's public origin (tilo.sh, Cloudflare's edge)
 web_port=$((base + 21))        # the web entry's own plain listener (8080), behind it
@@ -449,7 +448,7 @@ stack_tcp_ports() {
     "$mail_stand_in_smtp_port" "$discord_rest_port" "$discord_gateway_port" \
     "$discord_control_port" "$models_port" "$control_port"
 }
-stack_udp_ports() { printf '%s\n' "$packet_port" "$iroh_port" "$link_port"; }
+stack_udp_ports() { printf '%s\n' "$packet_port" "$iroh_port" "$server_web_port"; }
 
 # check_ports: refuse a base this machine cannot give the stack whole.
 #
@@ -2809,7 +2808,7 @@ forward_tcp() {
 
 # The page reaches the server over QUIC (WebTransport, then iroh), which ssh
 # cannot carry: the drop-in serves these through its own datagram channel.
-forward_udp() { printf '%s\n' "$packet_port,$iroh_port,$link_port"; }
+forward_udp() { printf '%s\n' "$packet_port,$iroh_port,$server_web_port"; }
 
 # The sockets of the ssh masters on this machine: an ssh that multiplexes
 # commands names itself `ssh: <socket> [mux]`, and every generation of the
@@ -3040,7 +3039,7 @@ status_remote() {
   done
   pid=$(supervisor_pid || true)
   if [[ -n $pid ]]; then
-    printf '%-9s %-8s %s\n' forward up "the stack's ports on 127.0.0.1 from $base (page: $site_origin, API: $api_origin), with the page's UDP ($packet_port,$iroh_port,$link_port), from the build server"
+    printf '%-9s %-8s %s\n' forward up "the stack's ports on 127.0.0.1 from $base (page: $site_origin, API: $api_origin), with the page's UDP ($packet_port,$iroh_port,$server_web_port), from the build server"
   else
     printf '%-9s %-8s %s\n' forward down "nothing serves the stack's ports here: stack.sh up"
   fi
