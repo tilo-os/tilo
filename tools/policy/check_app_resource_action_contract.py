@@ -116,8 +116,8 @@ CONTROL_CALLBACKS = frozenset(
         "on_activate", "on_activate_entry", "on_change", "on_check",
         "on_clear_filters", "on_click", "on_context_menu_item",
         "on_delete", "on_drop", "on_files", "on_heading_action", "on_hover_action", "on_move",
-        "on_name_group", "on_navigate", "on_open_entry", "on_outcome", "on_remove",
-        "on_rename", "on_retry",
+        "on_name_group", "on_navigate", "on_open_entry", "on_outcome", "on_person",
+        "on_remove", "on_rename", "on_retry",
         "on_revert", "on_row_action", "on_row_click", "on_save",
         "on_section_action", "on_select", "on_station", "on_submit",
         "on_toggle", "on_undo", "on_undo_band", "on_confirm", "on_decline",
@@ -239,7 +239,7 @@ CLOSURE_TYPE = re.compile(r"\bFn(?:Mut|Once)?\s*\(")
 # verb, `dispatcher.submit(Tracker::paths().title.set(..))` a field edit;
 # either names its action at the call, so the audit reads it there.
 DISPATCHER_SUBMIT = re.compile(
-    r"\.\s*submit(?:_on_its_own|_now|_gesture|_confirming)?\s*\("
+    r"\.\s*(?:submit(?:_on_its_own|_now|_gesture|_confirming)?|invoke|query)\s*\("
 )
 PUBLISHED_ACTION = re.compile(
     r"(?:[A-Za-z_][A-Za-z0-9_]*\s*::\s*)+"
@@ -257,12 +257,24 @@ def call_text(code: str, open_paren: int) -> str:
     return code[open_paren + 1 : matching(code, open_paren) - 1]
 
 
-def submits_a_published_action(code: str) -> bool:
-    """Whether `code` submits a published action through the dispatcher."""
-    return any(
-        PUBLISHED_ACTION.search(call_text(code, submit.end() - 1))
-        for submit in DISPATCHER_SUBMIT.finditer(code)
-    )
+def submits_a_published_action(code: str, fragments: dict[str, list[str]] | None = None) -> bool:
+    """Whether `code` submits a published action through the dispatcher.
+
+    The action is named at the call (`submit(Tracker::PLACE.with(..))`), or the
+    call hands it a target a binding in this app built (`env.query(target, ..)`
+    with `let target = RemoteActionTarget { address: Tracker::PLACE.on(..) }`).
+    """
+    bindings = fragments or {}
+    for submit in DISPATCHER_SUBMIT.finditer(code):
+        argument = call_text(code, submit.end() - 1)
+        reach = argument + "".join(
+            body
+            for name in re.findall(r"\b([a-z_][A-Za-z0-9_]*)\b", argument)
+            for body in bindings.get(name, ())
+        )
+        if PUBLISHED_ACTION.search(reach):
+            return True
+    return False
 
 
 def callback_fragments(code: str) -> dict[str, list[str]]:
@@ -274,14 +286,16 @@ def callback_fragments(code: str) -> dict[str, list[str]]:
     return fragments
 
 
-def reaches_closure(code: str, open_paren: int) -> bool:
+def reaches_closure(
+    code: str, open_paren: int, fragments: dict[str, list[str]] | None = None
+) -> bool:
     """Whether the callback at `open_paren` reaches a submit of a published
-    action: written as a closure there, or named here and defined in this
-    file, directly or through what those functions and bindings reach."""
+    action: written as a closure there, or named in this file and defined in
+    this app, directly or through what those functions and bindings reach."""
     argument = call_text(code, open_paren)
-    if submits_a_published_action(argument):
+    if submits_a_published_action(argument, fragments):
         return True
-    fragments = callback_fragments(code)
+    fragments = callback_fragments(code) | (fragments or {})
     pending = [
         name
         for name in re.findall(r"\b([a-z_][A-Za-z0-9_]*)\b", argument)
@@ -294,7 +308,7 @@ def reaches_closure(code: str, open_paren: int) -> bool:
             continue
         seen.add(name)
         for fragment in fragments[name]:
-            if submits_a_published_action(fragment):
+            if submits_a_published_action(fragment, fragments):
                 return True
             pending.extend(
                 called
@@ -304,7 +318,9 @@ def reaches_closure(code: str, open_paren: int) -> bool:
     return False
 
 
-def closure_controls(code: str, raw: str, matches: list[re.Match]) -> list[re.Match]:
+def closure_controls(
+    code: str, raw: str, matches: list[re.Match], fragments: dict[str, list[str]]
+) -> list[re.Match]:
     """The callback calls that hand a control something to run: not a
     widget's own handler called on `self`, nor a call without arguments, nor
     one whose callback hands the dispatcher a published action: that is the
@@ -317,7 +333,10 @@ def closure_controls(code: str, raw: str, matches: list[re.Match]) -> list[re.Ma
         before = code[: match.start()].rstrip()
         if re.search(r"(?<![\w.])self$", before):
             continue
-        if ".submit" in code and reaches_closure(code, match.end() - 1):
+        if (
+            (".submit" in code or ".invoke" in code or ".query" in code)
+            and reaches_closure(code, match.end() - 1, fragments)
+        ):
             continue
         kept.append(match)
     return kept
@@ -364,13 +383,15 @@ def call_arguments(code: str, raw: str, open_paren: int) -> int:
     return count
 
 
-def closure_action_buttons(code: str, raw: str, matches: list[re.Match]) -> list[re.Match]:
+def closure_action_buttons(
+    code: str, raw: str, matches: list[re.Match], fragments: dict[str, list[str]]
+) -> list[re.Match]:
     """The closure-run buttons among `matches`: a builder method passed its
     toolkit arity, on anything but a view context, whose `action` of the same
     name and arity is the published action route."""
     contexts = set(VIEW_CONTEXT_BINDING.findall(code))
     kept = []
-    for match in closure_controls(code, raw, matches):
+    for match in closure_controls(code, raw, matches, fragments):
         receiver = re.search(r"([A-Za-z_][A-Za-z0-9_]*)\s*$", code[: match.start()])
         if receiver and receiver.group(1) in contexts:
             continue
@@ -847,6 +868,9 @@ def audit_ratchets(
         workspace = root.resolve() == ROOT.resolve()
     if counts is None:
         counts = {}
+    # A callback's helper often lives in another file of the same app, so what
+    # the app's callbacks reach is read across all its sources.
+    app_fragments = callback_fragments("\n".join(code_only(text) for _, text in sources))
     for source, source_text in sources:
         relative = source.relative_to(root).as_posix()
         code = code_only(source_text)
@@ -873,7 +897,7 @@ def audit_ratchets(
         for rule, pattern, reason, code in rules:
             matches = list(pattern.finditer(code))
             if rule in RATCHET_FILTERS:
-                matches = RATCHET_FILTERS[rule](code, source_text, matches)
+                matches = RATCHET_FILTERS[rule](code, source_text, matches, app_fragments)
             counts[(rule, relative)] = len(matches)
             if matches:
                 violations.append(
