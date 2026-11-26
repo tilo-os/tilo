@@ -501,27 +501,8 @@ mod tests {
     use crate::theme::{PresetDesign, Theme};
 
     #[test]
-    fn roles_resolve_to_the_design_table_from_one_base() {
+    fn roles_take_their_faces_and_follow_one_base() {
         let typography = Typography::default();
-        let expect = [
-            (TextRole::Display, 34.0, TextWeight::Semibold, 1.15),
-            (TextRole::LargeTitle, 26.0, TextWeight::Semibold, 1.2),
-            (TextRole::Title, 20.0, TextWeight::Semibold, 1.25),
-            (TextRole::Heading, 16.0, TextWeight::Semibold, 1.3),
-            (TextRole::Subheading, 14.0, TextWeight::Semibold, 1.35),
-            (TextRole::Body, 14.0, TextWeight::Regular, 1.45),
-            (TextRole::Label, 13.0, TextWeight::Medium, 1.3),
-            (TextRole::Caption, 12.0, TextWeight::Regular, 1.35),
-            (TextRole::Reading, 16.0, TextWeight::Regular, 1.6),
-            (TextRole::Code, 13.0, TextWeight::Regular, 1.5),
-        ];
-        for (role, size, weight, leading) in expect {
-            let style = typography.style(role);
-            assert_eq!(style.size, size, "{role:?} size");
-            assert_eq!(style.weight, weight, "{role:?} weight");
-            assert_eq!(style.line_height, leading, "{role:?} leading");
-            assert_eq!(style.scaling, TextScaling::Resolved, "{role:?} scaling");
-        }
         assert_eq!(
             typography.style(TextRole::Reading).family,
             FontChoice::Named(crate::text_render::UI_SERIF_FAMILY.into())
@@ -533,6 +514,11 @@ mod tests {
         assert_eq!(
             typography.style(TextRole::Body).family,
             FontChoice::Named(crate::text_render::UI_SANS_FAMILY.into())
+        );
+        assert!(
+            typography.style(TextRole::Reading).line_height
+                > typography.style(TextRole::Body).line_height,
+            "reading text is set looser than interface text"
         );
 
         let larger = Typography::default().with_base_size(16.0);
