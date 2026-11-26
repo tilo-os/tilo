@@ -3681,38 +3681,44 @@ default = false
 # The tilolang apps laid out headlessly at the standard window sizes: 320x568 and 390x844, a
 # phone's, and 1280x800, a laptop's. What `tilo-layout-check` finds is the check's verdict (a
 # finding the allow-list does not name, a line it names that no longer shows, a view no scenario
-# reaches), and each size's report, the layout of the frames its findings came from and its PNG
-# captures are its outputs: `t outputs layout-check --to DIR`. The renders are the toolkit's own,
-# so they run in the test environment (the product's fonts, lavapipe) on x86_64, where the visual
-# goldens are recorded. One job lays every view out once and reports the three sizes; a view is
-# read at every size from 320x568 to 3440x1440 either way, so a second job over the same apps
-# would read all of them again for a verdict it already has.
+# reaches), and the report, the layout of the frames its findings came from and, when a run asks
+# for them, its PNG captures are its outputs: `t outputs layout-check --to DIR`. The renders are
+# the toolkit's own, so they run in the test environment (the product's fonts, lavapipe) on
+# x86_64, where the visual goldens are recorded. One job lays every view out once and reports the
+# three sizes; a view is read at every size from 320x568 to 3440x1440 either way, so a second job
+# over the same apps would read all of them again for a verdict it already has.
+#
+# The pictures cost nine tenths of the check: each is a software rasterisation of a whole window,
+# nine hundred of them to a size, and a run over the tree that took them measured over half an
+# hour against a few minutes for the verdict alone. So they are taken when asked (`--input
+# shots=true`), not on every head.
 #
 # A run narrows with its inputs, which are part of its key: `app` lays out one package of `apps/tl`
-# (`--input app=apps/tl/tasks`, the run to make while iterating), `size` reports and shoots one
-# size of the three (`--input size=390x844`), `press` presses a control by its words before each
-# window is read (`--input press="Mark Buy oat milk and eggs done"`), `dump=true` prints every
-# frame laid out rather than only those a finding came from, `shot_height=2200` takes the shots in
-# a window that tall, so the lower part of a long page shows, `hover=640,980` rests the pointer
-# there for the shots (a chart's readout), and `state=picked=studio` stages a view state's value
-# before anyone picks, so a screen behind a pick is the one shot. Strict's whole-tree verdict (an
-# allow-list line that no longer shows, a view no scenario reaches) is the run that names no app
-# and no press; a narrowed run still fails on a finding the allow-list does not name.
+# (`--input app=apps/tl/tasks`, the run to make while iterating), `size` reports one size of the
+# three (`--input size=390x844`), `shots=true` writes the window at each reported size, light and
+# dark, to PNGs in its own directory, `press` presses a control by its words before each window is
+# read (`--input press="Mark Buy oat milk and eggs done"`), `dump=true` prints every frame laid out
+# rather than only those a finding came from, `shot_height=2200` takes the shots in a window that
+# tall, so the lower part of a long page shows, `hover=640,980` rests the pointer there for the
+# shots (a chart's readout), and `state=picked=studio` stages a view state's value before anyone
+# picks, so a screen behind a pick is the one shot. Strict's whole-tree verdict (an allow-list line
+# that no longer shows, a view no scenario reaches) is the run that names no app and no press; a
+# narrowed run still fails on a finding the allow-list does not name.
 [[check]]
 name = "layout-check"
 # Heavy: every app of apps/tl laid out at every size, strict, in one pass: the three jobs that each
 # made that whole pass for the same verdict cost 10.1 core-hours and 11.6 minutes apiece (91 jobs,
-# 923 core-hours, 2026-11-25). One run measured 0.75 core-hours and 6.6 minutes on a shared node,
-# against 1.3 core-hours and 16.2 minutes for one of those jobs there; both stopped at the music
-# crash main carries. On main's newest head with the room main's heads leave (`idle`), keyed on
-# every commit, so a failure is still bisected to the commit that broke it and told to its pusher.
+# 923 core-hours, 2026-11-25). The pictures, nine hundred windows a size and a software
+# rasterisation apiece, are taken only by a run that asks for them (`shots=true`). On main's newest
+# head with the room main's heads leave (`idle`), keyed on every commit, so a failure is still
+# bisected to the commit that broke it and told to its pusher.
 on = ["idle", "stable"]
 egress = { to = ["code.tilo.so:443"], pinned = true }
 run = "bash tools/ci/layout-check.sh"
 requires = ["arch=x86_64"]
 outputs = ["/target/layout-check/**"]
 timeout_secs = 1800
-dispatch_inputs = { app = "", size = "", press = "", dump = "false", shot_height = "", hover = "", state = "" }
+dispatch_inputs = { app = "", size = "", shots = "false", press = "", dump = "false", shot_height = "", hover = "", state = "" }
 
 [[check]]
 name = "app-screenshots"

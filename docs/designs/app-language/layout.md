@@ -138,7 +138,8 @@ room above it as below at a phone's width and a monitor's alike.
 display scales 1, 1.5 and 2 and text scales 1 and 1.5. It reports overflow, clipped text, overlaps,
 hit targets that are too small, pages that scroll sideways and edges between device pixels, each at
 a view path. It runs as the `layout-check` t check, on the build servers, where its findings are
-the verdict and each standard size's dump and shots are `t outputs`.
+the verdict, each standard size's dump is `t outputs` and so are its pictures, which a run takes
+when it asks for them: rasterising a picture of every window costs more than the verdict does.
 
 A window that names its places in a sidebar shows one of them, so the check chooses each destination
 as a person does and lays the page behind it out at every size and scale: a page only a choice

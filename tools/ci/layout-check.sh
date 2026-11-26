@@ -1,17 +1,22 @@
 #!/usr/bin/env bash
 # Lay every view of the tilolang apps out headlessly at the standard window sizes, on the build
 # server: what `tilo-layout-check` finds is the check's verdict, and each size's report, the
-# layout of each frame a finding came from (dump.txt) and PNG captures (one per window, in its
-# light and dark theme) are its outputs. It runs the command as `tilo-layout-check`
-# (tools/layout-check), which stages the Mail and Tube apps over the sample data their outside
-# services hold, as the published `tilolang` cannot.
+# layout of each frame a finding came from (dump.txt) and, when a run asks for them, PNG captures
+# (one per window, in its light and dark theme) are its outputs. It runs the command as
+# `tilo-layout-check` (tools/layout-check), which stages the Mail and Tube apps over the sample
+# data their outside services hold, as the published `tilolang` cannot.
 #
 #   tools/ci/layout-check.sh [WIDTHxHEIGHT]
 #
 # One pass lays every window out once, and the standard sizes are the frames it reports and the
 # windows it shoots: 320x568 and 390x844, a phone's, and 1280x800, a laptop's. The check's own
 # verdict reads every view at every size from 320x568 to 3440x1440, so a size given here reports
-# that one's frames and shots alone, never a second pass over the apps.
+# that one's frames alone, never a second pass over the apps.
+#
+# The pictures cost more than the verdict does: each is a software rasterisation of a whole
+# window, nine hundred of them to a size, so they are taken only when a run asks for them
+# (`shots=true`) rather than on every head. The verdict, the frames its findings came from and
+# the counts are always written.
 #
 # The `layout-check` check runs it and takes inputs, which narrow a run to what is being looked
 # at. While iterating, name the one app you are looking at (`t test layout-check --input
@@ -19,6 +24,8 @@
 # many core-hours it spent (`used` in `t follow --json`).
 #   app     one package of `apps/tl` to lay out (default: every one)
 #   size    the standard size to report and shoot (default: all three)
+#   shots   `true` writes the window at each reported size as each stage leaves it, light and
+#           dark, to PNGs in its own directory (default: false: the verdict's frames alone)
 #   press   a control's words, pressed before each window is read at the first reported size,
 #           where the shots show it (default: none); name a size beside it to press elsewhere
 #   dump    `true` prints every frame laid out at the reported sizes, not only the frames a
@@ -30,12 +37,12 @@
 #   state   a view state's value before anyone picks, as the app writes it
 #           (`picked=studio`), so a screen behind a pick is the one shot (default: the view's own)
 #
-#   t test layout-check --input app=apps/tl/tasks --input size=390x844 \
+#   t test layout-check --input app=apps/tl/tasks --input size=390x844 --input shots=true \
 #       --input press="Mark Buy oat milk and eggs done" --input dump=true
 #
 # `t test layout-check` runs it over every app, and `t outputs layout-check --to DIR` fetches a
-# run's report, dumps and shots. Never run it on a workstation: it lays out every app, which takes
-# the machine.
+# run's report and dumps (and its shots, from a run that asked for them). Never run it on a
+# workstation: it lays out every app, which takes the machine.
 set -euo pipefail
 repo=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)
 cd -- "$repo"
@@ -70,10 +77,12 @@ mkdir -p -- "$out"
 app=${T_INPUT_APP:-}
 press=${T_INPUT_PRESS:-}
 dump=${T_INPUT_DUMP:-false}
+shots=${T_INPUT_SHOTS:-false}
 shot_height=${T_INPUT_SHOT_HEIGHT:-}
 hover=${T_INPUT_HOVER:-}
 state=${T_INPUT_STATE:-}
 case $dump in true|false) ;; *) echo "dump must be true or false, not $dump" >&2; exit 2 ;; esac
+case $shots in true|false) ;; *) echo "shots must be true or false, not $shots" >&2; exit 2 ;; esac
 
 # Every app in `apps/tl`: a package directory with an `app.tl`, as the library's own tests find
 # them, so an app added there is laid out without being named here. `app` lays out one instead.
@@ -100,17 +109,19 @@ pointing=()
 states=()
 [[ -z $state ]] || states=(--state "$state")
 # A narrowing input reads its own layouts: `dump` prints every frame laid out, where the whole
-# tree's run prints the frames its findings came from. Each reported size keeps its own frames,
-# shots and dump.
+# tree's run prints the frames its findings came from. Each reported size keeps its own frames and,
+# when the run asks for them, its own shots.
 frames=()
 for size in "${sizes[@]}"; do
-    mkdir -p -- "$out/$size"
     if [[ $dump == false ]]; then
         frames+=(--dump-findings "$size")
     else
         frames+=(--dump "$size")
     fi
-    frames+=(--shots "$out/$size")
+    if [[ $shots == true ]]; then
+        mkdir -p -- "$out/$size"
+        frames+=(--shots "$out/$size")
+    fi
 done
 
 # Strict judges the whole tree (an allow-list line whose finding no longer shows, a view no
@@ -130,10 +141,12 @@ if [[ ! -s $out/report.txt ]]; then
     tail -n 20 -- "$out/dump.txt" >&2
     exit 1
 fi
-for size in "${sizes[@]}"; do
-    if ! compgen -G "$out/$size/*.png" >/dev/null; then
-        echo "layout-check: no window was shot at $size" >&2
-        status=1
-    fi
-done
+if [[ $shots == true ]]; then
+    for size in "${sizes[@]}"; do
+        if ! compgen -G "$out/$size/*.png" >/dev/null; then
+            echo "layout-check: no window was shot at $size" >&2
+            status=1
+        fi
+    done
+fi
 exit "$status"

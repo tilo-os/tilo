@@ -427,16 +427,17 @@ allow-list line whose finding no longer shows or a view no scenario reaches. The
 
 A run takes inputs, which are part of its key and show in its result
 (`layout-check [app=apps/tl/chat]`): `app` lays out one package of `apps/tl` instead of
-every one, `size` reports and shoots one size instead of all three, `press` presses a control by
-the words it carries before each window is read, and `dump=true` prints every frame laid out
-rather than only the frames a finding came from. Iterating on one app, name it: a run over every
-app takes the machine and the job's `used` figures say what it cost.
+every one, `size` reports one size instead of all three, `shots=true` writes the window at each
+reported size as a PNG, `press` presses a control by the words it carries before each window is
+read, and `dump=true` prints every frame laid out rather than only the frames a finding came
+from. Iterating on one app, name it: a run over every app takes the machine and the job's `used`
+figures say what it cost.
 
 ```bash
 t test layout-check --input app=apps/tl/tasks --input size=390x844
 t test layout-check --input app=apps/tl/tasks --input size=390x844 \
     --input press="Mark Buy oat milk and eggs done"
-t test layout-check --input app=apps/tl/tasks --input size=390x844 \
+t test layout-check --input app=apps/tl/tasks --input size=390x844 --input shots=true \
     --input press="Mark Buy oat milk and eggs done" --input dump=true
 ```
 
@@ -453,16 +454,18 @@ t outputs layout-check --to ~/layout-shots
 
 That writes `~/layout-shots/target/layout-check/`, which holds `report.txt` (the report the
 job's log prints: every finding with its app, view, node and source line, the allow-list lines
-that no longer show and the views no layout reached, then the counts), `dump.txt` (the toolkit's
-inspection of the layouts a finding was read from at each size: each widget's box, clip and
-semantics; `dump=true` writes every frame instead) and one directory per size holding one PNG per
-window per theme (`<app>-<view>-<theme>.png`, light and dark; about nine hundred for the tl apps),
-as each scenario leaves the window. `t outputs` starts the run for this state if none ran, so the
-shot is always of the code as it stands here; a run with inputs is fetched by its id, which
+that no longer show and the views no layout reached, then the counts) and `dump.txt` (the
+toolkit's inspection of the layouts a finding was read from at each size: each widget's box, clip
+and semantics; `dump=true` writes every frame instead). A run that asked for the pictures
+(`shots=true`) also keeps one directory per size holding one PNG per window per theme
+(`<app>-<view>-<theme>.png`, light and dark; about nine hundred for the tl apps), as each
+scenario leaves the window: rasterising every window is nine tenths of what a run costs, so the
+verdict's run takes none. `t outputs` starts the run for this state if none ran, so the shot is
+always of the code as it stands here; a run with inputs is fetched by its id, which
 `t test --detach` prints:
 
 ```bash
-t test layout-check --input app=apps/tl/tasks --input size=390x844 --detach
+t test layout-check --input app=apps/tl/tasks --input size=390x844 --input shots=true --detach
 t outputs layout-check --run <run> --to ~/layout-shots
 ```
 
