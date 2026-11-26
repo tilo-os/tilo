@@ -266,4 +266,16 @@ mod tests {
         (&daemon).write_all(b"{\"result\":{}}\n").unwrap();
         assert!(answer(&pam).unwrap().1.is_none());
     }
+
+    /// A sign-in with no person yet answers the founding link's one-use secret as text inside
+    /// the JSON-RPC answer, escaped once: the token read from that line is what the session is
+    /// handed as `TILO_SHELL_TOKEN`.
+    #[test]
+    fn a_founding_sign_in_names_the_token_the_session_redeems() {
+        let token = "ab".repeat(32);
+        let answer = format!(
+            r#"{{"jsonrpc":"2.0","id":1,"result":{{"content":[{{"type":"text","text":"ok\n{{\"founding\":true,\"shell\":true,\"token\":\"{token}\"}}"}}],"isError":false}}}}"#
+        );
+        assert_eq!(token_in(&answer).as_deref(), Some(token.as_str()));
+    }
 }
