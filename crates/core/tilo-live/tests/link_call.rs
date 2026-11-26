@@ -13,31 +13,20 @@
     reason = "a failed unwrap in a test is its assertion"
 )]
 
+#[path = "support.rs"]
+mod support;
 use std::sync::Arc;
+use support::{WORKSPACE, keys, scope};
 
-use key_group::{ContentKeys, KeyGroup, MemberKey};
+use key_group::ContentKeys;
 use tilo_live::link_call::Call;
 use tilo_live::live::Track;
 use tilo_live::live_session::{Join, LiveSession};
 use tilo_live::relay::{Admission, Denied, Peer, Relay, RelayAuthority};
 use tilo_live::roster::Roster;
-use tilo_live::scope::Scope;
 
-const WORKSPACE: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
 const DAEMON: [u8; 32] = [1; 32];
 const PEER: [u8; 32] = [2; 32];
-
-fn scope() -> Scope {
-    Scope::workspace(WORKSPACE)
-}
-
-fn keys() -> ContentKeys {
-    let workspace = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
-    KeyGroup::create(workspace, MemberKey::generate("owner").unwrap())
-        .unwrap()
-        .content_keys()
-        .unwrap()
-}
 
 /// The relay the sessions meet on: in-process, admitting nobody, since each joins the relay
 /// this device serves.

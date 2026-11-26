@@ -12,12 +12,15 @@
     reason = "in a test these are the assertion; the scenario is one connection's life"
 )]
 
-use std::net::{Ipv4Addr, SocketAddr};
+#[path = "support.rs"]
+mod support;
+use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::time::Duration;
+use support::addr;
 
 use iroh::endpoint::presets;
-use iroh::{Endpoint, EndpointAddr, RelayMode};
+use iroh::{Endpoint, RelayMode};
 use moq_net::Timestamp;
 use tilo_live::carrier::{self, AdmissionError, Dial as _};
 use tilo_live::native;
@@ -82,12 +85,6 @@ async fn endpoint() -> Endpoint {
         .bind()
         .await
         .unwrap()
-}
-
-/// Where the other endpoint reaches `endpoint` on loopback.
-fn addr(endpoint: &Endpoint) -> EndpointAddr {
-    let port = endpoint.bound_sockets().first().unwrap().port();
-    EndpointAddr::new(endpoint.id()).with_ip_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
 }
 
 /// One in-process origin whose driver runs until its task drops.

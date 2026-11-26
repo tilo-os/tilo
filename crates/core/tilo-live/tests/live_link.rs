@@ -14,55 +14,27 @@
     reason = "a failed unwrap in a test is its assertion"
 )]
 
+#[path = "support.rs"]
+mod support;
 use std::collections::BTreeMap;
-use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Arc, Mutex};
+use support::{WORKSPACE, addr, endpoint, grant_for, heard, keys, scope};
 
-use iroh::{Endpoint, EndpointAddr, RelayMode};
-use key_group::{ContentKeys, KeyGroup, MemberKey};
+use iroh::Endpoint;
+use key_group::ContentKeys;
 use tilo_live::grant;
 use tilo_live::link::{self, Toward};
 use tilo_live::live::{self, Namespace, Track};
-use tilo_live::live_session::{Heard, Join, LiveError, LiveSession};
+use tilo_live::live_session::{Join, LiveError, LiveSession};
 use tilo_live::native;
 use tilo_live::relay::{
     Admission, AuthorizationStatus, Denied, Direction, Peer, Relay, RelayAuthority,
     SessionAuthorization,
 };
 use tilo_live::roster::Roster;
-use tilo_live::scope::Scope;
+
 use tilo_live::voice::{FRAME_SAMPLES, VoiceObject};
 use tilo_test_env::wait_until;
-
-const WORKSPACE: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
-
-fn scope() -> Scope {
-    Scope::workspace(WORKSPACE)
-}
-
-fn keys() -> ContentKeys {
-    let workspace = collab_types::WorkspaceId::parse(WORKSPACE).unwrap();
-    KeyGroup::create(workspace, MemberKey::generate("owner").unwrap())
-        .unwrap()
-        .content_keys()
-        .unwrap()
-}
-
-async fn endpoint() -> Endpoint {
-    Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .relay_mode(RelayMode::Disabled)
-        .bind_addr((Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .transport_config(native::transport_config())
-        .bind()
-        .await
-        .unwrap()
-}
-
-fn addr(endpoint: &Endpoint) -> EndpointAddr {
-    let port = endpoint.bound_sockets().first().unwrap().port();
-    EndpointAddr::new(endpoint.id()).with_ip_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
-}
 
 /// The workspace's devices and their certificates, as a daemon's authority reads them.
 struct Authority {
@@ -154,18 +126,6 @@ impl SessionAuthorization for Permit {
     }
 }
 
-fn grant_for(certificate: &[u8]) -> Vec<u8> {
-    grant::Native::new(
-        live::workspace_bytes(WORKSPACE).unwrap(),
-        &scope().id(),
-        1,
-        certificate.to_vec(),
-        Vec::new(),
-    )
-    .unwrap()
-    .encode()
-}
-
 fn join(device: [u8; 32], roster: Roster, keys: &ContentKeys) -> Join {
     Join {
         scope: scope(),
@@ -232,16 +192,6 @@ impl Daemon {
             toward,
         ))
     }
-}
-
-fn heard(live_session: &LiveSession, track: Track) -> Vec<Heard> {
-    let mut bodies = Vec::new();
-    while let Some(heard) = live_session.try_recv() {
-        if heard.track == track {
-            bodies.push(heard);
-        }
-    }
-    bodies
 }
 
 /// Keep publishing presence from `from` until `to` hears it: presence repeats, and one object

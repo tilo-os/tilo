@@ -21,14 +21,16 @@
     reason = "each test is one workspace session end to end"
 )]
 
+#[path = "support.rs"]
+mod support;
 use std::collections::{BTreeMap, BTreeSet};
-use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use support::{WORKSPACE, addr, endpoint, grant_for, heard, scope};
 
 use iroh::endpoint::{Connection, VarInt};
-use iroh::{Endpoint, EndpointAddr, RelayMode};
+use iroh::{Endpoint, EndpointAddr};
 use key_group::{ContentKeys, KeyGroup, MemberKey};
 use tilo_live::frame::LiveKeys;
 use tilo_live::grant;
@@ -40,16 +42,9 @@ use tilo_live::relay::{
     MAX_ADMITTING_STRANGERS, Peer, Relay, RelayAuthority, SessionAuthorization,
 };
 use tilo_live::roster::Roster;
-use tilo_live::scope::Scope;
+
 use tilo_live::voice::{FRAME_SAMPLES, VoiceObject};
 use tilo_test_env::wait_until;
-
-const WORKSPACE: &str = "0f8fad5b-d9cb-469f-a165-70867728950e";
-
-/// The scope every device of the test joins: the workspace itself.
-fn scope() -> Scope {
-    Scope::workspace(WORKSPACE)
-}
 
 /// The workspace's content keys at epoch 1, as its group hands them to its
 /// members.
@@ -60,22 +55,6 @@ fn keys() -> ContentKeys {
         .unwrap()
         .content_keys()
         .unwrap()
-}
-
-async fn endpoint() -> Endpoint {
-    Endpoint::builder(iroh::endpoint::presets::Minimal)
-        .relay_mode(RelayMode::Disabled)
-        .bind_addr((Ipv4Addr::LOCALHOST, 0))
-        .unwrap()
-        .transport_config(native::transport_config())
-        .bind()
-        .await
-        .unwrap()
-}
-
-fn addr(endpoint: &Endpoint) -> EndpointAddr {
-    let port = endpoint.bound_sockets().first().unwrap().port();
-    EndpointAddr::new(endpoint.id()).with_ip_addr(SocketAddr::from((Ipv4Addr::LOCALHOST, port)))
 }
 
 /// The authority a session's relay role holds: who is in the workspace now,
@@ -241,19 +220,6 @@ impl SessionAuthorization for Permit {
     }
 }
 
-/// The grant `device` presents for the workspace scope.
-fn grant_for(certificate: &[u8]) -> Vec<u8> {
-    grant::Native::new(
-        live::workspace_bytes(WORKSPACE).unwrap(),
-        &scope().id(),
-        1,
-        certificate.to_vec(),
-        Vec::new(),
-    )
-    .unwrap()
-    .encode()
-}
-
 fn join(device: [u8; 32], roster: Roster, keys: impl Into<LiveKeys>) -> Join {
     Join {
         scope: scope(),
@@ -383,17 +349,6 @@ fn talk(live_sessions: &[&LiveSession], keys: &ContentKeys, sequence: u32) {
             .iter()
             .all(|live_session| live_session.voice_wanted())
     });
-}
-
-/// Everything `live_session` heard on `track` so far.
-fn heard(live_session: &LiveSession, track: Track) -> Vec<Heard> {
-    let mut bodies = Vec::new();
-    while let Some(heard) = live_session.try_recv() {
-        if heard.track == track {
-            bodies.push(heard);
-        }
-    }
-    bodies
 }
 
 #[tokio::test(flavor = "multi_thread")]
