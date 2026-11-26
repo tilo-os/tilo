@@ -1136,7 +1136,10 @@ impl Client {
             lan.clone(),
         );
         // What the actor serves is installed before it starts: every actor built after answers it.
-        let versions = crate::network::install(fabric.as_ref(), questions);
+        let record = identity
+            .as_ref()
+            .map(|identity| (person.clone(), identity.device_cert.clone()));
+        let versions = crate::network::install(fabric.as_ref(), record, questions);
         let endpoint_handle = Arc::new(std::sync::OnceLock::new());
         let binding = network::Bound::new(Arc::clone(&endpoint_handle), entry.relays, lan);
         // The workspaces' live sessions run through this device's daemon, which holds the relay

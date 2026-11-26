@@ -45,13 +45,13 @@ impl VersionMismatch {
 /// as.
 pub(crate) fn install(
     link: Option<&Arc<crate::platform::fabric::SessionFabric>>,
+    record: Option<(crate::PersonResources, tilo_user_identity::DeviceCert)>,
     questions: Option<AskSender>,
 ) -> std::sync::mpsc::Receiver<VersionMismatch> {
     let (updates, requests) = std::sync::mpsc::channel();
     let Some(fabric) = link else {
         return requests;
     };
-    let record = fabric.personal();
     let link = Arc::clone(fabric) as SharedLink;
     let Some(local) = link
         .local_device_fabric_identity()

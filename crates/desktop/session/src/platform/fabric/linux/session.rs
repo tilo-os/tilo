@@ -202,19 +202,6 @@ impl SessionFabric {
         })
     }
 
-    /// The person's own workspace and this device's certificate there: where what lasts of this
-    /// device is kept.
-    pub(crate) fn personal(&self) -> Option<(PersonResources, tilo_user_identity::DeviceCert)> {
-        self.personal.clone()
-    }
-
-    /// The person's own workspace's resources this fabric keeps what lasts of this device in.
-    pub(crate) fn person_resources(&self) -> Option<PersonResources> {
-        self.personal
-            .as_ref()
-            .map(|(resources, _)| resources.clone())
-    }
-
     /// This session's Nearby Send takes what the person's devices offer and stream here.
     /// One of the person's devices proved itself on its session with this one. What it proves is
     /// the grant to tell it what this device says of itself, so it is told at once: both sides say
