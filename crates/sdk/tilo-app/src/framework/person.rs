@@ -847,9 +847,14 @@ impl PersonState {
             .read(tilo_resource::evolution::needs_migrate::<P>)
             .ok_or_else(|| "the record cannot be read".to_owned())?;
         let id = record.checkout().id.route().to_owned();
+        // The person's records are kept in their own workspace, and in the personal scope where
+        // this device knows no person yet, as their store keeps them.
+        let workspace = self
+            .workspace()
+            .unwrap_or_else(|| collab_types::document::PERSONAL_SCOPE.to_owned());
         if older
             && let Err(error) = record.edit(false, |doc| {
-                tilo_resource::founding::bring_up_resource::<P>(&id, doc)
+                tilo_resource::founding::bring_up_resource::<P>(&workspace, &id, doc)
                     .map_err(|error| error.to_string())
             })
         {

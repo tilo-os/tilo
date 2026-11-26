@@ -27,6 +27,8 @@ use tilo_resource_store::{
 };
 
 const KIND: &str = "Issue";
+/// The workspace every measured store keeps the resources of.
+const WORKSPACE: &str = "bench";
 /// Resources each measured commit writes, one per commit as a person's edits are.
 const MEASURED: usize = 10_000;
 
@@ -88,7 +90,7 @@ type Kept = (String, Vec<u8>, Vec<u8>, Vec<automerge::ChangeHash>);
 /// every document, and from the index's snapshots of them.
 fn store(size: usize) {
     const WRITES: usize = 2_000;
-    let mut store = Store::new();
+    let mut store = Store::new(WORKSPACE);
     let mut docs = std::collections::BTreeSet::new();
     for n in 0..size {
         let (id, resource) = resource(n);
@@ -111,7 +113,7 @@ fn store(size: usize) {
     }
     let writes = WRITES as f64 / start.elapsed().as_secs_f64();
 
-    let mut peer = Store::new();
+    let mut peer = Store::new(WORKSPACE);
     let start = Instant::now();
     for write in written {
         docs.insert(write.doc.clone());
@@ -141,13 +143,13 @@ fn store(size: usize) {
         })
         .collect();
     let start = Instant::now();
-    let mut cold = Store::new();
+    let mut cold = Store::new(WORKSPACE);
     for (doc, bytes, _, _) in &kept {
         cold.load(doc, bytes).expect("a kept document");
     }
     let cold_ms = start.elapsed().as_secs_f64() * 1e3;
     let start = Instant::now();
-    let mut warm = Store::new();
+    let mut warm = Store::new(WORKSPACE);
     for (doc, _, snapshot, heads) in &kept {
         assert!(
             warm.restore(doc, snapshot, heads),

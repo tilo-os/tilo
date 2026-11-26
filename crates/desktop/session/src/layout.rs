@@ -2752,7 +2752,7 @@ fn found(
     for strip in &mut strips.strips {
         strip.window_groups.clear();
     }
-    tilo_desktop_model::record::found_into(doc).map_err(|error| {
+    tilo_desktop_model::record::found_into(&workspace_id.to_string(), doc).map_err(|error| {
         tracing::warn!(%error, "the layout's founding does not apply");
         automerge::AutomergeError::Fail
     })?;

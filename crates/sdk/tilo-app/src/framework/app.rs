@@ -1237,11 +1237,12 @@ fn open_root<A: ResourceApp>(
     created: bool,
 ) -> Result<Result<OpenedRoot, String>, LaunchError> {
     let id = context.record().id.route().to_owned();
+    let workspace = context.records().workspace();
     let migrated = migrate_older(
         context,
         tilo_resource::evolution::needs_migrate::<A::Resource>,
         &mut |doc| {
-            tilo_resource::founding::bring_up_resource::<A::Resource>(&id, doc)
+            tilo_resource::founding::bring_up_resource::<A::Resource>(&workspace, &id, doc)
                 .map_err(|error| error.to_string())
         },
     )?;

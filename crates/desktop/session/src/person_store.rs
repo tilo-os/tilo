@@ -203,6 +203,7 @@ mod tests {
         let shell = DaemonShell::new(link.map(|(link, _)| link), runtime.clone());
         let person =
             tilo_actions::Acting::person(tilo_actions::PersonId::from_root(cert.user_public_key));
+        let workspace = tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key);
         let store = DaemonPersonStore::new(shell.clone(), DaemonWritesFeed::start(&shell), cert);
         let (app, name) = (
             tilo_desktop_model::ownership::DESKTOP_APP,
@@ -229,7 +230,8 @@ mod tests {
                     Authoring {
                         kind: Some(tilo_desktop_model::ownership::DESKTOP_KIND),
                         genesis: Some(Box::new(
-                            tilo_desktop_model::record::founded().expect("the layout founds"),
+                            tilo_desktop_model::record::founded(&workspace)
+                                .expect("the layout founds"),
                         )),
                         edit: Box::new(move |document| {
                             document

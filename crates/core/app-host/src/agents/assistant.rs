@@ -33,7 +33,7 @@ pub async fn assistant_of(
         return Ok(None);
     };
     let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-    let agents = super::opened::<WorkspaceAgents>(&record, &mut doc)?;
+    let agents = super::opened::<WorkspaceAgents>((workspace, &record), &mut doc)?;
     Ok(agents
         .agents
         .iter()

@@ -574,14 +574,7 @@ impl<P: Resource> WorkspaceResource<P> {
         let opened = records.open_resource(owner, P::KIND, &|doc| {
             P::initialize(doc).map_err(|error| error.to_string())
         });
-        Self::hold(
-            opened,
-            owner,
-            app,
-            permissions,
-            wake,
-            records.author().clone(),
-        )
+        Self::hold(opened, owner, app, permissions, wake, records)
     }
 
     /// [`Self::open`] of the record `id` of `kind` `P` that `owner` keeps:
@@ -613,14 +606,7 @@ impl<P: Resource> WorkspaceResource<P> {
         let opened = records.open_resource_at(owner, id, P::KIND, &|doc| {
             P::initialize(doc).map_err(|error| error.to_string())
         });
-        Self::hold(
-            opened,
-            owner,
-            app,
-            permissions,
-            wake,
-            records.author().clone(),
-        )
+        Self::hold(opened, owner, app, permissions, wake, records)
     }
 
     /// [`Self::open_at`] of the record `owner` keeps as its own primary one of
@@ -640,15 +626,7 @@ impl<P: Resource> WorkspaceResource<P> {
         let opened = records.open_primary(owner, P::KIND, &|doc| {
             P::initialize(doc).map_err(|error| error.to_string())
         });
-        Self::hold(
-            opened,
-            owner,
-            app,
-            permissions,
-            wake,
-            records.author().clone(),
-        )
-        .ok()
+        Self::hold(opened, owner, app, permissions, wake, records).ok()
     }
 
     /// [`Self::open`]'s record, opened (or not) by the store it is kept in:
@@ -660,10 +638,12 @@ impl<P: Resource> WorkspaceResource<P> {
         app: (&'static str, &'static str),
         permissions: Option<LivePermissions>,
         wake: Option<WakeHandle>,
-        me: tilo_resource::MemberId,
+        records: &WorkspaceResources,
     ) -> Result<Self, Unopened> {
+        let me = records.author().clone();
         let record = opened_at_version(
             opened,
+            (records, owner),
             P::KIND,
             tilo_resource::evolution::needs_migrate::<P>,
             tilo_resource::founding::bring_up_resource::<P>,
@@ -932,14 +912,15 @@ impl<P: Resource> WorkspaceResource<P> {
     }
 }
 
-/// The stored resource `opened`, brought to the resource of `kind`'s
-/// stored version: what every kind does before it reads what it holds, so
+/// The stored resource `opened`, the record `owner` keeps in `records`' workspace, brought to the
+/// resource of `kind`'s stored version: what every kind does before it reads what it holds, so
 /// it is compiled once rather than once per kind.
 fn opened_at_version(
     opened: Result<StoredResource, ui_core::resource::ResourceOpenError>,
+    (records, owner): (&WorkspaceResources, &str),
     kind: &'static str,
     needs_migrate: fn(&tilo_resource::Doc) -> bool,
-    migrate: fn(&str, &mut tilo_resource::Doc) -> Result<bool, tilo_resource::ModelError>,
+    migrate: fn(&str, &str, &mut tilo_resource::Doc) -> Result<bool, tilo_resource::ModelError>,
 ) -> Result<StoredResource, Unopened> {
     let stored = match opened {
         Ok(stored) => stored,
@@ -954,9 +935,15 @@ fn opened_at_version(
     };
     let id = stored.checkout().id.route().to_owned();
     if stored.read(needs_migrate).ok_or(Unopened::InUse)?
-        && let Err(error) = stored.edit(false, |doc| {
-            migrate(&id, doc).map_err(|error| error.to_string())
-        })
+        && let Err(error) = records
+            .store_of(owner)
+            .map(|store| store.workspace())
+            .map_err(|error| error.to_string())
+            .and_then(|workspace| {
+                stored.edit(false, |doc| {
+                    migrate(&workspace, &id, doc).map_err(|error| error.to_string())
+                })
+            })
     {
         tracing::warn!(kind, %error, "the workspace's resource did not migrate");
     }
@@ -1001,7 +988,8 @@ fn offered<P: Resource>(shared: &Rc<Shared<P>>, id: String) -> Held<P> {
 /// The verb `action` invokes, as its record publishes it and history names
 /// it (what a grant on one verb covers); `None` for a field edit.
 pub(crate) fn verb_of<P: Resource>(action: &P::Action) -> Option<String> {
-    let doc = tilo_resource::founding::new_record::<P>("").ok()?;
+    // A record of no workspace's, made only to name what the action does.
+    let doc = tilo_resource::founding::new_record::<P>("", "").ok()?;
     match action.describe(&doc)?.what {
         tilo_actions::Did::Verb(call) => Some(call.action.action),
         _ => None,

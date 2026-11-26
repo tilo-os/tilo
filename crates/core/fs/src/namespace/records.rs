@@ -58,7 +58,11 @@ impl Namespace {
             }
         }
         let mount: super::MountAuthor = author.into();
-        let mut docs = Chunks::new(index.unwrap_or_default(), mount.person.clone());
+        let mut docs = Chunks::new(
+            index.unwrap_or_default(),
+            mount.person.clone(),
+            mount.workspace.clone(),
+        );
         for (chunk, doc) in chunks {
             docs.adopt_chunk(chunk, doc)?;
         }
@@ -513,10 +517,10 @@ impl Namespace {
 
 /// The document that founds `chunk` of the tree: the change every copy of the record derives
 /// alike, so a mount and a page that start the same record make one document.
-pub(super) fn founding_document(chunk: TreeChunk) -> Option<AutoCommit> {
+pub(super) fn founding_document(workspace: &str, chunk: TreeChunk) -> Option<AutoCommit> {
     use tilo_automerge::ApplyIncoming as _;
     let record = fs_protocol::tree::chunk_document_id(chunk);
-    let founding = fs_protocol::tree::founding(&record).ok()?;
+    let founding = fs_protocol::tree::founding(workspace, &record).ok()?;
     let mut doc = AutoCommit::new();
     doc.apply_incoming([founding]).ok()?;
     Some(doc)

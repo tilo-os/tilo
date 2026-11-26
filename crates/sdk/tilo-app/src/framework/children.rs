@@ -256,7 +256,7 @@ pub(crate) struct ChildrenState<C: ChildResource> {
 
 impl<C: ChildResource> ChildrenState<C> {
     pub(crate) fn open(workspace: WorkspaceResources, parent: Parent<C>) -> Option<Self> {
-        let doc = tilo_resource::founding::new_record::<C>("")
+        let doc = tilo_resource::founding::new_record::<C>(&workspace.store.workspace(), "")
             .map_err(|error| tracing::warn!(kind = C::KIND, %error, "child has no genesis"))
             .ok()?;
         let empty = Reader::<C>::read(&doc)
@@ -457,8 +457,9 @@ impl<C: ChildResource> ChildrenState<C> {
             if !self.workspace.store.takes_writes() {
                 return Err("migrated once the store takes writes".into());
             }
+            let workspace = self.workspace.store.workspace();
             self.workspace.store.migrate(&record, |doc| {
-                tilo_resource::founding::bring_up_resource::<C>(record.route(), doc)
+                tilo_resource::founding::bring_up_resource::<C>(&workspace, record.route(), doc)
                     .map_err(|error| error.to_string())
             })?;
         }

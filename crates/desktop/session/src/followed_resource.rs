@@ -532,7 +532,8 @@ fn state_of<P: Resource>(copy: &Reading) -> Rc<P::State> {
             Err(error) => tracing::warn!(%error, kind = P::KIND, "a resource does not read"),
         }
     }
-    tilo_resource::founding::new_record::<P>("")
+    // A record of no workspace's, made only to read the type's first state.
+    tilo_resource::founding::new_record::<P>("", "")
         .and_then(|doc| tilo_resource::Reader::<P>::read(&doc))
         .map_err(|error| error.to_string())
         .map_or_else(

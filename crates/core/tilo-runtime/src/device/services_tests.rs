@@ -1279,7 +1279,8 @@ fn the_shell_the_daemon_starts_reaches_its_workspaces_and_no_other_process_of_th
         let person = tilo_actions::Acting::person(tilo_actions::PersonId::from_root(
             session.workspaces.device_cert().user_public_key,
         ));
-        let mut layout = tilo_desktop_model::record::founded().expect("the layout founds");
+        let mut layout =
+            tilo_desktop_model::record::founded(&workspace).expect("the layout founds");
         automerge::transaction::Transactable::put(&mut layout, automerge::ROOT, "front", "shell")
             .unwrap();
         layout.commit_with(

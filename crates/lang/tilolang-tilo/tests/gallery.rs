@@ -183,7 +183,7 @@ fn the_gallery_s_surface_admits_the_root_its_host_creates() {
 
     let (_, packages) = Replica::new("ada", Workspace::new(), &[(GALLERY, "")]);
     let meta = &packages[0].meta;
-    let mut there = Store::new();
+    let mut there = Store::new("workspace");
     for surface in tilolang_tilo::surface::package_surfaces(meta, &tilolang_runtime::SourceWords) {
         there.declare(Schema::from_surface(&surface)).unwrap();
     }
@@ -202,7 +202,7 @@ fn the_gallery_s_surface_admits_the_root_its_host_creates() {
         membership: vec!["m1".to_owned()],
         ..Stamp::default()
     };
-    let written = Store::new()
+    let written = Store::new("workspace")
         .put(
             &kind,
             "g",

@@ -56,25 +56,29 @@ pub fn write_version_at(doc: &mut Doc, at: &ObjId, version: u32) -> Result<(), M
     Ok(())
 }
 
-/// The step that brings the record `id` of `kind` to `version`: the change every holder makes
-/// alike, under an actor derived from the record and the version alone, at time zero, writing the
-/// version key and nothing else. `before` holds exactly the link it follows, the record's founding
-/// for the first version and the step to the version before otherwise, so the chain a record
-/// stands on is one every holder derives ([`crate::founding::chain`]), however
-/// its content went on meanwhile.
+/// The step that brings the record `scope` names to `version`: the change every holder makes alike,
+/// under an actor derived from the record, its workspace and the version alone, at time zero,
+/// writing the version key and nothing else. `before` holds exactly the link it follows, the
+/// record's founding for the first version and the step to the version before otherwise, so the
+/// chain a record stands on is one every holder derives ([`crate::founding::chain`]), however its
+/// content went on meanwhile.
 ///
 /// # Errors
 /// When `before` holds no heads to step from, or the step cannot be committed.
 pub fn step(
-    kind: &str,
-    id: &str,
+    scope: crate::founding::Scope<'_>,
     version: u32,
     before: &Doc,
 ) -> Result<automerge::Change, automerge::AutomergeError> {
+    let crate::founding::Scope {
+        workspace,
+        kind,
+        id,
+    } = scope;
     let mut doc = before.clone().with_actor(crate::genesis::actor(
         id,
         kind,
-        &format!("version {version}"),
+        &format!("version {version} in {workspace}"),
     ));
     doc.put(ROOT, VERSION_KEY, ScalarValue::Uint(u64::from(version)))?;
     let context = tilo_actions::ActionContext {
@@ -125,22 +129,27 @@ pub fn needs_migrate<R: Resource>(doc: &Doc) -> bool {
     stored_version(doc) < R::VERSION
 }
 
-/// The app's own rewrite of the record `id` of `kind` for `version`, from the version `from` it
+/// The app's own rewrite of the record `scope` names for `version`, from the version `from` it
 /// stood at, by `migration` (its `#[resource(migrate = ..)]`): once, as one housekeeping change
 /// after the record's step to `version`, made by an actor and at a time derived from the record,
-/// the version and the heads it starts from, so two holders rewriting the same history make the
-/// same change. It is decided as any write of the record's. A rewrite rewrites by key and never
-/// inserts list elements, so two holders rewriting apart converge on one item each. Whether it
-/// changed anything.
+/// its workspace, the version and the heads it starts from, so two holders rewriting the same
+/// history make the same change. It is decided as any write of the record's. A rewrite rewrites by
+/// key and never inserts list elements, so two holders rewriting apart converge on one item each.
+/// Whether it changed anything.
 ///
 /// # Errors
 /// Returns the migration's error; `doc` is left as it was.
 pub fn rewrite(
-    (kind, id, version): (&str, &str, u32),
+    (scope, version): (crate::founding::Scope<'_>, u32),
     from: u32,
     migration: &dyn Fn(&mut Doc, u32) -> Result<(), ModelError>,
     doc: &mut Doc,
 ) -> Result<bool, ModelError> {
+    let crate::founding::Scope {
+        workspace,
+        kind,
+        id,
+    } = scope;
     let mut heads = doc.get_heads();
     heads.compact_sort();
     let mut on: Vec<String> = heads.iter().map(ToString::to_string).collect();
@@ -148,7 +157,10 @@ pub fn rewrite(
     let actor = crate::genesis::actor(
         id,
         kind,
-        &format!("rewrite to version {version} on {}", on.join(",")),
+        &format!(
+            "rewrite to version {version} on {} in {workspace}",
+            on.join(",")
+        ),
     );
     let mut migrated = doc.fork_at(&heads)?.with_actor(actor);
     if from < version {

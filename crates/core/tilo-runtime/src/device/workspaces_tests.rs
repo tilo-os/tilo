@@ -66,7 +66,7 @@ async fn found_front(workspaces: &Workspaces, workspace: &str, want: &str) {
     let person = tilo_actions::Acting::person(tilo_actions::PersonId::from_root(
         workspaces.device_cert().user_public_key,
     ));
-    let mut document = tilo_desktop_model::record::founded().expect("the layout founds");
+    let mut document = tilo_desktop_model::record::founded(workspace).expect("the layout founds");
     automerge::transaction::Transactable::put(&mut document, automerge::ROOT, "front", want)
         .unwrap();
     document.commit_with(

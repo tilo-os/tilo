@@ -386,7 +386,8 @@ impl Computer {
             workspaces: vec![shown],
             ..Layout::default()
         };
-        let mut layout = tilo_desktop_model::record::founded().expect("the layout founds");
+        let mut layout =
+            tilo_desktop_model::record::founded(&self.workspace).expect("the layout founds");
         tilo_desktop_model::desktop_doc::write_shared(
             &mut layout,
             &tree,

@@ -4,9 +4,14 @@
 //! sync (a person's vault opened on a phone and a laptop at once) would each make the containers
 //! its fields keep their items in, and the items one of them adds first would land in a
 //! container the merge leaves behind. So the containers come first, in one change every holder
-//! derives from the record's kind and id alone: an actor derived from them makes it at time zero.
-//! The store admits that change only as the one it derives itself ([`structure`]); the app's
-//! own first values follow as any change of its.
+//! derives from the record's workspace, kind and id alone ([`Scope`]): an actor derived from them
+//! makes it at time zero. The store admits that change only as the one it derives itself
+//! ([`structure`]); the app's own first values follow as any change of its.
+//!
+//! The workspace is part of every derivation. A record's id can be the same in every workspace
+//! (a workspace's own accounts record), and a change two workspaces both held would be one
+//! change in both: a host keeping both would refuse the second, and the hash would link records
+//! the workspaces keep apart.
 
 use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{AutoCommit, ObjType, ROOT};
@@ -14,6 +19,31 @@ use tilo_actions::surface::{FieldType, Surface};
 use tilo_automerge::ApplyIncoming as _;
 
 pub mod split;
+
+/// The record a founding and its steps are derived for: the record `id` of `kind` in the
+/// workspace `workspace`. A record is always one workspace's, so two workspaces holding a record
+/// of the same kind and id still derive changes of their own, and the holders within one derive
+/// the same.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Scope<'a> {
+    pub workspace: &'a str,
+    pub kind: &'a str,
+    pub id: &'a str,
+}
+
+impl Scope<'_> {
+    /// The actor the record's founding is made under ([`structure`]). It is salted apart from
+    /// the actor of the record's identity genesis, which is derived from the same id, kind and
+    /// workspace: two different changes under one actor and sequence number would not merge.
+    #[must_use]
+    pub fn founding_actor(self) -> automerge::ActorId {
+        crate::genesis::actor(
+            self.id,
+            self.kind,
+            &format!("founding in {}", self.workspace),
+        )
+    }
+}
 
 /// The containers at the root of `surface`'s record that its top-level fields keep their items
 /// in, by field name: a collection, map or set in a map, a list in a list, a record of its own
@@ -53,7 +83,7 @@ pub fn of_kind(surface: &Surface) -> Vec<(String, ObjType)> {
     if own { containers(surface) } else { Vec::new() }
 }
 
-/// The derived founding of the record `id` of `kind`, whose fields keep their items in the
+/// The derived founding of the record `scope` names, whose fields keep their items in the
 /// `containers` named at its root. A kind that keeps none founds with a change that holds nothing:
 /// every record has its founding as its first head, so a record nothing was written to yet is kept
 /// and read back like any other, and what follows the founding names it as its dependency.
@@ -61,11 +91,10 @@ pub fn of_kind(surface: &Surface) -> Vec<(String, ObjType)> {
 /// # Errors
 /// When a container cannot be put at the root under its field's name (an empty name).
 pub fn structure(
-    kind: &str,
-    id: &str,
+    scope: Scope<'_>,
     containers: &[(String, ObjType)],
 ) -> Result<automerge::Change, automerge::AutomergeError> {
-    let mut doc = AutoCommit::new().with_actor(crate::genesis::actor(id, kind, ""));
+    let mut doc = AutoCommit::new().with_actor(scope.founding_actor());
     for (field, container) in containers {
         doc.put_object(ROOT, field.as_str(), *container)?;
     }
@@ -83,7 +112,7 @@ pub fn structure(
         .ok_or(automerge::AutomergeError::MissingHash(hash))
 }
 
-/// The derived founding of the record `id` of `kind` ([`structure`]) followed by the steps that
+/// The derived founding of the record `scope` names ([`structure`]) followed by the steps that
 /// bring it to each version up to `version` ([`crate::evolution::step`]): the chain every
 /// holder of a record at `version` stands on. Each step follows the one before it, the first the
 /// founding, so two holders that wrote their own changes meanwhile still make it byte for byte
@@ -92,42 +121,40 @@ pub fn structure(
 /// # Errors
 /// When the founding or a step cannot be made ([`structure`]).
 pub fn chain(
-    kind: &str,
-    id: &str,
+    scope: Scope<'_>,
     version: u32,
     containers: &[(String, ObjType)],
 ) -> Result<Vec<automerge::Change>, automerge::AutomergeError> {
-    let founding = structure(kind, id, containers)?;
+    let founding = structure(scope, containers)?;
     let mut doc = AutoCommit::new();
     doc.apply_incoming([founding.clone()])?;
     let mut chain = vec![founding];
     for version in 1..=version {
-        let step = crate::evolution::step(kind, id, version, &doc)?;
+        let step = crate::evolution::step(scope, version, &doc)?;
         doc.apply_incoming([step.clone()])?;
         chain.push(step);
     }
     Ok(chain)
 }
 
-/// The step that brings the record `id` of `kind` to `version`, on the chain [`chain`] derives:
+/// The step that brings the record `scope` names to `version`, on the chain [`chain`] derives:
 /// the one change a store admits under the migration verb for that version, and the one every
 /// holder writes.
 ///
 /// # Errors
 /// When the chain cannot be made ([`chain`]), or `version` is no version a record steps to (0).
 pub fn migrate(
-    kind: &str,
-    id: &str,
+    scope: Scope<'_>,
     version: u32,
     containers: &[(String, ObjType)],
 ) -> Result<automerge::Change, automerge::AutomergeError> {
-    chain(kind, id, version, containers)?
+    chain(scope, version, containers)?
         .pop()
         .filter(|_| version > 0)
         .ok_or(automerge::AutomergeError::Fail)
 }
 
-/// Bring the record `id` of `kind`, the app `app`'s, to `version`, in the one way every holder
+/// Bring the record `scope` names, the app `app`'s, to `version`, in the one way every holder
 /// does: a record made before its founding was derived (two devices' own root containers) takes
 /// the founding and has what its devices made apart brought together
 /// ([`split::merge_split_containers`]); then the chain of steps up to `version`
@@ -139,15 +166,15 @@ pub fn migrate(
 /// When the founding, a step or the merge cannot be made, or the app's rewrite fails; `doc` is
 /// left with what was written before it.
 pub fn bring_up(
-    (kind, id, app): (&str, &str, &str),
+    (scope, app): (Scope<'_>, &str),
     version: u32,
     containers: &[(String, ObjType)],
     rewrite: &dyn Fn(&mut AutoCommit, u32) -> Result<(), crate::ModelError>,
     doc: &mut AutoCommit,
 ) -> Result<bool, crate::ModelError> {
     let from = crate::evolution::stored_version(doc);
-    let mut changed = found((kind, id, app), containers, doc)?;
-    let chain = chain(kind, id, version, containers)?;
+    let mut changed = found((scope, app), containers, doc)?;
+    let chain = chain(scope, version, containers)?;
     let missing: Vec<automerge::Change> = chain
         .into_iter()
         .filter(|link| doc.get_change_by_hash(&link.hash()).is_none())
@@ -155,12 +182,12 @@ pub fn bring_up(
     changed |= !missing.is_empty();
     doc.apply_incoming(missing)?;
     if from < version || crate::evolution::stored_version(doc) < version {
-        changed |= crate::evolution::rewrite((kind, id, version), from, rewrite, doc)?;
+        changed |= crate::evolution::rewrite((scope, version), from, rewrite, doc)?;
     }
     Ok(changed)
 }
 
-/// Give the record `id` of `kind`, the app `app`'s, its derived founding when it was made without
+/// Give the record `scope` names, the app `app`'s, its derived founding when it was made without
 /// one (two devices' own root containers, before every holder derived it), and bring together
 /// what its devices made apart ([`split::merge_split_containers`]): once, the first part
 /// of [`bring_up`], and all a store that reads no type's version does on opening a record.
@@ -169,30 +196,36 @@ pub fn bring_up(
 /// # Errors
 /// When the founding or the merge cannot be made.
 pub fn found(
-    (kind, id, app): (&str, &str, &str),
+    (scope, app): (Scope<'_>, &str),
     containers: &[(String, ObjType)],
     doc: &mut AutoCommit,
 ) -> Result<bool, automerge::AutomergeError> {
-    let founding = structure(kind, id, containers)?;
+    let founding = structure(scope, containers)?;
     if doc.get_change_by_hash(&founding.hash()).is_some() {
         return Ok(false);
     }
     doc.apply_incoming([founding])?;
-    split::merge_split_containers(doc, kind, id, containers, app)?;
+    split::merge_split_containers(doc, scope, containers, app)?;
     Ok(true)
 }
 
-/// [`bring_up`] of the record `id` of the resource type `R`, by the containers and version its
-/// surface declares and its own migration (`#[resource(migrate = ..)]`).
+/// [`bring_up`] of the record `id` of the resource type `R` in `workspace`, by the containers and
+/// version its surface declares and its own migration (`#[resource(migrate = ..)]`).
 ///
 /// # Errors
 /// As [`bring_up`].
 pub fn bring_up_resource<R: crate::Resource>(
+    workspace: &str,
     id: &str,
     doc: &mut AutoCommit,
 ) -> Result<bool, crate::ModelError> {
+    let scope = Scope {
+        workspace,
+        kind: R::KIND,
+        id,
+    };
     bring_up(
-        (R::KIND, id, R::APP_ID),
+        (scope, R::APP_ID),
         R::VERSION,
         &of_kind(&crate::surface::surface_of::<R>()),
         &|doc: &mut AutoCommit, from: u32| R::migrate(doc, from),
@@ -200,16 +233,24 @@ pub fn bring_up_resource<R: crate::Resource>(
     )
 }
 
-/// A new record `id` of `R`: its derived founding and the steps to `R`'s version ([`chain`]),
-/// then `R`'s first values, left uncommitted for the caller to commit under its own message.
-/// Its version comes from the chain alone, as every holder of the record derives it.
+/// A new record `id` of `R` in `workspace`: its derived founding and the steps to `R`'s version
+/// ([`chain`]), then `R`'s first values, left uncommitted for the caller to commit under its own
+/// message. Its version comes from the chain alone, as every holder of the record derives it.
 ///
 /// # Errors
 /// When the chain cannot be made, or `R`'s initializer fails.
-pub fn new_record<R: crate::Resource>(id: &str) -> Result<AutoCommit, crate::ModelError> {
+pub fn new_record<R: crate::Resource>(
+    workspace: &str,
+    id: &str,
+) -> Result<AutoCommit, crate::ModelError> {
     let mut doc = AutoCommit::new();
     let containers = of_kind(&crate::surface::surface_of::<R>());
-    doc.apply_incoming(chain(R::KIND, id, R::VERSION, &containers)?)?;
+    let scope = Scope {
+        workspace,
+        kind: R::KIND,
+        id,
+    };
+    doc.apply_incoming(chain(scope, R::VERSION, &containers)?)?;
     R::initialize(&mut doc)?;
     Ok(doc)
 }
@@ -218,14 +259,19 @@ pub fn new_record<R: crate::Resource>(id: &str) -> Result<AutoCommit, crate::Mod
 mod tests {
     #![allow(clippy::unwrap_used, reason = "tests")]
 
+    use crate::evolution::{VERSION_KEY, stored_version};
     use automerge::transaction::Transactable as _;
     use automerge::{AutoCommit, ObjType, ROOT, ReadDoc as _};
     use tilo_automerge::ApplyIncoming as _;
-    use crate::evolution::{VERSION_KEY, stored_version};
 
     const KIND: &str = "test.founding.chain";
     const ID: &str = "groceries";
     const APP: &str = "test.app";
+    const SCOPE: super::Scope<'static> = super::Scope {
+        workspace: "6f1c1b62-4f5e-4b8a-9b52-1f8a3f0f3a11",
+        kind: KIND,
+        id: ID,
+    };
 
     fn containers() -> Vec<(String, ObjType)> {
         vec![("items".to_owned(), ObjType::Map)]
@@ -235,7 +281,7 @@ mod tests {
     /// its items as that device's change.
     fn device(version: u32, actor: u8, key: &str, wrote: &str) -> AutoCommit {
         let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from([actor; 16]));
-        doc.apply_incoming(super::chain(KIND, ID, version, &containers()).unwrap())
+        doc.apply_incoming(super::chain(SCOPE, version, &containers()).unwrap())
             .unwrap();
         let (_, items) = doc.get(ROOT, "items").unwrap().unwrap();
         doc.put(&items, key, wrote).unwrap();
@@ -258,12 +304,8 @@ mod tests {
         let mut here = device(1, 1, "milk", "2 l");
         let mut there = device(1, 2, "eggs", "6");
         let (own_heads, peer_heads) = (here.get_heads(), there.get_heads());
-        assert!(
-            super::bring_up((KIND, ID, APP), 3, &containers(), &unchanged(), &mut here).unwrap()
-        );
-        assert!(
-            super::bring_up((KIND, ID, APP), 3, &containers(), &unchanged(), &mut there).unwrap()
-        );
+        assert!(super::bring_up((SCOPE, APP), 3, &containers(), &unchanged(), &mut here).unwrap());
+        assert!(super::bring_up((SCOPE, APP), 3, &containers(), &unchanged(), &mut there).unwrap());
         let bytes = |changes: Vec<automerge::Change>| -> Vec<Vec<u8>> {
             changes
                 .into_iter()
@@ -277,19 +319,11 @@ mod tests {
         assert_eq!(ours, theirs);
         assert_eq!(
             ours,
-            bytes(
-                super::chain(KIND, ID, 3, &containers())
-                    .unwrap()
-                    .split_off(2)
-            )
+            bytes(super::chain(SCOPE, 3, &containers()).unwrap().split_off(2))
         );
-        for (to, step) in (2..=3).zip(
-            super::chain(KIND, ID, 3, &containers())
-                .unwrap()
-                .split_off(2),
-        ) {
+        for (to, step) in (2..=3).zip(super::chain(SCOPE, 3, &containers()).unwrap().split_off(2)) {
             assert_eq!(
-                super::migrate(KIND, ID, to, &containers()).unwrap().hash(),
+                super::migrate(SCOPE, to, &containers()).unwrap().hash(),
                 step.hash()
             );
         }
@@ -297,9 +331,7 @@ mod tests {
         assert_eq!(stored_version(&here), 3);
         assert_eq!(items(&here), ["eggs", "milk"]);
         // Brought up already: nothing more.
-        assert!(
-            !super::bring_up((KIND, ID, APP), 3, &containers(), &unchanged(), &mut here).unwrap()
-        );
+        assert!(!super::bring_up((SCOPE, APP), 3, &containers(), &unchanged(), &mut here).unwrap());
     }
 
     #[test]
@@ -317,8 +349,8 @@ mod tests {
             doc.put(&tags, "default", "kept")?;
             Ok(())
         };
-        super::bring_up((KIND, ID, APP), 2, &containers(), &add_tags, &mut here).unwrap();
-        super::bring_up((KIND, ID, APP), 2, &containers(), &add_tags, &mut there).unwrap();
+        super::bring_up((SCOPE, APP), 2, &containers(), &add_tags, &mut here).unwrap();
+        super::bring_up((SCOPE, APP), 2, &containers(), &add_tags, &mut there).unwrap();
         tilo_automerge::ApplyIncoming::merge_incoming(&mut here, &mut there).unwrap();
         let (_, tags) = here.get(ROOT, "tags").unwrap().unwrap();
         assert_eq!(here.keys(&tags).collect::<Vec<_>>(), ["default"]);
@@ -340,23 +372,69 @@ mod tests {
         let mut there = made(2, "eggs");
         tilo_automerge::ApplyIncoming::merge_incoming(&mut here, &mut there).unwrap();
         let mut again = here.fork();
-        assert!(
-            super::bring_up((KIND, ID, APP), 2, &containers(), &unchanged(), &mut here).unwrap()
-        );
-        assert!(
-            super::bring_up((KIND, ID, APP), 2, &containers(), &unchanged(), &mut again).unwrap()
-        );
+        assert!(super::bring_up((SCOPE, APP), 2, &containers(), &unchanged(), &mut here).unwrap());
+        assert!(super::bring_up((SCOPE, APP), 2, &containers(), &unchanged(), &mut again).unwrap());
         // Every holder converts it alike.
         assert_eq!(here.get_heads(), again.get_heads());
-        let founding = super::structure(KIND, ID, &containers()).unwrap();
+        let founding = super::structure(SCOPE, &containers()).unwrap();
         assert!(here.get_change_by_hash(&founding.hash()).is_some());
         let mut held = items(&here);
         held.sort();
         assert_eq!(held, ["eggs", "milk"]);
         assert_eq!(stored_version(&here), 2);
         assert!(here.get(ROOT, VERSION_KEY).unwrap().is_some());
+        assert!(!super::bring_up((SCOPE, APP), 2, &containers(), &unchanged(), &mut here).unwrap());
+    }
+
+    #[test]
+    fn the_same_record_in_two_workspaces_shares_no_change() {
+        // A workspace's own records have the same id in every workspace; a host holding two
+        // workspaces keeps each one's apart, so neither the founding nor a step may be the same
+        // change in both.
+        let other = super::Scope {
+            workspace: "0b9d7a3e-2c41-4f6b-8e15-7a9c3d2e1f40",
+            ..SCOPE
+        };
+        let hashes = |scope| -> Vec<automerge::ChangeHash> {
+            super::chain(scope, 3, &containers())
+                .unwrap()
+                .iter()
+                .map(automerge::Change::hash)
+                .collect()
+        };
+        let (here, there) = (hashes(SCOPE), hashes(other));
+        assert_eq!(here.len(), 4);
+        assert!(here.iter().all(|hash| !there.contains(hash)));
+        assert_ne!(
+            super::structure(SCOPE, &containers()).unwrap().hash(),
+            super::structure(other, &containers()).unwrap().hash()
+        );
+        // Nor is its actor the one the record's identity genesis in its workspace is made under,
+        // which a record founded beside that genesis would hold two first changes of.
+        assert_ne!(
+            SCOPE.founding_actor(),
+            crate::genesis::actor(ID, KIND, SCOPE.workspace)
+        );
+        // Brought up from records each workspace's devices made apart, neither shares a change
+        // with the other either.
+        let mut here_doc = device(1, 1, "milk", "2 l");
+        let mut there_doc = AutoCommit::new().with_actor(automerge::ActorId::from([1; 16]));
+        there_doc
+            .apply_incoming(super::chain(other, 1, &containers()).unwrap())
+            .unwrap();
+        super::bring_up((SCOPE, APP), 3, &containers(), &unchanged(), &mut here_doc).unwrap();
+        super::bring_up((other, APP), 3, &containers(), &unchanged(), &mut there_doc).unwrap();
+        let held = |doc: &mut AutoCommit| -> Vec<automerge::ChangeHash> {
+            doc.get_changes(&[])
+                .iter()
+                .map(automerge::Change::hash)
+                .collect()
+        };
+        let there_held = held(&mut there_doc);
         assert!(
-            !super::bring_up((KIND, ID, APP), 2, &containers(), &unchanged(), &mut here).unwrap()
+            held(&mut here_doc)
+                .iter()
+                .all(|hash| !there_held.contains(hash))
         );
     }
 }

@@ -130,17 +130,25 @@ pub fn workspace_id(workspaces: &Workspaces) -> String {
     person_workspace_id(&workspaces.device_cert().user_public_key)
 }
 
-/// The document the record `record` of `R` starts as where this device's store holds none of it,
-/// as that store founds a record: the change every copy of the kind derives, the containers of
-/// `R`'s type in it and nothing else.
+/// The document the record `record` of `R` in `workspace` starts as where this device's store
+/// holds none of it, as that store founds a record: the change every copy of the kind derives in
+/// the workspace, the containers of `R`'s type in it and nothing else.
 ///
 /// # Errors
 /// The founding cannot be made, or the document refused it.
-pub fn founded<R: Resource>(record: &str) -> Result<automerge::AutoCommit, String> {
+pub fn founded<R: Resource>(
+    workspace: &str,
+    record: &str,
+) -> Result<automerge::AutoCommit, String> {
     use tilo_automerge::ApplyIncoming as _;
     let containers =
         collab_types::document::founding::of_kind(&tilo_resource::surface::surface_of::<R>());
-    let founding = collab_types::document::founding::structure(R::KIND, record, &containers)
+    let scope = collab_types::document::founding::Scope {
+        workspace,
+        kind: R::KIND,
+        id: record,
+    };
+    let founding = collab_types::document::founding::structure(scope, &containers)
         .map_err(|error| error.to_string())?;
     let mut doc = automerge::AutoCommit::new();
     doc.apply_incoming([founding])

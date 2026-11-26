@@ -1607,23 +1607,32 @@ mod tests {
         kept
     }
 
-    /// The founding every holder derives of the note `record`: its `items` list.
-    fn derived(record: &str) -> automerge::Change {
+    /// The founding every holder derives of the note `record` in `workspace`: its `items` list.
+    fn derived(workspace: &str, record: &str) -> automerge::Change {
         tilo_resource::founding::structure(
-            NOTE,
-            record,
+            tilo_resource::founding::Scope {
+                workspace,
+                kind: NOTE,
+                id: record,
+            },
             &[("items".to_owned(), automerge::ObjType::List)],
         )
         .expect("a note founds with its list")
     }
 
-    /// A device's first item of `record`, written on the derived founding as `writer` types it.
-    fn first_item(record: &str, writer: &str, item: &str, by: &Actor) -> Vec<u8> {
+    /// A device's first item of `record` in `workspace`, written on the derived founding as
+    /// `writer` types it.
+    fn first_item(
+        (workspace, record): (&str, &str),
+        writer: &str,
+        item: &str,
+        by: &Actor,
+    ) -> Vec<u8> {
         use automerge::ReadDoc as _;
         use tilo_automerge::ApplyIncoming as _;
         let mut note =
             automerge::AutoCommit::new().with_actor(automerge::ActorId::from(writer.as_bytes()));
-        note.apply_incoming([derived(record)]).unwrap();
+        note.apply_incoming([derived(workspace, record)]).unwrap();
         let (_, items) = note.get(automerge::ROOT, "items").unwrap().unwrap();
         note.insert(&items, 0, item).unwrap();
         commit(&mut note, &typed_by(by));
@@ -1639,8 +1648,8 @@ mod tests {
         let workspaces = host.workspaces();
         let me = caller_of(workspaces, &workspace).acting().by.clone();
 
-        let laptop = first_item("groceries", "laptop", "Milk", &me);
-        let phone = first_item("groceries", "phone", "Bread", &me);
+        let laptop = first_item((&workspace, "groceries"), "laptop", "Milk", &me);
+        let phone = first_item((&workspace, "groceries"), "phone", "Bread", &me);
         write(workspaces, &workspace, "groceries", laptop)
             .await
             .expect("the laptop founds the note");
@@ -1665,7 +1674,12 @@ mod tests {
         let founded_on = |writer: &str| {
             let mut tag = automerge::AutoCommit::new()
                 .with_actor(automerge::ActorId::from(writer.as_bytes()));
-            tag.apply_incoming([tilo_resource::founding::structure(TAG, "errands", &[]).unwrap()])
+            let scope = tilo_resource::founding::Scope {
+                workspace: &workspace,
+                kind: TAG,
+                id: "errands",
+            };
+            tag.apply_incoming([tilo_resource::founding::structure(scope, &[]).unwrap()])
                 .unwrap();
             tag
         };
@@ -1705,8 +1719,14 @@ mod tests {
         let (host, workspace) = kitchen(dir.path()).await;
         let workspaces = host.workspaces();
 
-        let mut forged = automerge::AutoCommit::new()
-            .with_actor(tilo_resource::genesis::actor("forged", NOTE, ""));
+        let mut forged = automerge::AutoCommit::new().with_actor(
+            tilo_resource::founding::Scope {
+                workspace: &workspace,
+                kind: NOTE,
+                id: "forged",
+            }
+            .founding_actor(),
+        );
         forged
             .put_object(automerge::ROOT, "items", automerge::ObjType::List)
             .unwrap();

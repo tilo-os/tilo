@@ -454,6 +454,14 @@ impl ResourceSet {
         self.open.get(id).and_then(|p| p.doc.as_ref())
     }
 
+    /// The workspace a record of this store is kept in, which its founding and steps are derived
+    /// within ([`tilo_resource::founding::Scope`]): the cluster its route names, or the store's
+    /// home where that names none (a person's records on a device that knows no person yet).
+    fn workspace(&self) -> String {
+        self.cluster()
+            .map_or_else(|_| self.home.clone(), |cluster| cluster.to_string())
+    }
+
     /// The cluster a record's route names: the workspace it is kept in, or the person's own
     /// workspace for a record kept in their own scope.
     fn cluster(&self) -> Result<uuid::Uuid, ResourceOpenError> {
@@ -582,12 +590,14 @@ impl ResourceSet {
             // that declares the kind, so every holder derives the same bytes.
             let app = collab_types::app_surface::app_of_kind(want.kind.as_str())
                 .unwrap_or_else(|| self.app_id.to_string());
-            tilo_resource::founding::found(
-                (want.kind.as_str(), want.id.route(), &app),
-                &founding,
-                doc,
-            )
-            .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
+            let workspace = self.workspace();
+            let scope = tilo_resource::founding::Scope {
+                workspace: &workspace,
+                kind: want.kind.as_str(),
+                id: want.id.route(),
+            };
+            tilo_resource::founding::found((scope, &app), &founding, doc)
+                .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
         }
         Ok(())
     }
@@ -604,6 +614,7 @@ impl ResourceSet {
         content_genesis(
             &mut doc,
             want,
+            &self.workspace(),
             founding
                 .as_ref()
                 .map(|(containers, version)| (containers.as_slice(), *version)),
@@ -1232,7 +1243,7 @@ impl ResourceReservation {
         seed: impl FnOnce(&mut AutoCommit) -> Result<(), String>,
         by: &tilo_action_policy::Acting,
     ) -> Result<(), ResourceOpenError> {
-        let (writer, founding) = {
+        let (writer, workspace, founding) = {
             let set = self.store.0.borrow();
             set.pending
                 .get(&self.checkout.id)
@@ -1240,6 +1251,7 @@ impl ResourceReservation {
                 .ok_or(ResourceOpenError::Busy)?;
             (
                 set.writer.clone(),
+                set.workspace(),
                 set.types.chain(self.checkout.kind.as_str()),
             )
         };
@@ -1247,6 +1259,7 @@ impl ResourceReservation {
         content_genesis(
             &mut doc,
             &self.checkout,
+            &workspace,
             founding
                 .as_ref()
                 .map(|(containers, version)| (containers.as_slice(), *version)),
@@ -1486,6 +1499,12 @@ impl ResourceStore {
     /// The workspace this store's records are opened in.
     pub fn home(&self) -> String {
         self.0.borrow().home.clone()
+    }
+
+    /// The workspace this store's records are kept in, which their foundings and steps are
+    /// derived within: the one their route names, the person's own for their own records.
+    pub fn workspace(&self) -> String {
+        self.0.borrow().workspace()
     }
 
     /// The resources this store holds open, and the chain of each part among them: the resources
@@ -1857,16 +1876,18 @@ impl ResourceStore {
         // bytes, whichever store opened it.
         let app =
             collab_types::app_surface::app_of_kind(kind).unwrap_or_else(|| set.app_id.to_string());
+        let workspace = set.workspace();
         for (id, parked) in &mut set.open {
             if parked.kind.as_str() != kind {
                 continue;
             }
             if let Some(doc) = parked.doc.as_mut() {
-                match tilo_resource::founding::found(
-                    (kind, id.route(), &app),
-                    &founding,
-                    doc,
-                ) {
+                let scope = tilo_resource::founding::Scope {
+                    workspace: &workspace,
+                    kind,
+                    id: id.route(),
+                };
+                match tilo_resource::founding::found((scope, &app), &founding, doc) {
                     Ok(changed) => merged |= changed,
                     Err(error) => {
                         tracing::warn!(record = %id, %error, "a record's split containers were not brought together");

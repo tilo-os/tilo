@@ -291,8 +291,12 @@ impl Records {
             return Ok(None);
         };
         let record = self.document_id(key)?;
-        if tilo_resource::founding::bring_up_resource::<Environment>(&record, &mut held.doc)
-            .map_err(|e| RecordError::Model(e.to_string()))?
+        if tilo_resource::founding::bring_up_resource::<Environment>(
+            &self.workspace,
+            &record,
+            &mut held.doc,
+        )
+        .map_err(|e| RecordError::Model(e.to_string()))?
         {
             self.write(key, &mut held.doc, Some(held.heads.as_slice()))?;
             held.heads = held.doc.get_heads();
@@ -385,21 +389,22 @@ impl Records {
         Ok(made)
     }
 
-    /// The record `key` as it is founded: the derived founding of its kind and id, which every
-    /// holder makes alike and the workspace admits only as that, then the record's initial
-    /// content as the person's own edit of the record they made, as an app's record is founded.
+    /// The record `key` as it is founded: the derived founding of its kind and id in this
+    /// workspace, which every holder makes alike and the workspace admits only as that, then the
+    /// record's initial content as the person's own edit of the record they made, as an app's
+    /// record is founded.
     fn founded(&self, key: &str) -> Result<Doc, RecordError> {
         let model = |e: &dyn std::fmt::Display| RecordError::Model(e.to_string());
         let record = self.document_id(key)?;
         let containers = tilo_resource::founding::of_kind(&Environment::surface());
         let mut doc = Doc::new();
-        let founding = tilo_resource::founding::chain(
-            Environment::KIND,
-            &record,
-            Environment::VERSION,
-            &containers,
-        )
-        .map_err(|e| model(&e))?;
+        let scope = tilo_resource::founding::Scope {
+            workspace: &self.workspace,
+            kind: Environment::KIND,
+            id: &record,
+        };
+        let founding = tilo_resource::founding::chain(scope, Environment::VERSION, &containers)
+            .map_err(|e| model(&e))?;
         tilo_automerge::ApplyIncoming::apply_incoming(&mut doc, founding).map_err(|e| model(&e))?;
         Environment::initialize(&mut doc).map_err(|e| model(&e))?;
         doc.commit_with(

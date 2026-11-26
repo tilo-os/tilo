@@ -23,7 +23,8 @@ pub fn linked_ui() -> *const () {
 /// its edits with this code, which the running code may not read.
 pub fn publish_root<A: ResourceApp>() -> i32 {
     let mut reader = None;
-    if let Ok(doc) = tilo_resource::founding::new_record::<A::Resource>("") {
+    // A record of no workspace's, made only for the view to read its first state.
+    if let Ok(doc) = tilo_resource::founding::new_record::<A::Resource>("", "") {
         on_doc(doc, &mut |doc| {
             reader = Reader::<A::Resource>::read(doc).ok();
         });

@@ -810,7 +810,7 @@ async fn open_tree(
     Option<tilo_fs::tree_sync::remote::Service>,
 )> {
     let Some(dir) = dir else {
-        let mount = MountAuthor::person(author, member(credentials.user_public_key()));
+        let mount = MountAuthor::person(workspace, author, member(credentials.user_public_key()));
         return Ok((
             None,
             Arc::new(Mutex::new(Namespace::new(mount)?)),

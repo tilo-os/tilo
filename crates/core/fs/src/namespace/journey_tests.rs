@@ -347,7 +347,9 @@ fn trees_founded_before_reaching_the_workspace_merge_with_one_founding() {
     for ns in [&mut laptop, &mut desktop] {
         let index = ns.save_document(0).unwrap();
         let mut doc = automerge::AutoCommit::load(&index).unwrap();
-        let founding = fs_protocol::tree::founding(&fs_protocol::tree::document_id()).unwrap();
+        let founding =
+            fs_protocol::tree::founding(MountAuthor::UNSHARED, &fs_protocol::tree::document_id())
+                .unwrap();
         assert_eq!(
             doc.get_changes(&[]).first().map(automerge::Change::hash),
             Some(founding.hash()),
@@ -357,7 +359,11 @@ fn trees_founded_before_reaching_the_workspace_merge_with_one_founding() {
     }
     let held = laptop.save_document(1).expect("the laptop holds its chunk");
     let mut doc = automerge::AutoCommit::load(&held).unwrap();
-    let founding = fs_protocol::tree::founding(&fs_protocol::tree::chunk_document_id(1)).unwrap();
+    let founding = fs_protocol::tree::founding(
+        MountAuthor::UNSHARED,
+        &fs_protocol::tree::chunk_document_id(1),
+    )
+    .unwrap();
     assert_eq!(
         doc.get_changes(&[]).first().map(automerge::Change::hash),
         Some(founding.hash()),
@@ -368,7 +374,7 @@ fn trees_founded_before_reaching_the_workspace_merge_with_one_founding() {
     // reached it founds the record as every copy does, so its placing is one change in the one
     // map the founding stands up.
     let mut empty = Namespace::new(mount("laptop")).unwrap();
-    let mut record = super::founding_document(1).expect("the chunk founds");
+    let mut record = super::founding_document(MountAuthor::UNSHARED, 1).expect("the chunk founds");
     let mut tree = fs_protocol::tree::Tree::of_document(&record.save()).unwrap();
     fs_protocol::tree::place(
         (&mut record, 1),
@@ -711,7 +717,12 @@ fn a_persons_mount_names_them_on_each_change_it_makes() {
             .map(|context| context.invoker.map(|invoker| invoker.acting))
             .collect()
     };
-    let mut ns = Namespace::new(MountAuthor::person("ada-laptop", person.clone())).unwrap();
+    let mut ns = Namespace::new(MountAuthor::person(
+        MountAuthor::UNSHARED,
+        "ada-laptop",
+        person.clone(),
+    ))
+    .unwrap();
     let ino = ns.create_file(ROOT_INO, "plan.md", None, 0, 1).unwrap();
     {
         let _acting = acting_as(Some(

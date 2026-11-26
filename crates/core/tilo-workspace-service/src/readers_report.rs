@@ -148,7 +148,7 @@ mod tests {
     /// A store that declares a draft whose type names its readers, holding two drafts of
     /// `ada` where every member reads them, as a workspace written before its type did.
     fn misplaced_drafts() -> Store {
-        let mut store = Store::new();
+        let mut store = Store::new("workspace");
         store
             .declare(Schema {
                 types: vec![Type {

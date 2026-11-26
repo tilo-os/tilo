@@ -242,6 +242,8 @@ impl Members {
         .unwrap();
         let saved = {
             // Settings names the owner as who added it, as every change names who made it.
+            // Opened as Settings opens it: brought up to this version first.
+            let doc = super::account_logins::brought_up(&self.workspace, doc).unwrap();
             let mut replica = Replica::<AccountList>::from_doc(doc)
                 .in_app(accounts::person::ACCOUNTS_OWNER, "Settings")
                 .as_invoker_acting(self.owner.acting_or_own(None));

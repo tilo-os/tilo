@@ -211,8 +211,11 @@ pub struct Written {
 pub type Source = Box<dyn FnMut(&str) -> Option<Vec<u8>> + Send>;
 
 /// The resource store. See the module docs.
-#[derive(Default)]
 pub struct Store {
+    /// The workspace whose resources this store keeps: what a record's derived founding and steps
+    /// are derived within ([`collab_types::document::founding::Scope`]), so a record of the same
+    /// kind and id in another workspace never shares a change with one here.
+    workspace: String,
     /// The documents in memory.
     docs: HashMap<String, Arc<Automerge>>,
     filled: HashMap<(String, String), Filled>,
@@ -292,18 +295,50 @@ pub struct Live {
 }
 
 impl Store {
+    /// An empty store of the resources of `workspace`.
     #[must_use]
-    pub fn new() -> Self {
-        Self::default()
+    pub fn new(workspace: impl Into<String>) -> Self {
+        Self {
+            workspace: workspace.into(),
+            docs: HashMap::new(),
+            filled: HashMap::new(),
+            index: Index::default(),
+            source: None,
+            watches: BTreeMap::new(),
+            changed: BTreeSet::new(),
+            schema: Schema::default(),
+            types_by: BTreeMap::new(),
+            rules: BTreeMap::new(),
+            reader: None,
+            drafting: None,
+            refused: HashMap::new(),
+            waiting: HashMap::new(),
+            removed: HashMap::new(),
+            removed_under: HashMap::new(),
+            nested_in: HashMap::new(),
+            groups: HashMap::new(),
+            made_from: HashMap::new(),
+            touches: std::sync::Arc::default(),
+            nested_at: HashMap::new(),
+            live: BTreeMap::new(),
+            live_revision: 0,
+        }
     }
 
-    /// A store that reads each document it does not hold in memory from `source`.
+    /// A store of the resources of `workspace` that reads each document it does not hold in
+    /// memory from `source`.
     #[must_use]
-    pub fn with_source(source: Source) -> Self {
+    pub fn with_source(workspace: impl Into<String>, source: Source) -> Self {
         Self {
             source: Some(source),
-            ..Self::default()
+            ..Self::new(workspace)
         }
+    }
+
+    /// The workspace whose resources this store keeps.
+    #[must_use]
+    pub fn workspace(&self) -> &str {
+        &self.workspace
     }
 
     /// Who reads a record this store places, as the workspace's one read decision answers. The
@@ -354,7 +389,7 @@ impl Store {
             reader: self.reader.clone(),
             drafting: self.drafting.clone(),
             touches: std::sync::Arc::clone(&self.touches),
-            ..Self::default()
+            ..Self::new(self.workspace.clone())
         };
         let result = command(&mut staged);
         self.source = staged.source.take();
@@ -1394,7 +1429,8 @@ impl Store {
         self.rules.contains_key(kind)
     }
 
-    /// The changes every holder makes alike to found the content of the resource `id` of `kind`:
+    /// The changes every holder makes alike to found the content of the resource `id` of `kind`
+    /// in this store's workspace:
     /// the founding of the containers its type declares ([`collab_types::document::founding`]),
     /// none for a kind that declares none, and the steps to the version its type stands at
     /// ([`collab_types::document::founding::chain`]). `None` for a kind this store declares no
@@ -1409,7 +1445,13 @@ impl Store {
     ) -> Result<Option<Vec<AmChange>>, automerge::AutomergeError> {
         self.schema
             .get(kind)
-            .map(|ty| collab_types::document::founding::chain(kind, id, ty.version, &ty.founding))
+            .map(|ty| {
+                collab_types::document::founding::chain(
+                    self.scope(kind, id),
+                    ty.version,
+                    &ty.founding,
+                )
+            })
             .transpose()
     }
 
@@ -2519,8 +2561,22 @@ impl Store {
         Ok(())
     }
 
+    /// The record `id` of `kind` in this store's workspace, as its founding and steps are derived.
+    fn scope<'a>(
+        &'a self,
+        kind: &'a str,
+        id: &'a str,
+    ) -> collab_types::document::founding::Scope<'a> {
+        collab_types::document::founding::Scope {
+            workspace: &self.workspace,
+            kind,
+            id,
+        }
+    }
+
     /// Whether `received`, a founding of the record `id` of `kind`, is the one its kind and id
-    /// derive: the one every holder makes alike, and the only founding admitted.
+    /// derive in this store's workspace: the one every holder makes alike, and the only founding
+    /// admitted.
     fn judge_founding(
         &self,
         schema: Option<&Schema>,
@@ -2530,7 +2586,9 @@ impl Store {
         let derived = std::iter::once(&self.schema)
             .chain(schema)
             .find_map(|schema| schema.get(kind))
-            .map(|ty| collab_types::document::founding::structure(kind, id, &ty.founding))
+            .map(|ty| {
+                collab_types::document::founding::structure(self.scope(kind, id), &ty.founding)
+            })
             .transpose()
             .map_err(|error| {
                 Refusal::Undeclared(format!(
@@ -2546,9 +2604,10 @@ impl Store {
         }
     }
 
-    /// Whether `received`, a migration of the record `id` of `kind` that `named` reads, is the
-    /// step its kind and id derive to a version its type stands at, admitted whole: `false` for
-    /// the app's rewrite of its content for a version, decided as any write of the record's.
+    /// Whether `received`, a migration of the record `id` of `kind` that `named` reads, is the step
+    /// its kind and id derive in this store's workspace to a version its type stands at, admitted
+    /// whole: `false` for the app's rewrite of its content for a version, decided as any write of
+    /// the record's.
     fn judge_migration(
         &self,
         schema: Option<&Schema>,
@@ -2569,7 +2628,9 @@ impl Store {
             return Ok(false);
         }
         let derived = ty
-            .map(|ty| collab_types::document::founding::migrate(kind, id, to, &ty.founding))
+            .map(|ty| {
+                collab_types::document::founding::migrate(self.scope(kind, id), to, &ty.founding)
+            })
             .transpose()
             .map_err(|error| {
                 Refusal::Undeclared(format!(

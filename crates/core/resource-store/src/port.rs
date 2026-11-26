@@ -60,12 +60,16 @@ impl Default for LocalPort {
 }
 
 impl LocalPort {
+    /// The workspace a local store keeps its resources in: none of a real workspace's, since what
+    /// it keeps is this process's alone.
+    pub const WORKSPACE: &str = "local";
+
     /// A store kept in memory only.
     #[must_use]
     pub fn in_memory() -> Self {
         Self {
             app: String::new(),
-            store: RefCell::new(Store::new()),
+            store: RefCell::new(Store::new(Self::WORKSPACE)),
             documents: RefCell::default(),
             runs: RefCell::default(),
             dir: None,
@@ -86,7 +90,7 @@ impl LocalPort {
     /// When `dir` cannot be made or read, or holds a document that does not read.
     pub fn at(dir: PathBuf) -> Result<Self, String> {
         std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
-        let mut store = Store::new();
+        let mut store = Store::new(Self::WORKSPACE);
         let entries = std::fs::read_dir(&dir).map_err(|error| error.to_string())?;
         for entry in entries {
             let entry = entry.map_err(|error| error.to_string())?;

@@ -16,7 +16,7 @@ pub(crate) struct Workspace {
 impl Workspace {
     pub(crate) fn new() -> Self {
         Self {
-            store: RefCell::new(tilo_resource_store::Store::new()),
+            store: RefCell::new(tilo_resource_store::Store::new("person")),
             reader: Cell::new(PERSON),
             refuse: Cell::new(false),
         }

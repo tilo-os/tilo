@@ -108,14 +108,23 @@ fn declaring<const N: usize>(
     }
 }
 
-/// The change that founds `record`, a workspace's shared desktop, every copy of it alike: the
-/// maps its entries are kept in, and nothing else.
+/// The change that founds `record`, `workspace`'s shared desktop, every copy of it alike: the
+/// maps its entries are kept in, and nothing else. Another workspace's desktop is founded by a
+/// change of its own, so the two never share one.
 ///
 /// # Errors
 /// A container cannot be made.
-pub fn founding(record: &str) -> Result<automerge::Change, automerge::AutomergeError> {
+pub fn founding(
+    workspace: &str,
+    record: &str,
+) -> Result<automerge::Change, automerge::AutomergeError> {
     let containers = collab_types::document::founding::of_kind(&layout());
-    collab_types::document::founding::structure(DESKTOP_KIND, record, &containers)
+    let scope = collab_types::document::founding::Scope {
+        workspace,
+        kind: DESKTOP_KIND,
+        id: record,
+    };
+    collab_types::document::founding::structure(scope, &containers)
 }
 
 /// A document of `workspace`'s shared desktop, founded with the change every copy of it
@@ -124,20 +133,20 @@ pub fn founding(record: &str) -> Result<automerge::Change, automerge::AutomergeE
 ///
 /// # Errors
 /// The founding cannot be made, or the document refused it.
-pub fn founded() -> Result<AutoCommit, String> {
+pub fn founded(workspace: &str) -> Result<AutoCommit, String> {
     let mut doc = AutoCommit::new();
-    found_into(&mut doc)?;
+    found_into(workspace, &mut doc)?;
     Ok(doc)
 }
 
-/// Found `doc` with the change every copy of the record derives: the maps its entries are kept
-/// in.
+/// Found `doc`, `workspace`'s shared desktop, with the change every copy of the record derives:
+/// the maps its entries are kept in.
 ///
 /// # Errors
 /// The founding cannot be made, or the document refused it.
-pub fn found_into(doc: &mut AutoCommit) -> Result<(), String> {
+pub fn found_into(workspace: &str, doc: &mut AutoCommit) -> Result<(), String> {
     use tilo_automerge::ApplyIncoming as _;
-    let founding = founding(DESKTOP_DOCUMENT).map_err(|error| error.to_string())?;
+    let founding = founding(workspace, DESKTOP_DOCUMENT).map_err(|error| error.to_string())?;
     doc.apply_incoming([founding])
         .map_err(|error| error.to_string())
 }
@@ -146,13 +155,21 @@ pub fn found_into(doc: &mut AutoCommit) -> Result<(), String> {
 mod tests {
     use super::*;
 
+    const WORKSPACE: &str = "workspace";
+
     /// Two devices starting a workspace's desktop from the same founding write one record: the
     /// change each derives is the same, so what either puts in a container the other keeps.
     #[test]
     fn every_copy_derives_the_one_founding() {
-        let ours = founding(DESKTOP_DOCUMENT).expect("a desktop founds");
-        let theirs = founding(DESKTOP_DOCUMENT).expect("a desktop founds");
+        let ours = founding(WORKSPACE, DESKTOP_DOCUMENT).expect("a desktop founds");
+        let theirs = founding(WORKSPACE, DESKTOP_DOCUMENT).expect("a desktop founds");
         assert_eq!(ours.hash(), theirs.hash());
+        let elsewhere = founding("another", DESKTOP_DOCUMENT).expect("a desktop founds");
+        assert_ne!(
+            ours.hash(),
+            elsewhere.hash(),
+            "another workspace's desktop is founded by a change of its own"
+        );
         let containers: Vec<String> = collab_types::document::founding::of_kind(&layout())
             .into_iter()
             .map(|(name, _)| name)

@@ -329,8 +329,9 @@ fn read_part<P: Chained>(
         if !store.takes_writes() {
             return Err("the part is migrated once the store takes writes".into());
         }
+        let workspace = store.workspace();
         store.migrate(part, |doc| {
-            tilo_resource::founding::bring_up_resource::<P>(part.route(), doc)
+            tilo_resource::founding::bring_up_resource::<P>(&workspace, part.route(), doc)
                 .map_err(|error| error.to_string())
         })?;
     }

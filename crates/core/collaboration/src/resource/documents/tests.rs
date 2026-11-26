@@ -270,8 +270,11 @@ tilo_test_env::scenario! {
         // Who the record is is the store's: the document holds the one founding its route
         // derives, and the steps after it, which both members made alike.
         let chain = tilo_resource::founding::chain(
-            "notebook",
-            checkout.id.route(),
+            tilo_resource::founding::Scope {
+                workspace: "workspace-a",
+                kind: "notebook",
+                id: checkout.id.route(),
+            },
             1,
             &[
                 ("pages".to_owned(), ObjType::Map),

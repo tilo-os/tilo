@@ -402,10 +402,13 @@ impl KeptDocuments {
         // What was written is read back and compared with the tree, for isolating a save that
         // claims a generation it did not write.
         if std::env::var_os("TILO_FS_KEEP_VERIFY").is_some() {
-            let live = namespace.lock_recover().document_heads();
+            let (live, mount) = {
+                let mut namespace = namespace.lock_recover();
+                (namespace.document_heads(), namespace.mount())
+            };
             match KeptDocuments::open(&self.dir)
                 .and_then(|(_, documents)| {
-                    Namespace::from_documents_read("verify", documents).map_err(io::Error::other)
+                    Namespace::from_documents_read(mount, documents).map_err(io::Error::other)
                 })
                 .map(|(mut reopened, _)| reopened.document_heads())
             {

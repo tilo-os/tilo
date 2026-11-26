@@ -60,5 +60,10 @@ pub mod verbs;
 /// `doc`, a record of `R`, brought up to `R`'s version as every holder brings it up
 /// ([`tilo_resource::founding::bring_up_resource`]).
 pub fn bring_up<R: tilo_resource::Resource>(doc: &mut tilo_resource::Doc) -> bool {
-    tilo_resource::founding::bring_up_resource::<R>(tilo_resource::Replica::<R>::ID, doc).unwrap()
+    tilo_resource::founding::bring_up_resource::<R>(
+        tilo_resource::Replica::<R>::WORKSPACE,
+        tilo_resource::Replica::<R>::ID,
+        doc,
+    )
+    .unwrap()
 }

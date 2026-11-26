@@ -230,9 +230,10 @@ impl Resources {
             .join(STORE);
         let docs = root.join(DOCS);
         let reading = docs.clone();
-        let mut store = Store::with_source(Box::new(move |doc| {
-            fs::read(reading.join(file_name(doc))).ok()
-        }));
+        let mut store = Store::with_source(
+            id.to_string(),
+            Box::new(move |doc| fs::read(reading.join(file_name(doc))).ok()),
+        );
         let mut used = BTreeMap::new();
         let mut unsnapshotted = BTreeSet::new();
         // What the store kept of each document is read side by side, and each document is
@@ -2118,8 +2119,7 @@ fn workspace_members(
     bots.sort_unstable();
     bots.dedup();
     for bot in bots {
-        let who =
-            tilo_actions::Actor::Member(tilo_action_policy::MemberId::Bot(bot.clone()));
+        let who = tilo_actions::Actor::Member(tilo_action_policy::MemberId::Bot(bot.clone()));
         rows.push(serde_json::json!({
             "actor": serde_json::to_value(&who).map_err(|error| error.to_string())?,
             "name": bot,

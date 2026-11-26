@@ -16,19 +16,18 @@ use tilo_automerge::ApplyIncoming;
 /// hidden copy does, an element naming an `id` held once by it.
 ///
 /// The change is the same on every device that holds the same history: made at time zero by an
-/// actor derived from the record (`kind`, `id`), the containers it brings together and the heads
-/// it is made on, which are its only dependencies, and named as the app `app`'s own edit of its
-/// record, the same everywhere. Two devices doing it at once from one history
-/// make one change, which a merge keeps once; two doing it from different histories make two, of
-/// which a list keeps an element naming an `id` once all the same. Opened again, a record brought
-/// together is not changed. Whether this changed anything.
+/// actor derived from the record (`scope`: its workspace, kind and id), the containers it brings
+/// together and the heads it is made on, which are its only dependencies, and named as the app
+/// `app`'s own edit of its record, the same everywhere. Two devices doing it at once from one
+/// history make one change, which a merge keeps once; two doing it from different histories make
+/// two, of which a list keeps an element naming an `id` once all the same. Opened again, a record
+/// brought together is not changed. Whether this changed anything.
 ///
 /// # Errors
 /// The record could not be written.
 pub fn merge_split_containers(
     doc: &mut AutoCommit,
-    kind: &str,
-    id: &str,
+    scope: super::Scope<'_>,
     founding: &[(String, ObjType)],
     app: &str,
 ) -> Result<bool, automerge::AutomergeError> {
@@ -61,13 +60,10 @@ pub fn merge_split_containers(
     named.sort();
     let mut on: Vec<String> = heads.iter().map(ToString::to_string).collect();
     on.sort();
-    let actor = crate::genesis::actor(
-        id,
-        kind,
-        &format!("merge {} on {}", named.join(","), on.join(",")),
-    );
+    let (named, on) = (named.join(","), on.join(","));
+    let salt = format!("merge {named} on {on} in {}", scope.workspace);
     let mut merging = doc.fork();
-    merging.set_actor(actor);
+    merging.set_actor(crate::genesis::actor(scope.id, scope.kind, &salt));
     for (container, shown, hidden) in &split {
         for stray in hidden {
             match container {

@@ -27,7 +27,6 @@ pub type Routed = Rc<RefCell<Vec<(RouteSpec, CollabRequest)>>>;
 
 /// A workspace's store, as the broker answers the resource commands of every connection joined
 /// there: one of it per workspace, held in memory, with its app's whole documents beside it.
-#[derive(Default)]
 pub struct Workspace {
     store: RefCell<Store>,
     /// The once-only actions a connection ran and kept done, by address and inputs.
@@ -42,11 +41,28 @@ pub struct Workspace {
     declared: std::cell::Cell<Option<u64>>,
 }
 
+impl Default for Workspace {
+    fn default() -> Self {
+        Self {
+            store: RefCell::new(Store::new(Self::ID)),
+            done: RefCell::default(),
+            written: RefCell::default(),
+            documents: tilo_resource_store::LocalPort::default(),
+            members: RefCell::default(),
+            declared: std::cell::Cell::default(),
+        }
+    }
+}
+
 /// Who a write of the test's store is made by, as the workspace takes a write from a device that
 /// named no author of its own: one author for every write the test's workspace takes.
 const AUTHOR: [u8; 32] = [7; 32];
 
 impl Workspace {
+    /// The workspace the test's store keeps the resources of, which their foundings are derived
+    /// within.
+    pub const ID: &str = "workspace";
+
     /// Carries `command` out, as the workspace's store does for a connection of the person
     /// `reader`: a read answers only what that person reads.
     ///

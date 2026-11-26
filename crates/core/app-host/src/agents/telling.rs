@@ -323,7 +323,7 @@ async fn agents_of(workspaces: &Workspaces, workspace: &str) -> Option<Vec<Agent
         .await
         .ok()??;
     let mut doc = automerge::AutoCommit::load(&bytes).ok()?;
-    let agents = crate::agents::opened::<WorkspaceAgents>(&record, &mut doc).ok()?;
+    let agents = crate::agents::opened::<WorkspaceAgents>((workspace, &record), &mut doc).ok()?;
     Some(agents.agents.iter().cloned().collect())
 }
 

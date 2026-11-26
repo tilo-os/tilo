@@ -31,8 +31,9 @@ impl Workspaces {
     pub fn new() -> Arc<Self> {
         let surface = collab_types::surface::SurfaceFile::from_json(surface_json())
             .expect("the settings' surface reads");
-        let store = || {
-            let mut store = Store::new();
+        // Each holder is a workspace of its own, as the workspace service keeps them.
+        let store = |workspace: &str| {
+            let mut store = Store::new(workspace);
             for resource in &surface.resources {
                 store
                     .declare(Schema::from_surface(resource))
@@ -42,8 +43,8 @@ impl Workspaces {
         };
         Arc::new(Self {
             stores: Mutex::new(BTreeMap::from([
-                (Holder::Person, store()),
-                (Holder::Device, store()),
+                (Holder::Person, store("person")),
+                (Holder::Device, store("device")),
             ])),
             woken: AtomicUsize::new(0),
         })

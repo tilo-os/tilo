@@ -256,14 +256,23 @@ pub fn declared() -> tilo_resource::surface::Surface {
     surface
 }
 
-/// The change that founds `record` of a workspace's tree, every copy of it alike: the maps the
-/// tree's own record and each chunk keep their content in, and nothing else.
+/// The change that founds `record` of `workspace`'s tree, every copy of it alike: the maps the
+/// tree's own record and each chunk keep their content in, and nothing else. Another
+/// workspace's tree is founded by a change of its own, so the two never share one.
 ///
 /// # Errors
 /// A container cannot be made.
-pub fn founding(record: &str) -> Result<automerge::Change, automerge::AutomergeError> {
+pub fn founding(
+    workspace: &str,
+    record: &str,
+) -> Result<automerge::Change, automerge::AutomergeError> {
     let containers = collab_types::document::founding::of_kind(&declared());
-    collab_types::document::founding::structure(TREE_KIND, record, &containers)
+    let scope = collab_types::document::founding::Scope {
+        workspace,
+        kind: TREE_KIND,
+        id: record,
+    };
+    collab_types::document::founding::structure(scope, &containers)
 }
 pub const ROOT_ID: &str = "ROOT";
 /// The parent a deleted node is moved under, so that a concurrent child of it

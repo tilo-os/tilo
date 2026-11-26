@@ -16,6 +16,8 @@ use tilo_actions::ActionKind;
 use tilo_resource_store::{Change, Commit, CommitHook as _, FieldKind, Index, Schema};
 
 const ISSUE: &str = "Issue";
+/// The workspace every store a test makes keeps the resources of.
+const WORKSPACE: &str = "5d2e7c1a-9b3f-4e8d-a6c4-1f0b2e3d4c5a";
 
 fn issue(id: &str, parent: &str, order: &str, title: &str, state: &str, points: i64) -> Change {
     let mut fields = BTreeMap::new();
@@ -781,7 +783,7 @@ fn a_surface_declares_types_their_indexed_fields_and_what_nests_in_them() {
 // app declares.
 #[test]
 fn a_store_keeps_what_each_app_declares_its_actions_as() {
-    let mut store = tilo_resource_store::Store::new();
+    let mut store = tilo_resource_store::Store::new(crate::WORKSPACE);
     store
         .declare(Schema::of_app("so.tilo.tasks", &tracker_surface()))
         .unwrap();
@@ -844,7 +846,7 @@ fn a_type_version_only_adds_fields_and_containers() {
             .declare(Schema::from_surface(surface))
             .expect_err("a version that does not only add is refused")
     };
-    let mut store = tilo_resource_store::Store::new();
+    let mut store = tilo_resource_store::Store::new(crate::WORKSPACE);
     store
         .declare(Schema::from_surface(&tracker_surface()))
         .expect("the first version is declared");
@@ -1159,7 +1161,7 @@ mod store {
             value: tilo_resource_store::Expected::Any,
             optional: true,
         };
-        let mut store = Store::new();
+        let mut store = Store::new(crate::WORKSPACE);
         store
             .declare(Schema {
                 types: vec![tilo_resource_store::Type {
@@ -1336,7 +1338,7 @@ mod store {
     #[test]
     fn a_resource_is_live_while_its_types_condition_holds_and_read_as_its_document_is() {
         use tilo_resource_store::{Expected, Field, Type};
-        let mut store = Store::new();
+        let mut store = Store::new(crate::WORKSPACE);
         store
             .declare(Schema {
                 types: vec![Type {
@@ -2898,7 +2900,7 @@ mod store {
     fn a_granted_verb_writes_no_kind_its_surface_does_not() {
         use tilo_resource_store::{Verb, Writes};
         let anyone = |_: &Proposal<'_>| true;
-        let mut holder = Store::new();
+        let mut holder = Store::new(crate::WORKSPACE);
         holder
             .declare(Schema {
                 kind: String::new(),
@@ -2967,9 +2969,9 @@ mod store {
     #[test]
     fn a_store_that_declares_no_type_admits_no_change() {
         use tilo_resource_store::Refusal;
-        let mut there = Store::new();
+        let mut there = Store::new(crate::WORKSPACE);
         let anyone = |_: &Proposal<'_>| true;
-        let made = Store::new()
+        let made = Store::new(crate::WORKSPACE)
             .put(
                 "tl.so.tilo.lang.gallery.Gallery",
                 "g",
@@ -3252,7 +3254,7 @@ mod store {
         // declaring it would publish. The kind an origin keeps is declared as its own.
         let mut origin_kind = record_type(ISSUE);
         origin_kind.origin = Some("imap.issue".to_owned());
-        let mut there = Store::new();
+        let mut there = Store::new(crate::WORKSPACE);
         there
             .declare(Schema {
                 types: vec![origin_kind, record_type("gallery.Item")],
@@ -3331,6 +3333,50 @@ mod store {
         ));
     }
 
+    /// A record's founding is derived within the store's workspace: the same record's founding
+    /// in another workspace, made alike by every holder there, is no founding of this one's, so
+    /// two workspaces never hold one change.
+    #[test]
+    fn a_founding_derived_in_another_workspace_is_refused() {
+        use collab_types::document::founding::{Scope, structure};
+        use tilo_resource_store::{MOVE_VERB, Refusal, content_id};
+        let schema = Schema::from_surface(&super::tracker_surface());
+        let containers = schema.get("Comment").unwrap().founding.clone();
+        let mut there = issues();
+        there.declare(schema).unwrap();
+        let anyone = |_: &Proposal<'_>| true;
+        let empty = Resource {
+            readers: MEMBERS.to_owned(),
+            parent: None,
+            order: None,
+            fields: BTreeMap::new(),
+        };
+        let placed = issues()
+            .put("Comment", "c1", empty, &stamp(MOVE_VERB, "i1"))
+            .unwrap();
+        send(&placed, &mut there);
+        let founded_in = |workspace| {
+            let scope = Scope {
+                workspace,
+                kind: "Comment",
+                id: "c1",
+            };
+            vec![Written {
+                doc: content_id(MEMBERS, "Comment", "c1"),
+                readers: MEMBERS.to_owned(),
+                change: structure(scope, &containers).unwrap(),
+            }]
+        };
+        assert!(matches!(
+            deliver(&founded_in("another-workspace"), &mut there, &anyone).as_slice(),
+            [Refusal::Undeclared(why)] if why.contains("not the one its kind derives")
+        ));
+        assert_eq!(
+            deliver(&founded_in(crate::WORKSPACE), &mut there, &anyone),
+            []
+        );
+    }
+
     /// A record's step to a storage version names the store's migration verb, which no app
     /// declares: any member's copy of it is admitted only when it is the step its kind and id
     /// derive for that version, up to the version its type stands at. The app's rewrite of its
@@ -3342,6 +3388,11 @@ mod store {
         use tilo_resource_store::{MOVE_VERB, Refusal, content_id};
         let schema = Schema::from_surface(&super::tracker_surface());
         let containers = schema.get("Comment").unwrap().founding.clone();
+        let comment = collab_types::document::founding::Scope {
+            workspace: crate::WORKSPACE,
+            kind: "Comment",
+            id: "c1",
+        };
         let mut there = issues();
         there.declare(schema).unwrap();
         let anyone = |_: &Proposal<'_>| true;
@@ -3365,12 +3416,11 @@ mod store {
             readers: MEMBERS.to_owned(),
             change,
         };
-        let chain =
-            collab_types::document::founding::chain("Comment", "c1", 1, &containers).unwrap();
+        let chain = collab_types::document::founding::chain(comment, 1, &containers).unwrap();
         let [founding, step] = <[automerge::Change; 2]>::try_from(chain.clone()).unwrap();
         assert_eq!(
             step.hash(),
-            collab_types::document::founding::migrate("Comment", "c1", 1, &containers)
+            collab_types::document::founding::migrate(comment, 1, &containers)
                 .unwrap()
                 .hash()
         );
@@ -3396,8 +3446,7 @@ mod store {
             [Refusal::Undeclared(why)] if why.contains("not the one its kind derives")
         ));
         // A step to a version the type does not stand at is refused.
-        let beyond =
-            collab_types::document::founding::migrate("Comment", "c1", 2, &containers).unwrap();
+        let beyond = collab_types::document::founding::migrate(comment, 2, &containers).unwrap();
         assert!(matches!(
             deliver(&[content(beyond)], &mut there, &anyone).as_slice(),
             [Refusal::Undeclared(why)] if why.contains("no storage version")
@@ -3714,8 +3763,12 @@ mod store {
             types: vec![ty(ISSUE), ty("Comment")],
             ..Schema::default()
         };
-        let mut here = Store::new();
-        let mut holders = [Store::new(), Store::new(), Store::new()];
+        let mut here = Store::new(crate::WORKSPACE);
+        let mut holders = [
+            Store::new(crate::WORKSPACE),
+            Store::new(crate::WORKSPACE),
+            Store::new(crate::WORKSPACE),
+        ];
         let made = put(&mut here, "a", resource("board", "a0", "Draft", "open"));
         for holder in &mut holders {
             holder.declare(schema.clone()).unwrap();
@@ -3805,8 +3858,12 @@ mod store {
             ],
             readers: BTreeMap::new(),
         };
-        let mut here = Store::new();
-        let mut holders = [Store::new(), Store::new(), Store::new()];
+        let mut here = Store::new(crate::WORKSPACE);
+        let mut holders = [
+            Store::new(crate::WORKSPACE),
+            Store::new(crate::WORKSPACE),
+            Store::new(crate::WORKSPACE),
+        ];
         let made = put(&mut here, "a", resource("board", "a0", "Draft", "open"));
         for holder in &mut holders {
             // The record's first write names no verb: it is taken by the types alone, and the
@@ -4000,7 +4057,8 @@ mod store {
         let heads = kept.index().heads(&doc).unwrap().to_vec();
 
         let saved = bytes.clone();
-        let mut started = Store::with_source(Box::new(move |_| Some(saved.clone())));
+        let mut started =
+            Store::with_source(crate::WORKSPACE, Box::new(move |_| Some(saved.clone())));
         assert!(started.restore(&doc, &snapshot, &heads));
         assert_eq!(started.in_memory(), 0, "the document is not read to start");
         let open = Query::of(ISSUE, 10).filter(Filter::Is("state".into(), "open".into()));
@@ -4027,7 +4085,8 @@ mod store {
         assert_eq!(store.in_memory(), 0);
         assert_eq!(store.count(ISSUE, &[], &anyone), 3);
 
-        let mut sourced = Store::with_source(Box::new(move |_| Some(saved.clone())));
+        let mut sourced =
+            Store::with_source(crate::WORKSPACE, Box::new(move |_| Some(saved.clone())));
         let (_, doc, bytes) = kept();
         sourced.load(&doc, &bytes).unwrap();
         sourced.evict(&doc);
@@ -4078,7 +4137,7 @@ mod store {
         const CHANNEL: &str = "Channel";
         const REPORT: &str = "Report";
         const NOTE: &str = "Note";
-        let mut store = Store::new();
+        let mut store = Store::new(crate::WORKSPACE);
         store
             .declare(Schema {
                 readers: BTreeMap::from([(
@@ -4218,7 +4277,7 @@ mod store {
             origin: None,
             version: 1,
         };
-        let mut store = Store::new();
+        let mut store = Store::new(crate::WORKSPACE);
         store
             .declare(Schema {
                 types: vec![ty(MAILBOX), ty(DRAFT)],
@@ -4748,7 +4807,7 @@ mod outside_effects {
     }
 
     fn store(schema: Schema) -> Store {
-        let mut store = Store::new();
+        let mut store = Store::new(crate::WORKSPACE);
         store.declare(schema).unwrap();
         store
     }

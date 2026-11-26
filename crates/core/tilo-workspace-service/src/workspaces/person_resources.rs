@@ -137,7 +137,10 @@ impl PersonResources {
             Box::pin(async move {
                 let cert = store.certificate();
                 let (app, name) = resource;
-                let genesis = Box::new(person_workspace::founded::<R>(name)?);
+                // The person's own workspace, which the store keeps.
+                let workspace =
+                    tilo_server_protocol::servers::person_workspace_id(&cert.user_public_key);
+                let genesis = Box::new(person_workspace::founded::<R>(&workspace, name)?);
                 store
                     .author(
                         app.to_owned(),

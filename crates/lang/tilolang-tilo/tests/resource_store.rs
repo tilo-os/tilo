@@ -26,7 +26,7 @@ struct Declared(std::cell::RefCell<tilo_resource_store::Store>);
 
 impl Declared {
     fn of(surfaces: &[collab_types::surface::SurfaceFile]) -> Self {
-        let mut store = tilo_resource_store::Store::new();
+        let mut store = tilo_resource_store::Store::new("workspace");
         for file in surfaces {
             for surface in &file.resources {
                 store

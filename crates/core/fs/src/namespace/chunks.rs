@@ -65,6 +65,8 @@ pub(crate) struct Chunks {
     /// written atomically, because a namespace is shared by reference across the mount's threads
     /// and the answer is only a cache of what the document already holds.
     counted: AtomicU64,
+    /// The workspace whose tree these are: a chunk made here is founded within it.
+    workspace: String,
 }
 
 /// What [`Chunks::counted`] holds when no chunk's count is kept.
@@ -92,6 +94,7 @@ impl Clone for Chunks {
             held: self.held.clone(),
             located: self.located.clone(),
             counted: AtomicU64::new(self.counted.load(Ordering::Relaxed)),
+            workspace: self.workspace.clone(),
         }
     }
 }
@@ -102,12 +105,22 @@ fn chunk_maps(doc: &mut AutoCommit) -> Result<ObjId, AutomergeError> {
 }
 
 impl Chunks {
-    pub(super) fn new(index: AutoCommit, person: Option<tilo_actions::MemberId>) -> Self {
+    /// The workspace whose tree these are.
+    pub(crate) fn workspace(&self) -> &str {
+        &self.workspace
+    }
+
+    pub(super) fn new(
+        index: AutoCommit,
+        person: Option<tilo_actions::MemberId>,
+        workspace: String,
+    ) -> Self {
         Self {
             index: ChangeTrackedDoc::new(index, person),
             held: BTreeMap::new(),
             located: HashMap::new(),
             counted: AtomicU64::new(NOT_COUNTED),
+            workspace,
         }
     }
 
@@ -162,7 +175,7 @@ impl Chunks {
             ));
         }
         if !self.held.contains_key(&chunk) {
-            let mut doc = super::started_from(super::founding_document(chunk));
+            let mut doc = super::started_from(super::founding_document(&self.workspace, chunk));
             doc.set_actor(self.index.get_actor().clone());
             let nodes = chunk_maps(&mut doc)?;
             self.held.insert(

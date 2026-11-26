@@ -145,7 +145,7 @@ impl Daemon {
 /// The desktop's layout as the daemon keeps it, on the founding every copy of the record
 /// derives and naming `person`, whose device the daemon is.
 fn layout(person: &str) -> automerge::AutoCommit {
-    let mut layout = tilo_desktop_model::record::founded().expect("the layout founds");
+    let mut layout = tilo_desktop_model::record::founded(WORKSPACE).expect("the layout founds");
     automerge::transaction::Transactable::put(&mut layout, automerge::ROOT, "front", "Writer")
         .unwrap();
     layout.commit_with(

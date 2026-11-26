@@ -341,31 +341,44 @@ impl DocumentIndexDigest {
 pub struct MountAuthor {
     author: String,
     person: Option<tilo_actions::MemberId>,
+    /// The workspace whose tree the mount holds: its records are founded within it.
+    workspace: String,
 }
 
 impl MountAuthor {
+    /// The workspace a bare mount's tree is founded in: it syncs with no workspace, so its
+    /// records are no workspace's.
+    pub const UNSHARED: &str = "unshared";
+
     /// A mount nobody's certified device is: a test's, or a program that writes no one person's
-    /// files.
+    /// files, and syncs them with no workspace ([`Self::UNSHARED`]).
     pub fn device(author: impl Into<String>) -> Self {
         Self {
             author: author.into(),
             person: None,
+            workspace: Self::UNSHARED.to_owned(),
         }
     }
 
-    /// The mount of `person`'s certified device, which `author` (its device key) names.
+    /// The mount of `person`'s certified device, which `author` (its device key) names, holding
+    /// `workspace`'s tree.
     #[must_use]
-    pub fn person(author: impl Into<String>, person: tilo_actions::MemberId) -> Self {
+    pub fn person(
+        workspace: impl Into<String>,
+        author: impl Into<String>,
+        person: tilo_actions::MemberId,
+    ) -> Self {
         Self {
             author: author.into(),
             person: Some(person),
+            workspace: workspace.into(),
         }
     }
 
     /// The document that founds `chunk` of a mount's tree: the change every copy of the
     /// record derives, so two mounts of one tree found it as one document.
-    pub(super) fn founding(chunk: TreeChunk) -> Option<AutoCommit> {
-        founding_document(chunk)
+    pub(super) fn founding(&self, chunk: TreeChunk) -> Option<AutoCommit> {
+        founding_document(&self.workspace, chunk)
     }
 }
 
@@ -598,8 +611,9 @@ impl Namespace {
 
     pub fn new(author: impl Into<MountAuthor>) -> Result<Self, automerge::AutomergeError> {
         let mount: MountAuthor = author.into();
-        let index = started_from(MountAuthor::founding(0));
-        let mut ns = Self::over(Chunks::new(index, mount.person.clone()), mount, 0);
+        let index = started_from(mount.founding(0));
+        let chunks = Chunks::new(index, mount.person.clone(), mount.workspace.clone());
+        let mut ns = Self::over(chunks, mount, 0);
         let root_document_id = FileDocumentId::new();
         ns.doc.put(
             &Obj::index(),
@@ -623,6 +637,17 @@ impl Namespace {
 
     pub fn author(&self) -> &str {
         &self.author
+    }
+
+    /// The mount this namespace is: whose device, and the workspace whose tree it holds. What a
+    /// second reading of the same kept tree opens as, so it founds what it reads as this one did.
+    #[must_use]
+    pub fn mount(&self) -> MountAuthor {
+        MountAuthor {
+            author: self.author.clone(),
+            person: self.person.clone(),
+            workspace: self.doc.workspace().to_owned(),
+        }
     }
 
     /// Who the nodes this mount makes are named by: the person whose certified device it is,

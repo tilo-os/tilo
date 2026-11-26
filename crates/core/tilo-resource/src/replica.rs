@@ -90,6 +90,10 @@ impl<R: Resource> Replica<R, NoApp> {
     /// ([`crate::founding::bring_up_resource`]) to stand on the same chain.
     pub const ID: &str = "record";
 
+    /// The workspace the record a new replica holds is in ([`Self::new`]): a record's founding
+    /// and steps are derived within its workspace, so bring a document of one up in it as well.
+    pub const WORKSPACE: &str = "replica";
+
     /// A new resource, initialized as a new record would be.
     ///
     /// # Panics
@@ -101,7 +105,8 @@ impl<R: Resource> Replica<R, NoApp> {
         reason = "a test harness surfaces initializer bugs loudly"
     )]
     pub fn new() -> Replica<R, NoApp> {
-        let mut doc = crate::founding::new_record::<R>(Self::ID).expect("resource initializer");
+        let mut doc = crate::founding::new_record::<R>(Self::WORKSPACE, Self::ID)
+            .expect("resource initializer");
         // What a brand-new record starts with names itself as its genesis.
         doc.commit_with(
             automerge::transaction::CommitOptions::default()

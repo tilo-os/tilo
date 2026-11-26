@@ -100,8 +100,9 @@ async fn write_front(workspaces: &Workspaces, person: &str, what: &str, want: &s
         .await
         .unwrap();
     let founding = held.is_none();
-    let mut document =
-        held.unwrap_or_else(|| tilo_desktop_model::record::founded().expect("the layout founds"));
+    let mut document = held.unwrap_or_else(|| {
+        tilo_desktop_model::record::founded(&WORKSPACE.to_string()).expect("the layout founds")
+    });
     let heads = document.get_heads();
     automerge::transaction::Transactable::put(&mut document, automerge::ROOT, "front", want)
         .unwrap();

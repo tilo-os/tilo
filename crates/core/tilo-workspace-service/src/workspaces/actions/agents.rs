@@ -203,7 +203,7 @@ impl Workspaces {
         else {
             return Ok(None);
         };
-        read_resource_bytes::<R>(document, &bytes).map(Some)
+        read_resource_bytes::<R>((workspace, document), &bytes).map(Some)
     }
 
     /// What `workspace`'s list of its agents calls the agent `agent`, when it names it: the name
@@ -492,11 +492,11 @@ impl Workspaces {
 pub(super) mod tests;
 
 pub(in crate::workspaces) fn read_resource_bytes<R: tilo_resource::Resource>(
-    id: &str,
+    (workspace, id): (&str, &str),
     bytes: &[u8],
 ) -> Result<R::State, String> {
     let mut doc = automerge::AutoCommit::load(bytes).map_err(|error| error.to_string())?;
-    tilo_resource::founding::bring_up_resource::<R>(id, &mut doc)
+    tilo_resource::founding::bring_up_resource::<R>(workspace, id, &mut doc)
         .map_err(|error| format!("bring the resource up to version {}: {error}", R::VERSION))?;
     R::read(&doc).map_err(|error| error.to_string())
 }

@@ -156,7 +156,7 @@ impl Writer {
         Self {
             key,
             keys,
-            store: Store::new(),
+            store: Store::new(workspace),
             seq: 0,
             of,
         }
@@ -2054,7 +2054,7 @@ async fn checkpoints(workspaces: &Workspaces, workspace: &str, document: &str) -
         .await
         .unwrap()
         .expect("the store holds the document");
-    let mut store = Store::new();
+    let mut store = Store::new(workspace);
     store.load(document, &bytes).unwrap();
     store
         .document(document)
@@ -2120,7 +2120,7 @@ async fn marks(workspaces: &Workspaces, workspace: &str, document: &str) -> Vec<
         .await
         .unwrap()
         .expect("the store holds the document");
-    let mut store = Store::new();
+    let mut store = Store::new(workspace);
     store.load(document, &bytes).unwrap();
     store
         .document(document)
@@ -2168,7 +2168,7 @@ async fn a_history_mark_naming_another_person_is_refused() {
             .await
             .unwrap()
             .expect("the store holds the document");
-        writer.store = Store::new();
+        writer.store = Store::new(workspace.as_str());
         writer.store.load(&document, &kept).unwrap();
         let _ = writer
             .mark(
@@ -2192,7 +2192,7 @@ async fn a_history_mark_naming_another_person_is_refused() {
             .await
             .unwrap()
             .expect("the store holds the document");
-        writer.store = Store::new();
+        writer.store = Store::new(workspace.as_str());
         writer.store.load(&document, &kept).unwrap();
         writer
             .mark(&workspaces, &workspace, "i-1", verb, "Mine", Some(&own))

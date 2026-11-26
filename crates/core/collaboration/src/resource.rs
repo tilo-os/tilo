@@ -188,10 +188,7 @@ impl RecordTypes {
     pub fn declare(&self, surface: &tilo_actions::surface::Surface) {
         self.0.borrow_mut().insert(
             surface.kind.clone(),
-            (
-                tilo_resource::founding::of_kind(surface),
-                surface.version,
-            ),
+            (tilo_resource::founding::of_kind(surface), surface.version),
         );
     }
 
@@ -224,11 +221,11 @@ impl RecordTypes {
     }
 }
 
-/// Make `doc` an app's record as it is created: its derived founding, the containers its kind
-/// keeps its items in (`founding`, as the record's type declares them,
-/// [`tilo_resource::founding`]), which every member creating the same record makes alike
-/// and the store derives for the record its route names, then what the app's `initialize` writes,
-/// as the edit of `by`, who creates the record. Nothing of who the record is goes in: the
+/// Make `doc` an app's record in `workspace` as it is created: its derived founding, the containers
+/// its kind keeps its items in (`founding`, as the record's type declares them,
+/// [`tilo_resource::founding`]), which every member creating the same record makes alike and the
+/// workspace's store derives for the record its route names, then what the app's `initialize`
+/// writes, as the edit of `by`, who creates the record. Nothing of who the record is goes in: the
 /// workspace's store keeps that.
 ///
 /// A kind whose type is not declared (`founding` is `None`) founds nothing: its record is made
@@ -241,6 +238,7 @@ impl RecordTypes {
 pub fn content_genesis(
     doc: &mut AutoCommit,
     checkout: &DocumentCheckout,
+    workspace: &str,
     founding: Option<(&[(String, ObjType)], u32)>,
     (by, initialize): (
         &tilo_action_policy::Acting,
@@ -270,20 +268,24 @@ pub fn content_genesis(
     // The founding and the steps to the type's version, which every holder derives alike; a kind
     // whose type is not declared founds with no container and steps to no version.
     let (containers, version) = founding.unwrap_or_default();
-    let chain =
-        tilo_resource::founding::chain(kind, checkout.id.route(), version, containers)
-            .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
+    let scope = tilo_resource::founding::Scope {
+        workspace,
+        kind,
+        id: checkout.id.route(),
+    };
+    let chain = tilo_resource::founding::chain(scope, version, containers)
+        .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
     ApplyIncoming::apply_incoming(&mut made, chain)
         .map_err(|error| ResourceOpenError::Initialization(error.to_string()))?;
     // What the record starts with is made alike wherever its creator makes it: under an actor
-    // derived from the record and who creates it, at time zero, on the chain. Two of a person's
-    // devices creating the same record write one change; two people write one each.
+    // derived from the record, its workspace and who creates it, at time zero, on the chain. Two
+    // of a person's devices creating the same record write one change; two people write one each.
     let writer = made.get_actor().clone();
     made.set_actor(tilo_resource::genesis::actor(
         checkout.id.route(),
         kind,
         &format!(
-            "initial content by {}",
+            "initial content by {} in {workspace}",
             tilo_actions::stamp::Stamp::by(&by.by)
         ),
     ));
@@ -407,6 +409,15 @@ mod tests {
     /// for.
     const LIST: &str = "test.founding.list";
 
+    /// The list `id` of this workspace, as its founding is derived.
+    fn scope(id: &str) -> tilo_resource::founding::Scope<'_> {
+        tilo_resource::founding::Scope {
+            workspace: WORKSPACE,
+            kind: LIST,
+            id,
+        }
+    }
+
     fn list_type() -> RecordTypes {
         let types = RecordTypes::default();
         types.declare(
@@ -434,6 +445,7 @@ mod tests {
         content_genesis(
             &mut doc,
             checkout,
+            WORKSPACE,
             founding
                 .as_ref()
                 .map(|(containers, version)| (containers.as_slice(), *version)),
@@ -520,8 +532,11 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         let derived = tilo_resource::founding::chain(
-            LIST,
-            "",
+            tilo_resource::founding::Scope {
+                workspace: WORKSPACE,
+                kind: LIST,
+                id: "",
+            },
             1,
             &[("items".to_owned(), ObjType::List)],
         )
@@ -683,14 +698,14 @@ mod tests {
 
         let mut alone = one.clone();
         assert!(
-            merge_split_containers(&mut alone, LIST, "apart", &split_founding(), "test.app")
+            merge_split_containers(&mut alone, scope("apart"), &split_founding(), "test.app")
                 .unwrap()
         );
         assert_eq!(items(&alone), ["bread", "eggs", "milk"]);
         assert_eq!(notes(&alone), ["n1", "n2"]);
         let heads = alone.get_heads();
         assert!(
-            !merge_split_containers(&mut alone, LIST, "apart", &split_founding(), "test.app")
+            !merge_split_containers(&mut alone, scope("apart"), &split_founding(), "test.app")
                 .unwrap(),
             "a second open changes nothing"
         );
@@ -702,11 +717,11 @@ mod tests {
         here.set_actor(automerge::ActorId::from(b"device-one-again".as_slice()));
         there.set_actor(automerge::ActorId::from(b"device-two-again".as_slice()));
         assert!(
-            merge_split_containers(&mut here, LIST, "apart", &split_founding(), "test.app")
+            merge_split_containers(&mut here, scope("apart"), &split_founding(), "test.app")
                 .unwrap()
         );
         assert!(
-            merge_split_containers(&mut there, LIST, "apart", &split_founding(), "test.app")
+            merge_split_containers(&mut there, scope("apart"), &split_founding(), "test.app")
                 .unwrap()
         );
         assert_eq!(
@@ -754,18 +769,20 @@ mod tests {
         two.merge(&mut one.clone()).unwrap();
         two.put(ROOT, "title", "Shopping").unwrap();
         two.commit();
-        assert!(merge_split_containers(&mut one, LIST, "entries", &founding, "test.app").unwrap());
-        assert!(merge_split_containers(&mut two, LIST, "entries", &founding, "test.app").unwrap());
+        assert!(merge_split_containers(&mut one, scope("entries"), &founding, "test.app").unwrap());
+        assert!(merge_split_containers(&mut two, scope("entries"), &founding, "test.app").unwrap());
         one.merge(&mut two.clone()).unwrap();
         two.merge(&mut one.clone()).unwrap();
-        merge_split_containers(&mut one, LIST, "entries", &founding, "test.app").unwrap();
-        merge_split_containers(&mut two, LIST, "entries", &founding, "test.app").unwrap();
+        merge_split_containers(&mut one, scope("entries"), &founding, "test.app").unwrap();
+        merge_split_containers(&mut two, scope("entries"), &founding, "test.app").unwrap();
         one.merge(&mut two.clone()).unwrap();
         two.merge(&mut one.clone()).unwrap();
         assert_eq!(one.get_heads(), two.get_heads(), "they converge");
         assert_eq!(ids(&one), ["a", "b", "c"], "each entry once");
         let heads = one.get_heads();
-        assert!(!merge_split_containers(&mut one, LIST, "entries", &founding, "test.app").unwrap());
+        assert!(
+            !merge_split_containers(&mut one, scope("entries"), &founding, "test.app").unwrap()
+        );
         assert_eq!(one.get_heads(), heads, "opened again, nothing changes");
     }
 
@@ -820,8 +837,11 @@ mod tests {
         )
         .expect("the record is founded");
         let derived = tilo_resource::founding::migrate(
-            LIST,
-            "",
+            tilo_resource::founding::Scope {
+                workspace: WORKSPACE,
+                kind: LIST,
+                id: "",
+            },
             1,
             &[("items".to_owned(), ObjType::List)],
         )

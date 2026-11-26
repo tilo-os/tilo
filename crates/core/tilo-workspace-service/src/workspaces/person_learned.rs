@@ -466,7 +466,8 @@ fn opened(workspace: &str, bytes: Option<Vec<u8>>) -> Result<Replica<Learned>, S
         return Ok(Replica::new());
     };
     let mut doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
-    tilo_resource::founding::bring_up_resource::<Learned>(workspace, &mut doc)
+    // What was learned in `workspace` is a record of that workspace's, named by it.
+    tilo_resource::founding::bring_up_resource::<Learned>(workspace, workspace, &mut doc)
         .map_err(|error| error.to_string())?;
     Ok(Replica::from_doc(doc))
 }

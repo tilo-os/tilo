@@ -504,6 +504,7 @@ impl TreeSync {
         // it publishes starts from the founding every copy of the record derives, and names the
         // person whose changes it carries.
         let mount = MountAuthor::person(
+            workspace.clone(),
             hex::encode(device),
             tilo_actions::MemberId::person(tilo_actions::PersonId::from_root(person)),
         );

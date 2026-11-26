@@ -294,8 +294,9 @@ impl Workspaces {
         let Some(bytes) = self.accounts_document(workspace).await? else {
             return Ok(AccountList::default());
         };
-        Replica::<AccountList>::load(&bytes)
-            .and_then(|replica| replica.state())
+        let doc = automerge::AutoCommit::load(&bytes).map_err(|error| error.to_string())?;
+        Replica::<AccountList>::from_doc(brought_up(workspace, doc)?)
+            .state()
             .map_err(|error| error.to_string())
     }
 
@@ -553,14 +554,23 @@ impl Workspaces {
             None => None,
         };
         let (changes, answer) = {
-            let replica = match &bytes {
-                Some(bytes) => Replica::<AccountList>::load(bytes)
-                    .map_err(|error| error.to_string())?
-                    .in_app("so.tilo.model", "Model"),
-                None => Replica::from_doc(founding_accounts(workspace)?)
-                    .in_app("so.tilo.model", "Model"),
-            }
-            .in_app(accounts::person::ACCOUNTS_OWNER, "Settings");
+            // What the store holds, and the record as this version reads it: the steps bringing
+            // it up go to the store with the write.
+            let (doc, heads) = match &bytes {
+                Some(bytes) => {
+                    let mut doc =
+                        automerge::AutoCommit::load(bytes).map_err(|error| error.to_string())?;
+                    let heads = doc.get_heads();
+                    (brought_up(workspace, doc)?, heads)
+                }
+                None => (
+                    brought_up(workspace, founding_accounts(workspace)?)?,
+                    Vec::new(),
+                ),
+            };
+            let replica = Replica::<AccountList>::from_doc(doc)
+                .in_app("so.tilo.model", "Model")
+                .in_app(accounts::person::ACCOUNTS_OWNER, "Settings");
             // A write for a member's call keeps the call it serves, which names who asked;
             // any other names the caller as the device's own writes do.
             let mut replica = match carried {
@@ -577,11 +587,6 @@ impl Workspaces {
             replica.doc_mut().set_actor(automerge::ActorId::from(
                 self.signing_device().device().to_vec(),
             ));
-            let heads = if founding {
-                Vec::new()
-            } else {
-                replica.heads()
-            };
             for edit in edits {
                 replica
                     .apply_confirmed(edit)
@@ -615,6 +620,25 @@ impl Workspaces {
         .map_err(|refusal| refusal.to_string())?;
         Ok(answer)
     }
+}
+
+/// `workspace`'s accounts record `doc` as this version reads it, brought up as every holder
+/// brings it up ([`tilo_resource::founding::bring_up_resource`]): on its chain of storage
+/// versions, with what a device of an older version wrote folded in. Every workspace's accounts
+/// record has the same id, so its chain is derived within `workspace`: a host holding several
+/// workspaces holds a chain of each one's own.
+///
+/// # Errors
+/// The record cannot be brought up.
+pub(crate) fn brought_up(
+    workspace: &str,
+    mut doc: automerge::AutoCommit,
+) -> Result<automerge::AutoCommit, String> {
+    let id = collab_types::document::DocumentId::parse(&accounts_document())
+        .ok_or("the accounts record's id is no document's")?;
+    tilo_resource::founding::bring_up_resource::<AccountList>(workspace, id.route(), &mut doc)
+        .map_err(|error| error.to_string())?;
+    Ok(doc)
 }
 
 /// The accounts record's genesis in `workspace`: the same change Settings makes it with on any

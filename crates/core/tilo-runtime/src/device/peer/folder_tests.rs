@@ -148,6 +148,7 @@ async fn put_in_tree(
     // every change of the tree names them.
     let device = workspaces.device_cert();
     let mut tree = tilo_fs::Namespace::new(tilo_fs::namespace::MountAuthor::person(
+        workspace,
         hex::encode(device.device_public_key),
         tilo_actions::MemberId::person(tilo_actions::PersonId::from_root(device.user_public_key)),
     ))

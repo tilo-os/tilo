@@ -273,6 +273,7 @@ pub async fn put_file(
     // computer's own mount does.
     let cert = &peer.engine().identity().device_cert;
     let mount = tilo_fs::namespace::MountAuthor::person(
+        workspace,
         hex::encode(cert.device_public_key),
         tilo_actions::MemberId::person(tilo_actions::PersonId::from_root(cert.user_public_key)),
     );
