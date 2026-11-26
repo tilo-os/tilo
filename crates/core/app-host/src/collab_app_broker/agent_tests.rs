@@ -236,6 +236,7 @@ impl crate::services::AgentSessions for Native {
     }
 }
 struct Fixture {
+    /// The fixture's home and device key, kept for as long as the fixture lives.
     _home: crate::test_support::ProvisionedHome,
     _fanout: Arc<FanoutState>,
     native: Arc<Native>,
