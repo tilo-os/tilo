@@ -2345,9 +2345,24 @@ impl Workspaces {
         // Whether a change is the app's own, made with no person at it: a refusal of one is
         // said as the app's ([`Self::app_write_refused`]).
         let by_app = std::sync::atomic::AtomicBool::new(false);
-        // A change's label names whoever made it: the caller writing, or the invoker of an
-        // invocation the app serves for them. One naming nobody is its signer's own.
+        // The invocations the changes named, as their labels write them: once the write lands,
+        // the route that served them answers for them no more.
+        let invoked = std::sync::Mutex::new(Vec::new());
+        // An app's own process keeps the person's store on their device: the changes that store
+        // hands the workspace are that person's, and say so. It may name that person alone.
+        let app_person = context
+            .serves_app_process()
+            .then(|| context.caller().acting().person_id())
+            .flatten()
+            .map(|person| tilo_action_policy::Acting::person(person).by);
+        // A change's label names whoever made it: the caller writing, the invoker of an
+        // invocation the app serves for them, or the person whose store the app's process
+        // keeps. One naming nobody is its signer's own.
         let names_caller = |stamp: &tilo_resource_store::Stamp| {
+            use tilo_lock::MutexRecover as _;
+            if !stamp.invocation.is_empty() {
+                invoked.lock_recover().push(stamp.invocation.clone());
+            }
             if app_records::by_app(stamp, app) {
                 by_app.store(true, std::sync::atomic::Ordering::Relaxed);
             }
@@ -2355,6 +2370,7 @@ impl Workspaces {
                 None => true,
                 Some(named) => {
                     acting == Some(&named)
+                        || app_person.as_ref() == Some(&named)
                         || context
                             .invoker_of(&stamp.invocation)
                             .is_some_and(|invoker| invoker.by == named)
@@ -2377,6 +2393,11 @@ impl Workspaces {
                 error
             });
         }
+        context.note_landed(
+            &invoked
+                .into_inner()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        );
         Ok(collab_types::store::wire::Reply::Written)
     }
 

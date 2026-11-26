@@ -298,3 +298,29 @@ fn a_commands_output_is_kept_on_its_record() {
         );
     });
 }
+
+/// An agent's command is kept as the app wrote it with no window open: the app answers the
+/// action, its save of the change follows the answer, and the session records the command as the
+/// agent's.
+#[test]
+fn an_agents_call_to_the_terminal_app_with_no_window_keeps_what_it_wrote() {
+    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
+        let agent = host.agent();
+        let command = "echo kept after the app answered";
+        let (ran, failed) = act(&agent, "terminal#run", json!({"command": command})).await;
+        assert!(
+            !failed && ran.contains("\"exit\":0"),
+            "the command runs: {ran}"
+        );
+        let recorded = recorded_command(&agent, command).await;
+        assert_eq!(
+            recorded["exit"],
+            json!(0),
+            "the session keeps the command the app wrote: {recorded}"
+        );
+        assert!(
+            recorded["actor"].get("agent").is_some(),
+            "the session records the agent that asked: {recorded}"
+        );
+    });
+}

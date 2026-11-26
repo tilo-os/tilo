@@ -902,6 +902,37 @@ mod tests {
             .in_workspace(workspace)
     }
 
+    /// [`write`] from the app's own process, the route a windowless app serves its record on,
+    /// with the invocations `serving` the route was delivered and has answered.
+    async fn write_as_app(
+        workspaces: &Workspaces,
+        workspace: &str,
+        record: &str,
+        changes: Vec<u8>,
+        serving: &[(tilo_actions::InvocationId, tilo_actions::Acting)],
+    ) -> Result<Reply, String> {
+        let context = ResourceRequestContext::authenticated(
+            NOTES,
+            workspace,
+            caller_of(workspaces, workspace),
+        )
+        .of_app_process()
+        .serving(serving.to_vec())
+        .on_record(record)
+        .of_kind(Some(NOTE.to_owned()));
+        workspaces
+            .resource_command(
+                &context,
+                Command::RecordChange {
+                    record: Some(record.to_owned()),
+                    changes: Bytes(changes),
+                    more: false,
+                    commit: None,
+                },
+            )
+            .await
+    }
+
     /// The notes app's window writing `changes` of `record` as this device's person.
     async fn write(
         workspaces: &Workspaces,
@@ -1031,6 +1062,109 @@ mod tests {
             "a kept record takes no change naming someone else either"
         );
         assert_eq!(heads(workspaces, &workspace, "plan").await, kept);
+    }
+
+    /// An app's own process keeps the person's store on their device: the changes that store
+    /// hands the workspace are that person's, and land. One naming anybody else is refused, as
+    /// from any other route.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_apps_process_writes_its_persons_record_in_their_name_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, workspace) = kitchen(dir.path()).await;
+        let workspaces = host.workspaces();
+        let me = caller_of(workspaces, &workspace).acting().by.clone();
+        let someone_else = Actor::Member(MemberId::person("someone-else"));
+
+        let mut ours = automerge::AutoCommit::new();
+        ours.put(automerge::ROOT, "title", "From the app's store")
+            .unwrap();
+        commit(&mut ours, &typed_by(&me));
+        write_as_app(workspaces, &workspace, "app-ours", ours.save(), &[])
+            .await
+            .expect("the app's process writes its person's record in their name");
+        assert!(
+            !heads(workspaces, &workspace, "app-ours").await.is_empty(),
+            "the change landed"
+        );
+
+        let mut forged = automerge::AutoCommit::new();
+        forged.put(automerge::ROOT, "title", "Not mine").unwrap();
+        commit(&mut forged, &typed_by(&someone_else));
+        let refused = write_as_app(workspaces, &workspace, "app-forged", forged.save(), &[]).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.contains("names someone other than the caller")),
+            "{refused:?}"
+        );
+        assert!(
+            heads(workspaces, &workspace, "app-forged").await.is_empty(),
+            "the app's process may name no one but its person"
+        );
+    }
+
+    /// A save an app makes for an invocation its route was delivered and has answered is that
+    /// invoker's, though nothing is pending on it any more: the app writes what it carried out
+    /// as it answers. A route that was given no such invocation may not name one.
+    #[tokio::test(flavor = "current_thread")]
+    async fn a_save_for_an_invocation_the_route_answered_is_the_invokers() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, workspace) = kitchen(dir.path()).await;
+        let workspaces = host.workspaces();
+        let person = caller_of(workspaces, &workspace)
+            .acting()
+            .person_id()
+            .expect("the device's person")
+            .to_owned();
+        grant_scout(workspaces, &workspace, Answer::Allow).await;
+        let agent = tilo_actions::Acting::agent("scout", person);
+        let served = tilo_actions::InvocationId(uuid::Uuid::new_v4());
+
+        let mut ran = automerge::AutoCommit::new();
+        ran.put(automerge::ROOT, "title", "Ran for an agent")
+            .unwrap();
+        commit(
+            &mut ran,
+            &Stamp {
+                verb: Stamp::TYPE_VERB.to_owned(),
+                invoker: Stamp::by(&agent.by),
+                invocation: served.0.to_string(),
+                ..Stamp::default()
+            },
+        );
+        write_as_app(
+            workspaces,
+            &workspace,
+            "answered",
+            ran.save(),
+            &[(served, agent.clone())],
+        )
+        .await
+        .expect("the save names the invocation the route answered, which is its invoker's");
+
+        let stranger = tilo_actions::InvocationId(uuid::Uuid::new_v4());
+        let mut asked = automerge::AutoCommit::new();
+        asked.put(automerge::ROOT, "title", "Never ran").unwrap();
+        commit(
+            &mut asked,
+            &Stamp {
+                verb: Stamp::TYPE_VERB.to_owned(),
+                invoker: Stamp::by(&agent.by),
+                invocation: stranger.0.to_string(),
+                ..Stamp::default()
+            },
+        );
+        let refused = write_as_app(workspaces, &workspace, "unserved", asked.save(), &[]).await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.contains("names someone other than the caller")),
+            "{refused:?}"
+        );
+        assert!(
+            heads(workspaces, &workspace, "unserved").await.is_empty(),
+            "an invocation the route was never given names nobody"
+        );
     }
 
     /// A record's change is judged by the verb its label names: one the app's surface does not

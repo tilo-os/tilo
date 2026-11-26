@@ -436,6 +436,12 @@ pub struct AppBrokerState {
     native_checkouts: Mutex<HashMap<u64, native_checkout::NativeCheckout>>,
     action_directory_root_snapshot: Mutex<ActionDirectoryRootSnapshot>,
     pending_invocations: Mutex<HashMap<u64, PendingInvocation>>,
+    /// The invocations each route was delivered and has answered, by peer, each with who invoked
+    /// it: an app's save of what it wrote for one may reach the store after it answered, and is
+    /// that invoker's change. An invocation leaves this once the route's changes for it have
+    /// landed ([`Self::invocation_changes_landed`]), or with the route itself.
+    served_invocations:
+        Mutex<HashMap<u64, Vec<(tilo_actions::InvocationId, tilo_actions::Acting)>>>,
     external_moderation_jobs: Mutex<external_moderation::Registry>,
     /// Remote-action invocations admitted through the action host, keyed by
     /// caller and invocation id so a retried id is idempotent.
@@ -686,30 +692,81 @@ impl AppBrokerState {
             .cloned()
     }
 
-    /// The invocations delivered to `peer_id` that it has not finished, each with who the workspace
-    /// service admitted it for: what a write it makes while serving one is credited to.
+    /// The invocations delivered to `peer_id` that it has not finished, and those it has
+    /// answered whose changes may still land, each with who the workspace service admitted it
+    /// for: what a write it makes for one is credited to.
     fn delivered_to(
         &self,
         peer_id: u64,
     ) -> Vec<(tilo_actions::InvocationId, tilo_actions::Acting)> {
-        let pending = match self.pending_invocations.lock() {
-            Ok(pending) => pending,
-            Err(poisoned) => poisoned.into_inner(),
+        let mut delivered: Vec<(tilo_actions::InvocationId, tilo_actions::Acting)> = {
+            let pending = match self.pending_invocations.lock() {
+                Ok(pending) => pending,
+                Err(poisoned) => poisoned.into_inner(),
+            };
+            pending
+                .values()
+                .filter(|pending| pending.peer_id == peer_id)
+                .map(|pending| (pending.update.invocation(), acting_of(pending)))
+                .collect()
         };
-        pending
-            .values()
-            .filter(|pending| pending.peer_id == peer_id)
-            .map(|pending| {
-                // How the invoker acted goes with it: an agent its person's device handed its
-                // session to, or one under a key of its own, as its writes record it.
-                let acting = pending.context.invoker.as_ref().map_or_else(
-                    || tilo_actions::Acting::from(pending.actor.clone()),
-                    |invoker| invoker.acting.clone(),
-                );
-                (pending.update.invocation(), acting)
-            })
-            .collect()
+        if let Some(answered) = self
+            .served_invocations
+            .lock()
+            .ok()
+            .and_then(|served| served.get(&peer_id).cloned())
+        {
+            delivered.extend(answered);
+        }
+        delivered
     }
+
+    /// Keep `invocation`, delivered to `peer_id` and answered, as one the route may still write
+    /// changes for as `acting`: until those changes land, or the route closes.
+    fn keep_served(
+        &self,
+        peer_id: u64,
+        invocation: tilo_actions::InvocationId,
+        acting: tilo_actions::Acting,
+    ) {
+        let Ok(mut served) = self.served_invocations.lock() else {
+            return;
+        };
+        served
+            .entry(peer_id)
+            .or_default()
+            .push((invocation, acting));
+    }
+
+    /// The changes of the invocations `named` by a write `peer_id`'s route made have landed: it
+    /// answers for them no more.
+    fn invocation_changes_landed(&self, peer_id: u64, named: &[String]) {
+        if named.is_empty() {
+            return;
+        }
+        let Ok(mut served) = self.served_invocations.lock() else {
+            return;
+        };
+        let Some(answered) = served.get_mut(&peer_id) else {
+            return;
+        };
+        answered.retain(|(invocation, _)| {
+            !named.iter().any(|named| named == &invocation.0.to_string())
+        });
+        if answered.is_empty() {
+            served.remove(&peer_id);
+        }
+    }
+}
+
+/// Who `pending` was invoked by, as a write it makes for it records: an agent its person's
+/// device handed its session to, or one under a key of its own, else the actor it was admitted
+/// as.
+fn acting_of(pending: &PendingInvocation) -> tilo_actions::Acting {
+    pending.context.invoker.as_ref().map_or_else(
+        || tilo_actions::Acting::from(pending.actor.clone()),
+        |invoker| invoker.acting.clone(),
+    )
 }
 
 /// What ends one invocation stream once its app asks for no more: the broker

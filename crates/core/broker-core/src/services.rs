@@ -20,7 +20,9 @@ pub use agent_sessions::{
     session_answer_id, session_answer_scope,
 };
 pub use own_device::{OwnDeviceActions, OwnDeviceOutcome};
-pub use resource_requests::{FilesEntry, FilesPutCall, KEYLESS_AGENT, ResourceRequestContext};
+pub use resource_requests::{
+    FilesEntry, FilesPutCall, KEYLESS_AGENT, LandedInvocations, ResourceRequestContext,
+};
 pub use workspace_memberships::{
     WorkspaceMembershipFuture, WorkspaceMemberships, WorkspaceStatusFuture,
 };

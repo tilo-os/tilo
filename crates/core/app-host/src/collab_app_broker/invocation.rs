@@ -435,6 +435,14 @@ impl AppBrokerState {
             // Retire it before releasing the registry: a waiter woken by the
             // change above must find it pending or completed, never neither.
             state.record_completion(id, pending.completion_owner(), update.clone());
+            // What the app wrote for it may still be on its way: an app saves what an action
+            // changed after it answers, and that save is this invocation's change. Its route may
+            // name it until those changes land, or the route closes.
+            state.keep_served(
+                pending.peer_id,
+                pending.update.invocation(),
+                acting_of(&pending),
+            );
             drop(registry);
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
@@ -980,6 +988,10 @@ impl AppBrokerState {
     pub(super) fn end_invocations(&self, peer_id: u64) {
         if let Ok(mut capabilities) = self.stable_invocation_subscribers.lock() {
             capabilities.remove(&peer_id);
+        }
+        // Its route is gone: what it answered answers for no change after it.
+        if let Ok(mut served) = self.served_invocations.lock() {
+            served.remove(&peer_id);
         }
         // Gone already when its app ended the stream as it closed.
         let ended_by_app = !self

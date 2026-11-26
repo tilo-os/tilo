@@ -991,6 +991,14 @@ impl JoinedChannel {
                 .ok_or_else(|| BrokerError::failed("unknown invocation id".into()))?;
             state.publish_activity(pending.activity.as_ref(), &update);
             state.record_completion(id, pending.completion_owner(), update.clone());
+            // What the app wrote for it may still be on its way: an app saves what an action
+            // changed after it answers, and that save is this invocation's change. Its route may
+            // name it until those changes land, or the route closes.
+            state.keep_served(
+                pending.peer_id,
+                pending.update.invocation(),
+                super::acting_of(&pending),
+            );
             if let Ok(mut requests) = state.cancellation_requests.lock() {
                 requests.remove(&id);
             }

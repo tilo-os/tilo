@@ -1,6 +1,45 @@
 //! What an app's resource command and a put into a workspace's folder arrive with: the
 //! certified route and caller, and the call a put is made for.
 
+use std::sync::{Arc, Mutex};
+
+/// The invocations a route's writes named in the changes they made land: what the broker stops
+/// admitting changes for once the write that carried them was taken.
+#[derive(Debug, Default)]
+pub struct LandedInvocations(Mutex<Vec<String>>);
+
+impl PartialEq for LandedInvocations {
+    /// A route's writes are the same request whatever this has noted so far: it is where a
+    /// write hands them on, not part of what the request is.
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
+}
+
+impl Eq for LandedInvocations {}
+
+impl LandedInvocations {
+    /// Note that the changes of `invocations` landed, as a write the route made took them.
+    pub fn note(&self, invocations: &[String]) {
+        let mut noted = self
+            .0
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        noted.extend(invocations.iter().cloned());
+    }
+
+    /// The invocations noted since this was last taken, and none after.
+    #[must_use]
+    pub fn take(&self) -> Vec<String> {
+        std::mem::take(
+            &mut *self
+                .0
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner),
+        )
+    }
+}
+
 /// A resource command's certified route and caller, supplied by the broker.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResourceRequestContext {
@@ -11,6 +50,9 @@ pub struct ResourceRequestContext {
     /// each with who invoked it: a write that serves one is that invoker's, an agent acting for
     /// the caller included.
     serving: Vec<(tilo_actions::InvocationId, tilo_actions::Acting)>,
+    /// Where a write notes the invocations its changes named, once they landed
+    /// ([`LandedInvocations`]). `None` for a route whose writes the broker does not follow.
+    landed: Option<Arc<LandedInvocations>>,
     /// The caller the device opened this route's view for, when it opened one for a caller of
     /// its dispatch: a write the app makes outside an invocation it serves is theirs, limited
     /// to what they may do, and a read answers only what they may read.
@@ -39,6 +81,7 @@ impl ResourceRequestContext {
             workspace_id: workspace_id.into(),
             caller,
             serving: Vec::new(),
+            landed: None,
             opened_for: None,
             record: None,
             founding_refusal: None,
@@ -143,6 +186,22 @@ impl ResourceRequestContext {
             .iter()
             .find(|(id, _)| id.0.to_string() == invocation)
             .map(|(_, acting)| acting)
+    }
+
+    /// The context whose writes note the invocations their changes landed for, where the broker
+    /// follows them.
+    #[must_use]
+    pub fn landed_with(mut self, landed: Arc<LandedInvocations>) -> Self {
+        self.landed = Some(landed);
+        self
+    }
+
+    /// Note that the changes of `invocations` a write this route made have landed: the broker
+    /// may stop admitting changes that name them.
+    pub fn note_landed(&self, invocations: &[String]) {
+        if let Some(landed) = &self.landed {
+            landed.note(invocations);
+        }
     }
 
     #[must_use]

@@ -357,6 +357,11 @@ impl JoinedChannel {
         let resource_type = self.resource_type.clone();
         let founding_refusal = self.founding_refusal(&route);
         let state = std::sync::Arc::clone(&self.state);
+        // The invocations a write's landed changes named: this route may name them for no change
+        // after that.
+        let landed = std::sync::Arc::new(crate::services::LandedInvocations::default());
+        let noted = std::sync::Arc::clone(&state);
+        let peer_id = self.peer_id;
         let writer = self.connection_id;
         async move {
             // A change the caller may not make is refused for that, whether or not a store is here.
@@ -375,6 +380,7 @@ impl JoinedChannel {
             )
             .of_app_process()
             .serving(delivered_to)
+            .landed_with(std::sync::Arc::clone(&landed))
             .opened_for(opened_for);
             if let Some(record) = record {
                 context = context.on_record(record).of_kind(resource_type);
@@ -387,12 +393,13 @@ impl JoinedChannel {
             }
             let changes = command.writes() && context.record().is_some();
             let answer = service.command(&context, command);
-            if changes {
+            let result = if changes {
                 super::record_changes::telling_record_changed(state, writer, answer, route).await
             } else {
                 answer.await
-            }
-            .map_err(BrokerError::failed)
+            };
+            noted.invocation_changes_landed(peer_id, &landed.take());
+            result.map_err(BrokerError::failed)
         }
     }
 

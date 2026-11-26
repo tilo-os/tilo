@@ -438,6 +438,7 @@ impl AppBrokerState {
         clear!(self.native_checkouts);
         clear!(self.publishers.streams);
         clear!(self.pending_invocations);
+        clear!(self.served_invocations);
         clear!(self.stable_invocation_subscribers);
         clear!(self.workspace_governance_peers);
         clear!(self.confirmation_grants);
@@ -641,6 +642,12 @@ impl AppBrokerState {
             }
             self.publish_activity(pending.activity.as_ref(), &update);
             self.record_completion(id, pending.completion_owner(), update.clone());
+            // What the app wrote for it may still be on its way, as for an answer.
+            self.keep_served(
+                pending.peer_id,
+                pending.update.invocation(),
+                acting_of(&pending),
+            );
             if let Ok(mut requests) = self.cancellation_requests.lock() {
                 requests.remove(&id);
             }
@@ -755,6 +762,7 @@ impl AppBrokerState {
                 canonical_directories: Mutex::new(canonical_route::CanonicalDirectories::default()),
                 action_directory_root_snapshot: Mutex::new(ActionDirectoryRootSnapshot::default()),
                 pending_invocations: Mutex::new(HashMap::new()),
+                served_invocations: Mutex::new(HashMap::new()),
                 external_moderation_jobs: Mutex::default(),
                 remote_invocations: Mutex::new(tilo_actions::remote::InvocationLog::default()),
                 child_calls: Mutex::default(),
