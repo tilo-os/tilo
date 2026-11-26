@@ -47,10 +47,10 @@ use tilo_actions::remote::{ActionCallError, ActionProvider, Caller, InvokeReques
 use zeroize::Zeroizing;
 
 use crate::person_vault::asked_of;
-use tilo_workspace_service::work::Turn;
-use tilo_workspace_service::workspace_vault::{
-    self, DeviceKey, Found, ItemRef, Kept, Released, VaultAction,
+use tilo_workspace_records::vault::{
+    self as workspace_vault, DeviceKey, Found, ItemRef, Kept, Released, VaultAction,
 };
+use tilo_workspace_service::work::Turn;
 
 /// The name an app's asks are kept under in the store of asked records: a release of a vault
 /// item, a web call that carries its key, and any other use its own process asks for

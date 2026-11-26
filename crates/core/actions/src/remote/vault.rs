@@ -1,5 +1,5 @@
 //! What every vocabulary knows of the workspace's vault, whose provider declares its actions
-//! (`tilo_workspace_service::workspace_vault`): its provider, the reference that names one of
+//! (`tilo_workspace_records::vault`): its provider, the reference that names one of
 //! its items without its secret ([`ItemRef`]) and the parameter that takes one
 //! ([`item_param`]), the steps its actions take in the record the vault is kept in
 //! ([`VAULT_STEPS`]), and which calls answer a secret ([`answers_secret`]), so no record of

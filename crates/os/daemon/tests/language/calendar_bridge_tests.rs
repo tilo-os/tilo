@@ -158,7 +158,7 @@ async fn an_icloud_account_asked_for_calendars_lists_them_in_the_calendar() {
     use tilo_actions::remote::{
         ActionProvider as _, Caller, InvokeArgument, InvokeRequest, ReceiptStatus,
     };
-    use tilo_workspace_service::workspace_accounts;
+    use tilo_workspace_records::accounts as workspace_accounts;
     use tilolang_calendar::engine::CalendarAccount;
 
     const ADDRESS: &str = "ada@icloud.example";

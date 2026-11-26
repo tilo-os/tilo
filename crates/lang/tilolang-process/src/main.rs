@@ -175,7 +175,7 @@ fn run_held(kind: &str, code: std::sync::Arc<dyn tilolang_tilo::held::Kind>) -> 
 mod workspace_accounts {
     tilo_resource::bindings!(
         provider = "tilo.accounts",
-        surface = "../../core/tilo-workspace-service/accounts-surface.json"
+        surface = "../../core/workspace-records/accounts-surface.json"
     );
 }
 

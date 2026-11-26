@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
 use tilo_actions::remote::{ActionProvider as _, InvocationReceipt, ReceiptStatus};
-use tilo_workspace_service::workspace_accounts::{self, MailAccounts, SignInStep};
+use tilo_workspace_records::accounts::{self as workspace_accounts, MailAccounts, SignInStep};
 
 use crate::fixtures::asking;
 use crate::fixtures::{admit, caller, hosted, settled};
@@ -66,7 +66,7 @@ async fn sealed(
         .account(id)
         .and_then(|kept| {
             accounts::email::password_item(&kept.config)
-                .and_then(tilo_workspace_service::workspace_vault::ItemRef::parse)
+                .and_then(tilo_workspace_records::vault::ItemRef::parse)
         })?;
     let vault = workspaces.open_vault(&workspace).await.ok()?;
     vault.entry(named.id()).map(|entry| entry.password.clone())
@@ -408,7 +408,7 @@ async fn an_icloud_drive_waits_for_the_code_apple_sends() {
         .expect("the drive is kept");
     assert_eq!(kept["identity"], json!("ada@icloud.example"));
     let reference = accounts::email::password_item(&kept).expect("its sign-in is named");
-    let entry = tilo_workspace_service::workspace_vault::ItemRef::parse(reference)
+    let entry = tilo_workspace_records::vault::ItemRef::parse(reference)
         .expect("a reference to a vault item")
         .id()
         .to_owned();

@@ -1,0 +1,31 @@
+[package]
+name = "tilo-workspace-records"
+version = "0.1.0"
+edition = "2024"
+publish.workspace = true
+description = "What a workspace keeps beside its records on the host that serves it: its vault, its connected accounts, its model providers and the services it connected, each as its actions and what they read as."
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "tilo_workspace_records"
+path = "src/lib.rs"
+
+[dependencies]
+tilo-actions = { path = "../actions" }
+tilo-resource = { path = "../tilo-resource" }
+# Where the workspace's sign-ins stand in its policy, in Mail.
+tilo-action-policy = { path = "../action-policy" }
+tilo-app-id = { version = "0.1.0", path = "../tilo-app-id" }
+serde.workspace = true
+serde_json.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }
+
+[dev-dependencies]
+# Compiles the vault's surface for the test that holds `vault-surface.json` to it.
+tilo-surface-compile = { version = "0.1.0", path = "../tilo-surface-compile" }
+
+[lints]
+workspace = true

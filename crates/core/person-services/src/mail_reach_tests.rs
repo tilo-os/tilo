@@ -10,7 +10,7 @@ use std::net::{Ipv4Addr, TcpListener};
 
 use serde_json::json;
 use tilo_actions::remote::ActionProvider as _;
-use tilo_workspace_service::workspace_accounts;
+use tilo_workspace_records::accounts as workspace_accounts;
 
 use crate::fixtures::asking;
 use crate::fixtures::{admit, caller, hosted, settled};

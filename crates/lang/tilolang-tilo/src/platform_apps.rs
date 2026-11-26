@@ -422,7 +422,7 @@ const PUBLISHED: &[Published] = &[
         roots: MODELS_ROOTS,
         // What a workspace's providers read as, written beside the service that keeps them.
         files: &[include_str!(
-            "../../../core/tilo-workspace-service/models-surface.json"
+            "../../../core/workspace-records/models-surface.json"
         )],
         described: false,
         listed: &[],
@@ -434,7 +434,7 @@ const PUBLISHED: &[Published] = &[
         roots: ACCOUNTS_ROOTS,
         // What a workspace's accounts read as, written beside the service that keeps them.
         files: &[include_str!(
-            "../../../core/tilo-workspace-service/accounts-surface.json"
+            "../../../core/workspace-records/accounts-surface.json"
         )],
         described: false,
         listed: &[],

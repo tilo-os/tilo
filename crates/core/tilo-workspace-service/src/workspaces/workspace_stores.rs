@@ -41,13 +41,13 @@ impl Store {
     /// The workspace's mail accounts, in Mail.
     pub const MAIL: Self = Self {
         app: tilo_app_id::apps::MAIL,
-        kind: crate::workspace_accounts::PROVIDER,
+        kind: tilo_workspace_records::accounts::PROVIDER,
     };
     /// The workspace's calendar accounts, in Calendar: only agents' hosts keep them.
     #[cfg(feature = "agents")]
     pub const CALENDARS: Self = Self {
         app: tilo_app_id::apps::CALENDAR,
-        kind: crate::workspace_accounts::PROVIDER,
+        kind: tilo_workspace_records::accounts::PROVIDER,
     };
     /// The items of the workspace's vault, in Passwords.
     pub const VAULT: Self = Self {
@@ -56,13 +56,13 @@ impl Store {
     };
     /// The workspace's model providers and their keys.
     pub const MODELS: Self = Self {
-        app: crate::models::PROVIDER,
-        kind: crate::models::RESOURCE,
+        app: tilo_workspace_records::models::PROVIDER,
+        kind: tilo_workspace_records::models::RESOURCE,
     };
     /// The services the workspace connected.
     pub const CONNECTIONS: Self = Self {
-        app: crate::person_connections::PROVIDER,
-        kind: crate::person_connections::KIND,
+        app: tilo_workspace_records::connections::PROVIDER,
+        kind: tilo_workspace_records::connections::KIND,
     };
     /// What the workspace's agents learned.
     pub const LEARNED: Self = Self {

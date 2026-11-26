@@ -1061,52 +1061,6 @@ impl std::fmt::Debug for CloudCredential {
     }
 }
 
-impl CloudCredential {
-    /// What a cloud mount is handed for `credential`: the same sign-in, in the shape every
-    /// mount reads.
-    #[must_use]
-    pub fn for_mount(credential: cloud_source::Credential) -> Self {
-        let expires_at_ms = match &credential {
-            cloud_source::Credential::Bearer { expires, .. }
-            | cloud_source::Credential::Session { expires, .. } => expires.and_then(|time| {
-                time.duration_since(std::time::UNIX_EPOCH)
-                    .ok()
-                    .and_then(|since| u64::try_from(since.as_millis()).ok())
-            }),
-            cloud_source::Credential::Basic { .. } => None,
-        };
-        match credential {
-            cloud_source::Credential::Basic { username, password } => Self {
-                kind: CloudCredentialKind::Basic,
-                username,
-                secret: password.to_string(),
-                headers: Vec::new(),
-                expires_at_ms,
-            },
-            cloud_source::Credential::Bearer { token, .. } => Self {
-                kind: CloudCredentialKind::Bearer,
-                username: String::new(),
-                secret: token.to_string(),
-                headers: Vec::new(),
-                expires_at_ms,
-            },
-            cloud_source::Credential::Session { headers, .. } => Self {
-                kind: CloudCredentialKind::Session,
-                username: String::new(),
-                secret: String::new(),
-                headers: headers
-                    .into_iter()
-                    .map(|(name, value)| CloudHeader {
-                        name,
-                        value: value.to_string(),
-                    })
-                    .collect(),
-                expires_at_ms,
-            },
-        }
-    }
-}
-
 /// What a cloud mount signs in with ([`CloudCredential`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
@@ -1230,7 +1184,7 @@ pub struct AddMailWithItem {
     pub outgoing_host: String,
     pub outgoing_port: u16,
     /// The vault item that is the account's sign-in.
-    pub password: crate::workspace_vault::ItemRef,
+    pub password: crate::vault::ItemRef,
     /// Why whoever asks needs it, in a sentence its person reads when they
     /// are asked first; empty when nothing was said.
     pub reason: String,
@@ -1294,7 +1248,7 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&path).ok().as_deref(),
             Some(text.as_str()),
-            "crates/core/tilo-workspace-service/accounts-surface.json is not what this crate \
+            "crates/core/workspace-records/accounts-surface.json is not what this crate \
              publishes; regenerate it with UPDATE_SNAPSHOTS=1"
         );
     }
@@ -1354,7 +1308,7 @@ mod tests {
         assert_eq!(read.accounts[0].address, "ada@example.test");
 
         // No message of the accounts refuses what it does not know.
-        let source = include_str!("workspace_accounts.rs");
+        let source = include_str!("accounts.rs");
         assert!(!source.contains(concat!("deny_unknown", "_fields")));
     }
 

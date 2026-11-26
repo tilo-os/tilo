@@ -434,7 +434,7 @@ impl std::fmt::Debug for SetKey {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SetKeyFromItem {
     pub provider: String,
-    pub key: crate::workspace_vault::ItemRef,
+    pub key: crate::vault::ItemRef,
     /// Why whoever asks needs it, in a sentence its person reads when they
     /// are asked first; empty when nothing was said.
     pub reason: String,
@@ -557,7 +557,7 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(&path).ok().as_deref(),
             Some(text.as_str()),
-            "crates/core/tilo-workspace-service/models-surface.json is not what this crate \
+            "crates/core/workspace-records/models-surface.json is not what this crate \
              publishes; regenerate it with UPDATE_SNAPSHOTS=1"
         );
     }

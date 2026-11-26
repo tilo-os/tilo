@@ -75,16 +75,10 @@ pub mod i18n;
 pub mod live;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod metrics;
-/// The person's model providers: their actions, declared once, and what they read as.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod models;
 #[cfg(not(target_arch = "wasm32"))]
 mod own_workspaces;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod payloads;
-/// The services a person connected: their actions, declared once, and what they read as.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod person_connections;
 /// What a state directory's workspaces hold where their types' readers are not: counts an
 /// operator reads, without writing or repairing anything.
 #[cfg(not(target_arch = "wasm32"))]
@@ -106,9 +100,6 @@ pub mod styles;
 pub mod surfaces;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tl_records;
-/// The workspace's vault: its actions, declared once, and what they read as.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod workspace_vault;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub mod work;
@@ -117,9 +108,6 @@ pub mod workspace;
 #[cfg(not(target_arch = "wasm32"))]
 #[doc(hidden)]
 pub mod workspace_access;
-/// The workspace's connected accounts: their actions, declared once, and what they read as.
-#[cfg(not(target_arch = "wasm32"))]
-pub mod workspace_accounts;
 pub mod workspace_documents;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod workspace_files;

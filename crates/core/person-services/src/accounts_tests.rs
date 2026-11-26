@@ -9,7 +9,7 @@
 use serde_json::json;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{ActionProvider as _, Caller, ReceiptStatus};
-use tilo_workspace_service::workspace_accounts::{self, MailAccounts};
+use tilo_workspace_records::accounts::{self as workspace_accounts, MailAccounts};
 
 use crate::fixtures::{admit, asking, caller, hosted, hosting_device, settled, test_host};
 

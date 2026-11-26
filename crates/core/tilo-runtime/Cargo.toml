@@ -135,6 +135,7 @@ neighbour-wire = { package = "tilo-neighbour-wire", path = "../neighbour-wire" }
 # The workspace host every device runs, which the profile's own workspace is placed on. Its agents
 # are the ones this machine runs for the workspaces it holds, on every platform it serves.
 tilo-workspace-service = { path = "../tilo-workspace-service", features = ["agents", "apps", "device-keys", "files"] }
+tilo-workspace-records = { path = "../workspace-records" }
 tilo-person-services = { path = "../person-services", features = ["agents", "apps", "device-keys"] }
 tilo-app-host = { path = "../app-host", features = ["agents", "files"] }
 # The device's search index, which `search#find` is answered from.

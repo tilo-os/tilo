@@ -5,7 +5,7 @@
 //! member's device that may use Passwords signs in with that one entry, read from its own copy
 //! of the vault document ([`tilo_workspace_service::workspaces::vault`]). Nothing here asks another device, and no password
 //! leaves for another device: a member who may not read the vault reads and sends the
-//! workspace's mail through a device that may ([`tilo_workspace_service::workspace_accounts`]).
+//! workspace's mail through a device that may ([`tilo_workspace_records::accounts`]).
 //!
 //! Each call is decided once, before anything is read, for the device it comes from
 //! ([`Workspaces::using_vault`]). A password leaves the vault only to sign in at
@@ -19,7 +19,7 @@ use accounts::vault_items::{ItemId, ItemKind, NewItem, Released, UsedFor};
 use tilo_actions::remote::{Caller, InvokeRequest};
 use tilo_peer_state::workspace_documents::DocumentRead;
 use tilo_resource::{Replica, Resource as _};
-use tilo_workspace_service::workspace_vault::ItemRef;
+use tilo_workspace_records::vault::ItemRef;
 use zeroize::Zeroizing;
 
 use crate::person_settings::kept_sign_ins;
@@ -38,7 +38,7 @@ pub const MAY_NOT_USE_PASSWORDS: &str = "Your role in this workspace does not in
 
 /// What a release is refused with where the workspace's rules ask its person first: no password
 /// leaves the vault on a question, and the person's mail is read and sent where the vault is,
-/// asked as every action the rules ask about is ([`tilo_workspace_service::workspace_accounts`]).
+/// asked as every action the rules ask about is ([`tilo_workspace_records::accounts`]).
 pub const ASKS_FIRST: &str = "The workspace asks you first before this account's password is \
                               used, so it stays in the workspace's vault and this device does not \
                               sign in with it.";

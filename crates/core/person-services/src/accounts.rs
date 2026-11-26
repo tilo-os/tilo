@@ -4,17 +4,17 @@
 //!
 //! The reading is the accounts record's ([`crate::account_logins`]), which the
 //! workspace keeps as one document: the same record
-//! [`list`](tilo_workspace_service::workspace_accounts::LIST) answers, and it carries no secret. A
+//! [`list`](tilo_workspace_records::accounts::LIST) answers, and it carries no secret. A
 //! secret stays in the workspace's vault and is named by the account's settings alone, so nothing
 //! here reads one back. Changing an account is the record's own actions
-//! ([`tilo_workspace_service::workspace_accounts`]), answered where the workspace runs.
+//! ([`tilo_workspace_records::accounts`]), answered where the workspace runs.
 
 use serde_json::Value;
 
 use crate::PersonServices as Workspaces;
 use crate::person_settings;
 use crate::person_settings::cloud_control::Mount;
-use tilo_workspace_service::workspace_accounts::{
+use tilo_workspace_records::accounts::{
     AccountKind as Kind, AccountStatus as Status, AccountView as View, Accounts, CalendarView,
 };
 

@@ -17,8 +17,8 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tilo_action_services::workspace_invocations::{self, Invocation, InvocationStatus};
 use tilo_actions::remote::{ActionProvider, ResourceAddress, ResourceCopy};
-use tilo_workspace_service::models as model_providers;
-use tilo_workspace_service::workspace_vault;
+use tilo_workspace_records::models as model_providers;
+use tilo_workspace_records::vault as workspace_vault;
 
 use crate::language::host;
 use crate::language::host::said;

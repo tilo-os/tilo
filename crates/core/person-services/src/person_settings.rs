@@ -35,13 +35,11 @@ use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeReques
 use tilo_net::proxy::host::Destinations;
 use tilo_resource::Effect as _;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::models as model_providers;
-use tilo_workspace_service::models::{
+use tilo_workspace_records::accounts as workspace_accounts;
+use tilo_workspace_records::accounts::{AccountsAction, AddMailAccount, MailAccount, MailAccounts};
+use tilo_workspace_records::models as model_providers;
+use tilo_workspace_records::models::{
     Assignment, ModelProviders, OfferedModel, ProviderView, SetKey,
-};
-use tilo_workspace_service::workspace_accounts;
-use tilo_workspace_service::workspace_accounts::{
-    AccountsAction, AddMailAccount, MailAccount, MailAccounts,
 };
 
 use crate::VaultAt;
@@ -678,7 +676,7 @@ pub(super) async fn add_mail_with(
     tester: Arc<dyn AccountTester>,
     (vault, root): (VaultAt<'_>, &Path),
     adding: AddMailAccount,
-    kept: Option<tilo_workspace_service::workspace_vault::ItemRef>,
+    kept: Option<tilo_workspace_records::vault::ItemRef>,
     provider: workspace_accounts::Provider,
     linked: Option<(accounts::Account, String)>,
 ) -> Result<MailAccount, String> {
@@ -931,14 +929,14 @@ pub(super) fn save_provider_config(
 /// sign-in left.
 pub(super) fn key_reference(
     profile: &agent_provider_config::ProviderProfile,
-) -> Option<tilo_workspace_service::workspace_vault::ItemRef> {
+) -> Option<tilo_workspace_records::vault::ItemRef> {
     let named = match &profile.sign_in {
         Some(sign_in) => sign_in.kept.as_ref(),
         None => profile.credential.as_ref(),
     };
     named
         .and_then(agent_provider_config::SecretReference::workspace_vault_item)
-        .and_then(tilo_workspace_service::workspace_vault::ItemRef::parse)
+        .and_then(tilo_workspace_records::vault::ItemRef::parse)
 }
 
 /// Whether `profile` names a key, or a grant, in the workspace's vault.
@@ -949,7 +947,7 @@ pub(super) fn key_kept(profile: &agent_provider_config::ProviderProfile) -> bool
 /// Name `reference` as `profile`'s key, or as its sign-in's grant, or with `None` name none.
 fn name_key(
     profile: &mut agent_provider_config::ProviderProfile,
-    reference: Option<&tilo_workspace_service::workspace_vault::ItemRef>,
+    reference: Option<&tilo_workspace_records::vault::ItemRef>,
 ) {
     let named = reference.map(|reference| {
         agent_provider_config::SecretReference::workspace_vault(&reference.to_string())
@@ -1043,7 +1041,7 @@ impl<'a> ProviderKeys<'a> {
     pub(super) async fn name(
         &self,
         profile: &mut agent_provider_config::ProviderProfile,
-        reference: &tilo_workspace_service::workspace_vault::ItemRef,
+        reference: &tilo_workspace_records::vault::ItemRef,
     ) -> Result<(), String> {
         if let Some(before) = key_reference(profile)
             && &before != reference
@@ -1160,7 +1158,7 @@ pub(super) fn set_enabled(
 pub(super) async fn set_key(
     (keys, root): (ProviderKeys<'_>, &Path),
     setting: SetKey,
-    kept: Option<&tilo_workspace_service::workspace_vault::ItemRef>,
+    kept: Option<&tilo_workspace_records::vault::ItemRef>,
 ) -> Result<ProviderView, String> {
     let SetKey { provider, key } = setting;
     let key = zeroize::Zeroizing::new(key);
@@ -1568,8 +1566,7 @@ mod tests {
                         password,
                     ))
                     .unwrap();
-                tilo_workspace_service::workspace_vault::ItemRef::from_id(added.id.as_str())
-                    .unwrap()
+                tilo_workspace_records::vault::ItemRef::from_id(added.id.as_str()).unwrap()
             };
             accounts::email::set_password_item(&mut account.config, Some(&reference.to_string()));
             vault.keep_account(&account);

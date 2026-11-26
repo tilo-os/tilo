@@ -25,8 +25,8 @@ use tilo_server_protocol::workspaces::{
 };
 use tilo_session_client::Link;
 use tilo_user_identity::{AgentScope, DeviceCapabilities, UserIdentity};
-use tilo_workspace_service::models as model_providers;
-use tilo_workspace_service::workspace_vault;
+use tilo_workspace_records::models as model_providers;
+use tilo_workspace_records::vault as workspace_vault;
 
 use crate::support::flow;
 use crate::support::{Device, TestHost, enrol, start_workspace_host_relaying};

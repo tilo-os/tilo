@@ -40,15 +40,15 @@ use tilo_action_policy::{ActionKind, Answer, Grant, Level};
 use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::models::{
+use tilo_workspace_records::accounts::{
+    self as workspace_accounts, AddMailAccount, AddMailWithItem, MailAccount,
+};
+use tilo_workspace_records::models::{
     self as model_providers, ProviderView, SetKey, SetKeyFromItem,
 };
-use tilo_workspace_service::workspace_accounts::{
-    self, AddMailAccount, AddMailWithItem, MailAccount,
-};
-use tilo_workspace_service::workspace_vault::{
-    self, AlwaysUse, AskForItem, ItemKind, ItemRef, ItemUse, ItemUses, ItemView, KeptItems,
-    Revealed, VaultAction, part,
+use tilo_workspace_records::vault::{
+    self as workspace_vault, AlwaysUse, AskForItem, ItemKind, ItemRef, ItemUse, ItemUses, ItemView,
+    KeptItems, Revealed, VaultAction, part,
 };
 
 use collab_types::WorkspaceId;

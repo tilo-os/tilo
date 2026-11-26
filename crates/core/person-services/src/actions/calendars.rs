@@ -5,7 +5,7 @@
 
 use tilo_actions::remote::CatalogueRow;
 use tilo_actions::{ActionKind, ActionParam, ParamType};
-use tilo_workspace_service::workspace_accounts;
+use tilo_workspace_records::accounts as workspace_accounts;
 
 use tilo_workspace_service::workspaces::actions::{Publisher, Verb};
 

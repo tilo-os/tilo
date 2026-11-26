@@ -38,7 +38,7 @@ use crate::v1::errors::ApiError;
 mod vault_actions {
     tilo_resource_macros::bindings!(
         provider = "tilo.vault",
-        surface = "../tilo-workspace-service/vault-surface.json"
+        surface = "../workspace-records/vault-surface.json"
     );
 }
 use vault_actions::vault;

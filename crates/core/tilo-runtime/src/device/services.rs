@@ -1876,9 +1876,9 @@ impl Daemon {
             return caller;
         }
         caller.granting(vec![tilo_action_policy::Grant::new(
-            tilo_workspace_service::workspace_accounts::sign_in_grant_id(app, workspace),
+            tilo_workspace_records::accounts::sign_in_grant_id(app, workspace),
             tilo_action_policy::Grantee::app(app),
-            tilo_workspace_service::workspace_accounts::sign_ins_node(workspace),
+            tilo_workspace_records::accounts::sign_ins_node(workspace),
             tilo_action_policy::KindSet::READ,
             tilo_action_policy::Answer::Allow,
             tilo_action_policy::Grantee::person(self.person_id()),
@@ -3561,12 +3561,12 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
         )
         .serving(&[super::mcp_server::SERVER], Arc::clone(&mcp_server))
         .serving(
-            &[tilo_workspace_service::models::RESOURCE],
+            &[tilo_workspace_records::models::RESOURCE],
             Arc::clone(&models),
         )
         .serving_prefix("vault.item:", Arc::clone(&vault_codes))
         .serving(
-            &[tilo_workspace_service::workspace_accounts::RESOURCE],
+            &[tilo_workspace_records::accounts::RESOURCE],
             Arc::clone(&accounts),
         )
     };

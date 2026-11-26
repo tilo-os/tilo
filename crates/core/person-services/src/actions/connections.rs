@@ -22,7 +22,7 @@ use tilo_actions::remote::{
 use tilo_resource::{Effect as _, EffectDecl};
 
 use crate::connections::{self, Calling, Reach};
-use tilo_workspace_service::person_connections::{self, ConnectionsAction};
+use tilo_workspace_records::connections::{self as person_connections, ConnectionsAction};
 use tilo_workspace_service::workspaces::actions::{Asked, DeclaredRow as _, Publisher};
 use tilo_workspace_service::workspaces::workspace_stores::Store;
 

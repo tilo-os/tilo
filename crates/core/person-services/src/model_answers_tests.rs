@@ -18,11 +18,11 @@ use test_http::Responder;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, ReceiptStatus, RemoteActionTarget,
 };
-use tilo_workspace_service::workspace_vault;
+use tilo_workspace_records::vault as workspace_vault;
 
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::models as model_providers;
+use tilo_workspace_records::models as model_providers;
 
 use crate::fixtures::hosting_device;
 use crate::fixtures::test_host;

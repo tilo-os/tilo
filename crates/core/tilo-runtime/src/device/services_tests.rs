@@ -3313,8 +3313,8 @@ fn a_secret_argument_is_kept_out_of_every_invocation_record() {
     use serde_json::json;
     use tilo_actions::remote::InvokeRequest;
     use tilo_actions::{ActionAddress, InvocationId};
-    use tilo_workspace_service::models as model_providers;
-    use tilo_workspace_service::workspace_accounts;
+    use tilo_workspace_records::accounts as workspace_accounts;
+    use tilo_workspace_records::models as model_providers;
 
     let Some(root) = isolated_root(SECRET_ARGUMENT_TEST) else {
         return;

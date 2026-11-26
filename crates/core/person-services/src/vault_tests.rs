@@ -18,9 +18,9 @@ use tilo_actions::remote::{
 };
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::models as model_providers;
-use tilo_workspace_service::workspace_accounts;
-use tilo_workspace_service::workspace_vault;
+use tilo_workspace_records::accounts as workspace_accounts;
+use tilo_workspace_records::models as model_providers;
+use tilo_workspace_records::vault as workspace_vault;
 
 use crate::fixtures::{admit, caller, hosted, settled, signed_from};
 use crate::fixtures::{guest_device, hosting_device};

@@ -15,7 +15,7 @@ use tilo_actions::{InvocationId, InvocationUpdate};
 mod model_providers {
     tilo_resource::bindings!(
         provider = "tilo.models",
-        surface = "../../core/tilo-workspace-service/models-surface.json"
+        surface = "../../core/workspace-records/models-surface.json"
     );
 }
 
@@ -23,7 +23,7 @@ mod model_providers {
 mod workspace_accounts {
     tilo_resource::bindings!(
         provider = "tilo.accounts",
-        surface = "../../core/tilo-workspace-service/accounts-surface.json"
+        surface = "../../core/workspace-records/accounts-surface.json"
     );
 }
 
@@ -31,7 +31,7 @@ mod workspace_accounts {
 mod vault_actions {
     tilo_resource::bindings!(
         provider = "tilo.vault",
-        surface = "../../core/tilo-workspace-service/vault-surface.json"
+        surface = "../../core/workspace-records/vault-surface.json"
     );
 }
 

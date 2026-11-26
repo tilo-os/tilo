@@ -13,7 +13,7 @@ use tilo_action_services::environment_commands::VmSecret;
 use tilo_actions::remote::Caller;
 use tilo_environment::machine_secrets::{DOCUMENT, MachineSecrets};
 use tilo_resource::Resource as _;
-use tilo_workspace_service::workspace_vault::ItemRef;
+use tilo_workspace_records::vault::ItemRef;
 use zeroize::Zeroizing;
 
 /// What a use of an item for the machine is written down as.

@@ -18,7 +18,7 @@ use std::time::Duration;
 
 use serde_json::{Map, Value};
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::person_connections::{
+use tilo_workspace_records::connections::{
     Call, Called, Connection, Connections, Ended, Leave, Looked, SignIn, SignInStep, Uses,
 };
 

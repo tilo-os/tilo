@@ -11,7 +11,7 @@ use std::path::Path;
 use agent_provider_config::{EndpointLocation, ProviderConfig, ProviderProfile};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
-use tilo_workspace_service::models::ModelsAction;
+use tilo_workspace_records::models::ModelsAction;
 
 use crate::person_settings::{ProviderKeys, provider_config};
 

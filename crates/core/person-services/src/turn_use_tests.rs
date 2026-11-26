@@ -22,9 +22,9 @@ use tilo_actions::remote::ActionCallError::{self, InvalidRequest, Refused, Unkno
 use tilo_actions::remote::asked::{AskedBy, AskedFacts, Named};
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::models as model_providers;
-use tilo_workspace_service::workspace_accounts;
-use tilo_workspace_service::workspace_vault;
+use tilo_workspace_records::accounts as workspace_accounts;
+use tilo_workspace_records::models as model_providers;
+use tilo_workspace_records::vault as workspace_vault;
 
 use crate::fixtures::hosting_device;
 use crate::fixtures::test_host;

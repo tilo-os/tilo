@@ -75,13 +75,13 @@ use tilo_actions::remote::ActionCallError::{self, InvalidRequest, NotPermitted, 
 use tilo_actions::remote::CatalogueRow;
 use tilo_actions::remote::asked::{AskedFacts, Fact};
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
-use tilo_workspace_service::models::{self as model_providers, SetKeyFromItem};
-use tilo_workspace_service::person_connections;
-use tilo_workspace_service::workspace_accounts::{self, AddMailWithItem};
+use tilo_workspace_records::accounts::{self as workspace_accounts, AddMailWithItem};
+use tilo_workspace_records::connections as person_connections;
+use tilo_workspace_records::models::{self as model_providers, SetKeyFromItem};
 
 use crate::PersonServices as Workspaces;
 use collab_types::WorkspaceId;
-use tilo_workspace_service::workspace_vault::{self, ItemRef, VaultAction};
+use tilo_workspace_records::vault::{self as workspace_vault, ItemRef, VaultAction};
 use tilo_workspace_service::workspaces::workspace_stores::Store;
 pub(crate) use tilo_workspace_service::workspaces::workspace_stores::agent_of;
 

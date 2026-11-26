@@ -17,7 +17,7 @@ use tilo_actions::remote::{
     workspace_governance_resource,
 };
 use tilo_actions::{ActionKind, ActionParam};
-use tilo_workspace_service::workspace_accounts;
+use tilo_workspace_records::accounts as workspace_accounts;
 
 use tilo_workspace_service::workspaces::actions::{Publisher, Verb};
 use tilo_workspace_service::workspaces::workspace_stores::Store;

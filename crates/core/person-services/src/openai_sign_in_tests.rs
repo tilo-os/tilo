@@ -19,8 +19,8 @@ use serde_json::{Value, json};
 use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::models as model_providers;
-use tilo_workspace_service::models::{SignInStarted, SignInState};
+use tilo_workspace_records::models as model_providers;
+use tilo_workspace_records::models::{SignInStarted, SignInState};
 
 use crate::OpenAiSignIn;
 use crate::fixtures::{Answering, admit, answered, ask_own, hosted, request, settled};

@@ -15201,6 +15201,7 @@ dependencies = [
  "tilo-workspace-agent",
  "tilo-workspace-emoji",
  "tilo-workspace-keys",
+ "tilo-workspace-records",
  "tilo-workspace-service",
  "tokio",
  "tokio-rustls",
@@ -16730,6 +16731,7 @@ dependencies = [
  "tilo-user-identity",
  "tilo-vision-service",
  "tilo-workspace-agent",
+ "tilo-workspace-records",
  "tilo-workspace-service",
  "tilolang-calendar",
  "tilolang-cli",
@@ -19141,6 +19143,7 @@ dependencies = [
  "tilo-automerge-isolate",
  "tilo-browser-continuity-core",
  "tilo-clock",
+ "tilo-cloud-source",
  "tilo-collab-types",
  "tilo-collaboration",
  "tilo-content",
@@ -19170,6 +19173,7 @@ dependencies = [
  "tilo-user-identity",
  "tilo-wire-frame",
  "tilo-workspace-agent",
+ "tilo-workspace-records",
  "tilo-workspace-service",
  "tokio",
  "tracing",
@@ -19883,6 +19887,7 @@ dependencies = [
  "tilo-wasm-aot",
  "tilo-wire-frame",
  "tilo-workspace-keys",
+ "tilo-workspace-records",
  "tilo-workspace-search",
  "tilo-workspace-service",
  "tilolang",
@@ -20630,6 +20635,7 @@ dependencies = [
  "tilo-workspace-directory",
  "tilo-workspace-join",
  "tilo-workspace-keys",
+ "tilo-workspace-records",
  "tilo-workspace-search",
  "tilo-workspace-service",
  "tilolang-calendar",
@@ -20749,6 +20755,7 @@ dependencies = [
  "tilo-user-identity",
  "tilo-workspace-join",
  "tilo-workspace-keys",
+ "tilo-workspace-records",
  "tilo-workspace-service",
  "tokio",
  "tokio-rustls",
@@ -22328,6 +22335,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-workspace-records"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-app-id",
+ "tilo-resource",
+ "tilo-surface-compile",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-workspace-search"
 version = "0.1.0"
 dependencies = [
@@ -22391,7 +22412,6 @@ dependencies = [
  "tilo-broker-core",
  "tilo-browser-continuity-core",
  "tilo-clock",
- "tilo-cloud-source",
  "tilo-collab-types",
  "tilo-collaboration",
  "tilo-contact-directory",
@@ -22439,6 +22459,7 @@ dependencies = [
  "tilo-workspace-agent",
  "tilo-workspace-emoji",
  "tilo-workspace-keys",
+ "tilo-workspace-records",
  "tilo-workspace-search",
  "tokio",
  "tracing",
@@ -28131,6 +28152,7 @@ dependencies = [
  "tilo-workspace-emoji",
  "tilo-workspace-join",
  "tilo-workspace-keys",
+ "tilo-workspace-records",
  "tilo-workspace-search",
  "tilo-workspace-service",
  "tilo-x11-transfer",

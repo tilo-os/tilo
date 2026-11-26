@@ -11,7 +11,7 @@
 
 use serde_json::{Value, json};
 use tilo_actions::InvocationUpdate;
-use tilo_workspace_service::workspace_accounts;
+use tilo_workspace_records::accounts as workspace_accounts;
 
 use crate::language::host;
 

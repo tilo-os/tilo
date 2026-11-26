@@ -16,7 +16,7 @@ use serde_json::json;
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCapabilities;
-use tilo_workspace_service::workspace_vault;
+use tilo_workspace_records::vault as workspace_vault;
 
 use crate::fixtures::device_cert;
 use crate::fixtures::{member_service, shared_with};

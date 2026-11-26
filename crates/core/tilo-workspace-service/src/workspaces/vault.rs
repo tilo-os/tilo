@@ -217,7 +217,7 @@ impl Workspaces {
     /// `call` is the request the write answers, when a caller asked for it: the host that keeps
     /// the workspace's own copy writes it for them, keeping the call as they signed it, so every
     /// device reading it sees that they asked and decides the step their action declares
-    /// ([`crate::workspace_vault::effects`]) as theirs. An agent's call is kept with
+    /// ([`tilo_workspace_records::vault::effects`]) as theirs. An agent's call is kept with
     /// how it was allowed, and one nobody signed (a turn this host carries out, a call it
     /// admitted again on its person's yes) is signed by this host as the device that carried it
     /// out ([`Self::carried_call`]).

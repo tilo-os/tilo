@@ -30,8 +30,8 @@ use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 
 use crate::person_vault::asked_of;
 use crate::vault_release::{AppProcess, device_may_not_read};
-use tilo_workspace_service::workspace_vault::{
-    self, ItemRef, PageFilled, PageLogin, PageLogins, VaultAction,
+use tilo_workspace_records::vault::{
+    self as workspace_vault, ItemRef, PageFilled, PageLogin, PageLogins, VaultAction,
 };
 
 /// What a page login action that reached the vault's provider, rather than the window it would

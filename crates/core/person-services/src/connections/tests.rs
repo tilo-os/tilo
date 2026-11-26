@@ -12,7 +12,7 @@ use accounts::vault_items::{ItemError, ItemId, ItemKind, Place};
 use crate::VaultAt;
 use serde_json::{Value, json};
 use test_http::{Reply, Responder};
-use tilo_workspace_service::person_connections::{
+use tilo_workspace_records::connections::{
     Call, Command, Connection, Ended, Leave, SignIn, State, Use,
 };
 

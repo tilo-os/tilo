@@ -16,7 +16,7 @@ use agent_provider_config::protocol::{
 };
 use agent_provider_config::{AgentModel, ModelDescriptor, ProviderProfile, ProviderProtocol};
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::models::SetKey;
+use tilo_workspace_records::models::SetKey;
 
 use super::{Events, Interaction, ModelProvider, ProviderCall, ProviderFuture};
 use crate::person_settings::{ProviderKeys, provider_config, save_provider_config, set_key};

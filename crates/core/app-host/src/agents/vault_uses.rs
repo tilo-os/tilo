@@ -28,7 +28,7 @@ use tilo_actions::remote::{
 };
 use tilo_lock::MutexRecover as _;
 use tilo_person_services::hosted_use::PageFill;
-use tilo_workspace_service::workspace_vault::{self, FillField};
+use tilo_workspace_records::vault::{self as workspace_vault, FillField};
 use zeroize::Zeroizing;
 
 use super::turn_provider::{Ending, Rows};

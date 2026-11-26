@@ -357,7 +357,15 @@ fn bea_reads_none_of_adas_chat_draft() {
     let draft = target(drafts.first().expect("Ada's draft in the channel"));
     let kind = meta.kind_of("Draft");
     let (_, laptop_counts, _, laptop_reads) = found(&laptop, &kind, "", &draft);
-    assert_eq!((laptop_counts, laptop_reads), (1, true), "Ada's other device has her draft");
+    assert_eq!(
+        (laptop_counts, laptop_reads),
+        (1, true),
+        "Ada's other device has her draft"
+    );
     let (_, bea_counts, _, bea_reads) = found(&bea, &kind, "", &draft);
-    assert_eq!((bea_counts, bea_reads), (0, false), "Bea's device has none of it");
+    assert_eq!(
+        (bea_counts, bea_reads),
+        (0, false),
+        "Bea's device has none of it"
+    );
 }

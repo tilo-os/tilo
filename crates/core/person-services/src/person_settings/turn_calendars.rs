@@ -16,7 +16,7 @@
 use serde_json::Value;
 use tilo_action_policy::ActionKind;
 use tilo_actions::remote::{ActionCallError, CatalogueRow, InvokeRequest, RemoteActionTarget};
-use tilo_workspace_service::workspace_accounts::{self, AccountsAction};
+use tilo_workspace_records::accounts::{self as workspace_accounts, AccountsAction};
 
 use crate::hosted_use::HostedTurn;
 use crate::person_settings::kept_sign_ins::Signing;

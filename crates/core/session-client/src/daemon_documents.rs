@@ -64,10 +64,7 @@ pub enum ShellLinkAnswer {
 ///
 /// # Errors
 /// The daemon did not answer, refused the token, or answered no link.
-pub fn link_with(
-    socket: &std::path::Path,
-    token: Option<&str>,
-) -> Result<ShellLinkAnswer, String> {
+pub fn link_with(socket: &std::path::Path, token: Option<&str>) -> Result<ShellLinkAnswer, String> {
     use std::io::Write as _;
     let mut stream = tilo_socket::connect(socket)
         .map_err(|error| format!("this device's daemon at {}: {error}", socket.display()))?;

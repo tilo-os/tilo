@@ -18,7 +18,7 @@ use std::sync::{Arc, Mutex};
 use serde_json::{Value, json};
 use tilo_actions::remote::ActionProvider as _;
 use tilo_actions::remote::ReceiptStatus;
-use tilo_workspace_service::workspace_vault;
+use tilo_workspace_records::vault as workspace_vault;
 
 use crate::language::chat::{opens, said};
 use crate::language::host;

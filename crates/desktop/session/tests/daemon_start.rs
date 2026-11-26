@@ -102,7 +102,10 @@ fn the_persons_listing_offers_the_settings_the_session_serves() {
                 rows.into_iter()
                     .filter_map(|row| {
                         let action = row.action?;
-                        Some(format!("{} {}#{}", row.provider, action.address.resource, action.address.action))
+                        Some(format!(
+                            "{} {}#{}",
+                            row.provider, action.address.resource, action.address.action
+                        ))
                     })
                     .collect::<Vec<_>>()
             };

@@ -28,8 +28,8 @@ use tilo_actions::remote::asked::Offer;
 use tilo_actions::remote::{ActionCallError, Caller};
 use tilo_dav::discovery::CalendarCollection;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::workspace_accounts;
-use tilo_workspace_service::workspace_vault;
+use tilo_workspace_records::accounts as workspace_accounts;
+use tilo_workspace_records::vault as workspace_vault;
 
 use crate::fixtures::TestHost;
 use crate::fixtures::{admit, caller, hosted};

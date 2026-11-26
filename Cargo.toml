@@ -149,6 +149,7 @@ members = [
     "crates/core/actions",
     "crates/core/remote-actions",
     "crates/core/invocations",
+    "crates/core/workspace-records",
     "crates/core/automation",
     "crates/core/key-group",
     "crates/core/collab-types",

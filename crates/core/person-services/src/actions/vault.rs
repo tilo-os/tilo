@@ -9,7 +9,7 @@ use tilo_actions::remote::{
 };
 use tilo_resource::EffectDecl;
 
-use tilo_workspace_service::workspace_vault::{self, PERSON_ACTIONS};
+use tilo_workspace_records::vault::{self as workspace_vault, PERSON_ACTIONS};
 use tilo_workspace_service::workspaces::actions::{DeclaredRow as _, Publisher};
 use tilo_workspace_service::workspaces::workspace_stores::Store;
 

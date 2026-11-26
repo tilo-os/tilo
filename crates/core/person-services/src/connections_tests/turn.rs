@@ -27,8 +27,9 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::person_connections::{
-    self, ADD, BEGIN_SIGN_IN, CALL, FINISH_SIGN_IN, LIST, LOOK, PROPOSE, REFRESH, REMOVE, USES,
+use tilo_workspace_records::connections::{
+    self as person_connections, ADD, BEGIN_SIGN_IN, CALL, FINISH_SIGN_IN, LIST, LOOK, PROPOSE,
+    REFRESH, REMOVE, USES,
 };
 
 use super::{Refused, Served, admit, caller, hosted, hosting_device, start_serving};

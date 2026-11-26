@@ -983,7 +983,7 @@ fn own_line(
 /// a line whose process ended speaks for nobody.
 #[test]
 fn an_apps_own_process_keeps_reads_back_and_is_keyed_on_its_daemon_line() {
-    use tilo_workspace_service::workspace_vault;
+    use tilo_workspace_records::vault as workspace_vault;
     const BRIDGE: &str = "so.tilo.bridge";
     const READER: &str = "so.tilo.reader";
     const TOKEN: &str = "made-up-bridge-token-0123456789abcdef";

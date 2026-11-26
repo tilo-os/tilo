@@ -60,6 +60,8 @@ tilo-peer-state = { path = "../tilo-peer-state" }
 tilo-automerge-isolate.workspace = true
 tilo-actions = { path = "../actions", features = ["answer-reads", "document-read"] }
 tilo-remote-actions = { version = "0.1.0", path = "../remote-actions" }
+# The stores a workspace keeps beside its records, which its policy names.
+tilo-workspace-records = { path = "../workspace-records" }
 # Where Nearby Send hands a file to an AirDrop receiver: the descriptors its helper inherits.
 launcher = { path = "../launcher", optional = true }
 tilo-server-protocol = { path = "../tilo-server-protocol" }
@@ -166,8 +168,6 @@ tilo-content = { path = "../content", features = ["dir"] }
 # and the settings document whose surface every workspace declares.
 accounts = { package = "tilo-accounts", path = "../../integrations/accounts", features = ["person"] }
 settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
-# The sign-in a cloud mount is handed, in the shape the accounts answer it.
-cloud-source = { package = "tilo-cloud-source", path = "../../integrations/cloud-source" }
 # The cookies of a website session Browser opens a site with.
 browser-continuity-core = { package = "tilo-browser-continuity-core", path = "../browser-continuity-core", optional = true }
 # A device's cloud-storage mounts: sync now, pause and resume, read from the

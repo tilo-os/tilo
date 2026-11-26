@@ -18,13 +18,12 @@ use tilo_actions::remote::{
     ActionCallError, CatalogueProvider, CatalogueQuery, CatalogueRow, InvokeRequest,
     RemoteActionTarget, person_telling,
 };
-use tilo_workspace_service::models as model_providers;
+use tilo_workspace_records::models as model_providers;
 use tilo_workspace_service::workspaces::actions::LEARNED;
 use tilo_workspace_service::workspaces::providers::{
     Answered, Answering, Live, WorkspaceAnswers, WorkspaceCall,
 };
 use tilo_workspace_service::workspaces::workspace_stores::Store;
-use tilo_workspace_service::{person_connections, workspace_accounts, workspace_vault};
 
 use crate::{PersonServices, WeakPersonServices};
 
@@ -38,11 +37,11 @@ pub(crate) fn calendar_rows() -> Vec<CatalogueRow> {
 /// The providers the person services answer, each under its own id and granted as that
 /// application.
 const PROVIDED: [&str; 6] = [
-    workspace_accounts::PROVIDER,
+    tilo_workspace_records::accounts::PROVIDER,
     model_providers::PROVIDER,
-    workspace_vault::PROVIDER,
+    tilo_workspace_records::vault::PROVIDER,
     person_telling::PROVIDER,
-    person_connections::PROVIDER,
+    tilo_workspace_records::connections::PROVIDER,
     // What the workspace's agents learned about the person.
     LEARNED,
 ];
@@ -115,8 +114,10 @@ type ParamsOf = fn(&str) -> Option<Vec<ActionParam>>;
 impl WorkspaceAnswers for Provided {
     fn children(&self) -> &'static [&'static str] {
         match self.provider {
-            workspace_vault::PROVIDER => &[tilo_actions::remote::WORKSPACE_VAULT],
-            workspace_accounts::PROVIDER => &[tilo_actions::remote::WORKSPACE_MAIL_ACCOUNTS],
+            tilo_workspace_records::vault::PROVIDER => &[tilo_actions::remote::WORKSPACE_VAULT],
+            tilo_workspace_records::accounts::PROVIDER => {
+                &[tilo_actions::remote::WORKSPACE_MAIL_ACCOUNTS]
+            }
             model_providers::PROVIDER => &[tilo_actions::remote::WORKSPACE_MODELS],
             _ => &[],
         }
@@ -144,8 +145,12 @@ impl WorkspaceAnswers for Provided {
             };
             let asked = (call.workspace, call.caller, call.certificate);
             match self.provider {
-                workspace_accounts::PROVIDER => services.mail_account_rows(asked, workspace).await,
-                workspace_vault::PROVIDER => services.vault_rows(asked, workspace).await,
+                tilo_workspace_records::accounts::PROVIDER => {
+                    services.mail_account_rows(asked, workspace).await
+                }
+                tilo_workspace_records::vault::PROVIDER => {
+                    services.vault_rows(asked, workspace).await
+                }
                 model_providers::PROVIDER => services.models_rows(asked, workspace).await,
                 _ => Vec::new(),
             }
@@ -155,8 +160,11 @@ impl WorkspaceAnswers for Provided {
     fn params(&self, target: &RemoteActionTarget) -> Option<Vec<ActionParam>> {
         let address = &target.address;
         let (child, own): (ParamsOf, _) = match self.provider {
-            workspace_vault::PROVIDER => (workspace_vault::params_of, vault::vault_action(address)),
-            workspace_accounts::PROVIDER => {
+            tilo_workspace_records::vault::PROVIDER => (
+                tilo_workspace_records::vault::params_of,
+                vault::vault_action(address),
+            ),
+            tilo_workspace_records::accounts::PROVIDER => {
                 (mail::account_params_of, mail::account_action(address))
             }
             model_providers::PROVIDER => (models::params_of, models::models_action(address)),
@@ -166,7 +174,9 @@ impl WorkspaceAnswers for Provided {
             return child(action);
         }
         match self.provider {
-            workspace_accounts::PROVIDER => workspace_accounts::params_of(&address.action),
+            tilo_workspace_records::accounts::PROVIDER => {
+                tilo_workspace_records::accounts::params_of(&address.action)
+            }
             _ => child(&address.action),
         }
     }
@@ -174,8 +184,12 @@ impl WorkspaceAnswers for Provided {
     fn answers_a_secret(&self, target: &RemoteActionTarget) -> bool {
         let address = &target.address;
         let action = match self.provider {
-            workspace_vault::PROVIDER => vault::vault_action(address).map(|(_, action)| action),
-            workspace_accounts::PROVIDER => mail::account_action(address).map(|(_, action)| action),
+            tilo_workspace_records::vault::PROVIDER => {
+                vault::vault_action(address).map(|(_, action)| action)
+            }
+            tilo_workspace_records::accounts::PROVIDER => {
+                mail::account_action(address).map(|(_, action)| action)
+            }
             model_providers::PROVIDER => models::models_action(address).map(|(_, action)| action),
             _ => return false,
         };
@@ -204,14 +218,16 @@ impl WorkspaceAnswers for Provided {
                 // An agent or a key the workspace's policy lets read its mail or its calendars
                 // finds what it may do with them here. A page asks directly, and is offered no
                 // row.
-                workspace_accounts::PROVIDER
+                tilo_workspace_records::accounts::PROVIDER
                     if caller.acting().is_agent() || caller.acting().app().is_some() =>
                 {
                     (mail::MAIL, services.mail_rows(asked).await)
                 }
                 // Passwords finds the vault's own calls its person may make, which it calls by
                 // address.
-                workspace_vault::PROVIDER => (vault::VAULT, services.passwords_rows(asked).await),
+                tilo_workspace_records::vault::PROVIDER => {
+                    (vault::VAULT, services.passwords_rows(asked).await)
+                }
                 // An agent of a person's finds that person's log of what
                 // they were told here: it tells them, and marks what it
                 // told as not to be missed.
@@ -223,7 +239,9 @@ impl WorkspaceAnswers for Provided {
                 }
                 // An agent finds what it may read of the services the workspace connected.
                 // Adding one is no row.
-                person_connections::PROVIDER if services.connects_as_agent(asked).await => {
+                tilo_workspace_records::connections::PROVIDER
+                    if services.connects_as_agent(asked).await =>
+                {
                     (connections::CONNECTIONS, connections::agent_rows())
                 }
                 _ => return Vec::new(),
@@ -262,7 +280,9 @@ impl WorkspaceAnswers for Provided {
             if model_asks::is_model_ask(request) {
                 return services.ask_model(call, request).await;
             }
-            if request.target == workspace_accounts::target(workspace_accounts::WATCH) {
+            if request.target
+                == tilo_workspace_records::accounts::target(tilo_workspace_records::accounts::WATCH)
+            {
                 return services.watch_accounts(call, request).await;
             }
             services.answer(call, request).await.map(Answered::Value)
@@ -276,12 +296,15 @@ fn uses_by_reference(target: &RemoteActionTarget) -> bool {
     matches!(
         (target.provider.as_str(), target.address.action.as_str()),
         (
-            workspace_accounts::PROVIDER,
-            workspace_accounts::ADD_MAIL_WITH_ITEM
+            tilo_workspace_records::accounts::PROVIDER,
+            tilo_workspace_records::accounts::ADD_MAIL_WITH_ITEM
         ) | (
             model_providers::PROVIDER,
             model_providers::SET_KEY_FROM_ITEM
-        ) | (workspace_vault::PROVIDER, workspace_vault::ASK)
+        ) | (
+            tilo_workspace_records::vault::PROVIDER,
+            tilo_workspace_records::vault::ASK
+        )
     )
 }
 
@@ -316,7 +339,7 @@ impl PersonServices {
             // The person's own mail accounts and model providers, kept here when their
             // workspace runs here: a page has no connection to a mail server and no vault of
             // its own.
-            (workspace_accounts::PROVIDER, _) => {
+            (tilo_workspace_records::accounts::PROVIDER, _) => {
                 Box::pin(self.person_accounts_invoke(workspace, caller, certificate, request)).await
             }
             (model_providers::PROVIDER, _) => {
@@ -325,7 +348,7 @@ impl PersonServices {
             }
             // What the person keeps to sign in with, in that same vault: nothing of it is read
             // back, and no agent asks.
-            (workspace_vault::PROVIDER, _) => {
+            (tilo_workspace_records::vault::PROVIDER, _) => {
                 self.person_vault_invoke(workspace, caller, certificate, request)
                     .await
             }
@@ -340,7 +363,7 @@ impl PersonServices {
                 self.person_learned_invoke(workspace, caller, certificate, request)
                     .await
             }
-            (person_connections::PROVIDER, _) => {
+            (tilo_workspace_records::connections::PROVIDER, _) => {
                 Self::connections_invoke(self, asked, request).await
             }
             _ => Err(ActionCallError::UnknownAction),
@@ -348,7 +371,7 @@ impl PersonServices {
     }
 
     /// Follow `call`'s workspace's mail accounts, whom its policy lets read them, as `request`
-    /// asks ([`workspace_accounts::WATCH`]): the accounts now, and again whenever the person's
+    /// asks ([`tilo_workspace_records::accounts::WATCH`]): the accounts now, and again whenever the person's
     /// settings move and they read differently.
     async fn watch_accounts(
         &self,
@@ -359,7 +382,7 @@ impl PersonServices {
             .reaching_allowed(
                 (call.workspace, call.caller, call.certificate),
                 Store::MAIL,
-                workspace_accounts::WATCH,
+                tilo_workspace_records::accounts::WATCH,
                 tilo_action_policy::ActionKind::Read,
                 request,
             )

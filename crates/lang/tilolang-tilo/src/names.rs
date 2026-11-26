@@ -77,10 +77,7 @@ pub struct HostNames {
 impl HostNames {
     /// The names read from `host`'s last members read, and what its embedder knows otherwise.
     #[must_use]
-    pub fn new(
-        otherwise: Rc<dyn NameHost>,
-        host: Rc<RefCell<Option<crate::host::Host>>>,
-    ) -> Self {
+    pub fn new(otherwise: Rc<dyn NameHost>, host: Rc<RefCell<Option<crate::host::Host>>>) -> Self {
         Self { host, otherwise }
     }
 

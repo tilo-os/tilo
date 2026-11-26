@@ -9,7 +9,7 @@ use tilo_actions::remote::{
 };
 use tilo_oauth::fake::{FakeAuthorizationServer, browse};
 use tilo_server_protocol::servers::person_workspace_id;
-use tilo_workspace_service::workspace_accounts::{self, ConnectedAccount, SignInStep};
+use tilo_workspace_records::accounts::{self as workspace_accounts, ConnectedAccount, SignInStep};
 
 use crate::fixtures::asking;
 use crate::fixtures::{admit, caller, hosted, settled};

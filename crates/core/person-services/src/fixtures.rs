@@ -17,7 +17,7 @@ use tilo_actions::remote::ActionProvider as _;
 use tilo_actions::remote::{ActionCallError, InvokeArgument, InvokeRequest, ReceiptStatus};
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::workspace_accounts;
+use tilo_workspace_records::accounts as workspace_accounts;
 use tilo_workspace_service::workspaces::actions::ServiceWorkspaceActions;
 use tilo_workspace_service::workspaces::fixtures as core;
 
@@ -85,7 +85,7 @@ pub(crate) async fn ask_own(
     argument: Value,
 ) -> Result<Value, ActionCallError> {
     let mut request = request("", "", argument);
-    request.target = tilo_workspace_service::models::target(verb);
+    request.target = tilo_workspace_records::models::target(verb);
     let provider = host.device_page(workspace_id, device);
     let asking = caller(device);
     let invocation = request.invocation;

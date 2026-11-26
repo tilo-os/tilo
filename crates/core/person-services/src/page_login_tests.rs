@@ -15,7 +15,9 @@
 use serde_json::{Value, json};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::{ActionCallError, InvokeArgument, InvokeRequest, RemoteActionTarget};
-use tilo_workspace_service::workspace_vault::{self, ItemRef, PageFilled, PageLogin, PageLogins};
+use tilo_workspace_records::vault::{
+    self as workspace_vault, ItemRef, PageFilled, PageLogin, PageLogins,
+};
 
 use crate::fixtures::{caller, hosted};
 use crate::fixtures::{hosting_device, test_host};

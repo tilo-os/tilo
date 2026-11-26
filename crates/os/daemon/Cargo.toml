@@ -102,6 +102,7 @@ postcard.workspace = true
 # records are the language runtime's, so the tests that drive them run here, beside the daemon
 # that links the runtime and mounts it.
 tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["test-support", "agents"] }
+tilo-workspace-records = { path = "../../core/workspace-records" }
 tilo-person-services = { path = "../../core/person-services", features = ["test-support", "agents"] }
 tilo-app-host = { path = "../../core/app-host", features = ["test-support", "agents"] }
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }

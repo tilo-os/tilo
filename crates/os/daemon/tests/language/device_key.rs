@@ -232,7 +232,11 @@ fn a_fresh_computer_signs_at_once_through_its_first_sign_in() {
             refused.message.contains("this device has no person yet"),
             "{refused:?}"
         );
-        assert!(asked.elapsed() < AT_ONCE, "refusing took {:?}", asked.elapsed());
+        assert!(
+            asked.elapsed() < AT_ONCE,
+            "refusing took {:?}",
+            asked.elapsed()
+        );
 
         // The first sign-in: the computer founds its person, through the same call `tilo` makes.
         let place = tilo_api::daemon::DaemonPlace::at(native.parent().unwrap(), profile);
@@ -342,7 +346,9 @@ fn the_daemon_renews_a_due_certificate_a_session_asks_it_to() {
         let renewed = tilo_device_identity::persist::read_device_cert(&path).unwrap();
         assert!(renewed.issued_at_ns >= now, "{renewed:?}");
         assert_eq!(
-            renewed.expires_at_ns.map(|expires| expires - renewed.issued_at_ns),
+            renewed
+                .expires_at_ns
+                .map(|expires| expires - renewed.issued_at_ns),
             Some(3 * HOUR),
             "a renewal keeps the certificate's lifetime"
         );
@@ -350,7 +356,11 @@ fn the_daemon_renews_a_due_certificate_a_session_asks_it_to() {
         assert_eq!(renewed.device_public_key, held.device_public_key);
         tilo_user_identity::verify_device_cert_at(&renewed, tilo_clock::unix_now_ns())
             .expect("the person's root signed the renewal");
-        assert_eq!(actions.renew_certificates().unwrap(), 0, "nothing is due once renewed");
+        assert_eq!(
+            actions.renew_certificates().unwrap(),
+            0,
+            "nothing is due once renewed"
+        );
         running.stop().unwrap();
     });
 }

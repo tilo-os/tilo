@@ -29,7 +29,7 @@ use agent_provider_config::{ProviderConfig, ProviderProfile, SignInIssuer, trans
 use serde::{Deserialize, Serialize};
 use tilo_lock::MutexRecover as _;
 use tilo_net::proxy::host::guarded_client;
-use tilo_workspace_service::models::{AccountUse, ProviderView, SignInStarted, SignInState};
+use tilo_workspace_records::models::{AccountUse, ProviderView, SignInStarted, SignInState};
 use zeroize::Zeroizing;
 
 use super::{Reach, listing, merged};
@@ -231,7 +231,7 @@ impl crate::PersonServices {
     /// and keep the grant in the workspace's vault. A person signs in once
     /// at a time: one begun before is let go.
     ///
-    /// [`BEGIN_SIGN_IN`]: tilo_workspace_service::models::BEGIN_SIGN_IN
+    /// [`BEGIN_SIGN_IN`]: tilo_workspace_records::models::BEGIN_SIGN_IN
     pub(super) async fn begin_openai_sign_in(
         &self,
         (person, workspace): ([u8; 32], &str),
@@ -309,7 +309,7 @@ impl crate::PersonServices {
     /// it changed, or after a while as still waiting. A sign-in that ended
     /// is answered once and then forgotten.
     ///
-    /// [`WAIT_SIGN_IN`]: tilo_workspace_service::models::WAIT_SIGN_IN
+    /// [`WAIT_SIGN_IN`]: tilo_workspace_records::models::WAIT_SIGN_IN
     pub(super) async fn wait_openai_sign_in(
         &self,
         person: [u8; 32],
@@ -342,7 +342,7 @@ impl crate::PersonServices {
 
     /// Let go of `person`'s sign-in ([`CANCEL_SIGN_IN`]).
     ///
-    /// [`CANCEL_SIGN_IN`]: tilo_workspace_service::models::CANCEL_SIGN_IN
+    /// [`CANCEL_SIGN_IN`]: tilo_workspace_records::models::CANCEL_SIGN_IN
     pub(super) fn cancel_openai_sign_in(&self, person: [u8; 32], sign_in: &str) {
         let mut pending = self.inner.models.sign_ins.pending.lock_recover();
         if pending

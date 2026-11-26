@@ -10,7 +10,7 @@ use std::path::Path;
 use serde_json::{Map, Value};
 use tilo_account_probe::mail_servers::MailServers;
 use tilo_actions::remote::ActionCallError;
-use tilo_workspace_service::workspace_accounts::{
+use tilo_workspace_records::accounts::{
     AccountServices, AccountsAction, AddMailAccount, FoundServers, MailAccount, MailAccounts,
     MailSignIn, MailSignIns, Provider, ServerAt, SignedInAccount,
 };
@@ -146,7 +146,7 @@ impl crate::PersonServices {
         if kept.is_err()
             && let Some((calendar, _)) = &linked
             && let Some(reference) = accounts::email::password_item(&calendar.config)
-                .and_then(tilo_workspace_service::workspace_vault::ItemRef::from_id)
+                .and_then(tilo_workspace_records::vault::ItemRef::from_id)
         {
             let _ = signing
                 .vault
@@ -434,7 +434,7 @@ impl crate::PersonServices {
             .iter()
             .filter(|(entry, _)| entry.kind == accounts::SecretItemKind::Login)
             .filter_map(|(entry, _)| {
-                let id = tilo_workspace_service::workspace_vault::ItemRef::from_id(&entry.id.0)?;
+                let id = tilo_workspace_records::vault::ItemRef::from_id(&entry.id.0)?;
                 let account = accounts::vault_items::ItemId::parse(&entry.id.0)
                     .and_then(|id| items.kept_for(&id).map(str::to_owned))
                     .and_then(|kept| held.account(&kept))

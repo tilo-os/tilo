@@ -4,7 +4,7 @@
 //! went, read as `accounts`.
 //!
 //! The reading is the workspace service's, which this daemon holds ([`Workspaces`]): the same
-//! accounts record [`list`](tilo_workspace_service::workspace_accounts::LIST) answers and its members'
+//! accounts record [`list`](tilo_workspace_records::accounts::LIST) answers and its members'
 //! windows change, and no secret in it — a secret stays in the workspace's vault. A watch follows
 //! every write to that record, here or on another device, so a window listing the accounts draws
 //! again as one is added, signed in again or removed anywhere.
@@ -15,7 +15,7 @@ use tilo_app_host::services::Caller;
 
 use super::reading::{Changes, ReadLater, Served};
 
-pub use tilo_workspace_service::workspace_accounts::RESOURCE as ACCOUNTS;
+pub use tilo_workspace_records::accounts::RESOURCE as ACCOUNTS;
 
 /// The workspace's connected accounts, published to the apps this device serves, read where the
 /// workspaces keep them.

@@ -1322,6 +1322,7 @@ doc = false
 "tilo-workspace-emoji" = { path = "../../crates/core/tilo-workspace-emoji", default-features = false, features = [] }
 "tilo-workspace-join" = { path = "../../crates/core/workspace-join", default-features = false, features = ["test-support"] }
 "tilo-workspace-keys" = { path = "../../crates/core/workspace-keys", default-features = false, features = ["test-support"] }
+"tilo-workspace-records" = { path = "../../crates/core/workspace-records", default-features = false, features = [] }
 "tilo-workspace-search" = { path = "../../crates/core/workspace-search", default-features = false, features = ["test-support"] }
 "tilo-workspace-service" = { path = "../../crates/core/tilo-workspace-service", default-features = false, features = ["agents", "apps", "content", "device-keys", "files", "session-pages", "test-support"] }
 "tilo-x11-transfer" = { path = "../../crates/desktop/x11-transfer", default-features = false, features = [] }

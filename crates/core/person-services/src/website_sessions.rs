@@ -12,7 +12,7 @@ use accounts::vault_items::{
     ACCOUNT_FIELD, KIND_FIELD, MAX_USES_KEPT, Place, UseRecord, VaultChange,
 };
 use accounts::{Account, SecretItem, SecretItemKind};
-use tilo_workspace_service::workspace_vault::ItemRef;
+use tilo_workspace_records::vault::ItemRef;
 use zeroize::Zeroizing;
 
 use crate::person_settings::kept_sign_ins::sign_in_of;

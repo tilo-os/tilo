@@ -165,8 +165,8 @@ mod tests {
     /// kind in Passwords: what a device reading it takes the step as.
     #[test]
     fn the_vault_actions_declare_steps_this_record_takes() {
-        use crate::workspace_vault;
         use tilo_resource::Resource as _;
+        use tilo_workspace_records::vault as workspace_vault;
         let verbs: Vec<_> = WorkspaceVaultEntries::declarations()
             .into_iter()
             .map(|declared| declared.id)

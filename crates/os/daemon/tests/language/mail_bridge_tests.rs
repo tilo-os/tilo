@@ -15,10 +15,10 @@ use std::time::Duration;
 use serde_json::json;
 use tilo_action_policy::{Answer, Grant, Grantee, KindSet, TreePath};
 use tilo_actions::remote::Caller;
+use tilo_workspace_records::vault as workspace_vault;
 use tilo_workspace_service::work::{
     HostConnections, Order, Turn, connection_holder, takes_turn_in,
 };
-use tilo_workspace_service::workspace_vault;
 use tilo_workspace_service::workspaces::MemberDevice;
 use tilo_workspace_service::workspaces::fixtures::{
     TestGroupKeys, hosting_device, record_grants, test_host_holding,
@@ -382,9 +382,9 @@ fn the_mail_connector_signs_in_with_the_password_the_workspace_keeps() {
             )
             .expect("Mail's connection reads");
             let told = probe
-                .sign_ins::<tilo_workspace_service::workspace_accounts::MailSignIns>(
-                    tilo_workspace_service::workspace_accounts::target(
-                        tilo_workspace_service::workspace_accounts::SIGN_INS,
+                .sign_ins::<tilo_workspace_records::accounts::MailSignIns>(
+                    tilo_workspace_records::accounts::target(
+                        tilo_workspace_records::accounts::SIGN_INS,
                     ),
                 )
                 .unwrap_or_else(|refused| {
@@ -453,9 +453,9 @@ fn a_mail_account_added_later_signs_in_once_its_entry_is_allowed() {
             )
             .expect("Mail's connection reads");
             probe
-                .sign_ins::<tilo_workspace_service::workspace_accounts::MailSignIns>(
-                    tilo_workspace_service::workspace_accounts::target(
-                        tilo_workspace_service::workspace_accounts::SIGN_INS,
+                .sign_ins::<tilo_workspace_records::accounts::MailSignIns>(
+                    tilo_workspace_records::accounts::target(
+                        tilo_workspace_records::accounts::SIGN_INS,
                     ),
                 )
                 .unwrap_or_else(|refused| {
@@ -533,9 +533,9 @@ fn an_app_that_does_not_sign_in_is_refused_the_logins() {
         )
         .expect("Notes' connection reads");
         let refused = probe
-            .sign_ins::<tilo_workspace_service::workspace_accounts::MailSignIns>(
-                tilo_workspace_service::workspace_accounts::target(
-                    tilo_workspace_service::workspace_accounts::SIGN_INS,
+            .sign_ins::<tilo_workspace_records::accounts::MailSignIns>(
+                tilo_workspace_records::accounts::target(
+                    tilo_workspace_records::accounts::SIGN_INS,
                 ),
             )
             .expect_err("an app that does not sign in reads no login");

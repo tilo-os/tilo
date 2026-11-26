@@ -25,7 +25,7 @@ use tilo_remote_actions::signing_in::{NOT_ANSWERED, SigningIn};
 mod workspace_accounts {
     tilo_resource::bindings!(
         provider = "tilo.accounts",
-        surface = "../../core/tilo-workspace-service/accounts-surface.json"
+        surface = "../../core/workspace-records/accounts-surface.json"
     );
 }
 use tilo_socket::Stream;

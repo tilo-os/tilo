@@ -23,10 +23,10 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionAddress, InvocationId};
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::workspace_accounts::{
-    self, MailAccount, MailAccounts, MailSignIns, Provider,
+use tilo_workspace_records::accounts::{
+    self as workspace_accounts, MailAccount, MailAccounts, MailSignIns, Provider,
 };
-use tilo_workspace_service::workspace_vault;
+use tilo_workspace_records::vault as workspace_vault;
 
 use crate::fixtures::TestHost as TestHolder;
 use crate::fixtures::{admit, caller, hosted, settled};

@@ -22,9 +22,9 @@ use tilo_account_probe::AccountTester as _;
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_resource::{Id, Replica, Resource as _};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
-use tilo_workspace_service::workspace_accounts;
-use tilo_workspace_service::workspace_vault;
-use tilo_workspace_service::workspace_vault::ItemRef;
+use tilo_workspace_records::accounts as workspace_accounts;
+use tilo_workspace_records::vault as workspace_vault;
+use tilo_workspace_records::vault::ItemRef;
 use zeroize::Zeroizing;
 
 use crate::account_logins::{
@@ -479,9 +479,7 @@ async fn a_change_a_device_makes_for_another_member_names_the_member_who_asked()
 
     // Each of Bo's asks reaches Ada's device as the call Bo's device signed.
     let mut keeping = asking(workspace_accounts::LIST, &serde_json::json!({}));
-    keeping.target = tilo_workspace_service::workspace_vault::target(
-        tilo_workspace_service::workspace_vault::ADD,
-    );
+    keeping.target = tilo_workspace_records::vault::target(tilo_workspace_records::vault::ADD);
     let keeping = members.signed(keeping);
     let item = members
         .owner
@@ -1030,10 +1028,7 @@ async fn a_device_that_may_not_read_the_vault_releases_its_connection_nothing() 
     let process = AppProcess::connection(BRIDGE);
     let call = InvokeRequest {
         invocation: tilo_actions::InvocationId::new(),
-        target: tilo_workspace_service::workspace_vault::ItemRef::target(
-            &item,
-            workspace_vault::RELEASE,
-        ),
+        target: tilo_workspace_records::vault::ItemRef::target(&item, workspace_vault::RELEASE),
         argument: InvokeArgument::None,
         context: None,
         confirmation: None,
@@ -1068,7 +1063,7 @@ async fn a_device_that_may_not_read_the_vault_releases_its_connection_nothing() 
 #[test]
 fn the_account_actions_declare_steps_the_accounts_record_takes() {
     use tilo_resource::Resource as _;
-    use tilo_workspace_service::workspace_accounts;
+    use tilo_workspace_records::accounts as workspace_accounts;
     let verbs: Vec<_> = AccountList::declarations()
         .into_iter()
         .map(|declared| declared.id)

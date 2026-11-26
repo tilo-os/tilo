@@ -585,7 +585,10 @@ mod tests {
     fn a_sign_in_carries_what_the_person_typed_only_to_the_window() {
         let (page, asked) = page();
         page.call(SIGN_IN).unwrap();
-        answering((Some(approve(&["ada", PASSWORD])), false), || page.call(SIGN_IN)).unwrap();
+        answering((Some(approve(&["ada", PASSWORD])), false), || {
+            page.call(SIGN_IN)
+        })
+        .unwrap();
         page.call(SIGN_IN).unwrap();
         let asked: Vec<serde_json::Value> = asked
             .borrow()

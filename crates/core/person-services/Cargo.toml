@@ -24,6 +24,9 @@ device-keys = ["tilo-workspace-service/device-keys"]
 [dependencies]
 tilo-action-services = { version = "0.1.0", path = "../action-services", features = ["test-support"] }
 tilo-workspace-service = { path = "../tilo-workspace-service" }
+tilo-workspace-records = { path = "../workspace-records" }
+# The sign-in a cloud mount is handed, in the shape the accounts answer it.
+cloud-source = { package = "tilo-cloud-source", path = "../../integrations/cloud-source" }
 tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile", optional = true }
 tilo-test-env = { path = "../../../tools/test-env", optional = true }
 tilo-failure = { version = "0.1.0", path = "../../platform/tilo-failure" }

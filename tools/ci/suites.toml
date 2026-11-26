@@ -770,7 +770,7 @@ package = "tilo-api"
 # surface their service publishes.
 inputs = [
   "os/containers/tilo-api/host-info.json",
-  "crates/core/tilo-workspace-service/vault-surface.json",
+  "crates/core/workspace-records/vault-surface.json",
 ]
 readers = ["crates/core/tilo-api/src/tests.rs"]
 
@@ -928,9 +928,9 @@ inputs = [
   "crates/desktop/session/host-account-surface.json",
   "crates/desktop/session/window-menu-surface.json",
   "crates/core/tilo-workspace-service/mcp-server-surface.json",
-  "crates/core/tilo-workspace-service/models-surface.json",
+  "crates/core/workspace-records/models-surface.json",
   "crates/core/tilo-workspace-service/styles-surface.json",
-  "crates/core/tilo-workspace-service/accounts-surface.json",
+  "crates/core/workspace-records/accounts-surface.json",
   "apps/tl/passwords/",
   "crates/core/actions/src/remote/invocations-surface.json",
   "crates/services/vision/surface.json",
@@ -1477,7 +1477,7 @@ inputs = [
   "os/tests/seeded-state/var/lib/tilo/fs-capabilities.json/*",
   "tools/test-assets.py", "tools/test-assets-build.rs",
   # A mount binds its calls of the workspace's accounts to the surface their service publishes.
-  "crates/core/tilo-workspace-service/accounts-surface.json",
+  "crates/core/workspace-records/accounts-surface.json",
 ]
 readers = [
   "crates/core/fs/src/main.rs",
@@ -1488,22 +1488,22 @@ readers = [
 package = "tilolang-mail"
 # The connector binds its calls of the workspace's accounts to the surface their service
 # publishes.
-inputs = ["crates/core/tilo-workspace-service/accounts-surface.json"]
+inputs = ["crates/core/workspace-records/accounts-surface.json"]
 
 [[cargo]]
 package = "tilolang-calendar"
 # The connector binds its calls of the workspace's accounts to the surface their service
 # publishes.
-inputs = ["crates/core/tilo-workspace-service/accounts-surface.json"]
+inputs = ["crates/core/workspace-records/accounts-surface.json"]
 
 [[cargo]]
 package = "tilo-session-core"
 # The session's tests name the targets of the workspace's accounts, model providers and vault
 # from the surfaces their service publishes.
 inputs = [
-  "crates/core/tilo-workspace-service/accounts-surface.json",
-  "crates/core/tilo-workspace-service/models-surface.json",
-  "crates/core/tilo-workspace-service/vault-surface.json",
+  "crates/core/workspace-records/accounts-surface.json",
+  "crates/core/workspace-records/models-surface.json",
+  "crates/core/workspace-records/vault-surface.json",
 ]
 
 [[cargo]]

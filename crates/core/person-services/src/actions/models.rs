@@ -13,7 +13,7 @@ use tilo_actions::remote::{
 };
 use tilo_resource::{Effect as _, EffectDecl};
 
-use tilo_workspace_service::models::{self as model_providers, ModelsAction};
+use tilo_workspace_records::models::{self as model_providers, ModelsAction};
 use tilo_workspace_service::workspaces::actions::DeclaredRow as _;
 use tilo_workspace_service::workspaces::workspace_stores::Store;
 

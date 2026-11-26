@@ -37,7 +37,7 @@ use tilo_net::proxy::host::{
 };
 use tilo_resource::Effect as _;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::models::{
+use tilo_workspace_records::models::{
     self as model_providers, AddProvider, ListedModels, ListingProblem, ModelProviders,
     ModelsAction, ProviderView, SetKey,
 };
@@ -438,7 +438,7 @@ enum Said {
 pub(super) async fn take_key(
     (keys, root): (ProviderKeys<'_>, &Path),
     setting: SetKey,
-    kept_as: Option<&tilo_workspace_service::workspace_vault::ItemRef>,
+    kept_as: Option<&tilo_workspace_records::vault::ItemRef>,
     reach: &Reach,
 ) -> Result<ProviderView, String> {
     let profile = provider_config(root)
@@ -825,7 +825,7 @@ mod tests {
     use std::net::IpAddr;
 
     use test_http::{Reply, Responder};
-    use tilo_workspace_service::models::Protocol;
+    use tilo_workspace_records::models::Protocol;
 
     use std::collections::BTreeMap;
     use std::path::PathBuf;

@@ -415,7 +415,7 @@ pub const MODERATION_UNDO: &str = "undo";
 pub const MODERATED_APP: &str = "so.tilo.chat";
 
 /// The provider a workspace's model providers answer under. Their provider declares their
-/// actions (`tilo_workspace_service::models`); what this crate knows of them is that a
+/// actions (`tilo_workspace_records::models`); what this crate knows of them is that a
 /// workspace's host keeps them (`tilo_action_services::WORKSPACE_KEPT_PROVIDERS`) and what each writes in the
 /// workspace's vault ([`MODEL_VAULT_STEPS`]).
 pub const MODELS_PROVIDER: &str = "tilo.models";
@@ -443,7 +443,7 @@ pub const MODEL_VAULT_STEPS: [(&str, &[&str]); 11] = {
 };
 
 /// The provider a workspace's connected accounts answer under. Their provider declares their
-/// actions (`tilo_workspace_service::workspace_accounts`); what this crate knows of them is that
+/// actions (`tilo_workspace_records::accounts`); what this crate knows of them is that
 /// a workspace's host keeps them (`tilo_action_services::WORKSPACE_KEPT_PROVIDERS`), what each writes
 /// ([`ACCOUNT_STEPS`]) and which answer a secret ([`ACCOUNT_SECRET_ANSWERS`]).
 pub const ACCOUNTS_PROVIDER: &str = "tilo.accounts";
@@ -528,7 +528,7 @@ fn vault_steps(table: &[(&str, &[&str])], action: &str) -> Vec<crate::ActionEffe
 }
 
 /// The provider a person's connected services answer under. Their provider declares their
-/// actions (`tilo_workspace_service::person_connections`); what this crate knows of them is
+/// actions (`tilo_workspace_records::connections`); what this crate knows of them is
 /// that a workspace's host keeps them (`tilo_action_services::WORKSPACE_KEPT_PROVIDERS`), what each writes in the
 /// workspace's vault ([`CONNECTION_VAULT_STEPS`]) and whose answers carry the service's own
 /// words ([`CONNECTION_SAID_ACTIONS`]).

@@ -13,8 +13,9 @@ use tilo_actions::remote::{
     InvokeRequest,
 };
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::person_connections::{
-    self, ADD, BEGIN_SIGN_IN, CALL, FINISH_SIGN_IN, LIST, LOOK, REFRESH, REMOVE, USES,
+use tilo_workspace_records::connections::{
+    self as person_connections, ADD, BEGIN_SIGN_IN, CALL, FINISH_SIGN_IN, LIST, LOOK, REFRESH,
+    REMOVE, USES,
 };
 
 use crate::connections::ASKS_FIRST;

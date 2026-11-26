@@ -16,8 +16,8 @@
 use accounts::vault_items::ItemKind;
 use serde_json::Value;
 use tilo_actions::remote::ActionCallError;
-use tilo_workspace_service::workspace_accounts::{
-    AccountsAction, CloudAccount, CloudAccounts, CloudCredential, CloudCredentialKind,
+use tilo_workspace_records::accounts::{
+    AccountsAction, CloudAccount, CloudAccounts, CloudCredential, CloudCredentialKind, CloudHeader,
 };
 use zeroize::Zeroizing;
 
@@ -181,7 +181,50 @@ async fn credential(
     let Some(made_credential) = made.credential else {
         return Err("That account's sign-in needs renewing. Sign in again".to_owned());
     };
-    Ok(tilo_workspace_service::workspace_accounts::CloudCredential::for_mount(made_credential))
+    Ok(for_mount(made_credential))
+}
+
+/// What a cloud mount is handed for `credential`: the same sign-in, in the shape every
+/// mount reads.
+fn for_mount(credential: cloud_source::Credential) -> CloudCredential {
+    let expires_at_ms = match &credential {
+        cloud_source::Credential::Bearer { expires, .. }
+        | cloud_source::Credential::Session { expires, .. } => expires.and_then(|time| {
+            time.duration_since(std::time::UNIX_EPOCH)
+                .ok()
+                .and_then(|since| u64::try_from(since.as_millis()).ok())
+        }),
+        cloud_source::Credential::Basic { .. } => None,
+    };
+    match credential {
+        cloud_source::Credential::Basic { username, password } => CloudCredential {
+            kind: CloudCredentialKind::Basic,
+            username,
+            secret: password.to_string(),
+            headers: Vec::new(),
+            expires_at_ms,
+        },
+        cloud_source::Credential::Bearer { token, .. } => CloudCredential {
+            kind: CloudCredentialKind::Bearer,
+            username: String::new(),
+            secret: token.to_string(),
+            headers: Vec::new(),
+            expires_at_ms,
+        },
+        cloud_source::Credential::Session { headers, .. } => CloudCredential {
+            kind: CloudCredentialKind::Session,
+            username: String::new(),
+            secret: String::new(),
+            headers: headers
+                .into_iter()
+                .map(|(name, value)| CloudHeader {
+                    name,
+                    value: value.to_string(),
+                })
+                .collect(),
+            expires_at_ms,
+        },
+    }
 }
 
 /// Report how the sync of `account` went on this device, `message` summing it up, as every

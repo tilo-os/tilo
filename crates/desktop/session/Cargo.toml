@@ -271,6 +271,7 @@ tilo-network-actor = { path = "../network-actor" }
 # This device's own workspace service: the one a server runs, holding the workspaces this
 # device founds.
 tilo-workspace-service = { path = "../../core/tilo-workspace-service", features = ["agents", "apps", "files"] }
+tilo-workspace-records = { path = "../../core/workspace-records" }
 tilo-person-services = { path = "../../core/person-services", features = ["agents", "apps"] }
 tilo-app-host = { path = "../../core/app-host", features = ["agents", "files"] }
 # The device's search index the palette reads.

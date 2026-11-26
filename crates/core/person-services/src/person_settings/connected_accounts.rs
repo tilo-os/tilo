@@ -14,8 +14,8 @@
 //! member, and no app but the one that described the issuer, reads any of it; that app reads
 //! only the account's id and name ([`Workspaces::connected_account`]).
 //!
-//! [`CONNECT_ACCOUNT`]: tilo_workspace_service::workspace_accounts::CONNECT_ACCOUNT
-//! [`FINISH_CONNECT_ACCOUNT`]: tilo_workspace_service::workspace_accounts::FINISH_CONNECT_ACCOUNT
+//! [`CONNECT_ACCOUNT`]: tilo_workspace_records::accounts::CONNECT_ACCOUNT
+//! [`FINISH_CONNECT_ACCOUNT`]: tilo_workspace_records::accounts::FINISH_CONNECT_ACCOUNT
 
 use std::collections::BTreeMap;
 use std::sync::Mutex;
@@ -28,7 +28,7 @@ use tilo_actions::remote::{ActionCallError, Caller, InvokeRequest};
 use tilo_lock::MutexRecover as _;
 use tilo_oauth::OAuthError;
 use tilo_oauth::described::{ConfirmedAccount, DescribedIssuer};
-use tilo_workspace_service::workspace_accounts::{
+use tilo_workspace_records::accounts::{
     AccountIssuer, AccountsAction, CONNECT_ACCOUNT, ConnectedAccount, FINISH_CONNECT_ACCOUNT,
     FORGET_CONNECTED_ACCOUNT, SignInStep,
 };

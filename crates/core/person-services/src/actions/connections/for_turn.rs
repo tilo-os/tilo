@@ -38,9 +38,11 @@ use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
 use tilo_actions::{ActionKind, ActionParam, ParamType};
 #[cfg(feature = "agents")]
 use tilo_resource::Effect as _;
-use tilo_workspace_service::person_connections::{self, Call, ConnectionsAction, Leave};
+use tilo_workspace_records::connections::{
+    self as person_connections, Call, ConnectionsAction, Leave,
+};
 #[cfg(feature = "agents")]
-use tilo_workspace_service::person_connections::{Command, Connection, Connections};
+use tilo_workspace_records::connections::{Command, Connection, Connections};
 
 #[cfg(feature = "agents")]
 use super::CONNECTIONS;

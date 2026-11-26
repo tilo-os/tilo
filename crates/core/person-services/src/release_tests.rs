@@ -26,7 +26,7 @@ use tilo_actions::remote::{
     ActionCallError, Caller, InvokeArgument, InvokeRequest, ReceiptStatus, RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, InvocationId};
-use tilo_workspace_service::workspace_vault::{self, ItemRef, Released};
+use tilo_workspace_records::vault::{self as workspace_vault, ItemRef, Released};
 
 use crate::fixtures::{caller, hosted};
 use crate::fixtures::{hosting_device, test_host};

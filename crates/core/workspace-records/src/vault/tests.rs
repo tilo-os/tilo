@@ -31,7 +31,7 @@ fn the_vault_surface_file_is_what_this_crate_publishes() {
     assert_eq!(
         std::fs::read_to_string(&path).ok().as_deref(),
         Some(text.as_str()),
-        "crates/core/tilo-workspace-service/vault-surface.json is not what this crate \
+        "crates/core/workspace-records/vault-surface.json is not what this crate \
          publishes; regenerate it with UPDATE_SNAPSHOTS=1"
     );
 }

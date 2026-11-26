@@ -14,8 +14,8 @@
 //! What is begun is kept in memory alone, one entry per sign-in, expiring;
 //! no secret is ever answered to a caller.
 //!
-//! [`BEGIN_SIGN_IN`]: tilo_workspace_service::workspace_accounts::BEGIN_SIGN_IN
-//! [`SUBMIT_SIGN_IN_CODE`]: tilo_workspace_service::workspace_accounts::SUBMIT_SIGN_IN_CODE
+//! [`BEGIN_SIGN_IN`]: tilo_workspace_records::accounts::BEGIN_SIGN_IN
+//! [`SUBMIT_SIGN_IN_CODE`]: tilo_workspace_records::accounts::SUBMIT_SIGN_IN_CODE
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -29,7 +29,7 @@ use account_credentials::{
 };
 use serde_json::{Value, json};
 use tilo_net::Url;
-use tilo_workspace_service::workspace_accounts::{
+use tilo_workspace_records::accounts::{
     AccountServices, AccountsAction, BeginCloudSignIn, BeginSignIn, CloudKind, Provider,
     SignInStep, SigningIn,
 };
@@ -196,7 +196,7 @@ impl crate::PersonServices {
     /// would ask is one it may not call, or too many sign-ins are already
     /// begun.
     ///
-    /// [`BEGIN_SIGN_IN`]: tilo_workspace_service::workspace_accounts::BEGIN_SIGN_IN
+    /// [`BEGIN_SIGN_IN`]: tilo_workspace_records::accounts::BEGIN_SIGN_IN
     pub(super) async fn begin_sign_in(
         &self,
         (person, workspace, call): ([u8; 32], &str, Option<&tilo_actions::remote::InvokeRequest>),

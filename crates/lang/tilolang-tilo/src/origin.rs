@@ -106,7 +106,10 @@ impl OutsideSink for RoutingSink {
     fn outcome(&mut self, capability: &str, payload: &Json) -> Option<Delivery> {
         for origin in self.origins.borrow().iter() {
             let Ok(mut origin) = origin.try_borrow_mut() else {
-                tracing::warn!(capability, "an effect's outcome was asked of an origin busy polling");
+                tracing::warn!(
+                    capability,
+                    "an effect's outcome was asked of an origin busy polling"
+                );
                 return None;
             };
             if origin.serves(capability) {

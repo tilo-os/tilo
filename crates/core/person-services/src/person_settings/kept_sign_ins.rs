@@ -14,7 +14,7 @@
 //! added with an entry a member keeps for themselves only names it: that entry stays theirs.
 
 use accounts::vault_items::{ItemError, ItemId, ItemKind, NewItem, Place, Released, UsedFor};
-use tilo_workspace_service::workspace_vault::ItemRef;
+use tilo_workspace_records::vault::ItemRef;
 use zeroize::Zeroizing;
 
 use crate::VaultAt;

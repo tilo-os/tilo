@@ -21,7 +21,7 @@ use test_http::{Reply, Request, Responder};
 use tilo_actions::InvocationId;
 use tilo_actions::remote::ActionCallError::{self, NotPermitted, Refused, UnknownAction};
 use tilo_actions::remote::{InvokeArgument, InvokeRequest};
-use tilo_workspace_service::workspace_vault;
+use tilo_workspace_records::vault as workspace_vault;
 
 use crate::fixtures::{admit, caller, hosted};
 use crate::fixtures::{hosting_device, test_host};

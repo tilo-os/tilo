@@ -1,5 +1,5 @@
 //! The models a workspace's work runs on, answered by this session's broker for the person at
-//! this device ([`tilo_workspace_service::models`]).
+//! this device ([`tilo_workspace_records::models`]).
 //!
 //! A workspace keeps its model providers and the model each kind of its work runs on itself,
 //! wherever it is held: a host keeps them for a page, and a person's computer keeps them for
@@ -26,7 +26,7 @@ use tilo_actions::{
 use tilo_broker_core::BrokerActor;
 use tilo_desktop_model::WorkspaceId;
 use tilo_resource::Effect as _;
-use tilo_workspace_service::models::{self as model_providers, ModelsAction};
+use tilo_workspace_records::models::{self as model_providers, ModelsAction};
 
 use crate::workspace_view::WorkspaceView;
 

@@ -10,7 +10,7 @@
 use agent_provider_config::protocol::StreamEvent;
 use serde_json::json;
 use tilo_actions::remote::{ActionCallError, InvokeRequest};
-use tilo_workspace_service::models as model_providers;
+use tilo_workspace_records::models as model_providers;
 use tilo_workspace_service::workspaces::providers::{Answered, Live, WorkspaceCall};
 use tilo_workspace_service::workspaces::workspace_stores::Store;
 

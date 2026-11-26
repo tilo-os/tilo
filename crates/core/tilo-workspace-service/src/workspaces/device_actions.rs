@@ -10,7 +10,7 @@
 //! dispatch — the same one that answers its apps and engines — and answers with
 //! what it produced. And a workspace's governance
 //! actions (inviting someone, listing and cancelling invitations) and the
-//! models its work runs on ([`crate::models`]) are
+//! models its work runs on ([`tilo_workspace_records::models`]) are
 //! decided as the workspace's governance decides them for the asking device's
 //! certificate, and so are the host's own operations (`account/…`: the person's
 //! workspace list, making and deleting workspaces) for a device that asks them

@@ -71,7 +71,7 @@ use tilo_user_identity::AgentScope;
 mod model_providers {
     tilo_resource_macros::bindings!(
         provider = "tilo.models",
-        surface = "../tilo-workspace-service/models-surface.json"
+        surface = "../workspace-records/models-surface.json"
     );
 }
 

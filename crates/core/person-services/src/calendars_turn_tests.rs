@@ -13,7 +13,7 @@
 
 use serde_json::{Value, json};
 use tilo_actions::remote::{ActionCallError, Caller};
-use tilo_workspace_service::workspace_accounts;
+use tilo_workspace_records::accounts as workspace_accounts;
 
 use crate::fixtures::asking;
 use crate::fixtures::{hosting_device, test_host as test_server};

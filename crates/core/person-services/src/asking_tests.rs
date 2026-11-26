@@ -12,7 +12,7 @@ use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
 use tilo_remote_actions::asked::AskedStore;
 use tilo_server_protocol::WorkspaceId;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::workspace_vault;
+use tilo_workspace_records::vault as workspace_vault;
 
 use crate::fixtures::{admit, caller, settled};
 use crate::fixtures::{hosting_device, test_host};
@@ -507,9 +507,7 @@ async fn a_persons_own_call_the_rules_ask_first_runs_only_on_their_confirmation(
     // Her own calls wait, nothing of them done: a login she keeps, and a look at Mail's accounts.
     let adding = keeping("https://example.test");
     let listing = calling(
-        tilo_workspace_service::workspace_accounts::target(
-            tilo_workspace_service::workspace_accounts::LIST,
-        ),
+        tilo_workspace_records::accounts::target(tilo_workspace_records::accounts::LIST),
         json!({}),
     );
     for call in [&adding, &listing] {

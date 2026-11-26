@@ -12,9 +12,7 @@ use std::sync::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tilo_lock::MutexRecover as _;
-use tilo_workspace_service::person_connections::{
-    Command, Connection, Ended, Leave, SignIn, State, Use,
-};
+use tilo_workspace_records::connections::{Command, Connection, Ended, Leave, SignIn, State, Use};
 
 use super::said::Offered;
 use super::sign_in::{Client, Tokens, Way};

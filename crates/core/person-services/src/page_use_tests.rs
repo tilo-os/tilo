@@ -17,7 +17,7 @@ use tilo_actions::InvocationId;
 use tilo_actions::remote::ActionCallError as Refusal;
 use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest};
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::workspace_vault::{self, ItemRef};
+use tilo_workspace_records::vault::{self as workspace_vault, ItemRef};
 
 use crate::fixtures::hosting_device;
 use crate::fixtures::test_host as serving;

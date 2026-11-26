@@ -17,7 +17,7 @@ use tilo_actions::remote::{
 };
 use tilo_actions::{ActionOutput, InvocationId};
 use tilo_person_services::vault_release::AppProcess;
-use tilo_workspace_service::workspace_vault;
+use tilo_workspace_records::vault as workspace_vault;
 
 use super::services::Daemon;
 use crate::apps::ProcessOf;

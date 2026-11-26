@@ -26,7 +26,7 @@ use zeroize::Zeroizing;
 mod model_providers {
     tilo_resource_macros::bindings!(
         provider = "tilo.models",
-        surface = "../../core/tilo-workspace-service/models-surface.json"
+        surface = "../../core/workspace-records/models-surface.json"
     );
 }
 use model_providers::{Models, ProviderView, models};

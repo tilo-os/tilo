@@ -20,7 +20,7 @@ use tilo_actions::remote::asked::Offer;
 use tilo_actions::remote::{ActionCallError, Caller, InvokeArgument, InvokeRequest};
 use tilo_remote_actions::asked::SECRET_GONE;
 use tilo_user_identity::DeviceCert;
-use tilo_workspace_service::workspace_vault;
+use tilo_workspace_records::vault as workspace_vault;
 
 use crate::fixtures::hosting_device;
 use crate::fixtures::{TestGroupKeys, test_host_holding};
@@ -333,7 +333,7 @@ async fn kept_accounts(
     ada: &DeviceCert,
 ) -> Result<Vec<String>, ActionCallError> {
     use tilo_actions::remote::ActionProvider as _;
-    use tilo_workspace_service::workspace_accounts;
+    use tilo_workspace_records::accounts as workspace_accounts;
 
     let page = service.in_workspace_as(workspace_id, ada);
     let request = InvokeRequest {

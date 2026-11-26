@@ -37,7 +37,7 @@ use zeroize::Zeroizing;
 mod workspace_accounts {
     tilo_resource_macros::bindings!(
         provider = "tilo.accounts",
-        surface = "../tilo-workspace-service/accounts-surface.json"
+        surface = "../workspace-records/accounts-surface.json"
     );
 }
 
