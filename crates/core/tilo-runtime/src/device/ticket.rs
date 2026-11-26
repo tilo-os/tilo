@@ -1937,7 +1937,7 @@ pub(crate) fn device_info(place: &Place, key: &SigningKey) -> Value {
 
 /// [`DEV_ID`]'s answer for `args`, when `caller` may ask it: the admission that installs a
 /// development build on this device is the one that names the id it runs under.
-fn dev_id_answer(
+pub(crate) fn dev_id_answer(
     caller: &tilo_actions::remote::Caller,
     personal: bool,
     args: &Value,

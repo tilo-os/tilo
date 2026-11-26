@@ -26,8 +26,8 @@ use tilo_actions::remote::{
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_api::daemon::admission::Admitted;
 use tilo_device_identity::login::{
-    ALREADY_A_PERSONS, ANOTHER_PERSONS_WORDS, Device, FOUND, LOG_IN, PROVIDER, Place, RESOURCE,
-    RESTORE, SET_UP_UNLOCK,
+    ALREADY_A_PERSONS, ANOTHER_PERSONS_WORDS, DEV_ID, Device, FOUND, LOG_IN, PROVIDER, Place,
+    RESOURCE, RESTORE, SET_UP_UNLOCK,
 };
 use tilo_lock::MutexRecover as _;
 
@@ -41,8 +41,12 @@ use super::ticket::{
 pub const TICKET_CREDENTIAL: &str = "tilo.ticket";
 /// What the agent this computer's login names is, for a login made from a handed ticket.
 const HANDED_AGENT: &str = "tilo";
-/// How often the daemon looks whether a person's certificate now names its key.
+/// How often the daemon looks whether a person's certificate now names its key, when nothing of
+/// its own made one: a certificate another program filed here between two looks.
 const LOOKING: Duration = Duration::from_secs(2);
+/// How long the wait for that certificate sleeps before it hears a stop or a person this
+/// daemon's own founding, restoring or login took up.
+const HEARING: Duration = Duration::from_millis(100);
 /// How often a founding call reports the stage it is in while that stage runs: a caller that
 /// follows the call sees it move, and a stage that takes long is never mistaken for a daemon
 /// that stopped answering.
@@ -95,6 +99,9 @@ pub(crate) struct ThisDevice {
     entered: Entered,
     /// What the person's services issue the tickets a founding asks for through, once they run.
     founding: Arc<Founding>,
+    /// Told when this daemon's own founding, restoring or ticket login took this computer's
+    /// person up: the wait for their services looks again then rather than at its next look.
+    ready: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// The calls this device took, and where each is: what a caller following one reads, whichever
@@ -258,6 +265,7 @@ impl ThisDevice {
             lock,
             entered: Entered::default(),
             founding: Arc::default(),
+            ready: Arc::default(),
         })
     }
 
@@ -284,6 +292,7 @@ impl ThisDevice {
                 own: self.own,
                 entered: Arc::clone(&self.entered),
                 founding: Arc::clone(&self.founding),
+                ready: Arc::clone(&self.ready),
                 runtime: tilo_rt::app().handle().clone(),
                 packages: std::sync::OnceLock::new(),
                 records: Arc::new(super::records::DeviceRecords::at(
@@ -357,12 +366,22 @@ impl ThisDevice {
     /// Return once this computer's identity is one its person's services can start as
     /// ([`claimed`]): `true` then, and `false` when the daemon was told to stop first.
     pub(crate) fn until_ready(&self, stop: &super::serve::Stop) -> bool {
-        while !self.claimed() {
-            if stop.wait(LOOKING) {
-                return false;
+        loop {
+            if self.claimed() {
+                return true;
+            }
+            let looked = std::time::Instant::now();
+            // A certificate this daemon's own action files is heard at once; one another
+            // program files is looked for again every [`LOOKING`]. Each sleep hears a stop.
+            while looked.elapsed() < LOOKING {
+                if stop.wait(HEARING) {
+                    return false;
+                }
+                if self.ready.swap(false, std::sync::atomic::Ordering::AcqRel) {
+                    break;
+                }
             }
         }
-        true
     }
 }
 
@@ -409,8 +428,9 @@ pub(crate) async fn take_handed_ticket(
 
 /// What a device answers on its native endpoint before its person's services run, and to every
 /// account it serves no person for: what it is ([`INFO`]), logging it in with a ticket
-/// ([`LOG_IN`]), its package cache ([`super::packages`]), and, to root, who signed in and who left
-/// ([`crate::seats`]). Every other action needs a person, and is refused saying so.
+/// ([`LOG_IN`]), a development build's id ([`DEV_ID`]), its package cache
+/// ([`super::packages`]), and, to root, who signed in and who left ([`crate::seats`]). Every
+/// other action needs a person, and is refused saying so.
 #[derive(Clone)]
 pub(crate) struct DeviceOnly(Arc<Answering>, Option<crate::seats::Seated>);
 
@@ -426,6 +446,9 @@ struct Answering {
     /// What the person's services issue a founding's tickets through, once they run, and the
     /// calls the device took before it had a person, which they answer too.
     founding: Arc<Founding>,
+    /// Told when this daemon's own founding, restoring or ticket login took this computer's
+    /// person up: the wait for their services looks again then rather than at its next look.
+    ready: Arc<std::sync::atomic::AtomicBool>,
     runtime: tokio::runtime::Handle,
     /// The device's package cache, which it answers before a login as after it.
     packages: std::sync::OnceLock<Arc<dyn ActionProvider + Send + Sync>>,
@@ -478,6 +501,7 @@ impl DeviceOnly {
                 own,
                 entered: Entered::default(),
                 founding: Arc::default(),
+                ready: Arc::default(),
                 runtime: tilo_rt::app().handle().clone(),
                 packages: std::sync::OnceLock::new(),
                 records,
@@ -561,6 +585,32 @@ impl DeviceOnly {
         ActionCallError::Refused {
             reason: reason.into(),
         }
+    }
+
+    /// [`DEV_ID`]'s answer, one of the device's own: the id a development build of an app runs
+    /// under, derived from the key this part keeps.
+    fn answer_dev_id(
+        &self,
+        invocation: InvocationId,
+        caller: &tilo_actions::remote::Caller,
+        argument: InvokeArgument,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let InvokeArgument::Json(argument) = argument else {
+            return Pending::ready(Err(ActionCallError::Refused {
+                reason: "a device action asks with its arguments".into(),
+            }));
+        };
+        let personal = !tilo_api::daemon::system_daemon();
+        let answer = match super::ticket::dev_id_answer(
+            caller,
+            personal,
+            &Value::Object(argument),
+            &self.0.key,
+        ) {
+            Ok(answer) => answer,
+            Err(error) => return Pending::ready(Err(error)),
+        };
+        Pending::ready(Ok(self.keep(invocation, succeeded(invocation, answer))))
     }
 
     fn keep(&self, invocation: InvocationId, update: InvocationUpdate) -> InvocationReceipt {
@@ -743,6 +793,10 @@ impl DeviceOnly {
             );
         }
         let person = make(seated)?;
+        // Their services start now: the wait for them looks again at once, not at its next look.
+        self.0
+            .ready
+            .store(true, std::sync::atomic::Ordering::Release);
         seated.seats.founded_by(&seated.seat, person)?;
         // A person founded while this daemon serves has their root marked and their asks served
         // from now on, without the daemon starting again.
@@ -756,6 +810,10 @@ impl DeviceOnly {
         let device =
             tilo_api::daemon::enter::log_in_here(&self.0.key, &self.0.place, ticket, agent, label)
                 .await?;
+        // This computer is one of the person's devices now: their services start at once.
+        self.0
+            .ready
+            .store(true, std::sync::atomic::Ordering::Release);
         // The account joined the person this computer now serves: the person it made here for
         // its setup is retired, and the session that asked is the joined person's from now on.
         if let Some(seated) = &self.1 {
@@ -1066,6 +1124,9 @@ impl ActionProvider for DeviceOnly {
             return self.renew_certificates(invocation);
         }
         match address.action.as_str() {
+            // The id a development build of an app runs under: the device's own, as installing
+            // the build is, answered before its person's services run.
+            DEV_ID => self.answer_dev_id(invocation, caller, request.argument),
             INFO => Pending::ready(Ok(self.keep(
                 invocation,
                 succeeded(invocation, device_info(&self.0.place, &self.0.key)),

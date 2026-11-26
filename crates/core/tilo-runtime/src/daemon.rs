@@ -1686,8 +1686,8 @@ impl Native {
     }
 
     /// Serve `stream`, which came while the person's services start: at once when it follows a
-    /// call or asks the device key, and otherwise once the person's part takes it, within
-    /// [`WAITED_WITHIN`], or with why it is not served.
+    /// call, asks the device key, or asks the device's own package cache, and otherwise once the
+    /// person's part takes it, within [`WAITED_WITHIN`], or with why it is not served.
     fn wait_for_the_person(self: &Arc<Self>, stream: Stream, slot: ConnectionSlot, seated: Seated) {
         // A caller following a call this device already took reads its stage
         // where the device keeps it: answered here, not once the person's part
@@ -1695,7 +1695,15 @@ impl Native {
         // What the device key does is answered at once too, from the key the
         // daemon took: never after the person's services start or a workspace is
         // admitted, which a signature does not depend on.
-        if follows_a_call(&stream) || asks_the_device_key(&stream) {
+        // The device's own package cache answers its actions the same way on the account's own
+        // daemon: an install of a development build, a runtime bundle or an image is the
+        // device's, and waits for no workspace of the person's. A system daemon serves every
+        // account's person, and admits those changes only as the person they are.
+        let personal = !tilo_api::daemon::system_daemon();
+        if follows_a_call(&stream)
+            || asks_the_device_key(&stream)
+            || (personal && asks_the_devices_own_actions(&stream))
+        {
             if let Err(error) = self.device_only(stream, slot, seated) {
                 tracing::debug!(
                     %error,
@@ -2938,6 +2946,40 @@ fn asks_the_device_key(stream: &Stream) -> bool {
                     .and_then(|action| action.strip_prefix('#'))
                     .is_some_and(crate::device::key_use::asked_of_the_key)
             })
+}
+
+/// Whether `stream`'s first line is the action wire asking what the device keeps itself: its
+/// package cache ([`package_actions::PROVIDER`]) and the id a development build of an app runs
+/// under ([`tilo_device_identity::login::DEV_ID`]). Both are the device's, answered by the part
+/// that keeps its key, never by the person's part that is starting. Looked at without being
+/// read, so whoever serves the connection reads it as it always has.
+fn asks_the_devices_own_actions(stream: &Stream) -> bool {
+    use tilo_actions::remote::RemoteActionMessage;
+    /// How long a request has to say itself on the connection it opens.
+    const SAYS_WITHIN: Duration = Duration::from_secs(1);
+    let mut line = vec![0_u8; 64 * 1024];
+    let read = tilo_socket::peek(stream, &mut line, SAYS_WITHIN).unwrap_or(0);
+    let Some(line) = line
+        .get(..read)
+        .and_then(|read| read.split(|byte| *byte == b'\n').next())
+    else {
+        return false;
+    };
+    let Ok(frame) = tilo_actions::remote::RemoteActionFrame::decode(line) else {
+        return false;
+    };
+    match &frame.message {
+        RemoteActionMessage::CatalogueRequest { query, .. } => {
+            query.provider.as_deref() == Some(package_actions::PROVIDER)
+        }
+        RemoteActionMessage::Invoke(request) => {
+            request.target.provider == package_actions::PROVIDER
+                || (request.target.provider == tilo_device_identity::login::PROVIDER
+                    && request.target.address.resource == tilo_device_identity::login::RESOURCE
+                    && request.target.address.action == tilo_device_identity::login::DEV_ID)
+        }
+        _ => false,
+    }
 }
 
 /// The first message on `stream`, with the descriptors it carries: a Windows pipe carries bytes

@@ -1324,6 +1324,20 @@ impl OwnComputer {
     /// The computer — its home, runtime directory, identity and package store the test's own —
     /// with its daemon started, answering, and its person founded.
     fn start() -> Result<Self> {
+        let computer = Self::launch(None)?;
+        computer.found_person()?;
+        Ok(computer)
+    }
+
+    /// The computer with its daemon started and answering, and held between its person's parts
+    /// for `hold_between_parts_ms` when one is named (a debug build's test hold): the test founds
+    /// its person itself.
+    fn start_held(hold_between_parts_ms: u64) -> Result<Self> {
+        Self::launch(Some(hold_between_parts_ms))
+    }
+
+    /// The computer with its daemon started and answering, its person not yet founded.
+    fn launch(hold_between_parts_ms: Option<u64>) -> Result<Self> {
         use std::os::unix::fs::PermissionsExt as _;
         let root = tempfile::Builder::new()
             .prefix("tilo-o-")
@@ -1361,6 +1375,9 @@ impl OwnComputer {
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(computer.path().join("daemon.log"))?);
+        if let Some(ms) = hold_between_parts_ms {
+            command.env("TILO_TEST_HOLD_BETWEEN_PARTS_MS", ms.to_string());
+        }
         computer.daemon = Some(command.spawn_locked()?);
         let native = computer.native();
         let log = computer.path().join("daemon.log");
@@ -1391,11 +1408,17 @@ impl OwnComputer {
             },
         );
         answered?;
-        let place = tilo_api::daemon::DaemonPlace::at(&computer.sockets(), &computer.identity());
+        Ok(computer)
+    }
+
+    /// Set this computer up for the account that runs it, as the first command of a computer
+    /// with no person does: the founding call followed to where the person's part starts.
+    fn found_person(&self) -> Result<()> {
+        let place = tilo_api::daemon::DaemonPlace::at(&self.sockets(), &self.identity());
         place
             .found(&tilo_api::daemon::Founding::default())
             .map_err(|why| anyhow::anyhow!("setting this computer up: {why}"))?;
-        Ok(computer)
+        Ok(())
     }
 
     fn path(&self) -> &Path {
@@ -1463,14 +1486,7 @@ fn a_development_builds_id_is_read_on_the_persons_own_connection_alone() -> Resu
     let expected = tilo_app_package::dev_app_id(app, &device.verifying_key().to_bytes());
 
     // The read as `tilolang build --dev` asks it.
-    let mut command = Command::new(tilo_test_env::sibling_binary("install", "tilo-install"));
-    tilo_test_env::launch_env(&mut command);
-    command
-        .args(["dev-id", app])
-        .env("HOME", computer.home())
-        .env("XDG_RUNTIME_DIR", computer.runtime())
-        .stdin(Stdio::null());
-    let output = command.output_locked()?;
+    let output = dev_id(&computer, app)?;
     ensure!(
         output.status.success(),
         "tilo-install dev-id failed: {}\n{}",
@@ -1500,6 +1516,108 @@ fn a_development_builds_id_is_read_on_the_persons_own_connection_alone() -> Resu
     ensure!(
         reply.to_string().contains("not_permitted"),
         "the refusal must be the device's, not another's: {reply}\n{}",
+        computer.log()
+    );
+    Ok(())
+}
+
+/// `tilo-install dev-id app`, the read a development build's compilation makes first.
+fn dev_id(computer: &OwnComputer, app: &str) -> Result<std::process::Output> {
+    let mut command = Command::new(tilo_test_env::sibling_binary("install", "tilo-install"));
+    tilo_test_env::launch_env(&mut command);
+    command
+        .args(["dev-id", app])
+        .env("HOME", computer.home())
+        .env("XDG_RUNTIME_DIR", computer.runtime())
+        .stdin(Stdio::null());
+    Ok(command.output_locked()?)
+}
+
+/// The founding call a computer's first command makes, sent and taken up, its answer left to the
+/// connection it came on: the person is made and their part starts behind it.
+fn found_under_way(socket: &Path) -> Result<()> {
+    let mut stream = UnixStream::connect(socket)
+        .with_context(|| format!("connecting to {}", socket.display()))?;
+    stream
+        .write_all(
+            format!(
+                "{}\n",
+                json!({"jsonrpc":"2.0","id":1,"method":"tools/call",
+                    "params":{"name":"tilo_do",
+                        "arguments":{"path":"devices#found","args":{}}}})
+            )
+            .as_bytes(),
+        )
+        .context("sending the founding call")?;
+    // The call's answer comes to this connection alone, held while the call is under way: read
+    // and dropped on a thread of its own, so the test reaches the device as a caller does.
+    std::thread::spawn(move || {
+        let mut line = String::new();
+        let _ = BufReader::new(stream).read_line(&mut line);
+    });
+    Ok(())
+}
+
+/// A person just founded at this computer reads a development build's id at once: the read is
+/// the device's own package cache's, answered while their part has not started, and never waits
+/// out the services that start behind the founding answer.
+///
+/// The daemon is held between its person's parts for five seconds, as a debug build's test hold
+/// lets a test do: a read that waits for the person's part cannot come back inside the bound.
+/// Measured on a fresh profile before the device's own cache answered it, the first read took
+/// 8.7 s to 9.7 s, the person's part and the workspace the read's connection founded among the
+/// wait; answered as the device's own it takes the program's start and one round trip.
+#[test]
+fn a_development_builds_id_is_read_at_once_after_founding() -> Result<()> {
+    const HELD_MS: u64 = 5_000;
+    let computer = OwnComputer::start_held(HELD_MS)?;
+    let app = "org.tilo.tube.playback";
+    // The founding call a computer's first command makes, answered under way: the person is
+    // made and their part starts behind the answer. Its own answer is not what this test waits
+    // on, so it is left to the connection it came on.
+    found_under_way(&computer.native())?;
+    // The person is claimed and their part has not begun: the hold the daemon says it is in.
+    tilo_test_env::wait_for(
+        ItsLog {
+            log: computer.path().join("daemon.log"),
+            what: "the daemon to hold before its person's part starts",
+        },
+        || {
+            computer
+                .log()
+                .contains("a test holds the daemon between its person's parts")
+                .then_some(())
+        },
+    );
+    let keys = tilo_device_identity::persist::IdentityPaths::under(computer.identity());
+    let device = tilo_device_identity::persist::load_device_key(&keys)
+        .context("this computer's device key")?;
+    let expected = tilo_app_package::dev_app_id(app, &device.verifying_key().to_bytes());
+    let began = Instant::now();
+    let read = dev_id(&computer, app)?;
+    let took = began.elapsed();
+    ensure!(
+        read.status.success(),
+        "tilo-install dev-id failed: {}\n{}",
+        String::from_utf8_lossy(&read.stderr),
+        computer.log()
+    );
+    ensure!(
+        String::from_utf8_lossy(&read.stdout).trim() == expected,
+        "the device named {:?} for {app}, not {expected}",
+        String::from_utf8_lossy(&read.stdout).trim()
+    );
+    ensure!(
+        took < Duration::from_secs(3),
+        "the read after founding took {took:?}, waiting out the person's part the daemon held \
+         for {HELD_MS} ms: {}",
+        computer.log()
+    );
+    ensure!(
+        !computer
+            .log()
+            .contains("this daemon's person's part started"),
+        "the read waited until the person's part started: {}",
         computer.log()
     );
     Ok(())
