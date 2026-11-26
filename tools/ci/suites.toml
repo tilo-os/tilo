@@ -720,7 +720,6 @@ readers = [
   "crates/ui/ui-core/src/webview/paint.rs",
   "crates/ui/ui-core/src/theme_bundle/tests.rs",
   "crates/ui/ui-core/src/component/coverage_tests.rs",
-  "crates/ui/ui-core/src/history_mode/host_tests.rs",
   "crates/ui/ui-core/src/history_source/digest.rs",
   "crates/ui/ui-core/src/i18n/tests.rs",
   "crates/ui/ui-core/src/search/system/tests.rs",
@@ -737,11 +736,13 @@ package = "tilo-ui-app"
 # Bauhaus theme, and the typography goldens resolve their baselines through the asset tool.
 inputs = [
   "crates/ui/ui-base/tests/fixtures/finishes/",
+  "crates/ui/ui-base/locales/",
   "crates/ui/themes/bauhaus/theme.json",
   "tools/test-assets.py",
 ]
 readers = [
   "crates/ui/ui-app/tests/finish_render.rs",
+  "crates/ui/ui-app/tests/history_mode_host.rs",
   "crates/ui/ui-app/tests/painter_aot.rs",
   "crates/ui/ui-app/tests/typography_visual_regression.rs",
 ]
