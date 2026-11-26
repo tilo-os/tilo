@@ -137,6 +137,15 @@ impl JsonSchema for tilo_actions::Actor {
     }
 }
 
+/// What an action ran with, as serde writes it beside the change it made: the app and the
+/// resource it changed, what it did, and who asked for it. Which of those fields a change
+/// carries depends on the action, so its schema is the open object it is rather than a fixed set.
+impl JsonSchema for tilo_actions::ActionContext {
+    fn json_schema() -> Value {
+        json!({"type": "object"})
+    }
+}
+
 /// Where a message sent from a window goes, as serde writes it: one of
 /// `new-agent`, `agent`, `person`, `conversation` or `feedback`.
 impl JsonSchema for tilo_actions::RecipientKind {

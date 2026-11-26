@@ -20753,6 +20753,7 @@ dependencies = [
  "tilo-resource",
  "tilo-service",
  "tilo-sort",
+ "tilo-surface-compile",
  "tilo-test-env",
  "tilo-ui",
  "tilo-ui-base",

@@ -46,7 +46,9 @@ desktop:chrome desktop (Desktop)
   share-window Share a window
   shortcut Run a shortcut
   show-app Show an app
+  show-in-files Show in Files
   show-person Show a person
+  show-self Who you are here
   show-strip Show a strip
   show-strips Show the strips
   split-right Split right

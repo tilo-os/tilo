@@ -18,13 +18,13 @@
 use std::sync::Arc;
 
 use tilo_actions::remote::admitted::top_level;
-use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::remote::{Admitted, Caller, InvokeRequest, LiveRead, LiveView, Outcome, Pending};
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionFailure, ActionKind, ExecutionLocus,
     IRREVERSIBLE_TAG, InputSpec, InvocationId, OperationKind, RiskLevel,
 };
 use tilo_broker_core::BrokerActor;
+use tilo_session_core::desktop::activity::vocabulary as wire;
 use tilo_session_core::desktop::activity::{is_read, refused_to_agent};
 use tilo_session_core::desktop::i18n::t;
 use tilo_session_core::desktop::session::ActivityRequests;
@@ -111,7 +111,9 @@ fn rewrites_history(action: &str) -> bool {
     .contains(&action)
 }
 
-fn descriptor(action: &str, label: &str, kind: OperationKind) -> ActionDescriptor {
+fn descriptor(decl: &tilo_resource::EffectDecl) -> ActionDescriptor {
+    let action = decl.id;
+    let kind = decl.kind;
     let contract = if is_read(action) {
         ActionContract::live_view(serde_json::json!({ "type": "object" }))
     } else if kind == OperationKind::View {
@@ -143,15 +145,19 @@ fn descriptor(action: &str, label: &str, kind: OperationKind) -> ActionDescripto
         address: ActionAddress::new(wire::RESOURCE, action),
         resource_kind: wire::RESOURCE.into(),
         resource_label: t("activity-title-explore"),
-        action_label: t(label),
-        keywords: Vec::new(),
-        icon: None,
-        description: None,
+        action_label: decl.label.read(),
+        keywords: decl
+            .keywords
+            .iter()
+            .map(|word| (*word).to_owned())
+            .collect(),
+        icon: decl.icon.map(str::to_owned),
+        description: (!decl.description.is_empty()).then(|| decl.description.to_owned()),
         locus: ExecutionLocus::default(),
         kind,
         contract,
         input: InputSpec::None,
-        params: Vec::new(),
+        params: decl.params.clone(),
         view: None,
     }
 }
@@ -242,34 +248,11 @@ impl tilo_actions::remote::Admits for ActivityWire {
 
 impl ActivityWire {
     fn descriptors() -> Vec<ActionDescriptor> {
-        use OperationKind::{Document, View};
-        [
-            (wire::FEED, "activity-title-explore", View),
-            (wire::SUMMARY, "activity-title-whats-new", View),
-            (wire::REPLAY, "activity-title-replay", View),
-            (wire::DETAIL, "activity-pane-details", View),
-            (wire::FOCUS, "activity-detail-open", View),
-            (wire::MARK_VIEWED, "activity-action-mark-viewed", View),
-            (wire::FOCUSED, "activity-action-focused", View),
-            (wire::NAME, "activity-action-name", Document),
-            (wire::SPLIT, "activity-detail-split", Document),
-            (wire::MERGE, "activity-detail-merge", Document),
-            (
-                wire::MOVE_BOUNDARY,
-                "activity-action-move-boundary",
-                Document,
-            ),
-            (wire::UNDO, "activity-history-undo", Document),
-            (wire::RESTORE, "activity-history-restore", Document),
-            (wire::UNDO_SESSION, "activity-detail-undo-task", Document),
-            (wire::UNDO_RECORD, "activity-action-undo-record", Document),
-            (wire::OPEN, "activity-detail-open-app", View),
-            (wire::CHOOSE_SOURCE, "activity-action-choose-source", View),
-            (wire::SOURCE, "activity-action-source", View),
-        ]
-        .into_iter()
-        .map(|(action, label, kind)| descriptor(action, label, kind))
-        .collect()
+        use tilo_resource::Effect as _;
+        wire::ActivityAction::declarations()
+            .iter()
+            .map(descriptor)
+            .collect()
     }
 }
 

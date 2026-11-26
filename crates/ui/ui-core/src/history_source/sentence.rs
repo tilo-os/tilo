@@ -2,8 +2,8 @@
 //! in their locale, from the app's catalogue on this thread and the labels
 //! of the actions it publishes.
 
+use crate::activity_wire as wire;
 use tilo_actions::ActionContext;
-use tilo_actions::remote::workspace_activity as wire;
 use tilo_history::{FluentArgs, Messages, Reader};
 
 use crate::widget::history::{AuthorRelation, HistoryAuthor};

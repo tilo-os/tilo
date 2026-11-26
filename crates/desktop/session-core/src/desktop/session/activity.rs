@@ -19,8 +19,8 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+use crate::desktop::activity::vocabulary as wire;
 use serde_json::{Map, Value};
-use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::remote::{
     ActionCallError, Caller, Completer, InvocationReceipt, InvocationState, InvokeArgument,
     InvokeRequest, Pending, ReceiptStatus, pending,

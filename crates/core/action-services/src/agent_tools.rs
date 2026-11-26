@@ -36,7 +36,10 @@ pub fn target(action: &str) -> RemoteActionTarget {
 /// The argument a step carrying `value` sends.
 #[must_use]
 pub fn argument(value: &impl Serialize) -> InvokeArgument {
-    tilo_actions::remote::workspace_activity::argument(value)
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::Object(named)) => InvokeArgument::Json(named),
+        _ => InvokeArgument::None,
+    }
 }
 
 /// One tool, as a model is told it.

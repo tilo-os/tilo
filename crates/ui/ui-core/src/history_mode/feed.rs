@@ -3,8 +3,8 @@
 //! changes its documents hold ([`super::listing`]) and takes from the feed the name, colour and
 //! relation of each change's author, and the groups the workspace named.
 
+use crate::activity_wire as wire;
 use crate::tilo_actions::InvocationUpdate;
-use crate::tilo_actions::remote::workspace_activity as wire;
 use crate::widget::{AuthorRelation, HistoryAuthor, HistoryEntry};
 use crate::{DocumentId, NamedRange};
 use std::collections::HashMap;
@@ -13,7 +13,7 @@ use tilo_ui_base::{remote_actions::Followed, remote_actions::RemoteActions};
 
 /// The workspace's history of the window's resources, kept current while History lists it.
 pub(super) struct WindowFeed {
-    query: wire::FeedQuery,
+    query: wire::workspace_activity::Feed,
     followed: Followed,
     /// The answer revision last taken up.
     taken: Option<u64>,
@@ -47,17 +47,26 @@ impl Reading {
 impl WindowFeed {
     /// Follow the history of `resources`, of the app `app`, newest `limit` changes first.
     pub(super) fn follow(app: &str, resources: Vec<DocumentId>, limit: usize) -> Self {
-        let query = wire::FeedQuery {
+        let query = wire::workspace_activity::Feed {
+            scope: wire::Scope::ThisWorkspace,
+            period: wire::Period::AllTime,
+            author: None,
+            lens: None,
             resources: Some(wire::WindowResources {
                 app: app.to_owned(),
                 resources: resources.iter().map(|id| id.as_str().to_owned()).collect(),
                 item: None,
             }),
-            limit,
-            ..wire::FeedQuery::default()
+            limit: i64::try_from(limit).unwrap_or(i64::MAX),
         };
-        let followed =
-            RemoteActions::current().follow(wire::target(wire::FEED), wire::argument(&query));
+        // The query as the action takes it: an object, or none when it does not write one.
+        let argument = match serde_json::to_value(&query) {
+            Ok(serde_json::Value::Object(named)) => {
+                crate::tilo_actions::remote::InvokeArgument::Json(named)
+            }
+            _ => crate::tilo_actions::remote::InvokeArgument::None,
+        };
+        let followed = RemoteActions::current().follow(wire::workspace_activity::feed(), argument);
         Self {
             query,
             followed,
@@ -67,7 +76,7 @@ impl WindowFeed {
 
     /// Whether this follows the history of exactly `resources`, newest `limit` first.
     pub(super) fn reads(&self, resources: &[DocumentId], limit: usize) -> bool {
-        self.query.limit == limit
+        usize::try_from(self.query.limit).is_ok_and(|asked| asked == limit)
             && self.query.resources.as_ref().is_some_and(|window| {
                 window.resources.len() == resources.len()
                     && resources
@@ -100,7 +109,7 @@ impl WindowFeed {
 }
 
 fn entry_id(hex: &str) -> Option<HistoryEntryId> {
-    wire::entry_id(hex).map(HistoryEntryId::from_bytes)
+    crate::tilo_actions::entry_id(hex).map(HistoryEntryId::from_bytes)
 }
 
 /// `feed` keyed by each change's id in its own resource.
@@ -140,9 +149,12 @@ fn read(feed: &wire::Feed) -> Reading {
 }
 
 fn author(author: &wire::Author) -> HistoryAuthor {
-    let [red, green, blue] = author.rgb;
+    // The feed sends the colour as its three channels; a value that is not three is no colour.
+    let [red, green, blue] = author.rgb.as_slice() else {
+        return HistoryAuthor::new(author.name.clone(), 0.0, author.identity.clone());
+    };
     let mut by = HistoryAuthor::new(author.name.clone(), 0.0, author.identity.clone())
-        .with_rgb((red, green, blue))
+        .with_rgb((*red as u8, *green as u8, *blue as u8))
         .with_relation(match author.relation {
             wire::Relation::Reader => AuthorRelation::Reader,
             wire::Relation::Person => AuthorRelation::Person,
@@ -157,8 +169,11 @@ fn author(author: &wire::Author) -> HistoryAuthor {
             .filter(|_| author.relation == wire::Relation::Software),
         &author.member,
     ) {
+        let Ok(member) = serde_json::from_value(member.clone()) else {
+            return by;
+        };
         let mut attribution = crate::widget::history::HistoryAttribution::new(
-            crate::tilo_actions::Acting::member(member.clone()),
+            crate::tilo_actions::Acting::member(member),
         );
         attribution.on_behalf_of_name = Some(person.clone());
         by.attribution = Some(attribution);

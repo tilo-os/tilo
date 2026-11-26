@@ -1,24 +1,37 @@
 use super::{HistoryEntry, HistoryEntryId, read, wire};
 
 fn hex(byte: u8) -> String {
-    wire::entry_hex(&[byte; 16])
+    crate::tilo_actions::entry_hex(&[byte; 16])
+}
+
+fn author(name: &str) -> wire::Author {
+    wire::Author {
+        name: name.into(),
+        rgb: vec![10, 20, 30],
+        identity: "ab12".into(),
+        relation: wire::Relation::Person,
+        on_behalf_of: None,
+        member: None,
+        for_reader: false,
+        task: None,
+    }
 }
 
 fn entry(listed: u8, change: u8, name: &str, at_ms: i64) -> wire::Entry {
     wire::Entry {
         id: hex(listed),
         change: Some(hex(change)),
-        author: wire::Author {
-            name: name.into(),
-            rgb: [10, 20, 30],
-            identity: "ab12".into(),
-            relation: wire::Relation::Person,
-            ..wire::Author::default()
-        },
+        author: author(name),
+        kind: wire::Kind::Text,
         at_ms,
         summary: format!("{name} edited the note"),
+        step: None,
+        workspace: None,
         app: Some("Notes".into()),
-        ..wire::Entry::default()
+        resource: None,
+        group: None,
+        redacted: false,
+        refused: Vec::new(),
     }
 }
 
@@ -36,8 +49,13 @@ tilo_test_env::scenario! {
                 end: Some(hex(2)),
                 named_by: Some("Ada".into()),
             }],
+            workspace: "Home".into(),
+            scope: wire::Scope::ThisWorkspace,
             total: 3,
-            ..wire::Feed::default()
+            people: Vec::new(),
+            lenses: Vec::new(),
+            pending: false,
+            mutations: true,
         };
         let own = |byte: u8, summary: &str| HistoryEntry {
             id: HistoryEntryId::from_bytes([byte; 16]),
@@ -79,7 +97,10 @@ fn software_names_whom_it_acted_for() {
     let mut served = entry(1, 1, "Planner", 0);
     served.author.relation = wire::Relation::Software;
     served.author.on_behalf_of = Some("Ben".into());
-    served.author.member = Some(tilo_actions::MemberId::agent("planner", "Ben"));
+    // An agent is the member it acts as: its own id and the person it works for.
+    served.author.member = Some(serde_json::json!({
+        "agent": {"id": "planner", "person": "ben"},
+    }));
     let author = super::author(&served.author);
     assert_eq!(author.name, "Planner");
     assert_eq!(

@@ -15,6 +15,8 @@ mod pane;
 mod replay;
 #[cfg(test)]
 mod testing;
+pub mod vocabulary;
+
 pub use index::*;
 pub use pane::{
     ActivityView, Period, ServedTree, WorkspaceActivityOutcome, WorkspaceActivityPane,
@@ -368,7 +370,7 @@ pub trait ActivityHost {
     }
     /// The devices that refused writes in `workspace` , each with what it refused: one verdict per
     /// write, the highest sequence.
-    fn refusals(&self, _workspace: &str) -> Vec<tilo_actions::remote::workspace_activity::Refusal> {
+    fn refusals(&self, _workspace: &str) -> Vec<crate::desktop::activity::vocabulary::Refusal> {
         Vec::new()
     }
     /// Undo an agent's run of task `task`: each document in `steps` (its

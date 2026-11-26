@@ -115,7 +115,7 @@ view whats_new(h: history.Activity, place: State<Text>, first: State<Text>, last
                     ui.Text(resume.target.label, role: .body)
                     let target = resume.target
                     ui.Button("Resume") {
-                        on press: history.open_change(
+                        on press: history.open(
                             history.history,
                             id: target.id,
                             kind: target.kind,
@@ -157,7 +157,7 @@ view whats_new(h: history.Activity, place: State<Text>, first: State<Text>, last
                                 on press: history.source(
                                     history.history,
                                     key: source.key,
-                                    command: "refresh",
+                                    command: .refresh,
                                 )
                             }
                         }
@@ -165,7 +165,7 @@ view whats_new(h: history.Activity, place: State<Text>, first: State<Text>, last
                             on press: history.source(
                                 history.history,
                                 key: source.key,
-                                command: "remove",
+                                command: .remove,
                             )
                         }
                     }
@@ -293,7 +293,7 @@ view changes(
                             if entry.id == first or entry.id == last {
                                 ui.Badge("Selected", tone: .info)
                             }
-                            if let made_in = entry.made_in {
+                            if let made_in = entry.app {
                                 ui.Badge(made_in, tone: .neutral)
                             }
                             if let changed = entry.resource {
@@ -372,7 +372,7 @@ view detail_card(first: State<Text>, last: State<Text>) {
                 ui.Section("Changed") {
                     for target in d.resources {
                         ui.Button(target.label, icon: .arrow_up_right) {
-                            on press: history.open_change(
+                            on press: history.open(
                                 history.history,
                                 id: target.id,
                                 kind: target.kind,
@@ -384,41 +384,40 @@ view detail_card(first: State<Text>, last: State<Text>) {
             }
             // Each offer the model words for this range is its own press: an offer names one
             // of the model's verbs, and the press calls that verb.
-            if let undo = d.offers.find(o -> o.verb == "undo") {
+            if let undo = d.offers.find(o -> o.action == .undo) {
                 ui.Button(undo.label) {
-                    on press: history.undo_change(history.history, from: first, to: last)
+                    on press: history.undo(history.history, from: first, to: last)
                 }
             }
-            if let restore = d.offers.find(o -> o.verb == "restore") {
+            if let restore = d.offers.find(o -> o.action == .restore) {
                 ui.Button(restore.label) {
                     on press: history.restore(history.history, from: first, to: last)
                 }
             }
-            if let split = d.offers.find(o -> o.verb == "split") {
+            if let split = d.offers.find(o -> o.action == .split) {
                 ui.Button(split.label) {
                     on press: history.split(history.history, from: first, to: last)
                 }
             }
-            // The offer names the model's verb (`merge`), not this package's action
-            // (`merge-groups`), as undo's offer says `undo` and not `undo-change`.
-            if let merged = d.offers.find(o -> o.verb == "merge") {
+            // The offer names the action it does, as the model declares it.
+            if let merged = d.offers.find(o -> o.action == .merge) {
                 ui.Button(merged.label) {
-                    on press: history.merge_groups(history.history, from: first, to: last)
+                    on press: history.merge(history.history, from: first, to: last)
                 }
             }
-            if let session = d.offers.find(o -> o.verb == "undo-session") {
+            if let session = d.offers.find(o -> o.action == .undo-session) {
                 ui.Button(session.label) {
                     on press: history.undo_session(history.history, from: first, to: last)
                 }
             }
-            if let source = d.offers.find(o -> o.verb == "choose-source") {
+            if let source = d.offers.find(o -> o.action == .choose-source) {
                 ui.Button(source.label) {
                     on press: history.choose_source(history.history, from: first, to: last)
                 }
             }
             // Comparing asks the session for the workspace either side of the range: the offer
             // names that read, which the window takes when the person turns it on.
-            if let offer = d.offers.find(o -> o.verb == "detail") {
+            if let offer = d.offers.find(o -> o.action == .compare) {
                 ui.Button(offer.label, toggled: compare) {
                     on press: set(compare, not compare)
                 }
@@ -450,8 +449,19 @@ view compare_card(first: State<Text>, last: State<Text>) {
                 }
             }
         } else if let comparison = c.comparison {
-            ui.Section("Compare") {
-                ui.Text(comparison, role: .body)
+            match comparison {
+                .changes(lines) => {
+                    ui.Section("Compare") {
+                        ui.Text(lines.join("\n"), role: .body)
+                    }
+                }
+                .unavailable => {
+                    ui.Text(
+                        "No content differences in this selection",
+                        role: .caption,
+                        secondary: true,
+                    )
+                }
             }
         } else {
             ui.Text("No content differences in this selection", role: .caption, secondary: true)
@@ -502,7 +512,7 @@ view session_card(
                                 size: .small,
                                 role: .plain,
                             ) {
-                                on press: history.open_change(
+                                on press: history.open(
                                     history.history,
                                     id: c.target.id,
                                     kind: c.target.kind,
@@ -510,11 +520,11 @@ view session_card(
                                 )
                             }
                         }
-                        if let label = c.undo_label {
-                            ui.Button(label, size: .small, role: .plain) {
+                        if let undo = c.undo {
+                            ui.Button(undo.label, size: .small, role: .plain) {
                                 on press: history.undo_record(
                                     history.history,
-                                    range: history.Span(from: c.range.from, to: c.range.to),
+                                    range: history.Range(from: c.range.from, to: c.range.to),
                                     app_id: c.app_id,
                                     id: c.record,
                                     step: c.step,
@@ -610,14 +620,12 @@ fn period_of(label: Text) -> Text {
 }
 
 /// The place a chrome verb names, as this window's places are keyed.
-fn place_of(named: Text) -> Text {
-    if named == "history" {
-        return "history"
+fn place_of(named: history.View) -> Text {
+    match named {
+        .history => "history",
+        .replay => "replay",
+        .whats-new => "whats-new",
     }
-    if named == "replay" {
-        return "replay"
-    }
-    "whats-new"
 }
 
 /// How the agent of a session is named: who it worked for, when it is not the reader.
@@ -663,7 +671,7 @@ fn matches(entry: history.Entry, found: Text) -> Bool {
     if entry.author.name.lower().contains(needle) {
         return true
     }
-    (entry.made_in ?? "").lower().contains(needle)
+    (entry.app ?? "").lower().contains(needle)
 }
 
 fn join(parts: List<Text>) -> Text {

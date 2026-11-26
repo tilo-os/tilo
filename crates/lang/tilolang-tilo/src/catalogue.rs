@@ -851,6 +851,7 @@ impl Reader<'_> {
                     id: self.type_id(&name),
                     name,
                     doc: named.doc.clone(),
+                    tag: named.tag.clone(),
                     variants,
                 });
             } else {

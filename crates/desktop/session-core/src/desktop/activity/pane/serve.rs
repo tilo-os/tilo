@@ -1,12 +1,12 @@
 //! The pane's history as the session serves it to apps
-//! ([`tilo_actions::remote::workspace_activity`]): the reads an app follows and the writes it asks
+//! ([`crate::desktop::activity::vocabulary`]): the reads an app follows and the writes it asks
 //! for, each addressed by history id rather than by a row on a screen.
 
 use std::collections::HashMap;
 use std::hash::{Hash as _, Hasher as _};
 use tilo_desktop_model::WorkspaceId;
 
-use tilo_actions::remote::workspace_activity as wire;
+use crate::desktop::activity::vocabulary as wire;
 
 use super::{
     ActivityDeepLink, ActivityTree, ActivityView, BoundaryDirection, DetailAction, DocumentId,

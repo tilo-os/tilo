@@ -71,7 +71,7 @@ use crate::platform::authors::{People, Writers};
 use crate::platform::pane::Pane;
 use crate::platform::records::{Records as Reads, Source};
 #[cfg(target_os = "linux")]
-use tilo_actions::remote::workspace_activity as wire;
+use tilo_session_core::desktop::activity::vocabulary as wire;
 use ui::resource::{DocumentCheckout, DocumentId, ResourceType};
 
 #[cfg(target_os = "linux")]
@@ -1334,10 +1334,10 @@ mod tests {
     }
 
     use tilo_actions::InvocationId;
-    use tilo_actions::remote::workspace_activity as wire;
-    use tilo_actions::remote::{Caller, InvokeArgument, PendingPoll};
+    use tilo_actions::remote::{Caller, PendingPoll};
     use tilo_desktop_model::commands::DesktopCommand;
     use tilo_desktop_model::{IdMinter, Tab, TileContent};
+    use tilo_session_core::desktop::activity::vocabulary as wire;
     use tilo_session_core::desktop::navigation::{ActivityView, ChromeEffect};
     use tilo_session_core::desktop::seed_tree;
     use tilo_session_core::desktop::state::{DesktopHandle, DesktopPass, TileSource};
@@ -1595,7 +1595,9 @@ mod tests {
         /// Follow the history as the person's app does.
         fn follow(&self) -> InvocationId {
             let invocation = InvocationId::new();
-            let InvokeArgument::Json(query) = wire::argument(&wire::FeedQuery::default()) else {
+            let Ok(serde_json::Value::Object(query)) =
+                serde_json::to_value(wire::FeedQuery::default())
+            else {
                 panic!("the feed takes a query");
             };
             self.activity
@@ -1723,7 +1725,9 @@ mod tests {
         session.pass.serve_activity(session.activity.requests());
         session.open_history();
         let invocation = InvocationId::new();
-        let InvokeArgument::Json(query) = wire::argument(&wire::SessionsQuery::default()) else {
+        let Ok(serde_json::Value::Object(query)) =
+            serde_json::to_value(wire::SessionsQuery::default())
+        else {
             panic!("the runs take a query");
         };
         session
@@ -1856,8 +1860,10 @@ mod tests {
             named.author.name, "ada",
             "the row carries the account's name, what its face and the search read"
         );
+        let author: ui::activity_wire::Author =
+            serde_json::from_value(serde_json::to_value(&named.author).unwrap()).unwrap();
         assert_eq!(
-            ui::wire_author_line(&named.author),
+            ui::wire_author_line(&author),
             "You",
             "and the line words the person reading it as such, never by their account's name"
         );

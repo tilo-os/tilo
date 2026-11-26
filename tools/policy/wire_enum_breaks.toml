@@ -398,7 +398,7 @@ enum = "PersonalFabricPayload"
 reason = "frames between two of one person's devices are never kept, and the sibling link's ALPN moved to tilo-server-sibling/2 (the peer protocol to 71) when the retired nearby-transfer payload left it: the payloads after it number one lower, so a device of the old protocol is not answered rather than reading a document payload as that transfer. The RecordContent variants became DocumentContent in place, and what a device says of itself is a Presence frame where its stamped state was"
 
 [[break]]
-file = "crates/core/actions/src/remote/workspace_activity.rs"
+file = "crates/desktop/session-core/src/desktop/activity/vocabulary.rs"
 enum = "DetailAction"
 reason = "renames UndoRecord to UndoEntry in place: stored formats change with the code and nothing written before is read"
 
@@ -520,7 +520,7 @@ file = "crates/core/tilo-peer-state/src/owner_commit.rs"
 enum = "CommitTarget"
 reason = "the targets of those operations take `Refused...` names at the positions they kept: postcard writes no names, so the stored bindings and their digests read as they did"
 [[break]]
-file = "crates/core/actions/src/remote/workspace_activity.rs"
+file = "crates/desktop/session-core/src/desktop/activity/vocabulary.rs"
 enum = "DetailAction"
 reason = "the old `undo-run` name reads as `UndoSession` through its serde alias, so the variant that held it goes and the name a stored view wrote still reads"
 [[break]]

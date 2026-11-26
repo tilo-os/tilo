@@ -1,0 +1,1678 @@
+//! A workspace's activity as the session serves it: what changed since this
+//! device last looked, the full history, and the replay of its layout.
+//!
+//! The session keeps the history index of every workspace on this device and
+//! serves it under [`PROVIDER`] as resource [`RESOURCE`]. Its reads are live
+//! views: an app follows [`FEED`], [`SUMMARY`], [`REPLAY`] and [`DETAIL`] and
+//! gets a new result whenever the workspace's history moves. Its writes are
+//! ordinary actions on the same resource: naming, splitting and merging work
+//! groups, undoing and restoring, opening what a change touched, and marking
+//! what was seen. [`ActivityAction`] is that vocabulary, declared once: the
+//! record types below are what it reads and answers, and the surface written
+//! beside the crate comes from it.
+//!
+//! What this device has seen stays with the session: [`MARK_VIEWED`] moves
+//! its own frontier, never a shared record.
+//!
+//! Changes are addressed by their history id ([`Entry::id`]), 32 lowercase
+//! hex digits, and a range of changes by its first and last ([`Range`]) in
+//! the order [`Feed::entries`] lists them.
+
+use serde::{Deserialize, Serialize};
+
+use tilo_actions::ActionAddress;
+use tilo_actions::remote::RemoteActionTarget;
+use tilo_actions::{ActionContext, MemberId};
+
+/// The provider the session serves workspace activity under.
+pub const PROVIDER: &str = <ActivityAction as tilo_resource::Effect>::OPERATION;
+/// The application whose window shows it, and whose grants reach it.
+pub use tilo_app_id::apps::ACTIVITY as APP_ID;
+/// The resource every action is an action of.
+pub const RESOURCE: &str = "workspace.activity";
+
+/// The kind a reader with no words of its own knows the resource by.
+#[derive(tilo_resource::Row)]
+#[row(kind = "activity", label = "Activity")]
+pub struct ActivityRoot;
+
+/// Each action's id, as its declaration in [`ActivityAction`] names it.
+macro_rules! ids {
+    ($($id:ident),* $(,)?) => {
+        $(
+            #[doc = concat!("The id of [`ActivityAction::", stringify!($id), "`].")]
+            pub const $id: &str = ActivityAction::$id.id();
+        )*
+    };
+}
+
+ids! {
+    FEED, SUMMARY, REPLAY, DETAIL, FOCUS, SESSIONS, SESSION_OUTPUT, MARK_VIEWED, FOCUSED, NAME,
+    SPLIT, MERGE, MOVE_BOUNDARY, UNDO, RESTORE, UNDO_SESSION, UNDO_RECORD, OPEN, CHOOSE_SOURCE,
+    SOURCE
+}
+
+/// The target of action `action` of [`RESOURCE`].
+#[must_use]
+pub fn target(action: &str) -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: PROVIDER.to_owned(),
+        address: ActionAddress::new(RESOURCE, action),
+    }
+}
+/// Which workspaces' changes are shown.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum Scope {
+    /// The workspace's own changes, and ones belonging to no single workspace.
+    #[default]
+    ThisWorkspace,
+    /// Every workspace on this device, each change labelled with its own.
+    AllWorkspaces,
+}
+
+/// How far back the feed reaches.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum Period {
+    #[default]
+    AllTime,
+    Today,
+    Week,
+    Month,
+}
+
+/// What a [`FEED`] reads.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, deny_unknown_fields)]
+pub struct FeedQuery {
+    pub scope: Scope,
+    pub period: Period,
+    /// Only this person's changes, by the name [`Feed::people`] lists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    /// Only the changes of this lens, by [`Lens::key`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lens: Option<String>,
+    /// Only the changes to the resources one window of an app keeps: what the
+    /// app's own History lists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resources: Option<WindowResources>,
+    /// The newest this many changes; `0` for the first page.
+    pub limit: usize,
+}
+
+/// The resources one window of an app keeps: its own, and the chains of parts
+/// it keeps beside it.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, deny_unknown_fields)]
+pub struct WindowResources {
+    /// The app whose resources they are, by id.
+    pub app: String,
+    /// The window's own resource and each chain it keeps, by document id. A
+    /// part of one of these chains, or a chunk of one of these resources, is
+    /// the window's too.
+    pub resources: Vec<String>,
+    /// Only the changes to this item of them (a note, a task), by the id its
+    /// actions name it by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub item: Option<String>,
+}
+
+/// How many changes a feed answers when its query asks for no number.
+pub const FEED_PAGE: usize = 200;
+
+impl FeedQuery {
+    /// Whether this query reads only resources of `app` in the workspace its
+    /// caller works in: what an app may read as the person using it.
+    #[must_use]
+    pub fn reads_only_resources_of(&self, app: &str) -> bool {
+        self.scope == Scope::ThisWorkspace
+            && self
+                .resources
+                .as_ref()
+                .is_some_and(|resources| resources.app == app)
+    }
+
+    /// How many changes the feed answers.
+    #[must_use]
+    pub const fn page(&self) -> usize {
+        if self.limit == 0 {
+            FEED_PAGE
+        } else {
+            self.limit
+        }
+    }
+}
+
+/// Who an author is to the person reading.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum Relation {
+    /// The reader themselves.
+    Reader,
+    /// Another person.
+    #[default]
+    Person,
+    /// Software acting for someone: an agent, a Shortcut, an app.
+    Software,
+}
+
+/// Who made a change.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct Author {
+    /// The name it goes by: a person's, an agent's own — the reader's account
+    /// name too, since the line that names the author words the reader as
+    /// "You" from [`Relation`]. A name, never a sentence: a row that says whom
+    /// software acted for words that line once, from the facts beside it.
+    pub name: String,
+    /// The colour presence paints them in, `[r, g, b]`.
+    pub rgb: [u8; 3],
+    /// A short fragment of their key, telling apart two of the same name.
+    pub identity: String,
+    pub relation: Relation,
+    /// For software: who it acted for, as a sentence names them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub on_behalf_of: Option<String>,
+    /// For software: the member it is, an agent by its id and its person.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub member: Option<MemberId>,
+    /// The person it acted for is the reader.
+    pub for_reader: bool,
+    /// The task that named it, as it was called then.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+}
+
+/// What kind of change an entry is.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    Hash,
+    Serialize,
+    Deserialize,
+    tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum Kind {
+    #[default]
+    Text,
+    Move,
+    Details,
+    Comment,
+    Delete,
+    Restore,
+    Access,
+    Compaction,
+    Redaction,
+}
+
+/// A resource a change touched, and where it opens.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct Target {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app_label: Option<String>,
+    pub id: String,
+    pub kind: String,
+    pub label: String,
+}
+
+/// A device that refused one of a change's writes, and why.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct Refusal {
+    /// The change it refused, by its history id.
+    pub change: String,
+    /// The refusing device, by its key.
+    pub device: String,
+    /// What the person calls that device.
+    pub label: String,
+    /// Why the write is not there, as the refusing device put it.
+    pub reason: String,
+    /// Whether waiting will change nothing: the device will not take the
+    /// write, whatever the person does short of what the reason names.
+    pub permanent: bool,
+}
+
+/// One change.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct Entry {
+    pub id: String,
+    /// Its id in the history of the resource it changed, where that is not [`Self::id`]: what the
+    /// app keeping the resource names the change by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change: Option<String>,
+    pub author: Author,
+    pub kind: Kind,
+    /// When, in milliseconds since the Unix epoch.
+    pub at_ms: i64,
+    pub summary: String,
+    /// What it did, as its action recorded it (the app, the resource, the item and the step):
+    /// a reader that has the app's own words says it in them rather than in [`Self::summary`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub step: Option<ActionContext>,
+    /// The workspace it belongs to, under [`Scope::AllWorkspaces`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// The app it was made in, as a person names it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    /// The resource it changed, as its own title names it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resource: Option<String>,
+    /// The named work group it sits in, by [`Group::id`].
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// Whether its content was redacted.
+    pub redacted: bool,
+    /// The devices that refused it, so its author reads where it is not.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub refused: Vec<Refusal>,
+}
+
+/// A named range of changes.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct Group {
+    /// The naming record; a rename addresses it.
+    pub id: String,
+    pub label: String,
+    /// Its oldest change.
+    pub start: String,
+    /// Its newest change; `None` while it is still open.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub end: Option<String>,
+    /// Who named it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub named_by: Option<String>,
+}
+
+/// A way to narrow the feed: an app, a resource, a work group.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct Lens {
+    /// What [`FeedQuery::lens`] names it by.
+    pub key: String,
+    pub label: String,
+}
+
+/// The workspace's history, as a [`FeedQuery`] narrows it.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct Feed {
+    /// The workspace's name.
+    pub workspace: String,
+    pub scope: Scope,
+    /// Changes the query matches, of which [`Self::entries`] holds the
+    /// newest.
+    pub total: usize,
+    /// Newest first.
+    pub entries: Vec<Entry>,
+    pub groups: Vec<Group>,
+    /// Everyone who changed something, in the order they first did.
+    pub people: Vec<String>,
+    pub lenses: Vec<Lens>,
+    /// The history is still being read.
+    pub pending: bool,
+    /// Whether this device can change the history here: name, undo,
+    /// restore.
+    pub mutations: bool,
+}
+
+/// Where in the app a [`Focus`] opens.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum View {
+    /// What changed since this device last looked.
+    #[default]
+    WhatsNew,
+    /// Every change, filtered and selected as the focus says.
+    History,
+    /// The workspace played back change by change.
+    Replay,
+}
+
+/// What to show, asked for outside the app: the glance in the top bar, a
+/// file's own history, a command naming a view. Each ask has its own `serial`; the app that shows it
+/// says so ([`FOCUSED`]), and it is not offered again.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct Focus {
+    pub serial: u64,
+    pub view: View,
+    /// Only this person's changes, as [`FeedQuery::author`] names them.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    /// Only this lens's changes, as [`FeedQuery::lens`] names it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub lens: Option<String>,
+    /// This change, selected.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry: Option<String>,
+}
+
+/// One action of a work session's evidence.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct BriefAction {
+    pub author: Author,
+    pub summary: String,
+    pub at_ms: i64,
+}
+
+/// A work session: related changes told as an outcome.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct Brief {
+    pub title: String,
+    /// Who and how much, in the history's own words.
+    pub detail: String,
+    pub authors: Vec<Author>,
+    pub apps: Vec<String>,
+    pub resources: Vec<String>,
+    pub changes: usize,
+    /// Oldest first.
+    pub actions: Vec<BriefAction>,
+    pub first_ms: i64,
+    pub last_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    /// The record of a person-corrected session; only such a session's
+    /// boundary moves.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_session: Option<String>,
+    /// The changes it tells of.
+    pub entries: Vec<String>,
+}
+
+/// Where the reader left off.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct Resume {
+    pub target: Target,
+    pub author: Author,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub app: Option<String>,
+    pub at_ms: i64,
+}
+
+/// A resource this device chose to hear about each morning.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct Source {
+    /// What [`SourceRequest::key`] names it by.
+    pub key: String,
+    pub label: String,
+    /// What its app says about it now; empty when it says nothing.
+    pub text: String,
+    /// Whether its app refreshes it on request.
+    pub refreshable: bool,
+    /// How the last command on it went.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+}
+
+/// What changed since this device last looked.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct Summary {
+    pub workspace: String,
+    /// Newest first.
+    pub briefs: Vec<Brief>,
+    /// The briefs told in a sentence by a model on this device.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub narrative: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume: Option<Resume>,
+    /// Whether these are the changes made while the reader was away.
+    pub away: bool,
+    /// Whether morning sources can be chosen here.
+    pub sources_available: bool,
+    pub sources: Vec<Source>,
+    /// The history is still being read.
+    pub pending: bool,
+}
+
+/// One group of tabs in a replayed workspace.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct ReplayGroup {
+    pub tabs: Vec<String>,
+    /// The tab it showed, by index into [`Self::tabs`].
+    pub active: usize,
+    /// Its share of the strip, in thousandths.
+    pub width_permille: u32,
+}
+
+/// A workspace as it was.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct ReplayWorkspace {
+    pub name: String,
+    pub groups: Vec<ReplayGroup>,
+}
+
+/// Someone's pointer as it was.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(default)]
+pub struct ReplayPointer {
+    pub name: String,
+    pub rgb: [u8; 3],
+}
+
+/// The layout after one change.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(default)]
+pub struct Frame {
+    pub entry: String,
+    pub author: Author,
+    pub summary: String,
+    pub at_ms: i64,
+    pub workspaces: Vec<ReplayWorkspace>,
+    pub pointers: Vec<ReplayPointer>,
+}
+
+/// The workspace's layout at each recent change.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(default)]
+pub struct Replay {
+    /// Oldest first.
+    pub frames: Vec<Frame>,
+    /// Changes whose layout could not be read back.
+    pub unavailable: usize,
+    /// What the replay cannot show, said once.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
+    /// The history is still being read.
+    pub pending: bool,
+}
+
+/// A range of changes, by its first and last in feed order.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Hash, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(deny_unknown_fields)]
+pub struct Range {
+    pub from: String,
+    pub to: String,
+}
+
+impl Range {
+    /// The range of the one change `id`.
+    #[must_use]
+    pub fn one(id: &str) -> Self {
+        Self {
+            from: id.to_owned(),
+            to: id.to_owned(),
+        }
+    }
+}
+
+/// What a [`DETAIL`] reads.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, deny_unknown_fields)]
+pub struct DetailQuery {
+    pub range: Range,
+    /// Also compare the workspace before and after the session.
+    pub compare: bool,
+}
+
+/// What can be done with a range of changes, and which action does it.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum DetailAction {
+    Open,
+    Compare,
+    Restore,
+    Undo,
+    Split,
+    Merge,
+    ChooseSource,
+    UndoEntry,
+    /// Undo the whole agent session.
+    UndoSession,
+}
+
+impl DetailAction {
+    /// The action of [`RESOURCE`] that does it; [`DetailAction::Compare`]
+    /// is a [`DetailQuery`] of its own.
+    #[must_use]
+    pub const fn action(self) -> &'static str {
+        match self {
+            Self::Open => OPEN,
+            Self::Compare => DETAIL,
+            Self::Restore => RESTORE,
+            Self::Undo => UNDO,
+            Self::UndoSession => UNDO_SESSION,
+            Self::UndoEntry => UNDO_RECORD,
+            Self::Split => SPLIT,
+            Self::Merge => MERGE,
+            Self::ChooseSource => CHOOSE_SOURCE,
+        }
+    }
+}
+
+/// An offered action, worded for the session it acts on.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct Offer {
+    pub action: DetailAction,
+    pub label: String,
+}
+
+/// The agent session a change belongs to.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct Session {
+    /// The instruction, as the person phrased it.
+    pub instruction: String,
+    /// Who ran it and who asked, as a sentence.
+    pub byline: String,
+    /// Why the agent did what it did.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub decision: Option<String>,
+    /// The records it changed, each with what it did there.
+    pub records: Vec<SessionRecord>,
+    /// Why it cannot be undone from here, when it cannot.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub undo_blocked: Option<String>,
+    /// How its undo went, while one runs or once it ended.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub undo_status: Option<String>,
+    /// The records its undo did not reach, one sentence each: reported,
+    /// never left out of what the person is told happened.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unreverted: Vec<String>,
+}
+
+/// A record an agent session changed.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct SessionRecord {
+    /// The record, as its title names it.
+    pub record: String,
+    /// The app it belongs to.
+    pub app: String,
+    /// The record's own id, which [`ResourceQuery`] names to undo just it.
+    pub id: String,
+    /// The app's id, which [`ResourceQuery`] names to undo just it.
+    pub app_id: String,
+    /// What the session did to it, as a sentence.
+    pub change: String,
+    /// The action that undoes this record's share of the session, when the
+    /// document is open here; absent when it cannot be undone on its own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub undo: Option<Offer>,
+}
+
+/// One record of an agent session, as [`UNDO_RECORD`] names it.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, deny_unknown_fields)]
+pub struct ResourceQuery {
+    /// The session, by its range in the history.
+    pub range: Range,
+    /// The session, by the task it worked (`task:<id>`, or a Tasks issue's address), in place
+    /// of [`Self::range`]: what a view that follows the task rather than the history (the agent
+    /// composer) names it by.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub task: Option<String>,
+    /// The record inside that session.
+    pub app_id: String,
+    pub id: String,
+    /// The one change inside that record to take back, as its own history names it; absent to
+    /// take back the session's whole share of the record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+}
+
+/// What comparing the workspace before and after a session found.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(tag = "state", rename_all = "kebab-case")]
+pub enum Comparison {
+    /// What changed, one line each.
+    Changes { lines: Vec<String> },
+    /// The workspace's state either side could not be read.
+    Unavailable,
+}
+
+/// One field a range of changes changed, with what it held either side of it.
+///
+/// [`Comparison::Changes`] says a field changed; this says what it changed
+/// from and to, which is the question "compare before and after" is asked
+/// for.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct FieldChange {
+    /// The field's name as the person reads it ("Title").
+    pub field: String,
+    /// What it held before; empty when it was not there.
+    pub before: String,
+    /// What it holds after; empty when it was removed.
+    pub after: String,
+}
+
+/// What a range of changes did.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct Detail {
+    pub title: String,
+    /// Who, where and why, in the history's own words.
+    pub provenance: String,
+    pub authors: Vec<String>,
+    pub resources: Vec<Target>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_label: Option<String>,
+    pub offers: Vec<Offer>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session: Option<Session>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub comparison: Option<Comparison>,
+    /// The fields the session changed, with what they held either side: empty
+    /// when the provider could not read both states.
+    pub changes: Vec<FieldChange>,
+    /// The session is no longer in the history (an undo or a filter moved it).
+    pub gone: bool,
+}
+
+/// What a [`SESSIONS`] reads.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, deny_unknown_fields)]
+pub struct SessionsQuery {
+    pub scope: Scope,
+    /// The newest this many sessions; `0` for the first page.
+    pub limit: usize,
+    /// The newest this many of each session's changes still in effect; `0` for the first page.
+    pub changes: usize,
+}
+
+/// How many sessions a [`SESSIONS`] read answers when its query asks for no number.
+pub const SESSIONS_PAGE: usize = 50;
+
+/// How many of a session's changes still in effect a [`SESSIONS`] read answers when its query
+/// asks for no number.
+pub const SESSION_CHANGES_PAGE: usize = 20;
+
+impl SessionsQuery {
+    /// How many sessions the read answers.
+    #[must_use]
+    pub const fn page(&self) -> usize {
+        if self.limit == 0 {
+            SESSIONS_PAGE
+        } else {
+            self.limit
+        }
+    }
+
+    /// How many of each session's changes still in effect the read answers.
+    #[must_use]
+    pub const fn changes_page(&self) -> usize {
+        if self.changes == 0 {
+            SESSION_CHANGES_PAGE
+        } else {
+            self.changes
+        }
+    }
+}
+
+/// What one action of a session shows when it is opened: every action an agent
+/// takes has a view of its own, so none of them is opaque.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum ActionView {
+    /// A file it changed: its path, and the lines either side when the provider
+    /// read them. Without lines the view reads them with a [`DETAIL`]
+    /// comparison of the action's range.
+    File {
+        target: Target,
+        path: String,
+        #[serde(default)]
+        lines: Vec<DiffLine>,
+    },
+    /// A command line it ran in a shell, with what came of it: the shell
+    /// session's own record of the execution ([`CommandExecution`]), never a copy.
+    Command {
+        target: Target,
+        /// The command line, as the shell ran it.
+        command: String,
+        /// The directory it ran in.
+        #[serde(default)]
+        cwd: String,
+        /// The last lines it printed, without terminal escapes.
+        #[serde(default)]
+        output: Vec<String>,
+        /// It printed more than `output` holds; the rest is
+        /// read with [`SESSION_OUTPUT`].
+        #[serde(default)]
+        more: bool,
+        /// How the program ended; `None` while it runs or when unknown.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exit: Option<i32>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        started_ms: Option<i64>,
+        /// When it ended; `None` while it runs.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        ended_ms: Option<i64>,
+        /// The execution record, once the shell ran it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        execution: Option<CommandExecution>,
+    },
+    /// A web page it opened or acted on.
+    Page {
+        target: Target,
+        url: String,
+        /// The page's title, when it had one.
+        #[serde(default)]
+        title: String,
+    },
+    /// A record of an app it changed.
+    Record { target: Target },
+}
+
+impl ActionView {
+    /// Whether it is a command its shell has not finished running.
+    #[must_use]
+    pub const fn is_running(&self) -> bool {
+        matches!(
+            self,
+            Self::Command {
+                ended_ms: None,
+                execution: Some(_),
+                ..
+            }
+        )
+    }
+
+    /// The resource the action touched, where it opens.
+    #[must_use]
+    pub const fn target(&self) -> &Target {
+        match self {
+            Self::File { target, .. }
+            | Self::Command { target, .. }
+            | Self::Page { target, .. }
+            | Self::Record { target } => target,
+        }
+    }
+}
+
+/// One line of a file's change.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct DiffLine {
+    pub side: DiffSide,
+    pub text: String,
+}
+
+/// Which side of a change a [`DiffLine`] is on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum DiffSide {
+    /// Unchanged, shown for its context.
+    Both,
+    Removed,
+    Added,
+}
+
+/// One action of an agent session: what it did in one record, and the view
+/// that shows it.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct SessionAction {
+    /// Its changes, which [`UNDO`] takes back on their own.
+    pub range: Range,
+    /// How many changes `range` is: an action that wrote four paragraphs in one note is one
+    /// action of four changes.
+    pub changes: usize,
+    pub at_ms: i64,
+    /// What it did, as a sentence.
+    pub summary: String,
+    pub view: ActionView,
+    /// The app and record it changed, as [`ResourceQuery`] names them to undo
+    /// just this action.
+    pub app_id: String,
+    pub record: String,
+    /// The action that undoes this record's share of the session alone, when
+    /// it can be undone on its own here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo: Option<Offer>,
+}
+
+/// One of a session's changes still in effect: what it changed, where, and how to open it and
+/// take it back.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct SessionChange {
+    /// The change, as a range of one in the history.
+    pub range: Range,
+    /// The change in its record's own history, which its undo names as the step.
+    pub step: String,
+    pub at_ms: i64,
+    /// What it changed, as a sentence.
+    pub summary: String,
+    /// The app and record it changed.
+    pub app_id: String,
+    pub record: String,
+    /// The resource it touched, where it opens.
+    pub target: Target,
+    /// The action that undoes this change alone, when it can be undone on its own here.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo: Option<Offer>,
+}
+
+/// One agent session: an instruction it worked, and the actions it took for
+/// it, oldest first.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema)]
+pub struct AgentSession {
+    /// The session's record, as the history keeps it.
+    pub id: String,
+    /// The agent, and who it acted for.
+    pub agent: Author,
+    /// The workspace it worked in, under [`Scope::AllWorkspaces`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// What it was asked, as the person phrased it.
+    pub instruction: String,
+    /// Why it did what it did, when it said.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub decision: Option<String>,
+    pub started_ms: i64,
+    /// When it last acted.
+    pub last_ms: i64,
+    /// Every change it made, which [`UNDO_SESSION`] takes back.
+    pub range: Range,
+    pub actions: Vec<SessionAction>,
+    /// Its changes still in effect, newest first: what the session still leaves in place, each
+    /// undone on its own. A page of [`Self::changes_total`].
+    pub in_effect: Vec<SessionChange>,
+    /// How many of its changes are still in effect.
+    pub changes_total: usize,
+    /// Why it cannot be undone from here, when it cannot.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub undo_blocked: Option<String>,
+    /// What it is doing now, or did last: a command still running, else its
+    /// newest action. A reader shows it only for a session that is working.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub now: Option<Now>,
+}
+
+impl AgentSession {
+    /// How many changes the session made to records and files, as a person counts what it changed:
+    /// each of its edits, not the commands it ran or the pages it read. What its card and the
+    /// notice that it finished both say.
+    #[must_use]
+    pub fn changes(&self) -> usize {
+        self.actions
+            .iter()
+            .filter(|action| {
+                matches!(
+                    action.view,
+                    ActionView::File { .. } | ActionView::Record { .. }
+                )
+            })
+            .map(|action| action.changes.max(1))
+            .sum()
+    }
+}
+
+/// What a session is doing at the moment it is read.
+///
+/// Written as derived; read through one `serde_json::Value` ([`Now::read`]),
+/// which takes the same JSON. A derived reader of an internally tagged enum
+/// buffers the value and is compiled again for every reader it meets: a
+/// large share of the code a page loads first, for a handful of fields.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, tilo_resource::JsonSchema)]
+#[serde(tag = "kind", rename_all = "kebab-case")]
+pub enum Now {
+    /// A command line it asked a shell to run, which has not ended.
+    Running { command: String, since_ms: i64 },
+    /// A file it changed last.
+    Editing { path: String, at_ms: i64 },
+    /// A web page it opened or acted on last.
+    Browsing {
+        url: String,
+        #[serde(default)]
+        title: String,
+        at_ms: i64,
+    },
+    /// A record of an app it changed last, as its action says it.
+    Changing { summary: String, at_ms: i64 },
+    /// A command it ran last, which ended.
+    Ran { command: String, at_ms: i64 },
+}
+
+impl<'de> Deserialize<'de> for Now {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let value = <serde_json::Value as Deserialize>::deserialize(deserializer)?;
+        Self::read(&value).map_err(serde::de::Error::custom)
+    }
+}
+
+impl Now {
+    /// The moment `value` writes: `{"kind": .., ..fields}`.
+    #[inline(never)]
+    fn read(value: &serde_json::Value) -> Result<Self, String> {
+        let field = |name: &str| value.get(name);
+        let text = |name: &str| {
+            field(name)
+                .and_then(serde_json::Value::as_str)
+                .map(str::to_owned)
+                .ok_or_else(|| format!("missing field `{name}`"))
+        };
+        let millis = |name: &str| {
+            field(name)
+                .and_then(serde_json::Value::as_i64)
+                .ok_or_else(|| format!("missing field `{name}`"))
+        };
+        let kind = field("kind")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("missing field `kind`")?;
+        Ok(match kind {
+            "running" => Self::Running {
+                command: text("command")?,
+                since_ms: millis("since_ms")?,
+            },
+            "editing" => Self::Editing {
+                path: text("path")?,
+                at_ms: millis("at_ms")?,
+            },
+            "browsing" => Self::Browsing {
+                url: text("url")?,
+                title: if field("title").is_some() {
+                    text("title")?
+                } else {
+                    String::new()
+                },
+                at_ms: millis("at_ms")?,
+            },
+            "changing" => Self::Changing {
+                summary: text("summary")?,
+                at_ms: millis("at_ms")?,
+            },
+            "ran" => Self::Ran {
+                command: text("command")?,
+                at_ms: millis("at_ms")?,
+            },
+            other => return Err(format!("unknown variant `{other}`")),
+        })
+    }
+}
+
+/// Where a command's execution is recorded: the shell session's record and
+/// the execution in it. Terminal keeps every execution a session ran there,
+/// with its command, directory, exit status, times and output.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, deny_unknown_fields)]
+pub struct CommandExecution {
+    /// The workspace the session's record is in.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<String>,
+    /// The app that keeps the session's record.
+    pub app_id: String,
+    /// The session's record.
+    pub record: String,
+    /// The execution, an item of the session's executions.
+    pub execution: String,
+}
+
+/// Everything an execution printed, as [`SESSION_OUTPUT`] reads it.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct SessionOutput {
+    /// Its lines, without terminal escapes, at most [`SESSION_OUTPUT_LINES`].
+    pub lines: Vec<String>,
+    /// It printed more than the lines hold, or more than its shell kept.
+    pub truncated: bool,
+    /// The execution is not known here, or its output has not reached this device.
+    pub unavailable: bool,
+    /// The execution has not ended.
+    pub running: bool,
+}
+
+/// The most lines a [`SESSION_OUTPUT`] read answers: its newest.
+pub const SESSION_OUTPUT_LINES: usize = 10_000;
+/// The most lines an [`ActionView::Command`] carries.
+pub const COMMAND_TAIL_LINES: usize = 12;
+
+/// Every agent session a [`SessionsQuery`] reads, newest first.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct Sessions {
+    pub sessions: Vec<AgentSession>,
+    /// Sessions the query matches, of which [`Self::sessions`] holds the newest.
+    pub total: usize,
+    /// The history is still being read.
+    pub pending: bool,
+    /// Whether this device can undo here.
+    pub mutations: bool,
+}
+
+/// A page of the feed as a view names it by its own key
+/// (`workspace.activity/feed~<scope>~<period>~<lens>~<limit>`): one optional section, so a page
+/// the session has not read yet reads as having nothing, rather than as a record missing its
+/// fields.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct FeedReading {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub feed: Option<Feed>,
+}
+
+/// A range's detail as a view names it by the range it shows
+/// (`workspace.activity/range~<from>~<to>`): one optional section, as [`FeedReading`] is.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct RangeDetail {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<Detail>,
+}
+
+/// A command's whole output as a view names it by the execution it shows
+/// (`workspace.activity/output/<workspace>/<app>/<record>/<execution>`): one optional section,
+/// as [`FeedReading`] is.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default)]
+pub struct OutputReading {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output: Option<SessionOutput>,
+}
+
+/// Which [`Focus`] [`FOCUSED`] says was shown.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, deny_unknown_fields)]
+pub struct Focused {
+    pub serial: u64,
+}
+
+/// What [`MARK_VIEWED`] marks: the changes the reader was shown.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, deny_unknown_fields)]
+pub struct Viewed {
+    pub entries: Vec<String>,
+    /// Count them seen once the reader stops following [`SUMMARY`], rather
+    /// than now: the summary they are reading stays as it is until then.
+    pub later: bool,
+}
+
+/// What [`NAME`] writes. An empty label removes the name.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, deny_unknown_fields)]
+pub struct Name {
+    pub range: Range,
+    /// The naming record a rename replaces.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub record: Option<String>,
+    pub label: String,
+}
+
+/// Which way a [`Boundary`] moves.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum Toward {
+    /// The older session's newest change joins the newer session.
+    #[default]
+    Newer,
+    /// The newer session's oldest change joins the older session.
+    Older,
+}
+
+/// What [`MOVE_BOUNDARY`] moves: the boundary between the two adjacent
+/// work sessions holding `older` and `newer`.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, deny_unknown_fields)]
+pub struct Boundary {
+    /// A change of the older session.
+    pub older: String,
+    /// A change of the newer session.
+    pub newer: String,
+    pub toward: Toward,
+}
+
+/// A command on a chosen morning source.
+#[derive(
+    Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(rename_all = "kebab-case")]
+pub enum SourceCommand {
+    #[default]
+    Open,
+    Remove,
+    Refresh,
+    DraftRefresh,
+    NextSource,
+}
+
+/// What [`SOURCE`] runs.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
+)]
+#[serde(default, deny_unknown_fields)]
+pub struct SourceRequest {
+    pub key: String,
+    pub command: SourceCommand,
+}
+
+/// The history id helpers, which name a change the way [`Entry::id`] does: the
+/// session's own hex spelling, kept where every caller of a history names one.
+pub use tilo_actions::{change_hex, entry_hex, entry_id};
+
+/// The workspace's activity, as the session answers it: every read a live view
+/// of the model's last answer, every write a change of what the history named,
+/// undid, restored, opened or saw.
+#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
+#[effect(operation = "tilo.activity")]
+pub enum ActivityAction {
+    /// Live: the workspace's history, filtered by a [`FeedQuery`].
+    #[effect(kind = "read", view, label = "activity-title-explore", returns = Feed)]
+    Feed {
+        /// Which workspaces' changes are shown.
+        scope: Scope,
+        /// How far back the feed reaches.
+        period: Period,
+        /// Only this person's changes.
+        author: Option<String>,
+        /// Only this lens's changes.
+        lens: Option<String>,
+        /// Only the changes to one window's resources.
+        resources: Option<WindowResources>,
+        /// The newest this many changes; `0` for the first page.
+        limit: usize,
+    },
+    /// Live: what changed since this device last looked.
+    #[effect(kind = "read", view, label = "activity-title-whats-new", returns = Summary)]
+    Summary,
+    /// Live: the workspace's layout at each recent change.
+    #[effect(kind = "read", view, label = "activity-title-replay", returns = Replay)]
+    Replay,
+    /// Live: what a range of changes did and what can be done with it.
+    #[effect(kind = "read", view, label = "activity-pane-details", returns = Detail)]
+    Detail {
+        /// The range of changes.
+        range: Range,
+        /// Also compare the workspace before and after the range.
+        compare: bool,
+    },
+    /// Live: what the person last asked to be shown from outside the app, until an app shows it.
+    #[effect(kind = "read", view, label = "activity-detail-open", returns = Option<Focus>)]
+    Focus,
+    /// Live: every agent session the history holds, each as the timeline of the actions it took.
+    #[effect(kind = "read", view, label = "activity-title-explore", returns = Sessions)]
+    Sessions {
+        /// Which workspaces' sessions are shown.
+        scope: Scope,
+        /// The newest this many sessions; `0` for the first page.
+        limit: usize,
+        /// The newest this many of each session's changes still in effect; `0` for its first page.
+        changes: usize,
+    },
+    /// Every line a command an agent ran printed.
+    #[effect(kind = "read", view, label = "activity-pane-details", returns = SessionOutput)]
+    SessionOutput {
+        /// The workspace the session's record is in; absent for this one.
+        workspace: Option<String>,
+        /// The app that keeps the session's record.
+        app_id: String,
+        /// The session's record.
+        record: String,
+        /// The execution, an item of the session's executions.
+        execution: String,
+    },
+    /// Mark the changes the reader was shown as seen on this device.
+    #[effect(kind = "undoable", view, label = "activity-action-mark-viewed")]
+    MarkViewed {
+        /// The changes, by their history id.
+        entries: Vec<String>,
+        /// Count them seen once the reader stops following what is new, rather than now.
+        later: bool,
+    },
+    /// Say the ask the serial names was shown.
+    #[effect(kind = "undoable", view, label = "activity-action-focused")]
+    Focused {
+        /// The serial of the ask.
+        serial: u64,
+    },
+    /// Name, rename or un-name a range of changes; an empty name removes it.
+    #[effect(kind = "undoable", document, label = "activity-action-name")]
+    Name {
+        /// The changes to name.
+        range: Range,
+        /// The naming record a rename replaces.
+        record: Option<String>,
+        /// The name; empty removes it.
+        label: String,
+    },
+    /// Split the named work group a range sits in at its start.
+    #[effect(kind = "undoable", document, label = "activity-detail-split")]
+    Split {
+        /// The first change.
+        from: String,
+        /// The last change.
+        to: String,
+    },
+    /// Merge the named work groups a range spans.
+    #[effect(kind = "undoable", document, label = "activity-detail-merge")]
+    Merge {
+        /// The first change.
+        from: String,
+        /// The last change.
+        to: String,
+    },
+    /// Move the boundary between two work sessions.
+    #[effect(kind = "undoable", document, label = "activity-action-move-boundary")]
+    MoveBoundary {
+        /// A change of the older session.
+        older: String,
+        /// A change of the newer session.
+        newer: String,
+        /// The way the boundary moves.
+        toward: Toward,
+    },
+    /// Undo a range of changes.
+    #[effect(kind = "undoable", document, label = "activity-history-undo")]
+    Undo {
+        /// The first change.
+        from: String,
+        /// The last change.
+        to: String,
+    },
+    /// Restore the workspace to before a range of changes.
+    #[effect(kind = "undoable", document, label = "activity-history-restore")]
+    Restore {
+        /// The first change.
+        from: String,
+        /// The last change.
+        to: String,
+    },
+    /// Undo the agent session a range belongs to.
+    #[effect(kind = "undoable", document, label = "activity-detail-undo-task")]
+    UndoSession {
+        /// The first change.
+        from: String,
+        /// The last change.
+        to: String,
+    },
+    /// Undo one record's share of an agent session.
+    #[effect(kind = "undoable", document, label = "activity-action-undo-record")]
+    UndoRecord {
+        /// The session, by its range in the history.
+        range: Range,
+        /// The session, by the task it worked, in place of the range.
+        task: Option<String>,
+        /// The app's id.
+        app_id: String,
+        /// The record's own id.
+        id: String,
+        /// The one change inside that record to take back; absent takes back the session's share.
+        step: Option<String>,
+    },
+    /// Open what a change touched in its app.
+    #[effect(kind = "undoable", view, label = "activity-detail-open-app")]
+    Open {
+        /// The app it opens in.
+        app_id: Option<String>,
+        /// The app's name.
+        app_label: Option<String>,
+        /// The resource's id.
+        id: String,
+        /// The resource's kind.
+        kind: String,
+        /// The resource's title.
+        label: String,
+    },
+    /// Choose, or stop choosing, the resource a range changed as a morning source.
+    #[effect(kind = "undoable", view, label = "activity-action-choose-source")]
+    ChooseSource {
+        /// The first change.
+        from: String,
+        /// The last change.
+        to: String,
+    },
+    /// Run a command on a chosen morning source.
+    #[effect(kind = "undoable", view, label = "activity-action-source")]
+    Source {
+        /// The source's key.
+        key: String,
+        /// The command: `open`, `remove`, `refresh`, `draft-refresh` or `next-source`.
+        command: SourceCommand,
+    },
+}
+
+/// What the resource reads as: the model's last answers, taken together.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
+#[serde(default)]
+pub struct Activity {
+    /// This workspace's changes.
+    pub feed: Option<Feed>,
+    /// Every workspace's changes on this device.
+    pub everywhere: Option<Feed>,
+    /// What changed since this device last looked.
+    pub summary: Option<Summary>,
+    /// The layout at each recent change.
+    pub replay: Option<Replay>,
+    /// Every agent session.
+    pub sessions: Option<Sessions>,
+    /// What the person was asked to open from outside, until the app shows it.
+    pub focus: Option<Focus>,
+}
+
+/// What the activity publishes to a caller of another crate, from the declaration
+/// above: the surface a program binds its actions, arguments and answers to.
+#[cfg(test)]
+mod surface {
+    use tilo_resource::NoEffect;
+    use tilo_resource::surface::reading_surface;
+
+    use super::*;
+
+    /// `surface` with `name` declared beside its fields as a type of its own: a view names a
+    /// keyed reading's record in `resource(…, of: history.RangeDetail)`, so the record is
+    /// declared there too.
+    fn named_root(
+        mut surface: tilo_actions::surface::Surface,
+        name: &str,
+        doc: &str,
+    ) -> tilo_actions::surface::Surface {
+        let fields = surface
+            .fields
+            .iter()
+            .map(|field| tilo_actions::surface::TypeField {
+                name: field.path.clone(),
+                ty: field.ty.clone(),
+                title: field.title.clone(),
+            })
+            .collect();
+        surface.types.push(tilo_actions::surface::NamedType {
+            tag: None,
+            name: name.to_owned(),
+            doc: doc.to_owned(),
+            fields,
+            cases: Vec::new(),
+        });
+        surface
+    }
+
+    /// `surface` without its reads: a view of another language reads by naming the resource,
+    /// so what it may call is the writes alone.
+    fn writes(mut surface: tilo_actions::surface::Surface) -> tilo_actions::surface::Surface {
+        let reads = [
+            FEED,
+            SUMMARY,
+            REPLAY,
+            DETAIL,
+            FOCUS,
+            SESSIONS,
+            SESSION_OUTPUT,
+        ];
+        surface
+            .verbs
+            .retain(|verb| !reads.contains(&verb.id.as_str()));
+        surface
+    }
+
+    /// The files a caller binds to are what this crate publishes: the activity's own resource,
+    /// and the four readings a view of another language names it by. `UPDATE_SNAPSHOTS=1`
+    /// writes them.
+    #[test]
+    fn the_activity_surfaces_are_what_this_crate_publishes() {
+        let bound = [
+            writes(reading_surface::<Activity, ActivityAction>(
+                "activity", "Activity",
+            )),
+            named_root(
+                reading_surface::<RangeDetail, NoEffect>("activity-range", "Activity change"),
+                "RangeDetail",
+                "What a range of changes did.",
+            ),
+            named_root(
+                reading_surface::<FeedReading, NoEffect>("activity-feed", "Activity feed"),
+                "FeedReading",
+                "A page of the feed, narrowed by what the person chose.",
+            ),
+            named_root(
+                reading_surface::<OutputReading, NoEffect>("activity-output", "Command output"),
+                "OutputReading",
+                "Everything a command printed, as this device keeps it.",
+            ),
+        ];
+        check(
+            "workspace-activity-surface.json",
+            &[reading_surface::<Activity, ActivityAction>(
+                RESOURCE,
+                "Workspace activity",
+            )],
+        );
+        check("activity-surface.json", &bound);
+    }
+
+    /// The file `name` beside the crate is what this crate publishes, unless `UPDATE_SNAPSHOTS=1`
+    /// writes it.
+    fn check(name: &str, surfaces: &[tilo_actions::surface::Surface]) {
+        let text = tilo_surface_compile::canonical(&serde_json::json!({ "resources": surfaces }));
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join(name);
+        if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|value| value == "1") {
+            std::fs::write(&path, &text).expect("the surface file is written");
+            return;
+        }
+        assert_eq!(
+            std::fs::read_to_string(&path).ok().as_deref(),
+            Some(text.as_str()),
+            "crates/desktop/session-core/{name} is not what this crate publishes; regenerate it \
+             with UPDATE_SNAPSHOTS=1"
+        );
+    }
+
+    /// What tilo-actions keeps for the published registry names the declaration here.
+    #[test]
+    fn the_published_constants_name_this_declaration() {
+        use super::{APP_ID, ActivityAction as Declared, PROVIDER};
+        use tilo_actions::remote::workspace_activity as kept;
+        assert_eq!(kept::PROVIDER, PROVIDER);
+        assert_eq!(kept::APP_ID, APP_ID);
+        assert_eq!(
+            kept::PROVIDER,
+            <Declared as tilo_resource::Effect>::OPERATION
+        );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    tilo_test_env::scenario! {
+        fn workspace_activity_reads_back_as_written;
+
+        phase every_moment_reads_back_as_written_and_a_bare_page_has_no_title;
+        {
+            let moments = [
+                Now::Running {
+                    command: "cargo test".into(),
+                    since_ms: -3,
+                },
+                Now::Editing {
+                    path: "src/lib.rs".into(),
+                    at_ms: 4,
+                },
+                Now::Browsing {
+                    url: "https://example.org".into(),
+                    title: "Example".into(),
+                    at_ms: 5,
+                },
+                Now::Browsing {
+                    url: "https://example.org".into(),
+                    title: String::new(),
+                    at_ms: 6,
+                },
+                Now::Changing {
+                    summary: "Renamed a note".into(),
+                    at_ms: 7,
+                },
+                Now::Ran {
+                    command: "ls".into(),
+                    at_ms: 8,
+                },
+            ];
+            for now in moments {
+                let written = serde_json::to_string(&now).unwrap();
+                assert_eq!(
+                    serde_json::from_str::<Now>(&written).unwrap(),
+                    now,
+                    "{written}"
+                );
+                let value = serde_json::to_value(&now).unwrap();
+                assert_eq!(serde_json::from_value::<Now>(value).unwrap(), now);
+            }
+            assert!(serde_json::from_str::<Now>(r#"{"kind":"sleeping","at_ms":1}"#).is_err());
+            assert!(serde_json::from_str::<Now>(r#"{"kind":"ran","at_ms":1}"#).is_err());
+            assert_eq!(
+                serde_json::from_str::<Now>(r#"{"kind":"ran","command":"ls","at_ms":1,"more":0}"#)
+                    .unwrap(),
+                Now::Ran {
+                    command: "ls".into(),
+                    at_ms: 1
+                },
+                "a field a newer writer adds is passed over"
+            );
+        }
+
+        phase an_entry_id_reads_back_from_its_hex_and_nothing_else_does;
+        {
+            let id = [7_u8; 16];
+            assert_eq!(entry_id(&entry_hex(&id)), Some(id));
+            assert_eq!(entry_id("07"), None);
+            assert_eq!(entry_id(&"zz".repeat(16)), None);
+        }
+
+        phase a_query_reads_back_and_an_empty_one_asks_for_the_first_page;
+        {
+            let query = FeedQuery {
+                scope: Scope::AllWorkspaces,
+                period: Period::Week,
+                author: Some("Ada".into()),
+                lens: Some("app:so.tilo.notes".into()),
+                resources: Some(WindowResources {
+                    app: "so.tilo.notes".into(),
+                    resources: vec!["window:0000000000000000".into()],
+                    item: Some("note-1".into()),
+                }),
+                limit: 400,
+            };
+            let sent = serde_json::to_value(&query).unwrap();
+            assert!(sent.is_object(), "a query is an object");
+            let read: FeedQuery = serde_json::from_value(sent).unwrap();
+            assert_eq!(read, query);
+            assert_eq!(FeedQuery::default().page(), FEED_PAGE);
+            assert!(!query.reads_only_resources_of("so.tilo.notes"), "every workspace's is no app's own");
+            let here = FeedQuery { scope: Scope::ThisWorkspace, ..query };
+            assert!(here.reads_only_resources_of("so.tilo.notes"));
+            assert!(!here.reads_only_resources_of("so.tilo.chat"), "Notes' resources are not Chat's");
+            assert!(!FeedQuery::default().reads_only_resources_of("so.tilo.notes"));
+        }
+    }
+}

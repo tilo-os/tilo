@@ -400,7 +400,7 @@ const PUBLISHED: &[Published] = &[
         roots: ACTIVITY_ROOTS,
         // What the workspace's activity reads as, beside the session that serves it.
         files: &[include_str!(
-            "../../../desktop/session/activity-surface.json"
+            "../../../desktop/session-core/activity-surface.json"
         )],
         described: false,
         listed: &[],

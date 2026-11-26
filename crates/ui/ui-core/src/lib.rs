@@ -149,6 +149,8 @@ pub use runtime_collab::shown_actions;
 #[cfg(feature = "model")]
 pub use tilo_actions::remote::native_media;
 pub use {tilo_ui_paint::color, tilo_ui_paint::color_compat};
+#[cfg(feature = "model")]
+pub mod activity_wire;
 pub mod component_catalogue;
 pub mod component_lifecycle;
 pub mod composition;

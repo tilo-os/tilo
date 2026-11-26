@@ -67,8 +67,7 @@ fn still_in_effect(summary: &str, at: &str, step: &str) -> Json {
         "record": "note-1",
         "target": {"id": "note-1", "kind": "note", "label": "Plan",
                    "app_id": "so.tilo.lang.notes", "app_label": "Notes"},
-        "undo_label": "Undo this step",
-        "undo_verb": "undo-entry",
+        "undo": {"action": "undo-entry", "label": "Undo this step"},
     })
 }
 
@@ -90,8 +89,6 @@ fn still_standing(in_effect: Json, total: usize) -> Json {
         "in_effect": in_effect,
         "changes_total": total,
         "undo_blocked": null,
-        "now": "",
-        "now_kind": "",
     })
 }
 
@@ -114,7 +111,7 @@ fn change(id: &str, summary: &str) -> Json {
         "kind": "text",
         "at_ms": 1_700_000_000_000_i64,
         "summary": summary,
-        "made_in": "Notes",
+        "app": "Notes",
         "resource": null,
         "group": null,
         "redacted": false,
@@ -367,7 +364,7 @@ fn a_ranges_agent_work_lists_the_changes_it_still_leaves_in_place_and_undoes_one
     );
     press(&mut window, "Plan");
     assert_eq!(
-        app.sent.arg("open-change", "id"),
+        app.sent.arg("open", "id"),
         Some(Value::text("note-1")),
         "the change's resource opens where it is"
     );
@@ -400,7 +397,7 @@ fn a_range_compares_the_workspace_either_side_of_it() {
     app.device_says(&feed(0), &page(changes(3), 3));
     app.device_says(
         &range("e010", "e020"),
-        &detail(None, json!([{"verb": "detail", "label": "Compare"}])),
+        &detail(None, json!([{"action": "compare", "label": "Compare"}])),
     );
     app.device_says(
         &compare("e010", "e020"),
@@ -414,7 +411,7 @@ fn a_range_compares_the_workspace_either_side_of_it() {
                 "group_label": null,
                 "offers": [],
                 "changes": [],
-                "comparison": "Added a page\nRemoved a note",
+                "comparison": {"state": "changes", "lines": ["Added a page", "Removed a note"]},
                 "gone": false,
             }
         })

@@ -128,7 +128,7 @@ mod native_history {
         // Restoring a version writes the layout back through the host that keeps
         // it, and the restore is itself a change of the workspace.
         {
-            use tilo_actions::remote::workspace_activity as wire;
+            use crate::desktop::activity::vocabulary as wire;
             use tilo_desktop_model::Layout;
 
             let (mut snapshot, written, authors) = native_history();

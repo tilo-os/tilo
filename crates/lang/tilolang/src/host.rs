@@ -1144,6 +1144,7 @@ pub fn host_meta() -> PackageMeta {
                 id: e.id.to_string(),
                 name: e.name.to_string(),
                 doc: e.doc.to_string(),
+                tag: None,
                 variants: e
                     .variants
                     .iter()

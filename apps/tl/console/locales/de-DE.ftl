@@ -71,7 +71,8 @@ d-vwss2xgt = Freigabestatus
 d-z3srezcw = Aktuelles Tun
     .w-running = Läuft { $now }…
     .w-editing = Bearbeitet { $now }
-    .w-on = Auf { $now }
+    .w-on = Auf { $url }
+    .w-on-2 = Auf { $title }
     .w-ran = Führte { $now } aus
 
 d-rkm2dwcu = Gestartet von
@@ -103,6 +104,34 @@ d-4h4nigsj = Konsole
     .w-working-now = Arbeitet gerade
     .w-earlier = Früher
 
+d-y4sphhst = Öffnen
+    .doc = Was eine Aktion einer Sitzung geändert hat, wie die App es öffnet.
+    .noun = { $count ->
+        [one] Öffnung
+       *[other] Öffnungen
+    }
+
+d-dfdpyx4t = App-Kennung
+    .doc = Die App, in der es sich öffnet, wenn seine Ansicht eine nennt.
+
+d-th3jxxzc = Kennung
+    .doc = Die Ressource: ihre Kennung, ihre Art und ihr Titel.
+
+d-a4towmsc = Art
+
+d-hcgqiuvi = Titel
+
+d-mns2fywj = Berührt
+    .doc = Was die Ansicht einer Aktion getan hat, wie das Symbol ihrer Zeile es sagt.
+
+d-zuf6jlfd = Datei
+
+d-yqjm2pat = Befehl
+
+d-6q7izlmx = Seite
+
+d-d3cc4dpy = Eintrag
+
 d-7f5as25r = Veröffentlichen
     .doc = Gibt jeder der neuesten Sitzungen, die der Verlauf listet, und jedem Client, der hier tätig war, eine eigene Ressource, damit jede und jeder außerhalb dieses Fensters verlinkt, gefunden und geöffnet werden kann.
 
@@ -118,6 +147,10 @@ d-h5zbne7z-client = Client
 
 d-wtec67nk = Agent stoppen
     .doc = Hält die arbeitende Sitzung des Clients an und behält ihre Freigabe.
+
+d-q2qsuope = Aktion öffnen
+    .doc = Öffnet, was eine Aktion einer Sitzung geändert hat, in ihrer App.
+
 
 d-gxzhtzhy = Agent übernehmen
     .doc = Hält die Sitzung des Clients an und öffnet, was sie zuletzt geändert hat, oder den Arbeitsbereich, in dem sie arbeitete.

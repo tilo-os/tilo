@@ -6,8 +6,8 @@
 
 use crate::time::SystemTime;
 
+use crate::activity_wire as wire;
 use collab_types::ArtifactKind;
-use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::{ActionContext, ActionFacet};
 
 pub use collab_types::history::authors::{
@@ -627,7 +627,10 @@ pub fn author_face(
         row = row.agent_face();
     }
     // The colour its entry recorded is the member's own, as presence paints them.
-    let [red, green, blue] = author.rgb;
+    let [red, green, blue] = match author.rgb.as_slice() {
+        [red, green, blue] => [*red as u8, *green as u8, *blue as u8],
+        _ => [0; 3],
+    };
     if [red, green, blue] != [0; 3] {
         row = row.avatar_colour(crate::peniko::Color::from_rgb8(red, green, blue));
     } else if author.relation == wire::Relation::Software {

@@ -153,7 +153,7 @@ fn one_record_of_a_run_is_undone_alone() {
 /// same one record is undone, nothing else; a task that changed nothing is refused.
 #[test]
 fn one_record_of_a_run_is_undone_by_its_task() {
-    use tilo_actions::remote::workspace_activity as wire;
+    use crate::desktop::activity::vocabulary as wire;
     let (mut tree, mut pane, host) = fixture();
     let change = ui::history_source::entry_id_from_hash(&"ef".repeat(32));
     let doc = tree.document_mut();

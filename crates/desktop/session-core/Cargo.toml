@@ -70,6 +70,7 @@ audio = { package = "tilo-audio-service", version = "0.1.0", path = "../../os/au
 tilo-actions = { path = "../../core/actions", features = ["test-support"] }
 tilo-copy-lint = { path = "../../../tools/copy-lint" }
 tilo-resource = { path = "../../core/tilo-resource", features = ["test-support"] }
+tilo-surface-compile = { version = "0.1.0", path = "../../core/tilo-surface-compile" }
 tilo-test-env = { path = "../../../tools/test-env" }
 
 [lints]

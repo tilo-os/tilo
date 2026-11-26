@@ -9,8 +9,8 @@ use crate::history_source::{HistorySource, groups::read_named_ranges};
 use crate::{HistoryEntry, NamedRange};
 
 /// How many of the newest changes History lists when it opens, and how many more each request for
-/// earlier ones adds.
-const HISTORY_PAGE: usize = crate::tilo_actions::remote::workspace_activity::FEED_PAGE;
+/// earlier ones adds: the first page the activity's feed answers.
+const HISTORY_PAGE: usize = 200;
 
 pub(super) struct Listing {
     limit: usize,

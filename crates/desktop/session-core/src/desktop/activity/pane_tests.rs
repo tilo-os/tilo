@@ -4,7 +4,7 @@ use super::*;
     reason = "the store-backed history refresh is a method of this trait"
 )]
 use crate::desktop::activity::testing::StoreRecords as _;
-use tilo_actions::remote::workspace_activity as wire;
+use crate::desktop::activity::vocabulary as wire;
 
 #[cfg(test)]
 mod tests {
@@ -1269,7 +1269,7 @@ mod tests {
         let first = pane.serve_summary().briefs.remove(0).entries;
         pane.mark_viewed(
             workspace,
-            &tilo_actions::remote::workspace_activity::Viewed {
+            &crate::desktop::activity::vocabulary::Viewed {
                 entries: first,
                 later: true,
             },
@@ -2400,7 +2400,7 @@ mod tests {
             .collect();
         pane.mark_viewed(
             workspace,
-            &tilo_actions::remote::workspace_activity::Viewed {
+            &crate::desktop::activity::vocabulary::Viewed {
                 entries,
                 later: true,
             },
@@ -2975,7 +2975,7 @@ mod morning_source_tests {
 
         phase morning_payload_commands_reach_only_this_workspace_and_change_no_history;
         {
-            use tilo_actions::remote::workspace_activity::SourceCommand;
+            use crate::desktop::activity::vocabulary::SourceCommand;
             let (mut tree, mut pane) = fixture();
             choose_source(&mut pane, &mut tree);
             let host = Rc::new(PayloadHost::default());
@@ -3014,7 +3014,7 @@ mod morning_source_tests {
 
         phase morning_payload_paging_keeps_large_sources_and_removed_evidence_reachable;
         {
-            use tilo_actions::remote::workspace_activity::SourceCommand;
+            use crate::desktop::activity::vocabulary::SourceCommand;
             let (mut tree, mut pane) = fixture();
             choose_source(&mut pane, &mut tree);
             let host = Rc::new(PayloadHost {
@@ -3085,7 +3085,7 @@ mod morning_source_tests {
     }
     #[test]
     fn morning_sources_survive_restart_without_crossing_workspaces_or_acknowledging_work() {
-        use tilo_actions::remote::workspace_activity::SourceCommand;
+        use crate::desktop::activity::vocabulary::SourceCommand;
         let (mut tree, mut pane) = fixture();
         let host = Rc::new(Host::default());
         pane.set_host(host.clone());
@@ -3132,9 +3132,9 @@ mod morning_source_tests {
         pane: &mut WorkspaceActivityPane,
         tree: &mut TestTree,
         key: &str,
-        command: tilo_actions::remote::workspace_activity::SourceCommand,
+        command: crate::desktop::activity::vocabulary::SourceCommand,
     ) -> WorkspaceActivityOutcome {
-        let request = tilo_actions::remote::workspace_activity::SourceRequest {
+        let request = crate::desktop::activity::vocabulary::SourceRequest {
             key: key.into(),
             command,
         };
@@ -3144,7 +3144,7 @@ mod morning_source_tests {
             .cloned()
             .expect("a request is an object");
         pane.serve_action(
-            tilo_actions::remote::workspace_activity::SOURCE,
+            crate::desktop::activity::vocabulary::SOURCE,
             &arguments,
             tree,
         )

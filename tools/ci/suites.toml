@@ -694,6 +694,9 @@ package = "tilo-ui"
 # The paint stream's tests draw the layout snapshots and screenshot recorded
 # for tilo-paint-stream.
 inputs = [
+  # The history feed's actions and records, which the toolkit binds to the activity's published
+  # surface.
+  "crates/desktop/session-core/workspace-activity-surface.json",
   "vendor/winit/src/platform_impl/quit_request.rs",
   "crates/engines/paint-stream/tests/fixtures/",
   # The theme bundle's test loads a theme written only against the theme SDK.
@@ -937,7 +940,8 @@ inputs = [
   "crates/lang/tilolang/tests/fixtures/",
   "crates/desktop/device-surfaces/device-surface.json",
   "crates/desktop/settings-sections/published.json",
-  "crates/desktop/session/activity-surface.json",
+  "crates/desktop/session-core/activity-surface.json",
+  "crates/desktop/session-core/workspace-activity-surface.json",
   "crates/desktop/session/host-account-surface.json",
   "crates/desktop/session/window-menu-surface.json",
   "crates/core/tilo-workspace-service/mcp-server-surface.json",
@@ -1621,6 +1625,9 @@ package = "tilo-app-host"
 # nearby-send test runs the sender script the image ships, and the vault tests
 # read the app's own manifest and surface.
 inputs = [
+  # What an app's read of its own history is judged against: the activity's published surface,
+  # which the admission tests bind their arguments to.
+  "crates/desktop/session-core/workspace-activity-surface.json",
   "crates/integrations/tilo-web-search/tests/fixtures/brave.html",
   "crates/integrations/tilo-web-search/tests/fixtures/bing.html",
   "tools/protocols/airdrop_sender.py",

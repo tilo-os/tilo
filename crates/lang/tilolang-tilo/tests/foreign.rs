@@ -1188,3 +1188,70 @@ fn a_reading_changing_runs_only_the_views_that_read_it() {
         "nor does it run the quiet view"
     );
 }
+
+/// A board whose progress is a case that carries its own fields, written under the key the
+/// surface declares for it.
+const JOB: &str = r#"{"resources":[{"fields":[{"path":"progress","type":{"named":"Progress"}}],"kind":"job.board","label":"Board","version":1,"types":[{"name":"Progress","fields":[{"name":"step","type":{"named":"Step"}}]},{"name":"Step","tag":"kind","cases":[{"name":"running","fields":[{"name":"command","type":"text"},{"name":"since_ms","type":"int"}]},{"name":"done","fields":[{"name":"at_ms","type":"int"}]}]}]}]}"#;
+
+/// A view over the board: it matches the progress the board is on and shows what it carries.
+const PROGRESS: &str = r#"app test.progress "Progress"
+
+use jobs as jobs
+
+view board(j: jobs.Board) {
+  match j.progress.step {
+    .running(command, since) => text("at {command} since {since}")
+    .done(at) => text("done at {at}")
+  }
+}
+"#;
+
+#[test]
+fn a_reading_names_its_case_under_the_key_the_surface_declares() {
+    let surfaces = catalogue::parse_surfaces(JOB).expect("a surface file");
+    let meta = catalogue::package_of("jobs", "Jobs", &surfaces);
+    let host = Host::new(
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .unwrap();
+    host.runtime()
+        .load_foreign(meta.clone())
+        .expect("the app's package loads");
+    let compiled =
+        tilolang::compile_package(PROGRESS, &IdsLock::new(), std::slice::from_ref(&meta))
+            .unwrap_or_else(|diagnostics| panic!("{diagnostics:#?}"));
+    let package = host.load_compiled(&compiled).unwrap();
+    let view = package
+        .meta
+        .views
+        .iter()
+        .find(|view| view.name == "board")
+        .expect("the view's declaration")
+        .id
+        .clone();
+    let board = ResourceRef::parse_id("board-1", "jobs#Board").expect("a resource id");
+    host.runtime()
+        .set_reading(
+            &board,
+            &json!({"progress": {"step": {"kind": "running", "command": "cargo test", "since_ms": 5}}})
+                .to_string(),
+        )
+        .unwrap();
+    let view = host.open_resource(&board, Some(&view)).unwrap();
+    let mut shown = Vec::new();
+    walk_text(view.tree(), &mut shown);
+    assert_eq!(shown, vec!["at cargo test since 5"]);
+}
+
+/// Every text `node` or its children show, in order.
+fn walk_text(node: &tilolang_runtime::UiNode, into: &mut Vec<String>) {
+    if node.kind == "ui.Text"
+        && let Some(Value::Text(text)) = node.props.get("value")
+    {
+        into.push(text.clone());
+    }
+    for child in &node.children {
+        walk_text(child, into);
+    }
+}

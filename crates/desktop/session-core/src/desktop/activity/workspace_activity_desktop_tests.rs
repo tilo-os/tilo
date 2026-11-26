@@ -1,8 +1,8 @@
 #[cfg(test)]
 mod desktop_workspace_activity {
+    use crate::desktop::activity::vocabulary as wire;
     use crate::desktop::activity::{ActivitySnapshot, WorkspaceActivityPane};
     use automerge::{AutoCommit, ROOT, transaction::Transactable};
-    use tilo_actions::remote::workspace_activity as wire;
     use tilo_desktop_model::projection::WORKSPACE_ID_KEY;
     use tilo_desktop_model::{Layout, Workspace, WorkspaceId};
 

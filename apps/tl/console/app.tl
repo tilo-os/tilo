@@ -159,6 +159,31 @@ destructive action stop_agent(c: AgentCard) {
     }
 }
 
+/// What an action of a session changed, as the app opens it.
+type Opening {
+    /// The app it opens in, when its view names one.
+    app_id: Option<Text> = .none
+    /// The resource: its id, its kind and its title.
+    id: Text
+    kind: Text
+    label: Text
+}
+
+/// Where an action's view opens, as its own record.
+fn opening(v: history.ActionView) -> Opening {
+    let target = action_target(v)
+    Opening(app_id: target.app_id, id: target.id, kind: target.kind, label: target.label)
+}
+
+/// Opens what an action of a session changed, in its app.
+action open_action(o: Opening) {
+    if let kept = o.app_id {
+        history.open(history.history, app_id: .some(kept), id: o.id, kind: o.kind, label: o.label)
+    } else {
+        history.open(history.history, id: o.id, kind: o.kind, label: o.label)
+    }
+}
+
 /// Stops the client's session and opens what it changed last, or the workspace it worked in.
 action take_over_agent(c: AgentCard) {
     let sessions = resource("workspace.activity/sessions/all", of: history.Sessions)
@@ -170,31 +195,11 @@ action take_over_agent(c: AgentCard) {
                 session: mcp.AgentSessionRef(grant: grant.id, session: s.agent.name),
             )
             if let last = s.actions.last() {
-                if let kept = last.target.app_id {
-                    history.open_change(
-                        history.history,
-                        app_id: .some(kept),
-                        id: last.target.id,
-                        kind: last.target.kind,
-                        label: last.target.label,
-                    )
-                } else {
-                    history.open_change(
-                        history.history,
-                        id: last.target.id,
-                        kind: last.target.kind,
-                        label: last.target.label,
-                    )
-                }
+                open_action(opening(last.view))
             } else if let ws = workspace_of_session(s, server) {
                 device.open_link(device.invite, link: ws.open)
             } else {
-                history.open_change(
-                    history.history,
-                    id: s.id,
-                    kind: "session",
-                    label: s.instruction,
-                )
+                history.open(history.history, id: s.id, kind: "session", label: s.instruction)
             }
         }
     }
@@ -355,10 +360,10 @@ view session_row(
     let is_working = working(s, sessions.sessions, server)
     ui.ListRow(
         title: s.instruction,
-        note: if is_working and s.now != "" { now_line(s) } else { started_by(s.agent) },
+        note: if is_working and s.now != .none { now_line(s) } else { started_by(s.agent) },
         secondary: s.workspace ?? size_line(s),
         meta: when(s.last_ms),
-        icon: if s.agent.relation == "software" { .bot } else { .file_text },
+        icon: if s.agent.relation == .software { .bot } else { .file_text },
     ) {
         on activate: {
             let link = session_link(w, s.id)
@@ -432,26 +437,11 @@ view commands(s: history.AgentSession, sessions: history.Sessions, server: mcp.S
                     )
                     .then(
                         if let last = s.actions.last() {
-                            if let kept = last.target.app_id {
-                                history.open_change(
-                                    history.history,
-                                    app_id: .some(kept),
-                                    id: last.target.id,
-                                    kind: last.target.kind,
-                                    label: last.target.label,
-                                )
-                            } else {
-                                history.open_change(
-                                    history.history,
-                                    id: last.target.id,
-                                    kind: last.target.kind,
-                                    label: last.target.label,
-                                )
-                            }
+                            open_action(opening(last.view))
                         } else if let ws = workspace_of_session(s, server) {
                             device.open_link(device.invite, link: ws.open)
                         } else {
-                            history.open_change(
+                            history.open(
                                 history.history,
                                 id: s.id,
                                 kind: "session",
@@ -480,35 +470,28 @@ view timeline(s: history.AgentSession, opened: State<Text>, full: State<Text>) {
         }
         for a in s.actions {
             let showing = opened == a.range.from
+            let target = action_target(a.view)
             ui.ListRow(
                 title: a.summary,
-                secondary: if a.target.label != "" { a.target.label } else { a.place },
+                secondary: if target.label != "" { target.label } else { action_place(a.view) },
                 meta: when(a.at_ms),
-                icon: if a.kind == "file" {
-                    .file_text
-                } else if a.kind == "command" {
-                    .terminal
-                } else if a.kind == "page" { .globe } else { .app_window },
+                icon: acted_on(a.view).icon(),
                 selected: showing,
             ) {
                 on activate: set(opened, if showing { "" } else { a.range.from })
                     .then(set(full, ""))
                 trailing: {
-                    if let label = a.undo_label {
-                        ui.Button(label, role: .plain) {
-                            on press: if a.undo_verb == .some("undo-entry") {
+                    if let undo = a.undo {
+                        ui.Button(undo.label, role: .plain) {
+                            on press: if undo.action == .undo-entry {
                                 history.undo_record(
                                     history.history,
-                                    range: history.Span(from: a.range.from, to: a.range.to),
+                                    range: history.Range(from: a.range.from, to: a.range.to),
                                     app_id: a.app_id,
                                     id: a.record,
                                 )
                             } else {
-                                history.undo_change(
-                                    history.history,
-                                    from: a.range.from,
-                                    to: a.range.to,
-                                )
+                                history.undo(history.history, from: a.range.from, to: a.range.to)
                             }
                         }
                     }
@@ -521,59 +504,99 @@ view timeline(s: history.AgentSession, opened: State<Text>, full: State<Text>) {
     }
 }
 
+/// The resource an action's view touched, where it opens.
+fn action_target(v: history.ActionView) -> history.Target {
+    match v {
+        .file(target, _path, _lines) => target,
+        .command(target, _command, _cwd, _output, _more, _exit, _started, _ended, _execution) => target,
+        .page(target, _url, _title) => target,
+        .record(target) => target,
+    }
+}
+
+/// What an action's view did, as its row's glyph says it.
+enum ActedOn {
+    file (icon: .file_text)
+    command (icon: .terminal)
+    page (icon: .globe)
+    record (icon: .app_window)
+}
+
+/// The kind of thing an action's view touched.
+fn acted_on(v: history.ActionView) -> ActedOn {
+    match v {
+        .file => .file,
+        .command => .command,
+        .page => .page,
+        .record => .record,
+    }
+}
+
+/// Where an action landed, as its row names it: a file's path, a command line, a page's
+/// address, or a record's id.
+fn action_place(v: history.ActionView) -> Text {
+    match v {
+        .file(_target, path, _lines) => path,
+        .command(_target, command, _cwd, _output, _more, _exit, _started, _ended, _execution) => command,
+        .page(_target, url, _title) => url,
+        .record(target) => target.id,
+    }
+}
+
 /// What one action shows when it is opened: never just its sentence.
 view action_view(a: history.SessionAction, full: State<Text>) {
     stack(gap: .related) {
-        if a.kind == "file" {
-            ui.Text(a.place, role: .code)
-            if a.diff.is_empty() {
-                compared(a)
-            } else {
-                diff_lines(a)
-            }
-        } else if a.kind == "command" {
-            if a.cwd != "" {
-                ui.Text("in {a.cwd}", role: .caption, secondary: true)
-            }
-            if let execution = a.execution {
-                if a.more {
-                    output(a, execution, full)
+        match a.view {
+            .file(_target, path, lines) => {
+                ui.Text(path, role: .code)
+                if lines.is_empty() {
+                    compared(a)
                 } else {
-                    command_lines(a)
+                    diff_lines(lines)
                 }
-            } else {
-                command_lines(a)
             }
-            command_status(a)
-        } else if a.kind == "page" {
-            ui.Text(if a.title != "" { a.title } else { a.target.label }, role: .label)
-            ui.Text(a.place, role: .code)
-        } else {
-            row(gap: .related, align: .center) {
-                ui.Text(a.target.label, role: .body)
-                if let label = a.target.app_label {
-                    ui.Text(label, role: .caption, secondary: true)
+            .command(_target, command, cwd, output, more, exit, _started, ended, execution) => {
+                if cwd != "" {
+                    ui.Text("in {cwd}", role: .caption, secondary: true)
                 }
-                ui.Text(a.target.id, role: .caption, secondary: true)
+                if let place = execution {
+                    if more {
+                        command_output(command, output, place, a.range.from, full)
+                    } else {
+                        command_lines(command, output)
+                    }
+                } else {
+                    command_lines(command, output)
+                }
+                command_status(exit, ended, a.at_ms, execution)
             }
-            compared(a)
+            .page(target, url, title) => {
+                ui.Text(if title != "" { title } else { target.label }, role: .label)
+                ui.Text(url, role: .code)
+            }
+            .record(target) => {
+                row(gap: .related, align: .center) {
+                    ui.Text(target.label, role: .body)
+                    if let label = target.app_label {
+                        ui.Text(label, role: .caption, secondary: true)
+                    }
+                    ui.Text(target.id, role: .caption, secondary: true)
+                }
+                compared(a)
+            }
         }
+        let target = action_target(a.view)
         ui.Button("Open", icon: .external_link) {
-            on press: if let kept = a.target.app_id {
-                history.open_change(
+            on press: if let kept = target.app_id {
+                history.open(
                     history.history,
                     app_id: .some(kept),
-                    id: a.target.id,
-                    kind: a.target.kind,
-                    label: a.target.label,
+                    id: target.id,
+                    kind: target.kind,
+                    label: target.label,
                 )
             } else {
-                history.open_change(
-                    history.history,
-                    id: a.target.id,
-                    kind: a.target.kind,
-                    label: a.target.label,
-                )
+                history.open(history.history, id: target.id, kind: target.kind, label: target.label)
             }
         }
     }
@@ -581,8 +604,14 @@ view action_view(a: history.SessionAction, full: State<Text>) {
 
 /// A command's output: its last lines, or every line once the person asks, read from the session's
 /// own reading of that execution.
-view output(a: history.SessionAction, execution: history.Execution, full: State<Text>) {
-    let all = full == a.range.from
+view command_output(
+    command: Text,
+    lines: List<Text>,
+    execution: history.CommandExecution,
+    key: Text,
+    full: State<Text>,
+) {
+    let all = full == key
     if all {
         let workspace = execution.workspace ?? "-"
         let reading = resource(
@@ -608,34 +637,39 @@ view output(a: history.SessionAction, execution: history.Execution, full: State<
             ui.Text("Reading every line…", role: .caption, secondary: true)
         }
     } else {
-        command_lines(a)
+        command_lines(command, lines)
     }
     ui.Button(if all { "Show less" } else { "Show all output" }, role: .plain) {
-        on press: set(full, if all { "" } else { a.range.from })
+        on press: set(full, if all { "" } else { key })
     }
 }
 
 /// A command's last lines, with the prompt line they follow.
-view command_lines(a: history.SessionAction) {
-    ui.Text("$ {a.place}", role: .code)
-    for line in a.output {
+view command_lines(command: Text, lines: List<Text>) {
+    ui.Text("$ {command}", role: .code)
+    for line in lines {
         ui.Text(line, role: .code)
     }
 }
 
 /// How a command ended: still running, or its exit status and how long it took, a failure in the
 /// danger ink.
-view command_status(a: history.SessionAction) {
-    if a.exit == .none {
-        if a.execution != .none {
+view command_status(
+    exit: Option<Int>,
+    ended: Option<Int>,
+    at_ms: Int,
+    execution: Option<history.CommandExecution>,
+) {
+    if exit == .none {
+        if let _ = execution {
             ui.Badge("Running…", tone: .info)
         }
-    } else if let code = a.exit {
+    } else if let code = exit {
         // The action's own time is when its shell started the command, so the two say how long
         // it ran.
-        let said = if let ended = a.ended_ms {
-            if ended > a.at_ms {
-                let took = Duration((ended - a.at_ms) / 1000)
+        let said = if let stopped = ended {
+            if stopped > at_ms {
+                let took = Duration((stopped - at_ms) / 1000)
                 "Exited with {code} after {took}"
             } else { "Exited with {code}" }
         } else { "Exited with {code}" }
@@ -648,11 +682,11 @@ view command_status(a: history.SessionAction) {
 }
 
 /// A file's change, line by line: what it removed and what it added, marked and inked.
-view diff_lines(a: history.SessionAction) {
-    for line in a.diff {
-        if line.side == "removed" {
+view diff_lines(lines: List<history.DiffLine>) {
+    for line in lines {
+        if line.side == .removed {
             ui.Text("− {line.text}", role: .code, secondary: true)
-        } else if line.side == "added" {
+        } else if line.side == .added {
             ui.Text("+ {line.text}", role: .code)
         } else {
             ui.Text("  {line.text}", role: .code, secondary: true)
@@ -679,7 +713,18 @@ view compared(a: history.SessionAction) {
                 }
             }
         } else if let comparison = detail.comparison {
-            ui.Text(comparison, role: .code)
+            match comparison {
+                .changes(lines) => {
+                    ui.Text(lines.join("\n"), role: .code)
+                }
+                .unavailable => {
+                    ui.Text(
+                        "This change shows no difference to preview.",
+                        role: .caption,
+                        secondary: true,
+                    )
+                }
+            }
         } else {
             ui.Text("This change shows no difference to preview.", role: .caption, secondary: true)
         }
@@ -703,7 +748,7 @@ view client_card(c: AgentCard) {
         ui.ObjectHeader(
             title: c.client,
             caption: if let one = newest {
-                if working(one, sessions.sessions, server) and one.now != "" {
+                if working(one, sessions.sessions, server) and one.now != .none {
                     now_line(one)
                 } else { "Last worked {when(one.last_ms)}" }
             } else { "No sessions yet" },
@@ -807,7 +852,7 @@ view clients_section(server: mcp.Server, sessions: history.Sessions, w: Window) 
                 ui.ListRow(
                     title: client,
                     secondary: if let one = of_client.first() {
-                        if one.now != "" and working(one, sessions.sessions, server) {
+                        if one.now != .none and working(one, sessions.sessions, server) {
                             now_line(one)
                         } else { "Last worked {when(one.last_ms)}" }
                     } else { "Connected, no sessions yet" },
@@ -959,13 +1004,27 @@ view usage() {
 
 /// What a working session is doing now, as its row says it.
 fn now_line(s: history.AgentSession) -> Text {
-    if s.now_kind == "running" {
-        std.say("Running {s.now}…")
-    } else if s.now_kind == "editing" {
-        std.say("Editing {s.now}")
-    } else if s.now_kind == "browsing" {
-        std.say("On {s.now}")
-    } else if s.now_kind == "ran" { std.say("Ran {s.now}") } else { s.now }
+    if let now = s.now {
+        match now {
+            .running(command, _since) => std.say("Running {command}…"),
+            .editing(path, _at) => std.say("Editing {path}"),
+            .browsing(url, title, _at) => {
+                if title == "" { std.say("On {url}") } else { std.say("On {title}") }
+            }
+            .changing(summary, _at) => summary,
+            .ran(command, _at) => std.say("Ran {command}"),
+        }
+    } else { "" }
+}
+
+/// Whether the action changed a file or a record, as a person counts what a session changed.
+fn edited(v: history.ActionView) -> Bool {
+    match v {
+        .file => true,
+        .record => true,
+        .command => false,
+        .page => false,
+    }
 }
 
 /// Who started a session, as its row says it: "Started by you" for the reader's own, the
@@ -993,7 +1052,7 @@ fn size_line(s: history.AgentSession) -> Text {
 fn changes_of(s: history.AgentSession) -> Int {
     let total = 0
     for a in s.actions {
-        if a.kind == "file" or a.kind == "record" {
+        if edited(a.view) {
             total = total + if a.changes < 1 { 1 } else { a.changes }
         }
     }

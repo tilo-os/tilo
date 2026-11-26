@@ -483,7 +483,7 @@ pub struct WorkspaceActivityPane {
     unreverted: Vec<String>,
     open_agent_records: HashSet<String>,
     /// What a deep link last asked the feed to show, and how many it asked.
-    focus: Option<tilo_actions::remote::workspace_activity::Focus>,
+    focus: Option<crate::desktop::activity::vocabulary::Focus>,
     focus_serial: u64,
 }
 

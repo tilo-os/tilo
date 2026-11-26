@@ -9,6 +9,14 @@
 
 use tilo_actions::remote::{APPLICATION_OPEN_ACTION, application_provider};
 
+/// The workspace's activity, as the session that answers it publishes its actions and records.
+mod activity {
+    tilo_resource::bindings!(
+        provider = "tilo.activity",
+        surface = "../../desktop/session-core/workspace-activity-surface.json"
+    );
+}
+
 /// Whether `query` asks only where one of `app_id`'s own resources is shown,
 /// as minting a link to it does. That is read-only view discovery of the
 /// app's own record, answered as the person using it, never the catalogue of
@@ -83,13 +91,21 @@ pub(super) fn own_history_request(
     app_id: &str,
     request: &tilo_actions::remote::InvokeRequest,
 ) -> bool {
-    use tilo_actions::remote::{InvokeArgument, workspace_activity as wire};
+    use tilo_actions::remote::InvokeArgument;
     let InvokeArgument::Json(arguments) = &request.argument else {
         return false;
     };
-    request.target == wire::target(wire::FEED)
-        && serde_json::from_value::<wire::FeedQuery>(serde_json::Value::Object(arguments.clone()))
-            .is_ok_and(|query| query.reads_only_resources_of(app_id))
+    request.target == activity::workspace_activity::feed()
+        && serde_json::from_value::<activity::workspace_activity::Feed>(serde_json::Value::Object(
+            arguments.clone(),
+        ))
+        .is_ok_and(|query| {
+            query.scope == activity::Scope::ThisWorkspace
+                && query
+                    .resources
+                    .as_ref()
+                    .is_some_and(|resources| resources.app == app_id)
+        })
 }
 
 #[cfg(test)]
@@ -400,21 +416,44 @@ mod invitation_request_tests {
 
 #[cfg(test)]
 mod own_history_request_tests {
+    use super::activity;
     use crate::collab_app_broker::AppBrokerState;
     use crate::test_support::{Workspace, WorkspaceId, WorkspaceTree};
     use tilo_actions::remote::{
-        Caller, InvokeArgument, InvokeRequest, RemoteActionMessage, workspace_activity as wire,
+        Caller, InvokeArgument, InvokeRequest, RemoteActionMessage, RemoteActionTarget,
     };
 
-    fn feed(query: &wire::FeedQuery) -> RemoteActionMessage {
-        read(wire::FEED, wire::argument(query))
+    /// A feed of `app`'s own resources alone, as a window asks for it.
+    fn of(app: &str) -> activity::workspace_activity::Feed {
+        activity::workspace_activity::Feed {
+            scope: activity::Scope::ThisWorkspace,
+            period: activity::Period::AllTime,
+            author: None,
+            lens: None,
+            resources: Some(activity::WindowResources {
+                app: app.into(),
+                resources: vec!["@tilo:package-primary".into()],
+                item: None,
+            }),
+            limit: 0,
+        }
     }
 
-    fn read(action: &str, argument: InvokeArgument) -> RemoteActionMessage {
+    fn feed(query: &activity::workspace_activity::Feed) -> RemoteActionMessage {
+        let Ok(serde_json::Value::Object(named)) = serde_json::to_value(query) else {
+            panic!("a feed is an object");
+        };
+        read(
+            activity::workspace_activity::feed(),
+            InvokeArgument::Json(named),
+        )
+    }
+
+    fn read(target: RemoteActionTarget, argument: InvokeArgument) -> RemoteActionMessage {
         RemoteActionMessage::Invoke(InvokeRequest {
             on_behalf_of: None,
             invocation: tilo_actions::InvocationId::new(),
-            target: wire::target(action),
+            target,
             argument,
             context: None,
             confirmation: None,
@@ -423,17 +462,6 @@ mod own_history_request_tests {
             appearance: None,
             signed: None,
         })
-    }
-
-    fn of(app: &str) -> wire::FeedQuery {
-        wire::FeedQuery {
-            resources: Some(wire::WindowResources {
-                app: app.into(),
-                resources: vec!["@tilo:package-primary".into()],
-                item: None,
-            }),
-            ..wire::FeedQuery::default()
-        }
     }
 
     tilo_test_env::scenario! {
@@ -466,23 +494,31 @@ mod own_history_request_tests {
                 state.app_api(person, "so.tilo.chat", &feed(&of("so.tilo.notes"))).is_err(),
                 "Chat reads none of Notes' history"
             );
-            assert!(
-                state
-                    .app_api(person, "so.tilo.notes", &feed(&wire::FeedQuery::default()))
-                    .is_err(),
-                "the workspace's whole history is Activity's"
-            );
-            let everywhere = wire::FeedQuery {
-                scope: wire::Scope::AllWorkspaces,
+            let everywhere_in_this_workspace = activity::workspace_activity::Feed {
+                resources: None,
                 ..of("so.tilo.notes")
             };
             assert!(
-                state.app_api(person, "so.tilo.notes", &feed(&everywhere)).is_err(),
+                state
+                    .app_api(person, "so.tilo.notes", &feed(&everywhere_in_this_workspace))
+                    .is_err(),
+                "the workspace's whole history is Activity's"
+            );
+            let elsewhere = activity::workspace_activity::Feed {
+                scope: activity::Scope::AllWorkspaces,
+                ..of("so.tilo.notes")
+            };
+            assert!(
+                state.app_api(person, "so.tilo.notes", &feed(&elsewhere)).is_err(),
                 "an app's resources elsewhere are not the workspace it works in"
             );
             assert!(
                 state
-                    .app_api(person, "so.tilo.notes", &read(wire::SUMMARY, InvokeArgument::None))
+                    .app_api(
+                        person,
+                        "so.tilo.notes",
+                        &read(activity::workspace_activity::summary(), InvokeArgument::None)
+                    )
                     .is_err(),
                 "what is new in the workspace is Activity's"
             );

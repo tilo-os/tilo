@@ -712,19 +712,6 @@ so-tilo-desktop-confirm-cancel = Nichts ausführen und die Frage schließen
 
 
 so-tilo-activity = Aktivität
-so-tilo-activity-mark-viewed = Die gezeigten Änderungen auf diesem Gerät als gesehen markieren
-so-tilo-activity-focused = Melden, dass die angeforderte Ansicht gezeigt wurde
-so-tilo-activity-name = Einen Bereich von Änderungen benennen, umbenennen oder den Namen entfernen; ein leerer Name entfernt ihn
-so-tilo-activity-split = Die benannte Arbeitssitzung, in der ein Bereich liegt, an ihrem Anfang teilen
-so-tilo-activity-merge-groups = Die benannten Arbeitssitzungen, die ein Bereich umfasst, zusammenführen
-so-tilo-activity-move-boundary = Die Grenze zwischen zwei Arbeitssitzungen verschieben
-so-tilo-activity-undo-change = Einen Bereich von Änderungen rückgängig machen
-so-tilo-activity-restore = Den Arbeitsbereich auf den Stand vor einem Bereich von Änderungen zurücksetzen
-so-tilo-activity-undo-session = Die Sitzung eines Agenten, zu der ein Bereich gehört, rückgängig machen
-so-tilo-activity-undo-record = Den Anteil eines Eintrags an der Sitzung eines Agenten rückgängig machen
-so-tilo-activity-open-change = Öffnen, was eine Änderung berührt hat, in seiner App
-so-tilo-activity-choose-source = Die Ressource, die ein Bereich geändert hat, als Morgenquelle wählen oder abwählen
-so-tilo-activity-source = Einen Befehl auf einer gewählten Morgenquelle ausführen
 session-this-computer = Dieser Computer
 
 session-host-account = Hosting-Konto

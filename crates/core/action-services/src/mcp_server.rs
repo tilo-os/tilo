@@ -6,7 +6,8 @@
 //! the person's workspaces over MCP at [`Server::endpoint`]. The person grants
 //! it once, and the grant names the workspaces it may work in. Every change
 //! it makes there is attributed to it in the workspace's history
-//! ([`tilo_actions::remote::workspace_activity`]), where its work is read and undone.
+//! (`tilo_session_core::desktop::activity::vocabulary`), where its work is
+//! read and undone.
 //!
 //! The model is the API server's (`crates/core/tilo-api`): a
 //! grant reaches every workspace of the person or exactly one, and each MCP
@@ -51,7 +52,10 @@ pub fn target(action: &str) -> RemoteActionTarget {
 /// The argument an invocation carrying `value` sends.
 #[must_use]
 pub fn argument(value: &impl Serialize) -> InvokeArgument {
-    tilo_actions::remote::workspace_activity::argument(value)
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::Object(named)) => InvokeArgument::Json(named),
+        _ => InvokeArgument::None,
+    }
 }
 
 /// The MCP configuration an agent adds to reach the server at `endpoint`, as the server `tilo`

@@ -6,9 +6,9 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 
+use crate::desktop::activity::vocabulary as wire;
 use automerge::transaction::{CommitOptions, Transactable as _};
 use automerge::{ActorId, AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
-use tilo_actions::remote::workspace_activity as wire;
 
 use super::TERMINAL_APP;
 use crate::desktop::activity::index::DetachedRecordHistory;

@@ -1024,12 +1024,22 @@ tilo_test_env::scenario! {
     // An author as an app reads it over the wire words its row once: the
     // agent by its own name, and the reader as themselves.
     {
-                use tilo_actions::remote::workspace_activity as wire;
+        use crate::activity_wire as wire;
+        let unnamed = || wire::Author {
+            name: String::new(),
+            rgb: vec![0, 0, 0],
+            identity: String::new(),
+            relation: wire::Relation::Person,
+            on_behalf_of: None,
+            member: None,
+            for_reader: false,
+            task: None,
+        };
         let agent = wire::Author {
             name: "claude".into(),
             relation: wire::Relation::Software,
             on_behalf_of: Some("ada".into()),
-            ..wire::Author::default()
+            ..unnamed()
         };
         assert_eq!(crate::wire_author_line(&agent), "claude");
         let software = wire::Author {
@@ -1040,12 +1050,12 @@ tilo_test_env::scenario! {
         let reader = wire::Author {
             name: "Ada".into(),
             relation: wire::Relation::Reader,
-            ..wire::Author::default()
+            ..unnamed()
         };
         assert_eq!(crate::wire_author_line(&reader), "You");
         let person = wire::Author {
             name: "Grace".into(),
-            ..wire::Author::default()
+            ..unnamed()
         };
         assert_eq!(crate::wire_author_line(&person), "Grace");
     }

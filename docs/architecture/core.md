@@ -1163,8 +1163,8 @@ parameter schemas (`ActionParam`/`ParamType` and the surface field types,
 plus `param_row`), three hand-written REST clients, and 26 modules in
 `actions/src/remote/` (9,869) that hand-type a domain's provider name,
 action ids, arguments and answers (`person_accounts`, `person_vault`,
-`workspace_activity`, `person_telling` and others), which is what
-`surface.toml` exists to declare. Two crates are not entry points at all:
+`person_telling` and others), which is what `surface.toml` exists to
+declare. Two crates are not entry points at all:
 `os-actions` is a hardware backend with no `ActionSpec`, and
 `messaging-protocol` holds messaging codecs.
 

@@ -46,13 +46,13 @@ pub(super) fn detail_provenance(detail: &HistorySelectionDetail) -> String {
 /// side, read from the before and after documents the comparison kept.
 pub fn comparison_field_changes(
     comparison: &ui::history_source::HistoryComparison,
-) -> Vec<tilo_actions::remote::workspace_activity::FieldChange> {
+) -> Vec<crate::desktop::activity::vocabulary::FieldChange> {
     let before = automerge::AutoCommit::load(&comparison.before_document).ok();
     let after = automerge::AutoCommit::load(&comparison.after_document).ok();
     let (Some(before), Some(after)) = (before, after) else {
         return Vec::new();
     };
-    let mut changes: Vec<tilo_actions::remote::workspace_activity::FieldChange> = Vec::new();
+    let mut changes: Vec<crate::desktop::activity::vocabulary::FieldChange> = Vec::new();
     for patch in &comparison.patches {
         let automerge::PatchAction::PutMap { key, .. } = &patch.action else {
             continue;
@@ -61,7 +61,7 @@ pub fn comparison_field_changes(
         if changes.iter().any(|change| change.field == field) {
             continue;
         }
-        changes.push(tilo_actions::remote::workspace_activity::FieldChange {
+        changes.push(crate::desktop::activity::vocabulary::FieldChange {
             before: map_value(&before, &patch.obj, key),
             after: map_value(&after, &patch.obj, key),
             field,

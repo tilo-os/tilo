@@ -882,6 +882,7 @@ fn build_meta(
                     id: info.id.clone(),
                     name: info.key.name.clone(),
                     doc: info.doc.clone(),
+                    tag: None,
                     variants: info
                         .variants
                         .iter()

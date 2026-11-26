@@ -93,7 +93,7 @@ pub fn published_selection(
 }
 
 /// The app that shows a workspace's history.
-pub const ACTIVITY_APP: &str = tilo_actions::remote::workspace_activity::APP_ID;
+pub const ACTIVITY_APP: &str = crate::desktop::activity::vocabulary::APP_ID;
 /// The action of the Undo a close offers ([`DesktopHandle::press_notice`]).
 pub const REOPEN_CLOSED: &str = "shell-reopen-closed";
 

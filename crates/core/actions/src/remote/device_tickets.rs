@@ -230,7 +230,10 @@ impl Revoke {
     /// The argument [`REVOKE`] is asked with.
     #[must_use]
     pub fn argument(&self) -> crate::remote::InvokeArgument {
-        crate::remote::workspace_activity::argument(self)
+        match serde_json::to_value(self) {
+            Ok(serde_json::Value::Object(named)) => crate::remote::InvokeArgument::Json(named),
+            _ => crate::remote::InvokeArgument::None,
+        }
     }
 }
 

@@ -53,8 +53,10 @@ use tilo_actions::remote::{
     ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, MODELS_PROVIDER, Pending, ReceiptStatus,
     TELLING_PROVIDER, application_provider, application_provider_resource, pending,
-    provider_workspace, workspace_activity as wire,
+    provider_workspace,
 };
+
+use crate::desktop::activity::vocabulary as wire;
 
 use tilo_lock::MutexRecover as _;
 

@@ -20,7 +20,7 @@ use automerge::ChangeHash;
 use serde_json::Value;
 use tilo_sort::CompactSort as _;
 
-use tilo_actions::remote::workspace_activity as wire;
+use crate::desktop::activity::vocabulary as wire;
 use tilo_actions::terminal_text;
 
 use super::serve::{author, hex, millis, scope};

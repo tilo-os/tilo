@@ -259,6 +259,7 @@ pub fn actions_meta() -> PackageMeta {
             id: KIND_ENUM.to_string(),
             name: "ActionKind".to_string(),
             doc: "What an action does when it runs.".to_string(),
+            tag: None,
             variants: vec![
                 VariantMeta {
                     id: "read".to_string(),

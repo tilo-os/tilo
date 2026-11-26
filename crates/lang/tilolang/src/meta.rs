@@ -355,6 +355,11 @@ pub struct EnumMeta {
     pub id: String,
     pub name: String,
     pub doc: String,
+    /// For an enum whose cases carry fields, the key its case is written under beside them
+    /// (`{"kind": "file", "path": …}`); none for an enum whose case is the value alone or the
+    /// case's own name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tag: Option<String>,
     pub variants: Vec<VariantMeta>,
 }
 

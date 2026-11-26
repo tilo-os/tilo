@@ -1180,6 +1180,17 @@ impl Decoder<'_> {
                 Json::Object(spelled) if spelled.contains_key(tilo_resource::VARIANT_KEY) => {
                     self.case(json, key)
                 }
+                // A case under the key its enum declares for it, beside the case's fields.
+                Json::Object(spelled) => {
+                    let Some(tag) = self.registry.enum_of(key).and_then(|enum_| enum_.tag) else {
+                        return crate::value::from_json(json);
+                    };
+                    let case = spelled
+                        .get(&tag)
+                        .and_then(Json::as_str)
+                        .ok_or_else(|| format!("the reading does not name its `{tag}`"))?;
+                    self.case_of(json, key, case)
+                }
                 encoded => crate::value::from_json(encoded),
             },
             Ty::Result(..) | Ty::RichText => crate::value::from_json(json),
@@ -1276,15 +1287,20 @@ impl Decoder<'_> {
     }
 
     /// A case of `key`'s enum that carries values, spelled the way a data enum is written in
-    /// JSON ([`tilo_resource::VARIANT_KEY`]): the case's name beside its values by name. Each
-    /// value is read as the type the case declares for it, the way a declared type's field
-    /// is, so a resource a case carries is one a view reads the fields of. A plain case
-    /// spelled that way is the case alone.
+    /// JSON ([`tilo_resource::VARIANT_KEY`]): the case's name beside its values by name.
     fn case(&mut self, json: &Json, key: &TypeKey) -> Result<Value, String> {
         let name = json
             .get(tilo_resource::VARIANT_KEY)
             .and_then(Json::as_str)
             .ok_or_else(|| format!("{json} does not name its case"))?;
+        self.case_of(json, key, name)
+    }
+
+    /// The case `name` of `key`'s enum, and the values it carries, read from the object that
+    /// spells them: the case's name beside its values by name. Each value is read as the type
+    /// the case declares for it, the way a declared type's field is, so a resource a case
+    /// carries is one a view reads the fields of.
+    fn case_of(&mut self, json: &Json, key: &TypeKey, name: &str) -> Result<Value, String> {
         let declared = self.registry.enum_of(key).ok_or_else(|| {
             format!(
                 "`{}.{}` is not declared by any loaded package",

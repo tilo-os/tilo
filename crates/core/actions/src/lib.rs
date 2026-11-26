@@ -413,7 +413,7 @@ pub use executor::{
     settle_compensation, verify_change, with_invoking_context,
 };
 pub use framework::FrameworkChange;
-pub use history::HistoryEntryId;
+pub use history::{HistoryEntryId, change_hex, entry_hex, entry_id};
 pub use interaction::{
     INTERACTION_VERSION, InteractionAction, InteractionAnchor, InteractionGridRange,
     InteractionPhase, InteractionTextRange, InteractionUpdate, InteractionViolation,

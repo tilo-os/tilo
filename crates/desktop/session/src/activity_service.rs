@@ -14,12 +14,16 @@
 
 use std::collections::BTreeMap;
 
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value};
-use tilo_actions::remote::workspace_activity as wire;
 use tilo_actions::{ActionInvoker, ApiError, ResourceSpec};
 use tilo_service::{Service, Started, offer};
+use tilo_session_core::desktop::activity::vocabulary as wire;
 use tilo_session_core::desktop::session::ActivityRequests;
+use wire::{
+    Activity, Detail, Feed, FeedReading, Focus, OutputReading, RangeDetail, Replay, SessionOutput,
+    Sessions, Summary,
+};
 
 /// The resource every app reads the activity as, and every action is an action of: the id the
 /// model publishes it under.
@@ -57,511 +61,6 @@ pub(crate) const SESSIONS_PREFIX: &str = "workspace.activity/sessions~";
 /// execution: `workspace.activity/output/-/<app>/<record>/<execution>`. A window that shows one
 /// command's output reads its own, while no other is read.
 pub(crate) const OUTPUT_PREFIX: &str = "workspace.activity/output/";
-
-/// The kind a reader with no words of its own knows the resource by.
-#[derive(tilo_resource::Row)]
-#[row(kind = "activity", label = "Activity")]
-pub(crate) struct ActivityRoot;
-
-/// Who made a change.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct Author {
-    /// The name it goes by.
-    pub name: String,
-    /// The colour presence paints them in.
-    pub rgb: Vec<u8>,
-    /// A short fragment of their key, telling two of the same name apart.
-    pub identity: String,
-    /// `reader`, another `person`, or `software` acting for someone.
-    pub relation: String,
-    /// For software: who it acted for.
-    pub on_behalf_of: Option<String>,
-    /// The person it acted for is the reader.
-    pub for_reader: bool,
-    /// The task that named it.
-    pub task: Option<String>,
-}
-
-/// A device that refused one of a change's writes.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct Refusal {
-    pub device: String,
-    pub label: String,
-    pub reason: String,
-    /// Whether waiting will change nothing.
-    pub permanent: bool,
-}
-
-/// One change.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct Entry {
-    pub id: String,
-    pub author: Author,
-    /// `text`, `move`, `details`, `comment`, `delete`, `restore`, `access`, `compaction` or
-    /// `redaction`.
-    pub kind: String,
-    /// When, in milliseconds since the Unix epoch.
-    pub at_ms: i64,
-    pub summary: String,
-    /// The app it was made in.
-    pub made_in: Option<String>,
-    /// The resource it changed.
-    pub resource: Option<String>,
-    /// The named work group it sits in.
-    pub group: Option<String>,
-    /// Whether its content was redacted.
-    pub redacted: bool,
-    /// The devices that refused it.
-    pub refused: Vec<Refusal>,
-}
-
-/// A named range of changes.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct Group {
-    pub id: String,
-    pub label: String,
-    pub start: String,
-    pub end: Option<String>,
-    pub named_by: Option<String>,
-}
-
-/// A way to narrow the feed.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct Lens {
-    pub key: String,
-    pub label: String,
-}
-
-/// A workspace's history, newest first.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct Feed {
-    /// The workspace's name.
-    pub workspace: String,
-    /// `this-workspace` or `all-workspaces`.
-    pub scope: String,
-    /// Changes the model matched, of which `entries` holds the newest.
-    pub total: i64,
-    pub entries: Vec<Entry>,
-    pub groups: Vec<Group>,
-    /// Everyone who changed something, in the order they first did.
-    pub people: Vec<String>,
-    pub lenses: Vec<Lens>,
-    /// The history is still being read.
-    pub pending: bool,
-    /// Whether this device can change the history here.
-    pub mutations: bool,
-}
-
-/// One action of a work session's evidence.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct BriefAction {
-    pub author: Author,
-    pub summary: String,
-    pub at_ms: i64,
-}
-
-/// A work session: related changes told as an outcome.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct Brief {
-    pub title: String,
-    pub detail: String,
-    pub authors: Vec<Author>,
-    pub apps: Vec<String>,
-    pub resources: Vec<String>,
-    pub changes: i64,
-    /// Oldest first.
-    pub actions: Vec<BriefAction>,
-    pub first_ms: i64,
-    pub last_ms: i64,
-    pub group: Option<String>,
-    /// The record of a person-corrected session.
-    pub work_session: Option<String>,
-    /// The changes it tells of.
-    pub entries: Vec<String>,
-}
-
-/// A resource a change touched, and where it opens.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
-#[serde(default)]
-pub(crate) struct Target {
-    pub app_id: Option<String>,
-    pub app_label: Option<String>,
-    pub id: String,
-    pub kind: String,
-    pub label: String,
-}
-
-/// Where the reader left off.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct Resume {
-    pub target: Target,
-    pub author: Author,
-    pub app: Option<String>,
-    pub at_ms: i64,
-}
-
-/// A resource this device chose to hear about each morning.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct Source {
-    pub key: String,
-    pub label: String,
-    /// What its app says about it now.
-    pub text: String,
-    pub refreshable: bool,
-    /// How the last command on it went.
-    pub status: Option<String>,
-}
-
-/// What changed since this device last looked.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct Summary {
-    pub workspace: String,
-    /// Newest first.
-    pub briefs: Vec<Brief>,
-    /// The briefs told in a sentence by a model on this device.
-    pub narrative: Option<String>,
-    pub resume: Option<Resume>,
-    /// Whether these are the changes made while the reader was away.
-    pub away: bool,
-    /// Whether morning sources can be chosen here.
-    pub sources_available: bool,
-    pub sources: Vec<Source>,
-    pub pending: bool,
-}
-
-/// One group of tabs in a replayed workspace.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct ReplayGroup {
-    pub tabs: Vec<String>,
-    /// The tab it showed, by index into `tabs`.
-    pub active: i64,
-    /// Its share of the strip, in thousandths.
-    pub width_permille: i64,
-}
-
-/// A workspace as it was.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct ReplayWorkspace {
-    pub name: String,
-    pub groups: Vec<ReplayGroup>,
-}
-
-/// Someone's pointer as it was.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct ReplayPointer {
-    pub name: String,
-    pub rgb: Vec<u8>,
-}
-
-/// The layout after one change.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct Frame {
-    pub entry: String,
-    pub author: Author,
-    pub summary: String,
-    pub at_ms: i64,
-    pub workspaces: Vec<ReplayWorkspace>,
-    pub pointers: Vec<ReplayPointer>,
-}
-
-/// The workspace's layout at each recent change.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct Replay {
-    /// Oldest first.
-    pub frames: Vec<Frame>,
-    /// Changes whose layout could not be read back.
-    pub unavailable: i64,
-    /// What the replay cannot show, said once.
-    pub note: Option<String>,
-    pub pending: bool,
-}
-
-/// One action a view may offer for a range of changes.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
-#[serde(default)]
-pub(crate) struct Offer {
-    /// What it does, as the model names it.
-    pub verb: String,
-    /// How it reads.
-    pub label: String,
-}
-
-/// One field a range of changes changed, with what it held either side of it.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
-#[serde(default)]
-pub(crate) struct FieldChange {
-    /// The field's name as the person reads it.
-    pub field: String,
-    /// What it held before; empty when it was not there.
-    pub before: String,
-    /// What it holds now; empty when it was removed.
-    pub after: String,
-}
-
-/// What a range of changes did, as a view of that one range reads it: the reading a view names
-/// as `resource("workspace.activity/range~<from>~<to>", of: activity.RangeDetail)`.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
-#[serde(default)]
-pub(crate) struct Detail {
-    pub title: String,
-    /// Who, where and why, in the history's own words.
-    pub provenance: String,
-    pub authors: Vec<String>,
-    pub resources: Vec<Target>,
-    pub group: Option<String>,
-    pub group_label: Option<String>,
-    /// What can be done with it, worded for this range.
-    pub offers: Vec<Offer>,
-    /// The fields it changed, with what they held either side.
-    pub changes: Vec<FieldChange>,
-    /// What a comparison of the workspace before and after it says, one line each.
-    pub comparison: Option<String>,
-    /// The session is no longer in the history (an undo or a filter moved it).
-    pub gone: bool,
-}
-
-/// What to show, asked for outside the app.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct Focus {
-    /// Each ask has its own serial; the app that shows it says so.
-    pub serial: i64,
-    /// `whats-new`, `history` or `replay`.
-    pub view: String,
-    pub author: Option<String>,
-    pub lens: Option<String>,
-    /// This change, selected.
-    pub entry: Option<String>,
-}
-
-/// A range of changes, by its first and last in feed order.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
-pub(crate) struct Span {
-    pub from: String,
-    pub to: String,
-}
-
-/// Where a command's execution is recorded: the workspace its shell's record is in (none for this
-/// one), the app and record that keep the session, and the execution in it.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
-#[serde(default)]
-pub(crate) struct RunPlace {
-    pub workspace: Option<String>,
-    pub app_id: String,
-    pub record: String,
-    pub execution: String,
-}
-
-/// One line of a file's change.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
-#[serde(default)]
-pub(crate) struct DiffLine {
-    /// `both`, `removed` or `added`.
-    pub side: String,
-    pub text: String,
-}
-
-/// One action an agent session took, and what it did.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct SessionAction {
-    /// Its changes, which Undo takes back on their own.
-    pub range: Span,
-    /// How many changes `range` is.
-    pub changes: i64,
-    pub at_ms: i64,
-    /// What it did, as a sentence.
-    pub summary: String,
-    /// `file`, `command`, `page` or `record`.
-    pub kind: String,
-    /// A file's path, a command line, a page's address, or a record's id.
-    pub place: String,
-    /// The resource the action touched, where it opens.
-    pub target: Target,
-    /// The page's title, for a page.
-    pub title: String,
-    /// The directory a command ran in.
-    pub cwd: String,
-    /// The last lines a command printed.
-    pub output: Vec<String>,
-    /// It printed more than `output` holds.
-    pub more: bool,
-    /// How a command ended; absent while it runs or when unknown.
-    pub exit: Option<i64>,
-    pub ended_ms: Option<i64>,
-    /// The lines a file's change added or removed, each with its side.
-    pub diff: Vec<DiffLine>,
-    /// The app and record it changed.
-    pub app_id: String,
-    pub record: String,
-    /// The execution a command ran as, when its shell recorded one: what reads everything it
-    /// printed.
-    pub execution: Option<RunPlace>,
-    /// The action that undoes this record's share of the session alone, when it can be undone on
-    /// its own here.
-    pub undo_label: Option<String>,
-    /// What that action is, as the model names it: `undo-entry` for the record's share,
-    /// `undo` for the range of changes it took.
-    pub undo_verb: Option<String>,
-}
-
-/// One of a session's changes still in effect: what it changed, where, and how to open it and
-/// take it back on its own.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
-#[serde(default)]
-pub(crate) struct SessionChange {
-    /// The change, as a range of one in the history.
-    pub range: Span,
-    /// The change in its record's own history, which its undo names as the step.
-    pub step: String,
-    pub at_ms: i64,
-    /// What it changed, as a sentence.
-    pub summary: String,
-    /// The app and record it changed.
-    pub app_id: String,
-    pub record: String,
-    /// The resource it touched, where it opens.
-    pub target: Target,
-    /// What the press to undo it says, when it can be undone on its own here.
-    pub undo_label: Option<String>,
-    /// What that press is, as the model names it: `undo-entry` for the record's share.
-    pub undo_verb: Option<String>,
-}
-
-/// One agent session: an instruction it worked, and the actions it took for it.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct AgentSession {
-    pub id: String,
-    pub agent: Author,
-    /// The workspace it worked in, under every workspace's sessions.
-    pub workspace: Option<String>,
-    /// What it was asked, as the person phrased it.
-    pub instruction: String,
-    /// Why it did what it did.
-    pub decision: Option<String>,
-    pub started_ms: i64,
-    pub last_ms: i64,
-    /// Every change it made, which Undo takes back.
-    pub range: Span,
-    /// Oldest first.
-    pub actions: Vec<SessionAction>,
-    /// Its changes still in effect, newest first: what the session still leaves in place, each
-    /// undone on its own. A page of `changes_total`.
-    pub in_effect: Vec<SessionChange>,
-    /// How many of its changes are still in effect.
-    pub changes_total: i64,
-    /// Why it cannot be undone from here.
-    pub undo_blocked: Option<String>,
-    /// What it is doing now, as a sentence; empty when it is not working.
-    pub now: String,
-    /// What its `now` is: `running`, `editing`, `browsing`, `changing` or `ran`; empty when it
-    /// is not working.
-    pub now_kind: String,
-}
-
-/// Every agent session the history holds, newest first.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct SessionList {
-    pub sessions: Vec<AgentSession>,
-    pub total: i64,
-    pub pending: bool,
-    pub mutations: bool,
-}
-
-/// The activity as an app reads it: the model's last reads, taken together.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct Activity {
-    /// This workspace's changes.
-    pub feed: Option<Feed>,
-    /// Every workspace's changes on this device.
-    pub everywhere: Option<Feed>,
-    /// What changed since this device last looked.
-    pub summary: Option<Summary>,
-    /// The layout at each recent change.
-    pub replay: Option<Replay>,
-    /// Every agent session.
-    pub sessions: Option<SessionList>,
-    /// What the person was asked to open from outside, until the app shows it.
-    pub focus: Option<Focus>,
-}
-
-/// A page of the feed as its own reading: one optional section, as a range's detail is.
-#[derive(Clone, Debug, Default, Serialize, Deserialize, tilo_resource::JsonSchema)]
-#[serde(default)]
-pub(crate) struct FeedReading {
-    pub feed: Option<Feed>,
-}
-
-/// A range's detail as its own reading: one optional section, so a range the model has not read
-/// yet reads as having nothing, rather than as a record missing its fields.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
-#[serde(default)]
-pub(crate) struct RangeDetail {
-    pub detail: Option<Detail>,
-}
-
-/// A command's whole output as its own reading: at most the lines its shell kept, or why this
-/// device holds none.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
-#[serde(default)]
-pub(crate) struct OutputReading {
-    pub output: Option<SessionOutput>,
-}
-
-/// Everything a command printed, as this device keeps it.
-#[derive(
-    Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize, tilo_resource::JsonSchema,
-)]
-#[serde(default)]
-pub(crate) struct SessionOutput {
-    /// Its lines, without terminal escapes.
-    pub lines: Vec<String>,
-    /// It printed more than the lines hold, or more than its shell kept.
-    pub truncated: bool,
-    /// The execution is not known here, or its output has not reached this device.
-    pub unavailable: bool,
-    /// The execution has not ended.
-    pub running: bool,
-}
 
 /// The reads the model serves, in the order the service follows them: the action, and the
 /// arguments it is read with.
@@ -743,28 +242,63 @@ impl Key {
 
     /// The reading an app gets of the model's last read of it.
     fn reading(self, value: &Value) -> Value {
+        let empty = || self.empty();
         match self {
-            Self::Range | Self::Compare => detail_json(value),
-            Self::Feed => feed_json(value),
-            Self::Sessions => sessions_json(value),
-            Self::Output => output_json(value),
+            Self::Range | Self::Compare => reading_of::<Detail, _>(
+                value,
+                |detail| RangeDetail {
+                    detail: Some(detail),
+                },
+                empty,
+            ),
+            Self::Feed => {
+                reading_of::<Feed, _>(value, |feed| FeedReading { feed: Some(feed) }, empty)
+            }
+            Self::Sessions => reading_of::<Sessions, _>(value, |sessions| sessions, empty),
+            Self::Output => reading_of::<SessionOutput, _>(
+                value,
+                |output| OutputReading {
+                    output: Some(output),
+                },
+                empty,
+            ),
         }
     }
 
     /// What it reads as before the model has answered.
     fn empty(self) -> Value {
         match self {
-            Self::Range | Self::Compare => empty_detail(),
-            Self::Feed => empty_feed(),
-            Self::Sessions => serde_json::json!({
-                "sessions": [],
-                "total": 0,
-                "pending": true,
-                "mutations": false,
+            Self::Range | Self::Compare => json_or_null(&RangeDetail::default()),
+            Self::Feed => json_or_null(&FeedReading::default()),
+            Self::Sessions => json_or_null(&Sessions {
+                pending: true,
+                ..Sessions::default()
             }),
-            Self::Output => empty_output(),
+            Self::Output => json_or_null(&OutputReading::default()),
         }
     }
+}
+
+/// The reading an app gets of the model's answer `value`: `T` read out of it and wrapped as the
+/// record a view names it by, or what the reading holds before the model answers when the answer
+/// is not the shape an app reads.
+fn reading_of<T: serde::de::DeserializeOwned, R: Serialize>(
+    value: &Value,
+    wrap: impl FnOnce(T) -> R,
+    empty: impl Fn() -> Value,
+) -> Value {
+    match serde_json::from_value::<T>(value.clone()) {
+        Ok(read) => json_or_null(&wrap(read)),
+        Err(error) => {
+            tracing::warn!(%error, "a read of the activity is not the shape an app reads");
+            empty()
+        }
+    }
+}
+
+/// `value` as JSON: nothing at all when it does not write, which no record here fails to.
+fn json_or_null(value: &impl Serialize) -> Value {
+    serde_json::to_value(value).unwrap_or(Value::Null)
 }
 
 impl Served {
@@ -901,10 +435,7 @@ impl Served {
         let everywhere: Feed = self.last(Read::Everywhere).unwrap_or_default();
         let summary: Summary = self.last(Read::Summary).unwrap_or_default();
         let replay: Replay = self.last(Read::Replay).unwrap_or_default();
-        let sessions: SessionList = self
-            .last::<SessionsValue>(Read::Sessions)
-            .map(SessionsValue::into_sessions)
-            .unwrap_or_default();
+        let sessions: Sessions = self.last(Read::Sessions).unwrap_or_default();
         let focus: Option<Focus> = self.last(Read::Focus);
         self.reading = Activity {
             feed: Some(feed),
@@ -914,15 +445,15 @@ impl Served {
             sessions: Some(sessions),
             focus,
         };
-        self.json = serde_json::to_value(&self.reading).unwrap_or(Value::Null);
+        self.json = json_or_null(&self.reading);
     }
 }
 
 impl Service for Served {
     fn resources(&self) -> Vec<ResourceSpec> {
-        vec![offer::<ActivityAction>(tilo_resource::typed_resource::<
-            ActivityRoot,
-        >(RESOURCE, ""))]
+        vec![offer::<wire::ActivityAction>(
+            tilo_resource::typed_resource::<wire::ActivityRoot>(RESOURCE, ""),
+        )]
     }
 
     fn read(&self, resource: &str) -> Option<Value> {
@@ -953,7 +484,7 @@ impl Service for Served {
                 resource, action,
             )));
         }
-        let ran = self.requests.act(wire_action(action), arguments.clone());
+        let ran = self.requests.act(action, arguments.clone());
         Ok(Started::Later(ran.map(|ran| {
             ran.map(|()| tilo_actions::ActionOutput::default())
                 .map_err(ApiError::Failed)
@@ -987,504 +518,16 @@ impl Service for Served {
     }
 }
 
-/// The model's action a verb of this package names. Two of them carry a word the session's own
-/// package already declares (`open`, `undo`): a caller of this package's surface says which of
-/// them it means, and the model hears its own name.
-fn wire_action(action: &str) -> &str {
-    match action {
-        "open-change" => wire::OPEN,
-        "undo-change" => wire::UNDO,
-        "merge-groups" => wire::MERGE,
-        other => other,
-    }
-}
-
 /// Whether `action` changes only what the person at this device saw and hears about.
 fn is_personal(action: &str) -> bool {
     tilo_session_core::desktop::activity::is_personal(action)
-}
-
-/// The resource as a view of another language reads and changes it: the reading's fields, and the
-/// model's writes as its verbs. Published as `activity-surface.json` beside the crate, which is
-/// what an app compiles against; this is the same surface as the session builds it.
-#[cfg(test)]
-#[must_use]
-pub(crate) fn surface() -> tilo_actions::surface::Surface {
-    tilo_resource::surface::reading_surface::<Activity, ActivityAction>("activity", "Activity")
-}
-
-/// The reading as a view of another language names it: a keyed resource's fields are its root
-/// record's, and `reading_surface` folds that record into the resource. A view names the type in
-/// `resource(…, of: history.RangeDetail)`, so the record is declared beside the fields too.
-#[cfg(test)]
-fn named_root(
-    mut surface: tilo_actions::surface::Surface,
-    name: &str,
-    doc: &str,
-) -> tilo_actions::surface::Surface {
-    let fields = surface
-        .fields
-        .iter()
-        .map(|field| tilo_actions::surface::TypeField {
-            name: field.path.clone(),
-            ty: field.ty.clone(),
-            title: field.title.clone(),
-        })
-        .collect();
-    surface.types.push(tilo_actions::surface::NamedType {
-        tag: None,
-        name: name.to_owned(),
-        doc: doc.to_owned(),
-        fields,
-        cases: Vec::new(),
-    });
-    surface
-}
-
-/// A page of the feed as a view of another language reads it.
-#[cfg(test)]
-#[must_use]
-pub(crate) fn feed_surface() -> tilo_actions::surface::Surface {
-    named_root(
-        tilo_resource::surface::reading_surface::<FeedReading, tilo_resource::NoEffect>(
-            "activity-feed",
-            "Activity feed",
-        ),
-        "FeedReading",
-        "A page of the feed, narrowed by what the person chose.",
-    )
-}
-
-/// A range's detail as a view of another language reads it: the reading a view names by the
-/// range it shows. It offers no verbs of its own: what can be done with a range is one of the
-/// activity's, worded for this range.
-#[cfg(test)]
-#[must_use]
-pub(crate) fn range_surface() -> tilo_actions::surface::Surface {
-    named_root(
-        tilo_resource::surface::reading_surface::<RangeDetail, tilo_resource::NoEffect>(
-            "activity-range",
-            "Activity change",
-        ),
-        "RangeDetail",
-        "What a range of changes did.",
-    )
-}
-
-/// A command's whole output as a view of another language reads it: the reading a view names by
-/// the command it shows. It offers no verbs of its own.
-#[cfg(test)]
-#[must_use]
-pub(crate) fn output_surface() -> tilo_actions::surface::Surface {
-    named_root(
-        tilo_resource::surface::reading_surface::<OutputReading, tilo_resource::NoEffect>(
-            "activity-output",
-            "Command output",
-        ),
-        "OutputReading",
-        "Everything a command printed, as this device keeps it.",
-    )
-}
-
-/// What a view or an agent asks of the activity: an action of the model's, with its arguments.
-#[derive(Clone, Debug, PartialEq, tilo_resource::Effect)]
-#[effect(operation = "so.tilo.activity")]
-pub enum ActivityAction {
-    /// Mark the changes the reader was shown as seen on this device.
-    #[effect(kind = "undoable")]
-    MarkViewed {
-        /// The changes, by their history id.
-        #[param("The changes, by their history id")]
-        entries: Vec<String>,
-        /// Count them seen once the reader leaves what is new.
-        #[param("Count them seen once the reader leaves what is new")]
-        later: bool,
-    },
-    /// Say the ask the serial names was shown.
-    #[effect(kind = "undoable")]
-    Focused {
-        /// The serial of the ask.
-        #[param("The serial of the ask")]
-        serial: i64,
-    },
-    /// Name, rename or un-name a range of changes; an empty name removes it.
-    #[effect(kind = "undoable")]
-    Name {
-        /// The changes to name.
-        range: Span,
-        /// The naming record a rename replaces.
-        #[param("The naming record a rename replaces")]
-        record: Option<String>,
-        /// The name; empty removes it.
-        #[param("The name; empty removes it")]
-        label: String,
-    },
-    /// Split the named work group a range sits in at its start.
-    #[effect(kind = "undoable")]
-    Split {
-        /// The first change.
-        #[param("The first change")]
-        from: String,
-        /// The last change.
-        #[param("The last change")]
-        to: String,
-    },
-    /// Merge the named work groups a range spans.
-    #[effect(kind = "undoable")]
-    MergeGroups {
-        /// The first change.
-        #[param("The first change")]
-        from: String,
-        /// The last change.
-        #[param("The last change")]
-        to: String,
-    },
-    /// Move the boundary between two work sessions.
-    #[effect(kind = "undoable")]
-    MoveBoundary {
-        /// A change of the older session.
-        #[param("A change of the older session")]
-        older: String,
-        /// A change of the newer session.
-        #[param("A change of the newer session")]
-        newer: String,
-        /// The way the boundary moves: `newer` or `older`.
-        #[param("The way the boundary moves: `newer` or `older`")]
-        toward: String,
-    },
-    /// Undo a range of changes.
-    #[effect(kind = "undoable", destructive)]
-    UndoChange {
-        /// The first change.
-        #[param("The first change")]
-        from: String,
-        /// The last change.
-        #[param("The last change")]
-        to: String,
-    },
-    /// Restore the workspace to before a range of changes.
-    #[effect(kind = "undoable", destructive)]
-    Restore {
-        /// The first change.
-        #[param("The first change")]
-        from: String,
-        /// The last change.
-        #[param("The last change")]
-        to: String,
-    },
-    /// Undo the agent session a range belongs to.
-    #[effect(kind = "undoable", destructive)]
-    UndoSession {
-        /// The first change.
-        #[param("The first change")]
-        from: String,
-        /// The last change.
-        #[param("The last change")]
-        to: String,
-    },
-    /// Undo one record's share of an agent session.
-    #[effect(kind = "undoable", destructive)]
-    UndoRecord {
-        /// The session, by its range in the history.
-        range: Span,
-        /// The session, by the task it worked.
-        #[param("The session, by the task it worked")]
-        task: Option<String>,
-        /// The app's id.
-        #[param("The app's id")]
-        app_id: String,
-        /// The record's own id.
-        #[param("The record's own id")]
-        id: String,
-        /// The one change inside that record to take back, as the record's own history names
-        /// it; absent takes back the session's whole share of the record.
-        #[param(
-            "The one change inside that record to take back, as the record's own history names it"
-        )]
-        step: Option<String>,
-    },
-    /// Open what a change touched in its app.
-    #[effect(kind = "undoable")]
-    OpenChange {
-        /// The app it opens in.
-        #[param("The app it opens in")]
-        app_id: Option<String>,
-        /// The app's name.
-        #[param("The app's name")]
-        app_label: Option<String>,
-        /// The resource's id.
-        #[param("The resource's id")]
-        id: String,
-        /// The resource's kind.
-        #[param("The resource's kind")]
-        kind: String,
-        /// The resource's title.
-        #[param("The resource's title")]
-        label: String,
-    },
-    /// Choose, or stop choosing, the resource a range changed as a morning source.
-    #[effect(kind = "undoable")]
-    ChooseSource {
-        /// The first change.
-        #[param("The first change")]
-        from: String,
-        /// The last change.
-        #[param("The last change")]
-        to: String,
-    },
-    /// Run a command on a chosen morning source.
-    #[effect(kind = "undoable")]
-    Source {
-        /// The source's key.
-        #[param("The source's key")]
-        key: String,
-        /// `open`, `remove`, `refresh`, `draft-refresh` or `next-source`.
-        #[param("`open`, `remove`, `refresh`, `draft-refresh` or `next-source`")]
-        command: String,
-    },
-}
-
-/// The sessions read, before it is narrowed to what an app reads of it.
-#[derive(Default, Deserialize)]
-#[serde(default)]
-struct SessionsValue {
-    sessions: Vec<wire::AgentSession>,
-    total: usize,
-    pending: bool,
-    mutations: bool,
-}
-
-impl SessionsValue {
-    fn into_sessions(self) -> SessionList {
-        SessionList {
-            sessions: self.sessions.iter().map(session).collect(),
-            total: i64::try_from(self.total).unwrap_or(i64::MAX),
-            pending: self.pending,
-            mutations: self.mutations,
-        }
-    }
-}
-
-/// An agent session as an app reads it.
-fn session(session: &wire::AgentSession) -> AgentSession {
-    let (now, now_kind) = session.now.as_ref().map_or_else(
-        || (String::new(), String::new()),
-        |now| match now {
-            wire::Now::Running { command, .. } => (command.clone(), "running".to_owned()),
-            wire::Now::Editing { path, .. } => (path.clone(), "editing".to_owned()),
-            wire::Now::Browsing { url, title, .. } => (
-                if title.is_empty() {
-                    url.clone()
-                } else {
-                    title.clone()
-                },
-                "browsing".to_owned(),
-            ),
-            wire::Now::Changing { summary, .. } => (summary.clone(), "changing".to_owned()),
-            wire::Now::Ran { command, .. } => (command.clone(), "ran".to_owned()),
-        },
-    );
-    AgentSession {
-        id: session.id.clone(),
-        agent: author(&session.agent),
-        workspace: session.workspace.clone(),
-        instruction: session.instruction.clone(),
-        decision: session.decision.clone(),
-        started_ms: session.started_ms,
-        last_ms: session.last_ms,
-        range: span(&session.range),
-        actions: session.actions.iter().map(action).collect(),
-        in_effect: session.in_effect.iter().map(change).collect(),
-        changes_total: i64::try_from(session.changes_total).unwrap_or(i64::MAX),
-        undo_blocked: session.undo_blocked.clone(),
-        now,
-        now_kind,
-    }
-}
-
-/// What an undo a session's change offers is, as an app names the press: `undo-entry` takes back
-/// the record's share of it, `undo-change` the range, and the rest are the history's own verbs.
-fn action_verb(action: wire::DetailAction) -> String {
-    match action {
-        wire::DetailAction::UndoEntry => "undo-entry",
-        wire::DetailAction::Undo => "undo-change",
-        other => other.action(),
-    }
-    .to_owned()
-}
-
-/// One of an agent session's changes still in effect, as an app reads it.
-fn change(change: &wire::SessionChange) -> SessionChange {
-    let (undo_label, undo_verb) = change.undo.as_ref().map_or((None, None), |offer| {
-        (Some(offer.label.clone()), Some(action_verb(offer.action)))
-    });
-    SessionChange {
-        range: span(&change.range),
-        step: change.step.clone(),
-        at_ms: change.at_ms,
-        summary: change.summary.clone(),
-        app_id: change.app_id.clone(),
-        record: change.record.clone(),
-        target: Target {
-            app_id: change.target.app_id.clone(),
-            app_label: change.target.app_label.clone(),
-            id: change.target.id.clone(),
-            kind: change.target.kind.clone(),
-            label: change.target.label.clone(),
-        },
-        undo_label,
-        undo_verb,
-    }
-}
-
-/// A file change's lines, as an app reads them.
-fn diff_lines(lines: &[wire::DiffLine]) -> Vec<DiffLine> {
-    lines
-        .iter()
-        .map(|line| DiffLine {
-            side: match line.side {
-                wire::DiffSide::Both => "both",
-                wire::DiffSide::Removed => "removed",
-                wire::DiffSide::Added => "added",
-            }
-            .to_owned(),
-            text: line.text.clone(),
-        })
-        .collect()
-}
-
-/// One action of an agent session as an app reads it.
-fn action(action: &wire::SessionAction) -> SessionAction {
-    let (kind, place, title, cwd, output, more, exit, ended_ms, diff) = match &action.view {
-        wire::ActionView::File { path, lines, .. } => (
-            "file",
-            path.clone(),
-            String::new(),
-            String::new(),
-            Vec::new(),
-            false,
-            None,
-            None,
-            diff_lines(lines),
-        ),
-        wire::ActionView::Command {
-            command,
-            cwd,
-            output,
-            more,
-            exit,
-            ended_ms,
-            ..
-        } => (
-            "command",
-            command.clone(),
-            String::new(),
-            cwd.clone(),
-            output.clone(),
-            *more,
-            *exit,
-            *ended_ms,
-            Vec::new(),
-        ),
-        wire::ActionView::Page { url, title, .. } => (
-            "page",
-            url.clone(),
-            title.clone(),
-            String::new(),
-            Vec::new(),
-            false,
-            None,
-            None,
-            Vec::new(),
-        ),
-        wire::ActionView::Record { target } => (
-            "record",
-            target.id.clone(),
-            String::new(),
-            String::new(),
-            Vec::new(),
-            false,
-            None,
-            None,
-            Vec::new(),
-        ),
-    };
-    let execution = match &action.view {
-        wire::ActionView::Command {
-            execution: Some(execution),
-            ..
-        } => Some(RunPlace {
-            workspace: execution.workspace.clone(),
-            app_id: execution.app_id.clone(),
-            record: execution.record.clone(),
-            execution: execution.execution.clone(),
-        }),
-        _ => None,
-    };
-    let (undo_label, undo_verb) = action.undo.as_ref().map_or((None, None), |offer| {
-        (Some(offer.label.clone()), Some(action_verb(offer.action)))
-    });
-    SessionAction {
-        range: span(&action.range),
-        changes: i64::try_from(action.changes).unwrap_or(i64::MAX),
-        at_ms: action.at_ms,
-        summary: action.summary.clone(),
-        kind: kind.to_owned(),
-        place,
-        target: Target {
-            app_id: action.view.target().app_id.clone(),
-            app_label: action.view.target().app_label.clone(),
-            id: action.view.target().id.clone(),
-            kind: action.view.target().kind.clone(),
-            label: action.view.target().label.clone(),
-        },
-        title,
-        cwd,
-        output,
-        more,
-        exit: exit.map(i64::from),
-        ended_ms,
-        diff,
-        app_id: action.app_id.clone(),
-        record: action.record.clone(),
-        execution,
-        undo_label,
-        undo_verb,
-    }
-}
-
-fn span(range: &wire::Range) -> Span {
-    Span {
-        from: range.from.clone(),
-        to: range.to.clone(),
-    }
-}
-
-fn author(author: &wire::Author) -> Author {
-    Author {
-        name: author.name.clone(),
-        rgb: author.rgb.to_vec(),
-        identity: author.identity.clone(),
-        relation: serde_json::to_value(author.relation)
-            .ok()
-            .and_then(|value| value.as_str().map(str::to_owned))
-            .unwrap_or_default(),
-        on_behalf_of: author.on_behalf_of.clone(),
-        for_reader: author.for_reader,
-        task: author.task.clone(),
-    }
 }
 
 /// A reading of the activity with nothing in it, as an app starts: the resource reads this until
 /// the model serves its first pass.
 #[must_use]
 pub(crate) fn empty() -> Value {
-    serde_json::to_value(Activity::default()).unwrap_or(Value::Null)
-}
-
-/// What a page of the feed with nothing read yet shows.
-fn empty_feed() -> Value {
-    serde_json::to_value(FeedReading::default()).unwrap_or(Value::Null)
+    json_or_null(&Activity::default())
 }
 
 /// The query a feed reading names: this workspace's changes or every workspace's, how far back,
@@ -1563,62 +606,6 @@ pub(crate) fn output_resource(
     )
 }
 
-/// A command's output as an app reads it, from what the model read.
-fn output_json(value: &Value) -> Value {
-    match serde_json::from_value::<SessionOutput>(value.clone()) {
-        Ok(output) => serde_json::to_value(OutputReading {
-            output: Some(output),
-        })
-        .unwrap_or_else(|_| empty_output()),
-        Err(error) => {
-            tracing::warn!(%error, "a command's output is not the shape an app reads");
-            empty_output()
-        }
-    }
-}
-
-/// What a command's output with nothing read yet shows.
-fn empty_output() -> Value {
-    serde_json::to_value(OutputReading::default()).unwrap_or(Value::Null)
-}
-
-/// A page of the feed as an app reads it, from what the model read.
-fn feed_json(value: &Value) -> Value {
-    let mut value = value.clone();
-    if let Some(entries) = value.get_mut("entries").and_then(Value::as_array_mut) {
-        for entry in entries {
-            if let Some(map) = entry.as_object_mut()
-                && let Some(app) = map.remove("app")
-            {
-                map.insert("made_in".to_owned(), app);
-            }
-        }
-    }
-    match serde_json::from_value::<Feed>(value) {
-        Ok(feed) => {
-            serde_json::to_value(FeedReading { feed: Some(feed) }).unwrap_or_else(|_| empty_feed())
-        }
-        Err(error) => {
-            tracing::warn!(%error, "a page of the feed is not the shape an app reads");
-            empty_feed()
-        }
-    }
-}
-
-/// What a range with nothing read yet shows.
-fn empty_detail() -> Value {
-    serde_json::to_value(RangeDetail::default()).unwrap_or(Value::Null)
-}
-
-/// The range a keyed reading names: the first and last change, after [`RANGE_PREFIX`].
-/// A sessions read as an app gets it: the sessions as the types an app reads, not the wire.
-fn sessions_json(value: &Value) -> Value {
-    let Ok(read) = serde_json::from_value::<SessionsValue>(value.clone()) else {
-        return Key::Sessions.empty();
-    };
-    serde_json::to_value(read.into_sessions()).unwrap_or_else(|_| Key::Sessions.empty())
-}
-
 pub(crate) fn range_of(resource: &str) -> Option<wire::Range> {
     let rest = resource.strip_prefix(RANGE_PREFIX)?;
     let (from, to) = rest.split_once('~')?;
@@ -1648,61 +635,6 @@ pub(crate) fn compare_resource(range: &wire::Range) -> String {
 #[cfg(test)]
 pub(crate) fn range_resource(range: &wire::Range) -> String {
     format!("{RANGE_PREFIX}{}~{}", range.from, range.to)
-}
-
-/// A range's detail as an app reads it, from what the model read.
-fn detail_json(value: &Value) -> Value {
-    match serde_json::from_value::<wire::Detail>(value.clone()) {
-        Ok(detail) => {
-            let comparison = match detail.comparison {
-                Some(wire::Comparison::Changes { lines }) => Some(lines.join("\n")),
-                Some(wire::Comparison::Unavailable) | None => None,
-            };
-            let read = Detail {
-                title: detail.title,
-                provenance: detail.provenance,
-                authors: detail.authors,
-                resources: detail
-                    .resources
-                    .iter()
-                    .map(|target| Target {
-                        app_id: target.app_id.clone(),
-                        app_label: target.app_label.clone(),
-                        id: target.id.clone(),
-                        kind: target.kind.clone(),
-                        label: target.label.clone(),
-                    })
-                    .collect(),
-                group: detail.group,
-                group_label: detail.group_label,
-                offers: detail
-                    .offers
-                    .iter()
-                    .map(|offer| Offer {
-                        verb: offer.action.action().to_owned(),
-                        label: offer.label.clone(),
-                    })
-                    .collect(),
-                changes: detail
-                    .changes
-                    .iter()
-                    .map(|change| FieldChange {
-                        field: change.field.clone(),
-                        before: change.before.clone(),
-                        after: change.after.clone(),
-                    })
-                    .collect(),
-                comparison,
-                gone: detail.gone,
-            };
-            serde_json::to_value(RangeDetail { detail: Some(read) })
-                .unwrap_or_else(|_| empty_detail())
-        }
-        Err(error) => {
-            tracing::warn!(%error, "a range's detail is not the shape an app reads");
-            empty_detail()
-        }
-    }
 }
 
 #[cfg(test)]
@@ -1916,8 +848,13 @@ mod tests {
         );
         let sessions = reading.sessions.expect("agent sessions");
         assert_eq!(sessions.sessions[0].instruction, "Tidy the notes");
-        assert_eq!(sessions.sessions[0].actions[0].place, "note-1");
-        assert_eq!(sessions.sessions[0].actions[0].kind, "record");
+        assert!(
+            matches!(
+                &sessions.sessions[0].actions[0].view,
+                wire::ActionView::Record { target } if target.id == "note-1"
+            ),
+            "the action's view says what it changed"
+        );
 
         // The model reads differently: the reading moves, and only then.
         assert!(
@@ -2089,8 +1026,8 @@ mod tests {
             "the change is named as its record's own history names it, for its undo"
         );
         assert_eq!(changes[0]["target"]["label"], "Plan");
-        assert_eq!(changes[0]["undo_label"], "Undo this step");
-        assert_eq!(changes[0]["undo_verb"], "undo-entry");
+        assert_eq!(changes[0]["undo"]["label"], "Undo this step");
+        assert_eq!(changes[0]["undo"]["action"], "undo-entry");
         assert_eq!(sessions["sessions"][0]["changes_total"], 1);
         assert!(
             served
@@ -2126,26 +1063,5 @@ mod tests {
         let output = served.read(&output).expect("the output reads");
         assert_eq!(output["output"]["lines"][1], "ok");
         assert_eq!(output["output"]["running"], false);
-    }
-
-    /// The surface an app compiles against is the one the session publishes, written beside the
-    /// session as `activity-surface.json`.
-    #[test]
-    fn the_activity_surface_file_is_what_the_session_publishes() {
-        let published = vec![surface(), range_surface(), feed_surface(), output_surface()];
-        let text = tilo_surface_compile::canonical(&serde_json::json!({ "resources": published }));
-        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("activity-surface.json");
-        let on_disk = std::fs::read_to_string(&path).unwrap_or_default();
-        if on_disk == text {
-            return;
-        }
-        if std::env::var_os("UPDATE_SNAPSHOTS").is_some_and(|v| v == "1") {
-            std::fs::write(&path, &text).expect("activity-surface.json is written");
-            return;
-        }
-        panic!(
-            "crates/session/session/activity-surface.json is not what the session publishes; \
-             write it with UPDATE_SNAPSHOTS=1:\n{text}"
-        );
     }
 }
