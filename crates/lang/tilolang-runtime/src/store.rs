@@ -103,14 +103,19 @@ impl BytesData {
     pub fn from_json(json: &Json) -> Result<Self, String> {
         match json {
             Json::Null => Ok(Self::Inline(Rc::new(Vec::new()))),
+            // The data as the numbers it is, as an outside reader that holds bytes as a list of
+            // them writes it.
+            Json::Array(_) => {
+                let data: Vec<u8> = serde_json::from_value(json.clone())
+                    .map_err(|error| format!("bytes are not a list of bytes: {error}"))?;
+                Ok(Self::Inline(Rc::new(data)))
+            }
             Json::Object(fields) => {
-                let data: Vec<u8> = fields
-                    .get("inline")
-                    .cloned()
-                    .map(serde_json::from_value)
-                    .transpose()
-                    .map_err(|error| format!("inline bytes are not a list of bytes: {error}"))?
-                    .unwrap_or_default();
+                let Some(data) = fields.get("inline") else {
+                    return Err(format!("{json} is no bytes"));
+                };
+                let data: Vec<u8> = serde_json::from_value(data.clone())
+                    .map_err(|error| format!("inline bytes are not a list of bytes: {error}"))?;
                 Ok(Self::Inline(Rc::new(data)))
             }
             Json::String(text) => {

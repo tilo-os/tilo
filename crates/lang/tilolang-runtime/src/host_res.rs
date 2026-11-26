@@ -576,6 +576,8 @@ impl Core {
             (FieldKind::Text, FieldValue::Text(t)) => Ok(Value::Text(t)),
             (FieldKind::RichText, FieldValue::Rich(r)) => Ok(Value::Rich(r)),
             (FieldKind::Bytes, FieldValue::Bytes(data)) => self.bytes_value(data),
+            // A record written before the field held anything reads as bytes of nothing.
+            (FieldKind::Bytes, FieldValue::Absent) => Ok(Value::Bytes(Rc::new(Vec::new()))),
             // A store that reads a record's bytes from what its key held (the platform's, at a
             // past version) hands them as the stored form.
             (FieldKind::Bytes, FieldValue::Scalar(Scalar::Json(json))) => {

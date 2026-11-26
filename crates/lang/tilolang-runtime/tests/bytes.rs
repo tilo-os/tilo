@@ -15,7 +15,7 @@ mod cases {
     use tilolang_runtime::meta::FieldKind;
     use tilolang_runtime::origin::OriginWrite;
     use tilolang_runtime::store::{BytesData, FieldSpec, Store as _};
-    use tilolang_runtime::{AmStore, ResourceRef, Runtime, SimpleAuthority, Value};
+    use tilolang_runtime::{AmStore, ResourceRef, Runtime, Value};
 
     const SOURCE: &str = r#"app so.tilo.bytes "Bytes"
 
@@ -67,7 +67,7 @@ view printed(r: Run) {
 
     /// A runtime over `store` with `app` loaded, and the same content store as every other.
     fn runtime_with(store: &AmStore, blobs: &MemoryBlobs, app: &App) -> Runtime {
-        let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
+        let rt = Runtime::new(store.clone(), TestAuthority::new()).unwrap();
         app.load(&rt);
         rt.set_blobs(blobs.clone());
         rt
