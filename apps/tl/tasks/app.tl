@@ -1668,6 +1668,11 @@ view task_list(
     opened: State<Option<Task>>,
     project: Option<Project>,
 ) {
+    // What stands under each task, and how much of it is finished, counted once for the page:
+    // a row reads its own tally from these, where counting the tasks per row read the whole
+    // workspace again and again.
+    let counts = tasks.items.count_by(x -> x.parent)
+    let finished_counts = tasks.items.filter(x -> closed(x.status)).count_by(x -> x.parent)
     std.list(
         items,
         opened,
@@ -1682,7 +1687,12 @@ view task_list(
                 p
             }
         }
-        task_item(x, at, project, heading, done_place, tail, above, subtask_count(x))
+        let mine = counts.find(c -> c.key == .some(x))
+        let done = finished_counts.find(c -> c.key == .some(x))
+        let progress = if let mine = mine {
+            if mine.count > 0 { "{done?.count ?? 0}/{mine.count}" }
+        }
+        task_item(x, at, project, heading, done_place, tail, above, progress)
     }
 }
 
