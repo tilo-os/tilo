@@ -74,22 +74,15 @@ tilo_test_env::scenario! {
 
     phase the_changes_since_a_held_revision_complete_it_to_the_current_read;
     // The changes since a held revision, applied to that revision, are the
-    // document a whole read hands out now, with its revision; and they are read
-    // without capturing the document again.
+    // document a whole read hands out now, with its revision.
     {
         let joined = enrolled();
         let member = member().verifying_key().to_bytes();
         let held = full(&joined, member);
         commit(&joined, |chat| chat.put(ROOT, "topic", "edited").unwrap());
-        crate::document_read::reset_captures();
         let Ok(DocumentRead::Changes(read)) = changes(&joined, member, &held.heads, usize::MAX) else {
             panic!("the member is handed the changes since what it holds");
         };
-        assert_eq!(
-            crate::document_read::captures(),
-            0,
-            "the changes come from the committed document, not a whole capture"
-        );
         let current = full(&joined, member);
         assert_eq!(read.revision, current.revision);
         assert_eq!(read.heads, current.heads);

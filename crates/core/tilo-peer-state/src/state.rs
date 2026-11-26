@@ -261,10 +261,6 @@ impl Route {
 // Documents a durable hash took again: those changed since it was last taken.
 #[cfg(test)]
 thread_local! { pub(crate) static DOCUMENTS_WALKED: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
-#[cfg(test)]
-thread_local! { pub(crate) static CHECKPOINT_DECODES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
-#[cfg(test)]
-thread_local! { pub(crate) static CERTIFICATE_VERIFICATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 #[derive(Clone)]
 struct AcceptedCheckpoint(std::sync::Arc<CheckpointBytes>);
@@ -295,8 +291,6 @@ impl AcceptedCheckpoint {
         self.0.decoded.get_or_init(|| self.decode()).clone()
     }
     fn decode(&self) -> Result<std::sync::Arc<DecodedCheckpoint>, String> {
-        #[cfg(test)]
-        CHECKPOINT_DECODES.with(|count| count.set(count.get().saturating_add(1)));
         let mut doc = AutoCommit::load(&self.0.bytes).map_err(err)?;
         let heads = doc.get_heads().iter().map(ToString::to_string).collect();
         let payload_hash = crate::document::snapshot_hash(&self.0.bytes).map_err(err)?;

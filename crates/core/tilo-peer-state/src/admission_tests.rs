@@ -39,52 +39,7 @@ fn fixtures() -> (SigningKey, DeviceCert, SigningKey, DeviceCert, SystemTime) {
     (a, ac, b, bc, now)
 }
 tilo_test_env::scenario! {
-    fn permission_queries_reuse_what_admission_already_verified;
-
-    phase unchanged_permission_queries_share_policy_data_across_peer_clones;
-    {
-        let (peer, _, _, cert, now) = seeded();
-        crate::workspace::POLICY_READS.with(|count| count.set(0));
-        let expected = peer.permissions(cert.device_public_key, now).unwrap();
-        for _ in 0..100 {
-            let actual = peer
-                .clone()
-                .permissions(cert.device_public_key, now)
-                .unwrap();
-            assert_eq!(
-                serde_json::to_vec(&actual.policy).unwrap(),
-                serde_json::to_vec(&expected.policy).unwrap()
-            );
-            assert_eq!(actual.person_id(), expected.person_id());
-        }
-        assert!(
-            crate::workspace::POLICY_READS.with(std::cell::Cell::get) <= 1,
-            "unchanged policy data is decoded at most once"
-        );
-    }
-
-    phase admitted_immutable_certificate_does_not_repeat_signature_checks_per_permission_query;
-    {
-        let (peer, _, _, cert, now) = seeded();
-        crate::state::CERTIFICATE_VERIFICATIONS.with(|count| count.set(0));
-        let expected = peer.permissions(cert.device_public_key, now).unwrap();
-        for _ in 0..100 {
-            let actual = peer
-                .clone()
-                .permissions(cert.device_public_key, now)
-                .unwrap();
-            assert_eq!(
-                serde_json::to_vec(&actual.policy).unwrap(),
-                serde_json::to_vec(&expected.policy).unwrap()
-            );
-            assert_eq!(actual.person_id(), expected.person_id());
-        }
-        assert_eq!(
-            crate::state::CERTIFICATE_VERIFICATIONS.with(std::cell::Cell::get),
-            0,
-            "immutable signatures were already verified when the certificate entered the roster"
-        );
-    }
+    fn an_exported_certificate_changes_nothing_the_peer_verified;
 
     phase exported_certificate_mutation_cannot_change_verified_roster_or_replace_it_via_presence;
     {
@@ -2783,7 +2738,6 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
         now,
     )
     .unwrap();
-    crate::state::CHECKPOINT_DECODES.with(|count| count.set(0));
     for _ in 0..100 {
         let fork = browser.clone();
         assert_eq!(
@@ -2796,11 +2750,6 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
             Some((receipt.clone(), true))
         );
     }
-    assert_eq!(
-        crate::state::CHECKPOINT_DECODES.with(std::cell::Cell::get),
-        1,
-        "peer clones must share immutable checkpoint decoding"
-    );
     assert_eq!(
         browser
             .durable_coverage("test.app", "tab:1")

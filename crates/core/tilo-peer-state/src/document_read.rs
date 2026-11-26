@@ -32,23 +32,6 @@ use web_time::SystemTime;
 
 type HistoryOpener<'a> = &'a mut dyn FnMut(&collab_types::SignedOp) -> Result<Vec<u8>, String>;
 
-#[cfg(test)]
-thread_local! {
-    static CAPTURES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-/// How many times a document read captured the document. Tests use this to
-/// prove an unchanged revision does not pay that cost.
-#[cfg(test)]
-pub(crate) fn captures() -> usize {
-    CAPTURES.with(std::cell::Cell::get)
-}
-
-#[cfg(test)]
-pub(crate) fn reset_captures() {
-    CAPTURES.with(|count| count.set(0));
-}
-
 /// A document as the workspace last admitted it.
 pub struct CommittedDocument {
     /// Names exactly these heads; equal revisions are equal documents.
@@ -285,8 +268,6 @@ impl NativeCommittedView {
                 bytes,
             }));
         }
-        #[cfg(test)]
-        CAPTURES.with(|count| count.set(count.get().saturating_add(1)));
         // A record kept opened extends what its last capture made; any other is captured whole.
         let bytes = match kept.capture(maximum) {
             Some(bytes) => bytes,

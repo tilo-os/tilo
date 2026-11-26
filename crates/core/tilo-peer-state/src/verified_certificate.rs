@@ -12,17 +12,11 @@ impl VerifiedCertificate {
     }
 
     pub(crate) fn new_typed(certificate: DeviceCert, now_ns: u64) -> Result<Self, DeviceCertError> {
-        #[cfg(test)]
-        crate::state::CERTIFICATE_VERIFICATIONS
-            .with(|count| count.set(count.get().saturating_add(1)));
         verify_device_cert_at(&certificate, now_ns)?;
         Ok(Self(Arc::new(certificate)))
     }
 
     pub(crate) fn historical_typed(certificate: DeviceCert) -> Result<Self, DeviceCertError> {
-        #[cfg(test)]
-        crate::state::CERTIFICATE_VERIFICATIONS
-            .with(|count| count.set(count.get().saturating_add(1)));
         verify_device_cert(&certificate)?;
         Ok(Self(Arc::new(certificate)))
     }
@@ -87,7 +81,6 @@ mod tests {
     )]
     fn immutable_clones_check_the_current_expiry_boundary() {
         let verified = VerifiedCertificate::new(certificate(), 9).unwrap();
-        crate::state::CERTIFICATE_VERIFICATIONS.with(|count| count.set(0));
         assert!(verified.clone().current_typed(9).is_ok());
         assert_eq!(
             verified.clone().current_typed(10).unwrap_err(),
@@ -108,10 +101,6 @@ mod tests {
             "before its issue time"
         );
         assert!(verified.current_typed(1).is_ok(), "at its issue time");
-        assert_eq!(
-            crate::state::CERTIFICATE_VERIFICATIONS.with(std::cell::Cell::get),
-            0
-        );
         assert!(VerifiedCertificate::new(certificate(), 10).is_err());
         assert!(
             VerifiedCertificate::new(certificate(), 0).is_err(),

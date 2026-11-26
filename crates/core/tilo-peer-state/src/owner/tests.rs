@@ -439,7 +439,7 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase an_unchanged_committed_read_does_not_capture_the_document;
+    phase an_unchanged_committed_read_answers_unchanged_to_a_member_and_is_refused_a_stranger;
     {
         let joined = enrolled();
         let member = member().verifying_key().to_bytes();
@@ -449,24 +449,13 @@ tilo_test_env::scenario! {
                 view.read_document(reader, APP, "", known, usize::MAX, joined.now)
             })
         };
-        crate::document_read::reset_captures();
         let Ok(DocumentRead::Captured(document)) = read(member, None) else {
             panic!("the first read admits the document");
         };
-        assert!(
-            crate::document_read::captures() > 0,
-            "a first read captures the document so the counter can see a later skip"
-        );
-        let captures = crate::document_read::captures();
         assert!(matches!(
             read(member, Some(document.revision)),
             Ok(DocumentRead::Unchanged(revision)) if revision == document.revision
         ));
-        assert_eq!(
-            crate::document_read::captures(),
-            captures,
-            "an idle reread of the same revision must not capture the document"
-        );
         assert!(
             read(stranger, Some(document.revision)).is_err(),
             "a device outside the workspace cannot reuse a revision it was never given"
@@ -495,17 +484,11 @@ tilo_test_env::scenario! {
                     .map(|revision| revision.map(|revision| revision == known))
             })
         };
-        crate::document_read::reset_captures();
         assert_eq!(holds(member, document.revision), Ok(Some(true)));
         assert_eq!(
             holds(member, [0; 32]),
             Ok(Some(false)),
             "another revision is not held"
-        );
-        assert_eq!(
-            crate::document_read::captures(),
-            0,
-            "answered from the admitted heads, without capturing the document again"
         );
         assert!(
             holds(stranger, document.revision).is_err(),

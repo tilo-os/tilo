@@ -62,8 +62,6 @@ impl WorkspaceGovernance {
         }
     }
 }
-#[cfg(test)]
-thread_local! { pub(crate) static POLICY_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 /// The workspace's authority: its membership as the operations its document
 /// holds make it ([`crate::members::replay`]).
 #[must_use]
@@ -220,8 +218,6 @@ pub(crate) fn redemptions_kept(before: Option<&AutoCommit>, after: &AutoCommit) 
 pub fn extract_listed_fields(
     candidate: &AutoCommit,
 ) -> (Option<String>, tilo_action_policy::WorkspacePolicy) {
-    #[cfg(test)]
-    POLICY_READS.with(|count| count.set(count.get().saturating_add(1)));
     let text = |key: &str| candidate.str_at(&ROOT, key);
     let workspace = text("workspace").unwrap_or_default();
     (

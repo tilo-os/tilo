@@ -275,8 +275,6 @@ fn empty() -> PolicyData {
 
 /// `document`'s governance, read from every entry it holds.
 pub(crate) fn whole(document: &automerge::AutoCommit) -> PolicyData {
-    #[cfg(test)]
-    super::POLICY_READS.with(|count| count.set(count.get().saturating_add(1)));
     let mut value = PolicyData {
         owner: None,
         identities: std::collections::BTreeMap::new(),
