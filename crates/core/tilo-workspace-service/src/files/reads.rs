@@ -147,6 +147,13 @@ impl OpenedFiles {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Value, String> {
+        if arguments.contains_key("device") {
+            return Err(
+                "a path in the workspace names no device: a device's own disk is read by Files \
+                 on that device"
+                    .to_owned(),
+            );
+        }
         match action {
             fs_protocol::tree::LIST => tilo_rt::app()
                 .block_on(
