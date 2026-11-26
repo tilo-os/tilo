@@ -364,6 +364,12 @@ impl Store {
                 self.filled.clone(),
                 self.nested_in.clone(),
             )
+        } else if scope.check {
+            (
+                self.index.selected(&scope.resources),
+                self.filled.clone(),
+                self.nested_in.clone(),
+            )
         } else {
             let filled = scope
                 .placements
@@ -427,13 +433,9 @@ impl Store {
         if before.is_empty() && self.docs.contains_key(&last.doc) {
             return self.check_write_with(last, author, admit);
         }
-        // A check reads any row of the index, as the write the store takes in is judged: stage
-        // the whole of it. Each write is taken in so the next is judged against it; the last is
-        // judged and taken in by no one.
-        let scope = crate::wire::DraftScope {
-            undo: true,
-            ..crate::wire::DraftScope::default()
-        };
+        // Each write is taken in so the next is judged against it; the last is judged and taken
+        // in by no one.
+        let scope = self.check_scope(writes);
         self.stage(&scope, |staged| {
             for write in before {
                 staged.check_write_with(write, author, admit)?;
@@ -443,6 +445,62 @@ impl Store {
             }
             staged.check_write_with(last, author, admit)
         })
+    }
+
+    /// What a check of `writes` reads of the index: the rows of every resource they touch, of
+    /// what those are nested in, and of the record whose content a document holds: the only rows
+    /// judging a write and taking it in look up. A copy of the whole index costs every record the
+    /// workspace holds, on every batch. A document the batch makes is read as the batch makes it;
+    /// a write the store cannot read against what it holds is checked against the whole index.
+    fn check_scope(&self, writes: &[Written]) -> crate::wire::DraftScope {
+        let whole = crate::wire::DraftScope {
+            undo: true,
+            ..crate::wire::DraftScope::default()
+        };
+        let mut ids: BTreeMap<String, Option<String>> = BTreeMap::new();
+        let mut made: HashMap<&str, Automerge> = HashMap::new();
+        for write in writes {
+            if let Some((_, id)) = content_resource(&write.doc) {
+                ids.entry(id.to_owned()).or_default();
+            }
+            let touched = if let Some(doc) = self.docs.get(&write.doc) {
+                collab_types::touch::touched(doc, &write.doc, &write.change)
+            } else {
+                let doc = made.entry(write.doc.as_str()).or_default();
+                let touched = collab_types::touch::touched(doc, &write.doc, &write.change);
+                if doc.apply_changes([write.change.clone()]).is_err() {
+                    return whole;
+                }
+                touched
+            };
+            let Some((touched, _)) = touched else {
+                return whole;
+            };
+            for (id, touch) in touched.resources {
+                if let Some(parent) = touch.parent {
+                    ids.entry(parent).or_default();
+                }
+                if let Some(was) = touch.retyped_from {
+                    ids.entry(id.clone()).or_default().get_or_insert(was);
+                }
+                ids.entry(id).or_default();
+            }
+        }
+        let resources = ids
+            .into_iter()
+            .flat_map(|(id, was)| {
+                let held = self.index.kind_anywhere(&id);
+                [held, was]
+                    .into_iter()
+                    .flatten()
+                    .map(move |kind| (kind, id.clone()))
+            })
+            .collect();
+        crate::wire::DraftScope {
+            resources,
+            check: true,
+            ..crate::wire::DraftScope::default()
+        }
     }
 
     /// Check a staged write against the live document and the same schema a received write uses.

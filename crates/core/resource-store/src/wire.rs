@@ -125,6 +125,9 @@ pub(crate) struct DraftScope {
     pub(crate) resources: BTreeSet<(String, String)>,
     pub(crate) placements: BTreeSet<(String, String)>,
     pub(crate) undo: bool,
+    /// A check of writes already made: the index rows it reads are `resources`, and it keeps
+    /// every placement and nesting the store knows.
+    pub(crate) check: bool,
 }
 
 impl DraftScope {
