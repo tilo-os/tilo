@@ -23,12 +23,13 @@ use iroh::endpoint::{Connection, RecvStream, SendStream};
 use serde::de::DeserializeOwned;
 use serde_json::{Value, json};
 use tilo_actions::ActionAddress;
+use tilo_actions::InvocationId;
 use tilo_actions::remote::asked::{
     AskedBy, AskedDispatch, AskedFacts, AskedRecords, AskedStore, Fact, Named, RecordRef,
 };
 use tilo_actions::remote::{
-    ActionCallError, Caller, Completer, InvocationId, InvokeArgument, InvokeRequest, Pending,
-    RemoteActionTarget, pending,
+    ActionCallError, Caller, Completer, InvokeArgument, InvokeRequest, Pending, RemoteActionTarget,
+    pending,
 };
 use tilo_device_identity::login::{PROVIDER, RELEASE_HALF, RESOURCE};
 use tilo_unlock_protocol::published::{
@@ -90,10 +91,59 @@ pub(crate) struct Unlock {
     /// and the records written there as this device's.
     store: Arc<AskedStore>,
     records: Arc<dyn AskedRecords>,
-    /// The boot questions waiting for the person, by the invocation their record names.
-    waiting: Mutex<HashMap<InvocationId, Completer<bool>>>,
+    /// What delivers the person's answer to the exchange waiting for it.
+    asks: Arc<Asks>,
     /// The challenges this device issued, the boots it served and the requests waiting for it.
     sibling: Mutex<UnlockSibling>,
+}
+
+/// The boot questions the person is asked, by the invocation their record names: the answer an
+/// approve or a decline delivers completes the one the exchange waits on.
+#[derive(Default)]
+struct Asks {
+    waiting: Mutex<HashMap<InvocationId, Completer<bool>>>,
+}
+
+impl Asks {
+    /// Answer the question `invocation` asks with the person's `allowed`, where it still waits
+    /// here: a question whose boot went away waits no longer.
+    fn answered(&self, invocation: InvocationId, allowed: bool) {
+        let waiting = self
+            .waiting
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .remove(&invocation);
+        if let Some(waiting) = waiting {
+            waiting.complete(allowed);
+        }
+    }
+}
+
+/// What the person's answer reaches: the question the exchange waits on, and nothing of the
+/// boot's own kept with it.
+impl AskedDispatch for Asks {
+    fn context(&self, _: InvocationId) -> Value {
+        Value::Null
+    }
+
+    fn readmit(
+        &self,
+        _: &Caller,
+        request: InvokeRequest,
+        _: &Value,
+    ) -> Result<(), ActionCallError> {
+        self.answered(request.invocation, true);
+        Ok(())
+    }
+
+    fn declined(&self, _: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {
+        self.answered(invocation, false);
+        Ok(())
+    }
+
+    fn withdrawn(&self, _: &Caller, invocation: InvocationId, _: &str) {
+        self.answered(invocation, false);
+    }
 }
 
 impl std::fmt::Debug for Unlock {
@@ -121,17 +171,24 @@ impl Unlock {
         store: Arc<AskedStore>,
     ) -> Arc<Self> {
         let (person, local) = (cert.user_public_key, cert.device_public_key);
-        Arc::new_cyclic(|me: &Weak<Self>| {
-            let dispatch: Weak<dyn AskedDispatch> = me.clone();
-            Self {
-                workspaces,
-                person,
-                local,
-                records: store.for_dispatch(DISPATCH, dispatch),
-                store,
-                waiting: Mutex::default(),
-                sibling: Mutex::new(UnlockSibling::new(local)),
-            }
+        let asks = Arc::new(Asks::default());
+        let holding: Weak<Asks> = Arc::downgrade(&asks);
+        let dispatch: Weak<dyn AskedDispatch> = holding;
+        // Each question is told to the person as their own log's, with Approve and Decline
+        // answering its record, as every asked call is. The task that tells them runs on this
+        // device's runtime, which the daemon start may not be in yet.
+        let _entered = tilo_rt::app().handle().enter();
+        let records = workspaces
+            .copies()
+            .told(store.for_dispatch(DISPATCH, dispatch));
+        Arc::new(Self {
+            workspaces,
+            person,
+            local,
+            records,
+            store,
+            asks,
+            sibling: Mutex::new(UnlockSibling::new(local)),
         })
     }
 
@@ -430,7 +487,8 @@ impl Unlock {
             signed: None,
         };
         let (completer, answer) = pending();
-        self.waiting
+        self.asks
+            .waiting
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .insert(invocation, completer);
@@ -440,7 +498,8 @@ impl Unlock {
         {
             Ok(at) => Some((at, answer)),
             Err(why) => {
-                self.waiting
+                self.asks
+                    .waiting
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner)
                     .remove(&invocation);
@@ -463,19 +522,6 @@ impl Unlock {
             )
     }
 
-    /// Answer the question `invocation` asks with the person's `allowed`, where it still waits
-    /// here: a question whose boot went away waits no longer.
-    fn answered(&self, invocation: InvocationId, allowed: bool) {
-        let waiting = self
-            .waiting
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .remove(&invocation);
-        if let Some(waiting) = waiting {
-            waiting.complete(allowed);
-        }
-    }
-
     /// Keep the person's answer in the record of their devices, so their other devices answer the
     /// same boot the same way while it holds.
     async fn keep(&self, record: &UnlockDecisionEntry) {
@@ -491,33 +537,6 @@ impl Unlock {
         {
             tracing::warn!(%error, "the person's answer to a boot is not kept");
         }
-    }
-}
-
-/// The dispatches that raise the question and deliver the person's yes or no to the exchange
-/// waiting for it.
-impl AskedDispatch for Unlock {
-    fn context(&self, _: InvocationId) -> Value {
-        Value::Null
-    }
-
-    fn readmit(
-        &self,
-        _: &Caller,
-        request: InvokeRequest,
-        _: &Value,
-    ) -> Result<(), ActionCallError> {
-        self.answered(request.invocation, true);
-        Ok(())
-    }
-
-    fn declined(&self, _: &Caller, invocation: InvocationId) -> Result<(), ActionCallError> {
-        self.answered(invocation, false);
-        Ok(())
-    }
-
-    fn withdrawn(&self, _: &Caller, invocation: InvocationId, _: &str) {
-        self.answered(invocation, false);
     }
 }
 
@@ -604,11 +623,13 @@ async fn wait_for_person(
     })
     .await;
     match wait {
-        Ok(answer) => {
-            if answer.is_none() {
-                store.withdraw(at, &crate::i18n::t("unlock-gone"));
-            }
-            answer
+        // Their yes or no.
+        Ok(Some(Some(allowed))) => Some(allowed),
+        // The question ended without them answering it, or the boot stopped waiting: either
+        // way nobody waits for an answer any more.
+        Ok(Some(None) | None) => {
+            store.withdraw(at, &crate::i18n::t("unlock-gone"));
+            None
         }
         Err(_) => {
             // Nobody answered in time, which refuses this boot, and nobody waits for the answer
@@ -670,7 +691,7 @@ fn kept_unlock(record: &Devices, kept: &Device, key: &[u8; 32]) -> UnlockFabricS
     let mut state = kept
         .facts
         .get(UNLOCK)
-        .and_then(|value| decoded(value))
+        .and_then(|value| decoded::<UnlockFabricState>(value))
         .unwrap_or_default();
     let mut answers = record
         .unlocks

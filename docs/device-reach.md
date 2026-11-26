@@ -141,12 +141,13 @@ the recovery key always remains (`tilo-disk-encrypt`).
   sibling half over the peer network (relay fallback included). It
   authenticates with a boot-only key pair whose public half the person's
   devices certified when the slot was enrolled. A sibling releases its half
-  only after the owner approves the typed `device.unlock` action, which works
-  like any other action from their own identity: a prompt on their phone or
-  laptop, or an admin invoking it, a developer's tilo-vm among them. Policy can
-  auto-approve a request from a machine whose TPM attested the expected boot
-  chain. A stolen machine can ask, but it cannot unlock without the owner. A
-  copied boot partition alone gets nothing.
+  only after the owner approves: the daemon that answers raises the request as
+  an asked record in the person's own workspace, naming the machine and
+  showing the code its boot screen shows, and any of their devices shows it
+  and answers it, or an admin answers it as any asked call, a developer's
+  tilo-vm among them. Policy can auto-approve a request from a machine whose
+  TPM attested the expected boot chain. A stolen machine can ask, but it
+  cannot unlock without the owner. A copied boot partition alone gets nothing.
   - `tilo-disk-encrypt enrol --sibling --unattended` asks for exactly that
     auto-approval: at enrolment the machine creates an attestation key under
     its TPM, the person's root records its public point with the enrolment,

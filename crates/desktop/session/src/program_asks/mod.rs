@@ -27,8 +27,8 @@ mod tests;
 pub(crate) use notices::{ProgramNotices, TAG as NOTICE_TAG};
 
 /// Where the session's programs ask, and its side of it: the ones its caller or its desktop
-/// supplied, or one of its own when neither did (a headless session), where its own asks (a disk
-/// unlock, an enrolment, a machine asking to join) come too.
+/// supplied, or one of its own when neither did (a headless session), where its own asks (an
+/// enrolment, a machine asking to join) come too.
 pub(crate) fn for_session(
     supplied: Option<(AskSender, AskReceiver)>,
     desktop: Option<&(AskSender, AskReceiver)>,

@@ -125,6 +125,9 @@ tilo-neighbour-wire = { path = "../../core/neighbour-wire" }
 tilo-resource = { path = "../../core/tilo-resource" }
 tilo-resource-store = { path = "../../core/resource-store" }
 tilo-user-identity = { path = "../../core/tilo-user-identity" }
+# The wire an early boot asks a device of its person for its disk-unlock half with, and what a
+# device publishes of the enrolments it answers.
+tilo-unlock-protocol = { path = "../../core/tilo-unlock-protocol" }
 tilo-workspace-agent = { path = "../../sdk/tilo-workspace-agent" }
 blake3.workspace = true
 ed25519-dalek = { workspace = true, features = ["serde", "rand_core"] }

@@ -7,6 +7,7 @@ mod app_records_tests;
 mod approved_checks;
 mod calendar_bridge_tests;
 mod declared_kinds_tests;
+mod disk_unlock_tests;
 mod hosted_own_agent_tests;
 mod mail_bridge_tests;
 mod moderation_history_tests;

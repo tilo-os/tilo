@@ -1151,7 +1151,7 @@ impl Client {
         let person = crate::PersonResources::default();
         let fabric = fabric_of(
             identity.as_ref(),
-            person,
+            person.clone(),
             host_outbox,
             entry.continuity,
             lan.clone(),

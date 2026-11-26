@@ -2389,8 +2389,8 @@ impl Daemon {
         };
         stage("serving the device's endpoint");
         // Another of the person's devices at early boot asks this one for its disk-unlock half:
-        // the exchange is the device's own, answered as this device, and the person's yes is one
-        // of the asked records their devices show.
+        // the exchange is the device's own, answered as this device, and the person's yes is an
+        // asked record their devices show.
         let unlocking = match asked_store(&workspaces) {
             Ok(store) => Some(super::unlock::serving(&workspaces, store)),
             Err(error) => {

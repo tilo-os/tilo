@@ -16626,6 +16626,7 @@ dependencies = [
  "tilo-startup-metrics",
  "tilo-test-env",
  "tilo-ui",
+ "tilo-unlock-protocol",
  "tilo-user-identity",
  "tilo-vision-service",
  "tilo-workspace-agent",
