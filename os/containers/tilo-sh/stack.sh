@@ -761,8 +761,14 @@ server_env() {
 vm_skip_reason() { vm_host_blocker; }
 
 # Whether this stack's VM host is up, whatever this run asked for: a stack
-# started with it places workspaces there, and `down` stops it.
-vm_host_running() { [[ -n $(vm_host status 2>/dev/null | sed -n 's/^tilo-sh-vm-host-0 *running$/running/p') ]]; }
+# started with it places workspaces there, and `down` stops it. A host that
+# never started has no state directory, and asking it through sudo is not free:
+# where sudo wants a password, `sudo -n` can take a minute and more to refuse,
+# and every up and down asks more than once.
+vm_host_running() {
+  [[ -d $vm_state ]] || return 1
+  [[ -n $(vm_host status 2>/dev/null | sed -n 's/^tilo-sh-vm-host-0 *running$/running/p') ]]
+}
 
 # Who the server is and where it is dialled, as it wrote it in its state when its browser
 # listener started (the web entry's `TILO_WEB_HOME_HOST_INFO`).
