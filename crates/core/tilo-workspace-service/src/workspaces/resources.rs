@@ -1684,6 +1684,14 @@ impl Workspaces {
         {
             return Ok(envelopes);
         }
+        // Which version of the app the write was made with, and which the workspace runs: a
+        // write that waits for its app's surface is told apart by them.
+        let surface = |hash: Option<[u8; 32]>| hash.map_or_else(|| "none".to_owned(), hex::encode);
+        let versions = format!(
+            "the write names surface {}, the workspace runs {}",
+            surface(envelopes.last().and_then(|envelope| envelope.surface)),
+            surface(candidate.running_surface(app)),
+        );
         let opened = candidate
             .publication()
             .opened_document(app, document, &mut keys.open())?
@@ -1692,7 +1700,7 @@ impl Workspaces {
                 // that its document does not open leaves the reason nowhere.
                 format!(
                     "the workspace took no write of {document} of {app}: {decided}, held back {} \
-                     (waiting for {}), duplicate {}, refused {}",
+                     (waiting for {}), duplicate {}, refused {}; {versions}",
                     taken.deferred,
                     taken.incomplete.as_deref().unwrap_or("nothing"),
                     taken.duplicate,

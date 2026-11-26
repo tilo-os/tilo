@@ -218,6 +218,19 @@ impl Surfaces {
         self.arrived();
     }
 
+    /// The type the system declares for `kind` when it is a workspace record the system keeps for
+    /// `app` ([`Self::declare_system`]): what judges that record's writes on every device, whatever
+    /// version of `app` a change names. Another app's record of that kind is no such record.
+    #[must_use]
+    pub fn system_resource(&self, app: &str, kind: &str) -> Option<Surface> {
+        self.system
+            .lock_recover()
+            .get(app)?
+            .iter()
+            .find(|resource| resource.kind == kind)
+            .cloned()
+    }
+
     /// Whether `kind` is a workspace record the system keeps ([`Self::declare_system`]).
     #[must_use]
     pub fn keeps_system(&self, kind: &str) -> bool {

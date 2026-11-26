@@ -240,6 +240,19 @@ impl SurfaceSource for ContentSurfaces {
         kind: Option<&str>,
         named: Option<&[u8; 32]>,
     ) -> Option<Arc<dyn ReceiptSurface>> {
+        // A record the system keeps for its app is judged by the type the system declares for it,
+        // on every device and whatever version of the app the change names: the app's package
+        // does not declare it ([`crate::app_surface::Surfaces::register_package`]). No package
+        // judges such a kind, so another app's record of it finds no surface here.
+        if let Some(kind) = kind {
+            let known = crate::app_surface::Surfaces::process();
+            if let Some(kept) = known.system_resource(document.app, kind) {
+                return Some(Arc::new(KindSurface(kept)));
+            }
+            if known.keeps_system(kind) {
+                return None;
+            }
+        }
         let file = self.file(document, named?)?;
         let surface = match kind {
             Some(kind) => file.resource(kind)?.clone(),
@@ -620,6 +633,63 @@ writes = ["document", "comments.*"]
         assert_eq!(
             *blake3::hash(canonical(&nested).as_bytes()).as_bytes(),
             PINNED_NESTED_DIGEST
+        );
+    }
+
+    /// A record the system keeps for its app is judged by the system's declaration of it, whatever
+    /// surface of the app a change names, the app's package declaring none of it; another app's
+    /// record of that kind finds no surface at all, its package's copy included.
+    #[test]
+    fn a_record_the_system_keeps_is_judged_by_its_declaration_and_only_for_its_app() {
+        const VAULT: &str = "passwords.workspace-vault";
+        let declared = tilo_surface_compile::compile(&FILE.replace("notes.page", VAULT))
+            .expect("the fixture is a surface");
+        let declared = SurfaceFile::compiled(declared.as_bytes()).expect("a surface");
+        let vault = declared
+            .resource(VAULT)
+            .expect("the vault's declaration")
+            .clone();
+        crate::app_surface::Surfaces::process().declare_system("so.tilo.passwords", vault);
+        // Both apps' packages are here, and the squatter's names the vault's kind itself.
+        let package = tilo_surface_compile::compile(FILE).expect("a surface");
+        let squatter =
+            tilo_surface_compile::compile(&FILE.replace("notes.page", VAULT)).expect("a surface");
+        let (package_hash, squatter_hash) = (
+            *blake3::hash(package.as_bytes()).as_bytes(),
+            *blake3::hash(squatter.as_bytes()).as_bytes(),
+        );
+        let source = ContentSurfaces::new(move |_, wanted| {
+            [&package, &squatter]
+                .into_iter()
+                .find(|bytes| blake3::hash(bytes.as_bytes()).to_hex().as_str() == wanted)
+                .map(|bytes| bytes.as_bytes().to_vec())
+        });
+        let record = |app| WrittenDocument {
+            workspace: "w",
+            app,
+            document: "vault",
+        };
+        assert!(
+            source
+                .surface(
+                    &record("so.tilo.passwords"),
+                    Some(VAULT),
+                    Some(&package_hash)
+                )
+                .is_some(),
+            "the vault's writes are judged by the system's declaration"
+        );
+        assert!(
+            source
+                .surface(&record("so.tilo.passwords"), Some(VAULT), None)
+                .is_some(),
+            "whatever version of Passwords they name"
+        );
+        assert!(
+            source
+                .surface(&record("test.squatter"), Some(VAULT), Some(&squatter_hash))
+                .is_none(),
+            "another app's record of the vault's kind is judged by nothing"
         );
     }
 }

@@ -945,3 +945,69 @@ async fn a_call_out_of_the_workspace_changes_nothing() {
     }
     assert_eq!(listed(""), ["Tasks"], "a refused call changed nothing");
 }
+
+/// A workspace founded on a device that runs Passwords and Files from their packages takes its
+/// first vault write and its first file, each named by the surface its app runs with, as a daemon
+/// signs them: the vault and the tree are records the system keeps, judged by the type the system
+/// declares for them, which neither package declares.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_founded_workspace_takes_its_first_vault_write_and_file_from_packaged_apps() {
+    // Deciding changes against app surfaces is the whole process's, as a daemon's is.
+    if !tilo_test_env::in_own_process_here(
+        module_path!(),
+        "a_founded_workspace_takes_its_first_vault_write_and_file_from_packaged_apps",
+    ) {
+        return;
+    }
+    let known = collab_types::app_surface::Surfaces::process();
+    crate::workspaces::person_workspace::declare_kinds(known).unwrap();
+    for (app, kind) in [
+        (crate::workspaces::vault::APP, "passwords.item"),
+        (FILES_APP, "files.folder-view"),
+    ] {
+        let surface = format!(
+            r#"{{"format":2,"resources":[{{"fields":[{{"path":"title","type":"text"}}],"kind":"{kind}","label":"Item","verbs":[{{"id":"type","kind":"undoable"}}],"version":1}}]}}"#
+        );
+        known.register_package(app, surface.as_bytes());
+        assert!(known.hash_of(app).is_some(), "{app} runs from its package");
+    }
+    tilo_peer_state::decide_with_surfaces(
+        collab_types::Surfaces::from_source(Arc::new(collab_types::surface::ContentSurfaces::new(
+            |record, hash| {
+                let running = collab_types::app_surface::hash_of(record.app)?;
+                (hex::encode(running) == hash)
+                    .then(|| collab_types::app_surface::bytes_of(record.app).map(<[u8]>::to_vec))
+                    .flatten()
+            },
+        ))),
+        collab_types::app_surface::hash_of,
+    );
+
+    let put = fixture().await;
+    let opened = put.workspaces.open_vault(&put.name).await.unwrap();
+    let entry = accounts::SecretItem::login("Example", "ada", "correct horse battery staple");
+    put.workspaces
+        .write_vault(
+            &opened,
+            vec![accounts::vault_items::VaultChange::Keep(entry.clone())],
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let vault = put.workspaces.open_vault(&put.name).await.unwrap();
+    assert_eq!(vault.entries().len(), 1, "{vault:?}");
+    assert_eq!(vault.entries()[0].0, entry);
+
+    let note = b"first file";
+    let content = put_content(&put.shelf, put.workspace, note);
+    let answer = put
+        .put(&json!({"content": content, "name": "first.txt"}))
+        .unwrap();
+    assert_eq!(answer["path"], "first.txt", "{answer}");
+    let tree = tree_of(&put.workspaces, &put.name).await;
+    assert!(
+        file_at(&tree, "", "first.txt").is_some(),
+        "the file is in the workspace's tree"
+    );
+}
