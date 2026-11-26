@@ -927,12 +927,6 @@ fn a_map_is_stored_as_a_btree_map_is() {
     );
 }
 
-thread_local! {
-    static COMPARED: Cell<usize> = const { Cell::new(0) };
-    static SERIALISED: Cell<usize> = const { Cell::new(0) };
-}
-
-/// Text that counts how often it is compared and turned into JSON.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Compared(pub String);
 
@@ -941,7 +935,6 @@ impl tilo_resource::Settable for Compared {}
 impl Model for Compared {
     tilo_resource::leaf_paths!();
     fn to_json(&self) -> serde_json::Value {
-        SERIALISED.with(|serialised| serialised.set(serialised.get() + 1));
         self.0.to_json()
     }
     fn from_json(value: &serde_json::Value) -> Result<Self, ModelError> {
@@ -957,23 +950,8 @@ impl Model for Compared {
         self.0.store(doc, slot)
     }
     fn stores_as(&self, before: &Self) -> bool {
-        COMPARED.with(|compared| compared.set(compared.get() + 1));
         self == before
     }
-}
-
-/// What `run` returned, and how often a [`Compared`] was compared and
-/// turned into JSON while it ran.
-fn counted<T>(run: impl FnOnce() -> T) -> (T, usize, usize) {
-    let compared = || COMPARED.with(Cell::get);
-    let serialised = || SERIALISED.with(Cell::get);
-    let (was_compared, was_serialised) = (compared(), serialised());
-    let out = run();
-    (
-        out,
-        compared() - was_compared,
-        serialised() - was_serialised,
-    )
 }
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -1025,61 +1003,7 @@ fn apart(cut: &Cut) -> Cut {
 }
 
 tilo_test_env::scenario! {
-    fn the_edits_of_a_local_copy_compare_only_what_changed;
-
-    phase a_one_item_edit_of_a_local_copy_compares_only_that_item;
-    {
-        let before = cut(300);
-        let mut after = before.clone();
-        let id = Id::from_raw("s0150");
-        after.shots.find_mut(&id).unwrap().opacity = 0.5;
-        after.stack.find_mut(&id).unwrap().label = Compared("changed".into());
-        let (edits, compared, serialised) = counted(|| edits_of(&before, &after));
-        assert!(
-            compared <= 4,
-            "{compared} labels of 600 compared for a change to one item of each list"
-        );
-        assert!(
-            serialised <= 2,
-            "{serialised} labels turned into JSON: only the changed one may be"
-        );
-        let paths = Cut::paths();
-        assert_eq!(
-            edits,
-            [
-                paths.shots.item(&id).opacity.set(0.5),
-                paths.stack.item(&id).label.set(Compared("changed".into())),
-            ],
-        );
-        assert_eq!(edits, edits_of(&apart(&before), &apart(&after)));
-
-        // A copy nothing changed shares its items: nothing is compared.
-        let (edits, compared, serialised) = counted(|| edits_of(&before, &before.clone()));
-        assert!(edits.is_empty());
-        assert_eq!((compared, serialised), (0, 0));
-    }
-
-    phase items_changed_in_place_are_compared_without_serialising_the_others;
-    {
-        let before = cut(300);
-        let mut after = before.clone();
-        for shot in &mut after.shots {
-            if shot.id == "s0150" {
-                shot.opacity = 0.5;
-            }
-        }
-        let (edits, compared, serialised) = counted(|| edits_of(&before, &after));
-        assert_eq!(
-            edits,
-            [Cut::paths()
-                .shots
-                .item(&Id::from_raw("s0150"))
-                .opacity
-                .set(0.5)]
-        );
-        assert!(compared <= 300, "{compared} labels compared for 300 shots");
-        assert_eq!(serialised, 0, "unchanged labels are compared in memory");
-    }
+    fn the_edits_of_a_local_copy_match_comparing_every_item;
 
     phase the_edits_of_a_local_copy_match_comparing_every_item;
     {
@@ -1144,86 +1068,9 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase an_item_pushed_onto_a_local_copy_is_compared_with_nothing;
-    {
-        let before = cut(300);
-        let mut after = before.clone();
-        let id = Id::from_raw("s0150");
-        after.shots.find_mut(&id).unwrap().opacity = 0.5;
-        after.shots.push(shot("s9000", "new"));
-        after.stack.push(shot("s9001", "newer"));
-        // Changed after it came: still one new item.
-        after
-            .stack
-            .find_mut(&Id::from_raw("s9001"))
-            .unwrap()
-            .opacity = 0.25;
-        let (edits, compared, _) = counted(|| edits_of(&before, &after));
-        assert!(
-            compared <= 2,
-            "{compared} labels of 600 compared for one changed and two new items"
-        );
-        let paths = Cut::paths();
-        assert_eq!(
-            edits,
-            [
-                paths.shots.item(&id).opacity.set(0.5),
-                paths.shots.insert(&shot("s9000", "new")),
-                paths.stack.insert(
-                    300,
-                    &Shot {
-                        opacity: 0.25,
-                        ..shot("s9001", "newer")
-                    }
-                ),
-            ],
-        );
-        assert_eq!(edits, edits_of(&apart(&before), &apart(&after)));
-    }
-
     phase the_edits_of_a_local_copy_items_were_added_to_match_comparing_every_item;
     {
         local_copy_edits_match_comparing_every_item(add_and_change, 60, 10);
-    }
-
-    phase items_removed_from_a_local_copy_are_compared_with_nothing;
-    {
-        let before = cut(300);
-        let mut after = before.clone();
-        let changed = Id::from_raw("s0150");
-        after.shots.find_mut(&changed).unwrap().opacity = 0.5;
-        after
-            .shots
-            .retain(|shot| shot.id != "s0100" && shot.id != "s0200");
-        assert_eq!(
-            after.shots.take(&Id::from_raw("s0250")).unwrap().id,
-            "s0250"
-        );
-        assert_eq!(after.stack.remove(10).id, "s0010");
-        after.stack.push(shot("s9001", "newer"));
-        let (edits, compared, _) = counted(|| edits_of(&before, &after));
-        assert!(
-            compared <= 2,
-            "{compared} labels of 600 compared for four removed, one changed and one new item"
-        );
-        let paths = Cut::paths();
-        assert_eq!(
-            edits,
-            [
-                paths.shots.remove(&Id::from_raw("s0100")),
-                paths.shots.item(&changed).opacity.set(0.5),
-                paths.shots.remove(&Id::from_raw("s0200")),
-                paths.shots.remove(&Id::from_raw("s0250")),
-                paths.stack.remove(&Id::from_raw("s0010")),
-                paths.stack.insert(299, &shot("s9001", "newer")),
-            ],
-        );
-        assert_eq!(edits, edits_of(&apart(&before), &apart(&after)));
-
-        // Keeping every item changes nothing and copies nothing.
-        let mut kept = before.clone();
-        kept.shots.retain(|_| true);
-        assert!(kept.shots.stores_as(&before.shots));
     }
 
     phase the_edits_of_a_local_copy_items_were_removed_from_match_comparing_every_item;

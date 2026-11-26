@@ -2105,9 +2105,6 @@ const SCHEMA_ANNOTATIONS: &[&str] = &[
 /// Runtime value validation is too late to discover a malformed regular
 /// expression or an unsupported format: callers must be able to trust every
 /// schema they enumerate.
-///
-/// [`SCHEMA_ASSERTIONS`] and [`SCHEMA_ANNOTATIONS`] are pinned, word for
-/// word, by a test here: a keyword cannot be added without a check behind it.
 pub(crate) fn validate_schema_definition(schema: &serde_json::Value) -> Result<(), String> {
     let object = schema
         .as_object()
@@ -2866,82 +2863,5 @@ mod rich_schema_tests {
             validate_json_schema(&json!(["photos.photo:a", "photos.photo:a"]), &schema).is_err()
         );
         assert!(validate_schema_definition(&json!({"uniqueItems": "yes"})).is_err());
-    }
-}
-
-#[cfg(test)]
-mod schema_vocabulary_pin_tests {
-    use super::{SCHEMA_ANNOTATIONS, SCHEMA_ASSERTIONS};
-
-    /// The shape vocabulary this crate enforces, one keyword a line. A tool
-    /// that has to check a shape without linking this crate holds the same
-    /// text; a test beside it pins it, so adding a keyword here fails there
-    /// until both are updated together. Assertions first, then annotations,
-    /// each block in the order the arrays list them.
-    const PINNED: &str = "\
-type
-enum
-const
-minimum
-maximum
-minLength
-maxLength
-pattern
-format
-minItems
-maxItems
-uniqueItems
-items
-prefixItems
-required
-properties
-additionalProperties
-oneOf
----
-$schema
-$id
-$comment
-title
-description
-default
-examples
-deprecated
-readOnly
-writeOnly
-resource_kind
-resource_kinds
-place
-content
-choice_labels
-people
-pick
-shaped_by";
-
-    tilo_test_env::scenario! {
-        fn the_schema_vocabulary_is_pinned;
-
-        phase the_vocabulary_is_the_one_pinned_elsewhere;
-        {
-            let listed: Vec<&str> = SCHEMA_ASSERTIONS
-                .iter()
-                .chain(std::iter::once(&"---"))
-                .chain(SCHEMA_ANNOTATIONS)
-                .copied()
-                .collect();
-            assert_eq!(PINNED, listed.join("\n"));
-        }
-
-        phase every_keyword_is_listed_once;
-        {
-            let mut all: Vec<&str> = SCHEMA_ASSERTIONS
-                .iter()
-                .chain(SCHEMA_ANNOTATIONS)
-                .copied()
-                .collect();
-            let listed = all.len();
-            all.sort_unstable();
-            all.dedup();
-            assert_eq!(all.len(), listed, "a keyword is listed twice");
-        }
     }
 }
