@@ -236,7 +236,7 @@ impl crate::services::AgentSessions for Native {
     }
 }
 struct Fixture {
-    home: crate::test_support::ProvisionedHome,
+    _home: crate::test_support::ProvisionedHome,
     _fanout: Arc<FanoutState>,
     native: Arc<Native>,
     state: Arc<AppBrokerState>,
@@ -350,7 +350,7 @@ impl Fixture {
             },
         );
         Self {
-            home,
+            _home: home,
             _fanout: fanout,
             native,
             state,

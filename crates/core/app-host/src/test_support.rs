@@ -144,7 +144,11 @@ pub struct ProvisionedHome {
 
 impl ProvisionedHome {
     /// Provision this process a daemon's home and take its device key.
-    #[allow(clippy::unwrap_used, reason = "a fixture failing is its test failing")]
+    #[allow(
+        clippy::unwrap_used,
+        clippy::expect_used,
+        reason = "a fixture failing is its test failing"
+    )]
     pub fn new() -> Self {
         let home = tilo_test_env::TestHome::new().unwrap();
         let identity = home.root().join("identity");
@@ -170,6 +174,12 @@ impl ProvisionedHome {
     #[must_use]
     pub fn root(&self) -> &std::path::Path {
         self.home.root()
+    }
+}
+
+impl Default for ProvisionedHome {
+    fn default() -> Self {
+        Self::new()
     }
 }
 

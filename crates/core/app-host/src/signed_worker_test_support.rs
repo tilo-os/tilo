@@ -318,7 +318,7 @@ pub struct OriginalWorkspace {
     _clock: crate::policy_clock::OwnerPolicyClock,
     _owner_mailbox: crate::test_owner::writes::OwnerCommitMailbox,
     /// The host's home and device key, kept for as long as the host lives.
-    home: crate::test_support::ProvisionedHome,
+    _home: crate::test_support::ProvisionedHome,
 }
 
 impl OriginalWorkspace {
@@ -453,7 +453,7 @@ impl OriginalWorkspace {
             directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
             _clock: clock,
             _owner_mailbox: owner_mailbox,
-            home,
+            _home: home,
         }
     }
 
