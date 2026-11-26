@@ -36,6 +36,9 @@ mod external_moderation_rpc_tests {
     struct Workspace {
         original: signed_worker::OriginalWorkspace,
         route: CrdtRoute,
+        /// The session's fanout the broker answers a directory ask through: a broker holds it
+        /// only weakly, so the fixture keeps it alive for as long as its workspace lives.
+        _fanout: Arc<FanoutState>,
         state: Arc<AppBrokerState>,
         directories: Rc<LocalActionDirectoryRegistry>,
         /// The store the calls this app makes that wait for its person are kept in, as the
@@ -160,6 +163,9 @@ mod external_moderation_rpc_tests {
                 None,
                 services,
             );
+            // The session's fanout holds the broker that is live now: a directory ask resolves
+            // it when it is made, so the broker this fixture opens must be the one it names.
+            fanout.attach_app_broker(Arc::clone(&state));
             let authority = signed_worker::CurrentHost::new(
                 &route,
                 &original.cert,
@@ -176,6 +182,7 @@ mod external_moderation_rpc_tests {
             let me = Self {
                 original,
                 route,
+                _fanout: fanout,
                 state,
                 directories: Rc::new(LocalActionDirectoryRegistry::new(bridge)),
                 asked,
