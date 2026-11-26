@@ -82,7 +82,7 @@ test-support = [
 
 [dev-dependencies]
 # Turns on `test-support` for this package's own tests. The key must not be the package name.
-mail-test-support = { package = "tilolang-mail", path = ".", features = ["test-support"] }
+tilolang-mail = { path = ".", features = ["test-support"] }
 
 [lints]
 workspace = true

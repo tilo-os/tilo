@@ -30,7 +30,7 @@ fake-server = ["dep:test-http", "dep:base64"]
 [dev-dependencies]
 cloud-source = { package = "tilo-cloud-source", path = "../cloud-source", features = ["conformance"] }
 # The conformance run needs the fake server of this very crate.
-cloud-source-dav = { package = "tilo-cloud-source-dav", path = ".", features = ["fake-server"] }
+tilo-cloud-source-dav = { path = ".", features = ["fake-server"] }
 test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 zeroize.workspace = true
 

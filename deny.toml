@@ -8,13 +8,17 @@
 # dependency edges members really have, so `workspace` scoped advisories stay
 # about direct dependencies.
 #
-# The apps are pruned for a different reason: each turns its own `samples`
-# feature on for its tests through a renamed dev-dependency on itself, and
-# cargo-deny's graph builder (krates) cannot resolve a dependency whose manifest
-# key is not the package name — it aborts before checking anything. Pruning them
-# costs no coverage: every crate they depend on is also reachable from the rest
-# of the workspace, so license, advisory, ban and source checks still see all of
-# them.
+# Some crates are pruned for a different reason: each turns a feature on for its
+# own tests through a dev-dependency on itself, and cargo-deny's graph builder
+# (krates) cannot resolve a dependency whose manifest key is not the package
+# name — it aborts before checking anything. A crate whose dev-dependency is
+# keyed by its own name resolves, so the connectors key theirs that way; these
+# name theirs apart because a package-qualified feature (`terminal/thin`,
+# `tilolang-process/thin`, `tilo-session/dev-overrides`) would otherwise enable
+# the dev-dependency's feature and change what a shipped build links. Pruning
+# them costs no coverage: every crate they depend on is also reachable from the
+# rest of the workspace, so license, advisory, ban and source checks still see
+# all of them.
 [graph]
 exclude = [
     "workspace-hack",
@@ -28,6 +32,8 @@ exclude = [
     "photos",
     "remote",
     "shortcuts",
+    "tilo-session",
+    "tilolang-process",
 ]
 
 [advisories]

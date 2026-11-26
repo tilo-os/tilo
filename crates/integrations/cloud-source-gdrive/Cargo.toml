@@ -40,7 +40,7 @@ fake-server = ["dep:test-http", "dep:md-5", "dep:sha1", "dep:sha2", "dep:hex"]
 [dev-dependencies]
 cloud-source = { package = "tilo-cloud-source", path = "../cloud-source", features = ["conformance"] }
 # The conformance run needs the fake server of this very crate.
-cloud-source-gdrive = { package = "tilo-cloud-source-gdrive", path = ".", features = ["fake-server"] }
+tilo-cloud-source-gdrive = { path = ".", features = ["fake-server"] }
 tilo-net = { version = "0.1.0", path = "../../platform/tilo-net", features = ["blocking"] }
 tilo-test-env = { path = "../../../tools/test-env" }
 uuid.workspace = true

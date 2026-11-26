@@ -40,7 +40,7 @@ fake-server = ["dep:test-http", "dep:tilo-crypto"]
 [dev-dependencies]
 cloud-source = { package = "tilo-cloud-source", path = "../cloud-source", features = ["conformance"] }
 # The conformance run needs the fake server of this very crate.
-cloud-source-icloud = { package = "tilo-cloud-source-icloud", path = ".", features = ["fake-server"] }
+tilo-cloud-source-icloud = { path = ".", features = ["fake-server"] }
 
 [lints]
 workspace = true

@@ -46,7 +46,7 @@ client = ["dep:reqwest", "dep:tilo-net"]
 
 [target.'cfg(not(target_family = "wasm"))'.dev-dependencies]
 # Exercise `http::blocking_client` in this crate's own test run.
-cloud-source = { package = "tilo-cloud-source", path = ".", features = ["client"] }
+tilo-cloud-source = { path = ".", features = ["client"] }
 test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 
 [lints]
