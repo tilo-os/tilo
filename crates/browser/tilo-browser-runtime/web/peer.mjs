@@ -1123,6 +1123,11 @@ async function connect({
     /** This person's new devices waiting at the host, paired with the root
      * the page holds over this session (`PairingHost`: `pending`, `answer`). */
     pairing: () => peer.pairing(),
+    /** Approve the computer that asked with a ticket this tab's host serves: `root` is the
+     * person's root this page holds (an unlocked identity), and `asked` the question the host
+     * handed the page. Resolves to the `Approved` JSON the host checks with `check_approval`
+     * before it answers the computer. */
+    approveAsked: (root, asked) => peer.approveAsked(root, asked),
     /** The person's own workspace on this host, with this very device in it
      * (the shared device entry, `enterOwnWorkspace` in wasm): made the first
      * time under an id the host chooses, answered again after, another for

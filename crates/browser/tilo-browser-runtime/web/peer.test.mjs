@@ -122,6 +122,9 @@ function fakeRuntime({phase = 'ready'} = {}) {
           takeDurableEvents: () => JSON.stringify(durable.splice(0)),
           /** This page's device key: the publisher the workspace knows it by. */
           deviceKey: () => SELF,
+          /** The host's question about a computer a ticket brought, answered with the root the
+           * page holds: what the page's peer passes its session's own answer back from. */
+          approveAsked: async (root, asked) => JSON.stringify({root: root.userPublicKey, asked: JSON.parse(asked)}),
           said: [], published: [], left: [], previews: [], endedPreviews: [],
           /** The page's word of itself: the board keeps it and says what changed. */
           sayPresence(workspace, value) { const said = JSON.parse(value); peer.said.push({workspace, value: said}); peer.published.push(said); return 0; },
@@ -551,6 +554,16 @@ test('a page holding the root certifies itself, with no pairing code, and renews
   assert.equal(runtime.calls.certify.length, 2, 'one about to expire is issued anew');
   await renewed.dispose();
   await assert.rejects(connect(options(runtime, store, {userPublicKey: 'cc'.repeat(32), identity})), TypeError);
+});
+
+test('a page holding the root approves the computer a ticket brought, through its peer', async () => {
+  const runtime = fakeRuntime();
+  const identity = {kind: 'webcrypto-ed25519', publicKey: new Uint8Array(32).fill(0xbb), userPublicKey: 'bb'.repeat(32), sign: async () => new Uint8Array(64)};
+  const peer = await connect(options(runtime, memoryStore(), {userPublicKey: undefined, identity}));
+  assert.equal(typeof peer.approveAsked, 'function', 'the page peer offers the host’s question to the root this tab holds');
+  const approved = JSON.parse(await peer.approveAsked(identity, JSON.stringify({user_public_key: identity.userPublicKey})));
+  assert.deepEqual(approved, {root: identity.userPublicKey, asked: {user_public_key: identity.userPublicKey}});
+  await peer.dispose();
 });
 
 test('a member page joins its workspace as one device of it, and leaves it', async () => {
