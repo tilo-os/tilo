@@ -474,7 +474,10 @@ fn trigger_of(text: &str) -> Result<TriggerSpec, String> {
     if let Some(rest) = text.strip_prefix("when a ") {
         return quoted_change(rest);
     }
-    Err(format!("`{text}` is not a trigger"))
+    Err(format!(
+        "`{text}` is not a trigger: a trigger starts with `once at`, `every` or `when`: \
+         `once at 2026-11-17T11:32:00Z`, `every day at 09:00`"
+    ))
 }
 
 /// A message arriving, from the app and the person it names. `app_id` is the
