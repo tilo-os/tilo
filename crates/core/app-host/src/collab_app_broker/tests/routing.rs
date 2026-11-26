@@ -191,7 +191,7 @@ async fn a_native_context_subscriber_is_told_where_the_members_are() {
         crate::test_support::WorkspaceId::from_u128(57),
         "Studio",
     );
-    workspace.policy.set_owner(person.clone());
+    workspace.policy.set_owner(person);
     let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
@@ -272,7 +272,7 @@ async fn a_native_context_refuses_a_noncanonical_agent_identity() {
         crate::test_support::WorkspaceId::from_u128(58),
         "Studio",
     );
-    workspace.policy.set_owner(person.clone());
+    workspace.policy.set_owner(person);
     let _ = workspace.allow_agent("Not Canonical", crate::test_support::KindSet::READ);
     let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree::default();

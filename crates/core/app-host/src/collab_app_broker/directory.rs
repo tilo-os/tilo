@@ -128,7 +128,7 @@ impl DirectoryReply {
     /// action or frame is busy, not gone. `Err(TimedOut)` once the asker's
     /// patience ran out, `Err(Refused)` once it stopped asking.
     pub(super) async fn awaited<T>(
-        &mut self,
+        &self,
         answer: impl std::future::Future<Output = T>,
     ) -> Result<T, ActionDirectoryBridgeError> {
         await_while_asked(
@@ -206,7 +206,7 @@ mod directory_patience_tests {
             .await;
             assert_eq!(hung, Err(ActionDirectoryBridgeError::TimedOut));
 
-            let mut reply = DirectoryReply(completer);
+            let reply = DirectoryReply(completer);
             drop(answer);
             let abandoned = tilo_test_env::within(
                 "an abandoned asker stops the wait",
@@ -229,7 +229,7 @@ mod directory_patience_tests {
     pub(super) async fn directory_wait_ends_immediately_when_asker_drops() {
         let (completer, answer) =
             tilo_actions::remote::pending::<super::ActionDirectoryBridgeReply>();
-        let mut reply = DirectoryReply(completer);
+        let reply = DirectoryReply(completer);
         let started = tokio::time::Instant::now();
         let owner_never_answers = reply.awaited(std::future::pending::<()>());
         tokio::pin!(owner_never_answers);
@@ -1052,7 +1052,7 @@ impl AppBrokerState {
                         actor,
                         cluster_id,
                         query,
-                        mut reply,
+                        reply,
                     } => {
                         if reply.is_closed() {
                             return;
@@ -1086,7 +1086,7 @@ impl AppBrokerState {
                         revision,
                         resource,
                         action,
-                        mut reply,
+                        reply,
                     } => {
                         if reply.is_closed() {
                             return;
@@ -1276,7 +1276,7 @@ impl AppBrokerState {
                 Ok(resolution) => return Ok(resolution),
                 Err(Unserved::Refused(reason)) => return Err(reason),
                 // A resolution names no page, so no continuation is stale here.
-                Err(Unserved::Stale) | Err(Unserved::BetweenRevisions) => {
+                Err(Unserved::Stale | Unserved::BetweenRevisions) => {
                     tokio::time::sleep(DIRECTORY_REPUBLISH_PAUSE).await;
                 }
             }

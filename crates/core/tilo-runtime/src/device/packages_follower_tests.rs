@@ -334,11 +334,11 @@ fn an_install_through_the_cache_names_the_apps_actions_now() {
     let surface = collab_types::app_surface::bytes_of(APP)
         .expect("the app's surface is known here as soon as it installs");
     assert!(
-        std::str::from_utf8(&surface)
+        std::str::from_utf8(surface)
             .unwrap()
             .contains("sheets.book"),
         "its types and actions are the ones its package ships: {}",
-        String::from_utf8_lossy(&surface)
+        String::from_utf8_lossy(surface)
     );
 }
 

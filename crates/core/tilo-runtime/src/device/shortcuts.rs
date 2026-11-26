@@ -135,7 +135,7 @@ async fn store_shortcut(
                          in: name it after the time, as `every day at 08:00 in Europe/Berlin`",
                     )?);
                 }
-                *unzoned = zone.clone();
+                unzoned.clone_from(&zone);
             }
             // A trigger this device cannot watch would be saved into a shortcut that never
             // runs: the person is told now.

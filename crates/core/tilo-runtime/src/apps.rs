@@ -1041,8 +1041,10 @@ fn watch_end(app: &str, launch: Launch) {
     let status = launch.wait();
     let said = stderr
         .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let said = said.trim();
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .trim()
+        .to_owned();
+    let said = said.as_str();
     match &status {
         Some(status) if status.success() => {
             tracing::info!(app, pid, %status, said, "an app ended");

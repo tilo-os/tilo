@@ -76,11 +76,6 @@ impl HostWorkers {
     }
 
     #[cfg(test)]
-    pub(super) fn is_empty(&self) -> bool {
-        self.0.is_empty()
-    }
-
-    #[cfg(test)]
     pub(super) fn insert(&mut self, peer: u64, route: CrdtRoute, admitted: AdmittedJoinIdentity) {
         self.0.entry(peer).or_default().insert(route, admitted);
     }

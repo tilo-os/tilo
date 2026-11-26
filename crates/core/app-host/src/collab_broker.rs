@@ -597,11 +597,6 @@ impl AppActionBroker {
         });
     }
 
-    /// Bounded, nonblocking bridge from shell chrome into the broker's
-    /// `LocalSet`-owned application directory capabilities. Palette code must
-    /// poll the returned oneshot in its cache owner; it must never block a
-    /// compositor frame on a broker round trip.
-    #[must_use]
     /// A local action api bound to an already-issued signed workspace admission and
     /// one host-issued execution. No device is enrolled and no grant is minted.
     pub fn certified_local_action_provider(

@@ -2066,24 +2066,29 @@ fn workspace_members(
         let who = tilo_actions::Actor::Member(tilo_actions::MemberId::Person(
             tilo_actions::PersonId::from(person.as_str()),
         ));
-        let mut row = serde_json::json!({
-            "actor": serde_json::to_value(&who).map_err(|error| error.to_string())?,
-            "name": member.name,
-            "removed": member.removed,
-        });
+        let mut row = serde_json::Map::new();
+        row.insert(
+            "actor".into(),
+            serde_json::to_value(&who).map_err(|error| error.to_string())?,
+        );
+        row.insert("name".into(), serde_json::json!(member.name));
+        row.insert("removed".into(), serde_json::json!(member.removed));
         if let Some(role) = member.role {
-            row["role"] = serde_json::to_value(role).map_err(|error| error.to_string())?;
+            row.insert(
+                "role".into(),
+                serde_json::to_value(role).map_err(|error| error.to_string())?,
+            );
         }
         if let Some(joined) = policy.joined_at(&person) {
-            row["joined_at"] = serde_json::json!(joined);
+            row.insert("joined_at".into(), serde_json::json!(joined));
         }
         if let Some(photo) = workspaces
             .person_profile_photo(&root)
             .and_then(|bytes| collab_types::photo_url(&bytes))
         {
-            row["photo"] = serde_json::json!(photo);
+            row.insert("photo".into(), serde_json::json!(photo));
         }
-        rows.push(row);
+        rows.push(serde_json::Value::Object(row));
     }
     for (agent, _) in policy.agent_members_at(now) {
         let id = agent.id().to_owned();
@@ -2093,20 +2098,25 @@ fn workspace_members(
         let named = agents
             .iter()
             .find(|named| named.id == id && named.acts_for == acts_for);
-        let mut row = serde_json::json!({
-            "actor": serde_json::to_value(tilo_actions::Actor::Member(agent.clone()))
+        let mut row = serde_json::Map::new();
+        row.insert(
+            "actor".into(),
+            serde_json::to_value(tilo_actions::Actor::Member(agent.clone()))
                 .map_err(|error| error.to_string())?,
-            "name": named.map_or_else(|| id.clone(), |named| named.name.clone()),
-            "removed": false,
-        });
+        );
+        row.insert(
+            "name".into(),
+            serde_json::json!(named.map_or_else(|| id.clone(), |named| named.name.clone())),
+        );
+        row.insert("removed".into(), serde_json::json!(false));
         if let Some(photo) = named
             .and_then(|named| named.avatar.as_deref())
             .and_then(collab_types::avatar_of)
             .and_then(|avatar| collab_types::photo_url(&avatar.0))
         {
-            row["photo"] = serde_json::json!(photo);
+            row.insert("photo".into(), serde_json::json!(photo));
         }
-        rows.push(row);
+        rows.push(serde_json::Value::Object(row));
     }
     // The workspace's installed bots: the grants it made them name them, and a bot reads what
     // they allow it through the host that runs it.

@@ -101,13 +101,14 @@ impl AudioLane {
             .map_err(|reason| ActionCallError::Refused {
                 reason: reason.to_owned(),
             })?;
-        let future = self.connection.output(request.clone(), samples);
+        let kept = request.clone();
+        let future = self.connection.output(request, samples);
         let result = block_on_owned(async move {
             tokio::time::timeout(DEADLINE, future)
                 .await
                 .map_err(|_| "Governed audio output timed out".to_string())?
         });
-        self.evidence.lock_recover().record(&request, &result);
+        self.evidence.lock_recover().record(&kept, &result);
         result.map_err(|reason| ActionCallError::Unavailable { reason })
     }
 }
@@ -238,7 +239,7 @@ mod tests {
             device: &mut Device,
             capacity: usize,
             lockdown: bool,
-            request: Request,
+            request: &Request,
             samples: Vec<i16>,
         ) -> Result<Snapshot, String> {
             if !request.valid()
@@ -250,7 +251,7 @@ mod tests {
             {
                 return Err("invalid audio output command".into());
             }
-            if !matches!(request, Request::Open {}) && !request_matches(&request, device.generation)
+            if !matches!(request, Request::Open {}) && !request_matches(request, device.generation)
             {
                 return Err("stale audio output generation".into());
             }
@@ -276,10 +277,10 @@ mod tests {
                         return Ok(Self::snapshot(device));
                     }
                     device.queued.extend(samples.iter().copied());
-                    device.accepted = sequence;
+                    device.accepted = *sequence;
                     device.received.push(samples);
                 }
-                Request::Pause { paused, .. } => device.paused = paused,
+                Request::Pause { paused, .. } => device.paused = *paused,
                 Request::Flush { .. } => device.queued.clear(),
                 Request::Close { .. } => {
                     device.closed = true;
@@ -323,7 +324,7 @@ mod tests {
                     &mut device,
                     self.capacity,
                     self.lockdown.load(Ordering::Acquire),
-                    request,
+                    &request,
                     samples,
                 )
             });
@@ -331,9 +332,11 @@ mod tests {
         }
 
         fn disconnect(&self, _peer_id: u64) {
-            let mut device = self.state.lock().expect("the fake output");
-            device.closed = true;
-            device.queued.clear();
+            {
+                let mut device = self.state.lock().expect("the fake output");
+                device.closed = true;
+                device.queued.clear();
+            }
             self.disconnects.fetch_add(1, Ordering::AcqRel);
         }
     }

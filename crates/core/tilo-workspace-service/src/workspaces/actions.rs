@@ -61,10 +61,10 @@ use tilo_actions::remote::{
     WORKSPACE_GOVERNANCE_KIND, WORKSPACE_GOVERNANCE_PROVIDER, WORKSPACE_GRANT_REVOKE,
     WORKSPACE_INVITATIONS, WORKSPACE_INVITE, WORKSPACE_MEMBER_PLACED, WORKSPACE_MEMBER_REMOVED,
     WORKSPACE_MEMBERS, WORKSPACE_READ_GRANT, WORKSPACE_READ_REVOKE, WORKSPACE_REGISTRIES,
-    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, formats, mcp_server,
-    person_telling, person_vault, server_account, workspace_app, workspace_app_named,
-    workspace_governance_address, workspace_governance_child, workspace_governance_operation,
-    workspace_governance_resource, workspace_member, workspace_person,
+    WORKSPACE_SERVERS, WORKSPACE_TRUST, WORKSPACE_WAITING, formats, mcp_server, person_telling,
+    person_vault, server_account, workspace_app, workspace_app_named, workspace_governance_address,
+    workspace_governance_child, workspace_governance_operation, workspace_governance_resource,
+    workspace_member, workspace_person,
 };
 use tilo_actions::{
     ActionAddress, ActionContract, ActionDescriptor, ActionKind, ActionParam, ExecutionLocus,
@@ -1345,7 +1345,7 @@ fn action_row(
             locus: ExecutionLocus::ServerPreferred,
             kind: OperationKind::Effect,
             contract: ActionContract {
-                kind: kind,
+                kind,
                 risk: if kind == ActionKind::Read {
                     RiskLevel::None
                 } else {

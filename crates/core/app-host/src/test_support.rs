@@ -108,6 +108,7 @@ impl WorkspaceTree {
 /// Name what signs the evidence this process's fixtures keep — one synthetic device, served once
 /// for the whole process — and open `workspaces`, the ones the fixture's host serves: a host
 /// signs the receipts of the workspaces it opens, and no others.
+#[allow(clippy::unwrap_used, reason = "a fixture failing is its test failing")]
 pub fn serve_the_test_signer(workspaces: impl IntoIterator<Item = String>) {
     static ONCE: std::sync::Once = std::sync::Once::new();
     ONCE.call_once(|| {

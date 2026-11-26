@@ -822,7 +822,8 @@ impl collab_types::signer::DeviceSigner for HeldSigner {
         self.0.verifying_key().to_bytes()
     }
     fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
-        if let Some(proceed) = self.2.lock().unwrap().take() {
+        let proceed = self.2.lock().unwrap().take();
+        if let Some(proceed) = proceed {
             let _ = self.1.send(());
             let _ = proceed.recv();
         }

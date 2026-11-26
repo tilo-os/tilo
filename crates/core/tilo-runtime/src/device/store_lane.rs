@@ -93,6 +93,7 @@ impl StoreLane {
             return Ok(None);
         }
         let changes = runs.remove(&record).unwrap_or_default();
+        drop(runs);
         Ok(Some(Command::RecordChange {
             record: Some(record),
             changes: Bytes(changes),

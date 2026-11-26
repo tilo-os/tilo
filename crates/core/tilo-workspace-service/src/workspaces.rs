@@ -3073,10 +3073,8 @@ impl Workspaces {
             tracing::warn!(workspace = %workspace.workspace(), %reason, %error, "the host did not publish a refusal of a record write");
         }
         #[cfg(feature = "device-keys")]
-        if compact {
-            if let Err(error) = self.compact_sealed_histories(workspace).await {
-                tracing::warn!(workspace = %workspace.workspace(), %error, "hosted workspace did not compact a sealed record");
-            }
+        if compact && let Err(error) = self.compact_sealed_histories(workspace).await {
+            tracing::warn!(workspace = %workspace.workspace(), %error, "hosted workspace did not compact a sealed record");
         }
         #[cfg(not(feature = "device-keys"))]
         let _ = compact;

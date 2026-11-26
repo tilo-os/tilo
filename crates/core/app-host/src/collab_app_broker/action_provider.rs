@@ -1531,7 +1531,9 @@ impl AppBrokerState {
         caller: &Caller,
         rows: &mut Vec<CatalogueRow>,
     ) {
-        for row in tilo_workspace_service::workspaces::providers::Providers::rows(registered, caller) {
+        for row in
+            tilo_workspace_service::workspaces::providers::Providers::rows(registered, caller)
+        {
             let Some(action) = row.action.as_ref() else {
                 continue;
             };
@@ -2058,7 +2060,7 @@ impl AppBrokerState {
             // Admission can sign and durably record an invocation. Keep only
             // inert ownership on the UI turn; the broker revalidates it at dispatch.
             let (reply, response) = pending();
-            return match self.action_directory_request_queue().deliver(
+            let delivered = self.action_directory_request_queue().deliver(
                 super::ActionDirectoryBridgeRequest::InvokeEager(Box::new(
                     super::EagerActionInvokeRequest {
                         caller: caller.clone(),
@@ -2069,7 +2071,8 @@ impl AppBrokerState {
                         reply,
                     },
                 )),
-            ) {
+            );
+            return match delivered {
                 Ok(()) => response,
                 Err(error) => Pending::ready(Err(bridge_error("the application", error))),
             };

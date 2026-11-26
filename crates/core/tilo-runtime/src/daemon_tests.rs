@@ -3241,11 +3241,7 @@ fn a_founding_link_is_never_an_apps_or_another_programs() {
         .to_owned();
 
     // An app of the account's gets no founding link with the secret, and makes no person.
-    let theirs = ask(
-        ADA,
-        APP,
-        json!({"native": "shells#link", "token": token.clone()}),
-    );
+    let theirs = ask(ADA, APP, json!({"native": "shells#link", "token": token}));
     assert!(
         theirs["error"]
             .as_str()
@@ -3260,7 +3256,7 @@ fn a_founding_link_is_never_an_apps_or_another_programs() {
     let linked = ask(
         ADA,
         SESSION,
-        json!({"native": "shells#link", "token": token.clone()}),
+        json!({"native": "shells#link", "token": token}),
     );
     assert_eq!(linked["founding"], true, "{linked}");
 

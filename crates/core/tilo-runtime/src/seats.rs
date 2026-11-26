@@ -364,10 +364,7 @@ enum SeatLink {
     /// The process acts for `person`: its connections may reach them, and its shell asks for
     /// their link again after a restart. `device` is whether the link was made for the person this
     /// device itself serves, whose own endpoint answers the seat rather than a key's.
-    Person {
-        person: [u8; 32],
-        device: bool,
-    },
+    Person { person: [u8; 32], device: bool },
 }
 
 /// The daemon's seats: its admission, and the device it answers for.
@@ -441,8 +438,7 @@ impl Seats {
     pub(crate) fn may_found(&self, seat: &Seat) -> Result<bool, &'static str> {
         const NOT_SIGNED_IN: &str =
             "only an account signed in on this computer starts a person on it";
-        const NOT_THE_LINK: &str =
-            "only the session this computer signed in, with the link its sign-in answered, \
+        const NOT_THE_LINK: &str = "only the session this computer signed in, with the link its sign-in answered, \
              starts a person on it";
         if seat.uid == u32::MAX || seat.app.is_some() {
             return Err(NOT_SIGNED_IN);
@@ -528,13 +524,9 @@ impl Seats {
     /// Keep that the seat `(uid, pid)` acts for `person` from now on: the session its founding
     /// link made, through the endpoint of the person `device` names when this daemon serves them.
     fn record_person(&self, uid: u32, pid: u32, person: [u8; 32], device: bool) {
-        self.links.lock_recover().insert(
-            (uid, pid),
-            SeatLink::Person {
-                person,
-                device,
-            },
-        );
+        self.links
+            .lock_recover()
+            .insert((uid, pid), SeatLink::Person { person, device });
     }
 
     /// The person the seat `(uid, pid)` acts for, when a founding link or a person's link was
@@ -601,7 +593,8 @@ impl Seats {
         // it made or joined, and once it is that person, theirs.
         let mut founding = false;
         if let Some(pid) = peer.pid.filter(|_| app.is_none()) {
-            match self.links.lock_recover().get(&(peer.uid, pid)).cloned() {
+            let link = self.links.lock_recover().get(&(peer.uid, pid)).copied();
+            match link {
                 Some(SeatLink::Founding) => {
                     founding = true;
                     // Until the account acts as a person, its session reaches only what makes
@@ -617,7 +610,10 @@ impl Seats {
                         admitted = Admitted::Founding { key };
                     }
                 }
-                Some(SeatLink::Person { person, device: true }) => {
+                Some(SeatLink::Person {
+                    person,
+                    device: true,
+                }) => {
                     admitted = Admitted::Person(person);
                     founding = true;
                 }

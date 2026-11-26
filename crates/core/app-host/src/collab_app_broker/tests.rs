@@ -351,6 +351,8 @@ impl wire::DirectorySource for TestActionDirectoryServer {
 }
 
 #[cfg(test)]
+pub(crate) use signed_worker::presentation;
+#[cfg(test)]
 mod signed_worker {
     include!("../signed_worker_test_support.rs");
 }

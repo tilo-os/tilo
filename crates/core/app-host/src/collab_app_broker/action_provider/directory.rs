@@ -490,8 +490,8 @@ pub(super) fn bridge_error(app: &str, error: ActionDirectoryBridgeError) -> Acti
         ActionDirectoryBridgeError::Refused(reason) => ActionCallError::Unavailable {
             reason: format!("{app}'s action directory refused the ask: {reason}"),
         },
-        other => ActionCallError::Unavailable {
-            reason: format!("{app}'s action directory is {other:?}"),
+        ActionDirectoryBridgeError::Busy => ActionCallError::Unavailable {
+            reason: format!("{app}'s action directory is busy"),
         },
     }
 }

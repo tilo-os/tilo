@@ -770,7 +770,8 @@ impl Providers {
         if let Some(descriptor) = registered.answers.invocation(address, argument) {
             return Some(descriptor);
         }
-        let published = |resources: &[ResourceSpec]| tilo_actions::api::described(resources, address);
+        let published =
+            |resources: &[ResourceSpec]| tilo_actions::api::described(resources, address);
         published(&registered.published)
             .or_else(|| {
                 self.0
@@ -791,7 +792,10 @@ impl Providers {
     /// What `registered` lists for `caller`, as it answers at once: a registered provider lists
     /// what it already keeps, never what it must first go and ask.
     #[must_use]
-    pub fn rows(registered: &Registered, caller: &Caller) -> Vec<tilo_actions::remote::CatalogueRow> {
+    pub fn rows(
+        registered: &Registered,
+        caller: &Caller,
+    ) -> Vec<tilo_actions::remote::CatalogueRow> {
         let mut rows = Vec::new();
         let mut query = CatalogueQuery {
             provider: Some(registered.provider.to_string()),

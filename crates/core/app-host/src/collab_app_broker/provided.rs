@@ -903,9 +903,9 @@ pub(crate) mod signed_test_support {
         AppBrokerState, BrokerChannels, DurableInvocation, FanoutState, InvocationKey,
         PeerPublisher, person_id_for_root, published_invocation::InvocationCaller,
     };
+    use crate::collab_app_broker::tests::presentation;
     use crate::services::ProcessServices;
     use crate::test_support::{Workspace, WorkspaceTree};
-    use ed25519_dalek::Signer as _;
     use std::sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -1039,20 +1039,18 @@ pub(crate) mod signed_test_support {
             );
             // A fixture in a workspace of its own founds one: a workspace no other fixture in
             // this process opened, which its host therefore signs nothing for.
-            let named = match fresh {
-                false => {
-                    tilo_peer_state::owner::testing::add_interactive_device(
-                        &owner,
-                        &key,
-                        &certificate,
-                    )
-                    .unwrap();
-                    tilo_peer_state::owner::testing::WORKSPACE.to_owned()
-                }
-                true => tilo_peer_state::owner::testing::founded(&owner, &certificate, &key)
-                    .unwrap()
-                    .to_string(),
+            let named = if fresh {
+                tilo_desktop_model::WorkspaceId::new().to_string()
+            } else {
+                tilo_peer_state::owner::testing::WORKSPACE.to_owned()
             };
+            tilo_peer_state::owner::testing::add_interactive_device_in(
+                &owner,
+                &key,
+                &certificate,
+                &named,
+            )
+            .unwrap();
             let mut workspace = Workspace::new(
                 tilo_desktop_model::WorkspaceId::parse(&named).unwrap(),
                 "Host actions",
@@ -1080,34 +1078,26 @@ pub(crate) mod signed_test_support {
                 certificate_authority: authority.clone(),
             };
             let fanout = Arc::new(FanoutState::new());
-            // A fresh fixture's host has opened nothing: its tree is handed as it is, never
-            // through the authority that serves (and so opens) a fixture's workspaces.
-            let membership = if fresh {
-                Some(Arc::new(tree.clone()) as crate::services::WorkspaceAuthorityHandle)
-            } else {
-                Some(tree.authority())
-            };
             let (state, _) = AppBrokerState::new_configured(
                 &fanout,
                 Arc::new(Mutex::new(BrokerChannels::default())),
                 publisher,
-                membership,
+                // A fresh fixture's host has opened nothing: its tree is handed as it is, never
+                // through the authority that serves (and so opens) a fixture's workspaces.
+                Some(if fresh {
+                    Arc::new(tree.clone()) as crate::services::WorkspaceAuthorityHandle
+                } else {
+                    tree.authority()
+                }),
                 None,
                 Some(&config),
                 services,
             );
-            let presentation = runtime_collab::CertifiedJoinIdentity {
-                workspace_id: workspace_id.clone(),
-                device_certificate: serde_json::to_vec(&certificate).unwrap(),
-                proof: key
-                    .sign(&tilo_identity_client::collaboration_join_digest(&workspace_id).unwrap())
-                    .to_bytes()
-                    .to_vec(),
-            }
-            .encode()
-            .unwrap();
             let verified = state
-                .verify_action_caller(&workspace_id, &presentation)
+                .verify_action_caller(
+                    &workspace_id,
+                    &presentation(&workspace_id, &certificate, &key),
+                )
                 .unwrap();
             let origin = InvocationCaller::Local {
                 route: super::super::CrdtRoute::cluster(&workspace_id),
@@ -1147,19 +1137,7 @@ pub(crate) mod signed_test_support {
             // The evidence this fixture's broker keeps is signed as the device it acts as.
             tilo_invocation_journal::serve_as(certificate.clone(), Arc::new(key.clone()));
             tilo_invocation_journal::opened(&fixture.workspace);
-            let presentation = runtime_collab::CertifiedJoinIdentity {
-                workspace_id: fixture.workspace.clone(),
-                device_certificate: serde_json::to_vec(&certificate).unwrap(),
-                proof: key
-                    .sign(
-                        &tilo_identity_client::collaboration_join_digest(&fixture.workspace)
-                            .unwrap(),
-                    )
-                    .to_bytes()
-                    .to_vec(),
-            }
-            .encode()
-            .unwrap();
+            let presentation = presentation(&fixture.workspace, &certificate, &key);
             fixture.caller =
                 Caller::authenticated(certificate.user_public_key, certificate.device_public_key)
                     .in_workspace(&fixture.workspace)

@@ -1280,15 +1280,23 @@ impl ServerAgents {
         workspace: &str,
         turn: &Turn,
     ) -> Option<Arc<tilo_workspace_service::work::Claim>> {
+        use tilo_workspace_service::work::NotTaken;
         let agent = &turn.agent.id.0;
         let Ask::Triggered(place) = &turn.ask;
         let ask = triggered::started_here(&self.workspaces, agent, place);
         match tilo_workspace_service::work::takes_turn(&self.workspaces, workspace, &ask).await {
             Ok(claim) => Some(Arc::new(claim)),
-            Err(not_taken) => {
-                tracing::debug!(%workspace, %agent, %not_taken, "this device does not take an agent's turn");
+            Err(NotTaken::Unwritten(error)) => {
+                tracing::warn!(%workspace, %agent, %error, "this device could not claim an agent's turn");
                 None
             }
+            // Another device has it, did it, or comes first; or this one may not take it.
+            Err(
+                NotTaken::TakenBy(_)
+                | NotTaken::Done(_)
+                | NotTaken::Waiting { .. }
+                | NotTaken::Ineligible(_),
+            ) => None,
         }
     }
 
@@ -1454,15 +1462,9 @@ impl ServerAgents {
                 let learned = learned::learned_for(&self.workspaces, workspace, &turn)
                     .await
                     .map(|known| learned::told(&known));
-                let told = match (
-                    learned,
-                    learned::importance_for(&self.workspaces, &turn).await,
-                ) {
-                    (None, None) => None,
-                    (learned, importance) => {
-                        Some(learned.unwrap_or_default() + &importance.unwrap_or_default())
-                    }
-                };
+                let importance = learned::importance_for(&self.workspaces, &turn).await;
+                let told = (learned.is_some() || importance.is_some())
+                    .then(|| learned.unwrap_or_default() + &importance.unwrap_or_default());
                 Box::pin(work(
                     model,
                     &scope,
@@ -1853,7 +1855,7 @@ impl TurnScope {
             }
             Ok(_) => Vec::new(),
             Err(error) => {
-                tracing::debug!(workspace = %self.workspace, %error, "a turn's conversation did not read");
+                tracing::warn!(workspace = %self.workspace, %error, "a turn's conversation did not read");
                 Vec::new()
             }
         }
@@ -2161,7 +2163,7 @@ impl Reply {
             return;
         };
         if let Err(error) = self.say(&words).await {
-            tracing::debug!(workspace = %self.workspace, %error, "the reply did not take what its model wrote");
+            tracing::warn!(workspace = %self.workspace, %error, "the reply did not take what its model wrote");
         }
     }
 
@@ -2172,7 +2174,7 @@ impl Reply {
             return;
         }
         if let Err(error) = self.say(&self.written.wrote()).await {
-            tracing::debug!(workspace = %self.workspace, %error, "the reply did not take what its model reasoned");
+            tracing::warn!(workspace = %self.workspace, %error, "the reply did not take what its model reasoned");
         }
     }
 
