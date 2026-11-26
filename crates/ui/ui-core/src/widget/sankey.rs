@@ -962,7 +962,11 @@ mod tests {
                     .iter()
                     .map(|label| {
                         assert_eq!(label.lines.len(), 1, "{width}: a short name takes one line");
-                        label.lines.first().map(|(text, _)| text.clone()).unwrap_or_default()
+                        label
+                            .lines
+                            .first()
+                            .map(|(text, _)| text.clone())
+                            .unwrap_or_default()
                     })
                     .collect();
                 named.sort();
