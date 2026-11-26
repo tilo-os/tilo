@@ -283,7 +283,7 @@ fn sign_in(ticket: &str, json: bool) -> Result<ExitCode> {
     } else if let Some(tilo_device_identity::login::KeyFor::Agent(_)) = &key_for {
         println!("Approved: \"{label}\" runs your agent from now on.");
     } else if answer
-        .get("signed")
+        .pointer("/result/signed")
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
