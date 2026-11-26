@@ -1,0 +1,6 @@
+[package]
+id = "so.tilo.messages"
+kind = "app"
+
+[sandbox.services]
+messaging = "optional@3"

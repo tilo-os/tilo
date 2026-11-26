@@ -630,16 +630,10 @@ def check_containerfile(report: Report, manifest, installer, containerfile: Path
                 report.error(where, f"thin-app package {package!r} is not built by "
                              f"{thin_script.relative_to(report.repo)}",
                              "build it in that script's single cargo graph, or fix `packages`.")
-        match = re.search(r'APP_FEATURES="([^"]*)"', builder_text)
-        image_features = set(match.group(1).split(",")) if match else set()
-        for feature in component.features:
-            if feature not in image_features:
-                report.error(where, f"feature {feature!r} is declared but missing from APP_FEATURES in "
-                             f"{compiled}", "add it to APP_FEATURES, or drop it from `features`.")
-        for feature in sorted(image_features - set(component.features)):
-            report.error(f"{compiled}", f"APP_FEATURES enables {feature!r}, which component "
-                         f"{component.name!r} does not declare",
-                         f"add \"{feature}\" to `features` of {component.name!r} in os/components.toml.")
+        if component.features:
+            report.error(where, f"thin-app component {component.name!r} declares features "
+                         f"{', '.join(component.features)}: the image builds every app as it ships",
+                         "drop `features`; an app's library beside the runtime is a loadable engine.")
 
 
 def audit(repo: Path) -> list[str]:

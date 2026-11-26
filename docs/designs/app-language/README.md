@@ -501,7 +501,10 @@ resources the starting action has now, because it runs later and elsewhere: neve
 over the job, which the checker refuses. `engine.job(path)` reads the record as a `host.Job`
 (its state, how much of how much is done, its error, and the op's own detail); a view reads it
 too and is drawn again as the job moves, so a progress bar asks nothing. `engine.cancel(path)`
-stops it, and `done:` runs with the job cancelled.
+stops it, and `done:` runs with the job cancelled. An op that reaches a service outside Tilo (a
+message sent to someone on Signal) says `outside: true` on its `engine.call` or `engine.start`:
+the action is then an outside effect, as one calling `outside(...)` is, and a caller other than
+the person is asked before it runs.
 
 `engine.stream(op, input)` starts a job that keeps sending frames, which a view shows by
 `tilo-live://<job>`, and says of itself what `engine.state(job)` reads: whether it is connecting,

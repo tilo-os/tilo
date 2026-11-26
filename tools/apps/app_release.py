@@ -528,26 +528,6 @@ def plan(args: argparse.Namespace) -> dict:
     if unknown:
         raise ValueError(f"unknown apps: {', '.join(sorted(unknown))}")
     selected = sorted(with_used_packages(selected, catalog))
-    features = cfg.get("features", {})
-    for name in selected:
-        if kind_of(catalog[name]) != "native":
-            continue
-        cargo_manifest = args.root / "apps" / name / "Cargo.toml"
-        if not features.get(name) or not cargo_manifest.is_file():
-            continue
-        declared = tomllib.loads(cargo_manifest.read_text()).get("features", {})
-        undeclared = [feature for feature in features[name] if feature not in declared]
-        if undeclared:
-            raise ValueError(
-                f"{args.config.name} selects features {name} does not declare: "
-                + ", ".join(undeclared)
-            )
-    cargo_features = [
-        f"{catalog[name]['package']}/{feature}"
-        for name in selected
-        if kind_of(catalog[name]) == "native"
-        for feature in features.get(name, [])
-    ]
     return {
         "reason": reason,
         "input_classification": classification,
@@ -569,7 +549,6 @@ def plan(args: argparse.Namespace) -> dict:
             for name in selected
             if kind_of(catalog[name]) == "tilolang"
         ],
-        "features": cargo_features,
         # Every runtime the selected apps name besides the ones baked beside
         # the Tilo runtime (the tilolang packages' own), so the packing builds
         # the packages those apps install with them.
@@ -589,7 +568,6 @@ def emit_outputs(result: dict, path: Path) -> None:
         "count": str(result["count"]),
         "apps": " ".join(result["apps"]),
         "packages": " ".join(f"-p {name}" for name in result["packages"]),
-        "features": ",".join(result["features"]),
         "runtimes": " ".join(result["runtimes"]),
     }
     with path.open("a", encoding="utf-8") as output:

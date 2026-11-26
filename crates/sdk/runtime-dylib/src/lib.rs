@@ -8,7 +8,6 @@
 
 // `pub use`, not a bare `extern crate`: this is what records the crates as
 // provided by this dylib, which the `-C prefer-dynamic` link step reads.
-pub use accounts;
 pub use agent_provider_config;
 pub use collab_types;
 pub use desktop_policy;

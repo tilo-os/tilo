@@ -187,6 +187,13 @@ fn view_of(
         paused: mounts
             .iter()
             .any(|mount| mount.account == account.id.as_str() && mount.paused),
+        service: account.type_id.as_str().to_owned(),
+        scope: account
+            .config
+            .get("messaging_scope")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_owned(),
     })
 }
 

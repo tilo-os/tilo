@@ -63,8 +63,8 @@ An engine a few apps use moves out of the runtime into an engine library
 of its own: a crate under `crates/engines/loadable/<name>/` that is a Rust
 `dylib` chained on the runtime (account credentials with its OAuth client and the
 cloud-storage providers, the IMAP client and the WebDAV/CalDAV client left the runtime
-and Settings for the workspace service, which signs in on its own; the contact directory:
-`libtilo_contact_directory_engine.so` for Messages; Settings itself, its library with
+and Settings for the workspace service, which signs in on its own; the messaging client with
+the contact directory: `libtilo_messaging_engine.so` for Messages; Settings itself, its library with
 every pane, and the libraries only Settings uses, the settings sections, the
 model-provider administration panel, the NTFS mount protocol, the wallpaper
 catalogue, the accessibility settings, the PC keyboard outlines and the
@@ -98,22 +98,10 @@ relies on:
 - rustc exports every item of every crate linked into a Rust dylib. An
   engine that apps or other engines compile against keeps that list, since
   they may name any of those items. An engine no workspace crate depends on
-  (Settings', which its app binary calls by an unmangled name, and the
-  ad-block compiler, which the toolkit opens with `dlopen`) exports only its
-  unmangled entry points: `build-thin-apps.sh` finds those engines in the
+  (the ad-block compiler, which the toolkit opens with `dlopen`) exports only
+  its unmangled entry points: `build-thin-apps.sh` finds those engines in the
   workspace, and the link keeps only the code their entry points reach. Its
   check binary calls it the same way, through `tilo_<name>_engine_check`;
-- the app links the engine under a feature of its own (`runtime-engine` in
-  Typst Editor, Music, Canvas, Tube, Mail, Settings, Calendar, Clocks,
-  Contacts, Messages, PDF Viewer, Files, Print Centre, Imager, Browser, Store, Chat and the on-screen keyboard), named in `dist/apps/app-collections.toml`, the
-  Containerfile's `APP_FEATURES` and `os/components.toml`; without it the app
-  links the engine's crates statically, as `tilolang dev` does;
-- an engine may carry its app's own library (Settings): the engine then
-  depends on the app's package, which cannot depend on the engine in turn, so
-  the binary names the library with `#[link]` and calls one unmangled entry
-  point; `rustc-thin-app-wrapper.sh` gives app binaries Cargo's dylib
-  directory as a native search path, and `build-thin-apps.sh` links the
-  engines before the apps;
 - one app may not load two engine libraries that both carry a crate (rustc
   refuses a crate that shows up twice in a link); an engine whose crates
   overlap another's that its app always loads with it chains on that one
@@ -134,8 +122,7 @@ in the budget, by library name, with the runtime's headroom, rounding and
 raise files: a raise adds `"lib<name>.so" = <bytes>` under
 `[engines.<arch>]`, and an engine without a budget fails), fails when an app of `apps_without_media` loads one it
 does not use (`[engine_users]` in the budget names the ones those apps use), renders Typst Editor through its engine, and runs the other engines
-from each app that loads them (`contacts` and
-`messages --probe-contact-directory-engine`), checking each app loads its
+from each app that loads them (`contacts`), checking each app loads its
 engine itself.
 
 ### Engines the toolkit opens on first use

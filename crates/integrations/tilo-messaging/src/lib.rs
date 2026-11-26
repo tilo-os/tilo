@@ -44,5 +44,8 @@ pub use enrollment::{
 #[cfg(feature = "service-client")]
 pub mod service;
 
+#[cfg(feature = "engine")]
+pub mod engine;
+
 mod setup;
 pub use setup::{LinkedAccount, LinkingFuture, Pairing, PairingFuture, SetupClient, SetupHost};

@@ -606,6 +606,49 @@ fn resources_named(
     }
 }
 
+/// How each resource `value` names reads, by its id: `title` of each reference in it.
+fn titles_named(
+    value: &Value,
+    title: &dyn Fn(&ResourceRef) -> String,
+    out: &mut HashMap<String, String>,
+) {
+    match value {
+        Value::Ref(named) => {
+            out.entry(named.target.id_string())
+                .or_insert_with(|| title(&named.target));
+        }
+        Value::List(items) | Value::Tuple(items) => {
+            for item in items {
+                titles_named(item, title, out);
+            }
+        }
+        Value::Opt(Some(inner)) => titles_named(inner, title, out),
+        _ => {}
+    }
+}
+
+/// `answer` with each resource reference in it labelled as `titles` reads its id.
+fn titled(answer: &mut Json, titles: &HashMap<String, String>) {
+    match answer {
+        Json::Array(items) => items.iter_mut().for_each(|item| titled(item, titles)),
+        Json::Object(fields) => {
+            let title = fields
+                .get("kind")
+                .and(fields.get("id"))
+                .and_then(Json::as_str)
+                .and_then(|id| titles.get(id))
+                .cloned();
+            if let (Some(title), Some(Json::String(label))) = (title, fields.get_mut("label"))
+                && label.is_empty()
+            {
+                *label = title;
+            }
+            fields.values_mut().for_each(|field| titled(field, titles));
+        }
+        _ => {}
+    }
+}
+
 /// A plain enum's case by its name, or an enum with payloads encoded whole: what an action's
 /// parameter of the enum `key` of `meta` takes for `chosen`, which `value` holds.
 fn enum_json(
@@ -634,6 +677,46 @@ fn enum_json(
             "`{}` is not a case of {}",
             chosen.variant, key.name
         )),
+    }
+}
+
+/// What an action answered, in the API's JSON: as [`argument_json`] gives its value, except a
+/// file, which is answered by the reference to its content and what it is, the way a caller passes
+/// one in (`{"content": "tilo.content:<reference>", "name", "media", "size"}`), so a caller reads
+/// the bytes or hands the file on to an action that takes one.
+fn answer_json(
+    owner: &dyn Fn(&str) -> Result<Meta, String>,
+    meta: &Meta,
+    value: &Value,
+    ty: &Ty,
+) -> Result<Json, String> {
+    match (ty, value) {
+        (Ty::File, Value::File(file)) => {
+            let content = tilo_actions::content_resource(&file.hash).ok_or_else(|| {
+                format!(
+                    "the file {} the action answered holds no content",
+                    file.name
+                )
+            })?;
+            let mut answered = serde_json::json!({
+                "content": content,
+                "name": file.name,
+                "media": file.media,
+            });
+            if file.size >= 0 {
+                answered["size"] = Json::from(file.size);
+            }
+            Ok(answered)
+        }
+        (Ty::Option(_), Value::Opt(None)) => Ok(Json::Null),
+        (Ty::Option(inner), Value::Opt(Some(present))) => answer_json(owner, meta, present, inner),
+        (Ty::Option(inner), present) => answer_json(owner, meta, present, inner),
+        (Ty::List(inner) | Ty::Set(inner) | Ty::Collection(inner), Value::List(items)) => items
+            .iter()
+            .map(|item| answer_json(owner, meta, item, inner))
+            .collect::<Result<Vec<_>, _>>()
+            .map(Json::Array),
+        _ => argument_json(owner, meta, value, ty),
     }
 }
 
@@ -1585,7 +1668,13 @@ impl Host {
                         .package_of(app)
                         .map(|package| package.meta.clone())
                 };
-                output.value = Some(argument_json(&owner, &package.meta, value, &ty)?);
+                let mut answered = answer_json(&owner, &package.meta, value, &ty)?;
+                // An answer names a resource by its address and how it reads, as a picker
+                // shows it: a caller reads what it found without a read of each.
+                let mut titles = HashMap::new();
+                titles_named(value, &|at| self.label_at(at), &mut titles);
+                titled(&mut answered, &titles);
+                output.value = Some(answered);
             }
         }
         let made = self.inner.store.take_made();

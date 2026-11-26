@@ -50,7 +50,6 @@ RUN --mount=type=cache,target=/build/.cargo-home \
     && mkdir -p /out /out/optional /out/thin-apps \
     && build_phase rust-thin-apps \
     && EXCLUDE_PACKAGES="${THIN_EXCLUDES}" \
-       APP_FEATURES="" \
          /build/os/scripts/build-thin-apps.sh \
     && build_phase rust-cleanup \
     && find /build/target -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +

@@ -30,7 +30,7 @@ samples=$(
 )
 INCLUDE_PACKAGES=$(jq -r '.packages | join(" ")' <<<"$plan") \
     BUILD_PACKAGES="$(jq -r '.packages | join(" ")' <<<"$plan") tilolang-process" \
-    APP_FEATURES="$(jq -r '.features | join(",")' <<<"$plan")${samples:+,$samples}" \
+    APP_FEATURES="$samples" \
     TARGET_DIR=$target \
     os/scripts/build-thin-apps.sh
 

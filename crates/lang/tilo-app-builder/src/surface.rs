@@ -1946,22 +1946,4 @@ mod tests {
             "the catalogue names the app's own actions and fields"
         );
     }
-
-    #[test]
-    fn messages_history_reads_in_its_own_words() {
-        let app_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/messages");
-        assert!(is_framework_app(&app_dir), "Messages is a framework app");
-        let printed =
-            ui::framework::headless::surface_report::<messages::MessagesShell>().to_string();
-        let surface = parse_report(&printed).expect("Messages reports its surface");
-        let report = check_report(&app_dir, &surface, Level::Error).expect("the check runs");
-        let missing: Vec<&str> = report
-            .findings
-            .iter()
-            .filter(|finding| finding.rule == "history-message")
-            .map(|finding| finding.message.as_str())
-            .collect();
-        assert!(missing.is_empty(), "{missing:#?}");
-        assert!(report.passed(), "{:#?}", report.findings);
-    }
 }

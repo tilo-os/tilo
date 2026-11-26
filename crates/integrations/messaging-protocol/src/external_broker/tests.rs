@@ -1,7 +1,6 @@
 use super::*;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use ui::prelude::Id;
-use ui::tilo_resource::SharedResource as _;
 
 pub(super) fn owner(service: crate::Service) -> Owner {
     Owner {
@@ -307,19 +306,19 @@ async fn native_whatsapp_and_sms_submit_through_private_client_without_false_del
             Err(SendError::AlreadyReserved)
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        let mut app = messages_sends_once_confirmed_and_keeps_text_private(&owner, &broker, &calls);
-        let choice = route_choice(&owner, &route(service));
+        let engine = messages_send_once_and_keep_text_on_the_device(&owner, &broker, &calls);
         revoked.store(true, Ordering::SeqCst);
-        assert!(
-            app.effect(&messages::MessagesEffect::ReadHistory { choice })
-                .is_err()
+        assert_eq!(
+            engine.run("history", &ask(&route(service), None)),
+            Err("revoked".to_owned()),
+            "a revoked route reads no history"
         );
         assert!(!client.supports(&route(service)));
         assert_eq!(
             client.history().read(route(service), None).await,
             Err(HistoryError::Revoked)
         );
-        drop(app);
+        drop(engine);
         drop(client);
         drop(broker);
         let history = History::open(root.path(), &owner, key()).unwrap();
@@ -344,117 +343,37 @@ async fn native_whatsapp_and_sms_submit_through_private_client_without_false_del
     }
 }
 
-/// Messages sends through `broker` only once the person confirms, shows the
-/// text, and keeps it out of its shared record; a repeat is refused.
-fn messages_sends_once_confirmed_and_keeps_text_private(
+/// Messages' engine sends through `broker` once, answers the sent text in the page it reads back
+/// on this device, and refuses the same operation again without asking the service twice.
+fn messages_send_once_and_keep_text_on_the_device(
     owner: &Owner,
     broker: &ExternalBroker,
     calls: &AtomicUsize,
-) -> tilo_app_test_host::TestApp<messages::MessagesShell> {
-    let mut app = messages_over(owner, broker.client());
-    let send = messages::MessagesEffect::Send {
-        choice: route_choice(owner, &route(owner.service)),
-        operation: "app-operation".into(),
-        text: "private app message".into(),
-    };
+) -> tilo_messaging::engine::Engine {
+    let engine = tilo_messaging::engine::Engine::new(Some(broker.client()), None);
+    let send = serde_json::json!({
+        "route": route(owner.service),
+        "operation": "app-operation",
+        "text": "private app message",
+    })
+    .to_string();
     let before = calls.load(Ordering::SeqCst);
-    let after = before.checked_add(1).unwrap();
-    assert!(app.effect(&send).is_err());
-    assert_eq!(calls.load(Ordering::SeqCst), before);
-    app.effect_confirmed(&send).unwrap();
-    assert_eq!(calls.load(Ordering::SeqCst), after);
-    assert!(app.harness().a11y_nodes().iter().any(|(_, node)| {
-        node.label().is_some_and(|label| {
-            label == "private app message"
-                || label.split(", ").any(|part| part == "private app message")
-        })
-    }));
-    assert!(!app.harness().dump_json().contains("private app message"));
-    assert!(app.effect_confirmed(&send).is_err());
-    assert_eq!(calls.load(Ordering::SeqCst), after);
-    app
-}
-/// Messages as `owner` opens it in a host that lends it `client`, with the
-/// route's account and its confirmed contact projected and the person open.
-fn messages_over(
-    owner: &Owner,
-    client: tilo_messaging::MessagingClient,
-) -> tilo_app_test_host::TestApp<messages::MessagesShell> {
-    use tilo_contact_directory::ContactDirectory;
-    let route = route(owner.service);
-    let mut app = tilo_app_test_host::TestApp::<messages::MessagesShell>::for_person_with_lent(
-        &owner.actor,
-        client,
-    )
-    .unwrap();
-    project_account_metadata(owner, &route, &mut app);
-    let directory = app
-        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
-        .unwrap();
-    directory
-        .invoke(&ContactDirectory::PROJECT_CONTACT.with((route.person.clone(), "Alex".into())))
-        .unwrap();
-    directory
-        .invoke(&ContactDirectory::CONFIRM_ACCOUNT.with((
-            route.person.clone(),
-            route.association.clone(),
-            route.service.clone(),
-            route.scope.clone(),
-            route.recipient.clone(),
-            route.revision.clone(),
-        )))
-        .unwrap();
-    app.settle();
-    app.effect(&messages::MessagesEffect::OpenPerson {
-        person: route.person.as_str().into(),
-    })
-    .unwrap();
-    app.effect(&messages::MessagesEffect::SelectRoute {
-        choice: route_choice(owner, &route),
-    })
-    .unwrap();
-    app
+    let sent = engine.run("send", &send).unwrap();
+    assert_eq!(sent["status"], "submitted");
+    assert_eq!(calls.load(Ordering::SeqCst), before + 1);
+    let shown: Vec<&str> = sent["page"]["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|message| message["text"].as_str())
+        .collect();
+    assert!(shown.contains(&"private app message"), "{shown:?}");
+    assert_eq!(engine.run("send", &send), Err("reserved".to_owned()));
+    assert_eq!(calls.load(Ordering::SeqCst), before + 1);
+    engine
 }
 
-fn route_choice(owner: &Owner, route: &Route) -> String {
-    serde_json::json!({"service":route.service,"account":owner.account,"recipient":route.recipient,"association":route.association.as_str(),"scope":route.scope,"revision":route.revision}).to_string()
-}
-
-struct AccountOwnerFixture;
-impl ui::framework::ResourceApp for AccountOwnerFixture {
-    type Resource = tilo_messaging::AccountList;
-    const ID: &'static str = "so.tilo.settings";
-    const TITLE: &'static str = "Account metadata owner fixture";
-    fn view(_cx: &mut ui::framework::ViewCx<Self::Resource>) -> ui::widget::Element {
-        Box::new(ui::widget::Column::new())
-    }
-}
-
-pub(crate) fn project_account_metadata(
-    owner: &Owner,
-    route: &Route,
-    app: &mut tilo_app_test_host::TestApp<messages::MessagesShell>,
-) {
-    let mut settings =
-        tilo_app_test_host::TestApp::<AccountOwnerFixture>::for_person(&owner.actor).unwrap();
-    let metadata = settings
-        .shared_workspace::<tilo_messaging::AccountList>(tilo_messaging::AccountList::OWNER)
-        .unwrap();
-    metadata
-        .invoke(&tilo_messaging::AccountList::SAVE_ACCOUNT.with((
-            owner.account.clone(),
-            route.service.clone(),
-            "Personal".into(),
-            serde_json::json!({"messaging_scope":route.scope}),
-            true,
-            0,
-        )))
-        .unwrap();
-    let accounts = app
-        .shared_workspace::<tilo_messaging::AccountList>(tilo_messaging::AccountList::OWNER)
-        .unwrap();
-    accounts
-        .record()
-        .merge_peer_document(metadata.record().document().unwrap())
-        .unwrap();
+/// What Messages asks its engine about `route`, from the message `before` when it names one.
+pub(super) fn ask(route: &Route, before: Option<&str>) -> String {
+    serde_json::json!({"route": route, "before": before}).to_string()
 }

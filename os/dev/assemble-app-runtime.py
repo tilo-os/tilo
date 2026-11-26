@@ -639,12 +639,11 @@ def application_build_env(args, entries):
     """What os/scripts/build-thin-apps.sh reads to build this cohort."""
     repo, target = args.repo.resolve(), args.target_dir.resolve()
     env = dict(os.environ, REPO=str(repo), TARGET_DIR=str(target),
-               PROFILE=args.profile, APP_FEATURES=args.features)
+               PROFILE=args.profile)
     for variable in ('INCLUDE_PACKAGES', 'BUILD_PACKAGES', 'EXTRA_CARGO_ARGS'):
         env.pop(variable, None)
-    # An app the cohort leaves out is not built with it: build-thin-apps.sh
-    # leaves its features out too, and its binary then never exists to be
-    # packaged.
+    # An app the cohort leaves out is not built with it, and its binary then
+    # never exists to be packaged.
     env['EXCLUDE_PACKAGES'] = ' '.join(
         entry['package'] for entry in application_entries(repo) if entry not in entries)
     if args.compiler_interface_out is not None:
@@ -740,7 +739,6 @@ def main():
     parser.add_argument('--repo', type=Path, required=True)
     parser.add_argument('--target-dir', type=Path, required=True)
     parser.add_argument('--profile', required=True)
-    parser.add_argument('--features')
     parser.add_argument('--source-inventory', help='verified complete source inventory digest')
     parser.add_argument('--app')
     parser.add_argument('--app-plan', type=Path,
@@ -756,12 +754,10 @@ def main():
     args = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9_-]+', args.profile):
         parser.error('invalid build profile')
-    if args.features is None:
-        components = tomllib.loads((args.repo / 'os/components.toml').read_text())['component']
-        cohort = next(row for row in components if row['name'] == 'apps+runtime')
-        if args.profile != cohort.get('profile'):
-            parser.error('selected app must use the canonical cohort profile')
-        args.features = ','.join(cohort.get('features', []))
+    components = tomllib.loads((args.repo / 'os/components.toml').read_text())['component']
+    cohort = next(row for row in components if row['name'] == 'apps+runtime')
+    if args.profile != cohort.get('profile'):
+        parser.error('selected app must use the canonical cohort profile')
     if args.app is not None:
         named_applications(args.repo, None, args.app)
     if args.compiler_interface_out is not None and not args.inside:

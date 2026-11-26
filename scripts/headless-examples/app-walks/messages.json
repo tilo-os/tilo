@@ -1,0 +1,42 @@
+{
+  "app": "messages",
+  "said": "Messages",
+  "family": "apps",
+  "live": "tl",
+  "tl": { "id": "so.tilo.messages", "package": "messages" },
+  "steps": [
+    {
+      "id": "open",
+      "said": "Open Messages before anyone was added: it says how to start",
+      "ops": [
+        { "theme": false },
+        { "launch": true },
+        { "wait_for": "window" },
+        { "wait_for": "actions" },
+        { "targets": true },
+        { "must": { "see": ["Messages", "Accounts"] } }
+      ],
+      "dark": true,
+      "budget_ms": 30000
+    },
+    {
+      "id": "accounts",
+      "said": "Open the accounts: each one's state, and how linking works on this device",
+      "ops": [
+        { "press": "Accounts" },
+        { "wait_for": { "shown": "Your accounts" } },
+        { "must": { "see": ["Your accounts", "Link an account", "Close setup"] } }
+      ],
+      "budget_ms": 30000
+    },
+    {
+      "id": "close",
+      "said": "Close the setup, back to the people",
+      "ops": [
+        { "press": "Close setup" },
+        { "must_not": { "see": ["Your accounts"] } }
+      ],
+      "budget_ms": 30000
+    }
+  ]
+}

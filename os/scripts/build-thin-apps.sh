@@ -22,6 +22,8 @@ if [ "$BUILD_RUNTIME_ONLY" = 1 ] && [ "$BUILD_PACKAGES" != "  " ]; then
     echo "BUILD_RUNTIME_ONLY builds no app: it takes no BUILD_PACKAGES" >&2
     exit 1
 fi
+# Package features a build turns on (`package/feature`, comma-separated): a
+# screenshot capture's `samples`, never a release's.
 APP_FEATURES="${APP_FEATURES:-}"
 PROFILE="${PROFILE:-thin-app}"
 # The thin-dev profile is a developer session's build, never published: it
@@ -44,7 +46,6 @@ packages=()
 features=()
 binary_crates=()
 binaries=()
-binary_packages=()
 build_targets=()
 selected_crates=()
 app_profiles=()
@@ -106,7 +107,6 @@ for manifest in "$REPO"/apps/*/tilo-app.toml "$REPO"/crates/lang/*/tilo-runtime.
     binary_crates+=("${binary//-/_}")
     if [ "$BUILD_RUNTIME_ONLY" != 1 ] && { [ "$BUILD_PACKAGES" = "  " ] || [[ "$BUILD_PACKAGES" == *" $package "* ]]; }; then
         binaries+=("$binary")
-        binary_packages+=("$package")
         selected_crates+=("${binary//-/_}")
         build_targets+=(--bin "$binary")
     fi
@@ -189,28 +189,17 @@ for name in sorted(closure(apps) - shared - set(apps)):
         [ "$crate" = - ] || binary_crates+=("$crate")
     done <<<"$app_only"
 fi
-# An engine no workspace crate depends on (Settings', whose app binary calls
-# it by an unmangled name; the ad-block compiler, which the toolkit opens with
-# dlopen) is reached only through its unmangled entry points: the wrapper
-# links it exporting only those, so the code they do not reach goes too.
-#
-# Such an engine carries an app's package (Settings' library is the Settings
-# engine), and that app's binary links the engine by name: Cargo knows no edge
-# from the binary to the engine. Those binaries link in a build of their own,
-# after the build that makes the engines, never beside one that may write an
-# engine while the binary's link reads it.
-entry_graph=$(cd "$REPO" && "${CARGO:-cargo}" metadata --no-deps --format-version 1 --offline --locked \
+# An engine no workspace crate depends on (the ad-block compiler, which the
+# toolkit opens with dlopen) is reached only through its unmangled entry
+# points: the wrapper links it exporting only those, so the code they do not
+# reach goes too.
+entry_engines=$(cd "$REPO" && "${CARGO:-cargo}" metadata --no-deps --format-version 1 --offline --locked \
     | python3 -c '
 import json, sys
 packages = json.load(sys.stdin)["packages"]
 engines = {p["name"] for p in packages if "/crates/engines/loadable/" in p["manifest_path"].replace("\\", "/")}
 named = {d["name"] for p in packages for d in p["dependencies"] if p["name"] != d["name"]}
-entry = engines - named
-carried = {d["name"] for p in packages if p["name"] in entry for d in p["dependencies"]}
-print(":".join(sorted(e.replace("-", "_") for e in entry)))
-print(" ".join(sorted(carried)))')
-entry_engines=$(sed -n 1p <<<"$entry_graph")
-engine_carried=" $(sed -n 2p <<<"$entry_graph") "
+print(":".join(sorted(e.replace("-", "_") for e in engines - named)))')
 [ "${#binaries[@]}" -gt 0 ] || [ "$BUILD_RUNTIME_ONLY" = 1 ] || { echo "no tapp binaries selected" >&2; exit 1; }
 for requested in $BUILD_PACKAGES; do
     [[ " ${packages[*]} " == *" -p $requested "* ]] || {
@@ -218,7 +207,7 @@ for requested in $BUILD_PACKAGES; do
     }
 done
 feature_csv="$(IFS=,; echo "${features[*]}")"
-# The collection's features name apps by package. An app this run leaves out
+# The features name apps by package. An app this run leaves out
 # (EXCLUDE_PACKAGES, or outside INCLUDE_PACKAGES: the image without Browser)
 # is not selected, and Cargo refuses the whole build for a feature of a
 # package it does not select, so its features are left out with it.
@@ -227,17 +216,6 @@ for pair in ${app_feature_pairs[@]+"${app_feature_pairs[@]}"}; do
     case " ${packages[*]} " in
         *" -p ${pair%%/*} "*) feature_csv="$feature_csv,$pair" ;;
     esac
-done
-# The binaries that link an engine by name (see entry_graph), apart.
-named_engine_targets=()
-for index in "${!binaries[@]}"; do
-    [[ $engine_carried == *" ${binary_packages[$index]} "* ]] || continue
-    named_engine_targets+=(--bin "${binaries[$index]}")
-done
-graph_targets=()
-for ((index = 0; index < ${#build_targets[@]}; index += 2)); do
-    [[ " ${named_engine_targets[*]} " == *" --bin ${build_targets[index + 1]} "* ]] && continue
-    graph_targets+=("${build_targets[index]}" "${build_targets[index + 1]}")
 done
 thin_crates="$(IFS=:; echo "${binary_crates[*]}")"
 
@@ -337,16 +315,7 @@ thin_build() {
         ${app_profiles[@]+"${app_profiles[@]}"} ${keep_symbols[@]+"${keep_symbols[@]}"} \
         -p runtime-dylib "${packages[@]}" "$@"
 }
-# The whole graph but the binaries that link an engine by name, reporting
-# every unit; then those binaries, in a build that selects no engine, so none is
-# written while they link (an app whose code is its engine library, Settings,
-# names that library itself: Cargo cannot order the two, since the engine
-# depends on the app's package). Their libraries are the engines' dependencies,
-# built and reported by the first.
-thin_build ${message_format[@]+"${message_format[@]}"} "${graph_targets[@]}"
-if [ "${#named_engine_targets[@]}" -gt 0 ]; then
-    thin_build "${named_engine_targets[@]}" >&2
-fi
+thin_build ${message_format[@]+"${message_format[@]}"} "${build_targets[@]}"
 fi
 if [ "$BUILD_PHASE" = build ]; then
     if [ -n "${SDK_COMPILER_UNITS:-}" ]; then

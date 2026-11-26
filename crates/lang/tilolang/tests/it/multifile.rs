@@ -534,6 +534,7 @@ const NEEDS_PUBLISHED_APPS: &[&str] = &[
     "gallery",
     "logs",
     "mail",
+    "messages",
     "migrate",
     "monitor",
     "notes",

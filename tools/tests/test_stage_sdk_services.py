@@ -34,12 +34,12 @@ class SdkServiceStagingTests(unittest.TestCase):
         return manifest
 
     def test_the_identity_requirement_is_the_runtime_version_the_image_serves(self):
-        original = (ROOT / "apps/messages/tilo-app.toml").read_text()
+        original = (ROOT / "apps/discord/tilo-app.toml").read_text()
         staged = tomllib.loads(self.stamp(original).read_text())
         self.assertEqual(staged["sandbox"]["services"]["identity"], IDENTITY)
 
     def test_actual_app_staging_adds_only_negotiated_identity_requirement(self):
-        original = (ROOT / "apps/messages/tilo-app.toml").read_text()
+        original = (ROOT / "apps/discord/tilo-app.toml").read_text()
         expected = tomllib.loads(original)
         expected["package"]["runtime"] = RUNTIME
         expected["sandbox"]["services"]["identity"] = IDENTITY
@@ -73,7 +73,7 @@ class SdkServiceStagingTests(unittest.TestCase):
                 )
 
     def test_authored_legacy_identity_contract_remains_legacy(self):
-        original = (ROOT / "apps/messages/tilo-app.toml").read_text()
+        original = (ROOT / "apps/discord/tilo-app.toml").read_text()
         original = original.replace("[sandbox.services]", '[sandbox.services]\nidentity = "required@1"')
         expected = tomllib.loads(original)
         expected["package"]["runtime"] = RUNTIME

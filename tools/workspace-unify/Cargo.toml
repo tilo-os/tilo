@@ -587,7 +587,6 @@ doc = false
 "memfd-0_6_6" = { package = "memfd", version = "^0.6.6", default-features = false, features = [] }
 "memmap2-0_9_11" = { package = "memmap2", version = "^0.9.11", default-features = false, features = [] }
 "memoffset-0_9_1" = { package = "memoffset", version = "^0.9.1", default-features = false, features = ["default"] }
-"messages" = { path = "../../apps/messages", default-features = false, features = [] }
 "mime-0_3_17" = { package = "mime", version = "^0.3.17", default-features = false, features = [] }
 "minimal-lexical-0_2_1" = { package = "minimal-lexical", version = "^0.2.1", default-features = false, features = ["std"] }
 "miniz_oxide-0_8_9" = { package = "miniz_oxide", version = "^0.8.9", default-features = false, features = ["default", "simd", "simd-adler32", "with-alloc"] }
@@ -1166,7 +1165,7 @@ doc = false
 "tilo-mcp" = { path = "../../crates/core/tilo-mcp", default-features = false, features = ["test-support"] }
 "tilo-media" = { path = "../../crates/engines/tilo-media", default-features = false, features = ["cast", "decode", "default", "encode", "pipewire", "realtime", "test-support", "voice"] }
 "tilo-media-controls" = { path = "../../crates/services/media-controls", default-features = false, features = ["default", "service"] }
-"tilo-messaging" = { path = "../../crates/integrations/tilo-messaging", default-features = false, features = ["service-client", "wire"] }
+"tilo-messaging" = { path = "../../crates/integrations/tilo-messaging", default-features = false, features = ["engine", "service-client", "wire"] }
 "tilo-messaging-protocol" = { path = "../../crates/integrations/messaging-protocol", default-features = false, features = ["default", "signal-broker", "sms-dbus", "whatsapp-sdk"] }
 "tilo-messaging-service" = { path = "../../crates/integrations/messaging-service", default-features = false, features = ["default", "service"] }
 "tilo-migrate" = { path = "../../crates/import/migrate", default-features = false, features = ["fixture"] }
@@ -3057,7 +3056,6 @@ doc = false
 "memfd-0_6_6" = { package = "memfd", version = "^0.6.6", default-features = false, features = [] }
 "memmap2-0_9_11" = { package = "memmap2", version = "^0.9.11", default-features = false, features = [] }
 "memoffset-0_9_1" = { package = "memoffset", version = "^0.9.1", default-features = false, features = ["default"] }
-"messages" = { path = "../../apps/messages", default-features = false, features = [] }
 "mime-0_3_17" = { package = "mime", version = "^0.3.17", default-features = false, features = [] }
 "mime_guess-2_0_5" = { package = "mime_guess", version = "^2.0.5", default-features = false, features = ["default", "rev-mappings"] }
 "minimal-lexical-0_2_1" = { package = "minimal-lexical", version = "^0.2.1", default-features = false, features = ["std"] }
@@ -3609,7 +3607,7 @@ doc = false
 "tilo-mcp" = { path = "../../crates/core/tilo-mcp", default-features = false, features = ["test-support"] }
 "tilo-media" = { path = "../../crates/engines/tilo-media", default-features = false, features = ["decode", "default", "encode", "pipewire", "realtime", "test-support", "voice"] }
 "tilo-media-controls" = { path = "../../crates/services/media-controls", default-features = false, features = ["default", "service"] }
-"tilo-messaging" = { path = "../../crates/integrations/tilo-messaging", default-features = false, features = ["service-client", "wire"] }
+"tilo-messaging" = { path = "../../crates/integrations/tilo-messaging", default-features = false, features = ["engine", "service-client", "wire"] }
 "tilo-messaging-protocol" = { path = "../../crates/integrations/messaging-protocol", default-features = false, features = ["default", "signal-broker", "sms-dbus", "whatsapp-sdk"] }
 "tilo-messaging-service" = { path = "../../crates/integrations/messaging-service", default-features = false, features = ["default", "service"] }
 "tilo-migrate" = { path = "../../crates/import/migrate", default-features = false, features = ["fixture", "test-support"] }

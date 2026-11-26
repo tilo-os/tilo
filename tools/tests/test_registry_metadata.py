@@ -81,7 +81,6 @@ class RegistryMetadataTests(unittest.TestCase):
             report = json.loads(result.stdout)
             self.assertEqual(report["count"], len(catalog))
             self.assertIn("browser", report["apps"])
-            self.assertIn("messages", report["apps"])
             self.assertIn("chip-design", report["apps"])
 
     def test_a_tl_packages_tag_line_is_written_for_each_language(self):

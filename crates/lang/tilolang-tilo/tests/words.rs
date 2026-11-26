@@ -16,7 +16,7 @@ const CONTACTS: &str = "so.tilo.contacts";
 
 /// What the toolkit reads: a package's catalogues join the person's, so what it declares reads
 /// in their language.
-struct Toolkit;
+pub(crate) struct Toolkit;
 
 impl Words for Toolkit {
     fn add(&self, catalogues: &[(String, String)]) {

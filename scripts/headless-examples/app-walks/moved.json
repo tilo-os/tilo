@@ -886,5 +886,93 @@
   "so.tilo.terminal terminal.session#undo": {
     "to": "so.tilo.terminal tl.so.tilo.terminal#undo",
     "test": "crates/lang/tilolang-process/tests/window/hosted/history_undo.rs:130"
+  },
+  "so.tilo.messages tilo.messages#back": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#back",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:633"
+  },
+  "so.tilo.messages tilo.messages#cancel-link": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#cancel_link",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:847"
+  },
+  "so.tilo.messages tilo.messages#close-groups": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#close_groups",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:986"
+  },
+  "so.tilo.messages tilo.messages#deliver-message": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#deliver_message",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:1076"
+  },
+  "so.tilo.messages tilo.messages#export-content": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#export_content",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:1152"
+  },
+  "so.tilo.messages tilo.messages#list-account-states": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#list_account_states",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:906"
+  },
+  "so.tilo.messages tilo.messages#list-groups": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#list_groups",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:986"
+  },
+  "so.tilo.messages tilo.messages#list-people": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#list_people",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:627"
+  },
+  "so.tilo.messages tilo.messages#list-routes": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#list_routes",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:554"
+  },
+  "so.tilo.messages tilo.messages#open-account-setup": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#open_account_setup",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:847"
+  },
+  "so.tilo.messages tilo.messages#open-conversation": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#open_conversation",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:1072"
+  },
+  "so.tilo.messages tilo.messages#open-person": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#open_person",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:641"
+  },
+  "so.tilo.messages tilo.messages#read-group-history": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#read_group_history",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:986"
+  },
+  "so.tilo.messages tilo.messages#read-group-membership": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#read_group_membership",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:986"
+  },
+  "so.tilo.messages tilo.messages#read-history": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#read_history",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:641"
+  },
+  "so.tilo.messages tilo.messages#read-older-history": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#read_older_history",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:641"
+  },
+  "so.tilo.messages tilo.messages#reply": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#reply",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:1123"
+  },
+  "so.tilo.messages tilo.messages#reset-first-enrollment": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#reset_first_account",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:886"
+  },
+  "so.tilo.messages tilo.messages#search-messages": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#search_messages",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:1144"
+  },
+  "so.tilo.messages tilo.messages#select-route": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#select_route",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:764"
+  },
+  "so.tilo.messages tilo.messages#select-setup-account": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#select_setup_account",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:847"
+  },
+  "so.tilo.messages tilo.messages#send-message": {
+    "to": "so.tilo.messages tl.so.tilo.messages.Messages#send_message",
+    "test": "crates/lang/tilolang-tilo/tests/messages.rs:1132"
   }
 }

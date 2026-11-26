@@ -8386,24 +8386,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "messages"
-version = "0.1.0"
-dependencies = [
- "runtime-dylib",
- "serde",
- "serde_json",
- "tilo-action-services",
- "tilo-app",
- "tilo-app-test-host",
- "tilo-contact-directory",
- "tilo-contact-directory-engine",
- "tilo-messaging",
- "tilo-test-env",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "mime"
 version = "0.3.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -12381,7 +12363,6 @@ version = "0.1.0"
 dependencies = [
  "p384 0.14.0",
  "roxmltree 0.21.1",
- "tilo-accounts",
  "tilo-actions",
  "tilo-agent-provider-config",
  "tilo-app",
@@ -15011,7 +14992,6 @@ dependencies = [
  "hex",
  "image",
  "libc",
- "messages",
  "proc-macro2",
  "quote",
  "rustix 1.1.6",
@@ -16427,16 +16407,6 @@ dependencies = [
  "tilo-resource",
  "tilo-surface-compile",
  "uuid",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-contact-directory-engine"
-version = "0.1.0"
-dependencies = [
- "runtime-dylib",
- "tilo-contact-directory",
- "tilo-resource",
  "workspace-hack",
 ]
 
@@ -18213,12 +18183,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-messaging-engine"
+version = "0.1.0"
+dependencies = [
+ "runtime-dylib",
+ "tilo-engine-loader",
+ "tilo-messaging",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-messaging-protocol"
 version = "0.1.0"
 dependencies = [
  "futures-util",
  "jiff",
- "messages",
  "reqwest",
  "rustls",
  "rustls-native-certs",
@@ -18228,7 +18207,6 @@ dependencies = [
  "tilo-accounts",
  "tilo-advisory-lock",
  "tilo-app",
- "tilo-app-test-host",
  "tilo-clock",
  "tilo-contact-directory",
  "tilo-files",
@@ -27332,7 +27310,6 @@ dependencies = [
  "memfd",
  "memmap2",
  "memoffset",
- "messages",
  "mime",
  "mime_guess",
  "minimal-lexical",

@@ -45,8 +45,6 @@ description = "Browse history, review changes, and work with Git visually."
 description = "Inspect and edit binary files with precision."
 [apps.logs]
 description = "Search and understand system logs without a wall of noise."
-[apps.messages]
-description = "Keep direct conversations together with a clear choice of contact and messaging account."
 [apps.maps]
 description = "Find places, plan routes, and orient yourself visually."
 [apps.monitor]

@@ -13,6 +13,9 @@ wire = ["dep:serde", "zeroize/serde"]
 # The app's connection to the messaging service: its wire and, on Unix,
 # the client over the socket the launcher hands the app.
 service-client = ["wire", "dep:serde_json", "dep:wire-frame", "dep:tokio", "dep:tracing"]
+# What Messages asks its device for through `engine.call` and `engine.start`, as JSON over the
+# clients above: the engine library the tilolang runtime loads for the app.
+engine = ["dep:serde_json"]
 
 [dependencies]
 tilo-contact-directory = { path = "../../core/tilo-contact-directory" }

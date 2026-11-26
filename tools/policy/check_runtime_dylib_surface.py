@@ -107,10 +107,10 @@ ENGINES = {
     "tilo-dav": "the WebDAV/CalDAV client, whose calendar sign-in reaches account credentials, "
                 "which the workspace service links on its own",
     "jiff-tzdb": "the time-zone database, which only a program that reads a named zone carries",
-    "tilo-contact-directory-engine": "the contact directory's engine library "
-                                     "(libtilo_contact_directory_engine.so)",
-    "tilo-contact-directory": "the contact directory, which Contacts, Mail and Messages load from "
-                              "libtilo_contact_directory_engine.so",
+    "tilo-messaging-engine": "Messages' engine library (libtilo_messaging_engine.so): the "
+                             "messaging client and the contact directory",
+    "tilo-contact-directory": "the contact directory, which Messages loads from "
+                              "libtilo_messaging_engine.so",
     "tilo-pdf": "the PDF engine, which only a program reading PDFs links",
     "hayro": "the in-process PDF rasteriser under tilo-pdf",
     "hayro-interpret": "the in-process PDF rasteriser under tilo-pdf",
@@ -249,7 +249,7 @@ def engines() -> list[str]:
 
 
 def collection() -> tuple[list[str], list[str]]:
-    """The default collection's packages and their release features."""
+    """The default collection's packages and the features its thin build turns on."""
     result = subprocess.run(
         [sys.executable, "tools/apps/app_release.py", "--collection", "default"],
         cwd=ROOT,
@@ -263,7 +263,7 @@ def collection() -> tuple[list[str], list[str]]:
     packages = list(plan["packages"])
     if not packages:
         raise RuntimeError("the default collection has no packages")
-    return packages, [f"{package}/thin" for package in packages] + list(plan["features"])
+    return packages, [f"{package}/thin" for package in packages]
 
 
 def resolve(packages: list[str], features: list[str], target: str) -> str:

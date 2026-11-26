@@ -34,11 +34,11 @@ done
 
 case ":${TILO_THIN_BIN_CRATES:-}:" in
     *":${crate_name}:"*)
-        # An app whose code is its engine library (Settings) names that
-        # library itself (`#[link]`): the engine depends on the app's package,
-        # so Cargo cannot hand it over as a crate. The linker finds it where
-        # Cargo writes every dylib; build-thin-apps.sh links the engines
-        # before the apps.
+        # An engine's check binary names the engine library itself
+        # (`#[link]`), as the toolkit opens it by an unmangled name: an engine
+        # only reached that way is no crate the binary depends on. The linker
+        # finds it where Cargo writes every dylib; Cargo builds a package's
+        # library before its binaries.
         engine_dirs=()
         previous=""
         for argument in "$@"; do

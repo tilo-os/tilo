@@ -77,13 +77,30 @@ pub fn word(key: &str, args: &[(String, String)], source: &str) -> String {
     if said == key { source.to_owned() } else { said }
 }
 
-/// An argument as Fluent takes it: a number where it is one, so a plural rule selects by it.
+/// An argument as Fluent takes it: a number where it is written as one (`3`, `-2`, `0.5`), so a
+/// plural rule selects by it; anything else reads exactly as it was given. A phone number
+/// (`+15550100`), a code with leading zeros (`007`) or a name such as `inf` is text, which a
+/// number would show without its plus, its zeros or its letters.
 #[must_use]
 pub fn value_of(value: &str) -> tilo_ui_base::i18n::ArgValue {
     match value.parse::<f64>() {
-        Ok(number) => number.into(),
-        Err(_) => value.into(),
+        Ok(number) if written_as_number(value) => number.into(),
+        _ => value.into(),
     }
+}
+
+/// Whether `value` is a number as a number is shown: an optional minus, digits without a leading
+/// zero, and a fraction that does not end in zero.
+fn written_as_number(value: &str) -> bool {
+    let unsigned = value.strip_prefix('-').unwrap_or(value);
+    let (whole, fraction) = match unsigned.split_once('.') {
+        Some((whole, fraction)) => (whole, Some(fraction)),
+        None => (unsigned, None),
+    };
+    let digits = |part: &str| !part.is_empty() && part.bytes().all(|b| b.is_ascii_digit());
+    digits(whole)
+        && (whole == "0" || !whole.starts_with('0'))
+        && fraction.is_none_or(|fraction| digits(fraction) && !fraction.ends_with('0'))
 }
 
 /// Moves when the person's language, or a catalogue of theirs, does

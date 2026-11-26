@@ -279,7 +279,6 @@ runtime_plan=$(python3 tools/apps/app_release.py --collection default)
 build_thin() {
     INCLUDE_PACKAGES=$(jq -r '.packages | join(" ")' <<<"$runtime_plan") \
         BUILD_PACKAGES=$packages \
-        APP_FEATURES=$(jq -r '.features | join(",")' <<<"$runtime_plan") \
         TARGET_DIR=$target PROFILE=$thin_profile \
         EXTRA_CARGO_ARGS="${EXTRA_CARGO_ARGS:+$EXTRA_CARGO_ARGS }--timings" \
         os/scripts/build-thin-apps.sh

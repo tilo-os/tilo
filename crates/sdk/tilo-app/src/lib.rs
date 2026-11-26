@@ -65,8 +65,6 @@ pub mod launch {
 /// ui::main!(hello::App);                           // a `ResourceApp`
 /// ui::main!(hello::App, init = hello::initialize);  // optional process setup
 /// ui::main!(definition = hello::definition);       // fn() -> &'static ApplicationDefinition
-/// // the release binary runs the app from its engine library (`engine_main!`)
-/// ui::main!(hello::App, init = hello::initialize, engine = "tilo_hello_engine");
 /// ```
 ///
 /// On Linux and macOS it runs the native runner with the standard launch
@@ -91,65 +89,6 @@ macro_rules! main {
             $crate::framework::run::<$app>();
         }
     };
-    ($app:ty, init = $init:expr, engine = $engine:literal) => {
-        $crate::main!(
-            $app,
-            init = $init,
-            engine = $engine,
-            entry = tilo_app_engine_main
-        );
-    };
-    ($app:ty, init = $init:expr, engine = $engine:literal, entry = $entry:ident) => {
-        // The app's own build (`tilolang dev`, tests, the browser) runs it
-        // here, as any app runs.
-        #[cfg(not(feature = "runtime-engine"))]
-        $crate::main!($app, init = $init);
-
-        // The release build's binary is one call into the app's engine
-        // library ([`engine_main!`]), which carries the app's library: the
-        // engine depends on the app's package, so the binary names the
-        // library itself rather than through Cargo.
-        #[cfg(feature = "runtime-engine")]
-        #[link(name = $engine, kind = "dylib")]
-        unsafe extern "C-unwind" {
-            safe fn $entry();
-        }
-
-        #[cfg(feature = "runtime-engine")]
-        fn main() {
-            $entry();
-        }
-    };
-}
-
-/// The entry an app's engine library exports for the app's binary: run the
-/// app, after `init`, as [`main!`] would. Invoke it once at the root of the
-/// engine library (a runtime engine that carries the app's library), and
-/// name the library in the app's `ui::main!(App, init = .., engine = "..")`.
-/// The app's package then holds only that call, and its code ships in the
-/// runtime bundle beside the runtime it is built against.
-///
-/// The app enables the engine form with a `runtime-engine` feature; without
-/// it the binary runs the app itself.
-///
-/// An engine that carries several apps names each one's entry
-/// (`entry = tilo_hello_main`), and each app names the same entry in its
-/// `ui::main!`.
-#[macro_export]
-macro_rules! engine_main {
-    ($app:ty, init = $init:expr) => {
-        $crate::engine_main!($app, init = $init, entry = tilo_app_engine_main);
-    };
-    ($app:ty, init = $init:expr, entry = $entry:ident) => {
-        /// Run the app: the whole of its binary, which names this library and
-        /// calls this function by its unmangled name. A panic unwinds
-        /// through it as through any Rust call.
-        #[unsafe(no_mangle)]
-        pub extern "C-unwind" fn $entry() {
-            ($init)();
-            $crate::framework::run::<$app>();
-        }
-    };
 }
 
 /// Export the entry points every platform's host enters the app library by.
@@ -163,7 +102,7 @@ macro_rules! engine_main {
 /// apps define theirs. On Android it defines `android_main`, which the
 /// `NativeActivity` of `tilolang build --platform android` enters: the library
 /// built as a `cdylib` is the whole app there, run as [`framework::run`] runs it, after
-/// `init` when one is named (`ui::dev_reload_entry!(App, init = ..)`), as [`engine_main!`] does.
+/// `init` when one is named (`ui::dev_reload_entry!(App, init = ..)`).
 #[macro_export]
 macro_rules! dev_reload_entry {
     ($app:ty) => {

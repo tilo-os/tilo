@@ -10820,9 +10820,17 @@
         {
           "name": "item",
           "doc": "The message it stands for: its stable identity, what a caller anchors a scroll to, and what changes follow.",
-          "type": "resource",
-          "required": true,
+          "type": {
+            "option": "resource"
+          },
           "positional": true
+        },
+        {
+          "name": "id",
+          "doc": "What it stands for when it is no resource of the workspace: a line a service keeps for this device alone (a message of the person's Signal history), by the id that service gives it.",
+          "type": {
+            "option": "text"
+          }
         },
         {
           "name": "author",

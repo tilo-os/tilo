@@ -2,7 +2,7 @@
 # beside it: `*` is every native app, and a package joins the collection in the
 # change that retires the native app it replaces.
 [collections.default]
-include = ["*", "tl-activity", "tl-api-tester", "tl-backups", "tl-browser", "tl-calculator", "tl-calendar", "tl-camera", "tl-canvas", "tl-chat", "tl-chip-design", "tl-clocks", "tl-code-editor", "tl-console", "tl-contacts", "tl-containers", "tl-db-client", "tl-diffmerge", "tl-disk-usage", "tl-disks", "tl-ebook", "tl-feeds", "tl-files", "tl-firewall", "tl-git-client", "tl-hex-editor", "tl-logs", "tl-mail", "tl-maps", "tl-monitor", "tl-music", "tl-notes", "tl-osk", "tl-passwords", "tl-pdf", "tl-photos", "tl-poker", "tl-print-centre", "tl-publisher", "tl-remote", "tl-scratchpad", "tl-settings", "tl-sheets", "tl-shell", "tl-shortcuts", "tl-slides", "tl-snippets", "tl-speed-test", "tl-store", "tl-tasks", "tl-terminal", "tl-totp", "tl-tube", "tl-typst-editor", "tl-video", "tl-video-editor", "tl-weather", "tl-windows", "tl-word-processor"]
+include = ["*", "tl-activity", "tl-api-tester", "tl-backups", "tl-browser", "tl-calculator", "tl-calendar", "tl-camera", "tl-canvas", "tl-chat", "tl-chip-design", "tl-clocks", "tl-code-editor", "tl-console", "tl-contacts", "tl-containers", "tl-db-client", "tl-diffmerge", "tl-disk-usage", "tl-disks", "tl-ebook", "tl-feeds", "tl-files", "tl-firewall", "tl-git-client", "tl-hex-editor", "tl-logs", "tl-mail", "tl-messages", "tl-maps", "tl-monitor", "tl-music", "tl-notes", "tl-osk", "tl-passwords", "tl-pdf", "tl-photos", "tl-poker", "tl-print-centre", "tl-publisher", "tl-remote", "tl-scratchpad", "tl-settings", "tl-sheets", "tl-shell", "tl-shortcuts", "tl-slides", "tl-snippets", "tl-speed-test", "tl-store", "tl-tasks", "tl-terminal", "tl-totp", "tl-tube", "tl-typst-editor", "tl-video", "tl-video-editor", "tl-weather", "tl-windows", "tl-word-processor"]
 
 [collections.desktop]
 extends = ["default"]
@@ -18,8 +18,3 @@ extends = ["default"]
 
 [collections.recovery]
 include = ["tl-files", "tl-settings", "tl-terminal"]
-
-[features]
-# Typst from its engine library beside the runtime.
-# The contact directory from its engine library beside the runtime.
-messages = ["runtime-engine"]

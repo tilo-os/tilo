@@ -187,12 +187,12 @@ class AppReleaseTests(unittest.TestCase):
         # ordinary reverse-dependency selection chooses only that app. Reusing
         # the old tapps then failed the production runtime-root check.
         self.assertEqual(
-            app_release.apps_from_changes(["apps/messages/Cargo.toml"], catalog),
+            app_release.apps_from_changes(["apps/discord/Cargo.toml"], catalog),
             sorted(catalog),
         )
         self.assertEqual(
-            app_release.apps_from_changes(["apps/messages/src/lib.rs"], catalog),
-            ["messages"],
+            app_release.apps_from_changes(["apps/discord/src/lib.rs"], catalog),
+            ["discord"],
         )
 
     def test_direct_changes_select_exactly_their_packaging_closure(self):
@@ -451,8 +451,8 @@ class AppReleaseTests(unittest.TestCase):
             metadata = {
                 "packages": [
                     {
-                        "name": "messages",
-                        "manifest_path": str(ROOT / "apps/messages/Cargo.toml"),
+                        "name": "discord",
+                        "manifest_path": str(ROOT / "apps/discord/Cargo.toml"),
                         "dependencies": [],
                     }
                 ]
@@ -464,10 +464,10 @@ class AppReleaseTests(unittest.TestCase):
             ), mock.patch.object(
                 app_release,
                 "lockfile_affected_packages",
-                return_value={"messages"},
+                return_value={"discord"},
             ):
                 result = app_release.plan(args)
-            self.assertEqual(result["apps"], ["messages"])
+            self.assertEqual(result["apps"], ["discord"])
             self.assertEqual(result["input_classification"]["binary"], ["Cargo.lock"])
         with self.subTest(phase='lockfile dependency graph reaches workspace consumers'):
             old = b'''version = 4

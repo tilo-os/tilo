@@ -586,6 +586,11 @@ pub struct AccountView {
     pub files_mode: String,
     /// Whether its background sync and uploads are paused on this device.
     pub paused: bool,
+    /// The service it is an account of, as its type names it (`imap`, `signal`, `whatsapp`).
+    pub service: String,
+    /// A messaging account's scope, which a contact's address on its service is confirmed
+    /// under; empty for any other account.
+    pub scope: String,
 }
 
 /// One of a calendar account's calendars, as its person chooses which show.

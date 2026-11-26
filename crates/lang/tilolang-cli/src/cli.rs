@@ -2981,7 +2981,7 @@ mod tests {
         let apps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
         // A window is always certified, a service's own too (the launcher).
         assert!(!is_windowless_service(&apps.join("launcher")));
-        assert!(!is_windowless_service(&apps.join("messages")));
+        assert!(!is_windowless_service(&apps.join("discord")));
         // A service with nothing to show is certified nowhere: one that runs and draws no
         // window.
         let root = tempfile::tempdir().expect("a scratch directory");

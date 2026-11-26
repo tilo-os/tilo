@@ -329,10 +329,6 @@
       "libraries": 30586728,
       "tests": 1056185456
     },
-    "messages": {
-      "libraries": 26628808,
-      "tests": 310172360
-    },
     "moderation-model": {
       "libraries": 4609223,
       "tests": 129837376
@@ -668,10 +664,6 @@
     "tilo-contact-directory": {
       "libraries": 5145522,
       "tests": 30104120
-    },
-    "tilo-contact-directory-engine": {
-      "libraries": 0,
-      "tests": 2852192
     },
     "tilo-content": {
       "libraries": 4259437,

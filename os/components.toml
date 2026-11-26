@@ -507,9 +507,6 @@ scope = "session"
 profile = "thin-app"
 packages = ["runtime-dylib"]
 app_manifests = "apps/*/tilo-app.toml"
-features = [
-  "messages/runtime-engine",
-]
 layer = "direct"
 files = [
   { from = "/usr/lib/tilo-runtime/", to = "/usr/lib/tilo-runtime/", tree = true },

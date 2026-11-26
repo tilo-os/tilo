@@ -80,6 +80,7 @@ mod mail_recipients;
 mod make_from;
 mod marks;
 mod may_read;
+mod messages;
 mod migrations;
 mod monitor;
 mod naming;

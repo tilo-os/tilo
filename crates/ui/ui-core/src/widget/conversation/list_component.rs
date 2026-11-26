@@ -29,8 +29,11 @@ tilo_ui_base::choice!(crate::widget::conversation::DeliveryState, "Delivery", {
 pub struct ConversationEntryProps {
     /// The message it stands for: its stable identity, what a caller anchors a scroll to, and what changes
     /// follow.
-    #[component(required, positional)]
-    pub item: ResourceId,
+    #[component(positional)]
+    pub item: Option<ResourceId>,
+    /// What it stands for when it is no resource of the workspace: a line a service keeps for this
+    /// device alone (a message of the person's Signal history), by the id that service gives it.
+    pub id: Option<String>,
     /// Who said it, as the person reads names.
     pub author: Option<String>,
     /// When it was said: a divider marks the first line of each day, and the time shows beside an author's
@@ -65,7 +68,10 @@ fn line_of(entry: &ConversationEntryProps) -> ConversationLine {
     let at_ms = entry
         .time
         .map_or(0, |moment| moment.0.saturating_mul(1_000));
-    let key = entry.item.0.clone();
+    let key = entry.item.as_ref().map_or_else(
+        || entry.id.clone().unwrap_or_default(),
+        |item| item.0.clone(),
+    );
     let mut line = if entry.outgoing {
         ConversationLine::outgoing(key, at_ms, entry.said.clone())
     } else {

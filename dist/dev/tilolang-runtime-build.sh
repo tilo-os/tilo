@@ -28,7 +28,6 @@ export TILO_TEST_ASSET_CACHE=${TILO_TEST_ASSET_CACHE:-$target/test-assets}
 runtime_plan=$(python3 tools/apps/app_release.py --collection default)
 INCLUDE_PACKAGES=$(jq -r '.packages | join(" ")' <<<"$runtime_plan") \
     BUILD_PACKAGES=tilolang-process \
-    APP_FEATURES=$(jq -r '.features | join(",")' <<<"$runtime_plan") \
     TARGET_DIR=$target PROFILE=thin-dev \
     os/scripts/build-thin-apps.sh
 

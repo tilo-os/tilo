@@ -219,6 +219,17 @@ impl PublishedDirectory {
         reason = "every index is the loop's offset, checked against the candidates' length"
     )]
     pub fn page(&self, query: &ActionDirectoryQuery) -> ActionDirectoryPage {
+        self.page_refreshed(query, &mut |_| {})
+    }
+
+    /// [`PublishedDirectory::page`], each row as `refresh` leaves it: a row is
+    /// measured against the byte budget as it is answered, since what an
+    /// action can run for now (an unavailable one says why) adds to it.
+    fn page_refreshed(
+        &self,
+        query: &ActionDirectoryQuery,
+        refresh: &mut impl FnMut(&mut ActionDirectoryRow),
+    ) -> ActionDirectoryPage {
         let Some((revision, snapshot)) = &self.published else {
             return unavailable_page(query);
         };
@@ -226,8 +237,11 @@ impl PublishedDirectory {
             return stale_page(revision.clone());
         }
         if !query.resource_name.is_empty() {
-            let found = named_rows(snapshot, &query.parent_resource, &query.resource_name)
+            let mut found = named_rows(snapshot, &query.parent_resource, &query.resource_name)
                 .unwrap_or_default();
+            for row in &mut found {
+                refreshed(row, refresh);
+            }
             return named_page(query, revision.clone(), found);
         }
         let offset = if query.cursor.is_empty() {
@@ -282,7 +296,8 @@ impl PublishedDirectory {
                     .filter(|row| action_row_matches(row, &needle))
                     .cloned(),
             };
-            if let Some(row) = row {
+            if let Some(mut row) = row {
+                refreshed(&mut row, refresh);
                 let next = bytes.saturating_add(action_directory_row_wire_bytes(&row));
                 if next > max_bytes {
                     byte_exhausted = true;
@@ -366,11 +381,7 @@ impl PublishedDirectory {
             }
             crate::ActionDirectoryRequest::Query { query, reply } => {
                 if !reply.is_closed() {
-                    let mut page = self.page(&query);
-                    for row in &mut page.rows {
-                        refreshed(row, &mut refresh);
-                    }
-                    let _ = reply.send(page);
+                    let _ = reply.send(self.page_refreshed(&query, &mut refresh));
                 }
             }
             crate::ActionDirectoryRequest::Resolve {

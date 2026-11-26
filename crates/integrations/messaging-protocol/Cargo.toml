@@ -43,10 +43,9 @@ rustls-native-certs = { workspace = true, optional = true }
 tokio-tungstenite = { version = "=0.28.0", default-features = false, features = ["connect", "rustls-tls-native-roots"], optional = true }
 
 [dev-dependencies]
-messages = { path = "../../../apps/messages" }
+# What Messages asks its device for, driven over the broker's own clients.
+tilo-messaging = { path = "../tilo-messaging", features = ["engine"] }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
-# The headless test host the tests open the app in, as a person's device hosts it.
-tilo-app-test-host = { path = "../../sdk/tilo-app-test-host" }
 tempfile.workspace = true
 tilo-clock = { path = "../../platform/tilo-clock", features = ["test-support"] }
 tilo-test-env = { path = "../../../tools/test-env" }

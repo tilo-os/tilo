@@ -97,7 +97,6 @@ members = [
 
     # Applications
     "apps/moderation-model",
-    "apps/messages",
     "apps/imager",
     "apps/staging-handoff-model",
 
@@ -373,7 +372,7 @@ members = [
     "crates/engines/loadable/browser",
     "crates/engines/loadable/camera",
     "crates/engines/loadable/chip-design",
-    "crates/engines/loadable/contact-directory",
+    "crates/engines/loadable/messaging",
     "crates/engines/loadable/diffmerge",
     "crates/engines/loadable/git",
     "crates/engines/loadable/grayjay",

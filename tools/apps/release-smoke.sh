@@ -97,74 +97,12 @@ first_frame() (
   (( ${#failed[@]} == 0 )) || { echo "no first frame from: ${failed[*]}" >&2; exit 1; }
 )
 
-# Apps run their engine libraries. An app with no probe of its own counts by
-# the trace of its start alone (an app need not accept --help). An engine another engine chains on (`via:` the engine the app loads) must
-# arrive from the app or through that engine, which the app loaded itself:
-# Browser's import engine carries its service sessions; on x86_64 Browser
-# names only the import engine.
-engines() (
-  set -euo pipefail
-  libdir=$(rustc --print target-libdir)
-  failed=0
-  for probe in "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine"; do
-    read -r app library option <<<"$probe"
-    via=""
-    if [[ $option == via:* ]]; then via=${option#via:}; option=""; fi
-    if [[ ! -x $target/thin-app/$app ]]; then
-      echo "$app is not among this run's apps; no $library to run" | tee -a "$GITHUB_STEP_SUMMARY"
-      continue
-    fi
-    if ! grep -Fxq "$library" "$target/thin-app/runtime-engines"; then
-      echo "build-thin-apps.sh did not list $library" >&2
-      failed=1
-      continue
-    fi
-    if [[ -n $option ]]; then arguments=("$option" check); else arguments=(--help); fi
-    runtime=$(mktemp -d)
-    chmod 700 "$runtime"
-    status=0
-    XDG_RUNTIME_DIR=$runtime LD_LIBRARY_PATH="$target/thin-app:$libdir" LD_DEBUG=files \
-      timeout 120 "$target/thin-app/$app" "${arguments[@]}" \
-      >"$runtime/out.log" 2>"$runtime/loader.log" </dev/null || status=$?
-    if [[ -n $option ]] && (( status != 0 )); then
-      grep -v -e 'file=' -e 'calling' "$runtime/loader.log" | tail -40 >&2 || true
-      echo "$app could not run $library (exit $status)" >&2
-      failed=1
-    else
-      arrival=$(grep -Eo "file=${library//./\\.} \[0\];  needed by [^ ]*" \
-        "$runtime/loader.log" | head -1 || true)
-      if [[ -n $via ]]; then
-        # Either the app names it too (aarch64's link keeps it), or it comes
-        # through the chain, whose first link must be the app's own.
-        through=$(grep -Eo "file=${via//./\\.} \[0\];  needed by [^ ]*" \
-          "$runtime/loader.log" | head -1 || true)
-        if [[ $arrival == */$app || ($arrival == */$via && $through == */$app) ]]; then
-          printf '%s starts with %s\nand %s\n' "$app" "$through" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
-        else
-          echo "$app started without loading $library through $via, which it loads itself:" \
-            "${arrival:-$library not loaded}; ${through:-$via not loaded}" >&2
-          failed=1
-        fi
-      elif [[ $arrival == */$app && -n $option ]]; then
-        printf '%s\nthrough %s\n' "$(cat "$runtime/out.log")" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
-      elif [[ $arrival == */$app ]]; then
-        printf '%s starts with %s\n' "$app" "$arrival" | tee -a "$GITHUB_STEP_SUMMARY"
-      else
-        echo "$app ${option:-started} without loading $library itself: ${arrival:-not loaded}" >&2
-        failed=1
-      fi
-    fi
-    rm -rf "$runtime"
-  done
-  exit "$failed"
-)
-
 failed=()
 # RELEASE_SMOKE_STEPS narrows the run to some of the steps (the size check on main takes the two
 # size budgets); a release runs them all.
-for step in ${RELEASE_SMOKE_STEPS:-tapp_size runtime_size loader_cost first_frame engines}; do
+for step in ${RELEASE_SMOKE_STEPS:-tapp_size runtime_size loader_cost first_frame}; do
   case $step in
-    tapp_size|runtime_size|loader_cost|first_frame|engines) ;;
+    tapp_size|runtime_size|loader_cost|first_frame) ;;
     *) printf 'unknown release smoke step: %s\n' "$step" >&2; exit 2 ;;
   esac
   printf '==> %s\n' "$step"

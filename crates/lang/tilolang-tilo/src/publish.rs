@@ -234,8 +234,8 @@ pub fn action_type(
 
 /// The schema of the value the action `action` of `meta` returns, in the API's JSON: what an
 /// invocation of it is held to, so a caller reads the value as the data it declared. `None` for
-/// an action declared to return nothing, and for one whose value the API carries no data for (a
-/// file, the bytes of a response): that app shows it rather than yielding it.
+/// an action declared to return nothing, and for one whose value the API carries no data for (the
+/// bytes of a response): that app shows it rather than yielding it.
 ///
 /// A value may always be absent: an invocation that stopped for a person to decide first has not
 /// run, and returns nothing until they do.
@@ -246,7 +246,13 @@ pub fn result_schema(meta: &Meta, action: &ActionMeta) -> Option<Json> {
         Ty::Option(inner) => inner.as_ref(),
         other => other,
     };
-    let schema = crate::surface::schema_of(meta, inner);
+    let schema = match inner {
+        Ty::File => crate::surface::file_schema(),
+        Ty::List(item) if **item == Ty::File => {
+            serde_json::json!({"type": "array", "items": crate::surface::file_schema()})
+        }
+        other => crate::surface::schema_of(meta, other),
+    };
     Some(serde_json::json!({"oneOf": [schema, {"type": "null"}]}))
 }
 
@@ -258,11 +264,13 @@ pub(crate) fn result_ty(meta: &Meta, action: &ActionMeta) -> Option<Ty> {
 }
 
 /// Whether a value of `ty` is one the API carries as data: a text, a number, a flag, a person,
-/// rich text, a resource by the reference to it, a list of them, an option of one. A file, the
-/// bytes of a response, an action and a view are the app's own: no caller reads one.
+/// rich text, a resource by the reference to it, a file by the reference to its content, a list
+/// of them, an option of one. The bytes of a response, an action and a view are the app's own: no
+/// caller reads one.
 fn carries_data(ty: &Ty) -> bool {
     match ty {
-        Ty::Text
+        Ty::File
+        | Ty::Text
         | Ty::Int
         | Ty::Float
         | Ty::Bool

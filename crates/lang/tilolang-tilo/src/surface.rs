@@ -191,6 +191,23 @@ pub(crate) fn schema_of(meta: &Meta, ty: &Ty) -> Json {
     }
 }
 
+/// The schema of a file as an action answers it: the reference to its content, which a caller
+/// reads or hands to an action that takes a file, and what the file is. The keys are the ones a
+/// caller passes a file in with ([`tilolang_runtime::blob::file_from_json`]), which also takes a
+/// file by its `hash` or `url`: a parameter's schema stays open to those.
+pub(crate) fn file_schema() -> Json {
+    json!({
+        "type": "object",
+        "properties": {
+            "content": {"type": "string", "pattern": "^tilo\\.content:"},
+            "name": {"type": "string"},
+            "media": {"type": "string"},
+            "size": {"type": "integer", "minimum": 0},
+        },
+        "required": ["content", "name", "media"],
+    })
+}
+
 /// The schema of a workspace's actor as a member names one: a person by their key, an agent by
 /// its id and the person it acts for ([`tilo_action_policy::MemberId`]).
 fn actor_schema() -> Json {

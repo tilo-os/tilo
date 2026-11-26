@@ -7,7 +7,6 @@
 use super::*;
 use crate::signal_session::{Completion, SendJournal};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use ui::tilo_resource::SharedResource as _;
 use whatsapp_rust::wacore::types::{
     events::Receipt, message::MessageSource, presence::ReceiptType,
 };
@@ -151,43 +150,29 @@ async fn observe(fixture: &Fixture, kind: ReceiptType) -> Result<bool, SendError
         .await
 }
 
-pub(super) fn messages_with_client(
-    fixture: &Fixture,
-    client: tilo_messaging::MessagingClient,
-) -> tilo_app_test_host::TestApp<messages::MessagesShell> {
-    use messages::{MessagesEffect, MessagesShell};
-    use tilo_contact_directory::ContactDirectory;
-    let mut app = tilo_app_test_host::TestApp::<MessagesShell>::for_person_with_lent(
-        &fixture.owner.actor,
-        client,
-    )
-    .unwrap();
-    tests::project_account_metadata(&fixture.owner, &fixture.route, &mut app);
-    let directory = app
-        .shared_workspace::<ContactDirectory>(ContactDirectory::OWNER)
-        .unwrap();
-    let route = &fixture.route;
-    directory
-        .invoke(&ContactDirectory::PROJECT_CONTACT.with((route.person.clone(), "Alex".into())))
-        .unwrap();
-    directory
-        .invoke(&ContactDirectory::CONFIRM_ACCOUNT.with((
-            route.person.clone(),
-            route.association.clone(),
-            route.service.clone(),
-            route.scope.clone(),
-            route.recipient.clone(),
-            route.revision.clone(),
-        )))
-        .unwrap();
-    app.settle();
-    app.effect(&MessagesEffect::OpenPerson {
-        person: route.person.as_str().into(),
+/// Where Messages' engine, over `client`, says the fixture's WhatsApp account stands, once it
+/// says `want` or five seconds have passed: the state a window draws its words from.
+fn engine_state(fixture: &Fixture, client: &tilo_messaging::MessagingClient, want: &str) -> String {
+    let engine = tilo_messaging::engine::Engine::new(Some(client.clone()), None);
+    let ask = serde_json::json!({
+        "accounts": [{"service": "whatsapp", "account": fixture.owner.account}],
+        "routes": [fixture.route],
     })
-    .unwrap();
-    let choice = serde_json::json!({"service":route.service,"account":fixture.owner.account,"recipient":route.recipient,"association":route.association.as_str(),"scope":route.scope,"revision":route.revision}).to_string();
-    app.effect(&MessagesEffect::SelectRoute { choice }).unwrap();
-    app
+    .to_string();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let answer: serde_json::Value =
+            serde_json::from_str(&engine.call("state", &ask).unwrap()).unwrap();
+        assert_eq!(
+            answer["routes"][0], false,
+            "no state of these admits the route"
+        );
+        let state = answer["accounts"][0]["state"].as_str().unwrap().to_owned();
+        if state == want || std::time::Instant::now() > deadline {
+            return state;
+        }
+        std::thread::park_timeout(std::time::Duration::from_millis(5));
+    }
 }
 
 pub(super) async fn durability_fixture() -> (Fixture, Arc<WhatsappInboxHook>) {
@@ -260,28 +245,10 @@ async fn whatsapp_lifecycle_and_receipt_journey_never_admits_a_route() {
         supervisor.unavailable(AccountState::Ready),
         Err(SendError::InvalidRequest)
     );
-    let mut app = messages_with_client(&fixture, client.clone());
     supervisor.unavailable(AccountState::Linking).unwrap();
-    assert!(
-        app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |h| h
-                .a11y_nodes()
-                .iter()
-                .any(|(_, node)| node.label()
-                    == Some(
-                        "Linking this account… Confirm the request on your phone."
-                    )))
-    );
+    assert_eq!(engine_state(&fixture, &client, "linking"), "linking");
     supervisor.unavailable(AccountState::Locked).unwrap();
-    assert!(
-        app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |h| h
-                .a11y_nodes()
-                .iter()
-                .any(
-                    |(_, node)| node.label() == Some("Unlock this account to use messaging.")
-                ))
-    );
+    assert_eq!(engine_state(&fixture, &client, "locked"), "locked");
     assert!(!client.supports(&fixture.route));
     supervisor
         .install_whatsapp(Arc::new(fixture.broker.clone()), bootstrap)
@@ -289,50 +256,18 @@ async fn whatsapp_lifecycle_and_receipt_journey_never_admits_a_route() {
         .unwrap();
     // An SDK that has not logged in/connected must never advertise readiness.
     assert_eq!(client.account_state(&account), AccountState::NeedsRelink);
-    let states = app
-        .effect(&messages::MessagesEffect::ListAccountStates)
-        .unwrap()
-        .value
-        .unwrap();
-    assert!(
-        states
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|state| state["service"] == "whatsapp"
-                && state["account"] == fixture.owner.account
-                && state["state"] == "needs-relink")
+    assert_eq!(
+        engine_state(&fixture, &client, "needs-relink"),
+        "needs-relink"
     );
     assert!(!client.supports(&fixture.route));
-    assert!(
-        app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |h| h
-                .a11y_nodes()
-                .iter()
-                .any(|(_, node)| node.label()
-                    == Some("Link this account again to resume messaging.")))
-    );
     supervisor.unavailable(AccountState::Failed).unwrap();
-    assert!(
-        app.harness()
-            .wait_until(ui::time::Duration::from_secs(5), |h| h
-                .a11y_nodes()
-                .iter()
-                .any(|(_, node)| node.label()
-                    == Some(
-                        "This account's connection stopped. Check its connection and account setup."
-                    )))
-    );
+    assert_eq!(engine_state(&fixture, &client, "failed"), "failed");
     assert_eq!(
         client.account_state(&ServiceAccount::new("signal", &fixture.owner.account)),
         AccountState::Unavailable
     );
     assert_eq!(fixture.calls.load(Ordering::SeqCst), 0);
-    assert!(
-        !app.harness()
-            .dump_json()
-            .contains("private fixture message")
-    );
 
     // A supervisor frozen at another link generation installs neither an
     // external broker nor another owner's SDK, and never becomes ready.

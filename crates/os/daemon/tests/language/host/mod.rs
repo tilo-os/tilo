@@ -53,7 +53,6 @@
 
 pub mod apps;
 
-mod app_actions;
 mod messages_for_agents;
 mod second;
 
@@ -183,7 +182,7 @@ where
 
 /// [`run_with`], on a device that also has the Rust apps `rust` installed, each named by its
 /// package of this tree's `apps/` and the entrypoint binary this run built for it
-/// (`("messages", "messages")`): the daemon starts them the way a person's computer does.
+/// (`("discord", "discord")`): the daemon starts them the way a person's computer does.
 ///
 /// # Panics
 ///

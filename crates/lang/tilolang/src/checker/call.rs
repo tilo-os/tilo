@@ -3222,6 +3222,24 @@ impl Checker<'_> {
         let mut progress: Option<Ex> = None;
         for a in args {
             if let Some(named) = &a.name {
+                // `outside: true`: the op reaches a service outside Tilo (a message to someone
+                // on Signal), so the action that asks it is an outside effect, as one calling
+                // `outside(...)` is, and a caller other than the person is asked first.
+                if matches!(name.name.as_str(), "start" | "call") && named.name == "outside" {
+                    if matches!(a.value.kind, ExprKind::Bool(true)) {
+                        self.st.facts.outside = true;
+                    } else {
+                        self.err(
+                            "E022",
+                            a.value.span,
+                            format!(
+                                "{what} says `outside: true` where its op reaches outside Tilo, \
+                                 and nothing where it does not"
+                            ),
+                        );
+                    }
+                    continue;
+                }
                 let slot = match (name.name.as_str(), named.name.as_str()) {
                     ("start", "done") => Some(&mut done),
                     ("start", "progress") => Some(&mut progress),

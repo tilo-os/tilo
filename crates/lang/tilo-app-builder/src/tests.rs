@@ -5148,7 +5148,7 @@ tilo_test_env::scenario! {
         );
 
         let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-        assert!(app_is_workspace_member(&repo.join("apps/messages")));
+        assert!(app_is_workspace_member(&repo.join("apps/imager")));
         let temp = tempfile::tempdir().unwrap();
         assert!(!app_is_workspace_member(temp.path()));
     }

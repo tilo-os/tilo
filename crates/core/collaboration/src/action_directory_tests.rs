@@ -222,4 +222,62 @@ tilo_test_env::scenario! {
         assert_eq!(rest.rows.len(), 1);
         assert_eq!(rest.rows[0].resource, "done");
     }
+
+    phase a_page_fits_its_budget_with_what_each_action_can_run_for_now;
+    {
+        // An app says why each action it cannot run now is unavailable as it
+        // answers: the rows a page carries are those words long, and the host
+        // refuses a page over the budget it asked for.
+        let directory = published(40);
+        let why = "Link a messaging account first; ".repeat(10);
+        let max_bytes = 8 * 1024;
+        let mut cursor = Vec::new();
+        let mut found = 0;
+        loop {
+            let (reply, mut answered) = tokio::sync::oneshot::channel();
+            directory.answer_refreshed(
+                crate::ActionDirectoryRequest::Query {
+                    query: ActionDirectoryQuery {
+                        needle: "show".into(),
+                        cursor: std::mem::take(&mut cursor),
+                        max_bytes,
+                        ..query()
+                    },
+                    reply,
+                },
+                |row| {
+                    if let Some(descriptor) = row.descriptor.as_mut() {
+                        descriptor.contract.availability =
+                            tilo_actions::Availability::Unavailable {
+                                code: "no_account".into(),
+                                reason: why.clone(),
+                            };
+                    }
+                },
+            );
+            let page = answered.try_recv().expect("a page is answered at once");
+            let json = serde_json::to_string(&page).unwrap();
+            let page = runtime_collab::read_directory_answer(
+                &json,
+                u64::from(max_bytes),
+                |page: &ActionDirectoryPage| page.rows.iter().collect(),
+            )
+            .expect("the host reads the page within its budget");
+            assert!(!page.rows.is_empty(), "every page carries a row");
+            assert!(page.rows.iter().all(|row| {
+                row.visibility.as_ref().is_some_and(|visibility| {
+                    matches!(
+                        &visibility.contract.availability,
+                        tilo_actions::Availability::Unavailable { reason, .. } if *reason == why
+                    )
+                })
+            }));
+            found += page.rows.len();
+            if page.exhausted {
+                break;
+            }
+            cursor = page.next_cursor;
+        }
+        assert_eq!(found, 2 + 2 * 40, "every list's and item's view, once");
+    }
 }

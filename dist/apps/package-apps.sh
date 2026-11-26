@@ -120,7 +120,6 @@ fi
 runtime_plan="$out/runtime-plan.json"
 python3 "$repo_root/tools/apps/app_release.py" --collection default > "$runtime_plan"
 mapfile -t runtime_packages < <(jq -r '.packages[]' "$runtime_plan")
-features=$(jq -r '.features | join(",")' "$runtime_plan")
 # The language runtimes the selected apps name (`optional-runtimes`): each runtime package
 # carries the SDK's native part, so an app imports it from the runtime instead of shipping it.
 mapfile -t language_runtimes < <(jq -r '.runtimes[]? | split("/")[0]' "$plan" | sort -u)
@@ -150,7 +149,7 @@ fi
 # the complete default collection, even when only a few changed tapps will be
 # emitted below.  This makes the runtime root independent of the partial app
 # selection and therefore safe to combine with unchanged tapps.
-INCLUDE_PACKAGES="${runtime_packages[*]}" BUILD_PACKAGES="${packages[*]}" APP_FEATURES="$features" \
+INCLUDE_PACKAGES="${runtime_packages[*]}" BUILD_PACKAGES="${packages[*]}" \
     BUILD_RUNTIME_ONLY="$runtime_only" "$repo_root/os/scripts/build-thin-apps.sh"
 fi
 [[ $runtime_only != 1 ]] || exit 0
