@@ -267,6 +267,29 @@ fn a_members_content_steps_answer_and_the_workspace_keeps_what_they_put() {
     });
 }
 
+/// `device` installs `app` in `workspace`, as a person installing it does: the workspace runs a
+/// version of it, and the app's record has its root from then on.
+async fn installs(device: &host::Member, workspace: &str, app: &str) {
+    let installed = device
+        .call(
+            tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
+            tilo_actions::remote::workspace_governance_address(workspace, "install-app"),
+            &json!({
+                "app": app,
+                "version": "0.1.0",
+                "surface": "00".repeat(32),
+                "package": "00".repeat(32),
+                "publisher": "00".repeat(32),
+                "dev": true,
+            }),
+        )
+        .await;
+    assert!(
+        matches!(installed, Ok(InvocationUpdate::Succeeded { .. })),
+        "the workspace runs {app}: {installed:?}"
+    );
+}
+
 /// A commenter comments and a moderator makes a channel, by the role the workspace's governance
 /// names for them; the owner files the issue the comment is on, and the comment is Discussion's,
 /// made from that issue.
@@ -294,24 +317,7 @@ fn a_commenter_comments_and_a_moderator_makes_a_channel() {
         // `comment`, made from the task it is about. The owner's device installs Discussion in
         // the workspace, which makes its root, so its record offers `comment` on its whole with
         // no window of it open anywhere: the record's provider is what the commenter reaches.
-        let installed = owner_device
-            .call(
-                tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
-                tilo_actions::remote::workspace_governance_address(&workspace, "install-app"),
-                &json!({
-                    "app": DISCUSSION,
-                    "version": "0.1.0",
-                    "surface": "00".repeat(32),
-                    "package": "00".repeat(32),
-                    "publisher": "00".repeat(32),
-                    "dev": true,
-                }),
-            )
-            .await;
-        assert!(
-            matches!(installed, Ok(InvocationUpdate::Succeeded { .. })),
-            "the workspace runs Discussion: {installed:?}"
-        );
+        installs(&owner_device, &workspace, DISCUSSION).await;
         let commenter = guest(&host, &owner_device, "commenter", "Cyd").await;
         let discussion = workspace_record(DISCUSSION);
         let listed = commenter.listed(&discussion).await;
@@ -339,12 +345,20 @@ fn a_commenter_comments_and_a_moderator_makes_a_channel() {
             "a commenter's comment is saved: {comment:?}"
         );
 
-        // A moderator's new channel in Chat.
+        // A moderator's new channel in Chat: `new_channel`, where Chat's record offers it on the
+        // workspace's conversations, which installing Chat made.
+        installs(&owner_device, &workspace, "so.tilo.chat").await;
         let moderator = guest(&host, &owner_device, "moderator", "Mo").await;
+        let chat = workspace_record("so.tilo.chat");
+        let listed = moderator.listed(&chat).await;
+        let new_channel = listed
+            .iter()
+            .find(|action| action.address.action == "new_channel")
+            .unwrap_or_else(|| panic!("Chat's record offers a moderator new_channel: {listed:?}"));
         let made = moderator
             .call(
-                &workspace_record("so.tilo.chat"),
-                tilo_actions::ActionAddress::new("chat.channels", "create-channel"),
+                &chat,
+                new_channel.address.clone(),
                 &json!({"name": "launch"}),
             )
             .await
