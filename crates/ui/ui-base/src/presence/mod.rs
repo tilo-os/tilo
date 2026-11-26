@@ -9,7 +9,7 @@ pub mod capability;
 mod caret_tag;
 mod chat;
 #[cfg(feature = "model")]
-mod draft;
+pub mod draft;
 mod faces;
 pub mod frame;
 mod geom;
@@ -17,7 +17,7 @@ mod interaction;
 mod written;
 #[cfg(feature = "model")]
 pub use tilo_doc::written::written_by;
-mod key;
+pub mod key;
 mod labels;
 mod layer;
 mod mark;

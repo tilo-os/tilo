@@ -565,7 +565,7 @@ const RIM_CORNER_STEPS: u32 = 4;
 /// part coordinates, y down): fully where it faces the light, nothing side on, and a third as much
 /// where it faces away, where light that entered the glass leaves it.
 #[must_use]
-pub(crate) fn rim_light(normal: Vec2, toward_light: Vec2) -> f32 {
+pub fn rim_light(normal: Vec2, toward_light: Vec2) -> f32 {
     let facing = normal.dot(toward_light);
     let lit = facing.max(0.0).powi(2);
     let through = (-facing).max(0.0).powi(2) / 3.0;

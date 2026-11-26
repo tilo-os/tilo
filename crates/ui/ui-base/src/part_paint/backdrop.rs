@@ -795,7 +795,7 @@ fn settle(scene: &mut Scene, transform: Affine, shape: &impl Shape, theme: &Them
 /// The see-through material's fill over `ground`: half of it, unblurred,
 /// opaque under reduced transparency and forced colours (and on high
 /// contrast, whose token is `1`).
-pub(crate) fn see_through_fill(theme: &Theme, ground: Color) -> Color {
+pub fn see_through_fill(theme: &Theme, ground: Color) -> Color {
     let opacity = if theme.reduce_transparency || theme.forced_colors {
         1.0
     } else {

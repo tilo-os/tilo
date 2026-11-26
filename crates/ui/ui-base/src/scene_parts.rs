@@ -14,7 +14,7 @@ use vello::Scene;
 use vello::kurbo::Rect;
 use vello_encoding::{Encoding, Patch};
 
-mod widget_keys;
+pub mod widget_keys;
 pub use widget_keys::{
     Begun, DrawnField, DrawnScroll, FieldText, Keyer, begin_frame, begin_item, begin_widget,
     drawn_fields, drawn_pictures, drawn_scrolls, end_widget, item_key, key_widgets, keyed, keyer,

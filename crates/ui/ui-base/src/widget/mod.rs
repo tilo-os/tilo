@@ -1513,7 +1513,7 @@ fn first_window_answer<W: Widget + ?Sized, T>(
 fn first_answer_under<T>(widget: &dyn Widget, ask: &dyn Fn(&dyn Widget) -> Option<T>) -> Option<T> {
     first_window_answer(widget, |widget| ask(widget), ask)
 }
-mod spacer;
+pub mod spacer;
 pub use spacer::Spacer;
 pub mod aim;
 pub use aim::Trajectory;

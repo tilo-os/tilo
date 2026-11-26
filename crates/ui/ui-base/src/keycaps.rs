@@ -594,7 +594,7 @@ pub fn as_typed<'a>(
     (held, at.key.clone())
 }
 
-static ACTIVE: AtomicU8 = AtomicU8::new(0);
+pub static ACTIVE: AtomicU8 = AtomicU8::new(0);
 
 thread_local! {
     static SCOPED: std::cell::Cell<Option<Keycaps>> = const { std::cell::Cell::new(None) };

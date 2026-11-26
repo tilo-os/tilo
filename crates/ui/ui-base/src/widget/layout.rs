@@ -1472,7 +1472,7 @@ impl CompositionFocus {
 }
 
 #[cfg(test)]
-pub(crate) struct AnonymousFocusProbe {
+pub struct AnonymousFocusProbe {
     pub focused: bool,
     pub enabled: bool,
     pub state: String,

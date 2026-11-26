@@ -2,18 +2,18 @@
 //! search/maximize chips beside its ×).
 
 use super::aim::Trajectory;
-pub(crate) use super::aim::{SETTLE, in_aim_hull};
+pub use super::aim::{SETTLE, in_aim_hull};
 use crate::time::{Duration, Instant};
 use vello::kurbo::{Point, Rect};
 
 /// How long the pointer rests on an item before it opens. Shorter than a
 /// deliberate pause, longer than the time a pointer sweeping across a row
 /// spends over any one item.
-pub(crate) const DWELL: Duration = Duration::from_millis(100);
+pub const DWELL: Duration = Duration::from_millis(100);
 
 /// How long a change held by heading waits once the pointer stops moving
 /// toward what it was heading for without arriving.
-pub(crate) const AIM_HOLD: Duration = Duration::from_millis(300);
+pub const AIM_HOLD: Duration = Duration::from_millis(300);
 
 /// One item of the row, as laid out now.
 #[derive(Clone, Copy, Debug, PartialEq)]

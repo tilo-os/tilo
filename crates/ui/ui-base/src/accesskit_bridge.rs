@@ -187,7 +187,7 @@ pub fn ours_action_to_accesskit(
 /// Prefers `taffy_id` (offset by 1 so it can never be [`ROOT_ID`], since
 /// taffy ids start at 0); falls back to a high-range walk index for widgets
 /// with no `node_map` entry.
-fn widget_node_id(taffy_id: Option<TaffyNodeId>, walk_index: u64) -> AkNodeId {
+pub fn widget_node_id(taffy_id: Option<TaffyNodeId>, walk_index: u64) -> AkNodeId {
     match taffy_id {
         Some(id) => AkNodeId(u64::from(id).saturating_add(1)),
         None => AkNodeId(WALK_ID_BASE.saturating_add(walk_index)),

@@ -1,5 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tilo_ui_base::tokens::SurfaceRole;
+use tilo_ui_base::theme::Theme;
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, Shape, Size};

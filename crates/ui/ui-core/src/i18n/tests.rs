@@ -1,4 +1,10 @@
 use tilo_ui_base::i18n::*;
+use std::sync::Arc;
+use std::cell::Cell;
+use fluent::FluentArgs;
+use fluent::FluentResource;
+use fluent::FluentValue;
+use unic_langid::LanguageIdentifier;
 
 /// One line Fluent cannot read refuses the whole catalogue, and every toolkit label then
 /// shows as its key: each language the toolkit ships parses whole.

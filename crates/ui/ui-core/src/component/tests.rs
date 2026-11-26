@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use tilo_ui_base::widget::Element;
 
 use tilo_ui_base::component::*;
 use crate::component_catalogue::TOOLKIT;

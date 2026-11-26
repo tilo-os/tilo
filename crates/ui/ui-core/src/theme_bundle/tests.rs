@@ -3,6 +3,8 @@
 
 use std::fmt::Write as _;
 use std::sync::Arc;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::part_paint::wasm;
 
 use tilo_theme_bauhaus::Bauhaus;
 use tilo_theme_sdk::wire;

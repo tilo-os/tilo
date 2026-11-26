@@ -72,12 +72,12 @@ const SHADOW_EDGE_ROWS: u32 = 4;
 const SHADOW_GAUSSIAN_K: f64 = 0.35;
 /// Where the envelope peaks, as a fraction of the band it is baked across (the band runs
 /// one `spread` inside the rect's edge to one `spread` outside).
-const SHADOW_PEAK_RADIUS: f64 = 0.30;
+pub const SHADOW_PEAK_RADIUS: f64 = 0.30;
 
 /// The shadow's alpha as a function of the normalised signed distance `u` from the rect's
 /// edge: `-1` is one band inside the rect, `0` is exactly on the edge, `+1` is one
 /// `spread` outside.
-fn shadow_profile(u: f64) -> f64 {
+pub fn shadow_profile(u: f64) -> f64 {
     let d = (u + 1.0) * 0.5;
     if d <= 0.0 || d >= 1.0 {
         return 0.0;
@@ -503,7 +503,7 @@ pub fn edge_on(surface: Color) -> Color {
     edge
 }
 
-fn derive_edge_on(surface: Color) -> Color {
+pub fn derive_edge_on(surface: Color) -> Color {
     use crate::a11y::relative_luminance;
     let ground = relative_luminance(surface);
     let mut last = Color::TRANSPARENT;

@@ -28,7 +28,7 @@ pub fn encode(path: &[usize], inner: Option<&str>) -> String {
 }
 
 /// The inner part naming the synthetic node at `keys` of the reached widget.
-pub(crate) fn keys(keys: &[u64]) -> String {
+pub fn keys(keys: &[u64]) -> String {
     let keys = keys
         .iter()
         .map(u64::to_string)
@@ -37,13 +37,13 @@ pub(crate) fn keys(keys: &[u64]) -> String {
     format!("#{keys}")
 }
 
-enum Inner<'a> {
+pub enum Inner<'a> {
     Widget,
     Semantic(&'a str),
     Keys(Vec<u64>),
 }
 
-fn decode(target: &str) -> Option<(Vec<usize>, Inner<'_>)> {
+pub fn decode(target: &str) -> Option<(Vec<usize>, Inner<'_>)> {
     let rest = target.strip_prefix(PREFIX)?;
     let (path, inner) = match rest.split_once('>') {
         Some((path, inner)) => (path, Some(inner)),

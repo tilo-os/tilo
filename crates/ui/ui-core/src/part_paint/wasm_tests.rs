@@ -3,6 +3,8 @@
 //! is tested beside it (crates/ui/theme-painter-wasm).
 
 use std::fmt::Write as _;
+use tilo_ui_base::tokens::SurfaceRole;
+use tilo_ui_base::theme::Theme;
 
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect};

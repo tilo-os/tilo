@@ -506,7 +506,7 @@ fn fixture_root() -> PathBuf {
     clippy::expect_used,
     reason = "test support only: the prepared fixture fonts always load, and a test cannot run without them"
 )]
-pub(crate) fn fixture_font_system() -> FontSystem {
+pub fn fixture_font_system() -> FontSystem {
     FontCatalog::controlled_fixture(fixture_root(), "en-US")
         .load()
         .expect("prepared canonical font fixture")

@@ -1,6 +1,7 @@
 use tilo_ui_base::presence::key::*;
 use tilo_ui_base::presence::local_workspace_key;
 use crate::view::{ViewRect, ViewSubset};
+use tilo_presence::PresenceKey;
 
 tilo_test_env::scenario! {
     fn presence_keys_carry_views_scopes_and_pointer_spaces;

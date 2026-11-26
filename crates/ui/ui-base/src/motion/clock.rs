@@ -82,7 +82,7 @@ pub fn pin_frame() -> PinnedFrame {
 /// [`pin_frame`] at `at`: a test steps a gesture through frames at the pace a display presents them,
 /// without sleeping.
 #[cfg(test)]
-pub(crate) fn pin_frame_at(at: Instant) -> PinnedFrame {
+pub fn pin_frame_at(at: Instant) -> PinnedFrame {
     PinnedFrame(FRAME_AT.with(|cell| cell.replace(Some(at))))
 }
 
@@ -280,7 +280,7 @@ pub fn frame_drawn(at: Instant) {
 /// Forget every frame wish and drawn frame on this thread: a test starts from a clock nothing has
 /// asked.
 #[cfg(test)]
-pub(crate) fn forget_frames_for_tests() {
+pub fn forget_frames_for_tests() {
     WISHES.with(|wishes| wishes.borrow_mut().clear());
     DRAWN_AT.with(|drawn| drawn.borrow_mut().clear());
 }

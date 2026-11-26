@@ -1,5 +1,8 @@
 use tilo_ui_base::richtext::*;
 use tilo_ui_base::text_render::TextStyle;
+use cosmic_text::FontSystem;
+use tilo_ui_base::text_selection::TextAffinity;
+use tilo_ui_base::text_selection::TextPosition;
 
 fn shape(fs: &mut FontSystem, text: &str, width: f32, style: &TextStyle) -> RichTextLayout {
     RichTextLayout::shape_styled(

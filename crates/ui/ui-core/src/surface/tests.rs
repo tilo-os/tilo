@@ -1,5 +1,14 @@
 use tilo_ui_base::surface::*;
 use tilo_ui_base::theme::PresetDesign;
+use vello::kurbo::Affine;
+use vello::peniko::Color;
+use tilo_ui_base::tokens::Colors;
+use vello::peniko::Fill;
+use vello::kurbo::Rect;
+use vello::kurbo::RoundedRect;
+use vello::Scene;
+use tilo_ui_base::tokens::Shadow;
+use tilo_ui_base::theme::Theme;
 
 tilo_test_env::scenario! {
     /// Edge fades, separators and derived edges.

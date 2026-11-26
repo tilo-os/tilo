@@ -277,14 +277,14 @@ pub enum I18nError {
 }
 
 thread_local! {
-    static MANAGER: std::cell::RefCell<Option<I18nManager>> = const { std::cell::RefCell::new(None) };
+    pub static MANAGER: std::cell::RefCell<Option<I18nManager>> = const { std::cell::RefCell::new(None) };
     /// Explicit person locale installed on this thread ([`set_person_locale`]), kept separate from
     /// the window's display locale (`I18nManager::current_locale`). `None` falls back directly to
     /// [`preferred_language`] from Settings / the system locale.
-    static PERSON_LOCALE: std::cell::RefCell<Option<LanguageIdentifier>> =
+    pub static PERSON_LOCALE: std::cell::RefCell<Option<LanguageIdentifier>> =
         const { std::cell::RefCell::new(None) };
-    static PSEUDO_LOCALE: Cell<PseudoLocale> = const { Cell::new(PseudoLocale::Off) };
-    static PSEUDO_REVISION: Cell<u64> = const { Cell::new(0) };
+    pub static PSEUDO_LOCALE: Cell<PseudoLocale> = const { Cell::new(PseudoLocale::Off) };
+    pub static PSEUDO_REVISION: Cell<u64> = const { Cell::new(0) };
     /// Messages resolved without variables, under the manager and revision they were resolved at
     /// ([`I18nManager::lookup`]).
     static PLAIN_LOOKUPS: std::cell::RefCell<PlainLookups> = std::cell::RefCell::default();
@@ -294,7 +294,7 @@ thread_local! {
         const { std::cell::RefCell::new(Vec::new()) };
     // Shared controls remain readable even when an app installs only its own
     // catalog. App translations always take precedence over this source.
-    static TOOLKIT_SOURCE: Result<Bundle, I18nError> =
+    pub static TOOLKIT_SOURCE: Result<Bundle, I18nError> =
         make_bundle(&parse_locale_or_default("en-US"), include_str!("../locales/en-US.ftl"));
 }
 
@@ -335,16 +335,16 @@ fn next_manager_id() -> u64 {
     })
 }
 
-fn manager_id() -> Option<u64> {
+pub fn manager_id() -> Option<u64> {
     MANAGER.with(|manager| manager.borrow().as_ref().map(|manager| manager.id))
 }
 
 /// The markers a pseudo-localised string is wrapped in. They are what makes the copy findable in a
 /// frame at a glance, so exactly one pair may surround any string.
-const PSEUDO_OPEN: char = '⟦';
-const PSEUDO_CLOSE: char = '⟧';
+pub const PSEUDO_OPEN: char = '⟦';
+pub const PSEUDO_CLOSE: char = '⟧';
 
-fn pseudo_expand(value: &str) -> String {
+pub fn pseudo_expand(value: &str) -> String {
     // Copy reaches the screen localised more than once in places: a section
     // header composed from two already-localised fragments, a title set from a
     // string that was translated on its way in. Expanding that again renders
@@ -429,11 +429,11 @@ fn apply_pseudo_locale(value: String, args: Option<&FluentArgs>, pseudo_language
 /// Parse a BCP-47 locale tag, falling back to `en-US` on a malformed value (e.g. `en-US` is a
 /// compile-time-known-valid literal, so the final `unwrap_or_default` (BCP-47 "und", undefined) is a
 /// belt and braces path that's never actually reached.
-fn parse_locale_or_default(locale: &str) -> LanguageIdentifier {
+pub fn parse_locale_or_default(locale: &str) -> LanguageIdentifier {
     parse_locale(locale).unwrap_or_else(|_| "en-US".parse().unwrap_or_default())
 }
 
-fn parse_locale(locale: &str) -> Result<LanguageIdentifier, I18nError> {
+pub fn parse_locale(locale: &str) -> Result<LanguageIdentifier, I18nError> {
     crate::process::parse_posix_locale(locale)
         .ok_or_else(|| I18nError::InvalidLocale(locale.to_owned()))
 }
@@ -538,7 +538,7 @@ fn new_bundle(locale: &LanguageIdentifier) -> Bundle {
     bundle
 }
 
-fn make_bundle(locale: &LanguageIdentifier, source: &str) -> Result<Bundle, I18nError> {
+pub fn make_bundle(locale: &LanguageIdentifier, source: &str) -> Result<Bundle, I18nError> {
     let invalid = |details: String| I18nError::InvalidResource {
         locale: locale.to_string(),
         details,
