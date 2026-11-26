@@ -36,7 +36,7 @@ mod stand_in;
 pub mod swtpm;
 mod wall;
 
-pub use binary::sibling_binary;
+pub use binary::{binary_if_built, sibling_binary};
 #[cfg(unix)]
 pub use bus::PrivateBus;
 pub use capability::{Capability, Probe, capability_unavailable};

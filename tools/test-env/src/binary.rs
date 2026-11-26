@@ -58,6 +58,14 @@ pub fn sibling_binary(package: &str, bin: &str) -> PathBuf {
     at
 }
 
+/// [`sibling_binary`] when this run built the binary, and `None` when it built none: for a test
+/// that hands a program what the run built when it is there, and works without it otherwise.
+#[must_use]
+pub fn binary_if_built(package: &str, bin: &str) -> Option<PathBuf> {
+    let at = built_by_the_run(package, bin).unwrap_or_else(|| build().binary(bin));
+    at.is_file().then_some(at)
+}
+
 /// Where the run built this binary already: `NEXTEST_BIN_EXE_<bin>` when the
 /// run moved its binaries, `TILO_SIBLING_BIN_<bin>` (`-` as `_`) when the run's setup
 /// built it before any test started (`tools/build-sibling-binaries.sh`),

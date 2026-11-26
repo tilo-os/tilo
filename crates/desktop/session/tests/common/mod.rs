@@ -748,14 +748,19 @@ pub fn device_home() -> tilo_test_env::TestHome {
     home
 }
 
-/// Name the run's launcher to the daemon `home` starts, and answer it. The device's daemon runs in
-/// this process, so the launcher is not beside its program as it is for an installed device: the
-/// daemon finds the run's own by the variable a debug build honours. Every home needs it, one
-/// whose test opens no app too, since the shell is one of the default apps the daemon starts.
+/// Name the run's launcher, and the runtimes and publishers the apps it starts run on, to the
+/// daemon `home` starts, and answer the launcher. The device's daemon runs in this process, so the
+/// launcher is not beside its program as it is for an installed device: the daemon finds the run's
+/// own by the variable a debug build honours. Every home needs it, one whose test opens no app too,
+/// since the shell is one of the default apps the daemon starts, and a launcher that finds no
+/// runtimes starts nothing.
 ///
 /// # Panics
 /// No run built the launcher.
 pub fn launcher_for(home: &mut tilo_test_env::TestHome) -> std::path::PathBuf {
+    // Before its daemon starts: the device runs the person's shell and their apps' actions
+    // ([`furnished`]).
+    let _ = furnished();
     let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
     home.env().set("TILO_LAUNCHER_BIN", &launcher);
     launcher
@@ -959,12 +964,41 @@ impl Device {
     /// the message names what to run.
     #[track_caller]
     pub fn session_with_real_apps(&self, options: Options) -> Session {
-        let mut session = self.session_with(real_apps(self, options));
+        let mut session = self.session_with(real_apps(options));
         session
             .bind_display(session_bus())
             .expect("the session serves the display its apps' windows map on");
         session
     }
+}
+
+/// The launcher, and the runtimes and publishers the apps it starts run on, named to this test
+/// process the first time a device is made: a device's daemon starts the person's shell and their
+/// apps' actions as tilolang processes, and finds all three in the variables a developer build
+/// honours (`TILO_LAUNCHER_BIN`, [`runtime_bundle::RUNTIME_DIR_ENV`],
+/// [`launcher::dev_env::TRUSTED_PUBLISHERS_FILE_ENV`]). Pinned for the process, as the app store
+/// is ([`app_store`]), so every test that starts a device — not only one that opens a window — has
+/// the apps the run built.
+///
+/// `None` when the run built no launcher or host: a device then starts no tilolang process, and
+/// its home says so ([`launcher_for`] panics), as a test that needs an app's window does
+/// ([`Device::session_with_real_apps`]).
+fn furnished() -> Option<&'static Path> {
+    static FURNISHED: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+    FURNISHED
+        .get_or_init(|| {
+            let launcher = tilo_test_env::binary_if_built("launcher", "tilo-launcher")?;
+            tilo_test_env::binary_if_built("tilolang-process", "tilolang-process")?;
+            let runtimes = dev_apps::runtimes();
+            tilo_test_env::pin("TILO_LAUNCHER_BIN", &launcher);
+            tilo_test_env::pin(runtime_bundle::RUNTIME_DIR_ENV, &runtimes.bundles);
+            tilo_test_env::pin(
+                launcher::dev_env::TRUSTED_PUBLISHERS_FILE_ENV,
+                &runtimes.trusted,
+            );
+            Some(launcher)
+        })
+        .as_deref()
 }
 
 /// The session bus the person's apps reach, as a session started in a window reads it: what this
@@ -976,9 +1010,8 @@ fn session_bus() -> Option<String> {
 }
 
 /// Give `options` the apps a session starts as processes of their own, as a development session
-/// has them: the launcher a package is started through, the runtimes its code runs on, the store
-/// this run installed the packages in ([`app_store`]), and the session program whose own mode
-/// draws the apps' frames.
+/// has them: the launcher and the runtimes this run built ([`furnished`]), and the session program
+/// whose own mode draws the apps' frames.
 ///
 /// The session a test runs is its test binary, which is no session program: it names the run's
 /// own, as [`Options::render_service`] is for.
@@ -986,21 +1019,13 @@ fn session_bus() -> Option<String> {
 /// # Panics
 /// This run built no launcher, runtimes or session program: the message names what to run.
 #[track_caller]
-fn real_apps(device: &Device, mut options: Options) -> Options {
+fn real_apps(mut options: Options) -> Options {
+    // A run that built no launcher or host fails here, naming what to run, rather than waiting for
+    // a window that cannot come.
     let launcher = tilo_test_env::sibling_binary("launcher", "tilo-launcher");
-    let runtimes = device.home.data().join("tilo-runtime");
-    // A device of the test's own that started a session before keeps what it installed: the run's
-    // runtimes are the same files, linked in once.
-    if !runtimes.exists() {
-        dev_apps::install_runtimes(&runtimes);
-    }
-    tilo_test_env::pin(
-        "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
-        &dev_apps::runtimes().trusted,
-    );
-    // A tilolang host the device's daemon starts for an app's instance is started through the
-    // launcher too, which a daemon inside a test process finds only where this names it.
-    tilo_test_env::pin("TILO_LAUNCHER_BIN", &launcher);
+    let _host = tilo_test_env::sibling_binary("tilolang-process", "tilolang-process");
+    // The runtimes and publishers the apps it starts run on, named to this process.
+    let _ = furnished();
     let program = tilo_test_env::package_binary!("tilo-session");
     assert!(
         program.is_file(),

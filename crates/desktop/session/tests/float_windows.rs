@@ -63,6 +63,9 @@ thread_local! {
 /// A session as a development one starts: the tilolang shell as the whole screen, the seeded apps
 /// published, and the appearance section beside them, as this computer's daemon's shell.
 fn session() -> Session {
+    // What the session and an app it starts say of a launch that failed: a warning a failed step
+    // reads, where the card the person sees only keeps the app's own last words.
+    crate::common::people::install_log();
     let mut services = crate::common::seeded_apps();
     services.push(Box::new(settings_sections::service::SettingsService::new()));
     let options = Options {
@@ -644,11 +647,12 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
         &mut session,
         (f64::midpoint(letter.x1, note.x0), letter.y0 + 22.0),
     );
+    let carried = session.handle().carried_tab();
+    let shows = shown_windows(&mut session);
     assert_eq!(
-        session.handle().carried_tab(),
+        carried,
         Some(chat),
-        "the press on the floating window's bar took the window: the compositor shows {:?}",
-        shown_windows(&session)
+        "the press on the floating window's bar took the window: the compositor shows {shows:?}"
     );
     until(&mut session, "the float is drawn carried", |session| {
         rect(session, chat) != over
@@ -663,7 +667,7 @@ fn a_float_carried_over_its_strip_snaps_into_the_gap_it_was_dropped_in() {
 
 /// The app windows the compositor shows, each by its id, its app and where it stands: what a wait
 /// that finds none says.
-fn shown_windows(session: &Session) -> Vec<(u64, Option<String>, (i32, i32, i32, i32))> {
+fn shown_windows(session: &mut Session) -> Vec<(u64, Option<String>, (i32, i32, i32, i32))> {
     session
         .compositor()
         .windows()
@@ -799,11 +803,12 @@ fn a_click_where_a_float_bar_stood_reaches_the_window_there() {
     pointer_at(&mut session, bar);
     button(&mut session, true);
     pointer_at(&mut session, to);
+    let carried = session.handle().carried_tab();
+    let shows = shown_windows(&mut session);
     assert_eq!(
-        session.handle().carried_tab(),
+        carried,
         Some(chat),
-        "the press on the floating window's bar took the window: the compositor shows {:?}",
-        shown_windows(&session)
+        "the press on the floating window's bar took the window: the compositor shows {shows:?}"
     );
     button(&mut session, false);
     until(

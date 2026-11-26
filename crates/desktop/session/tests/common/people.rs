@@ -826,25 +826,6 @@ pub fn two_devices_of_one_person_with_apps() -> (Site, Person, Device, Device) {
     (site, ada, laptop, phone)
 }
 
-/// [`two_devices_of_one_person_with_apps`] for two devices whose daemons run those apps' code
-/// themselves, as a person's computer does: each has the runtimes the apps name and the launcher
-/// its daemon starts every tilolang process through (the shell's actions an agent or the person
-/// calls among them). A daemon a test starts finds no launcher beside it, so it is named.
-pub fn two_devices_of_one_person_running_apps() -> (Site, Person, Device, Device) {
-    two_devices_of_one_person_carrying(|device| {
-        crate::common::dev_apps::install(&device.store(), &device.store().join("scratch"));
-        crate::common::dev_apps::install_runtimes(&device.home.path().join("data/tilo-runtime"));
-        device.env(
-            "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
-            &crate::common::dev_apps::runtimes().trusted,
-        );
-        device.env(
-            "TILO_LAUNCHER_BIN",
-            tilo_test_env::sibling_binary("launcher", "tilo-launcher"),
-        );
-    })
-}
-
 /// The person's laptop and phone, each carrying what `install` puts in its store: both are made
 /// first, then told of the person's fleet, then started together — a session reads the apps and
 /// the devices of the person it has when it starts.
@@ -1906,6 +1887,10 @@ impl Device {
     /// ([`Self::env`], [`share_view_periods`]). The session the daemon starts takes these from the
     /// session that asks for it, as a login's session hands its own.
     fn device_env(&self, command: &mut Command, logs: &Path) {
+        // This device's daemon runs the person's shell and their apps' actions, and starts their
+        // processes through the run's launcher on the runtimes it built: named to the test process,
+        // which the daemon inherits ([`super::furnished`]).
+        let _ = super::furnished();
         let root = self.home.path();
         command
             .env("HOME", root.join("home"))

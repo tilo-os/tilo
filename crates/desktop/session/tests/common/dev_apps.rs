@@ -412,10 +412,15 @@ pub struct Runtimes {
     pub trusted: PathBuf,
 }
 
-/// [`Runtimes`] made once for this test process, from the `tilolang-process` this run built (with
+/// [`Runtimes`] made once for a run, from the `tilolang-process` this run built (with
 /// `app-launch`, so it draws an app's windows as well as hosting its code) and the libraries it
 /// loads: the Tilo runtime is the loader and libraries the host needs, as the image's runtime
 /// carries them, and the tilolang runtime is the host alone, as `tilolang dev` bakes it.
+///
+/// They stand under the build tree's temporary directory, named for what they are made from
+/// ([`runtimes_revision`]), as the apps' build is ([`built`]): the first test process of a run
+/// builds them, and every later one reads them, so a process pays for the two bundles' copies
+/// only when no process of its run has made them yet.
 ///
 /// # Panics
 /// The host was not built by the run, a library it loads cannot be found, or a bundle cannot be
@@ -423,15 +428,55 @@ pub struct Runtimes {
 pub fn runtimes() -> &'static Runtimes {
     static RUNTIMES: OnceLock<Runtimes> = OnceLock::new();
     RUNTIMES.get_or_init(|| {
+        let builds = builds();
+        let root = builds.join(format!("runtimes-{}", runtimes_revision()));
+        if !root.join(RUNTIMES_WHOLE).is_file() {
+            forget_old(&builds, &root);
+            let staging = tempfile::Builder::new()
+                .prefix(".building-runtimes-")
+                .tempdir_in(&builds)
+                .expect("a directory beside the runtimes");
+            build_runtimes(staging.path());
+            let staged = staging.keep();
+            // Another process may have finished the same runtimes first: either is whole, so the
+            // one that stands is the one read.
+            if std::fs::rename(&staged, &root).is_err() {
+                std::fs::remove_dir_all(&staged).ok();
+            }
+        }
+        Runtimes {
+            bundles: root.join("bundles"),
+            trusted: root.join("trusted-publishers.txt"),
+        }
+    })
+}
+
+/// The file a runtimes directory a run built ends with: one that has it is whole.
+const RUNTIMES_WHOLE: &str = "runtimes";
+
+/// What a runtimes directory is made from: the host the run built, by its path and what it holds,
+/// and the run the process is one of, as [`revision`] names it.
+fn runtimes_revision() -> String {
+    let program = tilo_test_env::sibling_binary("tilolang-process", "tilolang-process");
+    let built = std::fs::metadata(&program).expect("the run's tilolang host reads");
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    program.hash(&mut hasher);
+    built.len().hash(&mut hasher);
+    built.modified().ok().hash(&mut hasher);
+    std::env::var_os("NEXTEST_RUN_ID").hash(&mut hasher);
+    package::default_tilolang_runtime().hash(&mut hasher);
+    package::DEFAULT_TILO_RUNTIME.hash(&mut hasher);
+    format!("{:016x}", hasher.finish())
+}
+
+/// Build the two runtimes under `root` and end with [`RUNTIMES_WHOLE`] written: a directory that
+/// has it is whole.
+fn build_runtimes(root: &Path) {
+    {
         use tilo_test_env::SpawnUnderEnvLock as _;
-        let root = tempfile::Builder::new()
-            .prefix("tilo-runtimes-")
-            .tempdir_in(builds())
-            .expect("a directory for the runtimes")
-            .keep();
         let bundles = root.join("bundles");
         let identity = runtime_bundle::Identity::generate();
-        let key = root.join("publisher.json");
+        let key = root.join(PUBLISHER);
         std::fs::write(&key, identity.to_json_bytes()).expect("the runtimes' publisher key");
         let trusted = root.join("trusted-publishers.txt");
         std::fs::write(&trusted, format!("{}\n", identity.public_key_hex()))
@@ -453,7 +498,7 @@ pub fn runtimes() -> &'static Runtimes {
         let (_, tilolang) = tilolang
             .split_once('/')
             .expect("the tilolang runtime names its version");
-        let std = package::write_std(&root).expect("the standard library the runtime carries");
+        let std = package::write_std(root).expect("the standard library the runtime carries");
         runtime_bundle::build_binaries_bundle(
             &bundles.join(tilolang),
             tilolang,
@@ -494,8 +539,9 @@ pub fn runtimes() -> &'static Runtimes {
             },
         )
         .expect("the Tilo runtime");
-        Runtimes { bundles, trusted }
-    })
+        std::fs::write(root.join(RUNTIMES_WHOLE), trusted.display().to_string())
+            .expect("the mark of whole runtimes");
+    }
 }
 
 /// Take the [`runtimes`] into the store of runtimes under `store` (a device's
