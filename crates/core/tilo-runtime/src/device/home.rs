@@ -66,7 +66,7 @@ impl Home {
             None => self.named().await?,
         };
         let known = self.found.lock_recover().get_or_insert(found).clone();
-        self.list_here(&known).await;
+        self.list_here(&known);
         Some(known)
     }
 
@@ -80,7 +80,7 @@ impl Home {
     /// it. That is a workspace's copy, so it runs beside the answer this home gives, as the copy
     /// of any workspace a login enters is taken in: a caller waiting on this device is never held
     /// behind it.
-    async fn list_here(&self, device: &Device) {
+    fn list_here(&self, device: &Device) {
         if !self.cert.capabilities.can_admit_devices || self.listed.set(()).is_err() {
             return;
         }

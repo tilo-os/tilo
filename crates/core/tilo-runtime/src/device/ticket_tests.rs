@@ -2534,6 +2534,10 @@ fn the_device_is_listed(
 /// and the device is listed in the person's devices then. A process the daemon did not launch,
 /// and an app it launched in another workspace, found nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one founding read top to bottom: the launches that found nothing, the one that founds, and the device listed"
+)]
 async fn the_first_app_launched_in_the_persons_workspace_founds_it_with_the_device_listed() {
     use tilo_actions::remote::asked::{AskedKeeping, AskedStore};
     use tilo_identity::sources::PersonResourceTypes as _;
