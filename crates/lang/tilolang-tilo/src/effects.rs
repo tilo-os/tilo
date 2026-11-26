@@ -763,8 +763,8 @@ impl Host {
         Ok((app, at))
     }
 
-    /// A page of the collection `field` of `at` as `ask` asks it: its items, each as a row names
-    /// it, and where the next page starts.
+    /// A page of the collection `field` of `at` as `ask` asks it: how many items it holds, its
+    /// items, each as a row names it, and where the next page starts.
     fn page(
         &self,
         at: &ResourceRef,
@@ -825,6 +825,7 @@ impl Host {
             .map(|item| self.row(item, &app, reads))
             .collect();
         let mut out = serde_json::Map::new();
+        out.insert("count".into(), json!(items.len()));
         out.insert("items".into(), Json::Array(items));
         if let Some(next) = page.next {
             let next = at.item(&next, String::new());
