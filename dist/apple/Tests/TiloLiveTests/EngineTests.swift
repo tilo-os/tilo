@@ -137,7 +137,7 @@ final class EngineTests: XCTestCase {
       window.asked = [];
       window.handOver = () => giveDevice(Object.freeze({
         person: 'ad'.repeat(32), workspace: 'ws-1',
-        catalogue: async () => ({actions: []}),
+        catalogue: async query => window.grantCatalogue?.(query) ?? {actions: []},
         status: async invocation => ({invocation, state: 'succeeded'}),
         ownWorkspace: async () => ({id: 'own-7', name: 'Mine', origin: 'https://host.example:8443'}),
         invoke: async (target, argument) => {
@@ -159,6 +159,7 @@ final class EngineTests: XCTestCase {
             case 'agents grant-status':
             case 'agents request-chat-grant':
             case 'agents request-assistant-work-grant':
+            case 'agents request-app-grant':
             case 'agents revoke':
               return window.grantReceipt ?? done(window.grantAnswer);
             default:
@@ -1247,6 +1248,99 @@ final class EngineTests: XCTestCase {
         } catch let problem as TiloEngine.Problem {
             XCTAssertEqual(problem, .refused(code: "not_permitted", reason: "Only the keeper may revoke this grant"))
         }
+    }
+
+    func testAppGrantChoicesComeFromTheNamedAgentsActionAndOnlySelectedAppsAreRequested() async throws {
+        try await enterAsADevice()
+        let whose = try await engine.whose()
+        let scope = try XCTUnwrap(whose)
+        try await run(#"""
+            window.queries = [];
+            const param = (name, choices) => ({name, schema: {type: 'array', items: {type: 'string', oneOf: choices}}});
+            window.grantChoices = [{const: 'so.tilo.chat', title: 'Chat'}, {const: 'so.tilo.notes', title: 'Workspace notes'},
+              {const: 'so.tilo.sheets', title: 'Sheets'}];
+            const other = [{const: 'so.tilo.other', title: 'Another choice'}];
+            const row = (provider, resource, action, params) => ({provider, action: {address: {resource, action}, params}});
+            window.grantCatalogue = query => {
+              queries.push(query);
+              return {rows: [
+                row('other', 'agent:scout', 'request-app-grant', [param('apps', other)]),
+                row('agents', 'agent:other', 'request-app-grant', [param('apps', other)]),
+                row('agents', 'agent:scout', 'other-action', [param('apps', other)]),
+                row('agents', 'agent:scout', 'request-app-grant', [param('other', other), param('apps', window.grantChoices)]),
+              ]};
+            };
+            window.grantAnswer = {grant: 'scout', pairingCode: 'example-code'};
+            """#)
+        let apps = try await engine.chatGrantApps(agent: "scout", forDevice: scope)
+        let choices = apps.sorted { $0.id < $1.id }
+        XCTAssertEqual(choices.map(\.id), ["so.tilo.chat", "so.tilo.notes", "so.tilo.sheets"])
+        XCTAssertEqual(choices.map(\.name), ["Chat", "Workspace notes", "Sheets"])
+        let queries = try await said("return JSON.stringify(window.queries)")
+        XCTAssertEqual(JSON(text: queries), [
+            ["provider": "agents", "target": ["resource": "agent:scout", "action": "request-app-grant"]],
+        ])
+
+        let selection = ["so.tilo.chat", "so.tilo.notes"]
+        let code = try await engine.requestAppGrant(agent: "scout", apps: selection, forDevice: scope)
+        XCTAssertEqual(code, "example-code")
+        let calls = try await asked()
+        XCTAssertEqual(JSON(text: calls), [[
+            "target": ["provider": "agents", "address": ["resource": "agent:scout", "action": "request-app-grant"]],
+            "argument": ["apps": ["so.tilo.chat", "so.tilo.notes"]],
+        ]])
+        try await run("window.grantChoices = [{const: 'so.tilo.chat', title: 'Chat'}]")
+        do {
+            _ = try await engine.requestAppGrant(agent: "scout", apps: selection, forDevice: scope)
+            XCTFail("An app the host stopped offering was requested")
+        } catch TiloEngine.Problem.refused(let code, _) {
+            XCTAssertEqual(code, "invalid_request")
+        }
+        let forwarded = try await asked()
+        XCTAssertEqual(forwarded, calls)
+        let checked = try await said("return JSON.stringify(window.queries)")
+        let query: JSON = ["provider": "agents", "target": ["resource": "agent:scout", "action": "request-app-grant"]]
+        XCTAssertEqual(JSON(text: checked), [query, query, query])
+        for choices in ["[{const: 'so.tilo.notes', title: 'Notes'}]", "[{const: 'so.tilo.chat', title: 'Chat'}, {const: 'so.tilo.chat', title: 'Chat'}]"] {
+            try await run("window.grantChoices = " + choices)
+            do {
+                _ = try await engine.chatGrantApps(agent: "scout", forDevice: scope)
+                XCTFail("The malformed app grant catalogue was accepted")
+            } catch TiloEngine.Problem.refused(let code, _) {
+                XCTAssertEqual(code, "unknown_action")
+            }
+        }
+    }
+
+    func testAppGrantBridgeRejectsInvalidSelectionsAndUnscopedCatalogueQueries() async throws {
+        try await enterAsADevice()
+        let rejected = try await said(#"""
+            const scope = {person: 'ad'.repeat(32), workspace: 'ws-1'};
+            const apps = {apps: ['so.tilo.chat']};
+            let queries = 0;
+            window.grantCatalogue = () => { queries++; return {rows: []}; };
+            const call = async (given, action, where, argument) =>
+              JSON.parse(await __tiloLive.chatGrant(given, action, 'scout', where, argument)).error?.code;
+            const catalogue = async (given, agent, where) =>
+              JSON.parse(await __tiloLive.chatGrantApps(given, agent, where)).error?.code;
+            const badArgs = [null, {}, {apps: []}, {apps: ['so.tilo.notes']}, {apps: ['so.tilo.chat', 'so.tilo.chat']},
+              {apps: ['so.tilo.chat', '*']}, {apps: ['so.tilo.chat', 'so.tilo.*']}, {...apps, expiresInSecs: 3600},
+              {apps: ['so.tilo.chat', ...Array.from({length: 64}, (_, i) => 'so.tilo.app' + i)]}];
+            const invalid = [];
+            for (const arg of badArgs) invalid.push(await call(pass, 'request-app-grant', scope, arg));
+            for (const action of ['grant-status', 'request-chat-grant', 'request-assistant-work-grant', 'revoke'])
+              invalid.push(await call(pass, action, scope, apps));
+            return JSON.stringify({
+              invalid: [...new Set(invalid)], scope: await call(pass, 'request-app-grant', null, apps),
+              catalogue: [await catalogue('', 'scout', scope), await catalogue(pass, 'two agents', scope),
+                await catalogue(pass, 'scout', null), await catalogue(pass, 'scout', {...scope, person: 'other'})],
+              asked: window.asked.length, queries,
+            });
+            """#, ["pass": engine.pass])
+        XCTAssertEqual(JSON(text: rejected), [
+            "invalid": ["invalid_request"], "scope": "wrong_device",
+            "catalogue": ["unknown_action", "unknown_action", "wrong_device", "wrong_device"], "asked": 0, "queries": 0,
+        ])
     }
 
     func testChatGrantChecksTheEnginePassActionAgentAndDeviceBeforeAskingTheHost() async throws {

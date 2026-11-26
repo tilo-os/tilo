@@ -368,8 +368,24 @@ public enum EngineScript {
       const pass = %PASS%;
       const providers = new Set(%PROVIDERS%);
       const agentActions = new Set(['read', 'ensure-personal-assistant', 'stop-sub-agent']);
-      const grantActions = new Set(['grant-status', 'request-chat-grant', 'request-assistant-work-grant', 'revoke']);
+      const appGrant = 'request-app-grant';
+      const grantActions = new Set(['grant-status', 'request-chat-grant', 'request-assistant-work-grant', appGrant, 'revoke']);
       const agentNamed = item => typeof item === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(item);
+      const grantTarget = (agent, action) => ({provider: 'agents', address: {resource: `agent:${agent}`, action}});
+      const appNamed = id => typeof id === 'string' && id.length > 0 && !/[\s*?]/.test(id);
+      async function offeredGrantApps(agent) {
+        const {provider, address} = grantTarget(agent, appGrant);
+        const {rows} = await device.catalogue({provider, target: address});
+        const matches = (rows ?? []).filter(row => row.provider === provider && row.action?.address?.resource === address.resource
+          && row.action.address.action === address.action);
+        const params = matches.length === 1 ? matches[0].action.params?.filter(p => p.name === 'apps') : [];
+        const schema = params?.length === 1 ? params[0].schema : null;
+        const options = schema?.type === 'array' ? schema.items?.oneOf : null;
+        if (!Array.isArray(options) || !options.every(o => appNamed(o?.const) && typeof o.title === 'string' && o.title.trim())
+          || !options.some(o => o.const === 'so.tilo.chat') || new Set(options.map(o => o.const)).size !== options.length)
+          throw new Error('unknown_action: This assistant does not offer a choice of apps');
+        return options.map(o => ({id: o.const, name: o.title}));
+      }
       // An app's own document of the workspace, as the workspace's server names what it offers
       // of one: the app and nothing after it. Under any longer name the server offers nothing of it.
       const ownDocument = app => device.workspaceRecord ? device.workspaceRecord(app) : `record:${app}:`;
@@ -541,12 +557,35 @@ public enum EngineScript {
           } catch (error) { return JSON.stringify({error: failure(error)}); }
         },
         // The certified person may inspect, request or withdraw one roster agent's grant.
-        async chatGrant(given, action, agent, scope) {
+        async chatGrantApps(given, agent, scope) {
+          if (!holds(given) || !agentNamed(agent)) return unknown('agents', appGrant);
+          if (!device) return noDevice();
+          if (!inScope(scope)) return changedDevice();
+          try {
+            const apps = await offeredGrantApps(agent);
+            return inScope(scope) ? JSON.stringify({ok: apps}) : changedDevice();
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
+        },
+        async chatGrant(given, action, agent, scope, argument = null) {
           if (!holds(given) || !agentNamed(agent) || !grantActions.has(action)) return unknown('agents', action);
           if (!device) return noDevice();
           if (!inScope(scope)) return changedDevice();
           try {
-            const answer = await device.invoke({provider: 'agents', address: {resource: `agent:${agent}`, action}}, null);
+            let input = null;
+            if (action === appGrant) {
+              if (!argument || Object.keys(argument).length !== 1 || !Object.hasOwn(argument, 'apps') || !Array.isArray(argument.apps))
+                throw new Error('invalid_request: Choose the apps for this assistant');
+              const apps = [...argument.apps];
+              if (!apps.includes('so.tilo.chat') || apps.length > 64 || !apps.every(appNamed) || new Set(apps).size !== apps.length)
+                throw new Error('invalid_request: Choose Chat and up to 63 other distinct apps');
+              const offered = new Set((await offeredGrantApps(agent)).map(o => o.id));
+              if (!inScope(scope)) return changedDevice();
+              if (!apps.every(id => offered.has(id))) throw new Error('invalid_request: An app is not offered for this assistant');
+              input = {apps};
+            } else if (argument !== null) {
+              throw new Error('invalid_request: This grant action takes no arguments');
+            }
+            const answer = await device.invoke(grantTarget(agent, action), input);
             return inScope(scope) ? deviceAnswer(answer) : changedDevice();
           } catch (error) { return JSON.stringify({error: failure(error)}); }
         },

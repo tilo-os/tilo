@@ -132,7 +132,10 @@ public struct SupervisionView: View {
         }
 
         let apps = permission.apps.map { id in
-            switch id {
+            if let offered = model.supervision.assistantAppChoices.first(where: { $0.id == id }) {
+                return offered.name
+            }
+            return switch id {
             case "so.tilo.chat": AssistantWords.chatApp.said
             case "so.tilo.tasks": AssistantWords.tasks.said
             case "so.tilo.assistant": AssistantWords.assistant.said

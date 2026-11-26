@@ -211,7 +211,7 @@
 "workspaces" = "Workspaces";
 "works-in-this" = "Your assistant works in this workspace.";
 "own-workspace" = "Your own workspace";
-"chat-permission-scope" = "Let your assistant read and send Chat messages, with optional access to Tasks, Assistant and Shortcuts. Access applies only to this workspace and lasts up to six days.";
+"chat-permission-scope" = "Your assistant needs Chat to read and send messages. Choose which apps it can use in this workspace for up to six days.";
 "request-chat-permission" = "Request Chat only";
 "chat-permission-pending" = "Open this workspace in the browser where you created or restored your identity. Check the assistant, workspace, requested apps and expiry, then choose Approve or Decline.";
 "chat-permission-code" = "You can also check whether the browser shows the same code ({code}).";
@@ -223,6 +223,10 @@
 "check-chat-permission" = "Check approval";
 "chat-permission-excludes-chat" = "The existing approval does not include Chat.";
 "request-assistant-work-permission" = "Request Chat, Tasks, Assistant and Shortcuts";
+"choose-assistant-apps" = "Choose apps…";
+"request-selected-assistant-apps" = "Request selected apps";
+"assistant-access-selection" = "If approved, your assistant can use {apps} in this workspace for up to six days.";
+"assistant-app-required" = "{name} (required)";
 "assistant-access" = "Assistant access";
 "revoke-chat-permission" = "Revoke access";
 "confirm-revoke-chat-permission" = "Revoking cancels the request or ends your assistant's access in this workspace.";

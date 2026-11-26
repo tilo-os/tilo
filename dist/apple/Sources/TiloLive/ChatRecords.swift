@@ -302,6 +302,12 @@ extension TiloEngine {
     }
 }
 
+/// An app the host offers for this roster agent's workspace grant.
+public struct ChatGrantApp: Sendable, Equatable, Identifiable {
+    public let id: String
+    public let name: String
+}
+
 /// The workspace host's assessment of one agent's permission to work in Chat.
 public struct ChatGrantStatus: Sendable, Equatable {
     public enum State: String, Sendable {
@@ -368,21 +374,39 @@ extension TiloEngine {
         try await requestGrant("request-assistant-work-grant", agent: agent, scope: scope)
     }
 
+    /// The named apps offered in this agent's signed grant action.
+    public func chatGrantApps(agent: String, forDevice scope: (person: String, workspace: String)) async throws -> [ChatGrantApp] {
+        let answer = try await ask("return globalThis.__tiloLive.chatGrantApps(given, agent, scope)", [
+            "given": pass, "agent": agent, "scope": ["person": scope.person, "workspace": scope.workspace],
+        ])
+        guard let choices = answer.array else { throw Problem.noAnswer }
+        return try choices.map { choice in
+            guard let id = choice["id"]?.string, let name = choice["name"]?.string else { throw Problem.noAnswer }
+            return ChatGrantApp(id: id, name: name)
+        }
+    }
+
+    /// Request exactly the chosen apps for this agent, for the person's approval.
+    public func requestAppGrant(agent: String, apps: [String], forDevice scope: (person: String, workspace: String)) async throws -> String? {
+        try await requestGrant("request-app-grant", agent: agent, scope: scope, apps: apps)
+    }
+
     /// Withdraw the named agent's current grant as its keeper.
     public func revokeChatGrant(agent: String, forDevice scope: (person: String, workspace: String)) async throws {
         let value = try await chatGrant("revoke", agent: agent, scope: scope)
         guard value.object?.isEmpty == true else { throw Problem.noAnswer }
     }
 
-    private func requestGrant(_ action: String, agent: String, scope: (person: String, workspace: String)) async throws -> String? {
-        let value = try await chatGrant(action, agent: agent, scope: scope)
+    private func requestGrant(_ action: String, agent: String, scope: (person: String, workspace: String), apps: [String]? = nil) async throws -> String? {
+        let value = try await chatGrant(action, agent: agent, scope: scope, apps: apps)
         guard value["grant"]?.string == agent, let code = value["pairingCode"]?.string else { throw Problem.noAnswer }
         return code.isEmpty ? nil : code
     }
 
-    private func chatGrant(_ action: String, agent: String, scope: (person: String, workspace: String)) async throws -> JSON {
-        let answer = try await ask("return globalThis.__tiloLive.chatGrant(given, action, agent, scope)", [
+    private func chatGrant(_ action: String, agent: String, scope: (person: String, workspace: String), apps: [String]? = nil) async throws -> JSON {
+        let answer = try await ask("return globalThis.__tiloLive.chatGrant(given, action, agent, scope, argument)", [
             "given": pass, "action": action, "agent": agent, "scope": ["person": scope.person, "workspace": scope.workspace],
+            "argument": apps.map { ["apps": $0] as Any } ?? NSNull(),
         ])
         return try deviceOutput(answer)
     }

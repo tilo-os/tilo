@@ -114,6 +114,7 @@ final class StartTests: XCTestCase {
     }
 
     private func withPermissionWindow<Content: View>(setup: Setup, access: Supervision.AssistantPermission? = nil,
+                                                    appChoices: [AssistantAppChoice] = [],
                                                     place: AssistantModel.Place = .chat(.main),
                                                     @ViewBuilder view: () -> Content,
                                                     check: @MainActor (MemorySource, AssistantModel, Drive) async throws -> Void) async rethrows {
@@ -121,6 +122,7 @@ final class StartTests: XCTestCase {
         content.session = .signedIn(Drawing.person)
         content.setup = setup
         content.supervision.assistantAccess = access
+        content.supervision.assistantAppChoices = appChoices
         let source = MemorySource(content, now: { Drawing.now })
         let model = AssistantModel(source: source)
         model.place = place
@@ -163,6 +165,71 @@ final class StartTests: XCTestCase {
                 XCTAssertEqual(model.setup, .chatPermission(.pending(code: nil)))
                 XCTAssertEqual(drive.tree().filter(\.isButton).map(\.name), [AssistantWords.checkChatPermission.said])
                 XCTAssertFalse(drive.shows(codeInstruction), "an uncoded request showed a comparison instruction")
+            }
+        }
+    }
+
+    func testTheAppPickerSubmitsOnlyTheSelectedWorkspaceAppsAfterAnExplicitRequest() async throws {
+        let chat = AssistantAppChoice(id: "so.tilo.chat", name: "Workspace conversations")
+        let future = AssistantAppChoice(id: "org.example.review", name: "Design review")
+        let mail = AssistantAppChoice(id: "so.tilo.mail", name: "Team mailbox")
+        try await withPermissionWindow(setup: .chatPermission(.needed), appChoices: [chat, future, mail],
+                                       view: { ConversationView(chat: .main) }) { _, model, drive in
+            let choose = AssistantWords.chooseAssistantApps.said
+            let request = AssistantWords.requestSelectedAssistantApps.said
+            await drive.until("the workspace app choices") { drive.has(choose, role: "AXButton") }
+            XCTAssertTrue(drive.has(AssistantWords.requestChatPermission.said, role: "AXButton"))
+            XCTAssertTrue(drive.has(AssistantWords.requestAssistantWorkPermission.said, role: "AXButton"))
+            XCTAssertFalse(drive.has(request, role: "AXButton"))
+            drive.press(choose, role: "AXButton")
+            await drive.until("the optional apps") { drive.has(mail.name, role: "AXCheckBox") && drive.has(future.name, role: "AXCheckBox") }
+            let required = try XCTUnwrap(drive.node(AssistantWords.assistantAppRequired.said(["name": chat.name]), role: "AXCheckBox"))
+            XCTAssertFalse(required.isEnabled)
+            XCTAssertEqual(required.value, "1")
+            drive.press(mail.name, role: "AXCheckBox")
+            await drive.until("Mail to be checked") { drive.nodes(mail.name, role: "AXCheckBox").first?.value == "1" }
+            XCTAssertNil(model.supervision.assistantAccess)
+            XCTAssertEqual(model.setup, .chatPermission(.needed))
+            drive.press(AssistantWords.cancel.said, role: "AXButton")
+            await drive.until("the unsubmitted choices to close") { !drive.has(request, role: "AXButton") }
+            XCTAssertNil(model.supervision.assistantAccess)
+
+            drive.press(choose, role: "AXButton")
+            await drive.until("a new choice of apps") { drive.has(future.name, role: "AXCheckBox") }
+            XCTAssertEqual(drive.nodes(mail.name, role: "AXCheckBox").first?.value, "0")
+            drive.press(future.name, role: "AXCheckBox")
+            await drive.until("the future app to be checked") { drive.nodes(future.name, role: "AXCheckBox").first?.value == "1" }
+            XCTAssertNil(model.supervision.assistantAccess)
+            drive.press(request, role: "AXButton")
+            await drive.until("the selected scope to await approval") {
+                model.setup == .chatPermission(.pending(code: nil)) && model.supervision.assistantAccess?.state == .pending
+            }
+            XCTAssertEqual(model.supervision.assistantAccess?.apps, [chat.id, future.id])
+            XCTAssertFalse(drive.has(choose, role: "AXButton"))
+        }
+
+        await withPermissionWindow(setup: .chatPermission(.needed), appChoices: [mail, future],
+                                   view: { ConversationView(chat: .main) }) { _, _, drive in
+            await drive.until("the Chat preset without the required catalogue entry") { drive.has(AssistantWords.requestChatPermission.said) }
+            XCTAssertFalse(drive.has(AssistantWords.chooseAssistantApps.said, role: "AXButton"))
+        }
+    }
+
+    func testAnExistingGrantCannotBeReplacedThroughTheAppPicker() async {
+        let chat = AssistantAppChoice(id: "so.tilo.chat", name: "Workspace conversations")
+        let mail = AssistantAppChoice(id: "so.tilo.mail", name: "Team mailbox")
+        for state in [Supervision.AssistantPermission.State.pending, .approved] {
+            let grant = Supervision.AssistantPermission(state: state, apps: [chat.id], expires: nil, ready: state == .approved)
+            await withPermissionWindow(setup: .chatPermission(.needed), access: grant, appChoices: [chat, mail],
+                                       view: { ConversationView(chat: .main) }) { _, model, drive in
+                await drive.until("the stale setup and the workspace grant to arrive") {
+                    model.person != nil && model.setup == .chatPermission(.needed) && model.supervision.assistantAccess == grant
+                }
+                await drive.settle()
+                XCTAssertFalse(drive.has(AssistantWords.chooseAssistantApps.said, role: "AXButton"))
+                let replaced = await model.requestAssistantAppPermission(apps: [chat.id, mail.id])
+                XCTAssertFalse(replaced)
+                XCTAssertEqual(model.supervision.assistantAccess, grant)
             }
         }
     }

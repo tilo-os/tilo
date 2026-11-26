@@ -164,6 +164,7 @@ struct SetupStep: View {
     /// The models that can be chosen since a provider was linked here: the choice stays in the
     /// conversation until the person made it, or went on writing.
     @State private var offered: [ModelChoice] = []
+    @State private var choosingFrom: [AssistantAppChoice]?
 
     var body: some View {
         Group {
@@ -188,7 +189,13 @@ struct SetupStep: View {
                 Bubble { MarkdownText(text: why) }
                 Button(AssistantWords.tryAgain.said) { model.makeAssistant() }.buttonStyle(BoxButtonStyle(isMain: true))
             case .chatPermission(let permission):
-                chatAccess(permission)
+                if permission.canRequest, model.canChooseAssistantApps, let choosingFrom,
+                   choosingFrom == model.supervision.assistantAppChoices {
+                    AssistantAppPicker(choices: choosingFrom) { self.choosingFrom = nil }
+                        .onDisappear { self.choosingFrom = nil }
+                } else {
+                    chatAccess(permission)
+                }
             case .needsProvider(let providers):
                 ProviderCard(providers: providers) { offered = $0 }
             case .needsModel(let models):
@@ -234,6 +241,12 @@ struct SetupStep: View {
                 .buttonStyle(BoxButtonStyle())
                 .accessibilityIdentifier("request-assistant-work-permission")
                 .disabled(model.chatPermissionBusy)
+            if model.canChooseAssistantApps {
+                Button(AssistantWords.chooseAssistantApps.said) { choosingFrom = model.supervision.assistantAppChoices }
+                    .buttonStyle(BoxButtonStyle())
+                    .accessibilityIdentifier("choose-assistant-apps")
+                    .disabled(model.chatPermissionBusy)
+            }
         } else {
             let retry = if case .unavailable = permission { true } else { false }
             Button((retry ? AssistantWords.tryAgain : .checkChatPermission).said) { Task { await model.checkChatPermission() } }
@@ -247,6 +260,50 @@ struct SetupStep: View {
     /// provider they asked for picked. A step asked for anew begins anew.
     private func back(to step: AssistantModel.KeyStep) -> some View {
         ProviderCard(providers: step.providers, picked: step.picked, again: true) { offered = $0 }.id(step.picked)
+    }
+}
+
+private struct AssistantAppPicker: View {
+    let choices: [AssistantAppChoice]
+    let close: () -> Void
+    @Environment(AssistantModel.self) private var model
+    @Environment(\.wording) private var wording
+    @State private var selected = Set(AssistantAccess.chat.apps)
+
+    var body: some View {
+        let requested = choices.filter { selected.contains($0.id) }
+        let names = requested.map(\.name).formatted(.list(type: .and).locale(wording.locale))
+        Bubble {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(choices) { choice in
+                    let required = AssistantAccess.chat.apps.contains(choice.id)
+                    let label = required ? AssistantWords.assistantAppRequired.said(["name": choice.name]) : choice.name
+                    Toggle(label, isOn: Binding(get: { selected.contains(choice.id) }, set: { isOn in
+                        if isOn { selected.insert(choice.id) } else { selected.remove(choice.id) }
+                    }))
+                    #if os(macOS)
+                    .toggleStyle(.checkbox)
+                    #endif
+                    .tint(Token.on)
+                    .disabled(required)
+                    .accessibilityIdentifier(choice.id)
+                }
+                Text(AssistantWords.assistantAccessSelection.said(["apps": names]))
+                    .fixedSize(horizontal: false, vertical: true)
+                Flow(spacing: 8, lineSpacing: 8) {
+                    Button(AssistantWords.requestSelectedAssistantApps.said) {
+                        Task {
+                            guard choices == model.supervision.assistantAppChoices else { return }
+                            if await model.requestAssistantAppPermission(apps: requested.map(\.id)) { close() }
+                        }
+                    }
+                    .buttonStyle(BoxButtonStyle(isMain: true))
+                    .accessibilityIdentifier("request-selected-assistant-apps")
+                    Button(AssistantWords.cancel.said, action: close).buttonStyle(BoxButtonStyle())
+                }
+            }
+            .disabled(model.chatPermissionBusy)
+        }
     }
 }
 

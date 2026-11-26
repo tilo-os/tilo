@@ -797,6 +797,17 @@ public final class AssistantModel {
         await requestAccess(.work)
     }
 
+    public var canChooseAssistantApps: Bool {
+        guard case .chatPermission(let permission) = setup, permission.canRequest else { return false }
+        return supervision.assistantAccess?.revocable != true && supervision.offersAssistantApps(AssistantAccess.chat.apps)
+    }
+
+    @discardableResult
+    public func requestAssistantAppPermission(apps: [String]) async -> Bool {
+        guard supervision.offersAssistantApps(apps) else { return false }
+        return await requestAccess(.selected(apps))
+    }
+
     private func requestAccess(_ scope: AssistantAccess) async -> Bool {
         guard person != nil, place == .chat(.main), case .chatPermission(let permission) = setup, permission.canRequest,
               supervision.assistantAccess?.revocable != true, !chatPermissionBusy else { return false }
@@ -806,6 +817,7 @@ public final class AssistantModel {
             switch scope {
             case .chat: try await source.requestChatPermission()
             case .work: try await source.requestAssistantWorkPermission()
+            case .selected(let apps): try await source.requestAssistantAppPermission(apps: apps)
             }
         }
     }

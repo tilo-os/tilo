@@ -91,6 +91,9 @@ public protocol AssistantSource: Sendable {
     /// Ask for Chat, Tasks, Assistant and Shortcuts in this workspace.
     func requestAssistantWorkPermission() async throws
 
+    /// Ask for exactly the selected apps from this workspace's current offer.
+    func requestAssistantAppPermission(apps: [String]) async throws
+
     /// Revoke the hosted assistant's pending or approved access in this workspace.
     func revokeChatPermission() async throws
 
@@ -283,6 +286,7 @@ extension AssistantSource {
     public func makeAssistant() async throws {}
     public func requestChatPermission() async throws { throw SourceProblem.refused(AssistantWords.chatPermissionUnavailable.said) }
     public func requestAssistantWorkPermission() async throws { throw SourceProblem.refused(AssistantWords.chatPermissionUnavailable.said) }
+    public func requestAssistantAppPermission(apps: [String]) async throws { throw SourceProblem.refused(AssistantWords.chatPermissionUnavailable.said) }
     public func revokeChatPermission() async throws { throw SourceProblem.refused(AssistantWords.chatPermissionUnavailable.said) }
     public func checkChatPermission() async {}
     public func link(_ provider: ProviderChoice.ID, key: Secret) async throws -> [ModelChoice] {

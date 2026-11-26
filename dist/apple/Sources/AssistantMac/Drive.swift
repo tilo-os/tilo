@@ -25,6 +25,7 @@ import WebKit
 ///   {"do": "add-device"}   {"do": "stop-pairing"}    as the two buttons under what Tilo asks before it pairs
 ///   {"do": "make-assistant"}                         as Try again does where the assistant could not be made
 ///   {"do": "chat-permission"}   {"do": "assistant-work-permission"}   request one scope of assistant access
+///   {"do": "assistant-app-permission", "apps": ["so.tilo.chat", "so.tilo.calendar"]}   request just these apps
 ///   {"do": "check-chat-permission"}   {"do": "revoke-chat-permission", "confirm": true}   check or withdraw access
 ///   {"do": "choose", "model": "…"}                    as the main chat's choice of a model
 ///   {"do": "send", "text": "…", "files": ["…"]}       as the message field sends, with the files picked under it
@@ -502,6 +503,15 @@ final class AssistantDrive {
         case "assistant-work-permission":
             _ = await model.requestAssistantWorkPermission()
             AssistantDrive.say(["asked": "assistant-work-permission"])
+        case "assistant-app-permission":
+            guard let given = step["apps"]?.array else {
+                AssistantDrive.say(["error": "choose an explicit list of apps"])
+                return
+            }
+            let apps = given.compactMap(\.string)
+            guard apps.count == given.count else { AssistantDrive.say(["error": "each selected app needs its id"]); return }
+            let asked = await model.requestAssistantAppPermission(apps: apps)
+            AssistantDrive.say(["requested": .bool(asked)])
         case "revoke-chat-permission":
             guard step["confirm"]?.bool == true, let access = model.supervision.assistantAccess else {
                 AssistantDrive.say(["error": "revoking access needs a current grant and confirmation"])

@@ -275,6 +275,13 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
         try requestAccess(.work)
     }
 
+    public func requestAssistantAppPermission(apps: [String]) async throws {
+        guard supervisionNow.current.offersAssistantApps(apps) else {
+            throw SourceProblem.refused(AssistantWords.chatPermissionUnavailable.said)
+        }
+        try requestAccess(.selected(apps))
+    }
+
     private func requestAccess(_ scope: AssistantAccess) throws {
         try signedIn()
         guard case .chatPermission(let permission) = setupNow.current, permission.canRequest,

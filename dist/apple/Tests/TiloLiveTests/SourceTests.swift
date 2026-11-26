@@ -120,7 +120,13 @@ final class TiloSourceTests: XCTestCase {
       window.changeRoster = () => { rosterRevision++; rosterChanged?.(); };
       const device = Object.freeze({
         person: ADA, get workspace() { return window.admittedTo ?? (location.hash.includes('/w/own-7/') ? 'own-7' : 'ws-1'); },
-        catalogue: async () => ({actions: []}), status: async invocation => ({invocation, state: 'succeeded'}),
+        catalogue: async ({provider, target}) => {
+          if (!window.grantChoices || provider !== 'agents' || target?.resource !== 'agent:reed'
+              || target.action !== 'request-app-grant') return {rows: []};
+          const apps = {name: 'apps', ty: 'json', required: true, schema: {type: 'array', items: {oneOf: window.grantChoices}}};
+          return {rows: [{provider, action: {address: target, params: [apps]}}]};
+        },
+        status: async invocation => ({invocation, state: 'succeeded'}),
         changed: async ({after}) => {
           if (!window.observeAgents) noAgents();
           if (after == null) return {changed: [], cursor: String(rosterRevision)};
@@ -182,6 +188,13 @@ final class TiloSourceTests: XCTestCase {
               const listed = window.added.find(one => one.id === argument.provider);
               listed.models = [{id: 'm-1', label: 'Model one'}, {id: 'm-2', label: 'Model two'}];
               return done({provider: listed});
+            }
+            case 'agents request-app-grant': {
+              if (!window.chatGrant || target.address.resource !== 'agent:reed' || !argument
+                  || Object.keys(argument).length !== 1 || !Array.isArray(argument.apps)) noAgents();
+              (window.selectedScopes ??= []).push(argument.apps);
+              Object.assign(window.chatGrant, {state: 'pending', ready: false, apps: argument.apps, expiresAtMs: Date.now() + 6 * 86400000});
+              return done({grant: 'reed', pairingCode: '274 905'});
             }
             case 'agents grant-status': case 'agents request-chat-grant': case 'agents request-assistant-work-grant': case 'agents revoke': {
               if (!window.chatGrant || target.address.resource !== 'agent:reed' || argument !== null) noAgents();
@@ -1540,6 +1553,52 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertEqual(approved.expires, Date(timeIntervalSince1970: 2_000_100_000))
         let finished = try await decisions()
         XCTAssertEqual(finished, #"["agents revoke","agents request-assistant-work-grant"]"#)
+    }
+
+    func testRequestingOnlyTheSelectedCatalogueAppsNeedsASeparateGrantAfterRevocation() async throws {
+        try await enterHostedAssistant("""
+            window.chatGrant = {state: 'approved', ready: true, apps: ['so.tilo.chat'], expiresAtMs: 2000000000000};
+            window.grantChoices = [{const:'so.tilo.calendar', title:'Workspace calendar'}, {const:'so.tilo.chat', title:'Chat'},
+                {const:'so.tilo.mail', title:'Workspace mail'}, {const:'so.tilo.notes', title:'Workspace notes'}];
+            """)
+        try await until("the named applications in the signed action's catalogue are available") {
+            self.setups.last == .ready && self.supervisions.last?.assistantAppChoices.count == 4
+        }
+        let choices = try XCTUnwrap(supervisions.last?.assistantAppChoices)
+        XCTAssertEqual(Set(choices.map { "\($0.id) \($0.name)" }),
+                       ["so.tilo.calendar Workspace calendar", "so.tilo.chat Chat", "so.tilo.mail Workspace mail", "so.tilo.notes Workspace notes"])
+
+        let selected = ["so.tilo.chat", "so.tilo.mail", "so.tilo.calendar"]
+        func mutations() async throws -> String {
+            try await page("return JSON.stringify(window.hostAsked.filter(a => a.startsWith('agents ') && a !== 'agents grant-status'))")
+        }
+        do {
+            try await source.requestAssistantAppPermission(apps: selected)
+        } catch is SourceProblem { }
+        let oldGrant = try await mutations()
+        XCTAssertEqual(oldGrant, "[]")
+        try await source.revokeChatPermission()
+        try await until("the old Chat grant is revoked") { self.setups.last == .chatPermission(.revoked) }
+        do {
+            try await source.requestAssistantAppPermission(apps: ["so.tilo.mail", "so.tilo.calendar"])
+            XCTFail("The person must explicitly include Chat in the request")
+        } catch SourceProblem.refused { }
+        try await source.requestAssistantAppPermission(apps: selected)
+        try await until("the selected applications have their own pending code") {
+            self.setups.last == .chatPermission(.pending(code: "274 905")) && self.supervisions.last?.assistantAccess?.state == .pending
+        }
+        let sent = try await page("return JSON.stringify(window.selectedScopes)")
+        let scopes = try JSONDecoder().decode([[String]].self, from: Data(sent.utf8))
+        XCTAssertEqual(scopes, [selected])
+        let pending = try XCTUnwrap(supervisions.last?.assistantAccess)
+        XCTAssertEqual(pending.apps.sorted(), selected.sorted())
+        XCTAssertFalse(pending.ready)
+        try await run("window.chatGrant.state = 'denied'")
+        await source.checkChatPermission()
+        try await until("the refusal closes the pending request") { self.setups.last == .chatPermission(.declined) }
+        await source.checkChatPermission()
+        let finished = try await mutations()
+        XCTAssertEqual(finished, #"["agents revoke","agents request-app-grant"]"#)
     }
 
     func testWithNoProviderLinkedTheMainChatOffersTheStepAndTheKeyGoesToThePersonsServerOnly() async throws {

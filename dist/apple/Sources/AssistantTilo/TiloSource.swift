@@ -158,6 +158,7 @@ public final class TiloSource: AssistantSource {
         var device: (person: String, workspace: String) { (person, workspace) }
     }
     private var grantTarget: ChatGrantTarget?
+    private var grantCatalogueFor: ChatGrantTarget?
     private var grantSetup = Setup.unknown
     private var grantRead: UUID?
     private var grantRequest: UUID?
@@ -887,8 +888,7 @@ public final class TiloSource: AssistantSource {
                 agentsAgain.settle()
                 var seen = supervisionNow.now
                 await sayAgents(all, into: &seen)
-                seen.assistantAccess = supervisionNow.now.assistantAccess
-                supervisionNow.set(seen)
+                publishSurvey(seen)
             } catch TiloEngine.Problem.refused(let code, _) where code == "unknown_action" {
                 rosterRefused = true
                 agentsAgain.settle()
@@ -1099,16 +1099,40 @@ public final class TiloSource: AssistantSource {
     private func resetChatGrant() {
         grantAgain.settle()
         grantTarget = nil
+        grantCatalogueFor = nil
         grantSetup = .unknown
         grantRead = nil
         grantRequest = nil
-        publishChatAccess(nil)
+        publishChatAccess(nil, choices: [])
     }
 
-    private func publishChatAccess(_ access: Supervision.AssistantPermission?) {
+    private func publishChatAccess(_ access: Supervision.AssistantPermission?, choices: [AssistantAppChoice]? = nil) {
         var seen = supervisionNow.now
         seen.assistantAccess = access
+        if let choices { seen.assistantAppChoices = choices }
         supervisionNow.set(seen)
+    }
+
+    private func publishSurvey(_ survey: Supervision) {
+        var seen = survey
+        // Permissions and their catalogue can arrive while other supervision reads are pending.
+        seen.assistantAccess = supervisionNow.now.assistantAccess
+        seen.assistantAppChoices = supervisionNow.now.assistantAppChoices
+        supervisionNow.set(seen)
+    }
+
+    private func readGrantApps(for target: ChatGrantTarget) async {
+        guard grantCatalogueFor != target else { return }
+        grantCatalogueFor = target
+        do {
+            let apps = try await engine.chatGrantApps(agent: target.agent, forDevice: target.device)
+            guard currentChatGrant == target, grantCatalogueFor == target else { return }
+            publishChatAccess(supervisionNow.now.assistantAccess, choices: apps.map { .init(id: $0.id, name: $0.name) })
+        } catch {
+            guard currentChatGrant == target else { return }
+            if case TiloEngine.Problem.refused(let code, _) = error, TiloSource.offersNone(code) { return }
+            grantCatalogueFor = nil
+        }
     }
 
     /// This read never proposes or renews a grant. Only the person's explicit request does.
@@ -1149,7 +1173,8 @@ public final class TiloSource: AssistantSource {
             }
         } catch {
             guard grantRead == read, currentChatGrant == target else { return }
-            publishChatAccess(nil)
+            grantCatalogueFor = nil
+            publishChatAccess(nil, choices: [])
             let reason: String
             if case TiloEngine.Problem.refused(_, let message) = error, !message.isEmpty { reason = message }
             else { reason = AssistantWords.unreachable.said }
@@ -1172,10 +1197,15 @@ public final class TiloSource: AssistantSource {
             }
         default: grantAgain.settle()
         }
+        if supervisionNow.now.assistantAccess != nil { await readGrantApps(for: target) }
     }
 
     public func requestChatPermission() async throws { try await changeChatGrant(.request(.chat)) }
     public func requestAssistantWorkPermission() async throws { try await changeChatGrant(.request(.work)) }
+    public func requestAssistantAppPermission(apps: [String]) async throws {
+        guard supervisionNow.now.offersAssistantApps(apps) else { throw SourceProblem.refused(AssistantWords.chatPermissionUnavailable.said) }
+        try await changeChatGrant(.request(.selected(apps)))
+    }
     public func revokeChatPermission() async throws { try await changeChatGrant(.revoke) }
 
     private enum GrantChange { case request(AssistantAccess), revoke }
@@ -1198,6 +1228,7 @@ public final class TiloSource: AssistantSource {
                 switch change {
                 case .request(.chat): code = try await self.engine.requestChatGrant(agent: target.agent, forDevice: target.device)
                 case .request(.work): code = try await self.engine.requestAssistantWorkGrant(agent: target.agent, forDevice: target.device)
+                case .request(.selected(let apps)): code = try await self.engine.requestAppGrant(agent: target.agent, apps: apps, forDevice: target.device)
                 case .revoke: try await self.engine.revokeChatGrant(agent: target.agent, forDevice: target.device)
                 }
             }
@@ -2519,9 +2550,7 @@ public final class TiloSource: AssistantSource {
             seen.learnedCount = max(seen.learned.count, seen.learnedCount)
             // The one workspace the assistant works in. Nothing is said of any other of the person's.
             seen.workspaces = worksIn
-            // A permission read or revocation may have completed during the other reads.
-            seen.assistantAccess = supervisionNow.now.assistantAccess
-            supervisionNow.set(seen)
+            publishSurvey(seen)
             next = surveyAgain
         }
     }

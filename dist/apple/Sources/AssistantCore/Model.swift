@@ -123,15 +123,28 @@ public enum ChatPermission: Equatable, Sendable {
     }
 }
 
-/// The two app scopes a person may request for their hosted assistant.
+/// The apps a person asks to let their hosted assistant use.
 public enum AssistantAccess: Equatable, Sendable {
     case chat, work
+    case selected([String])
 
     public var apps: [String] {
         switch self {
         case .chat: ["so.tilo.chat"]
         case .work: ["so.tilo.chat", "so.tilo.tasks", "so.tilo.assistant", "so.tilo.shortcuts"]
+        case .selected(let apps): apps
         }
+    }
+}
+
+/// One app the workspace offers in the signed access request.
+public struct AssistantAppChoice: Identifiable, Equatable, Sendable {
+    public let id: String
+    public let name: String
+
+    public init(id: String, name: String) {
+        self.id = id
+        self.name = name
     }
 }
 
@@ -874,6 +887,7 @@ public struct Supervision: Equatable, Sendable {
     public var state: State?
     /// The workspace's latest answer about the hosted assistant's access.
     public var assistantAccess: AssistantPermission?
+    public var assistantAppChoices: [AssistantAppChoice]
     /// The model of the main chat. Nil while the person has linked no provider.
     public var model: String?
     public var usage: Usage
@@ -894,9 +908,11 @@ public struct Supervision: Equatable, Sendable {
     public init(state: State? = nil, model: String? = nil, usage: Usage = Usage(), connections: [Connection] = [],
                 logins: [Login] = [], manager: ManagerLogins? = nil, importance: [String] = [],
                 situations: [Situation] = [], learned: [Learned] = [], learnedCount: Int? = nil,
-                places: [Place] = [], workspaces: [String] = [], assistantAccess: AssistantPermission? = nil) {
+                places: [Place] = [], workspaces: [String] = [], assistantAccess: AssistantPermission? = nil,
+                assistantAppChoices: [AssistantAppChoice] = []) {
         self.state = state
         self.assistantAccess = assistantAccess
+        self.assistantAppChoices = assistantAppChoices
         self.model = model
         self.usage = usage
         self.connections = connections
@@ -908,6 +924,18 @@ public struct Supervision: Equatable, Sendable {
         self.learnedCount = learnedCount ?? learned.count
         self.places = places
         self.workspaces = workspaces
+    }
+
+    /// Each selected app must be offered exactly once; personal conversations require Chat.
+    public func offersAssistantApps(_ apps: [String]) -> Bool {
+        let ids = Set(assistantAppChoices.map(\.id))
+        let selected = Set(apps)
+        return ids.count == assistantAppChoices.count && selected.count == apps.count
+            && selected.contains("so.tilo.chat") && selected.isSubset(of: ids)
+            && assistantAppChoices.allSatisfy {
+                !$0.id.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
     }
 
     public struct AssistantPermission: Equatable, Sendable {
