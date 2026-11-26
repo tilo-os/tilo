@@ -41,6 +41,7 @@ use tilolang_tilo::publish::{Planner, Publications, publish_package, split_publi
 use tilolang_tilo::readings::{reading_of, resource_at};
 use tilolang_tilo::versions::{each_published, published_refs, store_ref, version_entry, versions};
 
+mod calls;
 pub mod notices;
 
 /// The history verbs a published root answers here: undo and redo through the store's undo, and
@@ -120,6 +121,9 @@ pub struct ResourceService {
     /// Where the app's resources open on the web, where this host mints their links
     /// ([`tilolang_tilo::share`]): set by the session that knows the workspace's entry.
     link_home: Option<tilolang_tilo::share::LinkHome>,
+    /// The device's dispatch the app's calls of other apps go through, once the session reaches
+    /// it ([`Service::reach_dispatch`]).
+    out: Option<calls::OutCalls>,
 }
 
 impl ResourceService {
@@ -152,6 +156,7 @@ impl ResourceService {
             seed: None,
             in_workspace: false,
             link_home: None,
+            out: None,
         };
         service.publications.update(&service.host, &service.planner);
         let _ = service.watch.take();
@@ -241,6 +246,17 @@ impl ResourceService {
         // packages hand their outside effects is routed to it there too, so a record moved into
         // the workspace keeps reaching the service that keeps it in step.
         self.route_effects();
+        // And the dispatch its app calls other apps through.
+        self.send_calls();
+    }
+
+    /// Send what the app's code calls of other apps through the dispatch the session reached,
+    /// as the app's calls for this service's person. A service that publishes every package it
+    /// loads calls nothing as one app.
+    fn send_calls(&self) {
+        if let (Some(out), Some(app)) = (&self.out, &self.only) {
+            out.install(&self.host, app, &self.person);
+        }
     }
 
     /// What an effect of a package's action hands an origin goes to that origin; anything this
@@ -691,6 +707,10 @@ impl ResourceService {
                     .action_output(&planned.app, &planned.action_id, returned_value.as_ref())
                     .map_err(ApiError::Failed)?,
             );
+            // A call the run made through the dispatch: the run goes on with its answer.
+            if let Some(out) = &mut self.out {
+                out.wait_on(&self.host);
+            }
         }
         if let Some(refused) = self.host.store().take_refusal() {
             return Err(ApiError::Failed(refused));
@@ -1434,7 +1454,12 @@ impl Service for ResourceService {
         // The origins keep their resources in step with their services, and hand the outside
         // effects the packages queued to them: what they wrote is published.
         let wrote = self.poll_origins();
-        self.watched() || !touched.is_empty() || ran || wrote
+        // The runs that waited on a call the dispatch has answered go on.
+        let answered = self.out.as_mut().is_some_and(|out| out.answer(&self.host));
+        if answered {
+            self.publications.update(&self.host, &self.planner);
+        }
+        self.watched() || !touched.is_empty() || ran || wrote || answered
     }
 
     fn wakes_in(&self) -> Option<std::time::Duration> {
@@ -1503,6 +1528,16 @@ impl Service for ResourceService {
     #[cfg(unix)]
     fn connect(&mut self, origin: &str, connection: std::os::fd::OwnedFd) -> Result<(), String> {
         self.connect_origin(origin, connection)
+    }
+
+    fn reach_dispatch(
+        &mut self,
+        dispatch: &tilo_service::Dispatch,
+        workspace: &str,
+        wake: tilo_service::Wake,
+    ) {
+        self.out = Some(calls::OutCalls::new(dispatch, workspace, wake));
+        self.send_calls();
     }
 
     fn wake_origins(&mut self, wake: tilo_service::Wake) {

@@ -32,7 +32,7 @@ impl crate::Shared {
             return;
         }
         let workspace = workspace.to_string();
-        let Some(store) = (self.held_stores)(workspace, runtime) else {
+        let Some(store) = (self.held_stores)(workspace.clone(), runtime) else {
             return waits("this device's workspace service holds no store of the workspace");
         };
         let kept = match self.services.borrow_mut().keep_in_workspace(&store) {
@@ -42,6 +42,23 @@ impl crate::Shared {
                 AppStores::Refused(standing, error)
             }
         };
+        if kept == AppStores::Kept {
+            // What the apps' code calls of other apps goes through the device's dispatch in that
+            // workspace, decided as their windows' calls are.
+            match self.daemon.link() {
+                Ok(link) => {
+                    let dispatch: tilo_service::Dispatch = std::sync::Arc::new(link.dispatch());
+                    self.services.borrow_mut().reach_dispatch(
+                        &dispatch,
+                        &workspace,
+                        &self.wake_handle,
+                    );
+                }
+                Err(error) => {
+                    tracing::warn!(%error, "the apps' calls of other apps reach no dispatch");
+                }
+            }
+        }
         *self.app_stores.borrow_mut() = kept;
     }
 }

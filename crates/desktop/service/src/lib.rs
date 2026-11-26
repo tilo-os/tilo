@@ -328,7 +328,17 @@ pub trait Service {
     /// Have `wake` called whenever an origin this service keeps in step answers, so the
     /// session's loop polls it and the answer lands in its documents.
     fn wake_origins(&mut self, _wake: Wake) {}
+
+    /// Send the calls the apps this service runs make of other apps' actions, and of their own
+    /// actions a person is asked about first, through `dispatch` in `workspace`, each as the
+    /// calling app's for the session's person: the dispatch decides it as it decides a window's
+    /// call, asks the person where it has to, and its answer wakes the session's loop with
+    /// `wake`. A service that runs no app's code makes no such call.
+    fn reach_dispatch(&mut self, _dispatch: &Dispatch, _workspace: &str, _wake: Wake) {}
 }
+
+/// The device's dispatch, as the session's person reaches it.
+pub type Dispatch = std::sync::Arc<dyn tilo_actions::remote::ActionProvider + Send + Sync>;
 
 /// An outside origin a service keeps its documents in step with: the app whose package declares
 /// it, and the origin's name.
@@ -417,6 +427,9 @@ pub struct Services {
     /// may have changed. A reading that lands on one service lists that one again and no other,
     /// so a catalogue of many services costs one service's list per change, not all of theirs.
     listed: std::cell::RefCell<Vec<Option<Vec<ResourceSpec>>>>,
+    /// The dispatch the services' apps call other apps through, once the session reaches it
+    /// ([`Service::reach_dispatch`]): a service added later reaches it too.
+    dispatch: Option<(Dispatch, String, Wake)>,
 }
 
 impl Services {
@@ -445,8 +458,25 @@ impl Services {
         }
     }
 
+    /// Send the calls the services' apps make of other apps' actions through `dispatch` in
+    /// `workspace`, waking the session's loop with `wake` when one is answered
+    /// ([`Service::reach_dispatch`]).
+    pub fn reach_dispatch(&mut self, dispatch: &Dispatch, workspace: &str, wake: &Wake) {
+        for service in &mut self.started {
+            service.reach_dispatch(dispatch, workspace, std::sync::Arc::clone(wake));
+        }
+        self.dispatch = Some((
+            std::sync::Arc::clone(dispatch),
+            workspace.to_owned(),
+            std::sync::Arc::clone(wake),
+        ));
+    }
+
     /// Host `service` too.
-    pub fn add(&mut self, service: Box<dyn Service>) {
+    pub fn add(&mut self, mut service: Box<dyn Service>) {
+        if let Some((dispatch, workspace, wake)) = &self.dispatch {
+            service.reach_dispatch(dispatch, workspace, std::sync::Arc::clone(wake));
+        }
         self.started.push(service);
         self.stirred.push(true);
         self.listed.get_mut().push(None);
@@ -926,6 +956,10 @@ impl Service for Services {
             service.connect(origin, given)?;
         }
         Ok(())
+    }
+
+    fn reach_dispatch(&mut self, dispatch: &Dispatch, workspace: &str, wake: Wake) {
+        Self::reach_dispatch(self, dispatch, workspace, &wake);
     }
 }
 
