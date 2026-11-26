@@ -189,13 +189,11 @@ fn order(session: &Session, tab: u64) -> Vec<u64> {
 }
 
 /// The shell the captures show: a conversation, a letter and a note in one strip, the conversation
-/// in front.
-fn shell() -> Session {
+/// in front. `windows` opens the three on the session, and what it answers comes back with it.
+fn shell_with<T>(windows: impl FnOnce(&mut Session) -> T) -> (Session, T) {
     let mut session = session();
     step(&mut session);
-    for app in [CHAT, MAIL, NOTES] {
-        open(&mut session, app);
-    }
+    let opened = windows(&mut session);
     // The window in front is the conversation: the chord and the menu act on it.
     let chat = tab_of(&session, CHAT).expect("the conversation is open");
     let handle = session.handle().clone();
@@ -237,7 +235,67 @@ fn shell() -> Session {
             windows.iter().all(Option::is_some) && windows != before
         },
     );
-    session
+    (session, opened)
+}
+
+/// [`shell_with`] of the seeded apps, opened as the launcher opens them.
+fn shell() -> Session {
+    shell_with(|session| {
+        for app in [CHAT, MAIL, NOTES] {
+            open(session, app);
+        }
+    })
+    .0
+}
+
+/// The same shell of a conversation, a letter and a note, as windows of a client of this session's
+/// display: what a package's window maps as it starts, which the seeded apps here do not. A click
+/// reaches only a window the compositor holds, so what a test clicks into is opened this way.
+fn shell_of_clients() -> (Session, crate::common::window::Client) {
+    shell_with(|session| {
+        let mut client = crate::common::window::Client::connect(session.compositor());
+        client.pump(session, |_, seen| {
+            seen.wm_base.is_some() && seen.shm.is_some() && seen.seat.is_some()
+        });
+        for app in [CHAT, MAIL, NOTES] {
+            client.map_plain(session, app, (400, 300));
+        }
+        client
+    })
+}
+
+/// Run frames until `done` holds, with `client` drawing each of its windows at the size the session
+/// gives it between them: what a package's window does as the shell lays it out, so the compositor
+/// holds its pixels in the room the shell made for it.
+fn until_drawn(
+    client: &mut crate::common::window::Client,
+    session: &mut Session,
+    what: &str,
+    mut done: impl FnMut(&mut Session) -> bool,
+) {
+    let mut drawn: Vec<Option<(i32, i32)>> = (0..client.seen.toplevels.len())
+        .map(|index| client.seen.size_at(index))
+        .collect();
+    let reached = crate::common::reached(session, |session| {
+        client.exchange();
+        for (index, last) in drawn.iter_mut().enumerate() {
+            if let Some(size) = client.seen.size_at(index)
+                && *last != Some(size)
+            {
+                *last = Some(size);
+                client.show(index, size.0, size.1, crate::common::window::WINDOW_BYTES);
+            }
+        }
+        client.exchange();
+        done(session)
+    });
+    assert!(
+        reached,
+        "{what}: not reached; the shell's refusals: {:?}; the session says: {:?}; the windows: {:?}",
+        session.shell_refusals(),
+        session.accessible_labels(),
+        session.compositor().windows()
+    );
 }
 
 fn key(session: &mut Session, keycode: u32, pressed: bool) {
@@ -756,28 +814,35 @@ fn shown_floating(session: &mut Session, tab: u64, card: ui::kurbo::Rect) -> boo
 #[test]
 fn a_click_where_a_float_bar_stood_reaches_the_window_there() {
     let _settled = tilo_ui_base::motion::testing::settled();
-    let mut session = shell();
+    let (mut session, mut client) = shell_of_clients();
     let chat = tab_of(&session, CHAT).expect("the conversation is open");
 
     press(&mut session, ShortcutAction::ToggleFloat);
     until(&mut session, "the window floats", |session| {
         held(session, chat).floating
     });
-    until(&mut session, "the window is drawn floating", |session| {
-        let over = rect(session, chat);
-        (over.width(), over.height()) == (640.0, 480.0)
-    });
+    until_drawn(
+        &mut client,
+        &mut session,
+        "the window is drawn floating",
+        |session| {
+            let over = rect(session, chat);
+            (over.width(), over.height()) == (640.0, 480.0)
+        },
+    );
     let over = rect(&session, chat);
-    until(
+    until_drawn(
+        &mut client,
         &mut session,
         "the conversation shows on screen inside its floating window",
         |session| shown_floating(session, chat, over),
     );
     capture(&mut session, "floating-dark");
 
-    // Carried away by its bar and let go below and beside where it stood, off the strip's bars.
-    let bar = (over.x1 - 220.0, over.y0 + 22.0);
-    let dx = if over.x0 >= 320.0 { -320.0 } else { 320.0 };
+    // Carried away by its bar, at the tab a one-window strip keeps there, and let go below and
+    // beside where it stood, off the strip's bars and inside the display's margin.
+    let bar = (over.x0 + 60.0, over.y0 + 22.0);
+    let dx = if over.x0 >= 320.0 { -240.0 } else { 240.0 };
     let dy = if over.y1 + 60.0 <= f64::from(HEIGHT) {
         60.0
     } else {
@@ -803,7 +868,8 @@ fn a_click_where_a_float_bar_stood_reaches_the_window_there() {
         !moved.contains(ui::kurbo::Point::new(bar.0, bar.1)),
         "and no longer over where its bar stood"
     );
-    until(
+    until_drawn(
+        &mut client,
         &mut session,
         "the conversation shows on screen where it was let go",
         |session| shown_floating(session, chat, moved),
@@ -825,7 +891,8 @@ fn a_click_where_a_float_bar_stood_reaches_the_window_there() {
     until(&mut session, "the window snaps back", |session| {
         !held(session, chat).floating
     });
-    until(
+    until_drawn(
+        &mut client,
         &mut session,
         "the conversation shows on screen in its strip again",
         |session| on_screen(session, chat).is_some() && !shown_floating(session, chat, moved),
