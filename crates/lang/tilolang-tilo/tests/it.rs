@@ -130,6 +130,7 @@ mod shell_staged;
 mod slides_agent_words;
 mod slides_search;
 mod spaces;
+mod staging;
 mod suggest;
 mod surface;
 mod task;

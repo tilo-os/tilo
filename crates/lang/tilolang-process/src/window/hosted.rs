@@ -1041,10 +1041,13 @@ impl ui::framework::ResourceSurface<super::resource::Workspace> for HostedWindow
         let Some(running) = &mut self.in_process else {
             return;
         };
+        // A capture of a scenario that did not run whole pictures nothing it tells: it stops on
+        // the step that failed, in the words of why.
         if let Some(scenario) = scenario
             && let Some(hosted) = running.host.instances_mut().next()
+            && let Err(why) = hosted.stage(scenario)
         {
-            hosted.stage(scenario);
+            panic!("{why}");
         }
         running.settle();
     }

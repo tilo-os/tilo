@@ -156,11 +156,8 @@ impl StagedWindow {
         if let Some(why) = instance.take_open_failure() {
             panic!("the shell's desktop did not open: {why}");
         }
-        instance.stage(Some(scenario));
-        instance.sync();
-        instance.commit_planned();
-        if let Some(why) = instance.take_stage_failure() {
-            panic!("the scenario \"{scenario}\" failed: {why}");
+        if let Err(why) = instance.stage(scenario) {
+            panic!("{why}");
         }
         instance.update();
         let window = tilo_app_window::AppWindow::new(Box::new(window_end), Vec::new());

@@ -19,6 +19,12 @@ pub enum RuntimeError {
     Engine(#[from] CallError),
     #[error("denied: {0}")]
     Denied(String),
+    /// A scenario run where it decides by a real workspace's access
+    /// ([`crate::Runtime::decide_by_workspace`]) stopped at a step it may not take there, in the
+    /// words that name the step, who it was to run as and why. The steps before it stand: a seed
+    /// into a person's workspace does only what they can, and says what it left out.
+    #[error("the scenario stopped at a step it may not take here: {0}")]
+    Stopped(String),
     /// A view call that cannot be shown: its package did not load, or its view failed when it
     /// ran. The call draws a failed state where it stands (`shell.md` §6), and its host is told
     /// ([`crate::foreign::FailedViews`]); it is never the whole screen's failure.

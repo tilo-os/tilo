@@ -2117,7 +2117,8 @@ fn a_mails_message_is_found_by_a_word_of_its_body_through_the_system_index() {
     host.instances_mut()
         .next()
         .expect("the instance runs")
-        .stage("a busy inbox");
+        .stage("a busy inbox")
+        .unwrap_or_else(|why| panic!("{why}"));
     settle(&mut host, &mut window);
 
     // The window publishes nothing to search: the device's daemon owns the app's entries.
@@ -2223,7 +2224,8 @@ tilo_test_env::scenario! {
         host.instances_mut()
             .next()
             .expect("the instance runs")
-            .stage("fetched");
+            .stage("fetched")
+            .unwrap_or_else(|why| panic!("{why}"));
         settle(&mut host, &mut window);
         let written = shown(&window);
         assert!(
@@ -2236,7 +2238,8 @@ tilo_test_env::scenario! {
         host.instances_mut()
             .next()
             .expect("the instance runs")
-            .stage("fetched");
+            .stage("fetched")
+            .unwrap_or_else(|why| panic!("{why}"));
         settle(&mut host, &mut window);
         let written = shown(&window);
         assert!(
@@ -2252,7 +2255,8 @@ tilo_test_env::scenario! {
         host.instances_mut()
             .next()
             .expect("the instance runs")
-            .stage("fetched");
+            .stage("fetched")
+            .unwrap_or_else(|why| panic!("{why}"));
         settle(&mut host, &mut window);
         let before = shown(&window);
         assert!(
@@ -2282,7 +2286,8 @@ tilo_test_env::scenario! {
         host.instances_mut()
             .next()
             .expect("the instance runs")
-            .stage("this week");
+            .stage("this week")
+            .unwrap_or_else(|why| panic!("{why}"));
         settle(&mut host, &mut window);
         let monday = shown(&window);
         assert!(
@@ -2727,7 +2732,8 @@ fn a_window_opened_with_a_tube_link_shows_the_video_it_names() {
     host.instances_mut()
         .next()
         .expect("the instance runs")
-        .stage("a subscriptions feed");
+        .stage("a subscriptions feed")
+        .unwrap_or_else(|why| panic!("{why}"));
     settle(&mut host, &mut window);
     // The root offers the system's `open-link`, which is what a shell delivers a link through
     // when it hands one to the app rather than to a window.

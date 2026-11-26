@@ -164,21 +164,25 @@ fn seeded_app(person: &str, app: &InstalledApp) -> Result<ResourceService, Strin
                     &tilolang_tilo::clock::system_time(),
                 )?;
             }
-            if let Some((called, action)) = &scenario
-                && let Err(error) = host.runtime().invoke_action(
+            if let Some((called, action)) = &scenario {
+                match host.runtime().invoke_action(
                     &tilo_actions::Actor::from(tilo_actions::MemberId::person(&person)),
                     (action.as_str(), vec![]),
-                )
-            {
-                let error = format!("{name}'s scenario \"{called}\": {error}");
-                // In a workspace the scenario does only what the person does: a step it takes
-                // as someone else is refused and stops it there. What it wrote before that
-                // stands, and the app opens on it; the refusal is said once, here. Anywhere else
-                // a scenario that stops is broken.
-                if !host.runtime().decides_by_workspace() {
-                    return Err(error);
+                ) {
+                    Ok(_) => {}
+                    // In a workspace the scenario does only what the person does: a step it takes
+                    // as someone else is refused and stops it there, which only a runtime deciding
+                    // by the workspace answers. What it wrote before that stands, and the app opens
+                    // on it; what it left out is said once, here.
+                    Err(tilolang_tilo::runtime::RuntimeError::Stopped(why)) => tracing::warn!(
+                        app = %name,
+                        scenario = %called,
+                        %why,
+                        "the app's first scenario was seeded up to a step the person may not take"
+                    ),
+                    // Any other failure is a broken seed, in a workspace or not.
+                    Err(error) => return Err(format!("{name}'s scenario \"{called}\": {error}")),
                 }
-                tracing::warn!(%error, "the app's first scenario stopped partway");
             }
             // A workspace of many items, to feel the app as a person with that many does.
             if let Some(items) = seed_items() {

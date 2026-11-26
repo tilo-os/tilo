@@ -28,7 +28,7 @@ fn in_a_conversation(
         spec = spec.access(policy::MemberAccess::person(policy, "ada"));
     }
     let mut session = Session::on_bus(&bus, &route, spec);
-    session.instance_mut().stage("a conversation");
+    session.stage("a conversation");
     session.settle();
     session
 }

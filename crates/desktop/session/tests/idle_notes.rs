@@ -232,7 +232,9 @@ fn an_idle_notes_window_in_a_workspace_this_device_holds_wakes_nothing() {
                     // app's own scenario seeds one. The window shows the tree of notes and the
                     // outline of the one open beside them.
                     for instance in host.instances_mut() {
-                        instance.stage("the notebook and a note's outline");
+                        instance
+                            .stage("the notebook and a note's outline")
+                            .unwrap_or_else(|why| panic!("{why}"));
                     }
                     // The window is built from what the app sends, as the app process builds it:
                     // each batch it takes composes the view again, and what that asks of the app

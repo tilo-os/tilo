@@ -247,7 +247,8 @@ fn workspace_members_share_mail_and_the_viewer_cannot_archive_it() {
         .instances_mut()
         .next()
         .unwrap()
-        .stage("a busy inbox");
+        .stage("a busy inbox")
+        .unwrap_or_else(|why| panic!("{why}"));
     ada.settle();
     bo.settle();
     for what in ADAS {
@@ -340,7 +341,8 @@ fn sent_reply() -> (Rc<Bus>, String) {
         .instances_mut()
         .next()
         .unwrap()
-        .stage("a reply being written");
+        .stage("a reply being written")
+        .unwrap_or_else(|why| panic!("{why}"));
     ada.settle();
     bo.settle();
     let send = ada
@@ -514,7 +516,8 @@ fn nobody_outside_the_workspace_reads_its_mail() {
         .instances_mut()
         .next()
         .unwrap()
-        .stage("a busy inbox");
+        .stage("a busy inbox")
+        .unwrap_or_else(|why| panic!("{why}"));
     ada.settle();
     for what in ADAS {
         assert!(ada.window.shows().contains(what), "Ada's Mail shows {what}");

@@ -2307,16 +2307,21 @@ impl Hosted {
         true
     }
 
-    /// Run the package's scenario `scenario` in the instance on its next frame, as a capture
-    /// stages one: its changes are the person's steps on the instance's document.
-    pub fn stage(&mut self, scenario: &str) {
+    /// Run the package's scenario `scenario` in the instance now, as a capture stages one: its
+    /// changes are the person's steps on the instance's document, which its next frame sends.
+    ///
+    /// # Errors
+    ///
+    /// Why the scenario did not run whole, naming the step that failed, its action and why
+    /// ([`Instance::stage`]).
+    pub fn stage(&mut self, scenario: &str) -> Result<(), String> {
         let _code = self.scope.enter();
         // A package's first scenario stands on what its outside services hold, which the
         // instance takes in from these samples through the services' origins before it runs.
         tilolang_mail::sample::register();
         #[cfg(feature = "app-launch")]
         tilolang_youtube::sample::register();
-        self.instance.stage(Some(scenario));
+        self.instance.stage(scenario)
     }
 
     /// Run the action of each watched folder that changed since the last frame, as the member
@@ -2442,9 +2447,6 @@ impl Hosted {
         changed |= self.run_watches();
         let chose = self.chosen();
         changed |= chose;
-        if let Some(why) = self.instance.take_stage_failure() {
-            tracing::error!(%why, "the staged scenario failed");
-        }
         if chose {
             self.instance.show_ran();
         }

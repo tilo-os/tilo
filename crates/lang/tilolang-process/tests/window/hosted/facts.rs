@@ -8,7 +8,7 @@ use super::{OPENBY, Session};
 
 fn staged() -> Session {
     let mut session = Session::new(OPENBY, "ada");
-    session.instance_mut().stage("two books");
+    session.stage("two books");
     session.settle();
     session
 }

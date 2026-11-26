@@ -2162,7 +2162,7 @@ fn a_frame_of_the_mark_in_a_sessions_window_costs_what_a_still_frame_costs() {
     }
     let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
     let mut session = Session::on_bus(&bus, &route, spec_of(&route, "ada"));
-    session.instance_mut().stage("a busy week");
+    session.stage("a busy week");
     session.settle();
     crate::motion::a_mark_costs_a_still_frame(&mut session);
 }

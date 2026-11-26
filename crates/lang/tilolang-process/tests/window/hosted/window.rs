@@ -25,7 +25,7 @@ const LETTERS: &str = "test.letters";
 /// `app`'s window in the display-less driver with the scenario `scenario` staged.
 fn staged(app: &str, scenario: &str) -> Session {
     let mut session = Session::new(app, "ada");
-    session.instance_mut().stage(scenario);
+    session.stage(scenario);
     session.settle();
     session
 }
@@ -1100,7 +1100,7 @@ fn run_send(session: &mut Session, draft: &ResourceRef) -> Result<(), String> {
 /// Bo at a Letters window of Ada's workspace, made its editor.
 fn bo_editing_letters() -> Session {
     let mut session = Session::bo_editing(LETTERS, super::Window::in_harness);
-    session.instance_mut().stage("a mailbox of letters");
+    session.stage("a mailbox of letters");
     session.settle();
     session
 }

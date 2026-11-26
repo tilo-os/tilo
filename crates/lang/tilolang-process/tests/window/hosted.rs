@@ -1079,6 +1079,14 @@ impl Session {
             .expect("the window's instance")
     }
 
+    /// Stage the app's scenario `scenario` in the window's instance, as a capture stages it: a
+    /// scenario that does not run whole fails the test where it stopped, in the words of why.
+    fn stage(&mut self, scenario: &str) {
+        if let Err(why) = self.instance_mut().stage(scenario) {
+            panic!("{why}");
+        }
+    }
+
     /// The host of the window's instance: its runtime and its store.
     fn instance_host(&self) -> tilolang_tilo::host::Host {
         self.instance()

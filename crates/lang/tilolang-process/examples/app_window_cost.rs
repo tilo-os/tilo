@@ -140,9 +140,10 @@ fn open(app: &str, platform: &Rc<Packages>, scenario: Option<&str>) -> Open {
         Box::new(app_end),
     );
     instance.sync();
-    if scenario.is_some() {
-        instance.stage(scenario);
-        instance.sync();
+    if let Some(scenario) = scenario
+        && let Err(why) = instance.stage(scenario)
+    {
+        panic!("{why}");
     }
     instance.update();
     Open {

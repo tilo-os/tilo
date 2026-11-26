@@ -182,18 +182,10 @@ impl Window {
                     .map_err(|error| format!("--state {state}: {error}"))?;
             }
         }
-        instance.stage_story(scenario);
-        // The scenario runs on the frame that takes it: its sample data is what it writes
-        // without a time of its own, and what it dates is the story it tells.
-        if scenario.is_some() {
-            instance.sync();
-            instance.commit_planned();
-        }
-        if let Some(why) = instance.take_stage_failure() {
-            return Err(format!(
-                "the scenario \"{}\" failed: {why}",
-                scenario.unwrap_or_default()
-            ));
+        // Its sample data is what the scenario writes without a time of its own, and what it
+        // dates is the story it tells.
+        if let Some(scenario) = scenario {
+            instance.stage_story(scenario)?;
         }
         // What the page opened the app with, run as a shell launches the app on it: the app's
         // own action for the file's kind, or its `open-link`, and what either made opens.

@@ -463,13 +463,12 @@ pub struct Instance {
     own_records_elsewhere: bool,
     /// Those presses, in order, until the host runs them ([`Self::take_own_record_calls`]).
     own_record_calls: Vec<(ActionAddress, serde_json::Map<String, serde_json::Value>)>,
-    /// The scenario a capture stages, until the host runs it.
+    /// The scenario a capture stages, while [`Instance::stage`] runs it.
     staged: Option<String>,
     /// The staged scenario's sample data is dated before the story it dates
     /// ([`Instance::stage_story`]).
     story: bool,
-    /// Why the scenario a capture staged did not run whole, until the capture takes it: a
-    /// capture of a half-run scenario is no picture of it.
+    /// Why the scenario [`Instance::stage`] runs did not run whole, which it answers.
     stage_failed: Option<String>,
     /// Why the app's root did not open, until the host that opened it takes it: a window with no
     /// root view stands empty, and shows why it does instead.
@@ -1157,25 +1156,49 @@ impl Instance {
         (self.focus.as_ref(), self.composing)
     }
 
-    /// Run the scenario `scenario` once the host runs, as a capture stages it.
-    pub fn stage(&mut self, scenario: Option<&str>) {
-        self.staged = scenario.map(str::to_owned);
-        self.stage_failed = None;
+    /// Run the scenario `scenario` now, as a capture stages it: its packages' first scenarios,
+    /// then its own steps, written as the person's.
+    ///
+    /// # Errors
+    ///
+    /// Why the scenario did not run whole: the step that failed, the action it ran and why, or a
+    /// package it uses that failed its first scenario. A capture or a test of a half-staged
+    /// workspace pictures nothing the scenario tells, so the caller stops there.
+    pub fn stage(&mut self, scenario: &str) -> Result<(), String> {
+        self.staged = Some(scenario.to_owned());
         self.story = false;
+        self.run_stage()
     }
 
-    /// Run the scenario `scenario` once the host runs, as a capture of the story it tells
-    /// stages it: what it writes without a time of its own is its sample data, the workspace
-    /// the story happens to, and is dated a second before the earliest change it dates.
-    pub fn stage_story(&mut self, scenario: Option<&str>) {
-        self.stage(scenario);
+    /// [`Self::stage`], as a capture of the story the scenario tells stages it: what it writes
+    /// without a time of its own is its sample data, the workspace the story happens to, and is
+    /// dated a second before the earliest change it dates.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::stage`].
+    pub fn stage_story(&mut self, scenario: &str) -> Result<(), String> {
+        self.staged = Some(scenario.to_owned());
         self.story = true;
+        self.run_stage()
     }
 
-    /// Why the scenario [`stage`](Self::stage) named failed, or a package it uses failed its
-    /// first scenario, once the host ran it: a capture refuses to picture a half-staged workspace.
-    pub fn take_stage_failure(&mut self) -> Option<String> {
-        self.stage_failed.take()
+    /// Run the staged scenario on a frame of its own, and answer whether it ran whole.
+    fn run_stage(&mut self) -> Result<(), String> {
+        let scenario = self.staged.clone().unwrap_or_default();
+        self.stage_failed = None;
+        self.frame();
+        self.commit_planned();
+        if self.staged.take().is_some() {
+            return Err(format!(
+                "the scenario \"{scenario}\" did not run: {} has no workspace to stage into",
+                self.app
+            ));
+        }
+        match self.stage_failed.take() {
+            Some(why) => Err(format!("the scenario \"{scenario}\" failed: {why}")),
+            None => Ok(()),
+        }
     }
 
     /// Why the app's root did not open, once the host ran it: a window opens on it, so a host

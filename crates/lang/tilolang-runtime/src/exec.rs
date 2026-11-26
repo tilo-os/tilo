@@ -1724,7 +1724,7 @@ impl Core {
         if outermost && !invocation.is_empty() {
             self.store.borrow_mut().begin_run(&invocation);
         }
-        let outcome = match self.drive(run, journal) {
+        let mut outcome = match self.drive(run, journal) {
             Ok(RunEnd::Done { journal, value }) => self.answer_parent(&journal, Ok(value)),
             Ok(RunEnd::Waits(waits)) => Ok(waits),
             Ok(RunEnd::Failed { journal, error }) => self.answer_parent(&journal, Err(error)),
@@ -1735,6 +1735,14 @@ impl Core {
             // A scenario stopped at a step it may not take keeps the steps before it, which were
             // changes of their own; it still answers why it stopped.
             let stopped = self.scenario_stopped.replace(false);
+            // And it answers that it stopped, apart from a failure: its caller (a seed into a
+            // person's workspace) says what it skipped rather than taking it for a broken seed.
+            if stopped && let Err(error) = outcome {
+                outcome = Err(RuntimeError::Stopped(match error {
+                    RuntimeError::Trap(why) => why,
+                    other => other.to_string(),
+                }));
+            }
             if !invocation.is_empty() {
                 let mut store = self.store.borrow_mut();
                 let settled = match &outcome {
@@ -1742,7 +1750,7 @@ impl Core {
                     // stays apart until it ends, and a failure after the answer takes it all back.
                     Ok(RunOutcome::Waits { .. }) => Ok(()),
                     Ok(_) => store.end_run(&invocation),
-                    Err(_) if stopped => store.end_run(&invocation),
+                    Err(RuntimeError::Stopped(_)) => store.end_run(&invocation),
                     Err(_) => {
                         store.abort_run(&invocation);
                         Ok(())
