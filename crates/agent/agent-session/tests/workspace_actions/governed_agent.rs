@@ -42,7 +42,9 @@ async fn supervise(
         ))
         .await;
     match receipt.status {
-        ReceiptStatus::Completed { output } => output.value.unwrap_or_default(),
+        ReceiptStatus::Completed { output } => output
+            .value
+            .expect("the grant action returns its JSON receipt"),
         other => panic!("{resource}#{action}: {other:?}"),
     }
 }
@@ -160,7 +162,7 @@ fn an_existing_roster_agent_joins_after_one_approval_without_a_task_runner() {
                 .enable_all()
                 .build()
                 .unwrap()
-                .block_on(a_hosted_roster_turn());
+                .block_on(Box::pin(a_hosted_roster_turn()));
         },
     );
 }
@@ -234,127 +236,15 @@ async fn a_hosted_roster_turn() {
         wrong.invoke(status()).await.status,
         ReceiptStatus::Rejected { .. }
     ));
-    // A certified keeper can discover precisely the grant actions their assistant offers.
-    let catalogue = |provider: Option<&str>| tilo_actions::remote::CatalogueQuery {
-        provider: provider.map(str::to_owned),
-        ..Default::default()
-    };
-    let discovery = page.catalogue(catalogue(None)).await.unwrap();
-    assert!(discovery.providers.iter().any(|entry| {
-        entry.provider == AGENTS_PROVIDER && entry.workspace == workspace.workspace
-    }));
-    let offered = page
-        .catalogue(catalogue(Some(AGENTS_PROVIDER)))
-        .await
-        .unwrap();
-    let offered: Vec<_> = offered
-        .rows
-        .iter()
-        .filter_map(|row| row.action.as_ref())
-        .collect();
-    assert_eq!(
-        offered.len(),
-        4,
-        "an assistant with no grant has nothing to revoke"
-    );
-    assert!(
-        offered
-            .iter()
-            .all(|action| action.address.resource == resource)
-    );
-    assert!(
-        offered
-            .iter()
-            .any(|action| action.address.action == "grant-status"
-                && action.contract.kind == tilo_actions::ActionKind::Read)
-    );
-    assert!(
-        offered
-            .iter()
-            .any(|action| action.address.action == "request-chat-grant")
-    );
-    assert!(
-        offered
-            .iter()
-            .any(|action| action.address.action == "request-assistant-work-grant")
-    );
-    let selected = offered
-        .iter()
-        .find(|action| action.address.action == "request-app-grant")
-        .unwrap();
-    let schema = selected
-        .params
-        .iter()
-        .find(|param| param.name == "apps")
-        .unwrap()
-        .schema
-        .as_deref()
-        .unwrap();
-    tilo_actions::validate_json_schema(
-        &serde_json::json!(["so.tilo.chat", "so.tilo.mail"]),
-        schema,
-    )
-    .unwrap();
-    let choices = tilo_server_protocol::agents::AgentGrantApp::choices(selected);
-    assert!(
-        choices
-            .iter()
-            .any(|app| app.id == "so.tilo.chat" && !app.title.is_empty())
-    );
-    assert!(
-        choices
-            .iter()
-            .any(|app| app.id == "tilo.models" && !app.title.is_empty())
-    );
-    assert!(choices.iter().any(|app| app.id == SHEETS));
-    assert!(choices.iter().any(
-        |app| app.id == tilo_actions::remote::OTHER_WORKSPACES_PROVIDER
-            && app.title == "Other workspace names"
-    ));
-    let choose = |apps: serde_json::Value| {
-        request(
-            AGENTS_PROVIDER,
-            ActionAddress::new(&resource, "request-app-grant"),
-            json(&apps),
-        )
-    };
-    for apps in [
-        serde_json::json!({"apps":[]}),
-        serde_json::json!({"apps":["so.tilo.mail"]}),
-        serde_json::json!({"apps":["so.tilo.chat", "*"]}),
-        serde_json::json!({"apps":["so.tilo.chat", "so.tilo.unknown-to-this-host"]}),
-        serde_json::json!({"apps":["so.tilo.chat", "so.tilo.chat"]}),
-        serde_json::json!({"apps":["so.tilo.chat"], "workspaces":[elsewhere.workspace]}),
-    ] {
-        assert!(matches!(
-            page.invoke(choose(apps)).await.status,
-            ReceiptStatus::Rejected { .. }
-        ));
-    }
-    let chosen = serde_json::json!({"apps":["so.tilo.mail", "so.tilo.chat"]});
-    assert!(matches!(
-        guest.invoke(choose(chosen.clone())).await.status,
-        ReceiptStatus::Rejected { .. }
-    ));
-    for other in [&mut guest, &mut wrong] {
-        assert!(
-            other
-                .catalogue(catalogue(Some(AGENTS_PROVIDER)))
-                .await
-                .unwrap()
-                .rows
-                .is_empty()
-        );
-        assert!(
-            !other
-                .catalogue(catalogue(None))
-                .await
-                .unwrap()
-                .providers
-                .iter()
-                .any(|entry| entry.provider == AGENTS_PROVIDER)
-        );
-    }
+    Box::pin(check_grant_catalogue(
+        &mut page,
+        &mut guest,
+        &mut wrong,
+        &workspace.workspace,
+        &elsewhere.workspace,
+        &resource,
+    ))
+    .await;
     let ask = || {
         request(
             AGENTS_PROVIDER,
@@ -692,19 +582,12 @@ async fn a_hosted_roster_turn() {
         caller: &as_agent,
         device,
     };
-    let turn = tilo_workspace_service::workspaces::hosted_use::HostedTurn {
-        workspace: workspace.workspace_id,
-        caller: &as_agent,
-        bound: None,
-    };
-    assert!(matches!(
-        workspaces.secret_ask_for_turn(&turn).await,
-        Err(tilo_actions::remote::ActionCallError::NotPermitted)
-    ));
-    assert!(workspaces.uses_offered(&turn).await.is_empty());
-    assert!(workspaces.connection_rows_for_turn(&turn).await.is_empty());
-    assert!(workspaces.mail_connect_offered(&turn).await.is_empty());
-    assert!(workspaces.calendar_connect_offered(&turn).await.is_empty());
+    Box::pin(check_connector_denials(
+        &workspaces,
+        workspace.workspace_id,
+        &as_agent,
+    ))
+    .await;
     // Services beside the records must honor the signed app list on a turn too.
     {
         use tilo_actions::remote::{
@@ -958,77 +841,15 @@ async fn a_hosted_roster_turn() {
         ReceiptStatus::Rejected { .. }
     ));
     assert_eq!(output(second.invoke(status()).await)["state"], "revoked");
-    let fresh = supervise(
+    Box::pin(check_grant_renewal(
         &mut page,
+        &mut second,
+        &mut approver,
+        agent,
         &resource,
-        "request-chat-grant",
-        InvokeArgument::None,
-    )
+        workspace.workspace_id,
+    ))
     .await;
-    assert_eq!(fresh["grant"], agent);
-    let proposal = approver
-        .list_agent_proposals()
-        .await
-        .unwrap()
-        .pop()
-        .unwrap();
-    assert_eq!(proposal.proposal.scope.workspaces, [workspace.workspace_id]);
-    assert_eq!(proposal.proposal.scope.apps, ["so.tilo.chat"]);
-    assert_eq!(output(second.invoke(status()).await)["state"], "pending");
-    supervise(&mut page, &resource, REVOKE_ACTION, InvokeArgument::None).await;
-    assert!(approver.list_agent_proposals().await.unwrap().is_empty());
-    let selected = output(page.invoke(choose(chosen)).await);
-    assert_eq!(
-        selected,
-        output(
-            second
-                .invoke(choose(
-                    serde_json::json!({"apps":["so.tilo.chat","so.tilo.mail"]})
-                ))
-                .await
-        )
-    );
-    let selected = approver.list_agent_proposals().await.unwrap();
-    assert_eq!(selected.len(), 1);
-    assert_eq!(
-        selected[0].proposal.scope.workspaces,
-        [workspace.workspace_id]
-    );
-    assert_eq!(
-        selected[0].proposal.scope.apps,
-        ["so.tilo.chat", "so.tilo.mail"]
-    );
-    assert_eq!(
-        output(second.invoke(status()).await)["apps"],
-        serde_json::json!(["so.tilo.chat", "so.tilo.mail"])
-    );
-    assert!(matches!(
-        page.invoke(choose(
-            serde_json::json!({"apps":["so.tilo.chat", "tilo.models"]})
-        ))
-        .await
-        .status,
-        ReceiptStatus::Rejected { .. }
-    ));
-    supervise(&mut page, &resource, REVOKE_ACTION, InvokeArgument::None).await;
-    supervise(
-        &mut page,
-        &resource,
-        "request-assistant-work-grant",
-        InvokeArgument::None,
-    )
-    .await;
-    let proposals = approver.list_agent_proposals().await.unwrap();
-    assert_eq!(proposals.len(), 1);
-    assert_eq!(
-        proposals[0].proposal.scope.apps,
-        [
-            "so.tilo.chat",
-            "so.tilo.tasks",
-            "so.tilo.assistant",
-            "so.tilo.shortcuts"
-        ]
-    );
     for page in [&page, &second, &wrong, &guest] {
         page.peer.close();
     }
@@ -1095,6 +916,252 @@ async fn a_hosted_roster_turn() {
     drop(reopened.web);
     reopened.server.shutdown().await;
     endpoint.close().await;
+}
+
+fn catalogue(provider: Option<&str>) -> tilo_actions::remote::CatalogueQuery {
+    tilo_actions::remote::CatalogueQuery {
+        provider: provider.map(str::to_owned),
+        ..Default::default()
+    }
+}
+
+fn choose_apps(resource: &str, apps: serde_json::Value) -> tilo_actions::remote::InvokeRequest {
+    request(
+        AGENTS_PROVIDER,
+        ActionAddress::new(resource, "request-app-grant"),
+        json(&apps),
+    )
+}
+
+async fn check_grant_catalogue(
+    page: &mut Browser,
+    guest: &mut Browser,
+    wrong: &mut Browser,
+    workspace: &str,
+    elsewhere: &str,
+    resource: &str,
+) {
+    // A certified keeper can discover precisely the grant actions their assistant offers.
+    let discovery = page.catalogue(catalogue(None)).await.unwrap();
+    assert!(
+        discovery
+            .providers
+            .iter()
+            .any(|entry| { entry.provider == AGENTS_PROVIDER && entry.workspace == workspace })
+    );
+    let offered = page
+        .catalogue(catalogue(Some(AGENTS_PROVIDER)))
+        .await
+        .unwrap();
+    let offered: Vec<_> = offered
+        .rows
+        .iter()
+        .filter_map(|row| row.action.as_ref())
+        .collect();
+    assert_eq!(
+        offered.len(),
+        4,
+        "an assistant with no grant has nothing to revoke"
+    );
+    assert!(
+        offered
+            .iter()
+            .all(|action| action.address.resource == resource)
+    );
+    assert!(
+        offered
+            .iter()
+            .any(|action| action.address.action == "grant-status"
+                && action.contract.kind == tilo_actions::ActionKind::Read)
+    );
+    assert!(
+        offered
+            .iter()
+            .any(|action| action.address.action == "request-chat-grant")
+    );
+    assert!(
+        offered
+            .iter()
+            .any(|action| action.address.action == "request-assistant-work-grant")
+    );
+    let selected = offered
+        .iter()
+        .find(|action| action.address.action == "request-app-grant")
+        .unwrap();
+    let schema = selected
+        .params
+        .iter()
+        .find(|param| param.name == "apps")
+        .unwrap()
+        .schema
+        .as_deref()
+        .unwrap();
+    tilo_actions::validate_json_schema(
+        &serde_json::json!(["so.tilo.chat", "so.tilo.mail"]),
+        schema,
+    )
+    .unwrap();
+    let choices = tilo_server_protocol::agents::AgentGrantApp::choices(selected);
+    assert!(
+        choices
+            .iter()
+            .any(|app| app.id == "so.tilo.chat" && !app.title.is_empty())
+    );
+    assert!(
+        choices
+            .iter()
+            .any(|app| app.id == "tilo.models" && !app.title.is_empty())
+    );
+    assert!(choices.iter().any(|app| app.id == SHEETS));
+    assert!(choices.iter().any(
+        |app| app.id == tilo_actions::remote::OTHER_WORKSPACES_PROVIDER
+            && app.title == "Other workspace names"
+    ));
+    for apps in [
+        serde_json::json!({"apps":[]}),
+        serde_json::json!({"apps":["so.tilo.mail"]}),
+        serde_json::json!({"apps":["so.tilo.chat", "*"]}),
+        serde_json::json!({"apps":["so.tilo.chat", "so.tilo.unknown-to-this-host"]}),
+        serde_json::json!({"apps":["so.tilo.chat", "so.tilo.chat"]}),
+        serde_json::json!({"apps":["so.tilo.chat"], "workspaces":[elsewhere]}),
+    ] {
+        assert!(matches!(
+            page.invoke(choose_apps(resource, apps)).await.status,
+            ReceiptStatus::Rejected { .. }
+        ));
+    }
+
+    assert!(matches!(
+        guest
+            .invoke(choose_apps(
+                resource,
+                serde_json::json!({"apps":["so.tilo.mail", "so.tilo.chat"]})
+            ))
+            .await
+            .status,
+        ReceiptStatus::Rejected { .. }
+    ));
+    for other in [guest, wrong] {
+        assert!(
+            other
+                .catalogue(catalogue(Some(AGENTS_PROVIDER)))
+                .await
+                .unwrap()
+                .rows
+                .is_empty()
+        );
+        assert!(
+            !other
+                .catalogue(catalogue(None))
+                .await
+                .unwrap()
+                .providers
+                .iter()
+                .any(|entry| entry.provider == AGENTS_PROVIDER)
+        );
+    }
+}
+
+async fn check_connector_denials(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: WorkspaceId,
+    caller: &tilo_actions::remote::Caller,
+) {
+    let turn = tilo_workspace_service::workspaces::hosted_use::HostedTurn {
+        workspace,
+        caller,
+        bound: None,
+    };
+    assert!(matches!(
+        workspaces.secret_ask_for_turn(&turn).await,
+        Err(tilo_actions::remote::ActionCallError::NotPermitted)
+    ));
+    assert!(workspaces.uses_offered(&turn).await.is_empty());
+    assert!(workspaces.connection_rows_for_turn(&turn).await.is_empty());
+    assert!(workspaces.mail_connect_offered(&turn).await.is_empty());
+    assert!(workspaces.calendar_connect_offered(&turn).await.is_empty());
+}
+
+async fn check_grant_renewal(
+    page: &mut Browser,
+    second: &mut Browser,
+    approver: &mut Approver,
+    agent: &str,
+    resource: &str,
+    workspace: WorkspaceId,
+) {
+    let fresh = supervise(page, resource, "request-chat-grant", InvokeArgument::None).await;
+    assert_eq!(fresh["grant"], agent);
+    let proposal = approver
+        .list_agent_proposals()
+        .await
+        .unwrap()
+        .pop()
+        .unwrap();
+    assert_eq!(proposal.proposal.scope.workspaces, [workspace]);
+    assert_eq!(proposal.proposal.scope.apps, ["so.tilo.chat"]);
+    assert_eq!(
+        supervise(second, resource, "grant-status", InvokeArgument::None).await["state"],
+        "pending"
+    );
+    supervise(page, resource, REVOKE_ACTION, InvokeArgument::None).await;
+    assert!(approver.list_agent_proposals().await.unwrap().is_empty());
+    let selected = supervise(
+        page,
+        resource,
+        "request-app-grant",
+        json(&serde_json::json!({"apps":["so.tilo.mail", "so.tilo.chat"]})),
+    )
+    .await;
+    assert_eq!(
+        selected,
+        supervise(
+            second,
+            resource,
+            "request-app-grant",
+            json(&serde_json::json!({"apps":["so.tilo.chat","so.tilo.mail"]}))
+        )
+        .await
+    );
+    let selected = approver.list_agent_proposals().await.unwrap();
+    assert_eq!(selected.len(), 1);
+    assert_eq!(selected[0].proposal.scope.workspaces, [workspace]);
+    assert_eq!(
+        selected[0].proposal.scope.apps,
+        ["so.tilo.chat", "so.tilo.mail"]
+    );
+    assert_eq!(
+        supervise(second, resource, "grant-status", InvokeArgument::None).await["apps"],
+        serde_json::json!(["so.tilo.chat", "so.tilo.mail"])
+    );
+    assert!(matches!(
+        page.invoke(choose_apps(
+            resource,
+            serde_json::json!({"apps":["so.tilo.chat", "tilo.models"]})
+        ))
+        .await
+        .status,
+        ReceiptStatus::Rejected { .. }
+    ));
+    supervise(page, resource, REVOKE_ACTION, InvokeArgument::None).await;
+    supervise(
+        page,
+        resource,
+        "request-assistant-work-grant",
+        InvokeArgument::None,
+    )
+    .await;
+    let proposals = approver.list_agent_proposals().await.unwrap();
+    assert_eq!(proposals.len(), 1);
+    assert_eq!(
+        proposals[0].proposal.scope.apps,
+        [
+            "so.tilo.chat",
+            "so.tilo.tasks",
+            "so.tilo.assistant",
+            "so.tilo.shortcuts"
+        ]
+    );
 }
 
 const STORE_FIXTURE: &str = "so.tilo.resource-fixture";

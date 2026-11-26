@@ -162,6 +162,7 @@ fn names_any(shown: &str, others: &[&str]) -> bool {
 /// A Chat turn can discover and start a team only after its keeper grants Assistant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_chat_turn_needs_the_assistant_grant_to_discover_and_start_a_team() {
+    use tilo_server_protocol::agents::AgentGrantAction;
     team!(
         root, browser, actions, workspaces, workspace, page, person, served
     );
@@ -174,12 +175,31 @@ async fn a_chat_turn_needs_the_assistant_grant_to_discover_and_start_a_team() {
     ] {
         let permitted = apps.contains(&OWNER);
         if permitted {
-            member_grant_action(
-                &mut page,
-                tilo_server_protocol::agents::AgentGrantAction::Revoke,
-            )
-            .await;
+            member_grant_action(&mut page, AgentGrantAction::Revoke).await;
+            let target = AgentGrantAction::RequestApps.target(SCOUT);
+            let request = request(
+                &target.provider,
+                target.address,
+                InvokeArgument::Json(serde_json::Map::from_iter([(
+                    "apps".to_owned(),
+                    json!(apps),
+                )])),
+            );
+            let receipt = page.invoke(request).await;
+            assert!(
+                matches!(receipt.status, ReceiptStatus::Completed { .. }),
+                "{receipt:?}"
+            );
+        } else {
+            member_grant_action(&mut page, AgentGrantAction::RequestChat).await;
         }
+        approve_member_grant(
+            &served,
+            &root,
+            WorkspaceId::parse(&workspace).unwrap(),
+            apps,
+        )
+        .await;
         let asked = Arc::new(Mutex::new(Vec::new()));
         let model = plays(&asked, |request| match tool_answers(request).len() {
             0 => looks(),
@@ -190,10 +210,13 @@ async fn a_chat_turn_needs_the_assistant_grant_to_discover_and_start_a_team() {
             ),
             _ => says("Finished."),
         });
-        let agents = served
-            .approving_for(&workspace, &[SCOUT], apps)
-            .await
-            .scripted(model);
+        let agents = ServerAgents::with_sessions(
+            workspaces.clone(),
+            actions.clone(),
+            Arc::new(served.server.agent_link()),
+            served.roster.sessions.clone(),
+        )
+        .scripted(model);
         let post = writes_in(
             &actions,
             &workspaces,
@@ -231,12 +254,13 @@ async fn narrowing_a_working_leads_rules_protects_its_team_before_the_next_tool_
         root, browser, actions, workspaces, workspace, page, person, served
     );
     let secret = "The April archive is on the north shelf.";
-    starts(&workspaces, &workspace, &person, ("Existing", secret)).await;
     let asked = Arc::new(Mutex::new(Vec::new()));
     let hold = Arc::new(Hold::default());
     let _opens = Opens(Arc::clone(&hold));
     let model = waits(
         vec![
+            does(1, START, &json!({"name": "Existing", "job": secret})),
+            says("Assigned."),
             looks(),
             does(
                 2,
@@ -246,7 +270,7 @@ async fn narrowing_a_working_leads_rules_protects_its_team_before_the_next_tool_
             reads(TEAM),
             says("Finished."),
         ],
-        1,
+        3,
         &asked,
         &hold,
     );
@@ -254,31 +278,43 @@ async fn narrowing_a_working_leads_rules_protects_its_team_before_the_next_tool_
         .approving_for(&workspace, &[SCOUT], &[CHAT, OWNER])
         .await
         .scripted(model);
-    let post = write_to_agent(
-        &actions,
-        &workspaces,
-        &workspace,
-        (&root, &browser),
-        "Start a researcher.",
-    )
-    .await;
-    let turn = agents
-        .turns(&workspace)
-        .await
-        .unwrap()
-        .into_iter()
-        .find(|turn| turn.cause == post.as_str())
-        .expect("the lead's Chat turn");
+    let my_turn = async |words: &str| {
+        let post =
+            write_to_agent(&actions, &workspaces, &workspace, (&root, &browser), words).await;
+        let turn = agents
+            .turns(&workspace)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|turn| turn.cause == post.as_str())
+            .expect("the lead's Chat turn");
+        (post, turn)
+    };
+    let (_, setup) = my_turn("Assign a child to keep the April archive.").await;
+    agents.answer(&workspace, &setup).await.unwrap();
+    assert_eq!(
+        sub_agents(&workspaces, &workspace, &person).await,
+        ["existing"]
+    );
+    let (post, turn) = my_turn("Start a researcher.").await;
     let (result, ()) = tokio::join!(Box::pin(agents.answer(&workspace, &turn)), async {
         until(
             "the lead has listed tools and is composing its team action",
-            || asked.lock().unwrap().len() == 2,
+            || asked.lock().unwrap().len() == 4,
         )
         .await;
-        on_roster(
-            &workspaces,
-            &workspace,
-            (None, &person),
+        let record = collab_types::workspace_document_id(KIND);
+        let bytes = workspaces
+            .resource_document(&workspace, OWNER, &record)
+            .await
+            .unwrap()
+            .unwrap();
+        let mut list =
+            Replica::<WorkspaceAgents>::from_doc(automerge::AutoCommit::load(&bytes).unwrap())
+                .as_author(&person)
+                .in_app(OWNER, "Assistant");
+        let heads = list.doc_mut().get_heads();
+        list.apply(
             WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
                 agent: Id::from_raw(SCOUT),
                 bound: vec![Bound {
@@ -290,8 +326,26 @@ async fn narrowing_a_working_leads_rules_protects_its_team_before_the_next_tool_
                 }],
             }),
         )
-        .await
-        .expect("the keeper narrows the active lead's rules");
+        .expect("the keeper narrows the lead's rules");
+        page.peer
+            .write(
+                DocumentRoute {
+                    cluster_id: workspace.clone(),
+                    app_id: OWNER.into(),
+                    document: record,
+                },
+                &collab_types::DocumentMutation::Incremental(list.doc_mut().save_after(&heads)),
+            )
+            .expect("the keeper signs the rule change on their own device");
+        page.durable().await;
+        assert!(
+            !roster(&workspaces, &workspace)
+                .await
+                .get(&Id::from_raw(SCOUT))
+                .unwrap()
+                .bound
+                .is_empty()
+        );
         hold.open();
     });
     result.unwrap();
