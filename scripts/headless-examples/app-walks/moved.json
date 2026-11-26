@@ -197,19 +197,19 @@
   },
   "so.tilo.settings settings.mcp-server#apply": {
     "to": "tilo.invocations workspace.invocations#resolve",
-    "test": "crates/core/actions/tests/asked_resolve.rs:362"
+    "test": "crates/core/remote-actions/tests/asked_resolve.rs:370"
   },
   "so.tilo.settings settings.mcp-server#field-edit": {
     "to": "tilo.invocations workspace.invocations#resolve",
-    "test": "crates/core/actions/tests/asked_resolve.rs:362"
+    "test": "crates/core/remote-actions/tests/asked_resolve.rs:370"
   },
   "so.tilo.settings settings.mcp-server#group": {
     "to": "tilo.invocations workspace.invocations#resolve",
-    "test": "crates/core/actions/tests/asked_resolve.rs:362"
+    "test": "crates/core/remote-actions/tests/asked_resolve.rs:370"
   },
   "so.tilo.settings settings.mcp-server#redo": {
     "to": "tilo.invocations workspace.invocations#resolve",
-    "test": "crates/core/actions/tests/asked_resolve.rs:362"
+    "test": "crates/core/remote-actions/tests/asked_resolve.rs:370"
   },
   "so.tilo.settings settings.mcp-server#set-accept-own-devices": {
     "to": "tilo.mcp-server mcp.server#stop",
@@ -217,11 +217,11 @@
   },
   "so.tilo.settings settings.mcp-server#set-act-without-asking": {
     "to": "tilo.invocations workspace.invocations#resolve",
-    "test": "crates/core/actions/tests/asked_resolve.rs:362"
+    "test": "crates/core/remote-actions/tests/asked_resolve.rs:370"
   },
   "so.tilo.settings settings.mcp-server#undo": {
     "to": "tilo.invocations workspace.invocations#resolve",
-    "test": "crates/core/actions/tests/asked_resolve.rs:362"
+    "test": "crates/core/remote-actions/tests/asked_resolve.rs:370"
   },
   "so.tilo.tasks tasks.issues#activate-window": {
     "to": "so.tilo.tasks tl.so.tilo.tasks#activate-window",
@@ -233,7 +233,7 @@
   },
   "so.tilo.tasks tasks.issues#apply": {
     "to": "tilo.invocations workspace.invocations#resolve",
-    "test": "crates/core/actions/tests/asked_resolve.rs:362"
+    "test": "crates/core/remote-actions/tests/asked_resolve.rs:370"
   },
   "so.tilo.tasks tasks.issues#assign": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#assign",
@@ -277,7 +277,7 @@
   },
   "so.tilo.tasks tasks.issues#group": {
     "to": "tilo.invocations workspace.invocations#resolve",
-    "test": "crates/core/actions/tests/asked_resolve.rs:362"
+    "test": "crates/core/remote-actions/tests/asked_resolve.rs:370"
   },
   "so.tilo.tasks tasks.issues#history": {
     "to": "so.tilo.tasks tl.so.tilo.tasks#history",
@@ -413,7 +413,7 @@
   },
   "so.tilo.tasks tasks.tracker#apply": {
     "to": "tilo.invocations workspace.invocations#resolve",
-    "test": "crates/core/actions/tests/asked_resolve.rs:362"
+    "test": "crates/core/remote-actions/tests/asked_resolve.rs:370"
   },
   "so.tilo.tasks tasks.tracker#checkpoint": {
     "to": "so.tilo.activity activity.window#checkpoint",
@@ -437,7 +437,7 @@
   },
   "so.tilo.tasks tasks.tracker#group": {
     "to": "tilo.invocations workspace.invocations#resolve",
-    "test": "crates/core/actions/tests/asked_resolve.rs:362"
+    "test": "crates/core/remote-actions/tests/asked_resolve.rs:370"
   },
   "so.tilo.tasks tasks.tracker#history": {
     "to": "so.tilo.tasks tl.so.tilo.tasks#history",
