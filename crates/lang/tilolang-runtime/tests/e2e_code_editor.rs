@@ -277,10 +277,6 @@ mod cases {
             ))
         }
 
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "a document's whole numbers are far inside i64"
-        )]
         fn value(&self, r: &ResourceRef, field: &str) -> Value {
             self.rt.read(r, field).unwrap()
         }

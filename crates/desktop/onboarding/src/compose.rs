@@ -1092,6 +1092,41 @@ impl Ceremony {
         )))
     }
 
+    /// What the backup says of itself: it failed, the recovery key was written, it saved, or it
+    /// was verified earlier.
+    fn backup_banner(&self, theme: &Theme) -> Option<Box<dyn Widget>> {
+        if let Some(error) = &self.page.backup_error {
+            return Some(spaced_banner(
+                Banner::error(t("onboarding-backup-failed")).with_message(error.clone()),
+                theme,
+            ));
+        }
+        if self.page.recovery_key_written && self.page.backup_saved.is_none() {
+            Some(spaced_banner(
+                Banner::success(t("onboarding-recovery-key-written"))
+                    .with_message(t("onboarding-recovery-key-written-detail"))
+                    .with_icon(ui::icons::Icon::Check),
+                theme,
+            ))
+        } else if let Some(path) = &self.page.backup_saved {
+            Some(spaced_banner(
+                Banner::success(t("onboarding-backup-verified"))
+                    .with_message(path.clone())
+                    .with_icon(ui::icons::Icon::Check),
+                theme,
+            ))
+        } else if self.page.backup_was_verified {
+            Some(spaced_banner(
+                Banner::success(t("onboarding-backup-verified"))
+                    .with_message(t("onboarding-backup-verified-earlier"))
+                    .with_icon(ui::icons::Icon::Check),
+                theme,
+            ))
+        } else {
+            None
+        }
+    }
+
     fn backup(&self, theme: &Theme) -> Box<dyn Widget> {
         if let Some(err) = &self.page.error {
             return Box::new(
@@ -1116,33 +1151,8 @@ impl Ceremony {
         }
         let compact = self.page.compact;
         let mut backup = Column::new().with_no_padding().with_intrinsic_height();
-        if let Some(error) = &self.page.backup_error {
-            backup = backup.push(spaced_banner(
-                Banner::error(t("onboarding-backup-failed")).with_message(error.clone()),
-                theme,
-            ));
-        }
-        if self.page.recovery_key_written && self.page.backup_saved.is_none() {
-            backup = backup.push(spaced_banner(
-                Banner::success(t("onboarding-recovery-key-written"))
-                    .with_message(t("onboarding-recovery-key-written-detail"))
-                    .with_icon(ui::icons::Icon::Check),
-                theme,
-            ));
-        } else if let Some(path) = &self.page.backup_saved {
-            backup = backup.push(spaced_banner(
-                Banner::success(t("onboarding-backup-verified"))
-                    .with_message(path.clone())
-                    .with_icon(ui::icons::Icon::Check),
-                theme,
-            ));
-        } else if self.page.backup_was_verified {
-            backup = backup.push(spaced_banner(
-                Banner::success(t("onboarding-backup-verified"))
-                    .with_message(t("onboarding-backup-verified-earlier"))
-                    .with_icon(ui::icons::Icon::Check),
-                theme,
-            ));
+        if let Some(banner) = self.backup_banner(theme) {
+            backup = backup.push(banner);
         }
         let mut page = Column::new()
             .with_no_padding()
@@ -1163,16 +1173,13 @@ impl Ceremony {
         if !self.page.recovery_only && !self.page.portable_backup_only {
             let dispatch = self.dispatch.clone();
             page = page.push(Box::new(Section::new(vec![Box::new(
-                ListRow::new(
-                    "onboarding.backup.join.row",
-                    t("onboarding-backup-join"),
-                )
-                .icon(ui::icons::Icon::Monitor)
-                .secondary(t("onboarding-backup-join-detail"))
-                .disclosure()
-                .on_activate(move || {
-                    dispatch.effect(&OnboardingEffect::choose("nearby"));
-                }),
+                ListRow::new("onboarding.backup.join.row", t("onboarding-backup-join"))
+                    .icon(ui::icons::Icon::Monitor)
+                    .secondary(t("onboarding-backup-join-detail"))
+                    .disclosure()
+                    .on_activate(move || {
+                        dispatch.effect(&OnboardingEffect::choose("nearby"));
+                    }),
             )])));
         }
         if self.page.backup_error.is_some()

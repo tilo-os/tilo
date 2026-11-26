@@ -100,6 +100,10 @@ fn captures() -> std::path::PathBuf {
 
 /// Chat's window as its app sends it, its channel open, in both themes, saved beside `out`.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "the shot's whole scene, staged and saved in both themes"
+)]
 fn a_chat_reply_by_an_agent_with_a_persona_and_a_members_face_in_both_themes() {
     let (app_end, mut window_end) = pair();
     // The workspace's members' resource: what the window calls each member and the picture it

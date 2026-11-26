@@ -1251,6 +1251,10 @@ fn a_message_delivered_from_outside_is_kept_once_in_its_conversation() {
 /// what a person reads and nothing reaches the server; a denial of another capability alone
 /// leaves the rest of the app's reach its own, and the reply goes.
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "each denial of the app's outside reach, each with its own expectation"
+)]
 fn a_reply_goes_out_as_far_as_the_workspace_lets_mail_send() {
     use collaboration::RouteSpec;
     use tilo_action_policy::roles::outside_capability_denial;

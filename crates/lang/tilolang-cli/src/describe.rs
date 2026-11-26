@@ -1030,9 +1030,8 @@ mod tests {
         let sealed = |ty: &str| {
             let dir = package(&format!(
                 "app t.vault \"Vault\"\n\ntype Entry {{\n    name: Text\n}}\n\n\
-                 type Vault{} {{\n    entries: Collection<Entry>\n}}\n\nroot vault: Vault\n\n\
+                 type Vault{ty} {{\n    entries: Collection<Entry>\n}}\n\nroot vault: Vault\n\n\
                  default view vault for Vault\n\nview vault(v: Vault) {{\n    text(\"Vault\")\n}}\n",
-                ty
             ));
             fleet(dir.path(), &[]).map(|entry| entry.expect("an app").sealed)
         };

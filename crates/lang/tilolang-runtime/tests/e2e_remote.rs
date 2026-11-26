@@ -58,7 +58,7 @@ mod cases {
         }
 
         /// The stream `job` says `state` of itself.
-        fn say(&self, job: &str, state: Json) {
+        fn say(&self, job: &str, state: &Json) {
             self.push
                 .borrow()
                 .clone()
@@ -69,7 +69,9 @@ mod cases {
 
     impl EngineHost for Device {
         fn call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-            assert_eq!(app, "so.tilo.remote");
+            if app != "so.tilo.remote" {
+                return Err(format!("`{app}` is not the Remote app"));
+            }
             let input: Json = serde_json::from_str(input).expect("the app asks in JSON");
             self.calls.borrow_mut().push((op.to_owned(), input));
             match op {
@@ -97,8 +99,10 @@ mod cases {
             input: &str,
             push: Arc<dyn Push>,
         ) -> Result<String, String> {
-            assert_eq!(app, "so.tilo.remote");
-            let job = format!("remote-{}", self.streams.borrow().len() + 1);
+            if app != "so.tilo.remote" {
+                return Err(format!("`{app}` is not the Remote app"));
+            }
+            let job = format!("remote-{}", self.streams.borrow().len().saturating_add(1));
             let input: Json = serde_json::from_str(input).expect("the app asks in JSON");
             self.streams
                 .borrow_mut()
@@ -294,7 +298,6 @@ mod cases {
 
     /// Every title, message and label a tree shows, in document order.
     fn words(node: &UiNode) -> Vec<String> {
-        let mut out = Vec::new();
         fn go(node: &UiNode, out: &mut Vec<String>) {
             for key in [
                 "title",
@@ -319,6 +322,7 @@ mod cases {
                 go(child, out);
             }
         }
+        let mut out = Vec::new();
         go(node, &mut out);
         out
     }
@@ -515,7 +519,7 @@ mod cases {
             assert_eq!(desk.field(&s, "job"), Value::text(&job));
             assert!(matches!(desk.field(&c, "last_used"), Value::Opt(Some(_))), "it was used now");
             assert!(shows(&page(&desk, &c), "Connecting to Build box"));
-            desk.device.say(&job, json!({"phase": "connected"}));
+            desk.device.say(&job, &json!({"phase": "connected"}));
             let terminal = page(&desk, &c);
             assert_eq!(
                 of_kind(terminal.tree(), "ui.Terminal")[0].props.get("session"),
@@ -544,7 +548,7 @@ mod cases {
             let c = desk.add(&[("name", Value::text("New box")), ("host", Value::text("new.lan"))]);
             desk.connect(&c);
             let (job, _, _) = desk.device.stream();
-            desk.device.say(&job, json!({
+            desk.device.say(&job, &json!({
                 "phase": "need-trust",
                 "why": "This is the first connection to new.lan. Check its key before you trust it.",
                 "algorithm": "ssh-ed25519", "fingerprint": "SHA256:abc",
@@ -568,7 +572,7 @@ mod cases {
             let (job, _, input) = desk.device.stream();
             assert_eq!(input["expected"], json!({"algorithm": "ssh-ed25519", "fingerprint": "SHA256:abc"}));
             // The machine shows another key: the window offers only to forget the old one.
-            desk.device.say(&job, json!({
+            desk.device.say(&job, &json!({
                 "phase": "key-changed",
                 "why": "new.lan shows a different key than the one this device trusted.",
                 "expected": {"algorithm": "ssh-ed25519", "fingerprint": "SHA256:abc"},
@@ -597,7 +601,7 @@ mod cases {
             let (job, op, input) = desk.device.stream();
             assert_eq!(op, "vnc");
             assert_eq!(input, json!({"host": "kiosk.lan", "port": 5900, "password": "pw"}));
-            desk.device.say(&job, json!({"phase": "connected", "width": 1024, "height": 768}));
+            desk.device.say(&job, &json!({"phase": "connected", "width": 1024, "height": 768}));
             let mut screen = page(&desk, &c);
             let shown = of_kind(screen.tree(), "ui.Image");
             assert_eq!(shown.len(), 1, "{}", dump(screen.tree()));
@@ -616,11 +620,11 @@ mod cases {
             desk.call("observe", &[("s", Value::resource(&desk.sessions()[0]))]);
             let seen = desk.items(&desk.here, "seen");
             assert_eq!(desk.field(&seen[0], "online"), Value::Bool(true), "the machine answered");
-            desk.device.say(&job, json!({"phase": "closed"}));
+            desk.device.say(&job, &json!({"phase": "closed"}));
             let ended = page(&desk, &c);
             assert!(shows(&ended, "Kiosk closed the session."), "{}", dump(ended.tree()));
             assert!(shows(&ended, "Reconnect"));
-            desk.device.say(&job, json!({"phase": "failed", "why": "kiosk.lan refused the connection"}));
+            desk.device.say(&job, &json!({"phase": "failed", "why": "kiosk.lan refused the connection"}));
             let failed = page(&desk, &c);
             assert!(shows(&failed, "kiosk.lan refused the connection"));
             assert!(shows(&failed, "Try again"));

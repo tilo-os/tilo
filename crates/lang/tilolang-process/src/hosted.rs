@@ -3574,7 +3574,7 @@ impl Hosted {
             {
                 Ok(()) => self.instance.commit_planned(),
                 Err(error) => {
-                    tracing::warn!(%call, %error, "an answered call's record kept waiting")
+                    tracing::warn!(%call, %error, "an answered call's record kept waiting");
                 }
             }
         }
@@ -4608,8 +4608,10 @@ struct Apis {
     prefs: Option<String>,
 }
 
-impl Invoker for Apis {
-    fn invoke(&self, invocation: &Invocation) -> Invoked {
+impl Apis {
+    /// What this host answers of a call before the dispatch has it: one of its own preferences'
+    /// setters, and a platform app's resource the session's services read.
+    fn answered_here(&self, invocation: &Invocation) -> Option<Invoked> {
         // The app's preferences are its section in the settings service
         // (`settings/apps/<app>`): a control bound to one invokes that field's setter, the same
         // change Settings makes, recorded in the settings' history. No app reaches another's.
@@ -4621,25 +4623,25 @@ impl Invoker for Apis {
                     ..
                 }
                 | Invocation::Edit { target, .. } => Some(target),
-                _ => None,
+                Invocation::Action { .. } => None,
             };
             if let Some(target) = target {
                 if let Some(refusal) =
                     tilolang_tilo::platform_apps::refuse_foreign_prefs(&target.id_string(), &app)
                 {
-                    use tilolang_tilo::runtime::delegate::Invoked;
-                    return Invoked::Refused(refusal);
+                    return Some(Invoked::Refused(refusal));
                 }
                 if target.id_string() == own
                     && let Invocation::Edit { field, value, .. } = invocation
                 {
-                    use tilolang_tilo::runtime::delegate::Invoked;
                     let (verb, arguments) =
                         tilolang_tilo::platform_apps::prefs_setter(field, value);
-                    return match self.platform.borrow().invoke(own, &verb, &arguments) {
-                        Ok(()) => Invoked::Done(tilolang_tilo::runtime::Value::Unit),
-                        Err(refusal) => Invoked::Refused(refusal),
-                    };
+                    return Some(
+                        match self.platform.borrow().invoke(own, &verb, &arguments) {
+                            Ok(()) => Invoked::Done(tilolang_tilo::runtime::Value::Unit),
+                            Err(refusal) => Invoked::Refused(refusal),
+                        },
+                    );
                 }
             }
         }
@@ -4650,15 +4652,25 @@ impl Invoker for Apis {
             && self.platform.borrow().reads(&app)
         {
             use tilolang_tilo::runtime::Value;
-            use tilolang_tilo::runtime::delegate::Invoked;
-            return match self
-                .platform
-                .borrow()
-                .invoke(&resource, &action, &arguments)
-            {
-                Ok(()) => Invoked::Done(Value::Unit),
-                Err(refusal) => Invoked::Refused(refusal),
-            };
+            return Some(
+                match self
+                    .platform
+                    .borrow()
+                    .invoke(&resource, &action, &arguments)
+                {
+                    Ok(()) => Invoked::Done(Value::Unit),
+                    Err(refusal) => Invoked::Refused(refusal),
+                },
+            );
+        }
+        None
+    }
+}
+
+impl Invoker for Apis {
+    fn invoke(&self, invocation: &Invocation) -> Invoked {
+        if let Some(answer) = self.answered_here(invocation) {
+            return answer;
         }
         let call = match self.callees.call(invocation) {
             Ok(call) => call,

@@ -143,10 +143,6 @@ mod cases {
             Value::resource(&self.root)
         }
 
-        #[expect(
-            clippy::cast_possible_truncation,
-            reason = "a query's whole numbers are far inside i64"
-        )]
         fn records(&self, name: &str) -> Vec<ResourceRef> {
             let d = self.rt.read(&self.root, name).unwrap();
             match d {

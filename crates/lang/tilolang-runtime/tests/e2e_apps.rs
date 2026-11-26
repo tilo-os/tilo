@@ -535,7 +535,7 @@ mod cases {
                 .invoke_approved_through(&agent("helper"), None, (action.as_str(), args), None)
                 .unwrap();
             assert!(matches!(ran, InvokeOutcome::Done(_)), "{ran:?}");
-            w.rt.call_answered(&record.run, &[draft.clone()], "done").unwrap();
+            w.rt.call_answered(&record.run, std::slice::from_ref(&draft), "done").unwrap();
             assert!(
                 view.is_stale(),
                 "the invocation resource changed, so the message refreshes"
@@ -1140,7 +1140,7 @@ mod cases {
             let record = w.rt.read_invocation(&invocation_of(&w, &apps, &message)).unwrap();
             // The person declines it on the system's confirm: its call is refused, and the card
             // says so.
-            w.rt.call_answered(&record.run, &[draft.clone()], "declined").unwrap();
+            w.rt.call_answered(&record.run, std::slice::from_ref(&draft), "declined").unwrap();
             view.poll_patches().unwrap();
             assert_eq!(
                 text_prop(of_kind(view.tree(), "invocation")[0], "state"),
@@ -1376,7 +1376,7 @@ mod cases {
             wb.rt
                 .invoke_approved_through(&agent("helper"), None, (action.as_str(), args), None)
                 .unwrap();
-            wb.rt.call_answered(&call, &[draft.clone()], "done").unwrap();
+            wb.rt.call_answered(&call, std::slice::from_ref(&draft), "done").unwrap();
             assert_eq!(wb.rt.read(&draft, "sent").unwrap(), Value::Bool(true));
             assert_eq!(wa.rt.read_invocation(&record).unwrap().state, "asked");
             assert!(wa.rt.pending_effects().is_empty(), "A has not heard yet");

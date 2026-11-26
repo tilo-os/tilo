@@ -68,7 +68,7 @@ impl BlobHost for MemoryBlobs {
 
     fn keep(&self, _: &str, _: &str, bytes: &[u8]) -> Result<FileValue, String> {
         let mut held = self.0.borrow_mut();
-        let hash = format!("{:064x}", held.len() + 1);
+        let hash = format!("{:064x}", held.len().saturating_add(1));
         held.insert(hash.clone(), bytes.to_vec());
         Ok(FileValue::new(
             "bytes",

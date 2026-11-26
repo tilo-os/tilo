@@ -176,11 +176,14 @@ impl BlobHost for Files {
     }
 }
 
+/// What the clipboard holds: the text copied and its media type.
+type Held = Rc<RefCell<Option<(String, Vec<u8>)>>>;
+
 /// The device's clipboard: what was copied last, with its media type, and how long a secret
 /// stays on it. One that refuses copies nothing.
 #[derive(Clone, Default)]
 pub struct Clipboard {
-    held: Rc<RefCell<Option<(String, Vec<u8>)>>>,
+    held: Held,
     clears_after: Rc<Cell<Option<Duration>>>,
     refuses: Rc<Cell<bool>>,
 }

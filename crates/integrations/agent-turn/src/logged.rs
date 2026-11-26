@@ -95,15 +95,20 @@ pub fn refusal(said: &str, input: &Value) -> String {
         })
         .collect();
     let mut kept = String::new();
-    for (at, (made, stretch)) in found.iter().enumerate() {
+    for (at, ((made, stretch), theirs_at)) in found.iter().zip(&words_theirs).enumerate() {
         // Signs are the call's only beside what the call wrote: the `_` of the server's own
         // `invalid_arguments` stays, the `/` between two steps of the call's path goes.
         let theirs = match made {
-            Made::Words => words_theirs[at],
+            Made::Words => *theirs_at,
             Made::Signs => {
                 stands_in_a_value(stretch)
-                    && (at.checked_sub(1).is_some_and(|before| words_theirs[before])
-                        || words_theirs.get(at + 1).copied().unwrap_or(false))
+                    && (at
+                        .checked_sub(1)
+                        .is_some_and(|before| words_theirs.get(before).copied().unwrap_or(false))
+                        || words_theirs
+                            .get(at.saturating_add(1))
+                            .copied()
+                            .unwrap_or(false))
             }
             Made::Gap | Made::Cut => false,
         };

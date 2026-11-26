@@ -437,8 +437,9 @@ impl Bus {
                     .avatar
                     .as_ref()
                     .and_then(|avatar| collab_types::photo_url(&avatar.0))
+                    && let Some(fields) = named.as_object_mut()
                 {
-                    named["photo"] = serde_json::json!(photo);
+                    fields.insert("photo".to_owned(), serde_json::json!(photo));
                 }
                 named
             })

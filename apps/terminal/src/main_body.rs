@@ -4871,7 +4871,7 @@ pub struct TerminalBackend {
 
 impl TerminalBackend {
     /// Take a session the engine opened: this view owns what the session handed over.
-    fn from_session(session: Session) -> Self {
+    fn from_session(session: &Session) -> Self {
         Self {
             writer: session
                 .take_writer()
@@ -4969,13 +4969,13 @@ impl TerminalBackend {
         };
         let session =
             Session::with_options(target, requested_by, &options).map_err(app_open_error)?;
-        Ok(Self::from_session(session))
+        Ok(Self::from_session(&session))
     }
 
     /// Open a PTY running `command`, with `TERM` forced to `xterm-256color` so programs emit the SGR and
     /// DEC sequences the emulator reads.
     pub fn with_command(cmd: CommandBuilder) -> Result<Self, Box<dyn std::error::Error>> {
-        Ok(Self::from_session(Session::with_command(cmd)?))
+        Ok(Self::from_session(&Session::with_command(cmd)?))
     }
 }
 
@@ -5006,7 +5006,7 @@ pub(crate) fn ush_backend_on(
     };
     tilo_terminal::open_on_socket(stream, target, requested_by, &options)
         .map_err(app_open_error)
-        .map(TerminalBackend::from_session)
+        .map(|session| TerminalBackend::from_session(&session))
 }
 
 /// The launcher's control connection, cloned for the session this process opens. A refusal here

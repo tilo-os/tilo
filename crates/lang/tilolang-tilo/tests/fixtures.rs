@@ -275,8 +275,9 @@ impl Invoker for Dispatch {
     fn invoke(&self, invocation: &Invocation) -> Invoked {
         match invocation {
             Invocation::Action { asks: true, .. } => {
-                self.0.set(self.0.get() + 1);
-                Invoked::Pending(format!("call-{}", self.0.get()))
+                let asked = self.0.get().saturating_add(1);
+                self.0.set(asked);
+                Invoked::Pending(format!("call-{asked}"))
             }
             _ => Invoked::Refused("this test host runs no call unasked".to_owned()),
         }
