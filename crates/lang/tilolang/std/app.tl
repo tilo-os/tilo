@@ -204,6 +204,9 @@ template view add_entry(placeholder: Text, create: Action) {
         }
         ui.TextInput(bind: typed, placeholder: placeholder, entry: true) {
             on submit: create.then(set(typed, ""))
+            // Escape leaves none: the field clears, and the state it stands in too, so the next
+            // words are the whole of the item they make.
+            on cancel: set(typed, "")
         }
     }
 }
