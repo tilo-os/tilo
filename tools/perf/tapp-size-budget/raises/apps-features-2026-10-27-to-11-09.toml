@@ -25,8 +25,6 @@ x86_64 = 196608
 x86_64 = 131072
 [apps."so.tilo.monitor"]
 x86_64 = 131072
-[apps."so.tilo.osk"]
-x86_64 = 131072
 [apps."so.tilo.poker"]
 x86_64 = 65536
 [apps."so.tilo.print-centre"]

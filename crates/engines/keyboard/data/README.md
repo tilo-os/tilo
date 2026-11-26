@@ -2,7 +2,7 @@
 
 Compact, embedded, **offline** English and French data for the on-screen
 keyboard's swipe decoder, tap-target resolver, autocorrector and next-word
-predictor. Every table is `include_str!`-bundled into the `osk` binary, so the
+predictor. Every table is `include_str!`-bundled into the keyboard engine, so the
 keyboard works with no network and no model download. The typing language
 follows the letter layout (QWERTY English, AZERTY French) unless one is chosen.
 Personal vocabulary and
@@ -138,7 +138,7 @@ visible "powered by FUTO Swipe" notice to end users if they are distributed.
 From the repository root:
 
 ```sh
-nice -n 19 ionice -c3 uv run apps/osk/data/generate.py
+nice -n 19 ionice -c3 uv run crates/engines/keyboard/data/generate.py
 ```
 
 The run streams about 130 GB (nothing large is written to disk), needs only

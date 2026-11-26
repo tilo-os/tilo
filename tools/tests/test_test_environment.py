@@ -179,7 +179,7 @@ class TestEnvironmentSetupTests(unittest.TestCase):
         siblings = scripts.pop("session-siblings")
         self.assertEqual(siblings["command"][:2], ["bash", "tools/build-sibling-binaries.sh"])
         self.assertEqual(siblings["command"][2:], [
-            "tilo-lock-screen:tilo-lock-screen", "osk:osk",
+            "tilo-lock-screen:tilo-lock-screen",
             "tilolang-process:tilolang-process=tilolang-process/app-launch", "launcher:tilo-launcher=launcher/dev-overrides",
             "tilo-daemon:tilo-runtime=tilo-daemon/test-support,tilo-daemon/agents",
             "example-shared-checklist:example-shared-checklist",
@@ -595,32 +595,32 @@ class SiblingBinaryTests(unittest.TestCase):
         # t's archive holds them and names each as NEXTEST_BIN_EXE_<bin>: no Cargo runs.
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
-            for name in ("osk", "tilo-lock-screen"):
+            for name in ("tilo-server", "tilo-lock-screen"):
                 (work / name).write_text("#!/bin/sh\n")
                 (work / name).chmod(0o755)
             result, ran, told = self.run_script(
-                work, "exit 9", "tilo-lock-screen:tilo-lock-screen", "osk:osk",
+                work, "exit 9", "tilo-lock-screen:tilo-lock-screen", "tilo-server:tilo-server",
                 **{"NEXTEST_BIN_EXE_tilo-lock-screen": str(work / "tilo-lock-screen"),
-                   "NEXTEST_BIN_EXE_osk": str(work / "osk")})
+                   "NEXTEST_BIN_EXE_tilo-server": str(work / "tilo-server")})
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(ran, "")
             self.assertEqual(told, [f"TILO_SIBLING_BIN_tilo_lock_screen={work}/tilo-lock-screen",
-                                    f"TILO_SIBLING_BIN_osk={work}/osk"])
+                                    f"TILO_SIBLING_BIN_tilo_server={work}/tilo-server"])
 
     def test_a_binary_not_handed_is_built_alone(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             work = Path(tmp)
-            for name in ("osk", "tilo-lock-screen"):
+            for name in ("tilo-server", "tilo-lock-screen"):
                 (work / name).write_text("#!/bin/sh\n")
                 (work / name).chmod(0o755)
-            built = f'echo \'{{"executable":"{work}/osk"}}\''
+            built = f'echo \'{{"executable":"{work}/tilo-server"}}\''
             result, ran, told = self.run_script(
-                work, built, "tilo-lock-screen:tilo-lock-screen", "osk:osk",
+                work, built, "tilo-lock-screen:tilo-lock-screen", "tilo-server:tilo-server",
                 **{"NEXTEST_BIN_EXE_tilo-lock-screen": str(work / "tilo-lock-screen")})
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(ran, "build --locked --message-format=json-render-diagnostics "
-                                  "--package osk --bin osk\n")
-            self.assertEqual(told[-1], f"TILO_SIBLING_BIN_osk={work}/osk")
+                                  "--package tilo-server --bin tilo-server\n")
+            self.assertEqual(told[-1], f"TILO_SIBLING_BIN_tilo_server={work}/tilo-server")
 
     def test_a_handed_library_is_told_and_never_built(self) -> None:
         # A cdylib no test binary links, which t's archive does not carry and its family

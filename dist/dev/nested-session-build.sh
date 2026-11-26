@@ -177,7 +177,6 @@ build_surfaces() {
     mapfile -t args < <(profile_args "$host_profile")
     cargo build --locked --timings "${args[@]}" \
         -p tilo-lock-screen --bin tilo-lock-screen \
-        -p osk --bin osk \
         -p tilo-audio-service --bin tilo-audio
 }
 # The tilolang host, in a build of its own: built with the session, the features the session
@@ -316,11 +315,10 @@ mkdir -p "$out/bin" "$out/thin-app"
 python3 tools/font-catalog.py prepare crates/ui/ui-core/assets/fonts "$out/fonts" --scope product
 for name in "${host_bins[@]}"; do cp -p "$target/$host_profile/$name" "$out/bin/"; done
 # The session's surfaces, which it starts from beside its own executable under
-# the names the OS image installs them as (`osk` ships as `/usr/bin/tilo-osk`).
+# the names the OS image installs them as.
 for name in tilo-lock-screen tilo-audio; do
     cp -p "$target/$host_profile/$name" "$out/bin/"
 done
-cp -p "$target/$host_profile/osk" "$out/bin/tilo-osk"
 # The stand-in mail server a user story starts beside its shells, under the name that says what
 # it is (the stack stages the same example as `mail-stand-in`).
 cp -p "$target/$host_profile/examples/mail_stand_in" "$out/bin/mail-stand-in"

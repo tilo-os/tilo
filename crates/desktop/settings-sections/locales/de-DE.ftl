@@ -152,3 +152,13 @@ so-tilo-settings-agent-providers-set-default-provider = Zum Standardanbieter mac
 so-tilo-settings-agent-providers-set-key = API-Schlüssel aufbewahren
 so-tilo-settings-agent-providers-clear-key = API-Schlüssel vergessen
 so-tilo-settings-agent-providers-refresh-providers = Anbieter erneut lesen
+
+settings-osk-sources-set-size = Größe der Tasten der Bildschirmtastatur festlegen
+settings-osk-sources-set-suggestions = Wortvorschläge anbieten
+settings-osk-sources-set-autocorrect = Fertige Wörter korrigieren
+settings-osk-sources-set-typing-language = Sprache für die Worterkennung festlegen
+settings-osk-sources-set-personalization = Aus meinem Tippen lernen
+settings-osk-sources-learn = Ein Wort lernen, das auf ein anderes folgte
+settings-osk-sources-teach = Lernen, wo meine Tipps landen
+settings-osk-sources-keep = Ein Wort so behalten, wie es getippt wurde
+settings-osk-sources-forget-learned = Vergessen, was das Tippen gelehrt hat

@@ -365,10 +365,6 @@
       "libraries": 40952694,
       "tests": 47753160
     },
-    "osk": {
-      "libraries": 23931416,
-      "tests": 746639872
-    },
     "package-store": {
       "libraries": 27354040,
       "tests": 90577560
@@ -781,10 +777,6 @@
       "libraries": 4197170,
       "tests": 14389096
     },
-    "tilo-emoji-engine": {
-      "libraries": 0,
-      "tests": 2852024
-    },
     "tilo-endpoint-reachability": {
       "libraries": 20755869,
       "tests": 132614968
@@ -900,10 +892,6 @@
     "tilo-innertube": {
       "libraries": 74310355,
       "tests": 9471640
-    },
-    "tilo-input-context": {
-      "libraries": 1153629,
-      "tests": 10786408
     },
     "tilo-install-helpers": {
       "libraries": 10376246,

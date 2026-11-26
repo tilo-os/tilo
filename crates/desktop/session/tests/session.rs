@@ -79,6 +79,16 @@ struct Seen {
     size: Option<(i32, i32)>,
 }
 
+impl Seen {
+    /// How many times the window heard `key` pressed, by its evdev code.
+    fn pressed_count(&self, key: u32) -> usize {
+        self.keys
+            .iter()
+            .filter(|(heard, pressed)| *heard == key && *pressed)
+            .count()
+    }
+}
+
 /// One client with one toplevel of a solid colour.
 struct TestClient {
     connection: Connection,
@@ -159,6 +169,19 @@ impl TestClient {
         }
         let field = self.seen.text_input.as_ref().expect("a text field");
         field.enable();
+        field.commit();
+        self.connection.flush().expect("flush");
+    }
+
+    /// Say what the field takes, as a toolkit does for a field of a kind: a password's, a
+    /// terminal's, a number's.
+    fn field_takes(
+        &mut self,
+        hint: zwp_text_input_v3::ContentHint,
+        purpose: zwp_text_input_v3::ContentPurpose,
+    ) {
+        let field = self.seen.text_input.as_ref().expect("a text field");
+        field.set_content_type(hint, purpose);
         field.commit();
         self.connection.flush().expect("flush");
     }

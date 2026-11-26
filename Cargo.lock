@@ -10037,39 +10037,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "osk"
-version = "0.1.0"
-dependencies = [
- "libc",
- "runtime-dylib",
- "serde",
- "serde_json",
- "swipe",
- "tempfile",
- "tilo-actions",
- "tilo-app",
- "tilo-app-test-host",
- "tilo-automerge-fork",
- "tilo-emoji",
- "tilo-emoji-engine",
- "tilo-history",
- "tilo-input-context",
- "tilo-keyboard-engine",
- "tilo-keyboard-map",
- "tilo-settings-model",
- "tilo-settings-store",
- "tilo-taffy",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "wayland-client",
- "wayland-protocols-misc",
- "workspace-hack",
- "xkbcommon",
-]
-
-[[package]]
 name = "ownedbytes"
 version = "0.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -17198,15 +17165,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-emoji-engine"
-version = "0.1.0"
-dependencies = [
- "runtime-dylib",
- "tilo-emoji",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-endpoint-reachability"
 version = "0.1.0"
 dependencies = [
@@ -17796,22 +17754,6 @@ dependencies = [
  "rustypipe",
  "serde_json",
  "time",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-input-context"
-version = "0.1.0"
-dependencies = [
- "libc",
- "serde",
- "serde_json",
- "tilo-actions",
- "tilo-test-env",
- "wayland-backend",
- "wayland-client",
- "wayland-scanner",
- "wayland-server",
  "workspace-hack",
 ]
 
@@ -27112,7 +27054,6 @@ dependencies = [
  "ordered-stream",
  "os-actions",
  "os_pipe",
- "osk",
  "ownedbytes",
  "p256 0.13.2",
  "p256 0.14.0",
@@ -27639,7 +27580,6 @@ dependencies = [
  "tilo-image-info",
  "tilo-image-policy-check",
  "tilo-innertube",
- "tilo-input-context",
  "tilo-install-helpers",
  "tilo-invocation-journal",
  "tilo-key-group",

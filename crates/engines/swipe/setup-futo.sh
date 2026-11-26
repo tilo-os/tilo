@@ -41,5 +41,4 @@ echo "FUTO swipe ready. Export these for the cargo build:"
 echo "  export TILO_SWIPE_LIB=$LIB"
 echo "  export TILO_SWIPE_MODELS=$MODELS"
 echo
-echo "Then e.g.:  cargo run -p osk"
 echo "For the OS image, install \$TILO_SWIPE_MODELS to /usr/share/tilo/swipe-models."

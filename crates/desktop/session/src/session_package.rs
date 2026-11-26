@@ -12,9 +12,10 @@
 //! them.
 
 use serde::Serialize;
+use tilo_actions::field_type::{NamedType, TypeField};
 use tilo_actions::params::{ActionParam, ParamType};
 use tilo_actions::surface::{
-    FieldType, ParamSurface, Surface, TypeSet, VerbSurface, param_type, verb_of,
+    FieldSurface, FieldType, ParamSurface, Surface, TypeSet, VerbSurface, param_type, verb_of,
 };
 use tilo_actions::{ActionSpec, ResourceSpec};
 use tilo_resource::Effect;
@@ -90,6 +91,11 @@ fn singletons() -> Vec<(ResourceSpec, Option<Declared>)> {
         // and `install` (`shell.md` §6, "Agents make styles with the same commands a person
         // types"), so a shell view and the canvas chat's agent call them as an app's.
         (crate::style_packages::resource(), None),
+        // The keyboard as it stands over the focused field: whether it shows and where it
+        // stands, and what the field asks of typing (its purpose, hints and whether its content
+        // is secret). Its app reads it as `session.keyboard` and asks it what to type through
+        // its actions, so a view of it never holds a copy of the field.
+        (crate::keyboard::keyboard_resource(), None),
     ]
 }
 
@@ -277,6 +283,24 @@ fn entry(
 ) -> Entry {
     let id = spec.id.as_str();
     let mut types = TypeSet::new();
+    let keyboard = spec.kind == crate::keyboard::KIND;
+    let keyboard_fields = if keyboard {
+        // The keyboard reads as a type of its own, so a package names it (`session.keyboard`)
+        // and reads what the field asks of typing and the person's keyboard settings.
+        let fields = keyboard_type_fields(&mut types);
+        let _ = types.named("so.tilo.session::Keyboard", "Keyboard", |_| NamedType {
+            name: String::new(),
+            doc: "The on-screen keyboard over the focused field: whether it shows and where, what \
+                  the field asks of typing, and the person's keyboard settings."
+                .to_owned(),
+            fields: fields.clone(),
+            cases: Vec::new(),
+            tag: None,
+        });
+        fields
+    } else {
+        Vec::new()
+    };
     let verbs = spec
         .actions
         .iter()
@@ -304,12 +328,83 @@ fn entry(
             person: false,
             readers: None,
             verbs,
-            fields: Vec::new(),
+            fields: keyboard_fields.into_iter().map(field_surface).collect(),
             types: types.into_types(),
             shows: Vec::new(),
             live: None,
             setters: false,
         },
+    }
+}
+
+/// The keyboard's fields as its reading declares them: what a view reads of it. The kinds of
+/// value they hold are declared in `types`.
+fn keyboard_type_fields(types: &mut TypeSet) -> Vec<TypeField> {
+    let field = |name: &str, ty: FieldType| TypeField {
+        name: name.to_owned(),
+        ty,
+        title: String::new(),
+    };
+    let transition = types.named("so.tilo.session::Transition", "Transition", |_| NamedType {
+        name: String::new(),
+        doc: "One word typing taught after another, and how often the person wrote the two."
+            .to_owned(),
+        fields: vec![
+            field("before", FieldType::Text),
+            field("word", FieldType::Text),
+            field("count", FieldType::Int),
+        ],
+        cases: Vec::new(),
+        tag: None,
+    });
+    let offset = types.named("so.tilo.session::TapOffset", "TapOffset", |_| NamedType {
+        name: String::new(),
+        doc: "Where the person's taps land on one letter, from its middle, in key sizes."
+            .to_owned(),
+        fields: vec![
+            field("letter", FieldType::Text),
+            field("dx", FieldType::Float),
+            field("dy", FieldType::Float),
+            field("samples", FieldType::Int),
+        ],
+        cases: Vec::new(),
+        tag: None,
+    });
+    let text_list = || FieldType::List(Box::new(FieldType::Text));
+    vec![
+        field("visible", FieldType::Bool),
+        field("field", FieldType::Int),
+        field("display", FieldType::Option(Box::new(FieldType::Text))),
+        field("purpose", FieldType::Text),
+        field("hints", FieldType::Int),
+        field("secret", FieldType::Bool),
+        field("layout", FieldType::Text),
+        field("layouts", text_list()),
+        field("size", FieldType::Text),
+        field("suggestions", FieldType::Bool),
+        field("autocorrect", FieldType::Bool),
+        field("typing_language", FieldType::Text),
+        field("personalization", FieldType::Bool),
+        field("transitions", FieldType::List(Box::new(transition))),
+        field("touch", FieldType::List(Box::new(offset))),
+        field("kept", text_list()),
+        field("personal", text_list()),
+    ]
+}
+
+/// One field of the keyboard's type, as the resource's own reading declares it.
+fn field_surface(field: TypeField) -> FieldSurface {
+    FieldSurface {
+        path: field.name,
+        owner: "keyboard".to_owned(),
+        title: String::new(),
+        stored: "value".to_owned(),
+        ty: field.ty,
+        readonly: true,
+        unit: false,
+        label: false,
+        whole: false,
+        ops: None,
     }
 }
 

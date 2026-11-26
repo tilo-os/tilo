@@ -185,7 +185,7 @@ isolation = { nested = ["launcher", "ush", "tilo-fs", "tilo-runtime", "tilo-devi
 # this family's build makes the cdylib and every shard is told its file as T_STARTED_CDYLIB_pam_tilo,
 # which the pam-module setup step hands to the tests (.config/nextest.toml). The extension helper's
 # end-to-end test checks real manifest signatures with the tilo-crypto it is handed.
-starts = { tilo-daemon = ["tilo-test-env:tilo-capability-probe", "install:tilo-install", "launcher:tilo-launcher=dev-overrides", "tilolang-process:tilolang-process@test=app-launch", "messages:messages", "terminal:terminal", "tilo-cli:tilo", "tilo-daemon:tilo-runtime=test-support,agents", "tilo-fs:fs"], tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], tilo-runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher=dev-overrides", "tilo-daemon:tilo-runtime=test-support,agents", "example-shared-checklist:example-shared-checklist", "tilolang-process:tilolang-process@test=app-launch"], tilo-session-client = ["tilo-daemon:tilo-runtime=test-support,agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher=dev-overrides", "tilolang-process:tilolang-process@test=app-launch", "messages:messages", "terminal:terminal"] }
+starts = { tilo-daemon = ["tilo-test-env:tilo-capability-probe", "install:tilo-install", "launcher:tilo-launcher=dev-overrides", "tilolang-process:tilolang-process@test=app-launch", "messages:messages", "terminal:terminal", "tilo-cli:tilo", "tilo-daemon:tilo-runtime=test-support,agents", "tilo-fs:fs"], tilo-device-identity = ["tilo-test-env:tilo-capability-probe"], tilo-extension = ["tilo-crypto:tilo-crypto"], tilo-files = ["tilo-test-env:tilo-capability-probe"], tilo-secrets = ["tilo-test-env:tilo-capability-probe"], tilo-identity = ["tilo-test-env:tilo-capability-probe"], tilo-runtime-portal = ["tilo-test-env:tilo-capability-probe"], linux-vm = ["tilo-test-env:tilo-capability-probe"], tilo-session = ["tilo-lock-screen:tilo-lock-screen", "launcher:tilo-launcher=dev-overrides", "tilo-daemon:tilo-runtime=test-support,agents", "example-shared-checklist:example-shared-checklist", "tilolang-process:tilolang-process@test=app-launch"], tilo-session-client = ["tilo-daemon:tilo-runtime=test-support,agents"], pam-tilo = ["pam-tilo:cdylib:pam_tilo"], tilo-device-vpn = ["tilo-test-env:tilo-capability-probe"], tilo-install-helpers = ["tilo-test-env:tilo-capability-probe"], tilo-net = ["tilo-test-env:tilo-capability-probe"], tilo-runtime = ["tilo-test-env:tilo-capability-probe", "launcher:tilo-launcher=dev-overrides", "tilolang-process:tilolang-process@test=app-launch", "messages:messages", "terminal:terminal"] }
 
 # The same packages' tests once per architecture: a result on one says nothing about the other.
 # It declares `unify` like `test`: these packages' shared libraries resolve as the whole builds of
@@ -266,7 +266,7 @@ needs = ["font-seed"]
 packages = [
     "tilo-accounts", "app-cli", "tilo-key-group",
     "discord-worker", "imager", "launcher", "local-model-service",
-    "osk", "tilo-runtime-bundle", "tilo-runtime-portal",
+    "tilo-runtime-bundle", "tilo-runtime-portal",
     "tilo-agent-session", "tilo-app", "tilo-bluez",
     "tilo-session-client", "tilo-clipboard", "tilo-cpu-raster", "tilo-dialogs", "tilo-doc-codecs",
     "tilo-doc-pdf", "tilo-files", "tilo-font-catalog", "tilo-fs", "tilo-install-helpers",
@@ -517,7 +517,7 @@ unify = "workspace-unify"
 packages = ["tilo-session"]
 args = ["--locked", "--profile", "ci", "--tests", "-E", "(package(tilo-session) and binary(it) and test(app_open_budget::))"]
 isolation = { nested = ["tilo-session"] }
-starts = { tilo-session = ["tilo-session:tilo-session@fast=dev-overrides", "tilo-lock-screen:tilo-lock-screen", "osk:osk", "launcher:tilo-launcher@fast=dev-overrides", "tilo-daemon:tilo-runtime=test-support,agents", "example-shared-checklist:example-shared-checklist", "tilolang-process:tilolang-process@fast=app-launch"] }
+starts = { tilo-session = ["tilo-session:tilo-session@fast=dev-overrides", "tilo-lock-screen:tilo-lock-screen", "launcher:tilo-launcher@fast=dev-overrides", "tilo-daemon:tilo-runtime=test-support,agents", "example-shared-checklist:example-shared-checklist", "tilolang-process:tilolang-process@fast=app-launch"] }
 heavy = true
 on = ["dispatch", "idle", "stable"]
 
@@ -3560,7 +3560,7 @@ arch = ["x86_64", "aarch64"]
 [[check]]
 name = "app-reproducible-{arch}"
 egress = { to = ["code.tilo.so:443"], pinned = true }
-run = "bash tools/apps/check-reproducible-tapp.sh osk"
+run = "bash tools/apps/check-reproducible-tapp.sh poker"
 needs = ["app-models"]
 env = { TILO_APP_MODELS = "/target/app-models" }
 requires = ["arch={arch}"]

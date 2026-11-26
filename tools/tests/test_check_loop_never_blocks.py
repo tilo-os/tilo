@@ -76,7 +76,7 @@ class WindowWaitsTest(unittest.TestCase):
         self.assertEqual(len(found), 1, found)
 
     def test_an_open_marked_off_the_window_a_follow_and_a_test_pass(self) -> None:
-        self.assertEqual(audit({"apps/osk/src/session.rs": OFF_THE_WINDOW}), [])
+        self.assertEqual(audit({"apps/calculator/src/session.rs": OFF_THE_WINDOW}), [])
 
     def test_the_session_loop_still_never_blocks_on(self) -> None:
         found = audit({"crates/desktop/session/src/loop.rs": "fn f() { pollster::block_on(x) }\n"})

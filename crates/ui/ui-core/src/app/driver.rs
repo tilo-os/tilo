@@ -1253,6 +1253,14 @@ impl Driver {
     /// Deliver one finger's contact at logical `(x, y)`; `id` tells simultaneous fingers apart.
     pub fn touch(&mut self, id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) {
         let (x, y) = self.device(x, y);
+        self.send_touch(id, phase, x, y);
+        self.run_frame();
+    }
+
+    /// Deliver one finger's contact at physical `(x, y)` as a window's loop hands it on: the frame
+    /// it moves is drawn on the host's own clock, as [`Self::send`] leaves it.
+    pub fn send_touch(&mut self, id: u64, phase: winit::event::TouchPhase, x: f64, y: f64) {
+        self.serve_due_frame();
         let touch = winit::event::Touch {
             device_id: winit::event::DeviceId::dummy(),
             phase,
@@ -1262,7 +1270,6 @@ impl Driver {
         };
         self.app
             .surface_touch(&self.surface, touch, &mut self.touch);
-        self.run_frame();
     }
 
     /// A tap at logical `(x, y)`.

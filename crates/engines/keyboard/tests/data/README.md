@@ -22,7 +22,7 @@ geometry and thinned. The two splits share no contributor session.
 ## Regenerating
 
 ```sh
-uv run apps/osk/tests/data/generate.py
+uv run crates/engines/keyboard/tests/data/generate.py
 ```
 
 downloads the pinned dataset files (~575 MB, SHA-256 checked, cached in
@@ -31,5 +31,5 @@ Regenerate them, and recheck the accuracy floors, after regenerating
 `data/words-en.txt`: the fixtures keep only words in it.
 
 ```sh
-cargo test --release -p osk --lib futo_held_out -- --nocapture
+cargo test --release -p tilo-keyboard-engine --lib futo_held_out -- --nocapture
 ```

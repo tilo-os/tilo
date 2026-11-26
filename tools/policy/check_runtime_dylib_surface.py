@@ -137,13 +137,6 @@ ENGINES = {
     "browser-continuity": "the import from another browser's profile, which only the importing "
                           "program links (the runtime keeps browser-continuity-core)",
     "app-catalogue": "the Store's catalogue, which only the Store links",
-    # The catalogue itself is no longer here: every text field resolves
-    # `:name:` and the picker opens for every app, so `emoji` is the
-    # toolkit's (crates/ui/ui-core) and belongs in the runtime every app
-    # maps (docs/measurements/runtime-size.md). The engine library Chat,
-    # Notes and the on-screen keyboard still name is emptied out as they
-    # migrate.
-    "tilo-emoji-engine": "the emoji catalogue's engine library (libtilo_emoji_engine.so)",
     "tilo-archive": "the archive reader and writer, which only a program opening archives links",
     "sevenz-rust2": "the 7z reader under tilo-archive",
     "lzma-rust2": "the xz and LZMA decoder under tilo-archive",

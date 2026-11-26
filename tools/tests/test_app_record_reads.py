@@ -92,7 +92,7 @@ class RecordReadsTests(unittest.TestCase):
         self.assertIn("read = false", errors[0])
 
     def test_a_record_that_declares_it_answers_no_read_is_fine(self):
-        root = self.fixture({"apps/osk/src/learned.rs": DECLARED_UNREADABLE})
+        root = self.fixture({"apps/calculator/src/learned.rs": DECLARED_UNREADABLE})
         self.assertEqual(record_reads.check(root), [])
 
     def test_a_doc_comment_naming_the_macro_is_not_a_declaration(self):

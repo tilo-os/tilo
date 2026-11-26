@@ -4158,145 +4158,6 @@
         "required": [],
         "description": ""
       },
-      "osk.keyboard.set-layout.Arguments": {
-        "type": "object",
-        "properties": {
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "value"
-        ],
-        "description": ""
-      },
-      "osk.keyboard.set-size.Arguments": {
-        "type": "object",
-        "properties": {
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "value"
-        ],
-        "description": ""
-      },
-      "osk.keyboard.set-suggestions.Arguments": {
-        "type": "object",
-        "properties": {
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "value"
-        ],
-        "description": ""
-      },
-      "osk.keyboard.set-autocorrect.Arguments": {
-        "type": "object",
-        "properties": {
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "value"
-        ],
-        "description": ""
-      },
-      "osk.keyboard.set-typing-language.Arguments": {
-        "type": "object",
-        "properties": {
-          "value": {
-            "type": "string"
-          }
-        },
-        "required": [
-          "value"
-        ],
-        "description": ""
-      },
-      "osk.keyboard.set-personalization.Arguments": {
-        "type": "object",
-        "properties": {
-          "value": {
-            "type": "boolean"
-          }
-        },
-        "required": [
-          "value"
-        ],
-        "description": ""
-      },
-      "osk.keyboard.set-emoji-recents.Arguments": {
-        "type": "object",
-        "properties": {
-          "value": {
-            "items": {
-              "type": "string"
-            },
-            "type": "array"
-          }
-        },
-        "required": [
-          "value"
-        ],
-        "description": ""
-      },
-      "osk.learned.learn.Arguments": {
-        "type": "object",
-        "properties": {
-          "lesson": {
-            "additionalProperties": false,
-            "properties": {
-              "kept": {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              "language": {
-                "type": "string"
-              },
-              "touch": {
-                "items": {
-                  "maxItems": 2,
-                  "minItems": 2,
-                  "type": "array"
-                },
-                "type": "array"
-              },
-              "transitions": {
-                "items": {
-                  "maxItems": 2,
-                  "minItems": 2,
-                  "type": "array"
-                },
-                "type": "array"
-              }
-            },
-            "required": [
-              "language",
-              "transitions",
-              "kept",
-              "touch"
-            ],
-            "type": "object"
-          }
-        },
-        "required": [
-          "lesson"
-        ],
-        "description": ""
-      },
-      "osk.learned.forget.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
       "so.tilo.poker.table.sit.Arguments": {
         "type": "object",
         "properties": {
@@ -58394,6 +58255,2089 @@
         "required": [],
         "description": "The data the app's shots and demos start from is written."
       },
+      "tl.so.tilo.osk.Typing.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.osk.Typing.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "word",
+              "previous",
+              "typed",
+              "tail",
+              "page",
+              "query",
+              "forms_for"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Typing.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "swiped",
+              "sentence",
+              "parked"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Taught.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.osk.Taught.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "context",
+              "word"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Taught.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.SuggestAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.osk.SuggestAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "word",
+              "previous",
+              "language"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.SuggestAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "personalization"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Offer.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.osk.Offer.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "word"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Offer.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "personal",
+              "emoji"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Suggested.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.osk.Suggested.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Suggested.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.CorrectAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.osk.CorrectAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "word",
+              "language",
+              "layout"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.CorrectAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Corrected.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.osk.Corrected.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Corrected.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.SwipeAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.osk.SwipeAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "layout",
+              "language",
+              "shift"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.SwipeAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "judged"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Candidate.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.osk.Candidate.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "word"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Candidate.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Swiped.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.osk.Swiped.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Swiped.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "swipe"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.TouchAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.osk.TouchAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "layout",
+              "previous",
+              "word",
+              "language"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.TouchAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "personalization"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Landed.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.osk.Landed.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "ch"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Landed.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Touched.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.osk.Touched.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Touched.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.AccentsAsk.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.osk.AccentsAsk.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "language",
+              "shift"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.AccentsAsk.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Accents.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.osk.Accents.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.Accents.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.osk.pressed.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "typing": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          },
+          "index": {
+            "type": "integer"
+          },
+          "at": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "k",
+          "typing",
+          "index",
+          "at"
+        ],
+        "description": "A key of the pad was pressed: `index` counts the keys shown, `at` is where the finger was, as\nfractions of the pad's box."
+      },
+      "tl.so.tilo.osk.held.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "typing": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          },
+          "choice": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "k",
+          "typing",
+          "choice"
+        ],
+        "description": "A long press chose one of a key's forms."
+      },
+      "tl.so.tilo.osk.meant.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "t": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          },
+          "key": {
+            "type": "string"
+          },
+          "at": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "k",
+          "t",
+          "key",
+          "at"
+        ],
+        "description": "The letter a tap meant. Where this person's taps tend to land and which letter may come next\nmove the edge between two letters, never the keys drawn; what the tap taught of where they\nland is kept. Only in a field of words, and never a secret's."
+      },
+      "tl.so.tilo.osk.continues.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "t": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          },
+          "stem": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "k",
+          "t",
+          "stem"
+        ],
+        "description": "Some word of the language goes on past `stem'`: `don'`, `l'`, `aujourd'`."
+      },
+      "tl.so.tilo.osk.letter.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "typing": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "k",
+          "typing",
+          "key"
+        ],
+        "description": "A letter typed: composed into the word where the field takes words, else typed as it is. With\nCtrl or Alt held, the key is a chord: pressed, not typed."
+      },
+      "tl.so.tilo.osk.press.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "typing": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          },
+          "key": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "k",
+          "typing",
+          "key"
+        ],
+        "description": "A key that is no letter: one of the keys' own, an editing key, or a mark."
+      },
+      "tl.so.tilo.osk.commit.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "typing": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          },
+          "after": {
+            "type": "string"
+          },
+          "correct": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "k",
+          "typing",
+          "after",
+          "correct"
+        ],
+        "description": "The composing word goes into the field with `after` behind it: corrected first when `correct`\nasks and the field takes corrections, and learned from. With no word composing, `after` is\ntyped alone."
+      },
+      "tl.so.tilo.osk.corrected.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "t": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          },
+          "word": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "k",
+          "t",
+          "word"
+        ],
+        "description": "What the device would correct `word` to, or the word itself."
+      },
+      "tl.so.tilo.osk.backspace.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "typing": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          }
+        },
+        "required": [
+          "k",
+          "typing"
+        ],
+        "description": "Backspace: right after a correction it types the word back as the person typed it, and keeps\nit so; in a word it takes its last letter (a swiped word goes whole); elsewhere it reaches the\nfield."
+      },
+      "tl.so.tilo.osk.undo_correction.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "typing": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          }
+        },
+        "required": [
+          "k",
+          "typing"
+        ],
+        "description": "The correction just made is taken back: the word goes in again as typed, and is never\ncorrected again."
+      },
+      "tl.so.tilo.osk.chord.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "typing": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "k",
+          "typing",
+          "name"
+        ],
+        "description": "A key pressed with Ctrl or Alt held. A modifier latched for one key lets go after it."
+      },
+      "tl.so.tilo.osk.caret.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "typing": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          },
+          "steps": {
+            "type": "integer"
+          }
+        },
+        "required": [
+          "k",
+          "typing",
+          "steps"
+        ],
+        "description": "The space bar was dragged: the caret moves by `steps` letters, after the word goes in."
+      },
+      "tl.so.tilo.osk.swiped.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "typing": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          },
+          "path": {
+            "items": {
+              "type": "number"
+            },
+            "type": "array"
+          },
+          "aspect": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "k",
+          "typing",
+          "path",
+          "aspect"
+        ],
+        "description": "A finger crossed the letters: the word it spelled composes, cased for Shift, and the other\nwords it may have meant stand in the bar. A swiped word is never corrected."
+      },
+      "tl.so.tilo.osk.offer.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "typing": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          }
+        },
+        "required": [
+          "k",
+          "typing"
+        ],
+        "description": "What the bar offers now: the words the one composing may become, or the ones that may come\nnext, the person's own first, then up to two emoji."
+      },
+      "tl.so.tilo.osk.took.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "typing": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          },
+          "chip": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "k",
+          "typing",
+          "chip"
+        ],
+        "description": "One of the bar's offers was taken."
+      },
+      "tl.so.tilo.osk.picked.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "typing": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          },
+          "emoji": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "k",
+          "typing",
+          "emoji"
+        ],
+        "description": "An emoji from the picker goes in after the word."
+      },
+      "tl.so.tilo.osk.tool.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "typing": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          },
+          "name": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "k",
+          "typing",
+          "name"
+        ],
+        "description": "One of the strip's commands."
+      },
+      "tl.so.tilo.osk.with_forms.Arguments": {
+        "type": "object",
+        "properties": {
+          "k": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.session.Keyboard",
+            "type": "object"
+          },
+          "typing": {
+            "pick": "resource",
+            "properties": {
+              "app": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "id": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "kind": {
+                "minLength": 1,
+                "type": "string"
+              },
+              "label": {
+                "type": "string"
+              },
+              "record": {
+                "minLength": 1,
+                "type": "string"
+              }
+            },
+            "required": [
+              "app",
+              "kind",
+              "id",
+              "label"
+            ],
+            "resource_kind": "tl.so.tilo.osk.Typing",
+            "type": "object"
+          }
+        },
+        "required": [
+          "k",
+          "typing"
+        ],
+        "description": "The forms a long press offers on every letter, asked of the device in the language typed."
+      },
       "tl.so.tilo.passwords.Item.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -97929,6 +99873,126 @@
         ],
         "description": ""
       },
+      "settings.osk-sources.set-size.Arguments": {
+        "type": "object",
+        "properties": {
+          "size": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "size"
+        ],
+        "description": ""
+      },
+      "settings.osk-sources.set-suggestions.Arguments": {
+        "type": "object",
+        "properties": {
+          "suggestions": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "suggestions"
+        ],
+        "description": ""
+      },
+      "settings.osk-sources.set-autocorrect.Arguments": {
+        "type": "object",
+        "properties": {
+          "autocorrect": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "autocorrect"
+        ],
+        "description": ""
+      },
+      "settings.osk-sources.set-typing-language.Arguments": {
+        "type": "object",
+        "properties": {
+          "language": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "language"
+        ],
+        "description": ""
+      },
+      "settings.osk-sources.set-personalization.Arguments": {
+        "type": "object",
+        "properties": {
+          "personalization": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "personalization"
+        ],
+        "description": ""
+      },
+      "settings.osk-sources.learn.Arguments": {
+        "type": "object",
+        "properties": {
+          "before": {
+            "type": "string"
+          },
+          "word": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "before",
+          "word"
+        ],
+        "description": ""
+      },
+      "settings.osk-sources.teach.Arguments": {
+        "type": "object",
+        "properties": {
+          "letter": {
+            "type": "string"
+          },
+          "dx": {
+            "type": "number"
+          },
+          "dy": {
+            "type": "number"
+          },
+          "samples": {
+            "maximum": 4294967295,
+            "minimum": 0,
+            "type": "integer"
+          }
+        },
+        "required": [
+          "letter",
+          "dx",
+          "dy",
+          "samples"
+        ],
+        "description": ""
+      },
+      "settings.osk-sources.keep.Arguments": {
+        "type": "object",
+        "properties": {
+          "word": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "word"
+        ],
+        "description": ""
+      },
+      "settings.osk-sources.forget-learned.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": ""
+      },
       "settings.device-vpn.route-through.Arguments": {
         "type": "object",
         "properties": {
@@ -98477,60 +100541,6 @@
       "resource": "tilo.messages",
       "action": "export-content",
       "arguments": "#/components/schemas/tilo.messages.export-content.Arguments"
-    },
-    {
-      "app": "so.tilo.osk",
-      "resource": "osk.keyboard",
-      "action": "set-layout",
-      "arguments": "#/components/schemas/osk.keyboard.set-layout.Arguments"
-    },
-    {
-      "app": "so.tilo.osk",
-      "resource": "osk.keyboard",
-      "action": "set-size",
-      "arguments": "#/components/schemas/osk.keyboard.set-size.Arguments"
-    },
-    {
-      "app": "so.tilo.osk",
-      "resource": "osk.keyboard",
-      "action": "set-suggestions",
-      "arguments": "#/components/schemas/osk.keyboard.set-suggestions.Arguments"
-    },
-    {
-      "app": "so.tilo.osk",
-      "resource": "osk.keyboard",
-      "action": "set-autocorrect",
-      "arguments": "#/components/schemas/osk.keyboard.set-autocorrect.Arguments"
-    },
-    {
-      "app": "so.tilo.osk",
-      "resource": "osk.keyboard",
-      "action": "set-typing-language",
-      "arguments": "#/components/schemas/osk.keyboard.set-typing-language.Arguments"
-    },
-    {
-      "app": "so.tilo.osk",
-      "resource": "osk.keyboard",
-      "action": "set-personalization",
-      "arguments": "#/components/schemas/osk.keyboard.set-personalization.Arguments"
-    },
-    {
-      "app": "so.tilo.osk",
-      "resource": "osk.keyboard",
-      "action": "set-emoji-recents",
-      "arguments": "#/components/schemas/osk.keyboard.set-emoji-recents.Arguments"
-    },
-    {
-      "app": "so.tilo.osk",
-      "resource": "osk.learned",
-      "action": "learn",
-      "arguments": "#/components/schemas/osk.learned.learn.Arguments"
-    },
-    {
-      "app": "so.tilo.osk",
-      "resource": "osk.learned",
-      "action": "forget",
-      "arguments": "#/components/schemas/osk.learned.forget.Arguments"
     },
     {
       "app": "so.tilo.poker",
@@ -118171,6 +120181,402 @@
       "arguments": "#/components/schemas/tl.so.tilo.notes.Found.$scenario.Arguments"
     },
     {
+      "app": "so.tilo.osk",
+      "resource": "tl.tilo.host.Notice",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.tilo.host.Notice",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.tilo.host.Notice.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.tilo.host.Notice",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.tilo.host.Notice.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Typing",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Typing.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Typing",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Typing.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Typing",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Typing.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Taught",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Taught.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Taught",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Taught.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Taught",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Taught.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.SuggestAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.SuggestAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.SuggestAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.SuggestAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.SuggestAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.SuggestAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Offer",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Offer.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Offer",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Offer.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Offer",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Offer.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Suggested",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Suggested.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Suggested",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Suggested.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Suggested",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Suggested.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.CorrectAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.CorrectAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.CorrectAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.CorrectAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.CorrectAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.CorrectAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Corrected",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Corrected.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Corrected",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Corrected.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Corrected",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Corrected.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.SwipeAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.SwipeAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.SwipeAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.SwipeAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.SwipeAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.SwipeAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Candidate",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Candidate.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Candidate",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Candidate.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Candidate",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Candidate.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Swiped",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Swiped.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Swiped",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Swiped.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Swiped",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Swiped.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.TouchAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.TouchAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.TouchAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.TouchAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.TouchAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.TouchAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Landed",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Landed.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Landed",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Landed.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Landed",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Landed.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Touched",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Touched.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Touched",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Touched.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Touched",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Touched.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.AccentsAsk",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.AccentsAsk.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.AccentsAsk",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.AccentsAsk.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.AccentsAsk",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.AccentsAsk.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Accents",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Accents.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Accents",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Accents.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk.Accents",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.Accents.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "pressed",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.pressed.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "held",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.held.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "meant",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.meant.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "continues",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.continues.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "letter",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.letter.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "press",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.press.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "commit",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.commit.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "corrected",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.corrected.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "backspace",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.backspace.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "undo_correction",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.undo_correction.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "chord",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.chord.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "caret",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.caret.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "swiped",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.swiped.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "offer",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.offer.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "took",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.took.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "picked",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.picked.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "tool",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.tool.Arguments"
+    },
+    {
+      "app": "so.tilo.osk",
+      "resource": "tl.so.tilo.osk",
+      "action": "with_forms",
+      "arguments": "#/components/schemas/tl.so.tilo.osk.with_forms.Arguments"
+    },
+    {
       "app": "so.tilo.passwords",
       "resource": "tl.tilo.host.Notice",
       "action": "$create",
@@ -131393,6 +133799,60 @@
       "resource": "settings.osk-sources",
       "action": "set-layouts",
       "arguments": "#/components/schemas/settings.osk-sources.set-layouts.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.osk-sources",
+      "action": "set-size",
+      "arguments": "#/components/schemas/settings.osk-sources.set-size.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.osk-sources",
+      "action": "set-suggestions",
+      "arguments": "#/components/schemas/settings.osk-sources.set-suggestions.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.osk-sources",
+      "action": "set-autocorrect",
+      "arguments": "#/components/schemas/settings.osk-sources.set-autocorrect.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.osk-sources",
+      "action": "set-typing-language",
+      "arguments": "#/components/schemas/settings.osk-sources.set-typing-language.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.osk-sources",
+      "action": "set-personalization",
+      "arguments": "#/components/schemas/settings.osk-sources.set-personalization.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.osk-sources",
+      "action": "learn",
+      "arguments": "#/components/schemas/settings.osk-sources.learn.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.osk-sources",
+      "action": "teach",
+      "arguments": "#/components/schemas/settings.osk-sources.teach.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.osk-sources",
+      "action": "keep",
+      "arguments": "#/components/schemas/settings.osk-sources.keep.Arguments"
+    },
+    {
+      "app": "so.tilo.settings.sections",
+      "resource": "settings.osk-sources",
+      "action": "forget-learned",
+      "arguments": "#/components/schemas/settings.osk-sources.forget-learned.Arguments"
     },
     {
       "app": "so.tilo.settings.sections",

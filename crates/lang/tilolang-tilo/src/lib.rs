@@ -55,6 +55,7 @@ pub mod published;
 pub mod reading;
 pub mod readings;
 
+pub mod keyboard;
 pub mod resources;
 pub mod schema;
 pub mod search;

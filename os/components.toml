@@ -114,8 +114,8 @@ external_units = ["greetd.service"]
 name = "tilo-session"
 kind = "userspace"
 scope = "session"
-packages = ["tilo-session", "tilo-lock-screen", "osk", "tilolang-process"]
-bins = ["tilo-session", "tilo-lock-screen", "osk", "tilolang-process"]
+packages = ["tilo-session", "tilo-lock-screen", "tilolang-process"]
+bins = ["tilo-session", "tilo-lock-screen", "tilolang-process"]
 # A dev image's session is the desktop `tilo-vm shot|input|control` and the
 # capture harnesses drive: it opens the test-control socket at
 # `$XDG_RUNTIME_DIR/tilo-session/test-control.sock`, or where
@@ -141,13 +141,9 @@ files = [
   # Source swaps materialize the pinned OS catalog; images already assemble
   # this direct tree with the runtime payload, sharing its font bytes.
   { from = "/usr/share/fonts/tilo/", to = "/usr/share/fonts/tilo/", tree = true, layer = "direct" },
-  # The lock screen and the on-screen keyboard are surface apps of the session
-  # too: it starts each one beside itself when what it shows is wanted, so
-  # without them here a login has no lock and no keyboard. The keyboard's
-  # program is named for the session rather than for its crate, which the
-  # store also ships as an app.
+  # The lock screen is a surface app of the session too: it starts it beside
+  # itself when what it shows is wanted, so without it here a login has no lock.
   { from = "tilo-lock-screen", to = "/usr/bin/tilo-lock-screen", mode = "0755" },
-  { from = "osk", to = "/usr/bin/tilo-osk", mode = "0755" },
 ]
 
 # The network-answers helper: search's one way to the network (exchange
@@ -509,7 +505,7 @@ profile = "thin-app"
 packages = ["runtime-dylib"]
 app_manifests = "apps/*/tilo-app.toml"
 features = [
-  "messages/runtime-engine", "osk/runtime-engine",
+  "messages/runtime-engine",
 ]
 layer = "direct"
 files = [

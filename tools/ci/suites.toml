@@ -925,6 +925,7 @@ inputs = [
 ]
 readers = [
   "crates/lang/tilolang-tilo/examples/write_rate.rs",
+  "crates/lang/tilolang-tilo/src/keyboard.rs",
   "crates/lang/tilolang-tilo/src/lib.rs",
   "crates/lang/tilolang-tilo/src/platform_apps.rs",
   "crates/lang/tilolang-tilo/src/shell.rs",
@@ -1350,7 +1351,6 @@ inputs = [
   "Cargo.toml", "crates/sdk/", "crates/platform/", "vendor/",
   "crates/desktop/pc-keyboard-geometry/",
   "crates/desktop/tilo-accessibility-settings/",
-  "crates/desktop/tilo-input-context/",
   "crates/desktop/tilo-keyboard-map/",
   "crates/desktop/tilo-system-resources/",
   "crates/desktop/tilo-wallpapers/",

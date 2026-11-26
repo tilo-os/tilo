@@ -160,10 +160,10 @@ impl Parts {
         if let Some(package) = installed(binding) {
             return Some(package);
         }
-        // The shell's own view is shipped with the session as this build's copy, so a machine
-        // with no shell in its app store still draws the window menu: the compiled shell is
-        // written where a package is read.
-        if let Some(package) = compiled_shell(binding) {
+        // The shell's and the keyboard's own views are shipped with the session as this build's
+        // copies, so a machine with neither in its app store still draws the window menu and
+        // types on the glass: the compiled package is written where a package is read.
+        if let Some(package) = compiled_part(binding) {
             return Some(package);
         }
         match surfaces::program_path(&binding.program()) {
@@ -212,19 +212,31 @@ impl Parts {
     }
 }
 
-/// The shell package's own view, as a payload the session can run when the app store holds no
-/// shell: this build's compiled shell, written once where a package is read. Its platform packages
-/// are descriptions the part's own host loads, so the bundle carries the shell's module alone.
-fn compiled_shell(binding: &Binding) -> Option<View> {
-    if binding.app != crate::shell::part::SHELL_APP {
+/// The shell's or the keyboard's own view, as a payload the session can run when the app store
+/// holds neither: this build's compiled package, written once where a package is read. Its
+/// platform packages are descriptions the part's own host loads, so the bundle carries the
+/// package's module alone.
+fn compiled_part(binding: &Binding) -> Option<View> {
+    let (compiled, name) = if binding.app == crate::shell::part::SHELL_APP {
+        (
+            crate::shell::part::compile_shell().ok()?.last()?.clone(),
+            "shell",
+        )
+    } else if binding.app == tilolang_tilo::keyboard::KEYBOARD_APP {
+        match tilolang_tilo::keyboard::compile() {
+            Ok(compiled) => (compiled, "keyboard"),
+            Err(why) => {
+                tracing::error!(%why, "this build's on-screen keyboard does not compile");
+                return None;
+            }
+        }
+    } else {
         return None;
-    }
-    let compiled = crate::shell::part::compile_shell().ok()?;
-    let shell = compiled.last()?;
+    };
     let root = std::env::var_os("XDG_RUNTIME_DIR").map_or_else(std::env::temp_dir, PathBuf::from);
-    let dir = root.join(format!("tilo-shell-package-{}", std::process::id()));
+    let dir = root.join(format!("tilo-{name}-package-{}", std::process::id()));
     tilolang_tilo::bundle::Bundle::new(
-        shell,
+        &compiled,
         std::iter::empty::<&tilolang_tilo::tilolang::Compiled>(),
     )
     .write(&dir)
@@ -270,6 +282,14 @@ pub fn surface(part: &str) -> Option<PartSurface> {
             app: crate::shell::state::WINDOW_MENU_APP.to_owned(),
             title: "Window menu".to_owned(),
             text: crate::shell::state::WINDOW_MENU_SURFACE.to_owned(),
+        }),
+        crate::keyboard::PART => Some(PartSurface {
+            id: crate::keyboard::KEYBOARD.to_owned(),
+            kind: crate::keyboard::KIND.to_owned(),
+            // The session's own resource, which its package declares: no surface of its own.
+            app: tilolang_tilo::platform_apps::SESSION_APP.to_owned(),
+            title: "Session".to_owned(),
+            text: String::new(),
         }),
         _ => None,
     }

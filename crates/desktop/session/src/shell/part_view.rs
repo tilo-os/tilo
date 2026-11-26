@@ -61,7 +61,8 @@ pub struct PartSurface {
     /// What the resource is called, as the package titles it.
     pub title: String,
     /// The surface file's text: the fields the reading holds and the verbs it offers
-    /// (`tilo_actions::surface`).
+    /// (`tilo_actions::surface`). Empty for one of the session's own resources, which the
+    /// session's package declares.
     pub text: String,
 }
 
@@ -208,8 +209,11 @@ impl Loads for PartPlatform {
             }
         }
         // The state the view reads exists as an app it does not run, and the package it runs is
-        // linked against it: both before either is asked anything.
-        if let Err(error) = host.runtime().load_foreign(self.meta.clone()) {
+        // linked against it: both before either is asked anything. The session's own state is
+        // the session's package, loaded below.
+        if self.meta.app != super::part::SESSION_APP
+            && let Err(error) = host.runtime().load_foreign(self.meta.clone())
+        {
             tracing::warn!(app = self.meta.app, %error, "a part's view did not load");
             *self.why.borrow_mut() = Some(error.to_string());
             return 0;
@@ -367,6 +371,11 @@ pub struct PartView {
     pressed_outside: bool,
     /// Where the pointer was last, in the desktop's coordinates.
     at: Option<(f64, f64)>,
+    /// The place the session docks the view at, `(x, y, w, h)` in the desktop's coordinates, for
+    /// a part that stands beside what the person works in rather than over it: the on-screen
+    /// keyboard. A docked view takes presses and fingers only where it draws, never the keys,
+    /// and a press elsewhere is no press on it.
+    dock: Option<(i32, i32, u32, u32)>,
 }
 
 impl PartView {
@@ -383,6 +392,22 @@ impl PartView {
             open: None,
             pressed_outside: false,
             at: None,
+            dock: None,
+        }
+    }
+
+    /// Where the session docks the view, while it does.
+    #[must_use]
+    pub fn docked(&self) -> Option<(i32, i32, u32, u32)> {
+        self.dock
+    }
+
+    /// Stand the view at `rect` , `(x, y, w, h)` in the desktop's coordinates, beside what the
+    /// person works in: see [`Self::dock`]'s field. `None` puts it back at the reading's anchor.
+    pub fn dock(&mut self, rect: Option<(i32, i32, u32, u32)>) {
+        if self.dock != rect {
+            self.dock = rect;
+            self.place();
         }
     }
 
@@ -410,8 +435,14 @@ impl PartView {
         else {
             return Err(format!("{} declares no view `{}`", spec.app, spec.view));
         };
-        let surfaces = catalogue::parse_surfaces(&spec.surface.text)?;
-        let meta = catalogue::package_of(&spec.surface.app, &spec.surface.title, &surfaces);
+        // A part whose state is one of the session's own resources (the on-screen keyboard) reads
+        // it as the session's package declares it, the package every view already reads.
+        let meta = if spec.surface.app == super::part::SESSION_APP {
+            tilolang_tilo::platform_apps::session_package()?
+        } else {
+            let surfaces = catalogue::parse_surfaces(&spec.surface.text)?;
+            catalogue::package_of(&spec.surface.app, &spec.surface.title, &surfaces)
+        };
         let ty = format!(
             "{}#{}",
             spec.surface.app,
@@ -480,7 +511,8 @@ impl PartView {
                 scale: self.scale,
             },
             false,
-        );
+        )
+        .with_fingers();
         self.anchor = anchor_of(reading);
         self.open = Some(Open {
             part: self.part,
@@ -593,6 +625,16 @@ impl PartView {
     /// Stand where the reading puts the view: at its anchor, with the space from there to the
     /// edge of the displays. What the view draws in that space is its own.
     fn place(&mut self) {
+        if let Some((x, y, w, h)) = self.dock {
+            if let Some(open) = self.open.as_mut() {
+                open.widgets.set_placement(Placement {
+                    origin: (x, y),
+                    size: (w.max(1), h.max(1)),
+                    scale: self.scale,
+                });
+            }
+            return;
+        }
         let Some((x0, y0, width, height)) = self.outputs else {
             return;
         };
@@ -635,10 +677,41 @@ impl ShellSurface for PartView {
             .unwrap_or_default()
     }
 
-    fn accepts_pointer(&self, _x: f64, _y: f64) -> bool {
+    fn accepts_pointer(&self, x: f64, y: f64) -> bool {
+        if self.dock.is_some() {
+            // Docked beside what the person works in: it takes what lands on what it draws, and
+            // everything else reaches what lies under it.
+            return self
+                .open
+                .as_ref()
+                .is_some_and(|open| open.widgets.accepts_pointer(x, y));
+        }
         // Window-modal: while the part is over the desktop it takes every press, and one away
         // from what it drew closes it rather than reaching what lies under it.
         self.focused()
+    }
+
+    fn takes_fingers(&self, x: f64, y: f64) -> bool {
+        // Only a docked part tells fingers apart: a window-modal one takes a finger as the
+        // pointer's press, which closes it when it lands away from what it drew.
+        self.dock.is_some()
+            && self
+                .open
+                .as_ref()
+                .is_some_and(|open| open.widgets.takes_fingers(x, y))
+    }
+
+    fn finger(
+        &mut self,
+        slot: u32,
+        phase: tilo_session_core::surface::FingerPhase,
+        x: f64,
+        y: f64,
+    ) {
+        if let Some(open) = self.open.as_mut() {
+            open.took_press();
+            open.widgets.finger(slot, phase, x, y);
+        }
     }
 
     fn pointer_motion(&mut self, x: f64, y: f64) {
@@ -655,7 +728,7 @@ impl ShellSurface for PartView {
     }
 
     fn pointer_button(&mut self, button: u32, pressed: bool) {
-        if pressed && self.focused() {
+        if pressed && self.dock.is_none() && self.focused() {
             let away = self
                 .at
                 .zip(self.open.as_ref())
@@ -709,7 +782,9 @@ impl ShellSurface for PartView {
     }
 
     fn wants_keyboard(&self) -> bool {
-        self.focused()
+        // A docked view types into the field the person is in: taking the keys would take them
+        // from that field.
+        self.dock.is_none() && self.focused()
     }
 
     fn key(&mut self, key: &SurfaceKey) {
@@ -759,4 +834,67 @@ fn anchor_of(reading: &str) -> Option<(f64, f64)> {
     let reading: Json = serde_json::from_str(reading).ok()?;
     let anchor = reading.get("anchor")?;
     Some((anchor.get("x")?.as_f64()?, anchor.get("y")?.as_f64()?))
+}
+
+/// A part's view is reached through the session's API as the windows the session draws are: its
+/// controls are listed where the person sees them and pressed by name, and assistive technology
+/// reads its tree. It publishes no resources of its own: what it changes is the part's state,
+/// whose resource the session publishes.
+impl tilo_session_core::surfaces::Published for PartView {
+    fn resources(&mut self) -> Vec<ui::tilo_actions::ResourceSpec> {
+        Vec::new()
+    }
+
+    fn invoke(
+        &mut self,
+        address: &ui::tilo_actions::ActionAddress,
+        _arguments: &serde_json::Map<String, serde_json::Value>,
+        _look: &mut tilo_session_core::surfaces::Look<'_>,
+    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
+        Err(ui::tilo_actions::ApiError::Unknown(address.clone()))
+    }
+
+    fn revision(&self) -> Option<u64> {
+        self.open
+            .as_ref()
+            .and_then(|open| tilo_session_core::surfaces::Published::revision(&open.widgets))
+    }
+
+    fn accessible_labels(&mut self) -> Vec<String> {
+        self.labels()
+    }
+
+    fn controls(&mut self) -> Vec<ui::window_targets::WindowControl> {
+        self.open.as_mut().map_or_else(Vec::new, |open| {
+            tilo_session_core::surfaces::Published::controls(&mut open.widgets)
+        })
+    }
+
+    fn press(&mut self, name: &str) -> Result<(), String> {
+        let open = self
+            .open
+            .as_mut()
+            .ok_or_else(|| format!("the {} part shows nothing", self.part))?;
+        open.took_press();
+        tilo_session_core::surfaces::Published::press(&mut open.widgets, name)
+    }
+
+    fn a11y_tree(&mut self) -> Option<ui::accesskit::TreeUpdate> {
+        tilo_session_core::surfaces::Published::a11y_tree(&mut self.open.as_mut()?.widgets)
+    }
+
+    fn a11y_name(&self) -> Option<String> {
+        self.open.as_ref().map(|_| self.part.to_owned())
+    }
+
+    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+        self.open.as_mut().is_some_and(|open| {
+            open.took_press();
+            tilo_session_core::surfaces::Published::a11y_action(&mut open.widgets, target, action)
+        })
+    }
+
+    fn offered(&self) -> bool {
+        self.open.is_some()
+    }
 }

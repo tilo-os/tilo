@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.settings.sections@91e8971aebc965f8";
+export const SURFACE = "so.tilo.settings.sections@ca0615d9770552f8";
 
 export interface Ink {
   primary: number;
@@ -317,6 +317,19 @@ export interface OutputMode {
 
 /** One of "normal", "rotate90", "rotate180", "rotate270". */
 export type OutputTransform = "normal" | "rotate90" | "rotate180" | "rotate270";
+
+export interface TapOffset {
+  letter: string;
+  dx: number;
+  dy: number;
+  samples: number;
+}
+
+export interface Transition {
+  before: string;
+  word: string;
+  count: number;
+}
 
 export interface Bytes {
   received: number;
@@ -871,6 +884,54 @@ export interface SetUsedArgs {
 export interface OskSourcesSetLayoutsArgs {
   layouts: string[];
   active: string;
+}
+
+/** The arguments of `set-size`. */
+export interface SetSizeArgs {
+  size: string;
+}
+
+/** The arguments of `set-suggestions`. */
+export interface SetSuggestionsArgs {
+  suggestions: boolean;
+}
+
+/** The arguments of `set-autocorrect`. */
+export interface SetAutocorrectArgs {
+  autocorrect: boolean;
+}
+
+/** The arguments of `set-typing-language`. */
+export interface SetTypingLanguageArgs {
+  language: string;
+}
+
+/** The arguments of `set-personalization`. */
+export interface SetPersonalizationArgs {
+  personalization: boolean;
+}
+
+/** The arguments of `learn`. */
+export interface LearnArgs {
+  before: string;
+  word: string;
+}
+
+/** The arguments of `teach`. */
+export interface TeachArgs {
+  letter: string;
+  dx: number;
+  dy: number;
+  samples: number;
+}
+
+/** The arguments of `keep`. */
+export interface KeepArgs {
+  word: string;
+}
+
+/** The arguments of `forget-learned`. */
+export interface ForgetLearnedArgs {
 }
 
 /** The arguments of `route-through`. */
@@ -1937,17 +1998,72 @@ export function emoji(ws: tilo.Workspace, path: string): Emoji {
 export interface OskSources extends tilo.Resource {
   readonly layout: string;
   readonly layouts: string[];
+  readonly size: string;
+  readonly suggestions: boolean;
+  readonly autocorrect: boolean;
+  readonly typing_language: string;
+  readonly personalization: boolean;
+  readonly transitions: Transition[];
+  readonly touch: TapOffset[];
+  readonly kept: string[];
   setLayouts(args: {
     layouts: string[];
     active: string;
   }): Promise<void>;
   /** Runs `set-layouts` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
   setLayoutsMany(items: OskSourcesSetLayoutsArgs[]): Promise<tilo.ActionAnswer[]>;
+  setSize(args: {
+    size: string;
+  }): Promise<void>;
+  /** Runs `set-size` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setSizeMany(items: SetSizeArgs[]): Promise<tilo.ActionAnswer[]>;
+  setSuggestions(args: {
+    suggestions: boolean;
+  }): Promise<void>;
+  /** Runs `set-suggestions` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setSuggestionsMany(items: SetSuggestionsArgs[]): Promise<tilo.ActionAnswer[]>;
+  setAutocorrect(args: {
+    autocorrect: boolean;
+  }): Promise<void>;
+  /** Runs `set-autocorrect` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setAutocorrectMany(items: SetAutocorrectArgs[]): Promise<tilo.ActionAnswer[]>;
+  setTypingLanguage(args: {
+    language: string;
+  }): Promise<void>;
+  /** Runs `set-typing-language` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setTypingLanguageMany(items: SetTypingLanguageArgs[]): Promise<tilo.ActionAnswer[]>;
+  setPersonalization(args: {
+    personalization: boolean;
+  }): Promise<void>;
+  /** Runs `set-personalization` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  setPersonalizationMany(items: SetPersonalizationArgs[]): Promise<tilo.ActionAnswer[]>;
+  learn(args: {
+    before: string;
+    word: string;
+  }): Promise<void>;
+  /** Runs `learn` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  learnMany(items: LearnArgs[]): Promise<tilo.ActionAnswer[]>;
+  teach(args: {
+    letter: string;
+    dx: number;
+    dy: number;
+    samples: number;
+  }): Promise<void>;
+  /** Runs `teach` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  teachMany(items: TeachArgs[]): Promise<tilo.ActionAnswer[]>;
+  keep(args: {
+    word: string;
+  }): Promise<void>;
+  /** Runs `keep` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  keepMany(items: KeepArgs[]): Promise<tilo.ActionAnswer[]>;
+  forgetLearned(): Promise<void>;
+  /** Runs `forget-learned` for each of `items`: one all-or-nothing step per call, all of them one invocation group that History lists once and one undo takes back. */
+  forgetLearnedMany(items: ForgetLearnedArgs[]): Promise<tilo.ActionAnswer[]>;
 }
 
 /** The actions `OskSources` reaches before it is read: `ws` calls them without a
   `load()` first. */
-export const OSKSOURCES_ACTIONS = ["setLayouts", "setLayoutsMany"] as const;
+export const OSKSOURCES_ACTIONS = ["setLayouts", "setLayoutsMany", "setSize", "setSizeMany", "setSuggestions", "setSuggestionsMany", "setAutocorrect", "setAutocorrectMany", "setTypingLanguage", "setTypingLanguageMany", "setPersonalization", "setPersonalizationMany", "learn", "learnMany", "teach", "teachMany", "keep", "keepMany", "forgetLearned", "forgetLearnedMany"] as const;
 
 /** The `settings.osk-sources` kind at `path`. */
 export function oskSources(ws: tilo.Workspace, path: string): OskSources {

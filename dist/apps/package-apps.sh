@@ -207,7 +207,7 @@ while IFS= read -r engine; do
     }
     runtime_engines+=("$thin_app_dir/$engine")
 done < "$thin_app_dir/runtime-engines"
-# The default SDK also serves osk/settings's native keyboard-map dependency.
+# The default SDK also serves settings's native keyboard-map dependency.
 # Include this fixed platform root for every selection: using only the emitted
 # apps' dependencies would change the SDK identity for a partial release.
 keyboard_libdir=$(pkg-config --variable=libdir xkbcommon)

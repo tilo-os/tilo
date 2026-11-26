@@ -2128,7 +2128,7 @@ impl Session {
             auto_brightness,
             keyboard_preference: options.config.on_screen_keyboard,
             keyboard_run: crate::keyboard::Run::default(),
-            keyboard_starts: 0,
+            keyboard_published: false,
             portal: options.portal,
             launches: std::sync::Arc::clone(&options.launches),
             app_wire,
@@ -2260,10 +2260,9 @@ impl Session {
         self.follow_displays()?;
         self.shared.follow_invitable();
         for surface in &self.surface_apps {
-            // The lock screen is started when the session locks and the
-            // on-screen keyboard when the person may need it: what their
-            // windows show is never the shell's to open.
-            if surface.lock || surface.name == crate::keyboard::SURFACE {
+            // The lock screen is started when the session locks: what its
+            // window shows is never the shell's to open.
+            if surface.lock {
                 continue;
             }
             let workspace = self.shared.active_workspace_id();

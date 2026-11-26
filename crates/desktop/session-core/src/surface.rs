@@ -22,8 +22,8 @@ mod shell;
 
 pub use cursor_icon::CursorIcon;
 pub use shell::{
-    CELL, Changed, FrameWatch, ShellSurface, SurfaceDrag, SurfaceFrame, SurfaceIme, SurfaceLayer,
-    SurfaceTextInput,
+    CELL, Changed, FingerPhase, FrameWatch, ShellSurface, SurfaceDrag, SurfaceFrame, SurfaceIme,
+    SurfaceLayer, SurfaceTextInput,
 };
 #[cfg(unix)]
 pub use shell::{SurfaceBuffer, SurfaceBuffers};

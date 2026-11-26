@@ -26,6 +26,9 @@ pub struct EmojiPaneProps {
     pub open: bool,
     /// What assistive technology calls it; the picker's own card name unless said.
     pub label: Option<String>,
+    /// The search, where the view types it with keys of its own (an on-screen keyboard's): the
+    /// card searches for it as if it were typed into its field.
+    pub query: Option<String>,
     /// An emoji was picked: carries it.
     #[component(event(value = String))]
     pub pick: Event,
@@ -83,7 +86,11 @@ impl Described for EmojiPane {
     type Props = EmojiPaneProps;
 
     fn from_props(_key: &str, props: EmojiPaneProps) -> Self {
-        Self::new(props.open, props.pick, props.dismiss)
+        let mut pane = Self::new(props.open, props.pick, props.dismiss);
+        if let Some(query) = props.query {
+            pane.picker.set_query(&query);
+        }
+        pane
     }
 
     /// Opening or closing keeps what was typed and chosen where the card stays open; the events a
@@ -96,6 +103,11 @@ impl Described for EmojiPane {
                 self.picker.close();
             }
             self.open = props.open;
+        }
+        if let Some(query) = props.query
+            && query != self.picker.query()
+        {
+            self.picker.set_query(&query);
         }
         self.pick = props.pick;
         self.dismiss = props.dismiss;

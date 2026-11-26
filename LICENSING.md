@@ -31,7 +31,7 @@
   license for each file and links its
   [license and copyright notices](crates/ui/ui-core/assets/fonts/LICENSES/).
 - **Third-party code and data retain their upstream licenses.** This includes
-  [vendored code](vendor/), [spelling dictionaries](apps/osk/data/), and
+  [vendored code](vendor/), [spelling dictionaries](crates/engines/keyboard/data/), and
   [Unicode emoji data](crates/ui/emoji/data/LICENSE-UNICODE.txt).
 
 The MIT crates you build with and the MIT client side do not grant permission to incorporate

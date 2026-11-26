@@ -4,7 +4,7 @@
 # ///
 """Build the swipe decoder's fixtures from FUTO's swipe dataset.
 
-    uv run apps/osk/tests/data/generate.py
+    uv run crates/engines/keyboard/tests/data/generate.py
 
 Input: the swipe.futo.org dataset (FUTO, MIT, see LICENSE.FUTO-SWIPE), pinned
 to one Hugging Face commit. Every file is checked against its byte size and

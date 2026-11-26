@@ -489,7 +489,10 @@ const PUBLISHED: &[Published] = &[
         app: SESSION_APP,
         title: "Session",
         kinds: &[],
-        roots: &[],
+        // The on-screen keyboard as it stands over the focused field: its app reads it as
+        // `session.keyboard` (whether it shows, where, and what the field asks of typing) and
+        // types into the field through its actions.
+        roots: &[("keyboard", "Keyboard", "keyboard")],
         files: &[include_str!("../../../../apps/tl/session/surface.json")],
         described: true,
         listed: &[],

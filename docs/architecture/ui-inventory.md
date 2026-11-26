@@ -51,7 +51,7 @@ file with one visible surface and several helpers is one row.
 | 13 | **Power menu, window menu, workspace menu, About sheet** | `sheets/src/power.rs`, `window-menu/src/surface.rs`, `desktop/src/workspace_menu.rs`, `desktop/src/about.rs` | — (`ContextMenu`, `MenuItem`, `ModalDialog`) | — | yes |
 | 17 | **Workspace overview (Super+Tab panel) and its picture** | `desktop/src/overview_panel.rs`, `overview_panel/layout.rs`, `overview_panel/input.rs`, `overview_panel/paint.rs`, `desktop/src/overview_picture.rs` | the panel's ground, edge and shadow, the "where you are" block, share rows, the go-to list, workspace rows and list rows, each tile and its strip label, the naming field, the face stack and app marks; and the shared picture's strip names, window titles and empty-strip words | `paint_surface`/`FloatingPanelFace` for the panel, `ListRowFace` for its rows, `TileHost`/`WindowPreview` for the pictured windows, `FaceStack` for the faces, `ScrollRegion` for its scroll (it clamps `scroll_y` by hand), `SearchField`/`TextInput` for the naming field | largely: `FloatingPanelFace`, `ListRowFace`, `TileHost`, `WindowPreview`, `ScrollRegion` exist; a **workspace-overview panel** (workspaces, each with pictured windows, one shared scroll) does not |
 | 18 | **Window switcher (Alt+Tab)** | `desktop/src/window_switcher.rs` | the panel, its cards and their wells, the hover ring, the hint line | `FloatingPanelFace` for the panel, `Card`/`WindowWell` for a card and its window, `KeyHintsFace` for the hints, `Text` for labels | partly: `FloatingPanelFace`, `Card`, `WindowWell`, `KeyHintsFace` exist; a **window switcher card** (a well with a title and an app mark, lifted when chosen) does not |
-| 19 | **Emoji picker** | `desktop/src/emoji_picker.rs` | the card's ground and edge, group segments, the grid's cells and their selection, the tone row | `FloatingPanelFace` for the card, `SearchField` (already used) and `ToggleGroup`/`SegmentedFace` for groups, `Card`/`ButtonFace` for a cell, `Popover` for the tone row | mostly: the picker's **grid cell** (a glyph, its name and its selection) as a shared component does not exist; `apps/osk`'s emoji panel draws the same thing and should share it |
+| 19 | **Emoji picker** | `desktop/src/emoji_picker.rs` | the card's ground and edge, group segments, the grid's cells and their selection, the tone row | `FloatingPanelFace` for the card, `SearchField` (already used) and `ToggleGroup`/`SegmentedFace` for groups, `Card`/`ButtonFace` for a cell, `Popover` for the tone row | mostly: the picker's **grid cell** (a glyph, its name and its selection) as a shared component does not exist; the on-screen keyboard's emoji panel already uses the shared `EmojiPane` |
 | 20 | **Widgets (team, calendar, monitor, music)** | `desktop/src/widgets/paint.rs` | each widget's glance ground, its open card's header, team rows, calendar grid, monitor readings, music art and transport, the grip, the pin and remove controls, the badge | `Card`/`ListRowFace` for the open card, `FaceStack` for the team, `DataTable`/`StatTile` for the monitor, `MediaTransport` for music, `ButtonFace`/`BarControlFace` for the controls, `Card`'s grip | partly: `Card`, `FaceStack`, `StatTile`, `MediaTransport` exist; the **widget glance/expand frame** (a glance that becomes a card at a size stage) is specific to the shell and has no shared component |
 | 22 | **Member roster** | `desktop/src/people.rs` | the roster's own scroll offset (computed and clamped itself); two labels | `ScrollRegion` for the list (the rows are already `ListRowFace`), `Text` for the labels | yes: `ScrollRegion` |
 | 23 | **Strip switcher and strip navigator** | `desktop/src/strip_switcher.rs`, `strip_navigator.rs` | a label's ground, a label's text, the ribbon's own scroll position | `paint_surface`/`ChromeRole::Control` for the label, `Text` for its name, `ScrollRegion` for the rail | partly: the label should be a row (`ListRowFace` with `rail()`); a **strip rail/ribbon** exists as `ui::chrome::shell::{StripRail, StripRibbon}` |
@@ -89,8 +89,8 @@ reachable, not aspirational:
 
 Each is named with the API a surface needs; none is built in this change.
 Where two surfaces draw the same thing (the overview and the switcher both
-picture a window; the emoji picker and `apps/osk` both draw a glyph grid), one
-component serves both.
+picture a window; the emoji picker and the on-screen keyboard's emoji panel both
+draw a glyph grid), one component serves both.
 
 1. **Modal sheet with a body slot** — `ModalSheet` exists for painted hosts;
    `ModalDialog` covers composed ones. Neither offers a header search slot, a
@@ -120,7 +120,7 @@ component serves both.
    each workspace a name, its strip labels and its window cards, with one
    `ScrollRegion`. Replaces `desktop/src/overview_panel/`.
 7. **Emoji grid cell** — `EmojiCell::new(name, glyph).chosen(bool).secondary(line).remove(action)`:
-   the cell the picker and `apps/osk`'s emoji panel both draw. API:
+   the cell the picker and the on-screen keyboard's emoji panel both draw. API:
    `EmojiGrid::new(groups).search(SearchField).filter(query)`.
 8. **Notification centre list** — **built:** `NotificationListView::new(rows, start).capacity(..).cursor(..).cleared(..).paint(..)`,
    grouped rows with a per-row control set, paging and a cleared band, on

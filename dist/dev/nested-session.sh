@@ -288,9 +288,9 @@ for name in tilo-session tilo-runtime tilo-launcher tilo-install tilo-app-packag
 done
 # The session starts its own surfaces as programs beside it, and its audio
 # service the same way: without one, the dev session is a desktop with no lock
-# screen, no quick settings, no on-screen keyboard or no sound, which is a
-# broken session rather than a smaller one.
-for name in tilo-lock-screen tilo-osk tilo-audio; do
+# screen, no quick settings or no sound, which is a broken session rather than a
+# smaller one.
+for name in tilo-lock-screen tilo-audio; do
     [[ -f $bin/$name ]] \
         || die "missing $bin/$name: the session would start without it (run without --no-build)"
     chmod +x "$bin/$name"

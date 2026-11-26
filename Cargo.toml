@@ -95,7 +95,6 @@ members = [
     "crates/ui/ui-core",
 
     # Applications
-    "apps/osk",
     "apps/moderation-model",
     "apps/messages",
     "apps/imager",
@@ -292,7 +291,6 @@ members = [
     "crates/lang/tilo-app-module",
     "crates/engines/tilo-capture",
     "crates/platform/tilo-clipboard",
-    "crates/desktop/tilo-input-context",
     "crates/platform/tilo-platform-caps",
     "crates/platform/tilo-clock",
     "crates/lang/tilolang-tilo",
@@ -374,7 +372,6 @@ members = [
     "crates/engines/loadable/diffmerge",
     "crates/engines/loadable/git",
     "crates/engines/loadable/grayjay",
-    "crates/engines/loadable/emoji",
     "crates/engines/loadable/highlight",
     "crates/engines/loadable/music",
     "crates/engines/loadable/remote",

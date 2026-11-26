@@ -68,11 +68,11 @@ class ComponentManifestPolicyTests(unittest.TestCase):
             self.assertIn('to = "/usr/bin/tilo-lock-screen"', errors)
         with self.subTest(phase='a surface app installed where the session does not look fails'):
             root = self.fixture()
-            self.edit(root / "os/components.toml", '{ from = "osk", to = "/usr/bin/tilo-osk"',
-                      '{ from = "osk", to = "/usr/libexec/tilo-osk"')
+            self.edit(root / "os/components.toml", '{ from = "tilo-lock-screen", to = "/usr/bin/tilo-lock-screen"',
+                      '{ from = "tilo-lock-screen", to = "/usr/libexec/tilo-lock-screen"')
             errors = "\n".join(check.audit(root))
-            self.assertIn("starts 'tilo-osk' beside itself, but no component installs it there", errors)
-            self.assertIn("/usr/libexec/tilo-osk", errors)
+            self.assertIn("starts 'tilo-lock-screen' beside itself, but no component installs it there", errors)
+            self.assertIn("/usr/libexec/tilo-lock-screen", errors)
 
     def test_session_surface_programs_are_read_from_literals_and_constants(self):
         temporary = tempfile.TemporaryDirectory()
@@ -81,7 +81,7 @@ class ComponentManifestPolicyTests(unittest.TestCase):
         source = root / "crates/desktop/session/probe/src"
         source.mkdir(parents=True)
         (source / "literal.rs").write_text('fn start() { program_path("tilo-lock-screen") }\n')
-        (source / "constant.rs").write_text('const PROGRAM: &str = "tilo-osk";\n'
+        (source / "constant.rs").write_text('const PROGRAM: &str = "tilo-bar";\n'
                                             'fn start() { program_path(PROGRAM) }\n')
         (source / "locate.rs").write_text('fn start() { Surface::locate("tilo-window-menu") }\n')
         (source / "passthrough.rs").write_text("fn start(name: &str) { program_path(name) }\n")
@@ -90,7 +90,7 @@ class ComponentManifestPolicyTests(unittest.TestCase):
         (source / "tests/fixture.rs").write_text('fn start() { program_path("tilo-test-only") }\n')
         programs, unreadable = check.session_programs(root)
         self.assertEqual([(posix, name) for posix, _, name in programs],
-                         [("crates/desktop/session/probe/src/constant.rs", "tilo-osk"),
+                         [("crates/desktop/session/probe/src/constant.rs", "tilo-bar"),
                           ("crates/desktop/session/probe/src/literal.rs", "tilo-lock-screen"),
                           ("crates/desktop/session/probe/src/locate.rs", "tilo-window-menu")])
         self.assertEqual([(posix, identifier) for posix, _, identifier in unreadable],
@@ -465,7 +465,7 @@ class InstallerTests(unittest.TestCase):
             self.assertIn("tilo-session/dev-overrides", features)
             self.assertEqual(set(bins), {"tilo-runtime", "tilo-vm",
                                          "tilo-test-registry", "tilo-session",
-                                         "tilo-lock-screen", "osk",
+                                         "tilo-lock-screen",
                                          "tilo-secret-service", "tilolang-process"})
             _, _, production_features = installer.cargo_plan(dev, False)
             self.assertFalse([feature for feature in production_features

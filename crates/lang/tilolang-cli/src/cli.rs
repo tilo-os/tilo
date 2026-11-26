@@ -2983,8 +2983,7 @@ mod tests {
         let apps = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps");
         // The one service with nothing to show is certified nowhere.
         assert!(is_windowless_service(&apps.join("thumbnails")));
-        // A window is always certified, a service's own too (the keyboard, the launcher).
-        assert!(!is_windowless_service(&apps.join("osk")));
+        // A window is always certified, a service's own too (the launcher).
         assert!(!is_windowless_service(&apps.join("launcher")));
         assert!(!is_windowless_service(&apps.join("messages")));
     }

@@ -78,8 +78,7 @@ rather than each carrying a copy in its tapp.
 The emoji catalogue with its names and keywords in every locale is not an
 engine: every text field resolves `:name:` by default and every app can open
 the picker, so the catalogue belongs to the toolkit and travels in the runtime
-itself. The engine library Chat, Notes and the on-screen keyboard still name
-is emptied out as they migrate off it.
+itself.
 
 The conventions the build
 relies on:

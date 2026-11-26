@@ -185,7 +185,6 @@ touch. Expanded neighbouring targets must not overlap.
 | `themes`       | Theme studio: browse presets, edit the OS token set live, duplicate/export themes.                                                                                                                      |
 | `store`        | Unified Tilo app store: verified registry packages plus Flatpak/Flathub search, details, remotes, install, update, launch, and removal.                                                                 |
 | `vpn`          | WireGuard / OpenVPN client: saved connection fleet, live detail pane with animated throughput chart.                                                                                                    |
-| `osk`          | On-screen keyboard: data-driven layouts, responsive sizing, SHARK²/FUTO swipe-typing (`swipe` crate, ExecuTorch FFI), text injection via `virtual-keyboard-v1`. Foundation for the Tilo phone keyboard. |
 
 ## Developer tools
 

@@ -129,8 +129,8 @@ mod tests {
             let build = Build::of(Path::new("/work/target/debug/deps/session-4f2c")).unwrap();
             assert_eq!(build.directory, Path::new("/work/target/debug"));
             assert_eq!(
-                build.binary("osk"),
-                Path::new("/work/target/debug").join(format!("osk{}", env::consts::EXE_SUFFIX))
+                build.binary("example-app"),
+                Path::new("/work/target/debug").join(format!("example-app{}", env::consts::EXE_SUFFIX))
             );
         }
 

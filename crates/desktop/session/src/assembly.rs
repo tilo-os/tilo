@@ -610,10 +610,10 @@ pub struct Session {
     /// again where they type.
     #[cfg(target_os = "linux")]
     pub(crate) keyboard_run: crate::keyboard::Run,
-    /// How often the keyboard's app was started on the display it stands on,
-    /// so one that keeps exiting is given up on rather than started for ever.
+    /// Whether the keyboard's view was published through the session's API: once, the first
+    /// time it ran, as its host stands for the session's life.
     #[cfg(target_os = "linux")]
-    pub(crate) keyboard_starts: u32,
+    pub(crate) keyboard_published: bool,
     /// The portal's link to the loop, while the portal serves.
     #[cfg(target_os = "linux")]
     pub(crate) portal: Option<crate::portal_link::SessionLink>,

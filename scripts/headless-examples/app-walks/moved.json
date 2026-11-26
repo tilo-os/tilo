@@ -640,5 +640,58 @@
   "so.tilo.remote remote.session#forget-host-key": {
     "to": "so.tilo.remote tl.so.tilo.remote.Connection#forget_host_key",
     "test": "crates/lang/tilolang-runtime/tests/e2e_remote.rs:541"
+  },
+  "so.tilo.session keyboard.on-screen#set-visible": {
+    "to": "so.tilo.session keyboard#set-visible",
+    "test": "crates/desktop/session/src/keyboard.rs:695"
+  },
+  "so.tilo.session keyboard.on-screen#type": {
+    "to": "so.tilo.session keyboard#type-text",
+    "test": "crates/desktop/session/src/keyboard.rs:794"
+  },
+  "so.tilo.osk osk.keyboard#set-layout": {
+    "to": "so.tilo.settings.sections settings/apps/so.tilo.osk#set-layouts",
+    "description": "the letter layouts the keyboard switches between and the one it types with, in the person's settings",
+    "test": "crates/desktop/settings-sections/src/osk.rs:321"
+  },
+  "so.tilo.osk osk.keyboard#set-size": {
+    "to": "so.tilo.settings.sections settings/apps/so.tilo.osk#set-size",
+    "description": "the keyboard's key size, in the person's settings",
+    "test": "crates/desktop/settings-sections/src/osk.rs:321"
+  },
+  "so.tilo.osk osk.keyboard#set-suggestions": {
+    "to": "so.tilo.settings.sections settings/apps/so.tilo.osk#set-suggestions",
+    "description": "whether the keyboard offers words, in the person's settings",
+    "test": "crates/desktop/settings-sections/src/osk.rs:321"
+  },
+  "so.tilo.osk osk.keyboard#set-autocorrect": {
+    "to": "so.tilo.settings.sections settings/apps/so.tilo.osk#set-autocorrect",
+    "description": "whether the keyboard corrects words, in the person's settings",
+    "test": "crates/desktop/settings-sections/src/osk.rs:321"
+  },
+  "so.tilo.osk osk.keyboard#set-typing-language": {
+    "to": "so.tilo.settings.sections settings/apps/so.tilo.osk#set-typing-language",
+    "description": "the language the keyboard reads words in, in the person's settings",
+    "test": "crates/desktop/settings-sections/src/osk.rs:321"
+  },
+  "so.tilo.osk osk.keyboard#set-personalization": {
+    "to": "so.tilo.settings.sections settings/apps/so.tilo.osk#set-personalization",
+    "description": "whether the keyboard learns from typing; off forgets what it learned",
+    "test": "crates/desktop/settings-sections/src/osk.rs:360"
+  },
+  "so.tilo.osk osk.keyboard#set-emoji-recents": {
+    "to": "so.tilo.session keyboard#type-text",
+    "description": "recent emoji are the system emoji picker's most-used row, which every picker shares, the keyboard's included; a pick is typed into the field",
+    "test": "crates/lang/tilolang-tilo/tests/chat_emoji.rs:195"
+  },
+  "so.tilo.osk osk.learned#learn": {
+    "to": "so.tilo.settings.sections settings/apps/so.tilo.osk#learn",
+    "description": "what typing teaches is kept in the person's keyboard settings, a word after another, as the keyboard commits it",
+    "test": "crates/desktop/settings-sections/src/osk.rs:360"
+  },
+  "so.tilo.osk osk.learned#forget": {
+    "to": "so.tilo.settings.sections settings/apps/so.tilo.osk#forget-learned",
+    "description": "forgetting what typing taught, keeping the personalization choice",
+    "test": "crates/desktop/settings-sections/src/osk.rs:360"
   }
 }

@@ -19,6 +19,29 @@ use crate::predict::Predictor;
 use crate::swipe::{GeometricSwipeModel, SwipeModel};
 use crate::touch_model::{KeyOffset, NextKeyDistribution, TouchKey, TouchModel};
 
+/// One word typing taught after a context, and how often.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Learned {
+    context: String,
+    word: String,
+    count: u32,
+}
+
+/// What typing taught, as the predictor reads it: each context's words with their counts.
+fn learned(rows: &[Learned]) -> BTreeMap<String, BTreeMap<String, u32>> {
+    let mut out: BTreeMap<String, BTreeMap<String, u32>> = BTreeMap::new();
+    for row in rows {
+        if row.word.is_empty() || row.count == 0 {
+            continue;
+        }
+        out.entry(row.context.clone())
+            .or_default()
+            .insert(row.word.clone(), row.count);
+    }
+    out
+}
+
 /// The most words one answer offers.
 const MOST_WORDS: usize = 8;
 
@@ -204,7 +227,7 @@ struct Suggest {
     personal: Vec<String>,
     personalization: bool,
     /// What typing taught: each context, then each word it led to and how often.
-    learned: BTreeMap<String, BTreeMap<String, u32>>,
+    learned: Vec<Learned>,
     /// Words the person kept as they typed them: never corrected again.
     kept: Vec<String>,
     limit: usize,
@@ -218,7 +241,7 @@ impl Default for Suggest {
             language: String::new(),
             personal: Vec::new(),
             personalization: true,
-            learned: BTreeMap::new(),
+            learned: Vec::new(),
             kept: Vec::new(),
             limit: 5,
         }
@@ -232,7 +255,7 @@ fn suggest(ask: &Suggest) -> String {
     let mut out = Vec::new();
     {
         let mut predictor = held(predictor(language));
-        predictor.adopt_learned(ask.learned.clone());
+        predictor.adopt_learned(learned(&ask.learned));
         if ask.word.is_empty() {
             for (word, score) in predictor.predict_next_n(previous, "", limit) {
                 out.push(json!({ "word": word, "score": score }));
@@ -417,6 +440,9 @@ struct Swipe {
     /// Whether the caller already judged the path a swipe: it draws the keys, so it knows the key
     /// it crossed and the scale it measures by, which the path's own units may not name.
     judged: bool,
+    /// For a path and area in fractions of a box, the box's width in its heights: across is
+    /// stretched by it, so the keys keep the shape they were drawn in. 0 leaves the units alone.
+    aspect: f64,
 }
 
 impl Default for Swipe {
@@ -430,6 +456,7 @@ impl Default for Swipe {
             shift: String::new(),
             limit: 5,
             judged: false,
+            aspect: 0.0,
         }
     }
 }
@@ -444,7 +471,13 @@ fn asked_layout(rows: &[String], name: &str) -> KeyboardLayout {
 
 fn swipe(ask: &Swipe) -> String {
     let layout = asked_layout(&ask.rows, &ask.layout);
-    let area = Rect::new(ask.area[0], ask.area[1], ask.area[2], ask.area[3]);
+    let across = if ask.aspect > 0.0 { ask.aspect } else { 1.0 };
+    let area = Rect::new(
+        ask.area[0] * across,
+        ask.area[1],
+        ask.area[2] * across,
+        ask.area[3],
+    );
     if area.width() <= 0.0 || area.height() <= 0.0 {
         return json!({ "swipe": false, "candidates": [] }).to_string();
     }
@@ -452,7 +485,7 @@ fn swipe(ask: &Swipe) -> String {
     let path: Vec<Point> = ask
         .path
         .chunks_exact(2)
-        .filter_map(|pair| Some(Point::new(*pair.first()?, *pair.get(1)?)))
+        .filter_map(|pair| Some(Point::new(*pair.first()? * across, *pair.get(1)?)))
         .collect();
     if path.len() < 2 || (!ask.judged && !crate::swipe::is_swipe(&path, key_scale(&geom, &layout)))
     {
@@ -504,7 +537,7 @@ struct Touch {
     word: String,
     language: String,
     /// Where this person tends to hit each letter, as the keyboard learned.
-    offsets: Vec<(char, f32, f32, u32)>,
+    offsets: Vec<Offset>,
     personalization: bool,
 }
 
@@ -524,6 +557,26 @@ impl Default for Touch {
     }
 }
 
+/// One letter's learned tap offset: how far from its middle this person lands, and from how many
+/// samples.
+#[derive(Debug, Default, Deserialize)]
+#[serde(default)]
+struct Offset {
+    letter: String,
+    dx: f64,
+    dy: f64,
+    samples: u32,
+}
+
+/// A learned offset, in the width the touch model keeps.
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "a tap's offset within a key, far inside f32's range"
+)]
+fn narrow(value: f64) -> f32 {
+    value as f32
+}
+
 /// The key a finger meant, and what its landing taught this person's tap positions.
 fn touch(ask: &Touch) -> String {
     let layout = asked_layout(&ask.rows, &ask.layout);
@@ -541,15 +594,16 @@ fn touch(ask: &Touch) -> String {
     let offsets: BTreeMap<char, KeyOffset> = ask
         .offsets
         .iter()
-        .map(|(ch, dx, dy, samples)| {
-            (
-                *ch,
+        .filter_map(|offset| {
+            let letter = offset.letter.chars().next()?;
+            Some((
+                letter,
                 KeyOffset {
-                    dx: *dx,
-                    dy: *dy,
-                    samples: *samples,
+                    dx: narrow(offset.dx),
+                    dy: narrow(offset.dy),
+                    samples: offset.samples,
                 },
-            )
+            ))
         })
         .collect();
     model.adopt(&offsets);

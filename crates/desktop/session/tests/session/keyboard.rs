@@ -1,21 +1,19 @@
-//! The on-screen keyboard as the session keeps it: an app of its own, started
-//! while the person may want it, on the display they work on, and up
-//! while a text field waits for typing on the glass.
+//! The on-screen keyboard as the session keeps it: the keyboard app's view, run in the session
+//! while the person may want it, docked on the display they work on, and up while a text field
+//! waits for typing on the glass.
 //!
-//! These start the keyboard the way the session does — through its own surface
-//! machinery, over an app wire only this test reaches — and touch a window's text
-//! field through the compositor: what a person with the machine in their hands
-//! does. What the keyboard does is read from the session's published resource,
-//! which is what its own app reads, and from what the displays show.
+//! These touch a window's text field through the compositor, as a person with the machine in their
+//! hands does, and press the keyboard's keys through the session's API, as a tap on them does. What
+//! the keyboard does is read from the session's published resource, which is what its view reads,
+//! from what the displays show and from what the window's field is sent.
 
 use super::*;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 
 use tilo_accessibility_settings::OnScreenKeyboard;
 use tilo_session::AppSocket;
-use tilo_session::keyboard;
 use tilo_session_core::desktop::verbs::SHELL_RESOURCE;
 
 use super::lock::{CLOSE, apart, pictures, private_home};
@@ -30,12 +28,6 @@ const SECOND: &str = "HEADLESS-2";
 /// One display's refresh, while waiting for the keyboard to draw.
 const REFRESH: Duration = Duration::from_millis(16);
 
-/// The on-screen keyboard's app: an app of its own package, which this run builds the first time a
-/// test brings the keyboard up.
-fn keyboard_binary() -> PathBuf {
-    tilo_test_env::sibling_binary("osk", "osk")
-}
-
 /// A session on two displays that starts its on-screen keyboard as the person's choice says,
 /// serving its services on `socket` .
 fn keyboard_session(socket: &Path, choice: OnScreenKeyboard) -> Session {
@@ -48,7 +40,6 @@ fn keyboard_session(socket: &Path, choice: OnScreenKeyboard) -> Session {
             user: "ada".to_owned(),
             collab: false,
             app_socket: AppSocket::At(socket.to_path_buf()),
-            surfaces: vec![keyboard::surface_of(keyboard_binary())],
             config: tilo_session::SessionConfig {
                 on_screen_keyboard: choice,
                 ..tilo_session::SessionConfig::default()
@@ -256,7 +247,7 @@ fn reading(session: &Session) -> serde_json::Value {
     session.read(KEYBOARD).unwrap_or_else(|| {
         panic!(
             "the session publishes its keyboard: {:?}",
-            session.surfaces().names()
+            session.keyboard_band()
         )
     })
 }
@@ -329,21 +320,21 @@ fn a_touch_into_a_field_brings_the_keyboard_up_on_that_display() {
         session.step(REFRESH).expect("a turn of the session");
     }
     assert!(
-        !session.surfaces().running(keyboard::SURFACE),
+        !session.keyboard_runs(),
         "no keyboard starts for a shell that was not touched: {:?}",
-        session.surfaces().names()
+        session.keyboard_band()
     );
 
     // A finger on that window, and into its field: the machine in the person's hands gets a
     // keyboard.
     finger(&mut session, middle(rect));
     pump(&mut session, &mut [&mut client], |session, _| {
-        session.surfaces().running(keyboard::SURFACE)
+        session.keyboard_runs()
     });
     assert!(
-        session.surfaces().running(keyboard::SURFACE),
+        session.keyboard_runs(),
         "the keyboard's app runs once the glass is typed on: {:?}",
-        session.surfaces().names()
+        session.keyboard_band()
     );
     // It stands there with no field to serve: nothing is drawn over the shell.
     let shell = still(&mut session, &[&typing_on, &left_alone]);
@@ -393,7 +384,7 @@ fn an_always_on_keyboard_is_up_where_the_person_works_with_no_field_at_all() {
     let shell = still(&mut session, &[&displays[0], &displays[1]]);
 
     pump(&mut session, &mut [], |session, _| {
-        session.surfaces().running(keyboard::SURFACE) && reading(session)["visible"] == true
+        session.keyboard_runs() && reading(session)["visible"] == true
     });
     let stands = reading(&session)["display"]
         .as_str()
@@ -452,7 +443,7 @@ fn the_keyboard_goes_away_when_the_field_loses_the_focus() {
     // The person touches the window without a field: the keyboard's app starts and keeps still.
     finger(&mut session, middle(mail_rect));
     pump(&mut session, &mut [&mut notes, &mut mail], |session, _| {
-        session.surfaces().running(keyboard::SURFACE)
+        session.keyboard_runs()
     });
     let shell = still(&mut session, &[&working_on]);
     assert_eq!(
@@ -516,7 +507,7 @@ fn the_keyboard_shows_and_hides_by_its_published_action() {
     environment.set("XDG_RUNTIME_DIR", home.path());
     let mut session = keyboard_session(&home.path().join("collab.sock"), OnScreenKeyboard::Always);
     pump(&mut session, &mut [], |session, _| {
-        session.surfaces().running(keyboard::SURFACE) && reading(session)["visible"] == true
+        session.keyboard_runs() && reading(session)["visible"] == true
     });
 
     // Away, as the keyboard's own Dismiss asks: the session stops saying it shows, which no
@@ -533,7 +524,7 @@ fn the_keyboard_shows_and_hides_by_its_published_action() {
         reading(session)["visible"] == false
     });
     assert!(
-        session.surfaces().running(keyboard::SURFACE),
+        session.keyboard_runs(),
         "its app keeps running: it is back on the next touch of a field"
     );
 
@@ -600,20 +591,21 @@ fn the_keyboards_keys_are_listed_and_pressed_through_the_sessions_api() {
     // A finger into the window's field: the keyboard comes up for it.
     finger(&mut session, middle(rect));
     pump(&mut session, &mut [&mut client], |session, _| {
-        session.surfaces().running(keyboard::SURFACE)
+        session.keyboard_runs()
     });
     type_until_the_keyboard_is_up(&mut session, &mut client);
     pump(&mut session, &mut [&mut client], |session, _| {
         !keys_on(session, display).is_empty()
     });
     let keys = keys_on(&session, display);
-    let namespace = tilo_session::surfaces::namespace(keyboard::SURFACE);
     let (kx, ky, kw, kh) = session
-        .compositor()
-        .layer_rect(&namespace)
+        .keyboard_band()
         .expect("the keyboard stands on the display");
     let (left, top) = (f64::from(kx), f64::from(ky));
-    let (right, bottom) = (f64::from(kx + kw) + 0.5, f64::from(ky + kh) + 0.5);
+    let (right, bottom) = (
+        f64::from(kx) + f64::from(kw) + 0.5,
+        f64::from(ky) + f64::from(kh) + 0.5,
+    );
     for (name, (x, y, w, h)) in &keys {
         assert!(
             *x >= left && *y >= top && x + w <= right && y + h <= bottom,
@@ -672,4 +664,264 @@ fn the_keyboards_keys_are_listed_and_pressed_through_the_sessions_api() {
             .all(|(_, (x, y, w, h))| *x >= left && *y >= top && x + w <= right && y + h <= bottom),
         "only the keyboard's own controls went with it: {gone:?}"
     );
+}
+
+/// A keyboard up for a field of `client`'s window that takes what `purpose` and `hint` say,
+/// in a session that brings it up for any field.
+fn typing_for(
+    hint: zwp_text_input_v3::ContentHint,
+    purpose: zwp_text_input_v3::ContentPurpose,
+) -> (
+    tempfile::TempDir,
+    tilo_test_env::ScopedEnv,
+    Session,
+    TestClient,
+) {
+    const APP: &str = "org.example.Notes";
+    let home = private_home();
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment.set("XDG_RUNTIME_DIR", home.path());
+    let mut session = keyboard_session(&home.path().join("collab.sock"), OnScreenKeyboard::Auto);
+    let mut client = mapped(&mut session, APP);
+    let (_, rect) = resting_window(&mut session, APP);
+    finger(&mut session, middle(rect));
+    type_until_the_keyboard_is_up(&mut session, &mut client);
+    client.field_takes(hint, purpose);
+    pump(&mut session, &mut [&mut client], |session, _| {
+        reading(session)["purpose"] == purpose_name(purpose)
+    });
+    let band = session
+        .keyboard_band()
+        .expect("the keyboard stands on the display");
+    let display = (
+        band.0,
+        band.1,
+        i32::try_from(band.2).unwrap_or(i32::MAX),
+        i32::try_from(band.3).unwrap_or(i32::MAX),
+    );
+    pump(&mut session, &mut [&mut client], |session, _| {
+        !controls_in(session, display).is_empty()
+    });
+    (home, environment, session, client)
+}
+
+/// The session's name for a field's purpose, as its keyboard reads it.
+fn purpose_name(purpose: zwp_text_input_v3::ContentPurpose) -> &'static str {
+    use zwp_text_input_v3::ContentPurpose as P;
+    match purpose {
+        P::Terminal => "terminal",
+        P::Password => "password",
+        P::Number => "number",
+        P::Pin | P::Digits => "pin",
+        _ => "text",
+    }
+}
+
+/// The controls standing in `band`: the keyboard's keys, its strip and its offers.
+fn controls_in(session: &Session, band: (i32, i32, i32, i32)) -> Vec<Control> {
+    let (left, top) = (f64::from(band.0), f64::from(band.1));
+    let (right, bottom) = (
+        left + f64::from(band.2) + 0.5,
+        top + f64::from(band.3) + 0.5,
+    );
+    controls(session)
+        .into_iter()
+        .filter(|(_, (x, y, w, h))| *x >= left && *y >= top && x + w <= right && y + h <= bottom)
+        .collect()
+}
+
+/// Press the keyboard's control named `name` through the session's API, as a tap on it does, and
+/// give the session the turns it takes to type what it means.
+#[track_caller]
+fn press(session: &mut Session, client: &mut TestClient, name: &str) {
+    session
+        .press_action(name, ui::window_targets::TargetAction::Activate)
+        .unwrap_or_else(|error| panic!("the keyboard's {name} is pressed: {error}"));
+    for _ in 0..6 {
+        client.exchange();
+        session.step(REFRESH).expect("a turn of the session");
+        client.exchange();
+    }
+}
+
+/// Type `word` on the keyboard's letters, one key at a time.
+#[track_caller]
+fn tap_word(session: &mut Session, client: &mut TestClient, word: &str) {
+    for letter in word.chars() {
+        press(session, client, &letter.to_string());
+    }
+}
+
+/// The field holds `text`, as the keyboard typed it in, before the turns run out.
+#[track_caller]
+fn until_typed(session: &mut Session, client: &mut TestClient, done: impl Fn(&str, &str) -> bool) {
+    pump(session, &mut [client], |_, clients| {
+        done(&clients[0].seen.committed, &clients[0].seen.composed)
+    });
+}
+
+/// The evdev code of Backspace, as a window hears it.
+const BACKSPACE: u32 = 14;
+
+/// Typing a word composes it in the field, Space corrects a word no dictionary has and offers it
+/// back as typed, and Backspace right after takes the correction back and keeps the word: typed
+/// again, it is left as it is.
+#[test]
+fn typed_words_compose_correct_and_take_a_correction_back() {
+    use zwp_text_input_v3::{ContentHint, ContentPurpose};
+    let _settled = ui::motion::testing::settled();
+    let (_home, _environment, mut session, mut client) =
+        typing_for(ContentHint::empty(), ContentPurpose::Normal);
+
+    tap_word(&mut session, &mut client, "teh");
+    until_typed(&mut session, &mut client, |committed, composed| {
+        committed.is_empty() && composed == "teh"
+    });
+
+    press(&mut session, &mut client, "Space");
+    until_typed(&mut session, &mut client, |committed, composed| {
+        committed == "the " && composed.is_empty()
+    });
+    assert!(
+        controls(&session).iter().any(|(name, _)| name == "“teh”"),
+        "the word as typed is offered back: {:?}",
+        controls(&session)
+    );
+
+    press(&mut session, &mut client, "Backspace");
+    until_typed(&mut session, &mut client, |committed, _| {
+        committed == "the teh "
+    });
+    assert_eq!(
+        client.seen.pressed_count(BACKSPACE),
+        4,
+        "the correction and its space were taken back: {:?}",
+        client.seen.keys
+    );
+
+    tap_word(&mut session, &mut client, "teh");
+    press(&mut session, &mut client, "Space");
+    until_typed(&mut session, &mut client, |committed, _| {
+        committed == "the teh teh "
+    });
+}
+
+/// Return sends the word as typed, uncorrected, then the key itself; a mark ends a word and goes
+/// in with it.
+#[test]
+fn return_and_marks_end_the_word() {
+    use zwp_text_input_v3::{ContentHint, ContentPurpose};
+    const RETURN: u32 = 28;
+    let _settled = ui::motion::testing::settled();
+    let (_home, _environment, mut session, mut client) =
+        typing_for(ContentHint::empty(), ContentPurpose::Normal);
+
+    tap_word(&mut session, &mut client, "ok");
+    press(&mut session, &mut client, "Numbers and symbols");
+    press(&mut session, &mut client, "!");
+    until_typed(&mut session, &mut client, |committed, composed| {
+        committed == "ok!" && composed.is_empty()
+    });
+    press(&mut session, &mut client, "Letters");
+    tap_word(&mut session, &mut client, "teh");
+    press(&mut session, &mut client, "Return");
+    until_typed(&mut session, &mut client, |committed, _| {
+        committed == "ok!teh"
+    });
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        clients[0].seen.pressed_count(RETURN) == 1
+    });
+}
+
+/// A password's field is typed as it is: no word composes in it and nothing is offered.
+#[test]
+fn a_secret_field_is_typed_as_it_is() {
+    use zwp_text_input_v3::{ContentHint, ContentPurpose};
+    let _settled = ui::motion::testing::settled();
+    let (_home, _environment, mut session, mut client) =
+        typing_for(ContentHint::SensitiveData, ContentPurpose::Password);
+    assert_eq!(reading(&session)["secret"], true, "{}", reading(&session));
+
+    tap_word(&mut session, &mut client, "teh");
+    press(&mut session, &mut client, "Space");
+    until_typed(&mut session, &mut client, |committed, composed| {
+        committed == "teh " && composed.is_empty()
+    });
+    assert!(
+        !controls(&session)
+            .iter()
+            .any(|(name, _)| name.starts_with('“')),
+        "nothing typed in a secret field is offered back: {:?}",
+        controls(&session)
+    );
+}
+
+/// A terminal's keyboard has its own row: Ctrl held for the next key makes a chord of it, and lets
+/// go after it.
+#[test]
+fn ctrl_holds_for_the_next_key_only() {
+    use zwp_text_input_v3::{ContentHint, ContentPurpose};
+    const CTRL: u32 = 29;
+    const C: u32 = 46;
+    let _settled = ui::motion::testing::settled();
+    let (_home, _environment, mut session, mut client) =
+        typing_for(ContentHint::empty(), ContentPurpose::Terminal);
+    for name in ["Esc", "Tab", "Ctrl", "Alt", "Left", "Down", "Up", "Right"] {
+        assert!(
+            controls(&session)
+                .iter()
+                .any(|(control, _)| control == name),
+            "the terminal row has {name}: {:?}",
+            controls(&session)
+        );
+    }
+
+    press(&mut session, &mut client, "Ctrl");
+    press(&mut session, &mut client, "c");
+    pump(&mut session, &mut [&mut client], |_, clients| {
+        clients[0].seen.pressed_count(C) == 1
+    });
+    let chord: Vec<u32> = client
+        .seen
+        .keys
+        .iter()
+        .filter(|(_, pressed)| *pressed)
+        .map(|(key, _)| *key)
+        .collect();
+    assert_eq!(chord, [CTRL, C], "Ctrl+C reached the terminal: {chord:?}");
+
+    press(&mut session, &mut client, "c");
+    until_typed(&mut session, &mut client, |committed, _| committed == "c");
+    assert_eq!(
+        client.seen.pressed_count(CTRL),
+        1,
+        "Ctrl let go after one key: {:?}",
+        client.seen.keys
+    );
+}
+
+/// A number's field gets a number pad: digits, no letters.
+#[test]
+fn a_number_field_gets_the_number_pad() {
+    use zwp_text_input_v3::{ContentHint, ContentPurpose};
+    let _settled = ui::motion::testing::settled();
+    let (_home, _environment, mut session, mut client) =
+        typing_for(ContentHint::empty(), ContentPurpose::Number);
+    let names: Vec<String> = controls(&session)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    assert!(
+        ["1", "5", "0", "Backspace", "Return"]
+            .iter()
+            .all(|key| names.iter().any(|name| name == key)),
+        "the number pad stands: {names:?}"
+    );
+    assert!(
+        !names.iter().any(|name| name == "q"),
+        "no letters on a number pad: {names:?}"
+    );
+    press(&mut session, &mut client, "4");
+    press(&mut session, &mut client, "2");
+    until_typed(&mut session, &mut client, |committed, _| committed == "42");
 }

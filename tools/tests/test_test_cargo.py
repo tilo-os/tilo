@@ -49,7 +49,7 @@ class TestCargo(unittest.TestCase):
             found('fn t() { Command::new("rustc").arg("--version").output().unwrap(); }'), []
         )
         self.assertEqual(
-            found('fn t() { Command::new(sibling_binary("osk", "osk")).spawn().unwrap(); }'), []
+            found('fn t() { Command::new(sibling_binary("tilo-lock-screen", "tilo-lock-screen")).spawn().unwrap(); }'), []
         )
 
     def test_production_code_is_not_a_test(self):

@@ -161,7 +161,7 @@ mod tests {
             "tilo-package",
             "tilo-agent",
         ];
-        let surfaces = ["tilo-session", "tilo-lock-screen", "tilo-osk"];
+        let surfaces = ["tilo-session", "tilo-lock-screen"];
         // A device gets its session from a swap, and its daemon through `swap
         // vmd --slot vm`; both land on whatever image the device already runs.
         let swapped: BTreeSet<&str> = ["vmd"].into_iter().collect();

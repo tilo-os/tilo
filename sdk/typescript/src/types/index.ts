@@ -16,7 +16,6 @@
 
 export * as discord from "./discord.ts";
 export * as messages from "./messages.ts";
-export * as osk from "./osk.ts";
 export * as poker from "./poker.ts";
 export * as terminal from "./terminal.ts";
 export * as activity from "./activity.ts";
@@ -56,6 +55,7 @@ export * as migrate from "./migrate.ts";
 export * as monitor from "./monitor.ts";
 export * as music from "./music.ts";
 export * as notes from "./notes.ts";
+export * as osk from "./osk.ts";
 export * as passwords from "./passwords.ts";
 export * as pdfViewer from "./pdf_viewer.ts";
 export * as photos from "./photos.ts";

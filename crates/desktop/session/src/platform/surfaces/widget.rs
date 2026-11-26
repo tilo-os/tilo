@@ -225,6 +225,8 @@ pub struct WidgetSurface {
     /// elsewhere: the shared handle runs it before the tree is borrowed, so
     /// the role may ask the layer it holds to draw again.
     dismissed: Option<Rc<dyn Fn()>>,
+    /// A finger on the tree reaches it as a finger, not as the pointer ([`Self::with_fingers`]).
+    fingers: bool,
 }
 
 impl WidgetSurface {
@@ -281,6 +283,7 @@ impl WidgetSurface {
             drag_seen: ui::widget::drag_bus::revision(),
             cadence: Cadence::new(),
             dismissed: None,
+            fingers: false,
         }
     }
 
@@ -371,6 +374,14 @@ impl WidgetSurface {
     #[must_use]
     pub fn with_keyboard(mut self, wants: Rc<dyn Fn() -> bool>) -> Self {
         self.keyboard = Some(wants);
+        self
+    }
+
+    /// Take a finger as a finger of its own wherever the tree draws, rather than as the
+    /// pointer's press: a tree that tells two thumbs apart (the on-screen keyboard's keys).
+    #[must_use]
+    pub fn with_fingers(mut self) -> Self {
+        self.fingers = true;
         self
     }
 
@@ -904,6 +915,30 @@ impl ShellSurface for WidgetSurface {
 
     fn pointer_button(&mut self, button: u32, pressed: bool) {
         self.input(&mouse_input(button, pressed));
+    }
+
+    fn takes_fingers(&self, x: f64, y: f64) -> bool {
+        self.fingers && self.accepts_pointer(x, y)
+    }
+
+    fn finger(
+        &mut self,
+        slot: u32,
+        phase: tilo_session_core::surface::FingerPhase,
+        x: f64,
+        y: f64,
+    ) {
+        use tilo_session_core::surface::FingerPhase;
+        let (lx, ly) = self.local(x, y);
+        let phase = match phase {
+            FingerPhase::Down => winit::event::TouchPhase::Started,
+            FingerPhase::Moved => winit::event::TouchPhase::Moved,
+            FingerPhase::Up => winit::event::TouchPhase::Ended,
+            FingerPhase::Cancelled => winit::event::TouchPhase::Cancelled,
+        };
+        let _placed = self.placed();
+        self.host.send_touch(u64::from(slot), phase, lx, ly);
+        self.owe();
     }
 
     fn press_elsewhere_closes(&self) -> Option<Rc<dyn Fn()>> {

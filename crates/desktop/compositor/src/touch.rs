@@ -1,5 +1,6 @@
 //! Touchscreens and touchpad gestures, routed.
-//! A touch on a surface reaches it as a pointer press (surfaces take pointer input only); the
+//! A touch on a surface reaches it as a pointer press, or as a finger of its own on a surface that
+//! takes fingers ([`tilo_session_core::surface::ShellSurface::takes_fingers`]); the
 //! desktop is offered every touch first and may take it (the top edge's swipe); every other touch
 //! goes to the client surface under it through the seat's touch handle and stays with that surface
 //! until the finger lifts. Touchpad gestures of one or two fingers belong to the client under the
@@ -21,6 +22,7 @@ use crate::gestures;
 use crate::input::{BTN_LEFT, GestureEvent};
 use crate::policy::TouchSample;
 use crate::state::State;
+use tilo_session_core::surface::FingerPhase;
 
 /// A client surface and its origin in the logical layout.
 pub(crate) type Focus = Option<(WlSurface, Point<f64, Logical>)>;
@@ -39,8 +41,9 @@ fn binds_touch(surface: &WlSurface) -> bool {
 /// Where each finger on the screen went down.
 #[derive(Debug, Default)]
 pub(crate) struct Touches {
-    /// Fingers on a surface, by slot: the surface's index and where the finger is.
-    surfaces: Vec<(u32, usize, Point<f64, Logical>)>,
+    /// Fingers on a surface, by slot: the surface's index, where the finger is, and whether the
+    /// surface takes it as a finger rather than as the pointer's press.
+    surfaces: Vec<(u32, usize, Point<f64, Logical>, bool)>,
     /// Fingers the desktop took, by slot and where the finger is ([`crate::WindowPolicy::touch`]):
     /// nothing under them sees them.
     pub(crate) desktop: Vec<(u32, Point<f64, Logical>)>,
@@ -70,7 +73,10 @@ impl Touches {
     /// A finger holding a surface, taken from it: the surface app starts a drag that follows
     /// it. Its slot, the surface and where it is.
     pub(crate) fn take_surface_finger(&mut self) -> Option<(u32, usize, Point<f64, Logical>)> {
-        self.surfaces.pop()
+        // A finger the surface tracks itself is no press a drag can follow.
+        let at = self.surfaces.iter().rposition(|(.., fingers)| !fingers)?;
+        let (slot, index, at, _) = self.surfaces.remove(at);
+        Some((slot, index, at))
     }
 }
 
@@ -95,6 +101,16 @@ impl State {
             && index < self.surfaces.len()
         {
             self.note_shell_press(serial.into(), person);
+            if let Some(surface) = self.surfaces.get_mut(index)
+                && surface.takes_fingers(at.x, at.y)
+            {
+                let press = self.shell_press;
+                tilo_session_core::surface::handling_press(press, || {
+                    surface.finger(slot, FingerPhase::Down, at.x, at.y);
+                });
+                self.touch.surfaces.push((slot, index, at, true));
+                return;
+            }
             let press = self.shell_press;
             if let Some(surface) = self.surfaces.get_mut(index) {
                 surface.pointer_motion(at.x, at.y);
@@ -102,7 +118,7 @@ impl State {
                     surface.pointer_button(BTN_LEFT, true);
                 });
             }
-            self.touch.surfaces.push((slot, index, at));
+            self.touch.surfaces.push((slot, index, at, false));
             return;
         }
         let (focus, at) = if self.locked() {
@@ -173,15 +189,19 @@ impl State {
             self.policy.touch(TouchSample::Move { x: at.x, y: at.y });
             return;
         }
-        if let Some((_, index, last)) = self
+        if let Some((_, index, last, fingers)) = self
             .touch
             .surfaces
             .iter_mut()
-            .find(|(held, _, _)| *held == slot)
+            .find(|(held, ..)| *held == slot)
         {
             *last = at;
             if let Some(surface) = self.surfaces.get_mut(*index) {
-                surface.pointer_motion(at.x, at.y);
+                if *fingers {
+                    surface.finger(slot, FingerPhase::Moved, at.x, at.y);
+                } else {
+                    surface.pointer_motion(at.x, at.y);
+                }
             }
             return;
         }
@@ -233,10 +253,18 @@ impl State {
             .touch
             .surfaces
             .iter()
-            .position(|(held, _, _)| *held == slot)
+            .position(|(held, ..)| *held == slot)
         {
-            let (_, index, _) = self.touch.surfaces.remove(position);
+            let (_, index, at, fingers) = self.touch.surfaces.remove(position);
             let press = self.shell_press;
+            if fingers {
+                if let Some(surface) = self.surfaces.get_mut(index) {
+                    tilo_session_core::surface::handling_press(press, || {
+                        surface.finger(slot, FingerPhase::Up, at.x, at.y);
+                    });
+                }
+                return;
+            }
             if let Some(surface) = self.surfaces.get_mut(index) {
                 // A control acts on the lift that completes the finger's press: the person's.
                 tilo_session_core::surface::handling_press(press, || {
@@ -284,7 +312,13 @@ impl State {
             self.touch.desktop.clear();
             self.policy.touch(TouchSample::Cancel);
         }
-        for (_, index, _) in std::mem::take(&mut self.touch.surfaces) {
+        for (slot, index, at, fingers) in std::mem::take(&mut self.touch.surfaces) {
+            if fingers {
+                if let Some(surface) = self.surfaces.get_mut(index) {
+                    surface.finger(slot, FingerPhase::Cancelled, at.x, at.y);
+                }
+                continue;
+            }
             if let Some(surface) = self.surfaces.get_mut(index) {
                 surface.pointer_button(BTN_LEFT, false);
                 surface.pointer_leave();

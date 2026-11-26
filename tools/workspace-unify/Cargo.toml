@@ -666,7 +666,6 @@ doc = false
 "ordered-stream-0_2_0" = { package = "ordered-stream", version = "^0.2.0", default-features = false, features = [] }
 "os-actions" = { path = "../../crates/os/os-actions", default-features = false, features = [] }
 "os_pipe-1_2_3" = { package = "os_pipe", version = "^1.2.3", default-features = false, features = ["io_safety"] }
-"osk" = { path = "../../apps/osk", default-features = false, features = [] }
 "ownedbytes-0_9_0" = { package = "ownedbytes", version = "^0.9.0", default-features = false, features = [] }
 "p256-0_13_2" = { package = "p256", version = "^0.13.2", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "pem", "pkcs8", "sha2", "sha256", "std"] }
 "p256-0_14_0" = { package = "p256", version = "^0.14.0", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "getrandom", "pem", "pkcs8", "precomputed-tables", "sha2", "sha256", "std"] }
@@ -1147,7 +1146,6 @@ doc = false
 "tilo-image-info" = { path = "../../crates/engines/tilo-image-info", default-features = false, features = [] }
 "tilo-image-policy-check" = { path = "../../crates/os/image-policy-check", default-features = false, features = [] }
 "tilo-innertube" = { path = "../../crates/integrations/tilo-innertube", default-features = false, features = [] }
-"tilo-input-context" = { path = "../../crates/desktop/tilo-input-context", default-features = false, features = ["client"] }
 "tilo-install-helpers" = { path = "../../crates/os/install-helpers", default-features = false, features = [] }
 "tilo-invocation-journal" = { path = "../../crates/core/invocation-journal", default-features = false, features = ["test-support"] }
 "tilo-key-group" = { path = "../../crates/core/key-group", default-features = false, features = [] }
@@ -3141,7 +3139,6 @@ doc = false
 "ordered-float-5_0_0" = { package = "ordered-float", version = "^5.0.0", default-features = false, features = ["default", "std"] }
 "ordered-stream-0_2_0" = { package = "ordered-stream", version = "^0.2.0", default-features = false, features = [] }
 "os-actions" = { path = "../../crates/os/os-actions", default-features = false, features = [] }
-"osk" = { path = "../../apps/osk", default-features = false, features = [] }
 "ownedbytes-0_9_0" = { package = "ownedbytes", version = "^0.9.0", default-features = false, features = [] }
 "p256-0_13_2" = { package = "p256", version = "^0.13.2", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "pem", "pkcs8", "sha2", "sha256", "std"] }
 "p256-0_14_0" = { package = "p256", version = "^0.14.0", default-features = false, features = ["alloc", "arithmetic", "default", "digest", "ecdh", "ecdsa", "ecdsa-core", "getrandom", "pem", "pkcs8", "precomputed-tables", "sha2", "sha256", "std"] }
@@ -3605,7 +3602,6 @@ doc = false
 "tilo-image-info" = { path = "../../crates/engines/tilo-image-info", default-features = false, features = [] }
 "tilo-image-policy-check" = { path = "../../crates/os/image-policy-check", default-features = false, features = [] }
 "tilo-innertube" = { path = "../../crates/integrations/tilo-innertube", default-features = false, features = [] }
-"tilo-input-context" = { path = "../../crates/desktop/tilo-input-context", default-features = false, features = ["client"] }
 "tilo-install-helpers" = { path = "../../crates/os/install-helpers", default-features = false, features = [] }
 "tilo-key-group" = { path = "../../crates/core/key-group", default-features = false, features = [] }
 "tilo-keyboard-map" = { path = "../../crates/desktop/tilo-keyboard-map", default-features = false, features = ["default", "native"] }

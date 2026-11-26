@@ -1548,7 +1548,7 @@ mod tests {
             // nothing of the desktop, it would take them from a host desktop the session happens to run
             // inside.
             let environment: std::collections::BTreeMap<String, String> =
-                Surface::new("osk", "/usr/bin/osk")
+                Surface::new("launcher", "/usr/bin/tilo-launcher")
                     .environment()
                     .into_iter()
                     .collect();

@@ -194,10 +194,6 @@ aarch64 = 2883584
 x86_64 = 2293760
 aarch64 = 1966080
 
-[apps."so.tilo.osk"]
-x86_64 = 3735552
-aarch64 = 3670016
-
 [apps."so.tilo.passwords"]
 x86_64 = 1638400
 aarch64 = 1179648

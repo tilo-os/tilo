@@ -460,18 +460,13 @@ def _caret(st):
 
 
 def _keyboard_evidence(ctx) -> str:
-    """Whether the on-screen keyboard is installed and running, and what the session said about
-    it: started, told to show, or never asked for."""
-    facts = ctx.vm.exec(
-        'command -v tilo-osk || echo "no tilo-osk on PATH"; '
-        'ls -l /usr/bin/tilo-osk 2>&1; '
-        'pgrep -a tilo-osk || echo "tilo-osk is not running"', check=False) or ""
-    said = ctx.vm.exec(
+    """What the session said about its on-screen keyboard: started, told to show, or never
+    asked for."""
+    return ctx.vm.exec(
         f'tail -n 4000 "{core.SESSION_LOG}" | sed "s/\\x1b\\[[0-9;]*m//g" '
         '| grep -avE "realtime|collab:|launch_latency|app_output" '
         '| grep -aiE "osk|on.screen keyboard|keyboard_run|surface app|input method|no keyboard|did not start" '
         '| tail -n 80 | cut -c1-400', check=False) or "the session log said nothing about the keyboard"
-    return facts + "\n--- session log\n" + said
 
 
 def _close_search(ctx) -> None:

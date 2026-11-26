@@ -97,10 +97,8 @@ first_frame() (
   (( ${#failed[@]} == 0 )) || { echo "no first frame from: ${failed[*]}" >&2; exit 1; }
 )
 
-# Apps run their engine libraries. Chat and the on-screen keyboard have no
-# probe of their own (build-thin-apps.sh runs those engines' own checks): for
-# those only the trace of the start counts (an app need not accept --help). An
-# engine another engine chains on (`via:` the engine the app loads) must
+# Apps run their engine libraries. An app with no probe of its own counts by
+# the trace of its start alone (an app need not accept --help). An engine another engine chains on (`via:` the engine the app loads) must
 # arrive from the app or through that engine, which the app loaded itself:
 # Browser's import engine carries its service sessions; on x86_64 Browser
 # names only the import engine.
@@ -108,10 +106,7 @@ engines() (
   set -euo pipefail
   libdir=$(rustc --print target-libdir)
   failed=0
-  for probe in "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine" \
-               "chat libtilo_emoji_engine.so" \
-               "osk libtilo_emoji_engine.so" \
-               "notes libtilo_emoji_engine.so"; do
+  for probe in "messages libtilo_contact_directory_engine.so --probe-contact-directory-engine"; do
     read -r app library option <<<"$probe"
     via=""
     if [[ $option == via:* ]]; then via=${option#via:}; option=""; fi

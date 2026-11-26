@@ -1,7 +1,7 @@
 //! Next-word / completion prediction (W9b).
 //!
 //! An **offline** n-gram language model: unigram frequency (from the
-//! [`Dictionary`]) + a bigram table (`apps/osk/data/bigrams-<lang>.txt`),
+//! [`Dictionary`]) + a bigram table (`crates/engines/keyboard/data/bigrams-<lang>.txt`),
 //! one pair per [`Language`]. It serves
 //! two jobs the suggestion bar needs:
 //!

@@ -4,7 +4,7 @@
 # ///
 """Regenerate the OSK's embedded word and bigram tables.
 
-    uv run apps/osk/data/generate.py [--lang en|fr ...] [--words-only]
+    uv run crates/engines/keyboard/data/generate.py [--lang en|fr ...] [--words-only]
 
 Per language, three pinned inputs (URL, byte size and SHA-256; the run aborts
 on any drift) decide the tables:

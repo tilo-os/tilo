@@ -4,7 +4,7 @@
 //! per [`Language`], used by the swipe decoder ([`crate::swipe`]), the
 //! next-word predictor ([`crate::predict`]) and autocorrection.
 //!
-//! The data is bundled at build time from `apps/osk/data/words-<lang>.txt`
+//! The data is bundled at build time from `crates/engines/keyboard/data/words-<lang>.txt`
 //! (`word<TAB>weight`, sorted by frequency descending). See that directory's
 //! `README.md` for provenance and licences (SCOWL or Grammalecte vocabulary
 //! ranked by wordfreq frequencies).

@@ -155,7 +155,9 @@ pub use typing::TypedMark;
 
 use smithay::utils::{Point, Rectangle};
 pub use switch_scan::{Scan, SwitchConfig, SwitchPair};
-pub use text_input::{TextCaret, TextEntry, TextField, TextFieldRefusal, TextInsertion};
+pub use text_input::{
+    FocusedField, TextCaret, TextEntry, TextField, TextFieldRefusal, TextInsertion,
+};
 use tilo_session_core::surface::{LayerPose, ShellSurface, SurfaceDrag, SurfaceLayer};
 pub use toplevel_icon::{IconArtwork, IconImage, WindowIcon};
 pub use window_frame::{Edge, Shadow, WindowFrame};
@@ -1227,6 +1229,20 @@ impl Compositor {
     /// remembered; `None` when no field takes text now.
     pub fn insert_active_text(&mut self, text: &str) -> Option<bool> {
         self.data.state.insert_active_text(text)
+    }
+
+    /// Show `text` in the field the person is typing into as the word being composed, not yet
+    /// committed. Answers whether the field declared its content secret; `None` when no field
+    /// takes text now.
+    pub fn preedit_active_text(&mut self, text: &str) -> Option<bool> {
+        self.data.state.preedit_active_text(text)
+    }
+
+    /// What the field the person types into asks of what is typed there: the purpose that picks
+    /// a keyboard's layout, the hints it gave, and whether it marks its content secret.
+    #[must_use]
+    pub fn focused_field(&self) -> FocusedField {
+        self.data.state.focused_field()
     }
 
     /// Type `ch` as the person's keyboard would on this seat's layout: the

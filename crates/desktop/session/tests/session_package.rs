@@ -110,15 +110,20 @@ tilo_test_env::scenario! {
 
     phase the_session_package_describes_none_of_the_devices_resources;
     // Each action is described once, by its owner: the shell and the device's resources are
-    // `so.tilo.device`'s, so the session's package describes none of them.
+    // `so.tilo.device`'s, so the session's package describes none of them. The roots the session
+    // publishes as its own (the on-screen keyboard) are the ones it describes.
     {
         let text =
             std::fs::read_to_string(repo().join(session_package::PATH)).expect("the description");
         let addresses = tilolang_tilo::catalogue::addresses(&text).expect("each action one address");
-        for (published, ty) in tilolang_tilo::platform_apps::platform_roots() {
+        let own = format!("{}#", session_package::APP);
+        for (published, ty) in tilolang_tilo::platform_apps::platform_roots()
+            .iter()
+            .filter(|(_, ty)| !ty.starts_with(&own))
+        {
             let described: Vec<&String> = addresses
                 .iter()
-                .filter(|(_, address)| **address == published)
+                .filter(|(_, address)| **address == *published)
                 .map(|(action, _)| action)
                 .collect();
             assert!(

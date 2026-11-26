@@ -3226,6 +3226,13 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "query",
+          "doc": "The search, where the view types it with keys of its own (an on-screen keyboard's): the card searches for it as if it were typed into its field.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "events": [

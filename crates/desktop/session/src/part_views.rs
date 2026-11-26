@@ -90,6 +90,25 @@ impl PartViews {
         }
     }
 
+    /// The host of `part`'s views, once the session ran one for it: what the session publishes so
+    /// the part's controls are reached through its API.
+    pub(crate) fn host_of(&self, part: &str) -> Option<Rc<RefCell<PartView>>> {
+        self.hosts.get(part).map(Rc::clone)
+    }
+
+    /// Dock the view in `part` at `rect` , `(x, y, w, h)` in the desktop's coordinates: it stands
+    /// there beside what the person works in, taking only what lands on what it draws.
+    pub(crate) fn dock(&self, part: &str, rect: Option<(i32, i32, u32, u32)>) {
+        if let Some(host) = self.hosts.get(part) {
+            host.borrow_mut().dock(rect);
+        }
+    }
+
+    /// Where the view in `part` is docked, while it is.
+    pub(crate) fn docked(&self, part: &str) -> Option<(i32, i32, u32, u32)> {
+        self.hosts.get(part).and_then(|host| host.borrow().docked())
+    }
+
     /// Whether a tilolang view stands in `part` now.
     pub(crate) fn running(&self, part: &str) -> bool {
         self.hosts

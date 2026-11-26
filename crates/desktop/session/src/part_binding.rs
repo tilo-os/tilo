@@ -151,7 +151,7 @@ impl Session {
     /// Run the view `view` of the tilolang package in `dir` for `part` , over the reading the
     /// session publishes for it now. A package that is no view for the part leaves it to the view
     /// the session ships with.
-    fn start_package_part(
+    pub(crate) fn start_package_part(
         &mut self,
         part: &'static str,
         dir: std::path::PathBuf,
@@ -196,7 +196,7 @@ impl Session {
     }
 
     /// Stop what draws `part` , whichever kind of view it is.
-    fn stop_part_view(&mut self, part: &str) {
+    pub(crate) fn stop_part_view(&mut self, part: &str) {
         self.part_views.stop(part);
         self.surfaces.stop(part);
     }

@@ -152,3 +152,13 @@ so-tilo-settings-agent-providers-set-default-provider = Make it the default prov
 so-tilo-settings-agent-providers-set-key = Keep the API key
 so-tilo-settings-agent-providers-clear-key = Forget the API key
 so-tilo-settings-agent-providers-refresh-providers = Read the providers again
+
+settings-osk-sources-set-size = Set the keyboard's key size
+settings-osk-sources-set-suggestions = Offer word suggestions
+settings-osk-sources-set-autocorrect = Correct finished words
+settings-osk-sources-set-typing-language = Set the typing language
+settings-osk-sources-set-personalization = Learn from my typing
+settings-osk-sources-learn = Learn a word that followed another
+settings-osk-sources-teach = Learn where my taps land
+settings-osk-sources-keep = Keep a word as typed
+settings-osk-sources-forget-learned = Forget what typing taught

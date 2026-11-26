@@ -40,8 +40,8 @@ class AppArtifactHandoffTests(unittest.TestCase):
             "tools/apps/runtime_packages.sh",
             "tools/ci/__init__.py", "tools/ci/workspace_graph.py", "tools/ci/runner_labels.py",
             "tools/apps/assemble_app_collection.py",
-            "apps/osk/Cargo.toml", "apps/osk/tilo-app.toml",
-            "apps/osk/surface.json",
+            "apps/terminal/Cargo.toml", "apps/terminal/tilo-app.toml",
+            "apps/terminal/surface.json",
             "crates/core/tilo-app-package/max-app-bytes",
             "tools/apps/dev_app_versions.py", "dist/apps/app-collections.toml", ".cargo/config.toml", "tools/apps/app_package_isa.py",
         ):
@@ -295,7 +295,7 @@ exit 99
         packed = list((self.root / "packed-surfaces").glob("totp-*-x86_64.tapp.surface"))
         self.assertEqual(len(packed), 1, "the totp tapp's payload has a surface.json")
         self.assertEqual(packed[0].read_bytes(),
-                         (ROOT / "apps/osk/surface.json").read_bytes())
+                         (ROOT / "apps/terminal/surface.json").read_bytes())
 
     def test_native_outputs_keep_audited_flags_through_upload_and_assembly(self):
         with self.subTest(phase='encoded output retains every audited target flag'):

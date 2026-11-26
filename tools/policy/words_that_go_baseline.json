@@ -892,7 +892,6 @@
    "SiblingToken",
    "Siblings",
    "TILO_SIBLING_BIN_",
-   "TILO_SIBLING_BIN_osk",
    "TILO_SIBLING_BIN_tilo_lock_screen",
    "TILO_SIBLING_BIN_tilo_server",
    "TellSiblings",
@@ -1017,8 +1016,7 @@
  "WorkspaceRuntime, Membership { devices }": {
   "names": [
    "WorkspaceRuntime",
-   "an_input_surface_runs_without_a_workspace_runtime",
-   "the_keyboard_service_runs_without_a_workspace_runtime"
+   "an_input_surface_runs_without_a_workspace_runtime"
   ],
   "lines": 0
  },

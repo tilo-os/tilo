@@ -761,6 +761,19 @@ pub enum SurfaceIme {
 }
 
 /// A surface app, as the shell that draws it sees it.
+/// What one finger did on a surface that takes fingers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FingerPhase {
+    /// It went down.
+    Down,
+    /// It moved, still down.
+    Moved,
+    /// It lifted.
+    Up,
+    /// The contact was taken from the surface: what it started does not happen.
+    Cancelled,
+}
+
 pub trait ShellSurface {
     /// The layers this surface shows now, bottom first. Surfaces draw above every window
     /// ([`Self::below_windows`] aside), later surfaces above earlier ones.
@@ -807,6 +820,17 @@ pub trait ShellSurface {
 
     /// A pointer button (evdev code) changed state over the surface.
     fn pointer_button(&mut self, button: u32, pressed: bool);
+
+    /// Whether a finger landing at this logical point reaches the surface as a finger of its own
+    /// rather than as the pointer's press: a surface typed on with two thumbs at once tells each
+    /// finger apart, which one pointer cannot.
+    fn takes_fingers(&self, _x: f64, _y: f64) -> bool {
+        false
+    }
+
+    /// The finger `slot` went down, moved, lifted or was cancelled at this logical point, on a
+    /// surface that [takes fingers](Self::takes_fingers).
+    fn finger(&mut self, _slot: u32, _phase: FingerPhase, _x: f64, _y: f64) {}
 
     /// A press made with Super held over a window at this logical point: whether this surface
     /// carries that window with the press, as a press on the window's bar would. The press itself
@@ -1000,6 +1024,7 @@ impl<T: ShellSurface + ?Sized> ShellSurface for Rc<RefCell<T>> {
         drawn_over_lock() -> bool;
         withholds_captures() -> bool;
         accepts_pointer(x: f64, y: f64) -> bool;
+        takes_fingers(x: f64, y: f64) -> bool;
         wants_keyboard() -> bool;
         text_input() -> Option<SurfaceTextInput>;
         window_pictures() -> Vec<WindowPicture>;
@@ -1015,6 +1040,7 @@ impl<T: ShellSurface + ?Sized> ShellSurface for Rc<RefCell<T>> {
         pointer_motion(x: f64, y: f64);
         pointer_leave();
         pointer_button(button: u32, pressed: bool);
+        finger(slot: u32, phase: FingerPhase, x: f64, y: f64);
         carries_window_at(x: f64, y: f64) -> bool;
         press_ended(x: f64, y: f64);
         pointer_axis(scroll: Scroll);

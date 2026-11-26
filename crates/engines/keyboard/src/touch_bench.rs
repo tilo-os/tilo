@@ -17,7 +17,7 @@
 //!   still typed something else. These are the misses a user notices and
 //!   cannot explain, so tuning keeps them near zero.
 //!
-//! `cargo test -p osk --lib touch_bench -- --ignored --nocapture` prints the
+//! `cargo test -p tilo-keyboard-engine --lib touch_bench -- --ignored --nocapture` prints the
 //! full parameter sweep.
 
 use std::collections::HashMap;

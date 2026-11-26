@@ -71,6 +71,38 @@ pub struct TextField {
     pub multiline: bool,
 }
 
+/// What the focused field asks of what is typed into it: the purpose that picks a keyboard's
+/// layout, the hints it gave, and whether it marks its content secret.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct FocusedField {
+    /// Which focused field this is: it changes when the person moves to another field, so a
+    /// keyboard drops what it composed in the one they left.
+    pub field: u64,
+    /// `text`, `number`, `decimal`, `telephone`, `url`, `email`, `pin`, `password`, `date`,
+    /// `time` or `terminal`.
+    pub purpose: &'static str,
+    /// The content hints the field gave, as the protocol's bits.
+    pub hints: u32,
+    /// Nothing typed there may be shown, suggested, corrected or learned.
+    pub secret: bool,
+}
+
+/// The name a keyboard knows a field's purpose by.
+fn purpose_name(purpose: ContentPurpose) -> &'static str {
+    match purpose {
+        ContentPurpose::Number => "number",
+        ContentPurpose::Digits | ContentPurpose::Pin => "pin",
+        ContentPurpose::Phone => "telephone",
+        ContentPurpose::Url => "url",
+        ContentPurpose::Email => "email",
+        ContentPurpose::Password => "password",
+        ContentPurpose::Date | ContentPurpose::Datetime => "date",
+        ContentPurpose::Time => "time",
+        ContentPurpose::Terminal => "terminal",
+        _ => "text",
+    }
+}
+
 /// Why dictated text may not be written into the field the person is in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TextFieldRefusal {
@@ -448,6 +480,50 @@ impl State {
             self.seat.text_input().done(false);
         }
         sensitive
+    }
+
+    /// Show `text` in the field the person is typing into as the word being composed, not yet
+    /// committed; an empty text clears the composition. Answers whether the field declared its
+    /// content secret; `None` when no field takes text now.
+    pub(crate) fn preedit_active_text(&mut self, text: &str) -> Option<bool> {
+        let end = text.len();
+        let cursor = i32::try_from(end).unwrap_or(i32::MAX);
+        if let Some(served) = self.text_input.surface_field {
+            self.notify_served_field(SurfaceIme::Preedit(text.to_owned(), Some((0, end))));
+            return Some(secret(Some((
+                ContentHint::from_bits_truncate(served.input.hint),
+                ContentPurpose::try_from(served.input.purpose).unwrap_or(ContentPurpose::Normal),
+            ))));
+        }
+        let mut sensitive = None;
+        self.seat
+            .text_input()
+            .with_active_text_input_committed(|input, _, committed| {
+                sensitive = Some(secret(committed.content_type));
+                input.preedit_string(Some(text.to_owned()), 0, cursor);
+            });
+        if sensitive.is_some() {
+            self.seat.text_input().done(false);
+        }
+        sensitive
+    }
+
+    /// What the field the person types into asks of what is typed there: the purpose that picks
+    /// a keyboard's layout, the hints it gave, and whether it marks its content secret.
+    pub(crate) fn focused_field(&self) -> FocusedField {
+        let mut field = FocusedField::default();
+        self.seat
+            .text_input()
+            .with_active_text_input_committed(|input, surface, committed| {
+                let (hint, purpose) = content_type(committed);
+                field = FocusedField {
+                    field: field_id(input, surface),
+                    purpose: purpose_name(purpose),
+                    hints: hint.bits(),
+                    secret: secret(committed.content_type),
+                };
+            });
+        field
     }
 
     /// Where the focused field's caret stands in the shell, in logical coordinates: the cursor
