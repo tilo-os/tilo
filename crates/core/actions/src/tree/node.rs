@@ -391,6 +391,11 @@ impl Node {
 #[derive(Clone, Default)]
 pub struct LevelPages {
     pub rows: Vec<CatalogueRow>,
+    /// The page the rows start in, when the level was read on from a mark: a
+    /// page whose first resources are in it starts there. `None` when the level
+    /// was read from the directory's start, whose page is asked for with no
+    /// cursor.
+    pub first: Option<PageMark>,
     pub marks: Vec<PageMark>,
     pub rest: Option<PageMark>,
 }
@@ -425,8 +430,9 @@ impl Level {
     /// as far as a cursor it handed out says.
     fn pages_by_offset(&self) -> bool {
         self.pages
-            .rest
+            .first
             .iter()
+            .chain(self.pages.rest.iter())
             .chain(&self.pages.marks)
             .next()
             .is_some_and(|mark| mark.cursor.len() == size_of::<u64>())
@@ -486,11 +492,40 @@ impl Level {
         // cursor it started at. A provider counting rows by offset is asked at
         // the wanted row itself: the rows since the mark move that on by as many as each
         // stands for. One whose cursors are its own names the page the row is in, and the
-        // resources before it that page holds. A row of the first page, which leaves no
-        // mark, is that many rows from the directory's start, at the revision the level was
-        // read at, where the provider's cursors are row offsets.
+        // resources before it that page holds. A row of the page the level started in,
+        // which leaves no mark, is that many resources into that page, asked for by the
+        // cursor the level was read on from, or by none when it was read from the start.
         let Some(mark) = self.pages.marks.iter().rev().find(|mark| mark.row <= at) else {
-            if self.revision.is_empty() || !by_offset {
+            let skip = distinct_children(rows.get(..at).unwrap_or_default(), parent);
+            if let Some(first) = self.pages.first.as_ref() {
+                // The level was read on from a mark, and the row is still in that mark's
+                // page: the page the level started in asks for it again.
+                if by_offset {
+                    let offset = row_offset(&first.cursor)
+                        .saturating_add(spanned(rows.get(..at).unwrap_or_default()));
+                    return Some((
+                        u64::try_from(offset)
+                            .unwrap_or(u64::MAX)
+                            .to_le_bytes()
+                            .to_vec(),
+                        first.revision.clone(),
+                        0,
+                    ));
+                }
+                return (!first.revision.is_empty()).then_some((
+                    first.cursor.clone(),
+                    first.revision.clone(),
+                    skip,
+                ));
+            }
+            if !by_offset {
+                // The directory's start is asked for with no cursor, and its revision names
+                // the page read: a page that reads on from it is refused as stale once the
+                // directory moves on.
+                return (!self.revision.is_empty())
+                    .then(|| (Vec::new(), self.revision.clone(), skip));
+            }
+            if self.revision.is_empty() {
                 return None;
             }
             let offset = spanned(rows.get(..at).unwrap_or_default());

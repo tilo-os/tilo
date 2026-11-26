@@ -3,11 +3,16 @@
 
 use super::PageMark;
 
+/// How a resume mark with no source cursor is written: the page a level started in when it
+/// was read from the directory's start, which is asked for with no cursor.
+const NO_CURSOR: &str = "~";
+
 /// A cursor a listing issues: how many entries the listing is past, and,
 /// for a resource's listing, the directory page the next one starts in and
 /// how many resources that page holds before it, so the next page reads
 /// from there instead of every page before it. Written
-/// `<offset>` or `<offset>.<skip>.<revision hex>.<cursor hex>[.<after hex>]`.
+/// `<offset>` or `<offset>.<skip>.<revision hex>.<cursor hex>[.<after hex>]`,
+/// the cursor hex being `~` when the page is the directory's start.
 #[derive(Debug, PartialEq, Eq)]
 pub struct LsCursor {
     /// Entries the listing is past.
@@ -36,12 +41,21 @@ impl LsCursor {
         };
         let skip = skip.parse().ok()?;
         let revision = String::from_utf8(hex::decode(parts.next()?).ok()?).ok()?;
-        let cursor = hex::decode(parts.next()?).ok()?;
+        let cursor = match parts.next()? {
+            NO_CURSOR => Vec::new(),
+            written => {
+                let cursor = hex::decode(written).ok()?;
+                if cursor.is_empty() {
+                    return None;
+                }
+                cursor
+            }
+        };
         let after = match parts.next() {
             Some(after) => Some(String::from_utf8(hex::decode(after).ok()?).ok()?),
             None => None,
         };
-        if parts.next().is_some() || cursor.is_empty() {
+        if parts.next().is_some() {
             return None;
         }
         Some(Self {
@@ -64,11 +78,15 @@ impl LsCursor {
         match &self.resume {
             None => self.offset.to_string(),
             Some((mark, skip)) => {
+                let cursor = if mark.cursor.is_empty() {
+                    NO_CURSOR.to_owned()
+                } else {
+                    hex::encode(&mark.cursor)
+                };
                 let mut written = format!(
-                    "{}.{skip}.{}.{}",
+                    "{}.{skip}.{}.{cursor}",
                     self.offset,
                     hex::encode(mark.revision.as_bytes()),
-                    hex::encode(&mark.cursor)
                 );
                 if let Some(after) = &self.after {
                     written.push('.');
@@ -77,5 +95,36 @@ impl LsCursor {
                 written
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{LsCursor, PageMark};
+
+    /// A page of the directory's start carries no source cursor, and is written and read back
+    /// as that page: its revision names it, and the skip how far into it the next entry is.
+    #[test]
+    fn a_cursor_naming_the_directorys_start_round_trips() {
+        let cursor = LsCursor {
+            offset: 7,
+            resume: Some((
+                PageMark {
+                    row: 0,
+                    cursor: Vec::new(),
+                    revision: "rev-1".to_owned(),
+                },
+                7,
+            )),
+            after: Some("message 6".to_owned()),
+        };
+        assert_eq!(LsCursor::parse(&cursor.write()), Some(cursor));
+    }
+
+    /// The one resume mark with no cursor is the one this writes `~`: an empty cursor field
+    /// names no page, and is refused with the other cursors this host did not write.
+    #[test]
+    fn an_empty_cursor_field_is_not_a_continuation() {
+        assert_eq!(LsCursor::parse("7.7.7265762d31."), None);
     }
 }

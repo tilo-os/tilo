@@ -121,6 +121,7 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
     ) -> Result<Option<Level>, Unresolved> {
         let mut level = Level {
             pages: std::sync::Arc::new(LevelPages {
+                first: Some(mark.clone()),
                 rest: Some(mark),
                 ..LevelPages::default()
             }),
@@ -148,9 +149,23 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
                 Err(Unread::MovedOn(now)) if resumed < RESUMES && !now.is_empty() => {
                     resumed = resumed.saturating_add(1);
                     let mut pages = std::sync::Arc::unwrap_or_clone(before.pages);
-                    let Some(rest) = pages.rest.as_mut().filter(|rest| rest.revision != now) else {
+                    // A mark that names the directory's start carries no source cursor: the
+                    // start read at another revision is not the row the page stood at, so the
+                    // caller reads the level from its first page instead.
+                    let Some(rest) = pages
+                        .rest
+                        .as_mut()
+                        .filter(|rest| rest.revision != now && !rest.cursor.is_empty())
+                    else {
                         return Ok(None);
                     };
+                    // A page the level started in reads on at the revision the directory
+                    // stands at now, as the mark it was read from does.
+                    let cursor = rest.cursor.clone();
+                    if let Some(first) = pages.first.as_mut().filter(|first| first.cursor == cursor)
+                    {
+                        first.revision.clone_from(&now);
+                    }
                     rest.revision = now;
                     level = Level {
                         pages: std::sync::Arc::new(pages),
@@ -228,6 +243,7 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
     ) -> Result<Result<Level, Unread>, Unresolved> {
         let LevelPages {
             mut rows,
+            first,
             mut marks,
             rest,
         } = std::sync::Arc::unwrap_or_clone(from.pages);
@@ -315,7 +331,12 @@ impl<P: ActionProvider + Sync + Clone + Send + 'static> Tree<P> {
         }
         let mut read = level_of(&rows, parent);
         read.revision = read_at;
-        read.pages = std::sync::Arc::new(LevelPages { rows, marks, rest });
+        read.pages = std::sync::Arc::new(LevelPages {
+            rows,
+            first,
+            marks,
+            rest,
+        });
         Ok(Ok(read))
     }
 
