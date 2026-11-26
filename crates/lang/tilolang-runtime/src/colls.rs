@@ -7,8 +7,8 @@
 //! something it saw is no longer so: `messages.last()` depends on the last message, not on the
 //! 10,000 before it, and builds one reference, not 10,000. An action reads the listing it
 //! first read ([`crate::value::Pinned`]), so sending a reply reads the last message's page, not
-//! the conversation. A run that journals its reads reads a collection whole: the journal
-//! answers that value again when the run is replayed.
+//! the conversation. A run that journals its reads journals each read it makes of a collection,
+//! and a replay answers those reads again from the journal.
 //!
 //! Wherever the items are needed as values (compared, stored, put into a list or a tuple) the
 //! collection is read whole into a [`Value::List`], and the view then depends on the whole
@@ -20,6 +20,7 @@ use std::rc::Rc;
 
 use crate::core::{Args, Core, HResult, trap};
 use crate::meta::FieldKind;
+use crate::run::{JournalEntry, ListingRead};
 use crate::store::{FieldRead, FieldSpec, Listing, Store, StoreError};
 use crate::value::{CollRef, RefValue, Value};
 
@@ -360,46 +361,75 @@ impl Core {
         Ok(listing)
     }
 
-    /// The listing of `coll` in a run that journals its reads: the ids its items held when the
-    /// run first read it, which a replay reads back from the journal. A collection is read where
-    /// its items are, not when the field is: a filter the store answers journals the items it
-    /// kept, never every item of the collection.
+    /// The listing of `coll` in a run that journals its reads: the store's, with each read the
+    /// run makes of it journaled as it is made ([`JournalEntry::Listing`]). A replay answers
+    /// those reads from the journal, so it walks what the run walked, and reads the store only
+    /// past them. A run reads a column of three thousand finished tasks a page at a time, as a
+    /// run that journals nothing does, and its journal keeps the few items it looked at.
     fn journaled_listing(&self, coll: &Rc<CollRef>) -> Result<Rc<Listing>, String> {
-        let read = self.journaled_read(|| {
-            let listing = listing_of(&**self.store.borrow(), coll)
-                .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
-            Ok(Value::List(
-                listing
-                    .items()
-                    .into_iter()
-                    .map(|id| Value::Text(id.as_ref().to_owned()))
-                    .collect(),
-            ))
-        });
-        let ids = match read {
-            Ok(Value::List(ids)) => ids,
-            Ok(other) => {
-                return Err(format!(
-                    "the run diverged from its journal: expected the items of a collection, read {}",
-                    other.kind_name()
-                ));
-            }
-            Err(crate::engine::HostFail::Trap(why)) => return Err(why),
-            Err(crate::engine::HostFail::Suspend) => {
-                return Err("a collection's read stopped the run".to_owned());
-            }
+        if self.writing.get() {
+            // A read a write makes on its way is the write's own: the journal answers the write.
+            return listing_of(&**self.store.borrow(), coll).map_err(|e| e.to_string());
+        }
+        let (run, entry, recorded) = {
+            let mut frames = self.frames.borrow_mut();
+            let Some(run) = frames.run_mut().filter(|run| run.journaled) else {
+                drop(frames);
+                return listing_of(&**self.store.borrow(), coll).map_err(|e| e.to_string());
+            };
+            let entry = run.cursor;
+            let recorded = match run.next_entry() {
+                Some(JournalEntry::Listing { reads }) => Some(reads),
+                Some(_) => {
+                    return Err(
+                        "the run diverged from its journal: expected the reads of a collection"
+                            .to_owned(),
+                    );
+                }
+                None => {
+                    run.push(JournalEntry::Listing { reads: Vec::new() });
+                    None
+                }
+            };
+            (run.run.clone(), entry, recorded)
         };
-        let ids: Vec<Rc<str>> = ids
+        let live = listing_of(&**self.store.borrow(), coll).map_err(|e| e.to_string())?;
+        let core = self.rc()?;
+        let items = Rc::new(JournaledItems {
+            core: Rc::downgrade(&core),
+            run,
+            entry,
+            coll: Rc::clone(coll),
+            live,
+            read: std::cell::RefCell::new(Answered::of(recorded.unwrap_or_default())),
+        });
+        self.journaled_listings.borrow_mut().push(Rc::clone(&items));
+        Ok(Rc::new(Listing::paged(items)))
+    }
+
+    /// Before the run `run` makes the call it stopped for, journal every item of each collection
+    /// its attempt read that the journal does not hold yet: the call may change the collection,
+    /// and the replay that follows walks the items as they were. A run that calls nothing, or
+    /// reads no collection before its call, lists nothing.
+    pub(crate) fn freeze_listings(&self, run: &str, journal: &mut crate::run::Journal) {
+        for items in self.forget_listings(run) {
+            let reads = items.rest();
+            if let Some(JournalEntry::Listing { reads: held }) =
+                journal.entries.get_mut(items.entry)
+            {
+                held.extend(reads);
+            }
+        }
+    }
+
+    /// The collections the run `run`'s attempt read, no longer kept for it.
+    pub(crate) fn forget_listings(&self, run: &str) -> Vec<Rc<JournaledItems>> {
+        let mut listings = self.journaled_listings.borrow_mut();
+        let (theirs, others) = std::mem::take(&mut *listings)
             .into_iter()
-            .map(|id| match id {
-                Value::Text(id) => Ok(Rc::from(id)),
-                other => Err(format!(
-                    "the run diverged from its journal: expected an item's id, read {}",
-                    other.kind_name()
-                )),
-            })
-            .collect::<Result<_, _>>()?;
-        Ok(Rc::new(Listing::from_items(ids)))
+            .partition(|items| items.run == run);
+        *listings = others;
+        theirs
     }
 
     /// Record, in a view's frame, what one read of `coll`, of `len` items, saw.
@@ -898,5 +928,206 @@ impl Core {
             Value::Coll(coll) => Ok(Value::List(self.coll_items(&coll)?)),
             other => Ok(other),
         }
+    }
+}
+
+/// The reads a journaled run made of one listing, by what they asked.
+#[derive(Debug, Default)]
+#[allow(
+    clippy::option_option,
+    reason = "where an item stands is the listing's answer: nowhere, or that it cannot say"
+)]
+struct Answered {
+    len: Option<(usize, bool)>,
+    at: std::collections::HashMap<usize, Option<Rc<str>>>,
+    position: std::collections::HashMap<String, Option<Option<usize>>>,
+    holds: std::collections::HashMap<String, Option<bool>>,
+}
+
+impl Answered {
+    fn of(reads: Vec<ListingRead>) -> Self {
+        let mut answered = Self::default();
+        for read in reads {
+            answered.note(read);
+        }
+        answered
+    }
+
+    /// Every item, in order, when the journal holds them all: a listing journaled whole before
+    /// a call, which answers where an item stands from them.
+    fn whole(&self) -> Option<Vec<&Rc<str>>> {
+        let (len, true) = self.len? else {
+            return None;
+        };
+        (0..len)
+            .map(|at| self.at.get(&at).and_then(Option::as_ref))
+            .collect()
+    }
+
+    fn note(&mut self, read: ListingRead) {
+        match read {
+            ListingRead::Len { len, exact } => self.len = Some((len, exact)),
+            ListingRead::Get { at, item } => {
+                self.at.insert(at, item.map(Rc::from));
+            }
+            ListingRead::Position { item, at } => {
+                self.position.insert(item, at);
+            }
+            ListingRead::Holds { item, held } => {
+                self.holds.insert(item, held);
+            }
+        }
+    }
+}
+
+/// A listing a journaled run reads ([`Core::journaled_listing`]): each read is answered from
+/// the journal when the run made it before, else from the store's listing, and journaled.
+pub(crate) struct JournaledItems {
+    core: std::rc::Weak<Core>,
+    run: crate::ids::RunId,
+    /// Where the run's journal holds this listing's reads.
+    entry: usize,
+    coll: Rc<CollRef>,
+    /// The store's listing, read when a read is not in the journal.
+    live: Rc<Listing>,
+    read: std::cell::RefCell<Answered>,
+}
+
+impl std::fmt::Debug for JournaledItems {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("JournaledItems")
+            .field("run", &self.run)
+            .field("entry", &self.entry)
+            .field("coll", &self.coll)
+            .finish_non_exhaustive()
+    }
+}
+
+impl JournaledItems {
+    /// Journal `read`, made of the store's listing, so a replay answers it.
+    fn journal(&self, read: ListingRead) {
+        self.read.borrow_mut().note(read.clone());
+        let Some(core) = self.core.upgrade() else {
+            return;
+        };
+        let Ok(mut frames) = core.frames.try_borrow_mut() else {
+            return;
+        };
+        if let Some(run) = frames.run_named_mut(&self.run)
+            && let Some(JournalEntry::Listing { reads }) = run.journal.entries.get_mut(self.entry)
+        {
+            reads.push(read);
+        }
+    }
+
+    /// The reads that journal the items not journaled yet, and the length: the listing whole.
+    fn rest(&self) -> Vec<ListingRead> {
+        let mut reads = Vec::new();
+        let known = self.read.borrow().len;
+        let (len, exact) = known.unwrap_or_else(|| {
+            let len = (self.live.len(), self.live.len_is_exact());
+            reads.push(ListingRead::Len {
+                len: len.0,
+                exact: len.1,
+            });
+            self.read.borrow_mut().len = Some(len);
+            len
+        });
+        // A count that may yet come down is read up to the last item there is.
+        let mut at = 0;
+        while !exact || at < len {
+            let known = self.read.borrow().at.get(&at).cloned();
+            let item = known.unwrap_or_else(|| {
+                let item = self.live.get(at);
+                reads.push(ListingRead::Get {
+                    at,
+                    item: item.as_deref().map(str::to_owned),
+                });
+                self.read.borrow_mut().at.insert(at, item.clone());
+                item
+            });
+            if item.is_none() {
+                break;
+            }
+            at = at.saturating_add(1);
+        }
+        if !exact {
+            reads.push(ListingRead::Len {
+                len: at,
+                exact: true,
+            });
+            self.read.borrow_mut().len = Some((at, true));
+        }
+        reads
+    }
+
+    fn len_read(&self) -> (usize, bool) {
+        if let Some(len) = self.read.borrow().len {
+            return len;
+        }
+        let len = (self.live.len(), self.live.len_is_exact());
+        self.journal(ListingRead::Len {
+            len: len.0,
+            exact: len.1,
+        });
+        len
+    }
+}
+
+impl crate::store::PagedItems for JournaledItems {
+    fn len(&self) -> usize {
+        self.len_read().0
+    }
+
+    fn len_is_exact(&self) -> bool {
+        self.len_read().1
+    }
+
+    fn get(&self, index: usize) -> Option<Rc<str>> {
+        if let Some(item) = self.read.borrow().at.get(&index) {
+            return item.clone();
+        }
+        let item = self.live.get(index);
+        self.journal(ListingRead::Get {
+            at: index,
+            item: item.as_deref().map(str::to_owned),
+        });
+        item
+    }
+
+    fn position(&self, id: &str) -> Option<Option<usize>> {
+        {
+            let read = self.read.borrow();
+            if let Some(at) = read.position.get(id) {
+                return *at;
+            }
+            if let Some(whole) = read.whole() {
+                return Some(whole.iter().position(|item| &***item == id));
+            }
+        }
+        let at = self.live.position(id);
+        self.journal(ListingRead::Position {
+            item: id.to_owned(),
+            at,
+        });
+        at
+    }
+
+    fn holds(&self, id: &str) -> Option<bool> {
+        {
+            let read = self.read.borrow();
+            if let Some(held) = read.holds.get(id) {
+                return *held;
+            }
+            if let Some(whole) = read.whole() {
+                return Some(whole.iter().any(|item| &***item == id));
+            }
+        }
+        let held = self.live.holds(id);
+        self.journal(ListingRead::Holds {
+            item: id.to_owned(),
+            held,
+        });
+        held
     }
 }

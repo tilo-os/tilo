@@ -434,6 +434,18 @@ impl Frames {
     }
 
     /// [`Self::run`], to journal a read in.
+    /// The run `run` on the stack, wherever it stands under the runs it called.
+    pub fn run_named_mut(&mut self, run: &str) -> Option<&mut RunState> {
+        self.stack
+            .iter_mut()
+            .rev()
+            .find_map(|frame| match &mut frame.kind {
+                FrameKind::Action(a) if a.run.run == run => Some(a.run.as_mut()),
+                FrameKind::Program(p) if p.run == run => Some(p.as_mut()),
+                _ => None,
+            })
+    }
+
     pub fn run_mut(&mut self) -> Option<&mut RunState> {
         for frame in self.stack.iter_mut().rev() {
             match &mut frame.kind {

@@ -62,6 +62,28 @@ pub enum JournalEntry {
         /// What the device answered: its own answer, or why it refused; a flag for `cancel`.
         answer: Value,
     },
+    /// A collection the run read, as what it read of it: its length, the item at each place it
+    /// asked for, where each item it asked about stands. A replay answers those reads from
+    /// here, so it walks what the run walked; the run never lists the items it did not read, so
+    /// moving a task among three thousand finished ones journals the two it looked at.
+    Listing { reads: Vec<ListingRead> },
+}
+
+/// One read a run made of a collection ([`JournalEntry::Listing`]), with its answer.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ListingRead {
+    /// How many items it has, and whether that count is exact.
+    Len { len: usize, exact: bool },
+    /// The item at `at`; `None` past the end.
+    Get { at: usize, item: Option<String> },
+    /// Where the item `item` stands: `Some(None)` when it is not there, `None` when the listing
+    /// could not say.
+    Position {
+        item: String,
+        at: Option<Option<usize>>,
+    },
+    /// Whether it holds the item `item`, `None` when the listing could not say.
+    Holds { item: String, held: Option<bool> },
 }
 
 impl JournalEntry {

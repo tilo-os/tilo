@@ -779,10 +779,10 @@ impl Core {
         let field = self.text(fh)?;
         let (_, f) = self.lookup_field(&target, &field)?;
         let author = self.module_of_frame()?;
-        // A collection reads as one, as outside a journaled run, and is listed where the run
-        // first reads its items: what the journal keeps of it is the items it listed then
-        // ([`Core::coll_listing`]), and a filter the store answers lists only the items it
-        // kept, so a stroke among ten thousand marks never lists them all.
+        // A collection reads as one, as outside a journaled run: what the journal keeps of it is
+        // each read the run makes of its listing ([`Core::coll_listing`]), and a filter the store
+        // answers reads only the items it kept, so a stroke among ten thousand marks never lists
+        // them all.
         if f.kind == FieldKind::Collection && !crate::foreign::is_foreign(&target) {
             let item = match inner_ty(&f.ty) {
                 Some(Ty::Union(_)) => String::new(),

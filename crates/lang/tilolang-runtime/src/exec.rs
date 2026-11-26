@@ -1884,7 +1884,11 @@ impl Core {
                 journaled,
                 journal,
             };
-            match self.attempt(&pkg, &meta, &module, program, state)? {
+            let attempted = self.attempt(&pkg, &meta, &module, program, state);
+            if !matches!(attempted, Ok(Attempted::Suspended { .. })) {
+                self.forget_listings(run);
+            }
+            match attempted? {
                 Attempted::Done {
                     journal: next,
                     value,
@@ -1900,6 +1904,7 @@ impl Core {
                 }
                 Attempted::Suspended { journal: next } => {
                     journal = next;
+                    self.freeze_listings(run, &mut journal);
                     match journal.pending.clone() {
                         Some(Pending::Call { call, .. }) => {
                             self.store.borrow_mut().save_journal(run, &journal)?;
@@ -3878,6 +3883,7 @@ fn entry_value(entry: &JournalEntry) -> Value {
         | JournalEntry::Wrote { .. }
         | JournalEntry::Notified
         | JournalEntry::Engine { .. }
+        | JournalEntry::Listing { .. }
         | JournalEntry::Page { .. } => Value::Unit,
     }
 }

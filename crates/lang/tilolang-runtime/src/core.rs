@@ -335,6 +335,10 @@ pub struct Core {
     /// Whether one write the code asked for is being made ([`Core::journaled_write`]): the reads
     /// and changes it makes on its way are its own, and the journal records the write whole.
     pub writing: std::cell::Cell<bool>,
+    /// The collections the runs that journal their reads read in their attempt now running
+    /// ([`Core::journaled_listing`]): what a run that stops for a call reads whole into its
+    /// journal before the call changes them ([`Core::freeze_listings`]).
+    pub(crate) journaled_listings: RefCell<Vec<Rc<crate::colls::JournaledItems>>>,
     /// The resource whose initial content is being written, and how many records it has
     /// inserted so far ([`crate::exec::Core::start_content`]): those records are named by the
     /// two, so every replica that makes the resource makes the same records, and a device that
@@ -527,6 +531,7 @@ impl Core {
             reader: RefCell::new(None),
             trying: std::cell::Cell::new(false),
             writing: std::cell::Cell::new(false),
+            journaled_listings: RefCell::new(Vec::new()),
             seeding: RefCell::new(None),
             running: std::cell::Cell::new(false),
             foreign: RefCell::new(crate::foreign::Foreign::default()),
