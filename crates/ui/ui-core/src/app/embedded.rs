@@ -136,7 +136,7 @@ impl EmbeddedApp {
     pub fn new(
         mut app: App,
         wake: impl Fn(crate::wake::WakeEvent) + Send + Sync + 'static,
-    ) -> Result<Self, crate::launch::LaunchError> {
+    ) -> Result<Self, crate::launch_error::LaunchError> {
         app.set_tab_order_continues_in_host(true);
         // The host has the one search; the tile opens none of its own.
         app.actions.search_in_host = true;
@@ -148,7 +148,7 @@ impl EmbeddedApp {
                     flag.store(true, std::sync::atomic::Ordering::Release);
                     wake(event);
                 })
-                .map_err(|error| crate::launch::LaunchError::Operation(error.to_string()))?;
+                .map_err(|error| crate::launch_error::LaunchError::Operation(error.to_string()))?;
         }
         if app.wake_scope.is_some() {
             // As in a window of its own: a change of an outside authority

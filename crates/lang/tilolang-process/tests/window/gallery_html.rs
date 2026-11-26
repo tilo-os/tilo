@@ -57,7 +57,10 @@ fn every_place_is_picked_and_patched_on_the_page() {
         // What the page sends back for a press on it: its action, on the widget its element
         // stands for, at the target it carries.
         let target = attribute(tag, "data-t");
-        page.act(harness, id, target.as_deref(), PageAction::Activate)
+        page.semantic_target(id, PageAction::Activate)
+            .and_then(|(widget, action)| {
+                harness.perform_semantic_named(widget, target.as_deref(), &action)
+            })
             .unwrap_or_else(|refused| panic!("a press on {place}'s row is taken: {refused}"));
         composition = until(
             harness,

@@ -70,7 +70,7 @@ impl HistoryPreview for FrozenRootPreview {
             bounds.width().max(1.0) as u32,
             bounds.height().max(1.0) as u32,
         );
-        let mut frame = crate::launch::ShotFrame::new(size, theme.clone());
+        let mut frame = crate::shot_frame::ShotFrame::new(size, theme.clone());
         if let Some(doc) = self.doc.take() {
             if !self.presented
                 && let Some(local) = &self.view.application

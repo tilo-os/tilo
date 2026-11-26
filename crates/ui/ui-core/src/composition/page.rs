@@ -543,28 +543,22 @@ impl Page {
         self.paths.get(id as usize).map(String::as_str)
     }
 
-    /// What the person did on the element numbered `id` (the semantic `target` it carries),
-    /// performed on `frame` as that node's accessibility action. An element the page numbers
-    /// for a part of a widget (a document's block, a control) is acted on through the widget it
-    /// is a part of.
+    /// Where what the person did on the element numbered `id` lands: the widget its element stands
+    /// for and the accessibility action to perform on it, at the semantic `target` the element
+    /// carries. An element the page numbers for a part of a widget (a document's block, a control)
+    /// is acted on through the widget it is a part of.
     ///
     /// # Errors
-    /// The page numbers no such element, `action` is the page's size rather than an action on
-    /// an element, or the view refuses it.
-    pub fn act(
-        &self,
-        frame: &mut crate::headless::Driver,
-        id: u32,
-        target: Option<&str>,
-        action: PageAction,
-    ) -> Result<(), String> {
+    /// The page numbers no such element, or `action` is the page's size rather than an action on
+    /// an element.
+    pub fn semantic_target(&self, id: u32, action: PageAction) -> Result<(&str, Action), String> {
         let path = self
             .path(id)
             .ok_or_else(|| format!("the page numbers no element {id}"))?;
         let widget = path.split_once('#').map_or(path, |(widget, _)| widget);
         let action = semantic(action)
             .ok_or_else(|| "a page's size is laid out, not acted on an element".to_owned())?;
-        frame.perform_semantic_named(widget, target, &action)
+        Ok((widget, action))
     }
 
     /// What the last render or patch showed other than as the browser's own elements.

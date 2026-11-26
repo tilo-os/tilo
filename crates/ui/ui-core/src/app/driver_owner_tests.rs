@@ -157,7 +157,7 @@ fn factory(
     mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
-) -> Result<AppComponent, crate::launch::LaunchError> {
+) -> Result<AppComponent, crate::launch_error::LaunchError> {
     context
         .initialize_new_resource(|doc| {
             doc.put(ROOT, "body", "canonical owner body")
@@ -165,7 +165,7 @@ fn factory(
             doc.commit();
             Ok(())
         })
-        .map_err(crate::launch::LaunchError::Record)?;
+        .map_err(crate::launch_error::LaunchError::Record)?;
     let seen = NEXT.with_borrow_mut(|next| next.take().unwrap());
     *seen.wake.borrow_mut() = Some(context.wake_handle());
     let mut registry = tilo_actions::ActionRegistry::new();

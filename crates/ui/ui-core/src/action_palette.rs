@@ -50,9 +50,9 @@ mod facet_chips;
 mod history;
 mod host;
 mod inspect;
-mod rows;
+
 mod window_place;
-pub use rows::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome, RowFace};
+pub use crate::search::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome, RowFace};
 pub use window_place::{list_cap, placement};
 
 /// The window a palette was asked for from, when a host lays several app tiles out in one tree (the

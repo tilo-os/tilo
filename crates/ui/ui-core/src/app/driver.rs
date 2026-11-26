@@ -409,7 +409,7 @@ impl Driver {
         component: crate::application::AppComponent,
         viewport: (u32, u32),
         inputs: crate::application::ComponentRunnerInputs,
-    ) -> Result<Self, crate::launch::LaunchError> {
+    ) -> Result<Self, crate::launch_error::LaunchError> {
         let mut driver = Self::built(
             App::from_component_using(component, inputs, super::AppConstructionInputs::component)?,
             viewport,
@@ -430,7 +430,7 @@ impl Driver {
     #[cfg(any(test, feature = "test-support"))]
     pub fn mount(
         component: crate::application::AppComponent,
-    ) -> Result<Self, crate::launch::LaunchError> {
+    ) -> Result<Self, crate::launch_error::LaunchError> {
         // A bare mount, not a window: no workspace stands behind it, so what the component asks
         // of one waits, as an unlaunched component's does.
         let viewport = crate::headless::MOUNT_VIEWPORT;

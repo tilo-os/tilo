@@ -15,8 +15,8 @@ use tilo_ui_base::text_match::FieldWeight;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
 
-use super::rows::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome};
 use super::{ActionPalette, FIELD_SIZE, HostStep};
+use crate::search::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome};
 use tilo_ui_base::widget::DrawChild;
 
 const DEFAULT_LIST_ROWS: f64 = 10.0;

@@ -11,10 +11,10 @@ tilo_test_env::scenario! {
         let factories = Cell::new(0_usize);
         let result = App::from_prepared_component_with_collaboration(
             CollaborationManager::disabled(),
-            || Err(crate::launch::LaunchError::Operation("read refused".into())),
+            || Err(crate::launch_error::LaunchError::Operation("read refused".into())),
             |_, _, _| {
                 factories.set(factories.get().saturating_add(1));
-                Err(crate::launch::LaunchError::Operation("factory ran".into()))
+                Err(crate::launch_error::LaunchError::Operation("factory ran".into()))
             },
         );
         assert!(result.is_err());
@@ -32,9 +32,9 @@ tilo_test_env::scenario! {
             CollaborationManager::disabled(),
             || {
                 preparations.set(preparations.get().saturating_add(1));
-                Err(crate::launch::LaunchError::Operation("prepare ran".into()))
+                Err(crate::launch_error::LaunchError::Operation("prepare ran".into()))
             },
-            |_, _, _| Err(crate::launch::LaunchError::Operation("factory ran".into())),
+            |_, _, _| Err(crate::launch_error::LaunchError::Operation("factory ran".into())),
         );
         assert!(result.is_err());
         assert_eq!(preparations.get(), 0);
@@ -56,7 +56,7 @@ tilo_test_env::scenario! {
             workspace_resource: false,
             opens_before_resource: false,
             create: |_, _, _| {
-                Err(crate::launch::LaunchError::Operation(
+                Err(crate::launch_error::LaunchError::Operation(
                     "definition factory ran".into(),
                 ))
             },
@@ -88,12 +88,12 @@ tilo_test_env::scenario! {
             },
             |_, _, _| {
                 factories.set(factories.get().saturating_add(1));
-                Err(crate::launch::LaunchError::Operation(
+                Err(crate::launch_error::LaunchError::Operation(
                     "default factory ran".into(),
                 ))
             },
         );
-        let Err(crate::launch::LaunchError::ComponentSetup { record, .. }) = result else {
+        let Err(crate::launch_error::LaunchError::ComponentSetup { record, .. }) = result else {
             panic!("absence must preserve the original record and fail before creation");
         };
         assert_eq!(*record, checkout);

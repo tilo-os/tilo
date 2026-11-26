@@ -32,10 +32,10 @@ fn responsive_nav_factory(
     mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
-) -> Result<AppComponent, crate::launch::LaunchError> {
+) -> Result<AppComponent, crate::launch_error::LaunchError> {
     context
         .initialize_new_resource(|_| Ok(()))
-        .map_err(crate::launch::LaunchError::Record)?;
+        .map_err(crate::launch_error::LaunchError::Record)?;
     let root = crate::widget::ModelView::from_document(
         |doc, _| doc.get(ROOT, "setup").unwrap().is_some(),
         |setup| {

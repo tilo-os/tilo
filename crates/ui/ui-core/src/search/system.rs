@@ -1,6 +1,6 @@
 //! Native and browser system-search policy. Activation payloads remain host-owned.
 #[cfg(feature = "model")]
-use crate::CommandEntry;
+use crate::search::CommandEntry;
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use tilo_app_id::apps;

@@ -36,6 +36,8 @@
 mod body;
 mod button_component;
 pub mod capability;
+#[cfg(feature = "model")]
+mod command;
 pub mod index_publication;
 mod ordinals;
 mod preview;
@@ -50,6 +52,8 @@ pub mod testing;
 
 pub use body::{BodyPiece, SearchBody, SearchBodySource};
 pub use button_component::{SearchButton, SearchButtonProps};
+#[cfg(feature = "model")]
+pub use command::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome};
 pub use preview::{PREVIEW_BODY_LINES, PREVIEW_LINES, SearchPreview};
 pub use provider::{
     CatalogSearchProvider, DEFAULT_SEARCH_CANDIDATE_LIMIT, DEFAULT_SEARCH_RESULT_LIMIT,

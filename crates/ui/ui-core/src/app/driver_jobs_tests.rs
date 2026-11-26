@@ -581,10 +581,10 @@ fn worker_factory(
     mut context: crate::application::ProcessContext,
     _: crate::application::LaunchTarget,
     _: crate::application::RestoreInput,
-) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
+) -> Result<crate::application::AppComponent, crate::launch_error::LaunchError> {
     context
         .initialize_new_resource(|_| Ok(()))
-        .map_err(crate::launch::LaunchError::Record)?;
+        .map_err(crate::launch_error::LaunchError::Record)?;
     Ok(crate::application::AppComponent::new(
         context,
         Box::new(NEXT_WORKER.with_borrow_mut(|next| next.take().unwrap())),

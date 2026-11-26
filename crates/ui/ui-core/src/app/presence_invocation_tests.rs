@@ -235,14 +235,14 @@ fn bound_factory(
     mut context: crate::application::ProcessContext,
     target: crate::application::LaunchTarget,
     _: crate::application::RestoreInput,
-) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
+) -> Result<crate::application::AppComponent, crate::launch_error::LaunchError> {
     if matches!(target, crate::application::LaunchTarget::New) {
         context
             .initialize_new_resource(|doc| {
                 doc.put(ROOT, "marker", "bound-record")
                     .map_err(|e| e.to_string())
             })
-            .map_err(crate::launch::LaunchError::Record)?;
+            .map_err(crate::launch_error::LaunchError::Record)?;
     }
     let probe = BOUND_PROBE.with_borrow(|probe| probe.clone().expect("probe installed"));
     let mut registry = tilo_actions::ActionRegistry::new();

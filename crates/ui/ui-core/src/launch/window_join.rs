@@ -8,19 +8,7 @@
 
 use super::{DefinitionDispatch, LaunchArgs, LaunchError, LaunchSpec};
 use crate::App;
-
-/// A launch whose record is not on this device yet: the workspace's join, waited for off the window's
-/// thread, and the wake scope the app built after it takes, which the join's manager wakes.
-pub(crate) struct Arriving {
-    pub(crate) join: tilo_ui_base::collaboration::NativeJoin,
-    scope: crate::wake::WakeScope,
-}
-
-impl std::fmt::Debug for Arriving {
-    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.debug_struct("Arriving").finish_non_exhaustive()
-    }
-}
+use crate::window_link::Arriving;
 
 enum LocalFirst {
     Built(Result<DefinitionDispatch, LaunchError>),

@@ -1,5 +1,5 @@
 //! One offscreen frame of a widget, for app-specific screenshot handlers.
-//! [`LaunchSpec::shot_root`](super::LaunchSpec::shot_root) captures through the full headless harness.
+//! An app launch's `LaunchSpec::shot_root` captures through the full headless harness instead.
 
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]

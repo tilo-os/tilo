@@ -529,7 +529,7 @@ impl InstanceViewStore {
     }
 }
 
-impl crate::launch::LaunchError {
+impl crate::launch_error::LaunchError {
     /// Whether the launch stopped only because the store thread is
     /// still opening a document for a thread that may not wait on the disk
     /// ([`crate::resource::ResourceOpenError::Opening`]): asked again once the

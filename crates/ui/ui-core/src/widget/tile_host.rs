@@ -483,7 +483,7 @@ impl TileHost {
     pub fn mount_component(
         mut component: crate::application::AppComponent,
         sink: impl Fn(crate::wake::WakeEvent) + Send + Sync + 'static,
-    ) -> Result<Self, crate::launch::LaunchError> {
+    ) -> Result<Self, crate::launch_error::LaunchError> {
         if let Err(error) = component.mount(sink) {
             return Err(component.setup_error(error));
         }

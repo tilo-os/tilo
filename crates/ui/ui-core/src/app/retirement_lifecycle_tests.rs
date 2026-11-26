@@ -129,14 +129,14 @@ fn factory(
     mut context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
-) -> Result<AppComponent, crate::launch::LaunchError> {
+) -> Result<AppComponent, crate::launch_error::LaunchError> {
     if matches!(target, LaunchTarget::New) {
         context
             .initialize_new_resource(|doc| {
                 doc.put(ROOT, "body", "real document")
                     .map_err(|error| error.to_string())
             })
-            .map_err(crate::launch::LaunchError::Record)?;
+            .map_err(crate::launch_error::LaunchError::Record)?;
     }
     let observed = OBSERVED.with_borrow(|slot| slot.as_ref().unwrap().clone());
     Ok(AppComponent::new(

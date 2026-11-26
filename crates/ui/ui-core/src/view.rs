@@ -53,23 +53,6 @@ pub fn broadcast_subset(view: &View) -> ViewSubset {
     }
 }
 
-impl View {
-    /// Capture the live [`App`](crate::app::App)'s presentation into a View. Thin front
-    /// API for [`FreezeThaw::capture_view`] so callers can write the natural
-    /// `View::capture(&app)`.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn capture(app: &crate::app::App) -> View {
-        <crate::app::App as FreezeThaw>::capture_view(app)
-    }
-
-    /// Write this View back onto a live [`App`](crate::app::App): move focus and restore
-    /// the caret, hand the scroll/view-mode fields to the root widget.
-    #[cfg(not(target_arch = "wasm32"))]
-    pub fn restore(&self, app: &mut crate::app::App) {
-        <crate::app::App as FreezeThaw>::restore_view(app, self);
-    }
-}
-
 /// Common local presentation validation; canonical state is never read or written here.
 impl View {
     /// Rejects nonfinite geometry before any widget receives it.

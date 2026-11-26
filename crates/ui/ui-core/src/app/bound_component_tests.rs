@@ -26,10 +26,10 @@ fn collaboration_probe_factory(
     mut context: ProcessContext,
     _: LaunchTarget,
     _: RestoreInput,
-) -> Result<AppComponent, crate::launch::LaunchError> {
+) -> Result<AppComponent, crate::launch_error::LaunchError> {
     context
         .initialize_new_resource(|_| Ok(()))
-        .map_err(crate::launch::LaunchError::Record)?;
+        .map_err(crate::launch_error::LaunchError::Record)?;
     let probe = crate::history_mode::isolation_tests::native_effect_probe_parts(
         "bound-collaboration",
         "fixture.bound-collaboration",
@@ -647,7 +647,7 @@ fn factory(
     context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
-) -> Result<AppComponent, crate::launch::LaunchError> {
+) -> Result<AppComponent, crate::launch_error::LaunchError> {
     build_probe(context, &target, false)
 }
 #[allow(clippy::needless_pass_by_value, reason = "factory contract")]
@@ -655,20 +655,20 @@ fn strict_factory(
     context: ProcessContext,
     target: LaunchTarget,
     _: RestoreInput,
-) -> Result<AppComponent, crate::launch::LaunchError> {
+) -> Result<AppComponent, crate::launch_error::LaunchError> {
     build_probe(context, &target, true)
 }
 fn build_probe(
     mut context: ProcessContext,
     target: &LaunchTarget,
     strict: bool,
-) -> Result<AppComponent, crate::launch::LaunchError> {
+) -> Result<AppComponent, crate::launch_error::LaunchError> {
     if matches!(target, LaunchTarget::New) {
         context
             .initialize_new_resource(|doc| {
                 doc.put(ROOT, "marker", "child").map_err(|e| e.to_string())
             })
-            .map_err(crate::launch::LaunchError::Record)?;
+            .map_err(crate::launch_error::LaunchError::Record)?;
     }
     let mut registry = tilo_actions::ActionRegistry::new();
     registry.register::<FollowUp>("bound.apply");
@@ -2656,7 +2656,7 @@ fn behaviour_probe_factory(
     context: ProcessContext,
     target: LaunchTarget,
     restore: RestoreInput,
-) -> Result<AppComponent, crate::launch::LaunchError> {
+) -> Result<AppComponent, crate::launch_error::LaunchError> {
     let mut component = collaboration_probe_factory(context, target, restore)?;
     component.set_behaviour(crate::application::ComponentBehaviour {
         autofocus_on_structure_change: true,
@@ -3225,7 +3225,7 @@ fn a_step_heard_elsewhere_reaches_the_window_through_its_bound_component() {
     let definition = crate::application_test_support::definition(|mut context, _, _| {
         context
             .initialize_new_resource(|_| Ok(()))
-            .map_err(crate::launch::LaunchError::Record)?;
+            .map_err(crate::launch_error::LaunchError::Record)?;
         let root = Box::new(HearsElsewhereProbe {
             rect: KurboRect::ZERO,
         });

@@ -59,65 +59,6 @@ pub(crate) fn window_stops_taking_invocations() {
     }
 }
 
-/// Build the window the shell asked for (`pending`), as the process's first window was
-/// built from its launch (`spec`, `args`), but with the window's own instance and
-/// connections, opening what the request names (a file opened with the running app) and
-/// nothing its launch named: that was the first window's.
-#[cfg(all(feature = "native", feature = "model"))]
-pub(crate) fn open_window(
-    spec: &crate::launch::LaunchSpec,
-    args: &crate::launch::LaunchArgs,
-    pending: PendingWindow,
-) -> Option<crate::app::App> {
-    let mut opening = pending.take()?;
-    if let Some(arriving) = opening.arriving.take() {
-        return building(opening, || {
-            crate::launch::dispatch_window_arrived(spec, args, arriving)
-        })
-        .map_err(|error| tracing::error!(%error, "the window the shell asked for could not open"))
-        .ok()
-        .flatten();
-    }
-    let reopen = pending.reopen.clone();
-    building(opening, || {
-        match crate::launch::dispatch_window(spec, args) {
-            Ok(crate::launch::WindowBuild::Built(app)) => app,
-            // The window's record is not on this device yet: its join, which brings it,
-            // is waited for off this thread, so the process's other windows go on
-            // meanwhile. The window is built when the join is over, handed back to this
-            // thread as it first arrived.
-            Ok(crate::launch::WindowBuild::Arriving(arriving)) => {
-                let (Some(mut opening), Some(reopen)) = (keep_building(), reopen) else {
-                    tracing::error!("the window the shell asked for cannot wait for its workspace");
-                    return None;
-                };
-                let back = PendingWindow {
-                    slot: std::sync::Arc::new(std::sync::Mutex::new(None)),
-                    reopen: Some(std::sync::Arc::clone(&reopen)),
-                };
-                // Told on the join's thread, or at once when it is already over; either
-                // way the window comes back to this thread only after it is in `back`,
-                // below.
-                arriving.join.when_done({
-                    let back = back.clone();
-                    move || {
-                        if !reopen(back) {
-                            tracing::warn!("the window's loop ended before its join did");
-                        }
-                    }
-                });
-                opening.arriving = Some(arriving);
-                back.put(opening);
-                None
-            }
-            Err(error) => {
-                tracing::error!(%error, "the window the shell asked for could not open");
-                None
-            }
-        }
-    })
-}
-
 /// The instance of the window being built for the shell's request, while one is; `None`
 /// while the process's first window is built, and where there is no window link.
 #[must_use]
@@ -165,6 +106,20 @@ pub fn requested_reveal() -> Option<String> {
     }
 }
 
+#[cfg(all(feature = "native", feature = "model"))]
+/// A launch whose record is not on this device yet: the workspace's join, waited for off the window's
+/// thread, and the wake scope the app built after it takes, which the join's manager wakes.
+pub struct Arriving {
+    pub(crate) join: tilo_ui_base::collaboration::NativeJoin,
+    pub(crate) scope: crate::wake::WakeScope,
+}
+
+impl std::fmt::Debug for Arriving {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Arriving").finish_non_exhaustive()
+    }
+}
+
 #[cfg(feature = "local-daemons")]
 mod transport {
     use super::WindowRequest;
@@ -181,7 +136,7 @@ mod transport {
         /// The window's record arrives with its workspace's join, waited for off the
         /// window's thread; the window is built once it is over.
         #[cfg(all(feature = "native", feature = "model"))]
-        pub(crate) arriving: Option<crate::launch::Arriving>,
+        pub(crate) arriving: Option<super::Arriving>,
     }
 
     /// Hand a [`PendingWindow`] to the loop that builds windows; `false` once that loop

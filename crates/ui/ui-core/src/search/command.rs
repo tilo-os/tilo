@@ -2,7 +2,7 @@
 //! the list shows (the shared search row model) and what choosing one needs.
 
 use crate::search::system::{ResourceKind, icon_for_kind};
-pub use crate::search::{ActivationModifier, Alternate, RowFace};
+use crate::search::{ActivationModifier, Alternate, RowFace};
 use crate::search::{CommandRow, SearchResult, SearchRow};
 use tilo_actions::{ActionDescriptor, ActionInput, ActionState, FlatAction, InputSpec, ListedRow};
 use tilo_ui_base::{icons, icons::Icon};

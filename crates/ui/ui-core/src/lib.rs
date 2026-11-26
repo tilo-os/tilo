@@ -180,6 +180,7 @@ pub mod hosted_window;
 /// semantic tree, the named targets a caller addresses, and the accessibility issues it reports.
 pub mod inspection;
 pub mod launch;
+pub mod launch_error;
 pub mod lift;
 pub mod live_activity;
 pub mod live_pictures;
@@ -197,6 +198,7 @@ pub(crate) mod pipeline_cache;
 pub mod pipeline_seed;
 pub mod pointer_replay;
 pub mod profiling;
+pub mod shot_frame;
 pub use tilo_ui_paint::raster;
 pub mod storage;
 /// Where each settings section is kept, and so published: `settings/<section>` for the person's,
@@ -371,8 +373,8 @@ pub mod autocorrect {
 pub use widget::ModelView;
 #[cfg(feature = "model")]
 pub use {
-    action_palette::ArgumentKind, action_palette::ArgumentSpec, action_palette::CommandEntry,
-    action_palette::CommandOutcome, action_palette::RowFace,
+    search::ArgumentKind, search::ArgumentSpec, search::CommandEntry, search::CommandOutcome,
+    search::RowFace,
 };
 pub use {widget::AppCommand, widget::AppKind, widget::AppWidget, widget::IconDescriptor};
 pub use {

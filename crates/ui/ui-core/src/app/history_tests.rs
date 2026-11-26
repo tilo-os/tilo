@@ -826,7 +826,7 @@ fn primary_routed_factory(
     mut context: crate::application::ProcessContext,
     target: crate::application::LaunchTarget,
     restore: crate::application::RestoreInput,
-) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
+) -> Result<crate::application::AppComponent, crate::launch_error::LaunchError> {
     if matches!(target, crate::application::LaunchTarget::PrimaryNew) {
         context
             .initialize_new_resource(|doc| {
@@ -834,7 +834,7 @@ fn primary_routed_factory(
                     .map_err(|error| error.to_string())?;
                 Ok(())
             })
-            .map_err(crate::launch::LaunchError::Record)?;
+            .map_err(crate::launch_error::LaunchError::Record)?;
     }
     crate::application_test_support::probe_factory(context, target, restore)
 }

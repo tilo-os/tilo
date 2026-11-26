@@ -924,7 +924,7 @@ impl App {
     pub fn from_component(
         component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
-    ) -> Result<Self, crate::launch::LaunchError> {
+    ) -> Result<Self, crate::launch_error::LaunchError> {
         Self::from_component_using(component, inputs, AppConstructionInputs::component)
             .map(|app| *app)
     }
@@ -935,7 +935,7 @@ impl App {
         component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
         collaboration: CollaborationManager,
-    ) -> Result<Self, crate::launch::LaunchError> {
+    ) -> Result<Self, crate::launch_error::LaunchError> {
         Self::from_component_using(component, inputs, |inputs, binding| {
             let mut construction = AppConstructionInputs::component(inputs, binding);
             construction.collab_manager = collaboration;
@@ -950,7 +950,7 @@ impl App {
     pub fn from_component_with_native_services(
         component: crate::application::AppComponent,
         inputs: crate::application::ComponentRunnerInputs,
-    ) -> Result<Self, crate::launch::LaunchError> {
+    ) -> Result<Self, crate::launch_error::LaunchError> {
         Self::from_component_using(component, inputs, AppConstructionInputs::native_component)
             .map(|app| *app)
     }
@@ -963,7 +963,7 @@ impl App {
             crate::application::ComponentRunnerInputs,
             &crate::bound_dispatch::CallbackBinding,
         ) -> AppConstructionInputs,
-    ) -> Result<Box<Self>, crate::launch::LaunchError> {
+    ) -> Result<Box<Self>, crate::launch_error::LaunchError> {
         let scope =
             tilo_ui_base::collaboration::native_initial::take_component_scope().unwrap_or_default();
         let retirement = component.take_root_retirement();
@@ -990,14 +990,14 @@ impl App {
                 opened = %binding.checkout.id.as_str(),
                 "application binding does not match: the collaboration route asked for is not the record the window opened"
             );
-            return Err(component.setup_error(crate::launch::LaunchError::BindingMismatch));
+            return Err(component.setup_error(crate::launch_error::LaunchError::BindingMismatch));
         }
         let history = component.history.take();
         let behaviour = component.behaviour;
         let input_surface_id = (behaviour.window == crate::application::WindowRole::InputSurface)
             .then(|| component.app_id().to_owned());
         let Some(component) = assembly.component.take() else {
-            return Err(crate::launch::LaunchError::Operation(
+            return Err(crate::launch_error::LaunchError::Operation(
                 "component assembly no longer owns its component".to_owned(),
             ));
         };
@@ -1020,7 +1020,9 @@ impl App {
         {
             return Err(root
                 .component
-                .setup_error(crate::launch::LaunchError::Operation(error.to_string())));
+                .setup_error(crate::launch_error::LaunchError::Operation(
+                    error.to_string(),
+                )));
         }
         validation.disarm();
         root_ownership.root = Some(root);
@@ -1039,10 +1041,12 @@ impl App {
             && let Err(error) = app.install_history(registration)
         {
             app.close_components();
-            return Err(crate::launch::LaunchError::ComponentSetup {
-                source: Box::new(crate::launch::LaunchError::Operation(error.to_string())),
+            return Err(crate::launch_error::LaunchError::ComponentSetup {
+                source: Box::new(crate::launch_error::LaunchError::Operation(
+                    error.to_string(),
+                )),
                 record: Box::new(binding.checkout),
-                recovery: crate::launch::LaunchRecovery::new(
+                recovery: crate::launch_error::LaunchRecovery::new(
                     Some(binding.records),
                     app.take_component_close_reports(),
                 ),
@@ -1058,27 +1062,6 @@ impl App {
     #[cfg(feature = "model")]
     pub fn collaboration_is_connected(&self) -> bool {
         self.collaboration.manager.is_connected()
-    }
-
-    #[cfg(feature = "model")]
-    pub(crate) fn native_component_presentation() -> crate::application::ComponentRunnerInputs {
-        let accessibility = crate::process::environment().accessibility;
-        let theme = Theme::configured().with_a11y(
-            &tilo_ui_base::a11y::A11ySettings {
-                high_contrast: accessibility.high_contrast,
-                reduce_motion: accessibility.reduce_motion,
-                ..Default::default()
-            },
-            accessibility.text_scale.unwrap_or(1.0),
-            accessibility.ui_scale.unwrap_or(1.0),
-        );
-        let mut text_renderer = TextRenderer::new();
-        text_renderer.set_text_scale(theme.text_scale);
-        text_renderer.apply_typography(&theme.tokens.typography);
-        crate::application::ComponentRunnerInputs {
-            theme,
-            text_renderer,
-        }
     }
 
     /// The window's root widget: what a host or a test drives the window through when it looks at what

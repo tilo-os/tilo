@@ -798,7 +798,8 @@ fn a_menu_buttons_menu_is_a_layer_of_its_own_that_grows_from_the_button() {
         })
         .expect("the page numbers the button");
     let path = page.path(button).expect("its path").to_owned();
-    page.act(&mut driver, button, None, PageAction::Activate)
+    page.semantic_target(button, PageAction::Activate)
+        .and_then(|(widget, action)| driver.perform_semantic_named(widget, None, &action))
         .expect("a press on More is taken");
     driver.relayout();
     driver.settle();
@@ -893,7 +894,10 @@ fn a_menu_buttons_menu_is_a_layer_of_its_own_that_grows_from_the_button() {
         .and_then(|tag| tag.split("data-t=\"").nth(1))
         .and_then(|rest| rest.split('"').next())
         .map(str::to_owned);
-    page.act(&mut driver, row, target.as_deref(), PageAction::Activate)
+    page.semantic_target(row, PageAction::Activate)
+        .and_then(|(widget, action)| {
+            driver.perform_semantic_named(widget, target.as_deref(), &action)
+        })
         .expect("a press on the row is taken");
     driver.settle();
     assert!(pinned.get(), "the row's action ran");

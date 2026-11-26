@@ -7,7 +7,7 @@ use super::{
     RestoreInput,
 };
 use crate::application_view::InstanceViewStore;
-use crate::launch::LaunchError;
+use crate::launch_error::LaunchError;
 use tilo_ui_base::{
     permissions::MemberId, permissions::PermissionContext, permissions::SharedPermissions,
 };

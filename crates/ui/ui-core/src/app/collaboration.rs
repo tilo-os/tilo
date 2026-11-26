@@ -59,15 +59,17 @@ impl App {
         collaboration: CollaborationManager,
         prepare_host: impl FnOnce() -> Result<
             crate::application::PreparedComponentInputs,
-            crate::launch::LaunchError,
+            crate::launch_error::LaunchError,
         >,
         instantiate: impl FnOnce(
             crate::application::ProcessContext,
             crate::application::LaunchTarget,
             crate::application::RestoreInput,
-        )
-            -> Result<crate::application::AppComponent, crate::launch::LaunchError>,
-    ) -> Result<Self, crate::launch::LaunchError> {
+        ) -> Result<
+            crate::application::AppComponent,
+            crate::launch_error::LaunchError,
+        >,
+    ) -> Result<Self, crate::launch_error::LaunchError> {
         Self::mount_on_collaboration(collaboration, prepare_host, instantiate, false)
     }
 
@@ -84,15 +86,17 @@ impl App {
         collaboration: CollaborationManager,
         prepare_host: impl FnOnce() -> Result<
             crate::application::PreparedComponentInputs,
-            crate::launch::LaunchError,
+            crate::launch_error::LaunchError,
         >,
         instantiate: impl FnOnce(
             crate::application::ProcessContext,
             crate::application::LaunchTarget,
             crate::application::RestoreInput,
-        )
-            -> Result<crate::application::AppComponent, crate::launch::LaunchError>,
-    ) -> Result<Self, crate::launch::LaunchError> {
+        ) -> Result<
+            crate::application::AppComponent,
+            crate::launch_error::LaunchError,
+        >,
+    ) -> Result<Self, crate::launch_error::LaunchError> {
         Self::mount_on_collaboration(collaboration, prepare_host, instantiate, true)
     }
 
@@ -103,16 +107,18 @@ impl App {
         collaboration: CollaborationManager,
         prepare_host: impl FnOnce() -> Result<
             crate::application::PreparedComponentInputs,
-            crate::launch::LaunchError,
+            crate::launch_error::LaunchError,
         >,
         instantiate: impl FnOnce(
             crate::application::ProcessContext,
             crate::application::LaunchTarget,
             crate::application::RestoreInput,
-        )
-            -> Result<crate::application::AppComponent, crate::launch::LaunchError>,
+        ) -> Result<
+            crate::application::AppComponent,
+            crate::launch_error::LaunchError,
+        >,
         launched: bool,
-    ) -> Result<Self, crate::launch::LaunchError> {
+    ) -> Result<Self, crate::launch_error::LaunchError> {
         use crate::launch::{LaunchError, LaunchRecovery};
         use tilo_ui_base::{
             collaboration::native_initial, collaboration::native_initial::NativeConstruction,

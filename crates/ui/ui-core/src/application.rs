@@ -3,7 +3,7 @@ use crate::application_view::{
     ApplicationFocusRestore, ApplicationLocalView, InstanceViewStore, SavedInstanceView,
     validate_identity,
 };
-use crate::launch::LaunchError;
+use crate::launch_error::LaunchError;
 use crate::resource::{
     DocumentCheckout, DocumentId, ResourceOpenError, ResourceReservation, ResourceStore,
     ResourceType,
@@ -233,7 +233,23 @@ impl ComponentRunnerInputs {
     /// Explicit native-runner discovery of the system's presentation settings and fonts.
     #[cfg(not(target_arch = "wasm32"))]
     pub fn from_native_process() -> Self {
-        crate::App::native_component_presentation()
+        let accessibility = crate::process::environment().accessibility;
+        let theme = tilo_ui_base::Theme::configured().with_a11y(
+            &tilo_ui_base::a11y::A11ySettings {
+                high_contrast: accessibility.high_contrast,
+                reduce_motion: accessibility.reduce_motion,
+                ..Default::default()
+            },
+            accessibility.text_scale.unwrap_or(1.0),
+            accessibility.ui_scale.unwrap_or(1.0),
+        );
+        let mut text_renderer = tilo_ui_base::TextRenderer::new();
+        text_renderer.set_text_scale(theme.text_scale);
+        text_renderer.apply_typography(&theme.tokens.typography);
+        Self {
+            theme,
+            text_renderer,
+        }
     }
 }
 
@@ -1035,7 +1051,7 @@ impl ApplicationDefinition {
                 LaunchError::ComponentSetup {
                     source: Box::new(source),
                     record: Box::new(record),
-                    recovery: crate::launch::LaunchRecovery::records(records),
+                    recovery: crate::launch_error::LaunchRecovery::records(records),
                 }
             } else {
                 source
@@ -1373,7 +1389,7 @@ impl AppComponent {
         LaunchError::ComponentSetup {
             source: Box::new(source),
             record: Box::new(binding.checkout),
-            recovery: crate::launch::LaunchRecovery::new(
+            recovery: crate::launch_error::LaunchRecovery::new(
                 Some(binding.records),
                 self.take_close_reports(),
             ),

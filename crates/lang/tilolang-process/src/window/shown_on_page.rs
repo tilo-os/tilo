@@ -116,7 +116,10 @@ impl ShownOnPage {
                 resize(frame, width, height);
                 Ok(())
             }
-            action => self.page.act(frame, id, target, action),
+            action => self
+                .page
+                .semantic_target(id, action)
+                .and_then(|(widget, action)| frame.perform_semantic_named(widget, target, &action)),
         };
         if let Err(reason) = acted {
             tracing::debug!(%reason, id, "a page's press was refused");

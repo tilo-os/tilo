@@ -226,7 +226,7 @@ mod tests {
             opens: &[],
             workspace_resource: false,
             opens_before_resource: false,
-            create: |_, _, _| Err(crate::launch::LaunchError::MissingComponentHost),
+            create: |_, _, _| Err(crate::launch_error::LaunchError::MissingComponentHost),
         }))
     }
 

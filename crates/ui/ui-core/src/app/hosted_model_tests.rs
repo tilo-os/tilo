@@ -206,10 +206,10 @@ fn owned_declared_directory_factory(
     mut context: crate::application::ProcessContext,
     _: crate::application::LaunchTarget,
     _: crate::application::RestoreInput,
-) -> Result<crate::application::AppComponent, crate::launch::LaunchError> {
+) -> Result<crate::application::AppComponent, crate::launch_error::LaunchError> {
     context
         .initialize_new_resource(|doc| doc.put(ROOT, "seed", true).map_err(|e| e.to_string()))
-        .map_err(crate::launch::LaunchError::Record)?;
+        .map_err(crate::launch_error::LaunchError::Record)?;
     let mut registry = tilo_actions::ActionRegistry::new();
     registry.register::<CounterAction>(COUNTER_TYPE);
     Ok(crate::application::AppComponent::new(
