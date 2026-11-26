@@ -304,7 +304,11 @@ fn a_refused_text_edit_says_why_and_keeps_the_text() {
         "the edit is refused out loud: {:?}",
         driver.control_failures()
     );
-    assert_eq!(shown(&mut driver, "Note"), held, "the field keeps what it held");
+    assert_eq!(
+        shown(&mut driver, "Note"),
+        held,
+        "the field keeps what it held"
+    );
 }
 
 /// Relays an agent's call to the send action: its `relay` handler, which changes only the

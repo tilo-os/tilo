@@ -73,7 +73,9 @@ impl ShortcutApproval {
             .as_ref()
             .map_or_else(
                 || tilo_action_policy::MemberId::person(self.saver.person.clone()),
-                |agent| tilo_action_policy::MemberId::agent(agent.as_str(), self.saver.person.clone()),
+                |agent| {
+                    tilo_action_policy::MemberId::agent(agent.as_str(), self.saver.person.clone())
+                },
             )
             .into()
     }
@@ -207,9 +209,9 @@ fn arguments_covered(
             || bindings
                 .get(name)
                 .is_some_and(|binding| value_covered(binding, value))
-    }) && bindings
-        .iter()
-        .all(|(name, binding)| !matches!(binding, Binding::Literal(_)) || arguments.contains_key(name))
+    }) && bindings.iter().all(|(name, binding)| {
+        !matches!(binding, Binding::Literal(_)) || arguments.contains_key(name)
+    })
 }
 
 fn value_covered(binding: &Binding, value: &serde_json::Value) -> bool {
@@ -281,7 +283,10 @@ impl AppBrokerState {
                     .clone()
             })
             .and_then(|certificate| {
-                serde_json::from_value::<tilo_user_identity::DeviceCert>(certificate).ok()
+                tilo_failure::ignored!(
+                    "a saved shortcut's proof that does not decode is no proof at all",
+                    serde_json::from_value::<tilo_user_identity::DeviceCert>(certificate).ok()
+                )
             })
             .filter(|certificate| {
                 certificate.user_public_key == root && certificate.device_public_key == saver.key
@@ -295,8 +300,12 @@ impl AppBrokerState {
             certificate,
             time,
         };
-        self.current_shortcut_approval(&approval, workspace, BrokerActor::for_caller(caller).actor())
-            .map_err(|reason| ActionCallError::Refused { reason })?;
+        self.current_shortcut_approval(
+            &approval,
+            workspace,
+            BrokerActor::for_caller(caller).actor(),
+        )
+        .map_err(|reason| ActionCallError::Refused { reason })?;
         Ok(InvocationCaller::Shortcut(Box::new(approval)))
     }
 
@@ -335,7 +344,12 @@ impl AppBrokerState {
                 .shortcuts
                 .iter()
                 .find(|saved| saved.id() == approval.shortcut.id)
-                .and_then(|saved| saved.decode().ok());
+                .and_then(|saved| {
+                    tilo_failure::ignored!(
+                        "a saved shortcut that does not decode is not the one kept",
+                        saved.decode().ok()
+                    )
+                });
             Ok::<_, String>((current, kept.policy.is_member(&approval.saver.person)))
         })??;
         let unchanged = current.as_ref().is_some_and(|current| {

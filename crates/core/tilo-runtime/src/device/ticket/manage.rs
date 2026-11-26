@@ -114,7 +114,8 @@ impl Tickets {
     async fn update(&self, args: &Value) -> Result<Value> {
         match device_in(args)? {
             Some(device) if device != self.this() => {
-                self.ask_device(device, (RESOURCE, UPDATE), args, None).await
+                self.ask_device(device, (RESOURCE, UPDATE), args, None)
+                    .await
             }
             _ => self.update_here(),
         }

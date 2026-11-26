@@ -853,9 +853,11 @@ impl DeviceOnly {
         &self,
         invocation: InvocationId,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-        let Some(uid) = self.1.as_ref().and_then(|seated| {
-            seated.seat.admitted.served().then_some(seated.seat.uid)
-        }) else {
+        let Some(uid) = self
+            .1
+            .as_ref()
+            .and_then(|seated| seated.seat.admitted.served().then_some(seated.seat.uid))
+        else {
             return Pending::ready(Err(ActionCallError::Refused {
                 reason: "only an account this device serves renews its certificates".into(),
             }));
