@@ -12,6 +12,8 @@
 set -euo pipefail
 
 apk=${1:?the APK to launch}
+# API 35: the emulator's images before it offer a Vulkan device that cannot present to a window,
+# and the app draws with Vulkan alone on Android.
 image="system-images;android-35;google_apis;x86_64"
 package=so.tilo.phone
 activity=so.tilo.android.TiloActivity
@@ -19,8 +21,9 @@ port=5560
 out=${OUT:-$TMPDIR/android-launch}
 mkdir -p "$out"
 
-# The emulator's disks need about 8 GiB free.
-avd_dir=$TMPDIR/android-user
+# The emulator refuses to start with less than about 7.4 GiB free beside its disks, whatever
+# their size, though it writes about 2 GiB: $AVD_DIR when the scratch disk is smaller.
+avd_dir=${AVD_DIR:-$TMPDIR}/android-user
 rm -rf "$avd_dir"
 export ANDROID_USER_HOME="$avd_dir" ANDROID_AVD_HOME="$avd_dir/avd"
 export ANDROID_EMULATOR_HOME="$ANDROID_USER_HOME"
@@ -62,7 +65,7 @@ timeout 300 "$sdk/platform-tools/adb" -s "emulator-$port" shell \
 
 adb install -r "$apk" >/dev/null || fail "the APK did not install"
 adb logcat -c
-adb shell am start -W -n "$package/$activity" >"$out/start.txt" || fail "the activity did not start"
+adb shell am start -n "$package/$activity" >"$out/start.txt" || fail "the activity did not start"
 # The first frame: the app logs the window adapter it renders with as it starts drawing, and
 # the frame reaches the screen a moment later. A blank screen compresses to a few kilobytes; the
 # app's first screen does not.
