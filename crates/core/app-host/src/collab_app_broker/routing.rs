@@ -18,7 +18,6 @@ pub(super) struct ContextSub {
 #[derive(Clone)]
 pub(super) struct NativeContext {
     pub(super) admitted: AdmittedJoinIdentity,
-    pub(super) roster: Vec<collaboration::Member>,
 }
 
 /// Per-channel subscriber registry, keyed by the record's channel key. A
@@ -140,11 +139,9 @@ impl AppBrokerState {
             .filter(|(k, _)| route.delivers_to(&CrdtRoute::from_channel_key(k)))
             .map(|(_, subs)| subs);
         let pruned = match event {
-            CollabEvent::Context {
-                members,
-                permissions,
-                apps,
-            } => Self::fanout_context(channels, except, members, permissions, apps),
+            CollabEvent::Context { permissions, apps } => {
+                Self::fanout_context(channels, except, permissions, apps)
+            }
             CollabEvent::FollowChanged { peer_id } => {
                 Self::fanout_follow_changed(channels, except, peer_id.as_ref())
             }
@@ -285,17 +282,16 @@ impl AppBrokerState {
             self.windows_changed();
         }
     }
-    /// One arm of [`Self::fanout_to_route`]: the workspace's member +
-    /// permission context.
+    /// One arm of [`Self::fanout_to_route`]: the workspace's permission
+    /// context and the names of the apps installed here. Who the members are
+    /// is its `workspace/members` resource, read through the store.
     pub(super) fn fanout_context<'a>(
         channels: impl Iterator<Item = &'a mut ChannelSubscribers>,
         except: u64,
-        members: &[collaboration::Member],
         permissions: &[String],
         apps: &[collab_types::history::NamedApp],
     ) -> bool {
         let env = ContextUpdate::Snapshot {
-            members: members.to_vec(),
             permissions: permissions.to_vec(),
             apps: apps.to_vec(),
         };
@@ -362,16 +358,14 @@ impl AppBrokerState {
         native: Option<NativeContext>,
     ) -> mpsc::UnboundedReceiver<ContextUpdate> {
         let (tx, rx) = mpsc::unbounded_channel();
-        // What each app installed here is called, with the people's names: what this window's
-        // history names another app's changes by.
+        // What each app installed here is called: what this window's history names another
+        // app's changes by. The members themselves are the workspace's `workspace/members`
+        // resource, which the window reads through the store when this frame reaches it.
         let apps = self.installed_apps();
-        if let Some(native) = native.as_ref() {
-            let _ = tx.send(ContextUpdate::Snapshot {
-                members: native.roster.clone(),
-                permissions: Vec::new(),
-                apps: apps.clone(),
-            });
-        }
+        let _ = tx.send(ContextUpdate::Snapshot {
+            permissions: Vec::new(),
+            apps: apps.clone(),
+        });
         let certified = native.is_some();
         let held = tx.clone();
         if let Ok(mut m) = self.channels.lock() {
@@ -502,174 +496,31 @@ impl AppBrokerState {
             .as_agent()
             .is_some_and(|(id, person)| id == named.id && person.as_str() == named.acts_for)
     }
-    /// The agents in a workspace, named and pictured as its record of its agents names them:
-    /// those its grants admit, and those only the record names.
-    pub(super) fn named_agent_members(
-        mut agents: Vec<(collab_types::MemberId, String, Option<String>)>,
-        listed: Vec<crate::services::ListedAgent>,
-    ) -> Vec<(collab_types::MemberId, String, Option<String>)> {
-        for named in listed {
-            match agents
-                .iter_mut()
-                .find(|(agent, _, _)| Self::lists(&named, agent))
-            {
-                Some((_, name, avatar)) => {
-                    name.clone_from(&named.name);
-                    avatar.clone_from(&named.avatar);
-                }
-                None => agents.push((
-                    collab_types::MemberId::agent(named.id, named.acts_for),
-                    named.name,
-                    named.avatar,
-                )),
-            }
-        }
-        agents.sort_by_key(|(member, ..)| member.actor_bytes());
-        agents
-    }
-    /// The picture `person` (their root, bytes) set in their profile, as the image's own bytes:
-    /// what a member row showing them as an author draws. `None` where this host keeps none.
-    pub(super) fn person_photo(&self, person: &[u8; 32]) -> Option<Vec<u8>> {
-        self.services
-            .workspace_memberships
-            .as_ref()?
-            .person_photo(person)
-            .filter(|photo| !photo.is_empty())
-    }
-    /// The workspace's people as member rows, in id order, then those it removed: presence may
-    /// supply a label, but only owner-backed membership supplies the identity. An offline member
-    /// remains a member.
-    pub(super) fn people_members(
-        &self,
-        workspace: &tilo_desktop_model::Workspace,
-    ) -> Vec<collab_types::Member> {
-        let mut people: Vec<(String, tilo_action_policy::Role)> = workspace
-            .policy
-            .people()
-            .into_iter()
-            .filter(|(person, _)| !workspace.policy.is_blocked(person))
-            .collect();
-        people.sort_by(|left, right| left.0.cmp(&right.0));
-        let mut listed: Vec<collab_types::Member> = people
-            .into_iter()
-            .map(|(person, role)| {
-                let row = workspace
-                    .members
-                    .iter()
-                    .find(|member| member.id == collab_types::MemberId::person(person.clone()));
-                // Someone the workspace's governance names is called that here, whoever is
-                // present: the same names the agent worker's members are given name them too.
-                // Someone nobody named is unnamed, never named by their key: an app calls them as
-                // it calls anyone it has no name for.
-                let name = workspace
-                    .person_name(&person)
-                    .unwrap_or_default()
-                    .to_owned();
-                // The colour their member row stores: the one they chose, else the one their
-                // identity derives.
-                let colour = row.map_or_else(
-                    || collab_types::presence::PresenceHue::of_identity(&person),
-                    |row| row.colour,
-                );
-                let mut member = collab_types::Member::of_person(
-                    &collab_types::Person::new(person.clone(), name).wearing(colour),
-                    Some(role),
-                );
-                // The picture they set in their profile, as the image's own bytes: every
-                // surface showing them as an author draws it.
-                let root = tilo_failure::ignored!(
-                    "a member list row names a person by their root key",
-                    hex::decode(&person)
-                        .ok()
-                        .and_then(|root| <[u8; 32]>::try_from(root).ok())
-                );
-                member.avatar = root
-                    .and_then(|root| self.person_photo(&root))
-                    .map(collab_types::AvatarBytes);
-                member.joined_at = workspace.policy.joined_at(&person);
-                member
-            })
-            .collect();
-        // Whoever the workspace removed keeps their row, so what they wrote still names them.
-        let removed: Vec<collab_types::Member> = workspace
-            .members
-            .iter()
-            .filter(|member| member.removed && member.id.is_person())
-            .filter(|member| !listed.iter().any(|row| row.id == member.id))
-            .cloned()
-            .collect();
-        listed.extend(removed);
-        listed
-    }
-    /// Complete workspace membership for one retained native receiver. This is
-    /// membership metadata, not online presence: it mints no pointer, caret,
-    /// arrival frame, or transport permission.
+    /// Complete workspace membership for one retained native receiver is the
+    /// workspace's `workspace/members` resource, which its windows read through
+    /// the store: a native receiver is kept only for the admission it joined
+    /// under, and is told when that membership may have moved.
     pub(super) fn native_membership_roster(
         &self,
         route: &CrdtRoute,
-        admitted: &AdmittedJoinIdentity,
-    ) -> Result<Vec<collaboration::Member>, String> {
-        let now = self.policy_now_ns()? / 1_000_000_000;
-        let (agents, people) = self
+        _admitted: &AdmittedJoinIdentity,
+    ) -> Result<(), String> {
+        let membership = self
             .membership
             .as_ref()
-            .ok_or("native context has no membership authority")?
-            .decide_in_workspace(&route.cluster_id, |workspace| {
-                let workspace = workspace.ok_or("native context workspace is unavailable")?;
-                let agents: Vec<(collab_types::MemberId, String, Option<String>)> = workspace
-                    .policy
-                    .agent_members_at(now)
-                    .into_iter()
-                    .map(|(agent, _)| {
-                        let name = agent.id().to_owned();
-                        (agent, name, None)
-                    })
-                    .collect();
-                let people = self.people_members(workspace);
-                Ok::<_, &str>((agents, people))
-            })??;
-        let listed = self
-            .services
-            .agents
-            .as_deref()
-            .map(|roster| roster.listed(&route.cluster_id))
-            .unwrap_or_default();
-        let agents = Self::named_agent_members(agents, listed);
-        let self_id = Self::member_id(admitted);
-        let mut mine: Option<collab_types::Member> = None;
-        let mut members =
-            Vec::with_capacity(agents.len().saturating_add(people.len()).saturating_add(1));
-        for row in people {
-            if row.id == self_id {
-                mine = Some(row);
-            } else {
-                members.push(row);
+            .ok_or("native context has no membership authority")?;
+        let now = self.policy_now_ns()? / 1_000_000_000;
+        membership.decide_in_workspace(&route.cluster_id, |workspace| {
+            let workspace = workspace.ok_or("native context workspace is unavailable")?;
+            // An agent the workspace admits is named by its id and the person it acts for, and
+            // an id its terms forbid names nobody.
+            for (agent, _) in workspace.policy.agent_members_at(now) {
+                tilo_peer_state::workspace_membership::valid_agent_id(agent.id())
+                    .map_err(|_| "native context contains a noncanonical agent identity")?;
             }
-        }
-        for (agent, name, avatar) in agents {
-            tilo_peer_state::workspace_membership::valid_agent_id(agent.id())
-                .map_err(|_| "native context contains a noncanonical agent identity")?;
-            let mut row = collab_types::Member::of_software(agent, name);
-            row.avatar = avatar.as_deref().and_then(collab_types::avatar_of);
-            if row.id == self_id {
-                mine = Some(row);
-            } else {
-                members.push(row);
-            }
-        }
-        // The person is called what the workspace's member list calls them, as everyone else is;
-        // never by their key. Their own app may show the name their session gives them.
-        let me = mine.unwrap_or_else(|| {
-            collab_types::Member::of_person(
-                &collab_types::Person::new(admitted.actor_key.clone(), String::new()),
-                None,
-            )
-        });
-        members.push(me.claiming_self());
-        if members.iter().filter(|row| row.is_self).count() != 1 {
-            return Err("native context has no exact authenticated self member".into());
-        }
-        Ok(members)
+            Ok::<_, &str>(())
+        })??;
+        Ok(())
     }
     pub(super) fn native_roster_for_subscriber(
         &self,
@@ -685,11 +536,8 @@ impl AppBrokerState {
         let current = self
             .revalidate_admission(route, admitted)
             .map_err(|error| error.to_string())?;
-        let roster = self.native_membership_roster(route, &current)?;
-        Ok(Some(NativeContext {
-            admitted: current,
-            roster,
-        }))
+        self.native_membership_roster(route, &current)?;
+        Ok(Some(NativeContext { admitted: current }))
     }
     /// What each app installed on this device is called, as the host's authority knows it: what
     /// a window's history names another app's change by. Presentation only.
@@ -702,11 +550,11 @@ impl AppBrokerState {
     pub(super) fn refresh_workspace_context_services(&self) -> Result<(), String> {
         for (channel, peer_id, admitted) in self.native_context_targets()? {
             let route = CrdtRoute::from_channel_key(&channel);
-            let Ok(current) = self.revalidate_admission(&route, &admitted) else {
+            if self.revalidate_admission(&route, &admitted).is_err() {
                 self.drop_context_subscriber(&channel, peer_id, &admitted)?;
                 continue;
-            };
-            self.tell_context_subscriber(&route, &channel, peer_id, &admitted, &current)?;
+            }
+            self.tell_context_subscriber(&channel, peer_id, &admitted)?;
         }
         Ok(())
     }
@@ -764,32 +612,20 @@ impl AppBrokerState {
         }
         Ok(())
     }
-    /// Tell one native context subscriber what its workspace's governance now
-    /// admits: the roster, and the name of every app installed here, when one
-    /// was installed or removed since it was last told. Returns whether it
-    /// heard something new.
+    /// Tell one native context subscriber that its workspace's membership may have moved: who
+    /// the members are is its `workspace/members` resource, which the window reads again
+    /// through the store, and the names of the apps installed here are sent with it when one
+    /// was installed or removed since it was last told. Returns whether it heard something.
     pub(super) fn tell_context_subscriber(
         &self,
-        route: &CrdtRoute,
         channel: &str,
         peer_id: u64,
         admitted: &AdmittedJoinIdentity,
-        current: &AdmittedJoinIdentity,
     ) -> Result<bool, String> {
-        fn same_roster(left: &[collaboration::Member], right: &[collaboration::Member]) -> bool {
-            left.len() == right.len()
-                && left.iter().zip(right).all(|(left, right)| {
-                    left.id == right.id
-                        && left.name == right.name
-                        && left.avatar == right.avatar
-                        && left.packed_colour() == right.packed_colour()
-                        && left.is_self == right.is_self
-                        && left.removed == right.removed
-                })
-        }
-
-        let roster = self.native_membership_roster(route, current)?;
         let apps = self.installed_apps();
+        let members_moved = ContextUpdate::RecordsMoved(vec![
+            tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned(),
+        ]);
         let mut channels = self
             .channels
             .lock()
@@ -803,14 +639,16 @@ impl AppBrokerState {
                 if subscriber.peer_id != peer_id || native.admitted != *admitted {
                     return true;
                 }
-                if same_roster(&native.roster, &roster) && subscriber.apps == apps {
-                    return true;
+                if subscriber.tx.send(members_moved.clone()).is_err() {
+                    return false;
                 }
                 changed = true;
+                if subscriber.apps == apps {
+                    return true;
+                }
                 if subscriber
                     .tx
                     .send(ContextUpdate::Snapshot {
-                        members: roster.clone(),
                         permissions: Vec::new(),
                         apps: apps.clone(),
                     })
@@ -818,7 +656,6 @@ impl AppBrokerState {
                 {
                     return false;
                 }
-                native.roster.clone_from(&roster);
                 subscriber.apps.clone_from(&apps);
                 true
             });

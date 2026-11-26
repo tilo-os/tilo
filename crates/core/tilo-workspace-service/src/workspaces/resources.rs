@@ -1826,6 +1826,19 @@ impl Workspaces {
         reader: &str,
         command: &collab_types::store::wire::Command,
     ) -> Result<collab_types::store::wire::Reply, String> {
+        // Who is in the workspace is its governance's to say, never a record an app keeps
+        // beside it: its names, roles, join times and pictures are read here, where the
+        // workspace's profiles and its record of its agents are.
+        if is_workspace_members_read(command) {
+            let reading = self
+                .reading_of(workspace)
+                .await
+                .ok_or_else(|| "this server does not hold that workspace".to_owned())?;
+            let peer = reading.replica.read(tilo_peer_state::StatePeer::clone);
+            return Ok(collab_types::store::wire::Reply::Content(Some(
+                workspace_members(self, &peer, &self.agents_named(workspace).await)?,
+            )));
+        }
         if let Some(answer) = self.read_record_now(workspace, reader, command) {
             return answer;
         }
@@ -1836,6 +1849,33 @@ impl Workspaces {
             .await
             .ok_or_else(|| "this server does not hold that workspace".to_owned())?;
         read_from(&reading, reader, command)
+    }
+
+    /// The agents that work in `workspace`, as its record of its agents names them, for the
+    /// members' resource.
+    #[allow(
+        clippy::unused_async,
+        reason = "a host that serves no apps names no agent, and answers as at once as one that does"
+    )]
+    async fn agents_named(&self, workspace: &str) -> Vec<AgentRow> {
+        #[cfg(feature = "apps")]
+        {
+            self.listed_agents(workspace)
+                .await
+                .into_iter()
+                .map(|agent| AgentRow {
+                    id: agent.id,
+                    name: agent.name,
+                    avatar: agent.avatar,
+                    acts_for: agent.acts_for,
+                })
+                .collect()
+        }
+        #[cfg(not(feature = "apps"))]
+        {
+            let _ = workspace;
+            Vec::new()
+        }
     }
 
     /// Answer `command`, a read of `workspace`'s record as `reader` reads it, from the store the
@@ -1849,6 +1889,11 @@ impl Workspaces {
         reader: &str,
         command: &collab_types::store::wire::Command,
     ) -> Option<Result<collab_types::store::wire::Reply, String>> {
+        if is_workspace_members_read(command) {
+            // Read from the governance and the profiles, which a held reading alone does not
+            // answer: [`Self::resource_read`] does.
+            return None;
+        }
         self.inner
             .readings
             .held(workspace)
@@ -1887,17 +1932,6 @@ fn read_from(
     use collab_types::store::wire::{Command, Reply};
     use tilo_lock::MutexRecover as _;
     use tilo_resource_store::wire::read;
-    // Who is in the workspace is its governance's to say: the one member list every port that
-    // reaches the workspace reads, never a record an app keeps beside it. It is read off the
-    // replica alone, with the store not held.
-    if let Command::Content { kind, id } = command
-        && kind == tilo_resource_store::WORKSPACE_MEMBERS_KIND
-        && id == tilo_resource_store::WORKSPACE_MEMBERS_ID
-    {
-        return Ok(Reply::Content(Some(
-            reading.replica.read(workspace_members)?,
-        )));
-    }
     let may_read = may_read(reader.to_owned());
     let mut store = reading.store.lock_recover();
     let answer = match command {
@@ -1990,25 +2024,115 @@ pub(super) fn member_rows(
         .collect())
 }
 
+/// Whether `command` reads the workspace's members' resource, which its governance answers.
+fn is_workspace_members_read(command: &collab_types::store::wire::Command) -> bool {
+    matches!(
+        command,
+        collab_types::store::wire::Command::Content { kind, id }
+            if kind == tilo_resource_store::WORKSPACE_MEMBERS_KIND
+                && id == tilo_resource_store::WORKSPACE_MEMBERS_ID
+    )
+}
+
 /// The workspace's members' resource as its governance has them: its owner and its members,
-/// none who are blocked (they hold nothing), each as the actor a view reads them as.
-fn workspace_members(peer: &tilo_peer_state::StatePeer) -> Result<serde_json::Value, String> {
+/// none who are blocked (they hold nothing), then the agents its grants admit and the bots they
+/// installed. Each row carries what a view shows of them — the name the workspace keeps, their
+/// role, when they joined and the picture they set — so every surface that shows people reads
+/// them here, through the store.
+fn workspace_members(
+    workspaces: &Workspaces,
+    peer: &tilo_peer_state::StatePeer,
+    agents: &[AgentRow],
+) -> Result<serde_json::Value, String> {
+    let now = tilo_clock::unix_now_ns() / 1_000_000_000;
     let policy = peer.governance().member_policy()?;
-    let people: std::collections::BTreeSet<&String> =
-        policy.owner.iter().chain(policy.members.keys()).collect();
-    let people = people
-        .into_iter()
-        .filter(|person| !policy.is_blocked(person))
-        .map(|person| {
-            let who = tilo_actions::Actor::Member(tilo_actions::MemberId::Person(
-                tilo_actions::PersonId::from(person.as_str()),
-            ));
-            serde_json::to_value(who)
-                .map(|who| serde_json::json!({ "actor": who }))
-                .map_err(|error| error.to_string())
+    let listed = peer.governance().member_list(tilo_clock::wall())?;
+    let mut rows: Vec<serde_json::Value> = Vec::new();
+    for member in &listed.members {
+        let Some(root) = member.root() else {
+            continue;
+        };
+        let person = hex::encode(root);
+        if !member.removed && policy.is_blocked(&person) {
+            continue;
+        }
+        let who = tilo_actions::Actor::Member(tilo_actions::MemberId::Person(
+            tilo_actions::PersonId::from(person.as_str()),
+        ));
+        let mut row = serde_json::json!({
+            "actor": serde_json::to_value(&who).map_err(|error| error.to_string())?,
+            "name": member.name,
+            "removed": member.removed,
+        });
+        if let Some(role) = member.role {
+            row["role"] = serde_json::to_value(role).map_err(|error| error.to_string())?;
+        }
+        if let Some(joined) = policy.joined_at(&person) {
+            row["joined_at"] = serde_json::json!(joined);
+        }
+        if let Some(photo) = workspaces
+            .person_profile_photo(&root)
+            .and_then(|bytes| collab_types::photo_url(&bytes))
+        {
+            row["photo"] = serde_json::json!(photo);
+        }
+        rows.push(row);
+    }
+    for (agent, _) in policy.agent_members_at(now) {
+        let id = agent.id().to_owned();
+        let acts_for = agent
+            .as_agent()
+            .map_or_else(String::new, |(_, person)| person.as_str().to_owned());
+        let named = agents
+            .iter()
+            .find(|named| named.id == id && named.acts_for == acts_for);
+        let mut row = serde_json::json!({
+            "actor": serde_json::to_value(tilo_actions::Actor::Member(agent.clone()))
+                .map_err(|error| error.to_string())?,
+            "name": named.map_or_else(|| id.clone(), |named| named.name.clone()),
+            "removed": false,
+        });
+        if let Some(photo) = named
+            .and_then(|named| named.avatar.as_deref())
+            .and_then(collab_types::avatar_of)
+            .and_then(|avatar| collab_types::photo_url(&avatar.0))
+        {
+            row["photo"] = serde_json::json!(photo);
+        }
+        rows.push(row);
+    }
+    // The workspace's installed bots: the grants it made them name them, and a bot reads what
+    // they allow it through the host that runs it.
+    let mut bots: Vec<String> = policy
+        .grants
+        .iter()
+        .filter_map(|grant| match &grant.grantee {
+            tilo_action_policy::Grantee::Member(tilo_action_policy::MemberId::Bot(bot)) => {
+                Some(bot.clone())
+            }
+            _ => None,
         })
-        .collect::<Result<Vec<_>, String>>()?;
-    Ok(serde_json::json!({ "people": people }))
+        .collect();
+    bots.sort_unstable();
+    bots.dedup();
+    for bot in bots {
+        let who =
+            tilo_actions::Actor::Member(tilo_action_policy::MemberId::Bot(bot.clone()));
+        rows.push(serde_json::json!({
+            "actor": serde_json::to_value(&who).map_err(|error| error.to_string())?,
+            "name": bot,
+            "removed": false,
+        }));
+    }
+    Ok(serde_json::json!({ "people": rows }))
+}
+
+/// An agent as the workspace's record of its agents names it, for the members' resource.
+pub(crate) struct AgentRow {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) avatar: Option<String>,
+    pub(crate) acts_for: String,
 }
 
 impl Workspaces {

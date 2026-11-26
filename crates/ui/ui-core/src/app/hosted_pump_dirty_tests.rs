@@ -341,7 +341,6 @@ tilo_test_env::scenario! {
         // Remote document bytes enter only with an inbound collaboration event.
         fixture.app.state.doc.put(ROOT, "more", true).unwrap();
         fixture.events.borrow_mut().push(CollabEvent::Context {
-            members: vec![],
             permissions: vec![],
             apps: Vec::new(),
         });

@@ -17,7 +17,7 @@
 //! and its peers already exchange, such as a presence frame ([`Presence`]),
 //! which the workspace's live session carries unchanged.
 
-use collab_types::presence::{Member, Presence};
+use collab_types::presence::Presence;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -478,10 +478,10 @@ pub enum Event {
 /// One change of a record's context.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum ContextUpdate {
-    /// The roster, this endpoint's permissions, and the apps installed on
-    /// this device, replacing the last.
+    /// This endpoint's permissions and the apps installed on this device,
+    /// replacing the last. Who the workspace's members are is its
+    /// `workspace/members` resource, read through the store.
     Snapshot {
-        members: Vec<Member>,
         permissions: Vec<String>,
         /// What each installed app is called, in each language its package
         /// names it in: a window names another app's changes by these, never
@@ -632,31 +632,25 @@ mod tests {
             assert!(!shown.contains("hunter2"), "a log shows no typed answer: {shown}");
         }
 
-        phase a_roster_of_rows_without_their_optional_parts_round_trips;
-        // A roster row without a role, avatar, join time or self mark reaches the endpoint as it
-        // was sent: postcard reads fields by position, so a row that left one out would not decode
-        // and the endpoint would take it for the host hanging up.
+        phase a_context_snapshot_carries_permissions_and_app_names;
+        // The context carries this endpoint's permissions and what the apps installed here are
+        // called, and no member list: who the members are is the workspace's `workspace/members`
+        // resource, read through the store.
         {
-            let bare = collab_types::Member::of_person(&collab_types::Person::new("p-1", "Ada"), None);
-            let full = collab_types::Member::of_person(
-                &collab_types::Person::new("p-2", "Grace"),
-                Some(collab_types::Role::Owner),
-            )
-            .joined_at(Some(5))
-            .claiming_self();
-            for members in [vec![bare.clone()], vec![full.clone()], vec![bare, full]] {
-                let frame = HostFrame::Event {
-                    subscription: 2,
-                    event: Event::Context(ContextUpdate::Snapshot {
-                        members,
-                        permissions: vec!["edit".into()],
-                        apps: Vec::new(),
-                    }),
-                };
-                let bytes = FRAMING.encode_value(&frame).unwrap();
-                let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
-                assert_eq!(read, frame);
-            }
+            let frame = HostFrame::Event {
+                subscription: 2,
+                event: Event::Context(ContextUpdate::Snapshot {
+                    permissions: vec!["edit".into(), "read".into()],
+                    apps: vec![collab_types::history::NamedApp {
+                        id: "so.tilo.notes".into(),
+                        name: "Notes".into(),
+                        names: std::collections::BTreeMap::new(),
+                    }],
+                }),
+            };
+            let bytes = FRAMING.encode_value(&frame).unwrap();
+            let read: HostFrame = FRAMING.read_value(&mut bytes.as_slice()).unwrap().unwrap();
+            assert_eq!(read, frame);
         }
     }
 }

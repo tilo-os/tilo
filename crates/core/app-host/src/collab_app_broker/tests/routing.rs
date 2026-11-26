@@ -164,8 +164,11 @@ async fn an_effects_follow_up_names_the_root_its_window_published_under_an_alias
         .await;
 }
 
+/// The workspace's membership for a native subscriber is its `workspace/members` resource, kept
+/// by the store: the context tells it when that resource may have moved and never carries the
+/// members itself, and app-authored context never reaches a native subscriber.
 #[tokio::test(flavor = "current_thread")]
-async fn a_connection_calls_its_own_person_what_the_member_list_calls_them() {
+async fn a_native_context_subscriber_is_told_where_the_members_are() {
     struct NativeWorkspace(String);
     impl crate::services::WorkspaceMemberships for NativeWorkspace {
         fn requires_workspace(&self, workspace: &str) -> bool {
@@ -178,28 +181,17 @@ async fn a_connection_calls_its_own_person_what_the_member_list_calls_them() {
             _: tilo_user_identity::DeviceCert,
             _: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
         ) -> crate::services::WorkspaceMembershipFuture {
-            Box::pin(async { Err("roster fixture never commits owner state".into()) })
+            Box::pin(async { Err("the fixture never commits owner state".into()) })
         }
     }
 
-    let root = SigningKey::from_bytes(&[47; 32]);
+    let root = SigningKey::from_bytes(&[57; 32]);
     let person = person_id_for_root(root.verifying_key().to_bytes());
     let mut workspace = crate::test_support::Workspace::new(
-        crate::test_support::WorkspaceId::from_u128(47),
+        crate::test_support::WorkspaceId::from_u128(57),
         "Studio",
     );
     workspace.policy.set_owner(person.clone());
-    workspace.members.push(collab_types::Member::of_person(
-        &collab_types::Person::new(person, "Ada"),
-        None,
-    ));
-    // A person nowhere near, whose own device named them and the workspace's governance keeps
-    // that name: no member row here names them.
-    let absent = "b".repeat(64);
-    workspace
-        .policy
-        .add_member(absent.clone(), crate::test_support::Role::Editor);
-    assert!(workspace.named_people([(absent.as_str(), "Ben")]));
     let workspace_id = workspace.id().to_string();
     let mut tree = WorkspaceTree::default();
     tree.workspaces.push(workspace);
@@ -219,24 +211,47 @@ async fn a_connection_calls_its_own_person_what_the_member_list_calls_them() {
         },
     );
     fanout.attach_app_broker(state.clone());
-    let roster = state.native_membership_roster(&route, &admitted).unwrap();
-    let me = roster
-        .iter()
-        .find(|row| row.is_self)
-        .expect("the person's own row");
-    assert_eq!(me.name, "Ada", "never their key: {roster:?}");
-    let row = roster
-        .iter()
-        .find(|row| row.id == collab_types::MemberId::person(absent.clone()))
-        .expect("the absent person's row");
+
+    let elsewhere = CrdtRoute::record("so.tilo.chat", uuid::Uuid::new_v4().to_string(), "main");
+    assert!(
+        state
+            .native_roster_for_subscriber(&elsewhere, &admitted)
+            .unwrap()
+            .is_none(),
+        "a workspace the native owner did not select keeps ordinary app context"
+    );
+    let native = state
+        .native_roster_for_subscriber(&route, &admitted)
+        .unwrap()
+        .expect("the actual owner selects this native workspace");
+    let channel = route.channel_key();
+    let mut stream = state.subscribe_context(&channel, 46, Some(native));
+    assert!(matches!(
+        stream.try_recv(),
+        Ok(ContextUpdate::Snapshot { .. })
+    ));
+    state.refresh_workspace_context_services().unwrap();
     assert_eq!(
-        row.name, "Ben",
-        "someone who is not here is called what the governance names them"
+        stream.try_recv().unwrap(),
+        ContextUpdate::RecordsMoved(vec![
+            tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned()
+        ]),
+        "the window is told where the members are, not who they are"
+    );
+    {
+        let mut channels = state.channels.lock().unwrap();
+        AppBrokerState::fanout_context(channels.values_mut(), u64::MAX, &[], &[]);
+    }
+    assert!(
+        stream.try_recv().is_err(),
+        "app context must not replace an authenticated native subscriber"
     );
 }
 
+/// An agent id the workspace's terms forbid admits nobody: a native subscriber is refused
+/// rather than shown a membership the workspace may not have.
 #[tokio::test(flavor = "current_thread")]
-async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
+async fn a_native_context_refuses_a_noncanonical_agent_identity() {
     struct NativeWorkspace(String);
     impl crate::services::WorkspaceMemberships for NativeWorkspace {
         fn requires_workspace(&self, workspace: &str) -> bool {
@@ -249,261 +264,40 @@ async fn native_context_projects_canonical_agents_and_withdraws_exactly() {
             _: tilo_user_identity::DeviceCert,
             _: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
         ) -> crate::services::WorkspaceMembershipFuture {
-            Box::pin(async { Err("roster fixture never commits owner state".into()) })
+            Box::pin(async { Err("the fixture never commits owner state".into()) })
         }
     }
 
-    let root = SigningKey::from_bytes(&[46; 32]);
+    let root = SigningKey::from_bytes(&[58; 32]);
     let person = person_id_for_root(root.verifying_key().to_bytes());
-    let tide = "tide";
-    let reed = "reed";
     let mut workspace = crate::test_support::Workspace::new(
-        crate::test_support::WorkspaceId::from_u128(46),
-        "Roster",
+        crate::test_support::WorkspaceId::from_u128(58),
+        "Studio",
     );
     workspace.policy.set_owner(person.clone());
+    let _ = workspace.allow_agent("Not Canonical", crate::test_support::KindSet::READ);
     let workspace_id = workspace.id().to_string();
-    let other_person = "other-person";
-    workspace
-        .policy
-        .add_member(other_person, crate::test_support::Role::Viewer);
-    workspace.policy.joined.insert(other_person.into(), 7_000);
-    workspace.allow_in_workspace(
-        crate::test_support::Grantee::person("person-in-other-workspace"),
-        &uuid::Uuid::new_v4().to_string(),
-        crate::test_support::KindSet::READ,
-    );
-    let collision = workspace.allow_agent(&person, crate::test_support::KindSet::READ);
-    workspace.allow_agent(tide, crate::test_support::KindSet::READ);
-    workspace.allow_in_workspace(
-        crate::test_support::Grantee::agent("wrong-workspace", "person-in-other-workspace"),
-        &uuid::Uuid::new_v4().to_string(),
-        crate::test_support::KindSet::READ,
-    );
     let mut tree = WorkspaceTree::default();
-    tree.workspaces.push(workspace.clone());
+    tree.workspaces.push(workspace);
     let route = CrdtRoute::record("so.tilo.chat", &workspace_id, "main");
     let admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
-    assert_eq!(
-        AppBrokerState::member_id(&admitted),
-        tilo_actions::MemberId::person(person.clone())
-    );
-    let membership = tree.shared();
     let fanout = Arc::new(FanoutState::new());
     let (state, _bridge_rx) = AppBrokerState::new_configured(
         &fanout,
         Arc::new(Mutex::new(BrokerChannels::default())),
         PeerPublisher::disabled(),
-        Some(membership.authority()),
+        Some(tree.shared().authority()),
         None,
         None,
         ProcessServices {
-            workspace_memberships: Some(Arc::new(NativeWorkspace(workspace_id.clone()))),
+            workspace_memberships: Some(Arc::new(NativeWorkspace(workspace_id))),
             ..Default::default()
         },
     );
     fanout.attach_app_broker(state.clone());
-
-    let roster = state.native_membership_roster(&route, &admitted).unwrap();
-    let legacy_route = CrdtRoute::record("so.tilo.chat", uuid::Uuid::new_v4().to_string(), "main");
     assert!(
-        state
-            .native_roster_for_subscriber(&legacy_route, &admitted)
-            .unwrap()
-            .is_none(),
-        "a workspace the native owner did not select keeps ordinary app context"
-    );
-    assert_eq!(roster.iter().filter(|row| row.is_self).count(), 1);
-    assert!(
-        roster
-            .iter()
-            .any(|row| row.id == collab_types::MemberId::person(person.clone()))
-    );
-    assert!(
-        roster
-            .iter()
-            .all(|row| row.id != collab_types::MemberId::person("person-in-other-workspace"))
-    );
-    assert!(
-        roster
-            .iter()
-            .any(|row| { row.id == collab_types::MemberId::person(other_person) && !row.is_self })
-    );
-    // When each person joined travels with their row, so every replica
-    // numbers namesakes alike; the owner holds the workspace from its start.
-    let joined =
-        |id: collab_types::MemberId| roster.iter().find(|row| row.id == id).unwrap().joined_at;
-    assert_eq!(
-        joined(collab_types::MemberId::person(other_person)),
-        Some(7_000)
-    );
-    assert_eq!(
-        roster.iter().find(|row| row.is_self).unwrap().joined_at,
-        Some(0)
-    );
-    assert_eq!(joined(collab_types::MemberId::agent(tide, "ada")), None);
-    assert!(
-        roster.iter().any(
-            |row| row.id == collab_types::MemberId::agent(person.clone(), "ada") && !row.is_self
-        )
-    );
-    assert!(
-        roster
-            .iter()
-            .any(|row| row.id == collab_types::MemberId::agent(tide, "ada"))
-    );
-    assert!(
-        roster.iter().all(|row| row.id
-            != collab_types::MemberId::agent("wrong-workspace", "person-in-other-workspace")),
-        "a grant for another workspace is not native membership here"
-    );
-    assert!(
-        state
-            .native_membership_roster(
-                &CrdtRoute::record("so.tilo.chat", uuid::Uuid::new_v4().to_string(), "main",),
-                &admitted,
-            )
-            .is_err()
-    );
-    // An agent wears the colour its face wears everywhere, so the card it
-    // shows in a window is drawn as the bar draws it.
-    for agent in roster.iter().filter(|row| !row.id.is_person()) {
-        assert_eq!(
-            agent.colour,
-            collab_types::presence::PresenceHue::of_member(&agent.id),
-            "{}",
-            agent.id
-        );
-    }
-
-    let channel = route.channel_key();
-    let native = state
-        .native_roster_for_subscriber(&route, &admitted)
-        .unwrap()
-        .expect("the actual owner selects this native workspace");
-    assert!(state.host_workers.lock().unwrap().is_empty());
-    let mut parallel = state.subscribe_context(&channel, 46, Some(native.clone()));
-    assert!(matches!(
-        parallel.try_recv(),
-        Ok(ContextUpdate::Snapshot { .. })
-    ));
-    let mut stream = state.subscribe_context(&channel, 46, Some(native.clone()));
-    let mut ordinary = state.subscribe_context(&channel, 47, None);
-    assert!(matches!(
-        stream.try_recv(),
-        Ok(ContextUpdate::Snapshot { .. })
-    ));
-    let forged = collab_types::Member::of_software(
-        collab_types::MemberId::agent("forged", "fixture-owner"),
-        "forged",
-    );
-    {
-        let mut channels = state.channels.lock().unwrap();
-        AppBrokerState::fanout_context(
-            channels.values_mut(),
-            u64::MAX,
-            std::slice::from_ref(&forged),
-            &[],
-            &[],
-        );
-    }
-    assert!(
-        stream.try_recv().is_err(),
-        "app context must not replace an authenticated native roster"
-    );
-    assert!(
-        parallel.try_recv().is_err(),
-        "app context must not replace a parallel authenticated native roster"
-    );
-    let ContextUpdate::Snapshot { members, .. } = ordinary.try_recv().unwrap() else {
-        panic!("ordinary context subscribers still receive app context");
-    };
-    assert_eq!(members.len(), 1);
-    assert_eq!(members[0], forged);
-    assert!(
-        membership.write().workspaces[0]
-            .policy
-            .revoke_grant(&collision)
-    );
-    assert!(
-        membership.write().workspaces[0]
-            .policy
-            .dismiss(other_person)
-    );
-    state.refresh_workspace_context_services().unwrap();
-    let ContextUpdate::Snapshot { members, .. } = stream.try_recv().unwrap() else {
-        panic!("membership refresh must be a complete snapshot");
-    };
-    assert!(
-        members
-            .iter()
-            .all(|row| row.id != collab_types::MemberId::agent(person.clone(), "ada"))
-    );
-    assert!(
-        members
-            .iter()
-            .all(|row| row.id != collab_types::MemberId::person(other_person))
-    );
-    assert!(
-        members
-            .iter()
-            .any(|row| row.id == collab_types::MemberId::person(person.clone()) && row.is_self)
-    );
-    let ContextUpdate::Snapshot { members, .. } = parallel.try_recv().unwrap() else {
-        panic!("every mounted root must receive membership removal");
-    };
-    assert!(
-        members
-            .iter()
-            .all(|row| row.id != collab_types::MemberId::agent(person.clone(), "ada"))
-    );
-    membership.write().workspaces[0].allow_agent(reed, crate::test_support::KindSet::READ);
-    state.refresh_workspace_context_services().unwrap();
-    let ContextUpdate::Snapshot { members, .. } = stream.try_recv().unwrap() else {
-        panic!("membership addition must be a complete snapshot");
-    };
-    assert!(
-        members
-            .iter()
-            .any(|row| row.id == collab_types::MemberId::agent(reed, "ada"))
-    );
-    let ContextUpdate::Snapshot { members, .. } = parallel.try_recv().unwrap() else {
-        panic!("every mounted root must receive membership addition");
-    };
-    assert!(
-        members
-            .iter()
-            .any(|row| row.id == collab_types::MemberId::agent("reed", "ada"))
-    );
-
-    let mut queued = state.subscribe_context(&channel, 48, Some(native.clone()));
-    assert!(matches!(
-        queued.try_recv(),
-        Ok(ContextUpdate::Snapshot { .. })
-    ));
-    let queued = Rc::new(AsyncMutex::new(wire::Feed::new(queued).with_native_guard(
-        Some(NativeContextReadGuard {
-            state: state.clone(),
-            route: route.clone(),
-            identity: native.admitted,
-        }),
-    )));
-    let reading = Rc::clone(&queued);
-    let mut pending = Box::pin(async move { reading.lock().await.next().await });
-    // The actual stream read must be waiting before revocation: it holds
-    // the queue while it waits for the next envelope.
-    tilo_test_env::within("the stream read to wait for an envelope", async {
-        while queued.try_lock().is_ok() {
-            assert!(futures::poll!(&mut pending).is_pending());
-            tokio::task::yield_now().await;
-        }
-    })
-    .await;
-    membership.write().workspaces[0].policy.owner = None;
-    state.refresh_workspace_context_services().unwrap();
-    assert!(
-        !matches!(pending.await, Ok(Some(_))),
-        "revocation must terminate an already waiting native read"
+        state.native_membership_roster(&route, &admitted).is_err(),
+        "an agent id the workspace's terms forbid names nobody"
     );
 }
 
@@ -1056,188 +850,3 @@ tilo_test_env::scenario! {
 
 }
 
-/// The roster an app reads names each member as they set themselves: the picture a person keeps
-/// in their profile, and an agent's persona from the workspace's record of its agents. What a
-/// window draws as an author's face comes from these rows.
-#[tokio::test(flavor = "current_thread")]
-async fn the_member_list_draws_a_persons_profile_picture_and_an_agents_persona() {
-    /// The image a person set, and the picture an agent's persona keeps: a 1-by-1 PNG.
-    const PNG: &[u8] = b"\x89PNG\r\n\x1a\n\x1a\n\x00\x00\x00\rIHDR";
-    const PERSONA: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAAA1BMVEX///+nxBvIAAAAAXRSTlMAQObYZgAAAAxJREFUeNoBgAEAAP//AwABWgH+AAAAAElFTkSuQmCC";
-
-    struct Photos([u8; 32]);
-
-    impl crate::services::WorkspaceMemberships for Photos {
-        fn requires_workspace(&self, _: &str) -> bool {
-            true
-        }
-
-        fn execute(
-            &self,
-            _: String,
-            _: tilo_user_identity::DeviceCert,
-            _: tilo_peer_state::workspace_membership::WorkspaceMembershipCommand,
-        ) -> crate::services::WorkspaceMembershipFuture {
-            Box::pin(async { Err("roster fixture never commits owner state".into()) })
-        }
-
-        fn person_photo(&self, person: &[u8; 32]) -> Option<Vec<u8>> {
-            (person == &self.0).then(|| PNG.to_vec())
-        }
-    }
-
-    /// Ada's agent Scout.
-    struct Scouts(String);
-
-    impl crate::services::AgentRoster for Scouts {
-        fn listed(&self, _: &str) -> Vec<crate::services::ListedAgent> {
-            vec![crate::services::ListedAgent {
-                id: "scout".to_owned(),
-                name: "Scout".to_owned(),
-                avatar: Some(PERSONA.to_owned()),
-                acts_for: self.0.clone(),
-            }]
-        }
-    }
-
-    let root = SigningKey::from_bytes(&[52; 32]);
-    let person = person_id_for_root(root.verifying_key().to_bytes());
-    let mut workspace = crate::test_support::Workspace::new(
-        crate::test_support::WorkspaceId::from_u128(52),
-        "Personas",
-    );
-    workspace.policy.set_owner(person.clone());
-    workspace.members.push(collab_types::Member::of_person(
-        &collab_types::Person::new(person.clone(), "Ada"),
-        None,
-    ));
-    let cluster_id = workspace.id().to_string();
-    let mut tree = WorkspaceTree::default();
-    tree.workspaces.push(workspace);
-    let route = CrdtRoute::record("so.tilo.lang.chat", &cluster_id, "main");
-    let admitted = admit_verified_join(&tree, &route, verified_device(&root)).unwrap();
-    let fanout = Arc::new(FanoutState::new());
-    let (state, _bridge_rx) = AppBrokerState::new_configured(
-        &fanout,
-        Arc::new(Mutex::new(BrokerChannels::default())),
-        PeerPublisher::disabled(),
-        Some(tree.shared().authority()),
-        None,
-        None,
-        ProcessServices {
-            workspace_memberships: Some(Arc::new(Photos(root.verifying_key().to_bytes()))),
-            agents: Some(Arc::new(Scouts(person.clone()))),
-            ..Default::default()
-        },
-    );
-    fanout.attach_app_broker(state.clone());
-    let roster = state.native_membership_roster(&route, &admitted).unwrap();
-    let me = roster.iter().find(|row| row.is_self).expect("Ada's row");
-    assert_eq!(
-        me.avatar.as_ref().map(|avatar| avatar.0.as_slice()),
-        Some(PNG),
-        "the picture Ada set in her profile: {me:?}"
-    );
-    let scout = roster
-        .iter()
-        .find(|row| row.id == collab_types::MemberId::agent("scout", person.as_str()))
-        .expect("Scout's row");
-    assert_eq!(scout.name, "Scout", "the audience reads its persona's name");
-    assert_eq!(
-        scout.avatar,
-        collab_types::avatar_of(PERSONA),
-        "and the picture its persona keeps"
-    );
-}
-
-/// The member list a daemon serves pictures a person whose profile the host keeps: another
-/// member reading it sees their face, though the two are on different devices and the daemon is
-/// the only place the profile lives.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_members_picture_reaches_another_member_through_the_daemons_member_list() {
-    use tilo_workspace_service::workspaces::PersonNames;
-    use tilo_workspace_service::workspaces::fixtures::{hosting_device, test_host};
-
-    /// A picture a profile keeps: a 1-by-1 PNG.
-    const PHOTO: &[u8] = b"\x89PNG\r\n\x1a\n\x1a\n\x00\x00\x00\rIHDR";
-
-    struct KeptPhotos([u8; 32]);
-
-    impl PersonNames for KeptPhotos {
-        fn name_of(&self, _: &[u8; 32]) -> Option<String> {
-            None
-        }
-
-        fn keep_name(&self, _: &[u8; 32], _: &str) -> Result<(), String> {
-            Ok(())
-        }
-
-        fn photo_of(&self, person: &[u8; 32]) -> Option<Vec<u8>> {
-            (person == &self.0).then(|| PHOTO.to_vec())
-        }
-    }
-
-    // The hosted daemon: a workspace service keeping its member's profile.
-    let dir = tempfile::tempdir().expect("a state directory");
-    let (key, cert) = hosting_device();
-    let host = test_host(dir.path(), &key, &cert).await;
-    host.workspaces()
-        .person_names(Arc::new(KeptPhotos(cert.user_public_key)));
-
-    // Ada holds the workspace here; Bo reads it from another device.
-    let ada = person_id_for_root(cert.user_public_key);
-    let bo_root = SigningKey::from_bytes(&[53; 32]);
-    let bo = hex::encode(bo_root.verifying_key().to_bytes());
-    let mut workspace = crate::test_support::Workspace::new(
-        crate::test_support::WorkspaceId::from_u128(53),
-        "Pictured",
-    );
-    workspace.policy.set_owner(ada.clone());
-    workspace.members.push(collab_types::Member::of_person(
-        &collab_types::Person::new(ada, "Ada"),
-        None,
-    ));
-    workspace
-        .policy
-        .add_member(bo.clone(), crate::test_support::Role::Editor);
-    let cluster_id = workspace.id().to_string();
-    let mut tree = WorkspaceTree::default();
-    tree.workspaces.push(workspace);
-
-    let route = CrdtRoute::record("so.tilo.lang.chat", &cluster_id, "main");
-    let admitted = admit_verified_join(&tree, &route, verified_device(&bo_root)).unwrap();
-    let membership = tree.shared();
-    let fanout = Arc::new(FanoutState::new());
-    let (state, _bridge_rx) = AppBrokerState::new_configured(
-        &fanout,
-        Arc::new(Mutex::new(BrokerChannels::default())),
-        PeerPublisher::disabled(),
-        Some(membership.authority()),
-        None,
-        None,
-        ProcessServices {
-            // The service the daemon installs on its broker.
-            workspace_memberships: Some(
-                tilo_workspace_service::workspaces::ProfileMemberships::new(
-                    host.workspaces().clone(),
-                    membership.authority(),
-                ) as Arc<dyn crate::services::WorkspaceMemberships>,
-            ),
-            ..Default::default()
-        },
-    );
-    fanout.attach_app_broker(state.clone());
-    let members = state.native_membership_roster(&route, &admitted).unwrap();
-    let ada = members
-        .iter()
-        .find(|row| {
-            row.id == collab_types::MemberId::person(person_id_for_root(cert.user_public_key))
-        })
-        .expect("Ada's row");
-    assert_eq!(
-        ada.avatar.as_ref().map(|avatar| avatar.0.as_slice()),
-        Some(PHOTO),
-        "the picture her profile holds reaches the member list another member reads: {ada:?}"
-    );
-    host.shutdown().await;
-}

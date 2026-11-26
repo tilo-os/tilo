@@ -1,22 +1,20 @@
 //! How a view names the workspace's members.
 //!
-//! The document holds ids, the same on every replica; the workspace's member list knows the names:
+//! The document holds ids, the same on every replica; the workspace's members' resource knows the names:
 //! what it calls each member, the instance's own person among them. A tilolang host names
-//! people by the list its instance's connection heard last ([`Told`]).
+//! people by its last read of that resource ([`HostNames`]).
 //!
 //! Naming is by what a member is ([`named`]): a person by their name, an app by its own
 //! name, an agent by the name it goes by. A history row, a presence mark and a catch-up line say
 //! who acted, never an internal id and never part of one.
 
 use std::cell::RefCell;
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use collab_types::history::authors::{MemberNames, UNKNOWN_AUTHOR_NAME, name_words};
 
 use crate::runtime::ids::MemberId;
 use crate::runtime::{Actor, NameHost};
-use tilo_action_policy::PersonId;
 
 /// The name of `who` to a reader who calls people, apps and agents as `names` does: a sample
 /// person or agent a scenario named by that name, an app acting by itself (one of its triggers,
@@ -67,105 +65,60 @@ impl NameHost for Installed {
     }
 }
 
-/// What the member list calls the members, and the colour it paints each in.
-#[derive(Default, PartialEq, Eq)]
-struct Said {
-    me: Option<String>,
-    others: HashMap<MemberId, String>,
-    hues: HashMap<MemberId, u8>,
-    pictures: HashMap<MemberId, String>,
-}
-
-/// The names an instance shows people by: what its host heard the member list call them
-/// ([`Told::tell`]) first, and what its embedder knows otherwise.
-pub struct Told {
-    me: PersonId,
-    said: RefCell<Said>,
+/// The names a view shows people by: what the host read of the workspace's members' resource
+/// names each ([`Host::member_rows`](crate::host::Host::member_rows)), and what its embedder
+/// knows otherwise. The sheet a view draws is the one place a name is resolved, so a rename, a
+/// new member or one removed moves every view with the host's next read.
+pub struct HostNames {
+    host: Rc<RefCell<Option<crate::host::Host>>>,
     otherwise: Rc<dyn NameHost>,
 }
 
-impl Told {
-    /// The names for the person `me`, falling back to `otherwise`.
+impl HostNames {
+    /// The names read from `host`'s last members read, and what its embedder knows otherwise.
     #[must_use]
-    pub fn new(me: PersonId, otherwise: Rc<dyn NameHost>) -> Self {
-        Self {
-            me,
-            said: RefCell::default(),
-            otherwise,
-        }
+    pub fn new(
+        otherwise: Rc<dyn NameHost>,
+        host: Rc<RefCell<Option<crate::host::Host>>>,
+    ) -> Self {
+        Self { host, otherwise }
     }
 
-    /// The member list calls the person `me` and each of `others` by id now, paints each member
-    /// of `hues` in its presence palette slot, and shows each of `pictures` as the address of
-    /// their face. Whether any of it changed.
-    pub fn tell(
-        &self,
-        me: String,
-        others: Vec<(MemberId, String)>,
-        hues: Vec<(MemberId, u8)>,
-        pictures: Vec<(MemberId, String)>,
-    ) -> bool {
-        let next = Said {
-            me: Some(me).filter(|me| !me.trim().is_empty()),
-            others: others
-                .into_iter()
-                .filter(|(_, name)| !name.trim().is_empty())
-                .collect(),
-            hues: hues.into_iter().collect(),
-            pictures: pictures
-                .into_iter()
-                .filter(|(_, picture)| !picture.trim().is_empty())
-                .collect(),
-        };
-        if *self.said.borrow() == next {
-            return false;
-        }
-        *self.said.borrow_mut() = next;
-        true
+    /// The row the workspace keeps for `member`, as the host last read it.
+    fn row(&self, member: &MemberId) -> Option<collab_types::Member> {
+        let host = self.host.borrow();
+        let host = host.as_ref()?;
+        host.member_rows().get(member).cloned()
     }
 }
 
-impl NameHost for Told {
+impl NameHost for HostNames {
     fn name(&self, who: &Actor) -> String {
-        let said = self.said.borrow();
         let Some(member) = who.member_id() else {
-            drop(said);
             return self.otherwise.name(who);
         };
-        if member.as_person() == Some(&self.me)
-            && let Some(me) = &said.me
+        if let Some(row) = self.row(member)
+            && !row.name.trim().is_empty()
         {
-            return me.clone();
+            return row.name;
         }
-        if let Some(name) = said.others.get(member) {
-            return name.clone();
-        }
-        drop(said);
         self.otherwise.name(who)
     }
 
-    /// The picture the member list gives `who`, as the address a face reads it from: shown
+    /// The picture the workspace keeps for `who`, as the address a face reads it from: shown
     /// wherever a view shows them as an author. `None` shows their initials.
     fn picture(&self, who: &Actor) -> Option<String> {
         let member = who.member_id()?;
-        self.said
-            .borrow()
-            .pictures
-            .get(member)
-            .cloned()
-            .or_else(|| self.otherwise.picture(who))
+        let avatar = self.row(member)?.avatar?;
+        collab_types::photo_url(&avatar.0).or_else(|| self.otherwise.picture(who))
     }
 
-    /// The colour the member list paints `who` in, so a byline or a chip in a view wears the
+    /// The colour the workspace paints `who` in, so a byline or a chip in a view wears the
     /// colour of their face on the bar and their caret in every other app.
     fn hue(&self, who: &Actor) -> Option<u8> {
         let member = who.member_id()?;
-        self.said
-            .borrow()
-            .hues
-            .get(member)
-            .copied()
-            .or_else(|| self.otherwise.hue(who))
+        let slot = self.row(member)?.colour.slot();
+        Some(u8::try_from(slot).unwrap_or_default())
     }
 }
 
@@ -190,7 +143,7 @@ mod tests {
     /// of a key.
     #[test]
     fn a_member_nobody_named_is_named_by_what_they_are_never_by_part_of_their_id() {
-        let told = Told::new("me-id".into(), Rc::new(Installed));
+        let names = Installed;
         let rows: &[(Actor, &str, &str)] = &[
             (agent("planner"), "Planner", "an agent by its name"),
             (
@@ -243,75 +196,15 @@ mod tests {
             ),
         ];
         for (who, expected, why) in rows {
-            assert_eq!(told.name(who), *expected, "{who:?}: {why}");
+            assert_eq!(names.name(who), *expected, "{who:?}: {why}");
         }
-    }
-
-    #[test]
-    fn a_member_is_named_as_the_window_said_and_by_what_they_are_when_nobody_did() {
-        let id = "95522b97c3d1e0f4a7b8c9d0e1f2a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4";
-        let told = Told::new(id.into(), Rc::new(Installed));
-        assert_eq!(
-            told.name(&person(id)),
-            "Unknown member",
-            "a key nobody named is never shown, in full or cut short"
-        );
-        assert_eq!(told.name(&agent("planner")), "Planner");
-        assert_eq!(
-            told.name(&app("so.tilo.lang.today")),
-            "Today",
-            "an app is its own name"
-        );
-        assert!(told.tell(
-            "Ada".to_owned(),
-            vec![(MemberId::person("ben-id"), "Ben".to_owned())],
-            Vec::new(),
-            Vec::new(),
-        ));
-        assert!(!told.tell(
-            "Ada".to_owned(),
-            vec![(MemberId::person("ben-id"), "Ben".to_owned())],
-            Vec::new(),
-            Vec::new(),
-        ));
-        assert_eq!(told.name(&person(id)), "Ada");
-        assert_eq!(told.name(&person("ben-id")), "Ben");
-    }
-
-    /// A member wears in a view the colour the member list paints them in, which travels with
-    /// them to the window; one the list said nothing of is left to the window's rule.
-    #[test]
-    fn a_member_wears_the_colour_the_member_list_paints_them_in() {
-        let told = Told::new("ada-id".into(), Rc::new(Installed));
-        assert_eq!(told.hue(&person("ben-id")), None, "nothing said yet");
-        assert!(told.tell(
-            "Ada".to_owned(),
-            vec![(MemberId::person("ben-id"), "Ben".to_owned())],
-            vec![
-                (MemberId::person("ben-id"), 1),
-                (MemberId::agent("planner", "ben-id"), 9),
-                (MemberId::person("ada-id"), 4),
-            ],
-            Vec::new(),
-        ));
-        assert_eq!(told.hue(&person("ben-id")), Some(1));
-        assert_eq!(told.hue(&agent("planner")), Some(9));
-        assert_eq!(
-            told.hue(&person("ada-id")),
-            Some(4),
-            "the person at the window too"
-        );
-        assert_eq!(
-            told.hue(&app("so.tilo.lang.today")),
-            None,
-            "an app is no member"
-        );
     }
 }
 
 #[cfg(test)]
-mod picture_tests {
+mod host_names_tests {
     use super::*;
+    use crate::runtime::ids::AppId;
 
     fn person(id: &str) -> Actor {
         MemberId::person(id).into()
@@ -321,27 +214,26 @@ mod picture_tests {
         MemberId::agent(id, "ada").into()
     }
 
-    /// A member's face draws the picture the member list gives them, and shows initials until
-    /// it gives one.
+    /// A view names people as the host last read the workspace's members' resource, and falls
+    /// back to what its embedder knows where the resource names nobody or the host read
+    /// nothing yet.
     #[test]
-    fn a_member_wears_the_picture_the_member_list_gives_them() {
-        let told = Told::new("ada-id".into(), Rc::new(Installed));
-        assert_eq!(told.picture(&person("ben-id")), None, "nothing said yet");
-        let picture = "data:image/png;base64,iVBORw0KGgo=".to_owned();
-        assert!(told.tell(
-            "Ada".to_owned(),
-            vec![(MemberId::person("ben-id"), "Ben".to_owned())],
-            Vec::new(),
-            vec![(MemberId::person("ben-id"), picture.clone())],
-        ));
+    fn a_member_is_named_by_what_they_are_until_the_members_resource_names_them() {
+        let host: Rc<RefCell<Option<crate::host::Host>>> = Rc::default();
+        let names = HostNames::new(Rc::new(Installed), Rc::clone(&host));
         assert_eq!(
-            told.picture(&person("ben-id")).as_deref(),
-            Some(picture.as_str())
+            names.name(&person("ben-id")),
+            "Unknown member",
+            "before the members are read, nobody is named by their key"
         );
+        assert_eq!(names.name(&agent("planner")), "Planner");
         assert_eq!(
-            told.picture(&agent("planner")),
-            None,
-            "an agent nobody pictured shows its mark"
+            names.name(&Actor::App(AppId::from("so.tilo.lang.today"))),
+            "Today",
+            "an app is its own name"
         );
+        // Nothing a host read is what a test stages: the rows are the replacement for the
+        // roster's `tell`, tested where the host is opened over a store
+        // (`tests/workspace_members.rs`), and their parse in `collab_types::Member::roster_of`.
     }
 }

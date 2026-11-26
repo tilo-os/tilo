@@ -556,6 +556,9 @@ impl App {
             }
         }
         collaboration.held_requests = held;
+        if collaboration.members_waiting {
+            self.request_workspace_members();
+        }
     }
 
     /// Take up what the window's workspace delivered, laying nothing out: a call its peer handed
@@ -825,8 +828,6 @@ impl App {
             event,
             CollabEvent::NativeMediaCommandResult { .. }
                 | CollabEvent::WorkspaceControl { .. }
-                | CollabEvent::ResourceCommandResult { .. }
-                | CollabEvent::RecordsMoved { .. }
         )
     }
     fn apply_collab_presence_event(&mut self, event: CollabEvent) {
@@ -835,10 +836,15 @@ impl App {
             CollabEvent::LocalDocumentActionReported { request_id, result } => {
                 self.observe_local_input_capture(request_id, result);
             }
-            CollabEvent::Context { members, apps, .. } => {
-                self.apply_collab_context(members);
+            CollabEvent::Context { apps, .. } => {
                 // What each app installed here is called: the same feed names the people in it.
                 crate::history_source::set_installed_apps(apps);
+                // Who the members are is the workspace's `workspace/members` resource, which
+                // this window reads through the store whenever its membership may have moved.
+                // A read still out may predate the move: the answer that matters is the one
+                // asked for now.
+                self.collaboration.members_request = None;
+                self.request_workspace_members();
             }
             CollabEvent::ResourcesArrived { records } => self.resources_arrived(&records),
             CollabEvent::ResourceUnavailable { route } => self.resource_unavailable(&route),
@@ -909,12 +915,24 @@ impl App {
             // application has no local state to apply.
             CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::WorkspaceControl { .. }
-            | CollabEvent::ResourceCommandResult { .. }
-            | CollabEvent::ActionVerdicts { .. }
+            | CollabEvent::ActionVerdicts { .. } => {}
             // A window that holds the workspace's documents applies each as it arrives from
             // the broker; only a window that reads the store, as a tilolang app's window does,
-            // re-reads the records named.
-            | CollabEvent::RecordsMoved { .. } => {}
+            // re-reads the records named. The members' resource is one of them: it is not a
+            // document, but its membership may have moved.
+            CollabEvent::RecordsMoved { records } => {
+                if records
+                    .iter()
+                    .any(|record| record.as_str() == collab_types::store::WORKSPACE_MEMBERS_ID)
+                {
+                    self.collaboration.members_request = None;
+                    self.request_workspace_members();
+                }
+            }
+            // The store's answer to what this window asked for: its members.
+            CollabEvent::ResourceCommandResult { request_id, result } => {
+                self.apply_workspace_members(request_id, result);
+            }
         }
     }
 
@@ -1058,6 +1076,72 @@ impl App {
             });
     }
 
+    /// Ask the store for the workspace's members' resource, as the person this window acts for
+    /// reads it. Who the members are is that resource, never a list the context carries: the
+    /// window reads it when its connection opens and whenever the store says it moved. One
+    /// read is out at a time, and a nudge while one is out is answered by the read that follows
+    /// it.
+    fn request_workspace_members(&mut self) {
+        if self.collaboration.members_request.is_some() {
+            return;
+        }
+        let request_id = self.collaboration.next_members_request;
+        self.collaboration.next_members_request = request_id.wrapping_add(1);
+        let command = collab_types::store::wire::Command::Content {
+            kind: collab_types::store::WORKSPACE_MEMBERS_KIND.to_owned(),
+            id: collab_types::store::WORKSPACE_MEMBERS_ID.to_owned(),
+        };
+        let Ok(command) = serde_json::to_vec(&command) else {
+            return;
+        };
+        if self
+            .collaboration
+            .manager
+            .try_send(crate::collaboration::CollabRequest::ResourceCommand {
+                request_id,
+                command,
+            })
+            .is_ok()
+        {
+            self.collaboration.members_request = Some(request_id);
+            self.collaboration.members_waiting = false;
+        } else {
+            // The connection is still joining its primary route: ask again once it is.
+            self.collaboration.members_waiting = true;
+        }
+    }
+
+    /// Take the store's answer to [`Self::request_workspace_members`]: the workspace's members
+    /// as its governance has them, each with the name, role, join time and picture it keeps.
+    fn apply_workspace_members(&mut self, request_id: u64, result: Result<Vec<u8>, String>) {
+        if self.collaboration.members_request != Some(request_id) {
+            return;
+        }
+        self.collaboration.members_request = None;
+        let Ok(result) = result else {
+            return;
+        };
+        let Ok(collab_types::store::wire::Reply::Content(Some(content))) =
+            serde_json::from_slice::<collab_types::store::wire::Reply>(&result)
+        else {
+            return;
+        };
+        self.apply_members_answer(&content);
+    }
+
+    /// Take the workspace's members' resource as its governance answers it, a complete list each
+    /// time: each with the name, role, join time and picture the workspace keeps.
+    pub(crate) fn apply_members_answer(&mut self, content: &serde_json::Value) {
+        let members = crate::collaboration::Member::roster_of(content, &self.local_author);
+        self.apply_collab_context(members);
+    }
+
+    /// [`Self::apply_members_answer`] for a test with no store behind it.
+    #[doc(hidden)]
+    pub fn apply_members_answer_for_test(&mut self, content: &serde_json::Value) {
+        self.apply_members_answer(content);
+    }
+
     /// The self row carries the address others use for this member (so
     /// a locally-derived id is recognised in a workspace-keyed roster) and the
     /// host-assigned name; it never enters the roster itself. The records this window runs read
@@ -1071,20 +1155,30 @@ impl App {
         self.presence_ctx.apply_members(members);
     }
 
-    /// Show what the connection of an app that runs elsewhere heard of the people at it, as what
-    /// this window's own connection hears is shown: the member list names them, and a step of
-    /// an agent's action outlines the control it stands for.
+    /// Show what the connection of an app that runs elsewhere heard at it, as what this
+    /// window's own connection hears is shown: a step of an agent's action outlines the control
+    /// it stands for.
     pub(crate) fn apply_heard_elsewhere(&mut self) -> bool {
         use crate::component_lifecycle::Heard;
         let heard = crate::component_lifecycle::take_heard(self.root_widget.as_mut());
         let any = !heard.is_empty();
         for heard in heard {
             match heard {
-                Heard::Members(members) => self.apply_collab_context(members),
                 // The app's connection heard it on the app's own resources: it is this window's.
                 Heard::Interaction(interaction) => {
                     if self.presence_ctx.apply_interaction(interaction.clone()) == Ok(true) {
                         self.announce_interaction(&interaction);
+                    }
+                }
+                // The app's host read the workspace's members: the marks this window draws for
+                // them wear the names the resource keeps.
+                Heard::Names(names) => {
+                    for (member, name) in names {
+                        if self.presence_ctx.self_id() == Some(&member) {
+                            self.presence_ctx.set_self_member(member, name);
+                        } else {
+                            self.presence_ctx.set_display_name(member, name);
+                        }
                     }
                 }
             }

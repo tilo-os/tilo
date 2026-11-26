@@ -832,6 +832,15 @@ pub(super) struct CollaborationRuntime {
     pub(super) held_requests: std::collections::VecDeque<crate::collaboration::CollabRequest>,
     /// How the window takes up what `manager`'s workspace sends it.
     pub(super) delivery: super::WorkspaceDelivery,
+    /// The store read of the workspace's members the window is waiting for, by its request id:
+    /// who the members are is the workspace's `workspace/members` resource, read through the
+    /// store, never carried by the context frame.
+    pub(super) members_request: Option<u64>,
+    /// The id the next read of the members' resource goes under.
+    pub(super) next_members_request: u64,
+    /// Whether the members' read is still to be asked: the connection was joining its primary
+    /// route when the context named it, and the window asks again.
+    pub(super) members_waiting: bool,
 }
 
 #[cfg(feature = "model")]
@@ -848,6 +857,9 @@ impl CollaborationRuntime {
             key_access: None,
             shown_sync_status: None,
             held_requests: std::collections::VecDeque::new(),
+            members_request: None,
+            next_members_request: 1,
+            members_waiting: false,
         }
     }
 }

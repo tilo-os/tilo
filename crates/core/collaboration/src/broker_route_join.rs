@@ -25,7 +25,6 @@ pub(super) struct JoinInputs {
     pub(super) asks_channel_keys: bool,
     pub(super) key_signals: tokio_mpsc::UnboundedSender<KeySignal>,
     pub(super) client: runtime_collab::CollabClient,
-    pub(super) member_handle: Option<String>,
     pub(super) member_kind: &'static str,
     pub(super) inbound_tx: InboundBridge,
     pub(super) media_routes: native_media::Routes,
@@ -49,7 +48,6 @@ pub(super) fn start_route_join(
             asks_channel_keys: inputs.asks_channel_keys,
             key_signals: &inputs.key_signals,
             client: &inputs.client,
-            member_handle: inputs.member_handle.as_deref(),
             member_kind: inputs.member_kind,
             inbound_tx: &inputs.inbound_tx,
             media_routes: &inputs.media_routes,
@@ -119,7 +117,6 @@ pub(super) async fn join_route(
         asks_channel_keys,
         key_signals,
         client,
-        member_handle,
         member_kind,
         inbound_tx,
         media_routes,
@@ -264,7 +261,6 @@ pub(super) async fn join_route(
         spawn_context_stream(
             &channel,
             record.as_ref().map(record_sync::Follower::changed),
-            member_handle,
             inbound_tx
         ),
         spawn_content_stream(&channel, spec.clone(), inbound_tx),

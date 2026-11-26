@@ -441,13 +441,14 @@ pub struct PresenceCtx {
     /// Seeded by the shell from `Member::cursor_color`; falls
     /// through to [`user_color`] via [`PresenceCtx::color_for`] when unset.
     pub color_overrides: HashMap<MemberId, (u8, u8, u8)>,
-    /// Friendly display names per user, seeded from the collab roster
-    /// (`CollabEvent::Context`). A peer with no entry falls back to its raw
-    /// id via [`PresenceCtx::display_name`], so a caret chip is never blank.
+    /// Friendly display names per user, seeded from the workspace's
+    /// `workspace/members` resource ([`Self::apply_members`]). A peer with no
+    /// entry falls back to its raw id via [`PresenceCtx::display_name`], so a
+    /// caret chip is never blank.
     pub names: HashMap<MemberId, String>,
-    /// The picture each member set, as the image's own bytes, seeded from the collab roster
-    /// (`CollabEvent::Context`): what an author's face draws where a view shows them, and in no
-    /// record of its own.
+    /// The picture each member set, as the image's own bytes, seeded from the workspace's
+    /// `workspace/members` resource: what an author's face draws where a view shows them, and in
+    /// no record of its own.
     #[cfg(feature = "model")]
     pictures: HashMap<MemberId, collab_types::AvatarBytes>,
     /// The person each agent or bot acts for, as the broker admitted it: a fact a history
@@ -510,13 +511,13 @@ pub struct PresenceCtx {
     /// frame it sent comes back stamped with. Empty means "unknown", which
     /// suppresses nobody. See [`Self::set_own_identity`].
     own: std::collections::HashSet<MemberId>,
-    /// Which member in the workspace this session *is* — the `is_self` row of
-    /// `CollabEvent::Context`. Deliberately not in [`Self::names`], [`Self::here`] or the pointer
+    /// Which member in the workspace this session *is* — the row of the
+    /// workspace's `workspace/members` resource that names it. Deliberately not in [`Self::names`], [`Self::here`] or the pointer
     /// and caret stores, which describe *other* people. `None` until the workspace has said.
     self_member: Option<(MemberId, String)>,
     /// When the workspace admitted each member, this session's own
-    /// included, Unix milliseconds, as the roster
-    /// (`CollabEvent::Context`) records it.
+    /// included, Unix milliseconds, as the workspace's `workspace/members`
+    /// resource records it.
     joined: HashMap<MemberId, u64>,
     /// The surface this process draws, spelled as [`crate::local_surface_id`] spells it, compared
     /// against a pointer's claimed surface to decide whether a content-space position is this
@@ -713,8 +714,8 @@ impl PresenceCtx {
         }
     }
 
-    /// Fed only from the `is_self` row of `CollabEvent::Context` — a
-    /// machine cannot mint this for itself.
+    /// Fed only from the row of the workspace's `workspace/members` resource
+    /// that names this session — a machine cannot mint this for itself.
     pub fn set_self_member(&mut self, id: MemberId, name: impl Into<String>) {
         self.self_member = Some((id, name.into()));
     }

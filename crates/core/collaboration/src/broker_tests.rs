@@ -302,7 +302,6 @@ pub struct SeedPresence {
 
 #[derive(Clone)]
 pub struct SeedContext {
-    members: Vec<Member>,
     permissions: Vec<String>,
 }
 
@@ -769,7 +768,6 @@ impl FakeHost {
                     }
                     for seed in backlog {
                         feed.send(Event::Context(ContextUpdate::Snapshot {
-                            members: seed.members,
                             permissions: seed.permissions,
                             apps: Vec::new(),
                         }));
@@ -4343,14 +4341,6 @@ tilo_test_env::scenario! {
     {
         let broker = FakeBroker {
             context_backlog: vec![SeedContext {
-                members: vec![
-                    collab_types::Member::of_person(
-                        &collab_types::Person::new("alice", "Alice")
-                            .wearing(collab_types::presence::PresenceHue::Orange),
-                        None,
-                    ),
-                    collab_types::Member::of_person(&collab_types::Person::new("bob", "Bob"), None),
-                ],
                 permissions: vec!["edit".to_owned(), "share".to_owned()],
             }],
             terminate_context_stream: true,
@@ -4369,30 +4359,13 @@ tilo_test_env::scenario! {
         let contexts = events
             .iter()
             .filter_map(|e| match e {
-                CollabEvent::Context {
-                    members,
-                    permissions,
-                    ..
-                } => Some((members.clone(), permissions.clone())),
+                CollabEvent::Context { permissions, .. } => Some(permissions.clone()),
                 _ => None,
             })
             .collect::<Vec<_>>();
         assert_eq!(contexts.len(), 2, "source loss must withdraw its context");
-        let (collabs, perms) = &contexts[0];
-        assert_eq!(collabs.len(), 2);
-        assert_eq!(collabs[0].id, collab_types::MemberId::person("alice"));
-        assert_eq!(collabs[0].name, "Alice");
-        assert_eq!(
-            collabs[0].colour,
-            collab_types::presence::PresenceHue::Orange
-        );
-        assert_eq!(
-            collabs[1].colour,
-            collab_types::presence::PresenceHue::of_identity("bob")
-        );
-        assert_eq!(perms, &["edit".to_owned(), "share".to_owned()]);
-        assert!(contexts[1].0.is_empty());
-        assert!(contexts[1].1.is_empty());
+        assert_eq!(contexts[0], ["edit".to_owned(), "share".to_owned()]);
+        assert!(contexts[1].is_empty());
     }
 
 }

@@ -47,9 +47,4 @@ pub use store::{
     CHANGED, CREATED, Live, RecordReader, Review, Source, Store, StoreError, UPDATED, Written,
     Wrote, content_id, content_resource,
 };
-/// The kind of the workspace's members' resource: who is in the workspace (`people`), as every
-/// store reading the workspace answers it. A store a workspace keeps answers it from the
-/// workspace's governance; one held in a process for a device of its own keeps it as a record.
-pub const WORKSPACE_MEMBERS_KIND: &str = "workspace.members";
-/// The id the workspace's members' resource is read by ([`WORKSPACE_MEMBERS_KIND`]).
-pub const WORKSPACE_MEMBERS_ID: &str = "workspace/members";
+pub use collab_types::store::{WORKSPACE_MEMBERS_ID, WORKSPACE_MEMBERS_KIND};

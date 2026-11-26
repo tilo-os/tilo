@@ -168,10 +168,7 @@ tilo_test_env::scenario! {
         let _context = state.subscribe_context(
             &route.channel_key(),
             1,
-            Some(NativeContext {
-                admitted,
-                roster: Vec::new(),
-            }),
+            Some(NativeContext { admitted }),
         );
         assert_eq!(
             state.next_policy_change(after).unwrap(),

@@ -22,7 +22,7 @@ use crate::meta::ReaderRule;
 use crate::value::{ResourceRef, Value};
 use crate::view_state::StateKey;
 
-/// One member of the workspace, as the session's member list has them.
+/// One member of the workspace, as its members' resource has them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Member {
     pub id: MemberId,

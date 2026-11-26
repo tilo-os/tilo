@@ -59,6 +59,11 @@ enum = "Role"
 reason = "write-only: an accessibility node's role goes out to AT-SPI and the screen reader as a JSON name, and nothing deserializes it back, so its place in the enum carries no bytes"
 
 [[break]]
+file = "crates/ui/ui-core/src/component_lifecycle.rs"
+enum = "Heard"
+reason = "written and read as JSON between an app's process and the window presenting it, both ends of one build and never by position: the member list it carried is the workspace's `workspace/members` resource now, which the window reads through the store, so no bytes written before name a member row that is still read back"
+
+[[break]]
 file = "crates/ui/ui-core/src/widget/layout_info.rs"
 enum = "LayoutInfo"
 reason = "a widget's resolved layout decisions reach the window's own inspection as newline-delimited JSON by name, read in the process that made them and never kept, so no stored bytes point at a variant position"

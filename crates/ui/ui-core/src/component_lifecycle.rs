@@ -239,16 +239,19 @@ pub fn take_process_intent(
     capability_mut::<dyn HostIntents>(widget).and_then(HostIntents::take_process_intent)
 }
 
-/// What the connection of an app that runs elsewhere (a tilolang host's instance) heard of the
-/// people at the app, handed to the window that presents it. That window has no connection of
-/// its own: it shows these as a native app's window shows what its own connection hears.
+/// What the connection of an app that runs elsewhere (a tilolang host's instance) heard at the
+/// app, handed to the window that presents it. That window has no connection of its own: it
+/// shows these as a native app's window shows what its own connection hears. Who the workspace's
+/// members are is its `workspace/members` resource, which the app's host reads through the store.
 #[cfg(feature = "model")]
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub enum Heard {
-    /// The workspace's member list: what each member is called and the colour they wear.
-    Members(Vec<crate::collaboration::Member>),
     /// A step of an action someone takes on one of the app's resources.
     Interaction(tilo_actions::SemanticInteraction),
+    /// What the workspace calls each member, from the app's own read of its
+    /// `workspace/members` resource: a window with no connection of its own names the people in
+    /// its presence marks by these.
+    Names(Vec<(crate::collaboration::MemberId, String)>),
 }
 
 /// A presentation whose app runs elsewhere hands over what its app's connection heard of the

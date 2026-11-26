@@ -304,13 +304,23 @@ impl Host {
         if !self.inner.members_stale.replace(false) {
             return false;
         }
-        let people = match self.workspace_people() {
-            Ok(people) => people,
+        let me_id = self
+            .viewer()
+            .member_id()
+            .cloned()
+            .unwrap_or_else(|| MemberId::person(""));
+        let rows = match self.member_rows_read(&me_id) {
+            Ok(rows) => rows,
             Err(error) => {
                 tracing::warn!(%error, "the workspace's members did not read");
                 return false;
             }
         };
+        *self.inner.member_rows.borrow_mut() = std::rc::Rc::new(
+            rows.iter()
+                .map(|row| (row.id.clone(), row.clone()))
+                .collect(),
+        );
         let me = self.viewer().clone();
         let mine = self
             .authority()
@@ -318,6 +328,11 @@ impl Host {
             .and_then(|access| access.person_id().map(PersonId::from));
         // The software the policy made members (agents its grants admitted, installed bots) is
         // in the workspace beside its people: the policy names them, not its member list.
+        let people: Vec<Actor> = rows
+            .iter()
+            .filter(|row| !row.removed)
+            .map(|row| Actor::Member(row.id.clone()))
+            .collect();
         let software: Vec<Actor> = self
             .runtime()
             .member_policy()
@@ -351,7 +366,9 @@ impl Host {
             })
     }
 
-    /// Who the workspace's members' resource names now, as this host's store reads it.
+    /// Who the workspace's members' resource names now, as this host's store reads it: the
+    /// actors alone, as the add-member and remove-member actions write them back. A row that
+    /// carries what the workspace says of a member names the member in its `actor`.
     fn workspace_people(&self) -> Result<Vec<Actor>, String> {
         let reading = self
             .store()
@@ -364,13 +381,62 @@ impl Host {
             .map(|people| {
                 people
                     .iter()
-                    .filter_map(|person| match tilolang_runtime::value::from_json(person) {
-                        Ok(tilolang_runtime::Value::Actor(who)) => Some(who),
-                        _ => None,
+                    .filter_map(|row| {
+                        let named = row.get("actor").unwrap_or(row);
+                        match tilolang_runtime::value::from_json(named) {
+                            Ok(tilolang_runtime::Value::Actor(who)) => Some(who),
+                            _ => serde_json::from_value::<Actor>(named.clone()).ok(),
+                        }
                     })
                     .collect()
             })
             .unwrap_or_default())
+    }
+
+    /// The members the workspace's members' resource names now, each with what the workspace
+    /// says of them, as this host's store reads it: the one member list every surface showing
+    /// people reads, here and on a replica that synced it.
+    fn member_rows_read(&self, me: &MemberId) -> Result<Vec<collab_types::Member>, String> {
+        let reading = self
+            .store()
+            .workspace_members()
+            .map_err(|error| error.to_string())?;
+        let Some(reading) = reading else {
+            return Ok(Vec::new());
+        };
+        let Some(rows) = reading.get("people").and_then(serde_json::Value::as_array) else {
+            return Ok(Vec::new());
+        };
+        // A workspace's governance answers each row with the actor an action names
+        // ([`tilo_actions::Actor`]); a store held in this process keeps the runtime's own
+        // encoding of one, which names the same member.
+        let rows: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|row| {
+                if row.get("actor").is_some() {
+                    return row.clone();
+                }
+                match tilolang_runtime::value::from_json(row) {
+                    Ok(tilolang_runtime::Value::Actor(who)) => serde_json::json!({
+                        "actor": serde_json::to_value(who).unwrap_or_default(),
+                    }),
+                    _ => row.clone(),
+                }
+            })
+            .collect();
+        Ok(collab_types::Member::roster_of(
+            &serde_json::json!({ "people": rows }),
+            me,
+        ))
+    }
+
+    /// The members this host last read of the workspace's members' resource, by id, with what
+    /// the workspace says of each: what a view calls people by and how it draws them.
+    #[must_use]
+    pub fn member_rows(
+        &self,
+    ) -> std::rc::Rc<std::collections::HashMap<MemberId, collab_types::Member>> {
+        std::rc::Rc::clone(&self.inner.member_rows.borrow())
     }
 
     /// Carry out the workspace's add-member action for `who`, as this host's viewer: they are in

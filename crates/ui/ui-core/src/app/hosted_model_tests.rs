@@ -646,7 +646,6 @@ tilo_test_env::scenario! {
         let page = app.action_directory_page(directory_query("", "", 1, 8192, 8));
         assert_eq!(page.rows.len(), 1);
         events.borrow_mut().push(CollabEvent::Context {
-            members: vec![],
             permissions: vec![],
             apps: Vec::new(),
         });
@@ -695,7 +694,6 @@ tilo_test_env::scenario! {
             }));
             app.invalidate_widget_resource_cache();
             let events = Rc::new(RefCell::new(vec![CollabEvent::Context {
-                members: vec![],
                 permissions: vec![],
                 apps: Vec::new(),
             }]));
@@ -730,7 +728,6 @@ tilo_test_env::scenario! {
     {
         let mut app = hosted_directory_fixture();
         let events = Rc::new(RefCell::new(vec![CollabEvent::Context {
-            members: vec![],
             permissions: vec![],
             apps: Vec::new(),
         }]));
@@ -752,48 +749,94 @@ tilo_test_env::scenario! {
     }
 }
 
+/// The workspace's members' resource as its governance answers it: each person's actor with the
+/// name the workspace keeps for them.
+fn members_answer(rows: &[(tilo_actions::Actor, &str)]) -> serde_json::Value {
+    let people: Vec<serde_json::Value> = rows
+        .iter()
+        .map(|(who, name)| {
+            serde_json::json!({
+                "actor": serde_json::to_value(who).expect("an actor encodes"),
+                "name": name,
+            })
+        })
+        .collect();
+    serde_json::json!({ "people": people })
+}
+
 tilo_test_env::scenario! {
-    fn the_roster_numbers_and_names_people_from_the_complete_context;
+    fn the_members_resource_numbers_and_names_people;
 
-    phase complete_context_replaces_the_people_a_member_list_names;
+    phase a_store_answer_names_the_members_and_a_later_one_removes_them;
     {
+        use tilo_actions::Actor;
         let mut app = hosted_directory_fixture();
-        app.apply_collab_event_for_test(CollabEvent::Context {
-            members: vec![
-                collab_types::Member::of_person(
-                    &collab_types::Person::new("local", "Local person"),
-                    None,
-                )
-                .claiming_self(),
-                collab_types::Member::of_software(
-                    collab_types::MemberId::agent("build-helper", "original-caller"),
-                    "Build helper",
-                ),
-            ],
-            permissions: vec![],
-            apps: Vec::new(),
-        });
         let helper = crate::permissions::MemberId::agent("build-helper", "original-caller");
+        let me = Actor::Member(app.local_author().clone());
+        let helper_actor = Actor::Member(helper.clone());
+        app.apply_members_answer(&members_answer(&[
+            (me.clone(), "Local person"),
+            (helper_actor, "Build helper"),
+        ]));
+        assert_eq!(
+            app.presence_ctx.display_name(&helper),
+            "Build helper",
+            "a member's name is the one the members' resource keeps"
+        );
+        assert_eq!(
+            app.presence_ctx.self_label().as_deref(),
+            Some("Local person"),
+            "the person at the window is the row the workspace names"
+        );
 
-        app.apply_collab_event_for_test(CollabEvent::Context {
-            members: vec![
-                collab_types::Member::of_person(
-                    &collab_types::Person::new("local", "Local person"),
-                    None,
-                )
-                .claiming_self(),
-            ],
-            permissions: vec![],
-            apps: Vec::new(),
-        });
+        // The workspace renamed the agent: a later answer names it what it is called now.
+        app.apply_members_answer(&members_answer(&[
+            (me.clone(), "Local person"),
+            (Actor::Member(helper.clone()), "Build assistant"),
+        ]));
+        assert_eq!(
+            app.presence_ctx.display_name(&helper),
+            "Build assistant",
+            "a rename shows as it is read"
+        );
+
+        // The workspace removed the agent: the next complete answer has no row for it.
+        app.apply_members_answer(&members_answer(&[(me, "Local person")]));
         assert!(!app.presence_ctx.names.contains_key(&helper));
 
-        app.apply_collab_event_for_test(CollabEvent::Context {
-            members: vec![],
-            permissions: vec![],
-            apps: Vec::new(),
-        });
+        // A workspace with nobody named leaves the person's own row unnamed.
+        app.apply_members_answer(&serde_json::json!({ "people": [] }));
         assert!(app.presence_ctx.self_id().is_none());
+    }
+
+    phase ten_thousand_members_are_one_answer_and_no_frame_reads_them_again;
+    {
+        use tilo_actions::Actor;
+        let mut app = hosted_directory_fixture();
+        let me = app.local_author().clone();
+        let people: Vec<serde_json::Value> = (0..10_000)
+            .map(|n| {
+                let who = if n == 0 {
+                    Actor::Member(me.clone())
+                } else {
+                    Actor::Member(crate::permissions::MemberId::person(format!("p{n:05}")))
+                };
+                serde_json::json!({
+                    "actor": serde_json::to_value(&who).expect("an actor encodes"),
+                    "name": format!("Person {n}"),
+                })
+            })
+            .collect();
+        app.apply_members_answer(&serde_json::json!({ "people": people }));
+        assert_eq!(app.presence_ctx.roster().len(), 10_000);
+        let asked = app.collaboration.members_request;
+        for _ in 0..3 {
+            app.pump_collab_presence();
+            assert_eq!(
+                app.collaboration.members_request, asked,
+                "a frame with nothing moved asks the store for nothing"
+            );
+        }
     }
 }
 

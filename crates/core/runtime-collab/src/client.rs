@@ -1395,12 +1395,7 @@ impl ContextStream {
         };
         let mut context = ChannelContext::default();
         match update {
-            ContextUpdate::Snapshot {
-                members,
-                permissions,
-                apps,
-            } => {
-                context.members = members;
+            ContextUpdate::Snapshot { permissions, apps } => {
                 context.permissions = permissions;
                 context.apps = apps;
             }

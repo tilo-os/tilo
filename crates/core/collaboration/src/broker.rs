@@ -14,10 +14,9 @@ use super::channel_key;
 use super::{
     ActionDirectoryRequest, Backend, CollabEvent, CollabRequest, CollabTransport,
     CollaborationManager, DocumentMutation, DocumentPublicationError, DocumentPublicationReceipt,
-    Member, PresencePayload, PrimaryRouteState, RouteSpec, TransportCommand, TransportError,
+    PresencePayload, PrimaryRouteState, RouteSpec, TransportCommand, TransportError,
     TransportStatus, Uuid, auto_hello_env, mpsc,
 };
-use tilo_sort::CompactSort as _;
 
 #[cfg(feature = "audio")]
 #[path = "audio_output.rs"]
@@ -3059,7 +3058,6 @@ async fn drive_shovel(
     let queue = DocumentQueue::start(inbound_tx.clone());
     let mut routes = std::collections::HashMap::<String, SdkRoute>::new();
     let mut primary: Option<String> = None;
-    let mut member_handle: Option<String> = None;
     let mut primary_result = Err("primary collaboration route was not announced".to_string());
     // The app's settings over the primary route, when the shell keeps them.
     let mut settings_link: Option<SettingsLink> = None;
@@ -3100,7 +3098,6 @@ async fn drive_shovel(
                 asks_channel_keys,
                 key_signals: key_signals.clone(),
                 client: client.clone(),
-                member_handle: member_handle.clone(),
                 member_kind,
                 inbound_tx: inbound_tx.clone(),
                 media_routes: media_routes.clone(),
@@ -3116,7 +3113,6 @@ async fn drive_shovel(
                 asks_channel_keys,
                 key_signals: &key_signals,
                 client: &client,
-                member_handle: member_handle.as_deref(),
                 member_kind,
                 inbound_tx: &inbound_tx,
                 media_routes: &media_routes,
@@ -3357,9 +3353,8 @@ async fn drive_shovel(
                 let PrimaryHello {
                     route: spec,
                     resource_type,
-                    handle,
+                    handle: _,
                 } = hello;
-                member_handle = handle;
                 let key = spec.channel_id();
                 // The join ends when the broker answers it or it fails, with
                 // the broker's reason; a broker that goes away fails it. No
@@ -3765,9 +3760,6 @@ struct SdkJoinContext<'a> {
     /// Where each route's endpoint says its keys may have changed.
     key_signals: &'a tokio_mpsc::UnboundedSender<KeySignal>,
     client: &'a runtime_collab::CollabClient,
-    /// The name the app's session gives its person, which the app's own row of each record's
-    /// members shows.
-    member_handle: Option<&'a str>,
     member_kind: &'a str,
     inbound_tx: &'a InboundBridge,
     media_routes: &'a native_media::Routes,
@@ -4041,8 +4033,10 @@ async fn spawn_content_stream(
     });
 }
 
-/// Bridge `channel`'s member/permissions context stream into
-/// [`CollabEvent::Context`] on `inbound_tx`.
+/// Bridge `channel`'s permissions, apps and presence context stream into
+/// [`CollabEvent::Context`] on `inbound_tx`. Who the workspace's members are
+/// is its `workspace/members` resource, which a window reads through the
+/// store: the context never carries a member list.
 #[allow(
     clippy::future_not_send,
     reason = "driven only on the shovel thread's LocalSet, whose route state is not Send"
@@ -4050,24 +4044,12 @@ async fn spawn_content_stream(
 async fn spawn_context_stream(
     channel: &runtime_collab::RecordHandle,
     record_changed: Option<std::rc::Rc<tokio::sync::Notify>>,
-    own_name: Option<&str>,
     inbound_tx: &InboundBridge,
 ) {
-    // A person's own name is how their session calls them, not their certified identity: their
-    // row says it where the workspace's member list would call them otherwise.
-    let own_name = own_name
-        .map(|name| name.trim().chars().take(64).collect::<String>())
-        .filter(|name| !name.is_empty());
     if let Ok(stream) = channel.subscribe_context().await {
         let tx = inbound_tx.clone();
         tokio::task::spawn_local(async move {
-            struct PrivateContextLifetime;
-            impl Drop for PrivateContextLifetime {
-                fn drop(&mut self) {}
-            }
-            let _private_context_lifetime = PrivateContextLifetime;
-            let mut private_person_basis = None;
-            while let Ok(mut context) = stream.read().await {
+            while let Ok(context) = stream.read().await {
                 if let Some((member, frame)) = context.heard {
                     if let Some(event) = heard_event(member, frame)
                         && !tx.send_presence(event)
@@ -4124,30 +4106,8 @@ async fn spawn_context_stream(
                     }
                     continue;
                 }
-                // Membership/permission replacement fences cached private bodies
-                // before delivering the new public context. Presentation changes
-                // alone must not cause a private contacts refresh.
-                if let (Some(name), Some(me)) = (
-                    own_name.as_ref(),
-                    context.members.iter_mut().find(|member| member.is_self),
-                ) {
-                    me.name.clone_from(name);
-                }
-                let mut people: Vec<_> = context
-                    .members
-                    .iter()
-                    .map(|person| (person.id.clone(), !person.id.is_person(), person.is_self))
-                    .collect();
-                people.compact_sort();
-                let mut permissions = context.permissions.clone();
-                permissions.compact_sort();
-                let basis = (people, permissions);
-                if private_person_basis.as_ref() != Some(&basis) {
-                    private_person_basis = Some(basis);
-                }
                 if !tx
                     .send_durable(CollabEvent::Context {
-                        members: context.members,
                         permissions: context.permissions,
                         apps: context.apps,
                     })
@@ -4156,11 +4116,11 @@ async fn spawn_context_stream(
                     return;
                 }
             }
-            // Context is a complete owner-backed membership snapshot. Losing
-            // that source must withdraw it rather than retain stale people.
+            // The workspace's word on who belongs is its members' resource, and a window that
+            // reaches it through the store reads it itself: losing this connection withdraws
+            // the permissions and app names it carried and nothing else.
             let _ = tx
                 .send_durable(CollabEvent::Context {
-                    members: Vec::new(),
                     permissions: Vec::new(),
                     apps: Vec::new(),
                 })

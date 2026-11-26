@@ -1,10 +1,11 @@
 //! Who a workspace's members are, as the host running a record's code knows them: what an action
 //! binds a typed `@Name` to and what a reading of the record calls an author by.
 //!
-//! The record keeps member ids only. Names are the workspace's member records, which the host
-//! reads (a window from its member list, an agent from the workspace's governance) and lends here
-//! before the record's code runs. Whatever an action derives from them it stores, so a replica
-//! replaying the change reads the stored result and never this list.
+//! The record keeps member ids only. Names are the workspace's members' resource, which the host
+//! reads through its store (a window when the resource may have moved, an agent from the
+//! workspace's governance) and lends here before the record's code runs. Whatever an action
+//! derives from them it stores, so a replica replaying the change reads the stored result and
+//! never this list.
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;

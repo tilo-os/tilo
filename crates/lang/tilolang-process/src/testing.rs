@@ -36,6 +36,8 @@ pub struct Workspace {
     written: RefCell<Vec<tilo_resource_store::Stamp>>,
     /// The app's whole documents: what the connection's `#[resource]` documents open from.
     documents: tilo_resource_store::LocalPort,
+    /// The workspace's members' resource, as its governance would answer it.
+    members: RefCell<Option<serde_json::Value>>,
     /// How many surfaces this process had named when the store last declared them.
     declared: std::cell::Cell<Option<u64>>,
 }
@@ -52,6 +54,14 @@ impl Workspace {
     /// Why the store refused the write.
     pub fn command(&self, command: Command, reader: &str) -> Result<Reply, String> {
         self.declare_surfaces();
+        // Who is in the workspace is its governance's to say, as the workspace service answers
+        // it: the members' resource is this test's own list, never a record in the store.
+        if let Command::Content { kind, id } = &command
+            && kind == tilo_resource_store::WORKSPACE_MEMBERS_KIND
+            && id == tilo_resource_store::WORKSPACE_MEMBERS_ID
+        {
+            return Ok(Reply::Content(self.members.borrow().clone()));
+        }
         if let Command::Turn {
             address,
             inputs,
@@ -145,6 +155,12 @@ impl Workspace {
         }
     }
 
+    /// The workspace's members' resource, as its governance has them now: what the store answers
+    /// a read of it with.
+    pub fn set_members(&self, members: serde_json::Value) {
+        *self.members.borrow_mut() = Some(members);
+    }
+
     /// The stamps of the writes the store took, oldest first: who wrote each and the
     /// invocation it served.
     #[must_use]
@@ -230,7 +246,8 @@ type HeldRead = (Inbox, u64, DeviceRecord, Option<String>);
 
 /// The connections of one workspace, as the broker holds them: the workspace's store every
 /// connection reads and writes, and the workspace's members, people and software, with their
-/// names, which every connection is handed when it joins and whenever the list changes.
+/// names, which the store answers as the workspace's members' resource and every connection is
+/// told moved when the list changes.
 #[derive(Default)]
 pub struct Bus {
     joined: RefCell<Vec<(RouteSpec, String, Inbox)>>,
@@ -385,26 +402,35 @@ impl Bus {
         }
     }
 
-    /// Hands the connection of `person` at `inbox` the member list, its own row marked: nothing
-    /// while the workspace has no members.
-    fn tell_members(&self, person: &str, inbox: &Inbox) {
+    /// Hands the connection of `person` at `inbox` the workspace's members, as its store answers
+    /// them now, and tells it the members' resource moved: nothing while the workspace has none.
+    fn tell_members(&self, _person: &str, inbox: &Inbox) {
         let members = self.members.borrow();
         if members.is_empty() {
             return;
         }
-        let members = members
+        let rows: Vec<serde_json::Value> = members
             .iter()
             .map(|row| {
-                let mut member = collaboration::Member::named(row.who.clone(), row.name.clone());
-                member.avatar.clone_from(&row.avatar);
-                member.is_self = row.who.person_id() == Some(person);
-                member
+                let actor = tilo_actions::Actor::Member(row.who.clone());
+                let mut named = serde_json::json!({
+                    "actor": serde_json::to_value(actor).unwrap_or_default(),
+                    "name": row.name,
+                });
+                if let Some(photo) = row
+                    .avatar
+                    .as_ref()
+                    .and_then(|avatar| collab_types::photo_url(&avatar.0))
+                {
+                    named["photo"] = serde_json::json!(photo);
+                }
+                named
             })
             .collect();
-        inbox.borrow_mut().push_back(CollabEvent::Context {
-            members,
-            permissions: Vec::new(),
-            apps: Vec::new(),
+        self.workspace
+            .set_members(serde_json::json!({ "people": rows }));
+        inbox.borrow_mut().push_back(CollabEvent::RecordsMoved {
+            records: vec![tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned()],
         });
     }
 

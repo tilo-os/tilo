@@ -1,10 +1,10 @@
-//! Who the people of a document are, where they are, and who of them is writing a message: the
-//! workspace's member list and presence, as they arrive on an instance's own connection, and
-//! presence as the instance says it of its person there.
+//! Where the people of a document are, and who of them is writing a message: the presence frames
+//! that arrive on an instance's own connection, and presence as the instance says it of its person
+//! there.
 //!
-//! The broker hands every connection the workspace's member list (`CollabEvent::Context`): what
-//! the instance's views call each person, its own person among them, as a native app's window
-//! calls them. It relays every member's presence frame on the document's route to the other
+//! Who the workspace's members are, and what they are called, is its `workspace/members`
+//! resource: the instance's host reads it through the store and names the window's views with
+//! it. This relays every member's presence frame on the document's route to the other
 //! connections on it. The instance's views read what this device heard as lenses
 //! (`lenses(c)`): who else is at each resource, and who is composing a message in the one the
 //! detail view shows, so a conversation says "… is typing" without reading a draft. What the
@@ -32,11 +32,9 @@ pub struct Presence {
     said_at: Option<PresenceKey>,
     /// What the instance last said of the draft its person writes.
     said_composing: DraftSaid,
-    /// Whether the member list changed since the instance was last told what people are called.
-    renamed: bool,
     /// What the window shows of the people here as a window with a connection of its own does,
-    /// waiting to be sent to it: the member list, and each step of an action taken on a resource
-    /// of the app, which outlines the control the action stands for.
+    /// waiting to be sent to it: each step of an action taken on a resource of the app, which
+    /// outlines the control the action stands for.
     for_window: Vec<Heard>,
 }
 
@@ -54,14 +52,11 @@ impl Presence {
             heard,
             said_at: None,
             said_composing: DraftSaid::default(),
-            renamed: true,
             for_window: Vec::new(),
         }
     }
 
-    /// Take `event` when it is a presence frame the broker relayed, or the workspace's member
-    /// list. Whether it was a presence frame, which nothing else takes; the member list also
-    /// names the apps installed here, which the host reads.
+    /// Take `event` when it is a presence frame the broker relayed. Whether it was one.
     pub fn take(&mut self, event: &CollabEvent) -> bool {
         match event {
             CollabEvent::RemotePresenceUpdate {
@@ -79,26 +74,6 @@ impl Presence {
                     .apply_remote_presence(member.clone(), key.clone(), payload.clone());
                 true
             }
-            CollabEvent::Context { members, .. } => {
-                // The window names people and wears their colours; the pictures reach the views
-                // through [`Instance::name_people`], where a face draws them.
-                self.for_window.push(Heard::Members(
-                    members
-                        .iter()
-                        .map(|member| collaboration::Member {
-                            avatar: None,
-                            ..member.clone()
-                        })
-                        .collect(),
-                ));
-                self.heard.apply_members(members.clone());
-                if self.heard.self_id().is_none() {
-                    // A list without the person: their own frames are still theirs.
-                    self.heard.set_self_member(self.me.clone(), "");
-                }
-                self.renamed = true;
-                false
-            }
             _ => false,
         }
     }
@@ -112,44 +87,10 @@ impl Presence {
         Some(ends.saturating_duration_since(ui_core::time::now()))
     }
 
-    /// Tell `instance` what people are called, who else is at each resource of the app, and who
-    /// is composing a message in the resource its detail view shows.
+    /// Tell `instance` who else is at each resource of the app and who is composing a message in
+    /// the resource its detail view shows. What people are called and how they are drawn is the
+    /// workspace's `workspace/members` resource, which the window's host reads through the store.
     pub fn show(&mut self, instance: &mut Instance) {
-        if std::mem::take(&mut self.renamed) {
-            let me = self.heard.self_label().unwrap_or_default();
-            let others = self
-                .heard
-                .names
-                .keys()
-                .map(|user| (user.clone(), self.heard.display_name(user)))
-                .collect();
-            // Everyone the member list named, the person included, in the colour it paints them:
-            // a byline in a view wears the colour of their face on the bar.
-            let hues = self
-                .heard
-                .names
-                .keys()
-                .chain(self.heard.self_id())
-                .map(|member| {
-                    let slot = self.heard.hue_for(member).slot();
-                    (member.clone(), u8::try_from(slot).unwrap_or_default())
-                })
-                .collect();
-            // The picture each member set in their profile, as the address a face reads it
-            // from: what an author's avatar draws wherever a view shows them.
-            let pictures = self
-                .heard
-                .names
-                .keys()
-                .chain(self.heard.self_id())
-                .filter_map(|member| {
-                    let avatar = self.heard.user(member).avatar?;
-                    let url = collab_types::photo_url(&avatar.0)?;
-                    Some((member.clone(), url))
-                })
-                .collect();
-            instance.name_people(me, others, hues, pictures);
-        }
         let now = ui_core::time::now();
         self.heard.prune_composing(now);
         let composing: Vec<MemberId> = instance.detail_target().map_or_else(Vec::new, |target| {
@@ -159,6 +100,12 @@ impl Presence {
                 .collect()
         });
         instance.set_peers_and_composers(self.peers(), &composing);
+        // The window has no connection of its own: what a presence mark it draws says of a
+        // member is named here, from the same read of the workspace's members' resource that
+        // names the app's own views.
+        if let Some(names) = instance.take_member_names() {
+            self.for_window.push(Heard::Names(names));
+        }
         for heard in &mut self.for_window {
             if let Heard::Interaction(interaction) = heard {
                 instance.heard(interaction);
@@ -310,19 +257,13 @@ mod tests {
     }
 
     /// The window of a hosted app has no connection of its own: the steps of an agent's action
-    /// on the app's resources, and the member list that names the agent, reach it from the
-    /// instance's connection, so the control the action stands for is outlined as in any
-    /// window. A step in another app is that app's window's.
+    /// on the app's resources reach it from the instance's connection, so the control the action
+    /// stands for is outlined as in any window. A step in another app is that app's window's.
+    /// (What people are called and how they are drawn is the workspace's `workspace/members`
+    /// resource, which the window's host reads through the store.)
     #[test]
-    fn an_agents_step_on_the_apps_resource_and_the_members_reach_the_window() {
+    fn an_agents_step_on_the_apps_resource_reaches_the_window() {
         let mut presence = Presence::new(APP, "bo");
-        let mut member = collaboration::Member::named(MemberId::agent("scout", "ada"), "Scout");
-        member.avatar = Some(collab_types::AvatarBytes(vec![1, 2, 3]));
-        presence.take(&CollabEvent::Context {
-            members: vec![member],
-            permissions: Vec::new(),
-            apps: Vec::new(),
-        });
         for (app, resource) in [(APP, "channel-1"), ("so.tilo.tasks", "task-1")] {
             let (key, payload) = step(app, resource, "TextChannel");
             assert!(presence.take(&CollabEvent::RemotePresenceUpdate {
@@ -332,14 +273,9 @@ mod tests {
             }));
         }
         let heard = sent(&mut presence);
-        let [Heard::Members(members), Heard::Interaction(interaction)] = heard.as_slice() else {
-            panic!("the members, then the step on this app's resource alone: {heard:?}");
+        let [Heard::Interaction(interaction)] = heard.as_slice() else {
+            panic!("the step on this app's resource alone: {heard:?}");
         };
-        assert_eq!(members.len(), 1);
-        assert!(
-            members[0].avatar.is_none(),
-            "the window names people; the views draw their pictures"
-        );
         assert_eq!(interaction.resource.id, "channel-1");
         assert!(sent(&mut presence).is_empty(), "each is sent once");
     }

@@ -225,6 +225,10 @@ pub(crate) struct HostInner {
     /// Whether the workspace's members' resource is read again at the next follow: a change of
     /// the policy or a member action of this host's may have moved it.
     pub(crate) members_stale: Cell<bool>,
+    /// The members its last read of the workspace's members' resource named, by id, with what
+    /// the workspace says of each: what a view calls people and wears their colours by.
+    pub(crate) member_rows:
+        RefCell<Rc<std::collections::HashMap<collab_types::MemberId, collab_types::Member>>>,
     /// Where the workspace's content is read from, when its embedder has one
     /// ([`Host::follow_content`](crate::content::Host::follow_content)).
     pub(crate) content_source: RefCell<Option<crate::content::ContentSource>>,
@@ -1287,6 +1291,7 @@ impl Host {
             members_from: RefCell::new(None),
             members_watch,
             members_stale: Cell::new(true),
+            member_rows: RefCell::new(Rc::new(std::collections::HashMap::new())),
             content_source: RefCell::new(None),
         });
         LIVE.with(|live| live.borrow_mut().insert(handle, Rc::downgrade(&inner)));

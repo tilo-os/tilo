@@ -13,7 +13,7 @@
 use crate::route::{KeyAccessState, RouteSpec};
 use collab_types::{
     DocumentMutation,
-    presence::{Member, PresenceKey, PresencePayload},
+    presence::{PresenceKey, PresencePayload},
 };
 
 /// The payloads only an SDK endpoint can hold, which it mints itself.
@@ -45,7 +45,6 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
         read: C::CommittedRead,
     },
     Context {
-        members: Vec<Member>,
         permissions: Vec<String>,
         /// What each app installed on this device is called, in each language
         /// its package names it in: what a history row names another app's

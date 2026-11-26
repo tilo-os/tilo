@@ -156,30 +156,20 @@ tilo_test_env::scenario! {
         let mut fixture = Fixture::new();
         let initial = paint(&mut fixture.tile, &fixture.theme);
         for present in [true, false] {
-            fixture.events.borrow_mut().push(CollabEvent::Context {
-                members: if present {
-                    vec![collab_types::Member::of_person(
-                        &collab_types::Person::new("peer", "Peer"),
-                        None,
-                    )]
-                } else {
-                    Vec::new()
-                },
-                permissions: Vec::new(),
-                apps: Vec::new(),
-            });
-            if present {
-                fixture
-                    .events
-                    .borrow_mut()
-                    .push(CollabEvent::RemotePresenceUpdate {
-                        member: crate::permissions::MemberId::person("peer"),
-                        key: PresenceKey::Widget {
-                            path: vec![PathSegment::Field("probe".into())],
-                        },
-                        payload: PresencePayload::Arrived,
-                    });
-            }
+            fixture
+                .events
+                .borrow_mut()
+                .push(CollabEvent::RemotePresenceUpdate {
+                    member: crate::permissions::MemberId::person("peer"),
+                    key: PresenceKey::Widget {
+                        path: vec![PathSegment::Field("probe".into())],
+                    },
+                    payload: if present {
+                        PresencePayload::Arrived
+                    } else {
+                        PresencePayload::Left
+                    },
+                });
             fixture.wake.notify_events();
             assert!(fixture.pump(), "presence changes the embedded scene");
             assert!(fixture.tile.needs_redraw());

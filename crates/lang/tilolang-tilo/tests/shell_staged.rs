@@ -133,10 +133,10 @@ impl StagedWindow {
     ) -> Self {
         use tilolang_tilo::host::RootView;
         use tilolang_tilo::instance::{Config, Instance, Mode};
-        use tilolang_tilo::names::{Installed, Told};
+        use tilolang_tilo::names::Installed;
 
         let (app_end, window_end) = tilo_render_protocol::patch::local::pair();
-        let names = Rc::new(Told::new("ada".into(), Rc::new(Installed)));
+        let names = Rc::new(Installed);
         let mut instance = Instance::new(
             Config {
                 app: SHELL.to_owned(),

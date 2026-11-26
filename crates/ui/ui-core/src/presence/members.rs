@@ -49,11 +49,11 @@ impl PresenceCtx {
         self.self_id().map(|id| self.display_name(id))
     }
 
-    /// Take the workspace's member list as the broker delivers it (`CollabEvent::Context`), a
-    /// complete one each time: when each joined, what this session's own member and
-    /// everyone else is called and the colour they wear. Whoever left the list since the last
-    /// one, or is on it as removed, is no longer here; a removed member's name is the records'
-    /// to read ([`tilo_resource::members`]).
+    /// Take the workspace's members as its `workspace/members` resource answers them, a complete
+    /// list each time: when each joined, what this session's own member and everyone else is
+    /// called and the colour they wear. Whoever left the list since the last one, or is on it as
+    /// removed, is no longer here; a removed member's name is the records' to read
+    /// ([`tilo_resource::members`]).
     pub fn apply_members(&mut self, members: Vec<Member>) {
         let members: Vec<Member> = members
             .into_iter()

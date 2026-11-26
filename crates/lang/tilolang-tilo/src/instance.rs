@@ -361,8 +361,6 @@ pub struct Instance {
     content: Rc<RefCell<Option<crate::content::ContentSource>>>,
     platform: Rc<dyn Platform>,
     names: Rc<dyn NameHost>,
-    /// What the workspace's member list calls people, which `names` reads first.
-    told: Rc<crate::names::Told>,
     host: Rc<RefCell<Option<Host>>>,
     publication: Option<Box<dyn Publication>>,
     root: Option<Shown>,
@@ -387,6 +385,9 @@ pub struct Instance {
     /// The lenses on each resource of the package, as presence last reported them.
     lenses: HashMap<String, Vec<(Actor, bool, bool)>>,
     lenses_changed: bool,
+    /// The workspace's members' resource named a different list since the window was last told
+    /// what people are called ([`Self::take_member_names`]).
+    member_names_moved: bool,
     /// Who is in each call the call service told of, by the id it names the call's place by.
     calls: HashMap<String, Vec<crate::runtime::CallMember>>,
     /// The microphones each call's view offers, by the place the call is held on: what
@@ -520,7 +521,11 @@ impl Instance {
         names: Rc<dyn NameHost>,
         transport: Box<dyn Transport>,
     ) -> Self {
-        let told = Rc::new(crate::names::Told::new(config.me.clone(), names));
+        let host: Rc<RefCell<Option<Host>>> = Rc::default();
+        let names: Rc<dyn NameHost> = Rc::new(crate::names::HostNames::new(
+            names,
+            Rc::clone(&host),
+        ));
         Self {
             app: config.app,
             root_view: config.root,
@@ -532,9 +537,8 @@ impl Instance {
             access: Rc::default(),
             content: Rc::default(),
             platform,
-            names: Rc::clone(&told) as Rc<dyn NameHost>,
-            told,
-            host: Rc::default(),
+            names,
+            host,
             publication: None,
             root: None,
             detail: None,
@@ -548,6 +552,7 @@ impl Instance {
             out: Vec::new(),
             lenses: HashMap::new(),
             lenses_changed: false,
+            member_names_moved: false,
             calls: HashMap::new(),
             call_inputs: HashMap::new(),
             call_steps: Vec::new(),
@@ -2952,24 +2957,33 @@ impl Instance {
     }
 
     /// Give the runtime the workspace's members as the workspace's policy has them now, when it
-    /// changed ([`Host::follow_members`]): the host reads the access this instance gives it.
-    fn follow_members(&self) -> bool {
-        self.host().is_some_and(|host| host.follow_members())
+    /// changed ([`Host::follow_members`]): the host reads the access this instance gives it and
+    /// its members' resource, which `names` reads the people this window shows from.
+    fn follow_members(&mut self) -> bool {
+        let Some(host) = self.host() else {
+            return false;
+        };
+        let changed = host.follow_members();
+        if changed {
+            self.member_names_moved = true;
+        }
+        changed
     }
 
-    /// What the workspace calls the person `me` and each of `others` by id now, the colour it
-    /// paints each member in (`hues`) and the picture each set (`pictures`), as its member list
-    /// says: the views show people by these.
-    pub fn name_people(
-        &mut self,
-        me: String,
-        others: Vec<(MemberId, String)>,
-        hues: Vec<(MemberId, u8)>,
-        pictures: Vec<(MemberId, String)>,
-    ) {
-        if self.told.tell(me, others, hues, pictures) {
-            self.person_changed = true;
+    /// What the workspace's members' resource calls each member, when it named a different list
+    /// since the last time: the window that presents this app has no connection of its own, so
+    /// what a presence mark of its own draws reads its names here (the host's members read).
+    pub fn take_member_names(&mut self) -> Option<Vec<(MemberId, String)>> {
+        if !std::mem::take(&mut self.member_names_moved) {
+            return None;
         }
+        let rows = self.host()?.member_rows();
+        Some(
+            rows.values()
+                .filter(|row| !row.removed && !row.name.trim().is_empty())
+                .map(|row| (row.id.clone(), row.name.clone()))
+                .collect(),
+        )
     }
 
     /// The person at the window, as the runtime names them.

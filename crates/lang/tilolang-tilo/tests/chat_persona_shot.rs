@@ -15,7 +15,7 @@ use tilolang_runtime::{Actor, InvokeOutcome, Value};
 use tilolang_tilo::background::Waker;
 use tilolang_tilo::host::{Host, RootView};
 use tilolang_tilo::instance::{Config, Instance, Mode, Platform};
-use tilolang_tilo::names::{Installed, Told};
+use tilolang_tilo::names::Installed;
 use tilolang_tilo::runtime::ids::MemberId;
 use ui::headless::Driver;
 
@@ -102,32 +102,43 @@ fn captures() -> std::path::PathBuf {
 #[test]
 fn a_chat_reply_by_an_agent_with_a_persona_and_a_members_face_in_both_themes() {
     let (app_end, mut window_end) = pair();
-    let names = Rc::new(Told::new("ada".into(), Rc::new(Installed)));
-    names.tell(
-        "Ada".to_owned(),
-        vec![
-            (MemberId::agent("scout", "leo"), "Scout".to_owned()),
-            (MemberId::person("leo"), "Leo".to_owned()),
-        ],
-        Vec::new(),
-        vec![
-            (MemberId::agent("scout", "leo"), PERSONA.to_owned()),
-            (MemberId::person("leo"), MEMBER.to_owned()),
-        ],
-    );
+    // The workspace's members' resource: what the window calls each member and the picture it
+    // draws for them, as the store answers the host's read.
+    let store = tilolang_tilo::resources::ResourceStore::in_memory();
+    let row = |who: MemberId, name: &str, photo: Option<&str>| {
+        let mut row = serde_json::json!({
+            "actor": serde_json::to_value(Actor::from(who)).expect("an actor encodes"),
+            "name": name,
+        });
+        if let Some(photo) = photo {
+            row["photo"] = serde_json::json!(photo);
+        }
+        row
+    };
+    store
+        .change_workspace_members(
+            tilo_action_policy::roles::governance::ADD_MEMBER,
+            &Actor::from(MemberId::person("ada")),
+            serde_json::Value::Array(vec![
+                row(MemberId::person("ada"), "Ada", None),
+                row(MemberId::person("leo"), "Leo", Some(MEMBER)),
+                row(MemberId::agent("scout", "leo"), "Scout", Some(PERSONA)),
+            ]),
+        )
+        .expect("the members' resource");
     let mut instance = Instance::new(
         Config {
             app: CHAT.to_owned(),
             me: "ada".into(),
             mode: Mode::Live,
             device: None,
-            store: tilolang_tilo::resources::ResourceStore::in_memory(),
+            store,
             root: RootView::default(),
             sink: None,
             link_home: None,
         },
         Rc::new(Chat),
-        names,
+        Rc::new(Installed),
         Box::new(app_end),
     );
     instance.sync();

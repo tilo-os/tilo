@@ -639,6 +639,28 @@ async fn a_person_accepting_an_invitation_is_listed_once_as_joining() {
 /// Who is in `workspace` as an app reads its members' resource, by person.
 #[cfg(any(feature = "apps", feature = "agents"))]
 async fn members_read(workspaces: &Workspaces, workspace: &str, reader: &str) -> Vec<String> {
+    members_rows(workspaces, workspace, reader)
+        .await
+        .iter()
+        .filter(|row| row["removed"] != true)
+        .map(|row| {
+            let who: Actor = serde_json::from_value(row["actor"].clone()).expect("an actor");
+            who.member_id()
+                .and_then(MemberId::person_id)
+                .expect("a person")
+                .to_owned()
+        })
+        .collect()
+}
+
+/// The rows of `workspace`'s members' resource as an app reads it: each actor with the name,
+/// role, join time and picture the workspace keeps for them.
+#[cfg(any(feature = "apps", feature = "agents"))]
+async fn members_rows(
+    workspaces: &Workspaces,
+    workspace: &str,
+    reader: &str,
+) -> Vec<serde_json::Value> {
     let reply = workspaces
         .resource_read(
             workspace,
@@ -656,15 +678,7 @@ async fn members_read(workspaces: &Workspaces, workspace: &str, reader: &str) ->
     reading["people"]
         .as_array()
         .expect("the members' people")
-        .iter()
-        .map(|who| {
-            let who: Actor = serde_json::from_value(who["actor"].clone()).expect("an actor");
-            who.member_id()
-                .and_then(MemberId::person_id)
-                .expect("a person")
-                .to_owned()
-        })
-        .collect()
+        .clone()
 }
 
 #[cfg(any(feature = "apps", feature = "agents"))]
@@ -716,5 +730,76 @@ async fn a_workspace_reads_its_own_members_and_no_other_workspaces() {
         members_read(workspaces, &first, &reader).await,
         std::slice::from_ref(&reader),
         "a removal is read at once"
+    );
+}
+
+/// The members' resource names each member as the workspace keeps them, says the role it gave
+/// them and when it admitted them: the one list every surface showing people reads.
+#[cfg(any(feature = "apps", feature = "agents"))]
+#[tokio::test]
+async fn the_members_resource_names_each_member_with_their_role_and_join_time() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let reader = person(owner.user_public_key);
+    let workspace = made_workspace(workspaces, "Named").await;
+    let target = [9u8; 32];
+    workspaces
+        .add_member(
+            &workspace,
+            &owner,
+            AddMemberRequest {
+                request_id: [1; 32],
+                user_public_key: target,
+                place: MemberPlace::Role(Role::Editor),
+                name: Some("Grace".to_owned()),
+            },
+        )
+        .await
+        .unwrap();
+
+    let rows = members_rows(workspaces, &workspace, &reader).await;
+    let row_of = |person: String| {
+        rows.iter()
+            .find(|row| {
+                let who: Actor = serde_json::from_value(row["actor"].clone()).expect("an actor");
+                who.member_id().and_then(MemberId::person_id) == Some(person.as_str())
+            })
+            .unwrap_or_else(|| panic!("{person} is a member: {rows:?}"))
+    };
+    let grace = row_of(person(target));
+    assert_eq!(grace["name"], "Grace", "the name the workspace admitted them by");
+    assert_eq!(
+        serde_json::from_value::<Role>(grace["role"].clone()).unwrap(),
+        Role::Editor
+    );
+    assert!(
+        grace["joined_at"].as_u64().is_some(),
+        "when they joined travels with their row: {grace:?}"
+    );
+    let mine = row_of(reader.clone());
+    assert_eq!(
+        serde_json::from_value::<Role>(mine["role"].clone()).unwrap(),
+        Role::Owner
+    );
+    assert_eq!(mine["joined_at"].as_u64(), Some(0), "the owner from its start");
+
+    workspaces
+        .remove_member(
+            &workspace,
+            &owner,
+            RemoveMemberRequest {
+                request_id: [2; 32],
+                user_public_key: target,
+            },
+        )
+        .await
+        .unwrap();
+    let rows = members_rows(workspaces, &workspace, &reader).await;
+    assert!(
+        rows.iter()
+            .all(|row| row["removed"] != true && row["name"] != "Grace"),
+        "the removed member is no longer one: {rows:?}"
     );
 }

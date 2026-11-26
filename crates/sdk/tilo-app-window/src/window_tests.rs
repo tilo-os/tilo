@@ -3550,24 +3550,39 @@ fn an_entry_the_app_clears_after_its_submit_takes_the_next_item() {
     );
 }
 
-/// What the app's connection heard of the people at it reaches the window's toolkit once, in the
-/// order it was heard; what does not read leaves the window showing the app.
+/// What the app's connection heard at it reaches the window's toolkit once, in the order it was
+/// heard; what does not read leaves the window showing the app.
 #[test]
-fn what_the_app_heard_of_people_reaches_the_toolkit_once() {
+fn what_the_app_heard_at_it_reaches_the_toolkit_once() {
     use ui::component_lifecycle::Heard;
     let (mut app, mut window) = window();
-    let members = Heard::Members(vec![ui::collaboration::Member::named(
-        ui::permissions::MemberId::agent("scout", "bo"),
-        "Scout",
-    )]);
+    let step = Heard::Interaction(tilo_actions::SemanticInteraction {
+        version: tilo_actions::INTERACTION_VERSION,
+        invocation: tilo_actions::InvocationId::new(),
+        sequence: 1,
+        actor: tilo_actions::Acting::person("bo"),
+        phase: tilo_actions::InteractionPhase::Applying,
+        action: tilo_actions::InteractionAction {
+            id: "create".into(),
+            label: "Create".into(),
+            app: None,
+            step: None,
+            creates: None,
+            did: None,
+        },
+        resource: tilo_actions::ActionResource {
+            id: "tasks.tracker".into(),
+            kind: "tasks.tracker".into(),
+            label: "Tasks".into(),
+        },
+        anchor: tilo_actions::InteractionAnchor::SemanticControl { id: "add".into() },
+        group: None,
+    });
     let heard = |heard: &Heard| ToUi::Heard(serde_json::to_vec(heard).expect("encodes"));
-    send(
-        &mut app,
-        &[heard(&members), ToUi::Heard(b"not json".to_vec())],
-    );
+    send(&mut app, &[heard(&step), ToUi::Heard(b"not json".to_vec())]);
     send(&mut app, &titled_page());
     window.receive();
-    assert_eq!(window.take_heard(), vec![members]);
+    assert_eq!(window.take_heard(), vec![step]);
     assert!(window.take_heard().is_empty(), "taken once");
     assert!(
         window.composed().is_some(),
