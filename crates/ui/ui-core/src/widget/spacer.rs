@@ -119,7 +119,7 @@ impl Widget for Spacer {
                 flex_shrink: 1.0,
                 ..Default::default()
             },
-            Some(px) if px <= 0.0 => super::when::removed_from_flow(),
+            Some(px) if px <= 0.0 => super::layout::removed_from_flow(),
             Some(px) => Style {
                 flex_grow: 0.0,
                 flex_shrink: 0.0,

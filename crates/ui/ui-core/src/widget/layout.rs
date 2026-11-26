@@ -2357,3 +2357,11 @@ pub(crate) fn solve_built(
 #[cfg(test)]
 #[path = "scrollable_placement_tests.rs"]
 mod scrollable_placement_tests;
+
+/// The style of a widget that takes no place in its parent's flow.
+pub(crate) fn removed_from_flow() -> taffy::Style {
+    taffy::Style {
+        display: taffy::Display::None,
+        ..taffy::Style::default()
+    }
+}

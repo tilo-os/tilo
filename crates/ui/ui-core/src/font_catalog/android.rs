@@ -65,5 +65,5 @@ fn extract(into: &Path) -> Result<(), FontCatalogError> {
 
 fn copy_asset(name: &str, to: &Path) -> Result<(), FontCatalogError> {
     let source = format!("{ASSET_ROOT}/{name}");
-    crate::launch::android::copy_asset(&source, to).map_err(|e| FontCatalogError::at(&source, e))
+    crate::platform::android::copy_asset(&source, to).map_err(|e| FontCatalogError::at(&source, e))
 }

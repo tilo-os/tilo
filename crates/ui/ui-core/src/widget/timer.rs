@@ -134,7 +134,7 @@ impl Widget for Timer {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        taffy.widget_leaf(super::when::removed_from_flow(), node_map, self)
+        taffy.widget_leaf(super::layout::removed_from_flow(), node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {

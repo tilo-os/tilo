@@ -26,13 +26,6 @@ impl Absent {
     }
 }
 
-pub(crate) fn removed_from_flow() -> Style {
-    Style {
-        display: taffy::Display::None,
-        ..Style::default()
-    }
-}
-
 impl Widget for Absent {
     fn build_layout(
         &mut self,
@@ -40,7 +33,7 @@ impl Widget for Absent {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        taffy.widget_leaf(removed_from_flow(), node_map, self)
+        taffy.widget_leaf(super::layout::removed_from_flow(), node_map, self)
     }
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, origin: Point) {

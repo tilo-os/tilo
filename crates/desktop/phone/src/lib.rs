@@ -105,7 +105,7 @@ fn declare_carried_runtimes() {
 /// app runs from a developer's build, or the manifest does not verify.
 #[cfg(target_os = "android")]
 fn signed_manifest() -> Option<tilo_app_package::Manifest> {
-    let bytes = ui::launch::android::read_asset("tilo/manifest.toml")
+    let bytes = ui::platform::android::read_asset("tilo/manifest.toml")
         .inspect_err(|error| tracing::warn!(%error, "this app carries no signed manifest"))
         .ok()?;
     let text = String::from_utf8(bytes)

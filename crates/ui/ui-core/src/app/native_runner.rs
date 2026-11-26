@@ -5216,7 +5216,7 @@ impl App {
         {
             use winit::platform::android::EventLoopBuilderExtAndroid;
             event_loop_builder.with_android_app(
-                crate::launch::android::app()
+                crate::platform::android::app()
                     .expect("an Android app starts through ui::android_main!")
                     .clone(),
             );
