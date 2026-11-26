@@ -2496,7 +2496,7 @@ mod tests {
             assert_eq!(
                 data,
                 BytesData::Kept {
-                    hash: hash.clone(),
+                    hash,
                     len: 4096
                 }
             );
