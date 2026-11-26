@@ -74,7 +74,7 @@ pub struct KeySessions {
     /// The person's devices and the broker, once they run: a host opens
     /// before the store and the broker it serves.
     serving: OnceLock<Serving>,
-    open: std::sync::Mutex<HashMap<(WorkspaceId, [u8; 32]), Session>>,
+    open: Arc<OpenSessions>,
     /// The workspaces' apps as web pages, served from the same dispatch.
     pages: Pages,
 }
@@ -90,6 +90,57 @@ struct Session {
     caller: Caller,
 }
 
+/// The sessions open, by workspace and key.
+type OpenSessions = std::sync::Mutex<HashMap<(WorkspaceId, [u8; 32]), Session>>;
+
+/// What the session a key works in needs, to be opened: a key's first call, or its first under
+/// a renewed certificate.
+struct Opening {
+    sessions: Arc<dyn Sessions>,
+    workspace: String,
+    workspace_id: WorkspaceId,
+    key: DeviceCert,
+    whose: Whose,
+}
+
+/// The session a key's call runs in: open, or opened on a thread of its own because the call
+/// came on the app runtime's thread, which never waits on the workspaces it is admitted by.
+enum Run {
+    Open(SessionHost, Caller),
+    Opening(Opening),
+}
+
+impl Opening {
+    /// Open the session and keep it in `open`: the one another call opened meanwhile, when one
+    /// did, and this one retired.
+    fn open(self, open: &OpenSessions) -> Result<(SessionHost, Caller), ActionCallError> {
+        let (host, caller) = self
+            .sessions
+            .open(&self.workspace, &self.key, self.whose)
+            .map_err(|reason| ActionCallError::Refused { reason })?;
+        let mut open = open.lock_recover();
+        let at = (self.workspace_id, self.key.device_public_key);
+        if let Some(run) = open.get(&at)
+            && run.cert == self.key
+        {
+            let kept = (Arc::clone(&run.host), run.caller.clone());
+            drop(open);
+            host.retire_execution(&caller);
+            return Ok(kept);
+        }
+        open.insert(
+            at,
+            Session {
+                cert: self.key,
+                host: Arc::clone(&host),
+                caller: caller.clone(),
+            },
+        );
+        drop(open);
+        Ok((host, caller))
+    }
+}
+
 impl KeySessions {
     /// Sessions nobody answers yet: every message is refused as not running
     /// until [`Self::serve`].
@@ -97,7 +148,7 @@ impl KeySessions {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
             serving: OnceLock::new(),
-            open: std::sync::Mutex::default(),
+            open: Arc::default(),
             pages: Pages::default(),
         })
     }
@@ -126,7 +177,7 @@ impl KeySessions {
         workspace_id: WorkspaceId,
         (caller, key): (&Caller, &DeviceCert),
         message: &RemoteActionMessage,
-    ) -> Result<(SessionHost, Caller), ActionCallError> {
+    ) -> Result<Run, ActionCallError> {
         let Serving { devices, sessions } =
             self.serving
                 .get()
@@ -180,7 +231,7 @@ impl KeySessions {
         if let Some(run) = open.get(&(workspace_id, key.device_public_key))
             && run.cert == *key
         {
-            return Ok((Arc::clone(&run.host), run.caller.clone()));
+            return Ok(Run::Open(Arc::clone(&run.host), run.caller.clone()));
         }
         // A key that renewed its certificate starts its run again under the
         // one it shows now.
@@ -193,19 +244,21 @@ impl KeySessions {
                 reason: "this device sessions as many of its person's keys as it takes".into(),
             });
         }
-        let (host, caller) = sessions
-            .open(&workspace, key, whose)
-            .map_err(|reason| ActionCallError::Refused { reason })?;
-        open.insert(
-            (workspace_id, key.device_public_key),
-            Session {
-                cert: key.clone(),
-                host: Arc::clone(&host),
-                caller: caller.clone(),
-            },
-        );
         drop(open);
-        Ok((host, caller))
+        let opening = Opening {
+            sessions: Arc::clone(sessions),
+            workspace,
+            workspace_id,
+            key: key.clone(),
+            whose,
+        };
+        // Opening admits the key in its workspace, which waits on the workspaces: never on the
+        // app runtime's own thread, whose tasks that wait would hold.
+        if tilo_rt::app().is_runtime_thread() {
+            return Ok(Run::Opening(opening));
+        }
+        let (host, caller) = opening.open(&self.open)?;
+        Ok(Run::Open(host, caller))
     }
 
     /// End the run `device` works in on `workspace_id`, if it has one.
@@ -241,7 +294,34 @@ impl AppActionServer for KeySessions {
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
         match self.run(workspace_id, (caller, certificate), &message) {
-            Ok((host, caller)) => tilo_actions::remote::serve(&host, &caller, message),
+            Ok(Run::Open(host, caller)) => tilo_actions::remote::serve(&host, &caller, message),
+            Ok(Run::Opening(opening)) => {
+                let open = Arc::clone(&self.open);
+                let replies = tilo_actions::remote::refuse(
+                    &message,
+                    ActionCallError::Unavailable {
+                        reason: String::new(),
+                    },
+                )
+                .is_some();
+                let (done, answer) = tilo_actions::remote::pending();
+                std::thread::spawn(move || {
+                    let served = match opening.open(&open) {
+                        Ok((host, caller)) => tilo_actions::remote::serve(&host, &caller, message),
+                        Err(refusal) => {
+                            tilo_actions::remote::refuse(&message, refusal).map(Pending::ready)
+                        }
+                    };
+                    if let Some(served) = served {
+                        served.then(move |answered| {
+                            if let Some(answered) = answered {
+                                done.complete(answered);
+                            }
+                        });
+                    }
+                });
+                replies.then_some(answer)
+            }
             Err(refusal) => tilo_actions::remote::refuse(&message, refusal).map(Pending::ready),
         }
     }
