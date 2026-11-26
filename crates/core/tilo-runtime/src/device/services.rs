@@ -393,8 +393,8 @@ impl Identity {
         // reads the store that account keeps, not the one of the account the unit runs as (the
         // system daemon runs as root, whose store names nobody).
         let served = tilo_identity::store::serve_identity_dir(identity_dir.clone());
-        let (key, cert) = tilo_identity::trusted_device::serving_in(&identity_dir, &keys)
-            .map_err(|error| {
+        let (key, cert) =
+            tilo_identity::trusted_device::serving_in(&identity_dir, &keys).map_err(|error| {
                 io::Error::new(io::ErrorKind::NotFound, format!("{SET_UP_FIRST} ({error})"))
             })?;
         Ok(Self {
