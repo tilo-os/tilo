@@ -47,6 +47,78 @@ tilo_test_env::scenario! {
         }
     }
 
+    phase overlay_badges_paint_legible_ink_in_every_theme;
+    {
+        use crate::color::contrast_ratio;
+        use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
+
+        let mut text = TextRenderer::new();
+        let art = Rect::new(0.0, 0.0, 320.0, 180.0);
+        for name in Theme::ALL {
+            let theme = Theme::named(name).expect("every shipped theme resolves");
+            for reduce_transparency in [false, true] {
+                let theme = theme.clone().with_reduce_transparency(reduce_transparency);
+                let metrics = MediaMetrics::new(&theme);
+                let live_fill = theme.tokens.colors.semantic.danger;
+                let live_ink =
+                    theme
+                        .tokens
+                        .colors
+                        .ink_on(live_fill, theme.text_primary, ON_FILL_MIN_CONTRAST);
+                let duration_fill = crate::chrome::panel_ground(&theme);
+                for (badge, fill, ink) in [
+                    (MediaBadge::Live, live_fill, live_ink),
+                    (
+                        MediaBadge::Duration("12:04"),
+                        duration_fill,
+                        theme.text_primary,
+                    ),
+                ] {
+                    let mut scene = vello::Scene::new();
+                    paint_badge(
+                        &mut PaintCtx::new(&mut scene, vello::kurbo::Affine::IDENTITY, &mut text, &theme),
+                        &metrics,
+                        art,
+                        badge,
+                    );
+                    for color in [fill, ink] {
+                        assert!(
+                            scene
+                                .encoding()
+                                .draw_data
+                                .contains(&color.premultiply().to_rgba8().to_u32()),
+                            "{name}, transparency reduced {reduce_transparency}: {badge:?} paints its fill and ink"
+                        );
+                    }
+                    assert!(
+                        contrast_ratio(ink, fill) >= ON_FILL_MIN_CONTRAST,
+                        "{name}: {badge:?} ink is legible on its actual plate"
+                    );
+                }
+                let mut progress = vello::Scene::new();
+                paint_badge(
+                    &mut PaintCtx::new(&mut progress, vello::kurbo::Affine::IDENTITY, &mut text, &theme),
+                    &metrics,
+                    art,
+                    MediaBadge::Progress(0.5),
+                );
+                assert!(
+                    progress.encoding().draw_data.contains(
+                        &theme
+                            .tokens
+                            .colors
+                            .intent
+                            .value_fill
+                            .premultiply()
+                            .to_rgba8()
+                            .to_u32()
+                    ),
+                    "{name}: playback progress is the neutral fill, not the accent"
+                );
+            }
+        }
+    }
+
 
 }
 

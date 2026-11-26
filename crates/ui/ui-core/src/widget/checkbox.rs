@@ -943,6 +943,28 @@ mod tests {
         );
     }
 
+    /// The unchecked edge, as painted, holds 3:1 against every region's
+    /// ground in every preset: it is the only thing that shows the box.
+    #[test]
+    fn an_unchecked_edge_reads_on_every_ground() {
+        use crate::tokens::colors::{NON_TEXT_MIN_CONTRAST, composite};
+        for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+            let s = &theme.tokens.colors.surfaces;
+            for ground in [s.content, s.sidebar, s.inspector, s.raised, s.overlay] {
+                let mut region = theme.clone();
+                region.tokens.colors.surfaces.content = ground;
+                let face = region.tokens.colors.surfaces.raised;
+                let edge = composite(unchecked_edge(&region, face), face);
+                let ratio = crate::a11y::contrast_ratio(edge, ground);
+                assert!(
+                    ratio >= NON_TEXT_MIN_CONTRAST - 0.01,
+                    "{}: the unchecked edge reaches only {ratio:.2}:1 on {ground:?}",
+                    theme.name
+                );
+            }
+        }
+    }
+
     /// A disabled box dims its face but keeps its edge at full strength
     /// (HIG §9.5): an unchecked white box on a light ground would otherwise
     /// vanish.
@@ -1227,5 +1249,161 @@ mod tests {
 
         document_binding_resets_after_the_boolean_path_disappears();
         local_state_binding_is_two_way_across_checkboxes();
+    }
+
+    fn box_at_origin(checkbox: &mut Checkbox) {
+        let mut tree = TaffyTree::<()>::new();
+        let node = checkbox.build_layout(
+            &mut tree,
+            &Theme::dark(),
+            &mut std::collections::HashMap::new(),
+        );
+        tree.compute_layout(node, taffy::prelude::TaffyMaxContent::MAX_CONTENT)
+            .unwrap();
+        checkbox.apply_layout(&tree, node, Point::ZERO);
+    }
+
+    fn present(checkbox: &mut Checkbox, theme: &Theme) {
+        checkbox.draw(&mut crate::draw::DrawCtx::new(
+            &mut Scene::new(),
+            Affine::IDENTITY,
+            &mut TextRenderer::new(),
+            theme,
+            crate::presence::PresenceCtx::empty().draw_env(),
+        ));
+        checkbox.mark_drawn();
+    }
+
+    #[test]
+    fn a_click_fades_the_box_in_unchecking_goes_quicker_and_a_key_lands() {
+        use crate::synthetic_input::{cursor_moved, mouse_press};
+        use crate::testing::dispatch;
+        use crate::time::testing::with_monotonic_time;
+        use crate::tokens::MotionSource;
+        let ms = |t0: crate::time::Instant, ms: u64| t0 + crate::time::Duration::from_millis(ms);
+        let theme = Theme::dark();
+        let state = crate::LocalState::new(false);
+        let mut checkbox = Checkbox::from_state(&state);
+        box_at_origin(&mut checkbox);
+        let t0 = crate::time::now();
+        with_monotonic_time(t0, || present(&mut checkbox, &theme));
+        assert!(!checkbox.needs_animation_frame(), "the first paint rests");
+        with_monotonic_time(t0, || {
+            crate::motion::note_source(MotionSource::Pointer);
+            dispatch(&mut checkbox, &cursor_moved(16.0, 16.0));
+            dispatch(&mut checkbox, &mouse_press());
+            assert!(state.get(), "checked on the press, at once");
+            present(&mut checkbox, &theme);
+        });
+        let came = checkbox.motion.mark.settles_at().expect("fading in") - t0;
+        with_monotonic_time(ms(t0, 40), || {
+            assert!(checkbox.needs_redraw() && checkbox.needs_animation_frame());
+            present(&mut checkbox, &theme);
+            let level = checkbox.motion.pose(ms(t0, 40)).level;
+            assert!(level > 0.0 && level < 1.0, "on its way: {level}");
+        });
+        with_monotonic_time(ms(t0, 1_000), || {
+            assert!(!checkbox.needs_animation_frame(), "settled: no frames");
+            present(&mut checkbox, &theme);
+            assert!(!checkbox.needs_redraw(), "settled: no repaint");
+            crate::motion::note_source(MotionSource::Pointer);
+            dispatch(&mut checkbox, &mouse_press());
+            assert!(!state.get());
+            present(&mut checkbox, &theme);
+        });
+        let went = checkbox.motion.mark.settles_at().expect("fading out") - ms(t0, 1_000);
+        assert!(went < came, "out {went:?} vs in {came:?}");
+        let mut doc = AutoCommit::new();
+        with_monotonic_time(ms(t0, 2_000), || {
+            crate::motion::note_source(MotionSource::Keyboard);
+            assert!(Widget::perform_action(
+                &mut checkbox,
+                &crate::a11y::Action::ToggleCheck,
+                &[],
+                &mut crate::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ));
+            present(&mut checkbox, &theme);
+            assert_eq!(
+                checkbox.motion.pose(ms(t0, 2_000)).level,
+                1.0,
+                "a key lands"
+            );
+            assert!(!checkbox.needs_animation_frame());
+        });
+    }
+
+    #[test]
+    fn mixed_and_checked_cross_fade_their_glyphs_and_reduced_motion_still_fades() {
+        use crate::tokens::MotionSource;
+        let now = crate::time::now();
+        let later = now + crate::time::Duration::from_millis(40);
+        let motion = Theme::dark().motion();
+        let mut boxed = CheckMotion::default();
+        boxed.follow(true, CheckGlyph::Mixed, motion, MotionSource::Pointer, now);
+        assert_eq!(
+            boxed.pose(now),
+            CheckPose::at_rest(true, CheckGlyph::Mixed),
+            "first rests"
+        );
+        boxed.follow(true, CheckGlyph::Check, motion, MotionSource::Pointer, now);
+        // Early on: the old glyph is gone by 60 % of the fade.
+        let pose = boxed.pose(now + crate::time::Duration::from_millis(12));
+        assert_eq!(pose.glyph, CheckGlyph::Check);
+        assert_eq!(pose.level, 1.0, "the box stays filled");
+        assert!(pose.incoming > 0.0 && pose.incoming < 1.0);
+        assert!(matches!(pose.outgoing, Some((CheckGlyph::Mixed, o)) if o < 1.0));
+        let settled = now + crate::time::Duration::from_secs(1);
+        assert_eq!(
+            boxed.pose(settled),
+            CheckPose::at_rest(true, CheckGlyph::Check)
+        );
+        assert!(!boxed.is_moving(settled));
+        boxed.follow(
+            true,
+            CheckGlyph::Mixed,
+            motion,
+            MotionSource::Keyboard,
+            settled,
+        );
+        assert_eq!(
+            boxed.pose(settled),
+            CheckPose::at_rest(true, CheckGlyph::Mixed)
+        );
+        let reduced = Theme::dark().with_reduce_motion(true).motion();
+        let mut calm = CheckMotion::default();
+        calm.follow(
+            false,
+            CheckGlyph::Check,
+            reduced,
+            MotionSource::Pointer,
+            now,
+        );
+        calm.follow(true, CheckGlyph::Check, reduced, MotionSource::Pointer, now);
+        let level = calm.pose(later).level;
+        assert!(level > 0.0 && level < 1.0, "fades: {level}");
+        // A painted box part-way differs from both ends; at rest it is the
+        // box it always was.
+        use crate::offscreen::OffscreenRenderer;
+        let theme = Theme::dark();
+        let rect = Rect::new(8.0, 8.0, 32.0, 32.0);
+        let render = |face: CheckboxFace| {
+            let mut scene = Scene::new();
+            Checkbox::paint(&mut scene, Affine::IDENTITY, &theme, &face);
+            OffscreenRenderer::new(40, 40).render(&scene, theme.tokens.colors.surfaces.content)
+        };
+        let half = CheckPose {
+            level: 0.5,
+            ..CheckPose::at_rest(true, CheckGlyph::Check)
+        };
+        let partway = render(CheckboxFace::new(rect, true).pose(half));
+        assert_ne!(partway, render(CheckboxFace::new(rect, true)));
+        assert_ne!(partway, render(CheckboxFace::new(rect, false)));
+        assert_eq!(
+            render(
+                CheckboxFace::new(rect, false).pose(CheckPose::at_rest(true, CheckGlyph::Check))
+            ),
+            render(CheckboxFace::new(rect, true)),
+        );
     }
 }

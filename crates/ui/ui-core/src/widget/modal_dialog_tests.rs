@@ -99,6 +99,49 @@ tilo_test_env::scenario! {
 
 
 
+    phase a_coarse_pointer_grows_the_sheets_controls_to_a_fingers_target;
+    {
+        let _settled = crate::motion::testing::settled();
+        let theme = Theme::dark();
+        let actions = [
+            ModalAction::primary("Save"),
+            ModalAction::secondary("Cancel"),
+        ];
+        let spec = ModalSpec::new("Save?").actions(&actions).body_height(40.0);
+        let mut tr = TextRenderer::new();
+        let touch = layout_for(
+            VIEWPORT,
+            &spec,
+            &mut tr,
+            &theme,
+            crate::interaction::InteractionEnvironment::TOUCH,
+        );
+        for action in &touch.actions {
+            assert!(
+                action.height() >= 48.0 && action.width() >= 48.0,
+                "an action is a finger's target: {action:?}"
+            );
+            assert!(
+                VIEWPORT.contains(action.center()) && touch.card.contains(action.center()),
+                "the target stands on the sheet and in the window: {action:?}"
+            );
+        }
+        let close = touch.close.expect("the sheet closes");
+        assert!(
+            close.height() >= 48.0,
+            "the close is a finger's target: {close:?}"
+        );
+        let pointer = lay(&spec, &theme);
+        assert!(
+            pointer.actions[0].height() < touch.actions[0].height(),
+            "a mouse needs no finger's area"
+        );
+        assert!(
+            pointer.card.height() < touch.card.height(),
+            "the sheet grows with them"
+        );
+    }
+
     phase compact_modals_fill_the_window_and_keep_their_controls_on_the_foreground_page;
     {
         let _settled = crate::motion::testing::settled();
@@ -1088,6 +1131,80 @@ tilo_test_env::scenario! {
         assert!(fresh.scroll_offset().abs() < 1e-9);
     }
 
+    phase a_header_stays_put_while_the_body_scrolls_under_it;
+    // A strip the caller passes as the sheet's header stays where it is while
+    // the body scrolls under it: the wheel moves what the body holds, never the
+    // tabs a person is switching between.
+    {
+        let _settled = crate::motion::testing::settled();
+        let theme = Theme::dark();
+
+        let strip = 40.0;
+        let plain = lay(&ModalSpec::new("Tabs").body_height(600.0), &theme);
+        let headed = lay(
+            &ModalSpec::new("Tabs")
+                .body_height(600.0)
+                .header_height(strip),
+            &theme,
+        );
+        assert!(
+            plain.header.is_none(),
+            "a sheet that asked for none has none"
+        );
+        let header = headed.header.expect("the spec asked for a header");
+        assert!(
+            (header.height() - strip).abs() < 0.5,
+            "the header takes the height it asked for: {header:?}"
+        );
+        assert!(
+            (header.width() - headed.body.width()).abs() < 0.5,
+            "and the body's width"
+        );
+        assert!(
+            header.y0 >= headed.title.y1 - 0.5 && headed.body.y0 >= header.y1,
+            "the header stands below the title and the body below it: {:?} {:?}",
+            header,
+            headed.body
+        );
+        let gap = plain.body.y0 - plain.title.y1;
+        assert!(
+            (headed.card.height() - plain.card.height() - strip - gap).abs() < 0.5,
+            "the sheet grows by the header and its gap: {} vs {}",
+            plain.card.height(),
+            headed.card.height()
+        );
+        assert!(
+            (plain.body.height() - headed.body.height()).abs() < 0.5,
+            "and the body keeps the height it asked for"
+        );
+
+        let mut d = ModalDialog::new(
+            "Tabs",
+            TestLeaf::sized(200.0, 2000.0),
+        )
+        .with_header(TestLeaf::sized(200.0, 40.0))
+        .open(true);
+        lay_out(&mut d, WINDOW, &theme);
+        present(&mut d, WINDOW, &theme);
+        let header_before = d.header_rect().expect("the sheet shows its header");
+        let body = d.body_rect();
+        dispatch(&mut d, &cursor_at(body.center()));
+        dispatch(&mut d, &wheel(-3.0));
+        let scrolled = d.scroll_offset();
+        assert!(scrolled > 0.0, "the wheel scrolls the body");
+        lay_out(&mut d, WINDOW, &theme);
+        present(&mut d, WINDOW, &theme);
+        assert_eq!(
+            d.header_rect(),
+            Some(header_before),
+            "the header stays where it stands"
+        );
+        assert!(
+            (d.content().get_rect().y0 - (d.body_rect().y0 - scrolled)).abs() < 0.5,
+            "while the content under it moves up by the scroll"
+        );
+    }
+
 
 }
 
@@ -1224,6 +1341,143 @@ fn what_stands_behind_an_open_sheet_never_takes_its_input() {
         before,
         "and nothing behind the sheet sees it"
     );
+}
+
+/// A dialog a click opens arrives from its centre over its fading scrim
+/// (`motion::Appear`) and leaves the same way, quicker; one built open is at
+/// rest from its first paint, so a host that rebuilds its tree never replays
+/// the entrance; a key opens it at once.
+#[test]
+fn a_dialog_arrives_from_its_centre_and_a_rebuilt_one_does_not_replay_it() {
+    use crate::motion::note_source;
+    use crate::time::testing::with_monotonic_time;
+    use crate::tokens::MotionSource;
+    let theme = Theme::dark();
+    let t0 = crate::time::now();
+    let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+
+    let (mut built, _) = with_monotonic_time(t0, || laid_out_counting(true));
+    with_monotonic_time(t0, || {
+        let _ = present(&mut built, WINDOW, &theme);
+        assert!(
+            !built.appear.is_moving(),
+            "a dialog built open does not arrive"
+        );
+        assert!(built.appear.progress() >= 1.0);
+    });
+
+    let (mut d, _) = with_monotonic_time(t0, || laid_out_counting(false));
+    with_monotonic_time(t0, || {
+        note_source(MotionSource::Pointer);
+        d.set_open(true);
+        lay_out(&mut d, WINDOW, &theme);
+        let _ = present(&mut d, WINDOW, &theme);
+        assert!(d.needs_animation_frame(), "it arrives");
+        assert!(d.appear.progress() < 0.05);
+    });
+    with_monotonic_time(at(80), || {
+        if d.is_layout_dirty() {
+            lay_out(&mut d, WINDOW, &theme);
+        }
+        let _ = present(&mut d, WINDOW, &theme);
+        let p = d.appear.progress();
+        assert!(p > 0.0 && p < 1.0, "mid-arrival: {p}");
+    });
+    with_monotonic_time(at(400), || {
+        if d.is_layout_dirty() {
+            lay_out(&mut d, WINDOW, &theme);
+        }
+        let _ = present(&mut d, WINDOW, &theme);
+        assert!(
+            !d.needs_animation_frame(),
+            "it rests: appear moving {} (progress {}), stale {}, remeasure {}, content wants frames {}, content size {:?}, body {:?}",
+            d.appear.is_moving(),
+            d.appear.progress(),
+            d.stale,
+            d.remeasure,
+            d.content.needs_animation_frame(),
+            d.content_size,
+            d.body_rect()
+        );
+        d.set_open(false);
+        assert!(!d.is_open());
+        let leaving = present(&mut d, WINDOW, &theme);
+        assert!(
+            !leaving.encoding().is_empty(),
+            "it is drawn while it leaves"
+        );
+    });
+    with_monotonic_time(at(800), || {
+        let gone = present(&mut d, WINDOW, &theme);
+        assert!(gone.encoding().is_empty(), "and then it has gone");
+        note_source(MotionSource::Keyboard);
+        d.set_open(true);
+        lay_out(&mut d, WINDOW, &theme);
+        let _ = present(&mut d, WINDOW, &theme);
+        assert!(!d.appear.is_moving(), "a shortcut lands at once");
+    });
+}
+
+#[test]
+fn a_shared_appearance_arrives_once_and_leaves_until_it_is_gone() {
+    use crate::motion::{Appearance, note_source};
+    use crate::time::testing::with_monotonic_time;
+    use crate::tokens::MotionSource;
+    let theme = Theme::dark();
+    let t0 = crate::time::now();
+    let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
+    let appearance = Appearance::shared();
+    let build = |open: bool| {
+        ModalDialog::new("Settings", crate::testing::TestLeaf::auto())
+            .appearing(appearance.clone())
+            .open(open)
+    };
+
+    note_source(MotionSource::Pointer);
+    let mut d = with_monotonic_time(t0, || build(true));
+    with_monotonic_time(t0, || {
+        lay_out(&mut d, WINDOW, &theme);
+        let _ = present(&mut d, WINDOW, &theme);
+        assert!(
+            d.appear.is_moving() && d.appear.progress() < 0.05,
+            "built open on a shared appearance, it arrives: moving {}, progress {}",
+            d.appear.is_moving(),
+            d.appear.progress()
+        );
+    });
+    with_monotonic_time(at(80), || {
+        let mut rebuilt = build(true);
+        lay_out(&mut rebuilt, WINDOW, &theme);
+        let _ = present(&mut rebuilt, WINDOW, &theme);
+        let progress = rebuilt.appear.progress();
+        assert!(
+            progress > 0.0 && progress < 1.0,
+            "the rebuild carries the arrival on: {progress}"
+        );
+        d = rebuilt;
+    });
+    with_monotonic_time(at(400), || {
+        lay_out(&mut d, WINDOW, &theme);
+        let _ = present(&mut d, WINDOW, &theme);
+        assert!(!d.needs_animation_frame(), "it rests");
+        assert!(d.presents_modal());
+    });
+    note_source(MotionSource::Pointer);
+    with_monotonic_time(at(420), || {
+        let mut leaving = build(false);
+        lay_out(&mut leaving, WINDOW, &theme);
+        let shown = present(&mut leaving, WINDOW, &theme);
+        assert!(!shown.encoding().is_empty(), "drawn while it leaves");
+        assert!(leaving.presents_modal(), "and still the sheet's modal");
+        d = leaving;
+    });
+    with_monotonic_time(at(900), || {
+        let mut gone = build(false);
+        lay_out(&mut gone, WINDOW, &theme);
+        let after = present(&mut gone, WINDOW, &theme);
+        assert!(after.encoding().is_empty(), "and then it has gone");
+        assert!(!gone.presents_modal());
+    });
 }
 
 #[test]

@@ -1187,6 +1187,74 @@ mod tests {
 
 
 
+        phase a_panel_keeps_a_column_for_the_content_however_narrow_its_authored_minimum;
+        // The content beside the panel is never a phone's screen: an authored minimum under a
+        // column's width ([`crate::widget::arrange::column_min_width`]) is raised to one, so the panel
+        // stops where the content still reads and the handle stays usable.
+        {
+            let theme = Theme::dark();
+            let column = f64::from(crate::widget::arrange::column_min_width(
+                crate::widget::arrange::rem_of(&theme),
+            ));
+            for side in [SidebarSide::Left, SidebarSide::Right] {
+                let mut drawer = SidebarDrawer::new()
+                    .side(side)
+                    .with_rail()
+                    .content_min_width(360.0);
+                drawer.scale_for(&theme);
+                let area = Rect::new(40.0, 20.0, 800.0, 740.0);
+                drawer.resolve(area);
+                drawer.snap(true);
+                drawer.resolve(area);
+                assert!(drawer.is_docked(), "the panel docks beside a column");
+                assert_eq!(drawer.content_rect().width(), column);
+                assert!(
+                    drawer.sidebar_rect().width() + column <= area.width() + 0.5,
+                    "the panel and the content's column fit the window"
+                );
+                assert!(drawer.resize_accessibility().is_some());
+                let value = match side {
+                    SidebarSide::Left => "90%",
+                    SidebarSide::Right => "10%",
+                };
+                let target = drawer.resize_target();
+                drawer.perform_resize_action(target, &crate::a11y::Action::SetValue(value.into()));
+                drawer.resolve(area);
+                assert!(drawer.is_docked(), "resize must not turn into an overlay");
+                assert_eq!(drawer.content_rect().width(), column);
+            }
+        }
+
+        phase a_panel_docks_beside_a_surface_narrower_than_a_column;
+        // A surface drawn to the size it gets (pages, a picture) is no column of text: the panel
+        // docks beside it narrower than a column, down to the surface's own minimum, and floats over
+        // it only below that.
+        {
+            let theme = Theme::dark();
+            let column = f64::from(crate::widget::arrange::column_min_width(
+                crate::widget::arrange::rem_of(&theme),
+            ));
+            let surface = 360.0;
+            assert!(surface < column, "the surface's minimum is under a column");
+            let mut drawer = SidebarDrawer::new()
+                .right()
+                .docked_width(300.0)
+                .content_surface(surface);
+            drawer.scale_for(&theme);
+            let area = Rect::new(0.0, 0.0, 600.0, 700.0);
+            drawer.resolve(area);
+            drawer.snap(true);
+            drawer.resolve(area);
+            assert!(drawer.is_docked(), "the panel docks beside the surface");
+            assert!((drawer.content_rect().width() - surface).abs() < 0.5);
+            let narrow = Rect::new(0.0, 0.0, surface + 150.0, 700.0);
+            drawer.resolve(narrow);
+            assert!(
+                drawer.is_overlay(),
+                "below the surface's minimum the panel floats"
+            );
+        }
+
         phase content_minimum_docks_by_the_narrowest_panel_and_shrinks_it_first;
         {
             let m = Metrics::BASE;

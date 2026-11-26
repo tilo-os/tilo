@@ -2250,6 +2250,35 @@ mod tests {
         });
     }
 
+    #[test]
+    fn keys_and_reduced_motion_land_the_thumb() {
+        use crate::time::testing::with_monotonic_time;
+        let theme = Theme::dark();
+        let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
+        let t0 = crate::time::now();
+        with_monotonic_time(t0, || {
+            present(&mut s, &theme);
+            Widget::set_focus(&mut s, true);
+            crate::motion::note_source(crate::tokens::MotionSource::Keyboard);
+            dispatch(&mut s, &crate::synthetic_input::named_key(NamedKey::End));
+            assert_eq!(s.value, 1.0);
+            present(&mut s, &theme);
+            assert_eq!(s.thumb.get(t0), 1.0, "a key lands");
+            assert!(!s.needs_animation_frame());
+        });
+        let calm = Theme::dark().with_reduce_motion(true);
+        let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
+        with_monotonic_time(t0, || {
+            present(&mut s, &calm);
+            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            dispatch(&mut s, &cursor_moved(20.0, 15.0));
+            dispatch(&mut s, &mouse_press());
+            present(&mut s, &calm);
+            assert!((s.thumb.get(t0) - 0.1).abs() < 1e-9, "reduced motion lands");
+            assert!(!s.needs_animation_frame());
+        });
+    }
+
     /// A view that builds the slider anew on every value it takes, as a volume, brightness or
     /// seek slider in most apps is: a drag goes on through every rebuild, by pointer and by
     /// finger.

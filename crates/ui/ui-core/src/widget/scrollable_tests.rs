@@ -63,6 +63,17 @@ tilo_test_env::scenario! {
     }
 
 
+    phase under_reduced_motion_fingers_stop_at_the_end;
+    {
+        use crate::time::testing::with_monotonic_time;
+        let mut s = vertical(1000.0);
+        s.motion = crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), true);
+        with_monotonic_time(crate::time::now(), || {
+            assert!(!s.pan(0.0, -60.0), "nothing moved: the wheel may bubble");
+            assert_eq!(s.drawn_offset(), (0.0, 0.0));
+        });
+    }
+
     phase a_browsers_swipe_past_the_top_springs_back_once_it_pauses;
     {
         use crate::time::testing::with_monotonic_time;
@@ -406,6 +417,149 @@ tilo_test_env::scenario! {
     }
 
 
+
+    phase a_section_receives_same_position_motion_after_pointer_reentry;
+    {
+        use crate::widget::{Section, SectionHeader, Text};
+
+        let opened = Rc::new(Cell::new(None));
+        let seen = Rc::clone(&opened);
+        let section = Section::new(vec![Box::new(Text::new("Details"))])
+            .with_header(SectionHeader::group("Advanced options"))
+            .collapsed()
+            .on_expand(move |open| seen.set(Some(open)));
+        let mut scroll = Scrollable::new_vertical()
+            .with_height(150.0)
+            .with_child(Box::new(section));
+        let mut tree = TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let mut text = TextRenderer::new();
+        let node = scroll.build_layout(&mut tree, &Theme::dark(), &mut nodes);
+        tree.compute_layout_with_measure(
+            node,
+            Size {
+                width: taffy::AvailableSpace::Definite(400.0),
+                height: taffy::AvailableSpace::Definite(150.0),
+            },
+            |known, available, node, _, _| {
+                nodes
+                    .get(&node)
+                    .map(|p| {
+                        // SAFETY: scroll exclusively owns the unchanged widget
+                        // tree; its layout map remains valid throughout measurement.
+                        unsafe { (**p).measure(known, available, &mut text) }
+                    })
+                    .unwrap_or(Size::ZERO)
+            },
+        )
+        .unwrap();
+        scroll.apply_layout(&tree, node, Point::ZERO);
+        let at = scroll.child.as_ref().unwrap().children()[0]
+            .get_rect()
+            .center();
+        assert!(scroll.content_viewport_rect().contains(at));
+        let mut sender = Dispatch::new().layout(&tree, node);
+        for event in [
+            cursor_moved(at.x, at.y),
+            WindowEvent::CursorLeft {
+                device_id: winit::event::DeviceId::dummy(),
+            },
+            cursor_moved(at.x, at.y),
+            mouse(ElementState::Pressed),
+            mouse(ElementState::Released),
+        ] {
+            sender.send(&mut scroll, &event);
+        }
+        assert_eq!(opened.get(), Some(true), "the real disclosure must open");
+        assert!(scroll.child.as_ref().unwrap().children().len() > 1);
+    }
+
+    phase a_scrolled_disclosure_gets_motion_after_leaving_a_text_field;
+    {
+        use crate::LocalState;
+        use crate::widget::{Column, Section, SectionHeader, Spacer, Text, TextInput};
+
+        for scale in [1.0, 2.0] {
+            let opened = Rc::new(Cell::new(None));
+            let seen = Rc::clone(&opened);
+            let mut scroll = Scrollable::new_vertical()
+                .with_height(150.0)
+                .with_child(Box::new(
+                    Column::new()
+                        .with_intrinsic_height()
+                        .push(Box::new(TextInput::from_state(&LocalState::new(
+                            String::new(),
+                        ))))
+                        .push(Box::new(Spacer::fixed(300.0)))
+                        .push(Box::new(
+                            Section::new(vec![Box::new(Text::new("Details"))])
+                                .with_header(SectionHeader::group("Advanced options"))
+                                .collapsed()
+                                .on_expand(move |open| seen.set(Some(open))),
+                        )),
+                ));
+            let theme = Theme::dark().with_text_scale(scale);
+            let mut tree = TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let mut text = TextRenderer::new();
+            let node = scroll.build_layout(&mut tree, &theme, &mut nodes);
+            tree.compute_layout_with_measure(
+                node,
+                Size {
+                    width: taffy::AvailableSpace::Definite(400.0),
+                    height: taffy::AvailableSpace::Definite(150.0),
+                },
+                |known, available, node, _, _| {
+                    nodes
+                        .get(&node)
+                        .map(|p| {
+                            // SAFETY: scroll exclusively owns the unchanged widget tree;
+                            // the node map remains valid for this measurement pass.
+                            unsafe { (**p).measure(known, available, &mut text) }
+                        })
+                        .unwrap_or(Size::ZERO)
+                },
+            )
+            .unwrap();
+            scroll.apply_layout(&tree, node, Point::ZERO);
+            let field = scroll.child.as_ref().unwrap().children()[0]
+                .get_rect()
+                .center();
+            let mut measured = Dispatch::new().layout(&tree, node);
+            measured.send(&mut scroll, &cursor_moved(field.x, field.y));
+            scroll.set_offset_y(scroll.max_offset_y());
+            scroll.apply_layout(&tree, node, Point::ZERO);
+            assert!(
+                scroll.offset_y() > 0.0,
+                "the disclosure was scrolled into view"
+            );
+            let at = scroll.child.as_ref().unwrap().children()[2].children()[0]
+                .get_rect()
+                .center();
+            assert!(scroll.content_viewport_rect().contains(at));
+            assert!(
+                !measured
+                    .send(&mut scroll, &cursor_moved(at.x, at.y))
+                    .handled,
+                "hover transitions do not consume motion intended for a sibling"
+            );
+            assert!(
+                measured
+                    .send(&mut scroll, &mouse(ElementState::Pressed))
+                    .handled
+            );
+            assert!(
+                measured
+                    .send(&mut scroll, &mouse(ElementState::Released))
+                    .handled
+            );
+            assert_eq!(
+                opened.get(),
+                Some(true),
+                "the real scrolled disclosure opens at scale {scale}"
+            );
+        }
+    }
 
     phase keyboard_scrolling_and_focusability_require_scrollable_focus;
     {
@@ -823,6 +977,25 @@ tilo_test_env::scenario! {
             );
             assert!(s.hold.is_none(), "release ends the hold");
         }
+    }
+
+    phase edge_fades_show_only_where_more_content_can_scroll_in;
+    {
+        use crate::surface::ContentEdge;
+        let mut scroll = vertical(900.0).with_edge_fade();
+        assert_eq!(scroll.faded_edges(), vec![ContentEdge::Bottom]);
+        scroll.set_offset_y(100.0);
+        assert_eq!(
+            scroll.faded_edges(),
+            vec![ContentEdge::Top, ContentEdge::Bottom]
+        );
+        scroll.set_offset_y(f32::MAX);
+        assert_eq!(scroll.faded_edges(), vec![ContentEdge::Top]);
+        assert!(vertical(900.0).faded_edges().is_empty(), "off unless asked");
+        assert!(
+            vertical(100.0).with_edge_fade().faded_edges().is_empty(),
+            "fits"
+        );
     }
 
 

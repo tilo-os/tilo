@@ -1886,11 +1886,81 @@ mod tests {
     use crate::search::SearchRegistry;
     use crate::testing::dispatch;
 
+    fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
+        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
+            rgba,
+            w,
+            x.floor() as u32,
+            y.floor() as u32,
+        );
+        crate::a11y::relative_luminance(vello::peniko::Color::from_rgb8(r, g, b))
+    }
+
     /// Where result `flat` is laid out, whether or not it shows: the same
     /// geometry the list paints from.
     fn laid(view: &SearchResultsView, flat: usize) -> Rect {
         let slot = view.slot(flat).expect("the result has a row");
         view.list.row_bounds(slot).expect("the list is placed")
+    }
+
+    /// The results panel's edge and a hovered row both register against the ground on the dark
+    /// and the light preset, at 1×.
+    #[test]
+    fn the_panel_edge_and_a_hovered_row_register_on_both_presets() {
+        use crate::offscreen::OffscreenRenderer;
+        const EDGE_MIN: f64 = 0.008;
+        let margin = 16.0;
+        for theme in [Theme::dark(), Theme::light()] {
+            let theme = theme.with_reduce_motion(true);
+            let mut v = view_from("");
+            v.set_cursor(0);
+            let panel = Rect::new(margin, margin, margin + 360.0, margin + v.desired_height());
+            v.set_rect(panel);
+            let last = v.len() - 1;
+            v.set_hover(Some(last));
+            let (w, h) = (panel.x1 + margin, panel.y1 + margin);
+            let mut tr = TextRenderer::new();
+            let presence = PresenceCtx::default();
+            let mut scene = Scene::new();
+            v.draw(&mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut tr,
+                &theme,
+                presence.draw_env(),
+            ));
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small test surface"
+            )]
+            let rgba = OffscreenRenderer::new(w as u32, h as u32)
+                .render(&scene, theme.tokens.colors.surfaces.base);
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "a small test surface"
+            )]
+            let lum = |x: f64, y: f64| lum_at(&rgba, w as u32, x, y);
+
+            let y = panel.y0 + f64::from(theme.tokens.radii.control) + 1.0;
+            let edge = lum(panel.x0, y);
+            let ground = lum(panel.x0 + 3.0, y);
+            assert!(
+                (edge - ground).abs() >= EDGE_MIN,
+                "{}: panel edge {edge:.4} vs ground {ground:.4} did not register",
+                theme.name
+            );
+
+            let row = v.row_rect(last).expect("the hovered row is laid out");
+            let hover = lum(row.x1 - 3.0, row.center().y);
+            let beside = lum(panel.x1 - ROW_INSET / 2.0, row.center().y);
+            assert!(
+                (hover - beside).abs() >= EDGE_MIN,
+                "{}: hover veneer {hover:.4} vs ground {beside:.4} did not register",
+                theme.name
+            );
+        }
     }
 
     /// The counts the headings draw, in order.

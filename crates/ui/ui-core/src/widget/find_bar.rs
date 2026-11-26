@@ -2003,6 +2003,25 @@ mod tests {
     }
 
     #[test]
+    fn under_reduced_motion_the_band_lands_and_its_controls_fade_in() {
+        let mut scope = page_scope();
+        lay_out(&mut scope);
+        scope.motion = Theme::dark().with_reduce_motion(true).motion();
+        let _frame = crate::motion::pin_frame();
+        crate::motion::note_input(&pointer_press());
+        scope.open();
+        lay_out(&mut scope);
+        let full = scope.bar.get_rect().height();
+        let reveal = scope.disclosure.reveal(full);
+        assert!(
+            (reveal.height - full).abs() < f64::EPSILON,
+            "the height lands"
+        );
+        assert!(reveal.opacity < 1.0, "the controls fade in");
+        assert!(scope.content_offset().abs() < f64::EPSILON, "nothing moves");
+    }
+
+    #[test]
     fn hosted_accessibility_edits_the_real_find_query_and_replacement() {
         let page = Page {
             doc: Doc {

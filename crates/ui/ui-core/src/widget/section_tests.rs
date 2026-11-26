@@ -104,6 +104,30 @@ tilo_test_env::scenario! {
 
 
 
+    phase adjacent_selected_rows_join_into_one_lift;
+    {
+        let mut section = Section::new(vec![
+            Box::new(ListRow::new("a", "Ada").selected(true)),
+            Box::new(ListRow::new("b", "Grace").selected(true)),
+            Box::new(ListRow::new("c", "Linus").selected(true)),
+            Box::new(ListRow::new("d", "Mary")),
+        ]);
+        section.sync_row_join();
+        let joins: Vec<RowJoin> = rows_of(&mut section)
+            .into_iter()
+            .map(|row| row.join())
+            .collect();
+        assert_eq!(
+            joins,
+            [
+                RowJoin::new(false, true),
+                RowJoin::new(true, true),
+                RowJoin::new(true, false),
+                RowJoin::new(true, false),
+            ]
+        );
+    }
+
     phase a_heading_counts_one_row_as_nothing;
     // A heading counts its rows where the number says something they do not: one row restates
     // itself with "1", while two say how many and a run cut short says how many it left out.

@@ -1181,6 +1181,103 @@ mod tests {
         ))
     }
 
+    /// The window drawn on its ground at `rect`, rendered: what a person sees around its edge.
+    fn rendered(theme: &Theme, focused: bool, rect: Rect) -> Vec<u8> {
+        let mut frame = WindowFrame::from_props(
+            "w",
+            WindowFrameProps {
+                name: Some("A window".to_owned()),
+                focused,
+                ..WindowFrameProps::default()
+            },
+        );
+        frame.rect = rect;
+        let mut scene = Scene::new();
+        scene.fill(
+            Fill::NonZero,
+            Affine::IDENTITY,
+            theme.tokens.colors.surfaces.base,
+            None,
+            &Rect::new(0.0, 0.0, 240.0, 240.0),
+        );
+        let mut text = crate::font_catalog::fixture_renderer();
+        Widget::draw(
+            &mut frame,
+            &mut crate::draw::DrawCtx::new(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut text,
+                theme,
+                crate::presence::PresenceCtx::empty().draw_env(),
+            ),
+        );
+        crate::offscreen::OffscreenRenderer::new(240, 240)
+            .render(&scene, vello::peniko::Color::BLACK)
+    }
+
+    /// How far the pixel at (`x`, `y`) stands from the ground, in relative luminance.
+    fn from_ground(rgba: &[u8], theme: &Theme, x: u32, y: u32) -> f64 {
+        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(rgba, 240, x, y);
+        let seen = vello::peniko::Color::from_rgb8(r, g, b);
+        (crate::a11y::relative_luminance(seen)
+            - crate::a11y::relative_luminance(theme.tokens.colors.surfaces.base))
+        .abs()
+    }
+
+    /// The window in front wears the accent on its edge, whatever the finish: a shell says which
+    /// window the keyboard is in with a colour, never a border so quiet it could be any window.
+    #[test]
+    fn the_focused_windows_edge_is_the_accent_colour() {
+        let rect = Rect::new(40.0, 40.0, 200.0, 160.0);
+        for theme in [Theme::dark(), Theme::light()] {
+            let front = rendered(&theme, true, rect);
+            let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(&front, 240, 120, 39);
+            let accent = theme.tokens.colors.window_edge_focused().to_rgba8();
+            let near = |seen: u8, want: u8| (i32::from(seen) - i32::from(want)).abs() <= 12;
+            assert!(
+                near(r, accent.r) && near(g, accent.g) && near(b, accent.b),
+                "the focused edge is the accent: saw {r},{g},{b}, the accent is {}, {}, {}",
+                accent.r,
+                accent.g,
+                accent.b
+            );
+        }
+    }
+
+    #[test]
+    fn the_window_in_front_stands_apart_from_the_ground_by_its_edge_and_its_shadow() {
+        let rect = Rect::new(40.0, 40.0, 200.0, 160.0);
+        for (theme, dark) in [(Theme::dark(), true), (Theme::light(), false)] {
+            let front = rendered(&theme, true, rect);
+            let behind = rendered(&theme, false, rect);
+            // // The pixel row just outside the top edge, away from the corners: the edge.
+            let edge = |rgba: &[u8]| from_ground(rgba, &theme, 120, 39);
+            assert!(
+                edge(&front) > edge(&behind) + crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                "the window in front has the heavier edge: {} over {}",
+                edge(&front),
+                edge(&behind)
+            );
+            assert!(
+                edge(&behind) >= crate::tokens::colors::HAIRLINE_MIN_DELTA / 2.0,
+                "a window behind still has an edge on the ground: {}",
+                edge(&behind)
+            );
+            let shadow = |rgba: &[u8]| from_ground(rgba, &theme, 120, 172);
+            let lighter = if dark {
+                shadow(&front) >= shadow(&behind)
+            } else {
+                shadow(&front) > shadow(&behind)
+            };
+            assert!(
+                lighter,
+                "a window behind casts the lighter shadow: {} under {}",
+                shadow(&behind),
+                shadow(&front)
+            );
+        }
+    }
+
     /// Lay `frame` out at `rect`, once: the bar's name elides itself in the room layout gives it
     /// and the controls keep their room from that same solve, so the window needs no second one.
     fn laid_out(frame: &mut WindowFrame, rect: Rect) {

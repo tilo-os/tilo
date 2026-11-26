@@ -2340,6 +2340,34 @@ mod tests {
             assert_eq!(shown, [false, true, false, false]);
         }
 
+        phase a_colour_well_is_a_square_command_named_for_its_colour;
+        {
+            let _settled = crate::motion::testing::settled();
+            let theme = Theme::dark();
+            let mut text = TextRenderer::new();
+            let yellow = vello::peniko::Color::from_rgb8(250, 204, 21);
+            let green = vello::peniko::Color::from_rgb8(74, 222, 128);
+            let mut tb = Toolbar::new(Orientation::Horizontal)
+                .push_swatch(yellow, "Marker colour: Yellow", || {})
+                .push_button("Insert table", || {});
+            tb.lay_out_in(Rect::new(0.0, 0.0, 600.0, 40.0), &mut text, &theme);
+            assert_eq!(
+                tb.item_rects[0].width(),
+                f64::from(theme.tokens.metrics.min_pointer_target)
+            );
+            tb.set_swatch(0, green, "Marker colour: Green");
+            assert_eq!(tb.command(0).and_then(|c| c.swatch), Some(green));
+            let node = Widget::accessibility(&tb).expect("toolbar semantics");
+            assert_eq!(
+                node.children[0].name.as_deref(),
+                Some("Marker colour: Green")
+            );
+
+            tb.lay_out_in(Rect::new(0.0, 0.0, 60.0, 40.0), &mut text, &theme);
+            assert!(tb.has_overflow());
+            assert!(tb.menu_indices.contains(&Some(0)) || tb.is_shown(0));
+        }
+
 
 
     }
