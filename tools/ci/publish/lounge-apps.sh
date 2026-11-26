@@ -46,7 +46,8 @@ esac
 # The apps the default collection plans, all of them tilolang: a Lounge runs
 # what a device's image ships, and every one of them is installed the way a
 # device installs a package.
-plan=$out.plan.json
+plan=$(mktemp)
+trap 'rm -f "$plan"' EXIT
 python3 tools/apps/app_release.py --collection default > "$plan"
 release=$(jq -er '[.catalog[].runtime] | unique | if length == 1 then .[0] else error("the apps name different runtimes") end | sub("^tilo-runtime/"; "")' < "$plan")
 
@@ -98,5 +99,5 @@ while IFS=$'\t' read -r name dir id version; do
   tilolang_build_package "$built/tilolang" "$repo_root" "$dir" "$name" "$out/packages" \
     "$identity" "$version" "tilo-runtime/$runtime" "$id"
 done < <(jq -r '.tilolang[] | [.app, .dir, .id, .version] | @tsv' < "$plan")
-rm -rf "$out/work" "$plan"
+rm -rf "$out/work"
 echo "apps: runtimes $runtime and tilolang/$tilolang, $(cd "$out/packages" && echo ./*.tapp | wc -w) packages"

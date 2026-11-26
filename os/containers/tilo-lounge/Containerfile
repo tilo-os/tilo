@@ -30,23 +30,25 @@ RUN --mount=type=bind,source=verify-no-cisco-openh264.sh,target=/run/tilo-verify
   && bash /run/tilo-verify-no-cisco-openh264.sh
 # The daemon, the Discord connector's outside worker beside it (the connector
 # finds `<app>-worker` next to the server it runs under), the launcher every
-# app's process starts in, the tilolang process an agent task's programs run
-# in, and the installer this build uses once, below.
-COPY bin/ /usr/local/bin/
+# app's process starts in, and the tilolang process an agent task's programs run
+# in. Each is a file of its own here: the installer below is not one of them.
+COPY bin/tilo-runtime bin/discord-worker bin/tilo-launcher bin/tilolang-process /usr/local/bin/
 # The runtimes the apps execute, at the root a Tilo program resolves its
 # bundles from, trusted by the one key this build signed them and the packages
 # with: a device's own trust list, in the image's /etc/tilo.
 COPY runtimes/ /usr/lib/tilo-runtime/
 COPY runtime-publishers.txt /etc/tilo/runtime-bundle-trusted-publishers.txt
-# The signed packages the workspace's apps are, and the store they install into
-# once: the image-wide store a device boots with, so the first page that asks
-# for an app finds it installed and runs it as any device does.
-COPY packages/ /usr/local/share/tilo/packages/
+# The signed packages the workspace's apps are, installed into the image-wide
+# store a device boots with as a device installs them: the first page that asks
+# for an app finds it installed and runs it as any device does. The packages and
+# the installer are this build's alone, mounted for the one step.
 COPY --chmod=0755 install-apps.sh /usr/local/bin/tilo-lounge-install-apps
-RUN export TILO_RUNTIME_BUNDLE_DIR=/usr/lib/tilo-runtime \
-  && /usr/local/bin/tilo-lounge-install-apps /usr/local/share/tilo/packages /usr/share/tilo-apps \
-  && rm -rf /usr/local/share/tilo/packages /usr/local/bin/tilo-install \
-    /usr/local/bin/tilo-lounge-install-apps
+RUN --mount=type=bind,source=packages,target=/run/tilo-packages,ro \
+    --mount=type=bind,source=bin/tilo-install,target=/run/tilo-install,ro \
+    TILO_INSTALL=/run/tilo-install TILO_RUNTIME_BUNDLE_DIR=/usr/lib/tilo-runtime \
+    TILO_LAUNCHER_PATH=/usr/local/bin/tilo-launcher \
+    /usr/local/bin/tilo-lounge-install-apps /run/tilo-packages /usr/share/tilo-apps \
+  && rm -f /usr/local/bin/tilo-lounge-install-apps
 # Every version of the built-in apps' compiled surface, which the server publishes
 # into its content store at start: history written by an older version than this
 # build runs is decided with the surface it was written with.
