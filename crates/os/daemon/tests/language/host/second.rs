@@ -94,14 +94,17 @@ impl Second {
         }
         let log = root.path().join("daemon.log");
         let daemon = Command::new(tilo_test_env::sibling_binary("tilo-daemon", "tilo-runtime"))
-            .envs(env.iter().map(|(name, value)| (name.clone(), value.clone())))
+            .envs(
+                env.iter()
+                    .map(|(name, value)| (name.clone(), value.clone())),
+            )
             .env_remove("TILO_SERVER_CONFIG")
             .env_remove(runtime_bundle::RUNTIME_DIR_ENV)
             .env_remove("TILO_SVC_COLLAB_FD")
             .env_remove("TILO_SVC_IDENTITY_FD")
             .stdout(std::fs::File::create(&log).unwrap())
             .stderr(std::fs::File::create(root.path().join("daemon.err")).unwrap())
-            .spawn()
+            .spawn_locked()
             .expect("the second computer's daemon starts");
         let mut second = Self {
             _root: root,
@@ -114,10 +117,9 @@ impl Second {
         // The person is founded on this computer as a person founds theirs: the first command
         // the daemon answers asks it for one.
         let made = second.tilo_until(&["login", "--new-identity", "--json", "--name", name], 90);
-        let answer: serde_json::Value =
-            serde_json::from_str(made.trim()).unwrap_or_else(|error| {
-                panic!("`tilo login --new-identity` answers its person ({error}): {made}")
-            });
+        let answer: serde_json::Value = serde_json::from_str(made.trim()).unwrap_or_else(|error| {
+            panic!("`tilo login --new-identity` answers its person ({error}): {made}")
+        });
         let person = answer["user_public_key"]
             .as_str()
             .unwrap_or_else(|| panic!("the identity names its key: {made}"))
@@ -155,7 +157,11 @@ impl Second {
     pub fn run(&self, args: &[&str]) -> Output {
         Command::new(tilo_test_env::sibling_binary("tilo-cli", "tilo"))
             .args(args)
-            .envs(self.env.iter().map(|(name, value)| (name.clone(), value.clone())))
+            .envs(
+                self.env
+                    .iter()
+                    .map(|(name, value)| (name.clone(), value.clone())),
+            )
             .env_remove("TILO_SERVER_CONFIG")
             .env_remove(runtime_bundle::RUNTIME_DIR_ENV)
             .env_remove("TILO_SVC_COLLAB_FD")
