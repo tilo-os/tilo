@@ -15,10 +15,11 @@
 # keyed by its own name resolves, so the connectors key theirs that way; these
 # name theirs apart because a package-qualified feature (`terminal/thin`,
 # `tilolang-process/thin`, `tilo-session/dev-overrides`) would otherwise enable
-# the dev-dependency's feature and change what a shipped build links. Pruning
-# them costs no coverage: every crate they depend on is also reachable from the
-# rest of the workspace, so license, advisory, ban and source checks still see
-# all of them.
+# the dev-dependency's feature and change what a shipped build links. For the
+# apps and the connectors every crate they reach is reachable another way, so
+# license, advisory, ban and source checks still see all of it; the session and
+# the process host reach a few crates nothing else does, and those go unseen
+# until cargo-deny's graph builder can read a renamed self-dependency.
 [graph]
 exclude = [
     "workspace-hack",
