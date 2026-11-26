@@ -60,7 +60,6 @@ allowed = [
     "tilo-process",
     "tilo-process-services",
     "tilo-registry-types",
-    "tilo-remote-actions",
     "tilo-render-protocol",
     "tilo-rt",
     "tilo-runtime-portal",
