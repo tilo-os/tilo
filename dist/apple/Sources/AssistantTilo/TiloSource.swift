@@ -1006,8 +1006,13 @@ public final class TiloSource: AssistantSource {
                 // Her server's word is that she keeps none: one is made now, the first time. Only
                 // from here on is it said that her assistant is being set up.
                 setups.set(.makingAssistant)
+                let page = engine.state
                 do {
-                    try await engine.askAgents("ensure-personal-assistant")
+                    // The workspace can publish the roster read before its setup action.
+                    _ = try await engine.whenPublished(within: .seconds(6)) {
+                        guard self.engine.state == page, self.me == me else { throw TiloEngine.Problem.notOpen }
+                        return try await self.engine.askAgents("ensure-personal-assistant")
+                    }
                 } catch TiloEngine.Problem.noAnswer {
                     // A write can finish even when its reply is lost. Read back the committed roster.
                 }

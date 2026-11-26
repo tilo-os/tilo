@@ -224,12 +224,14 @@ final class TiloSourceTests: XCTestCase {
             }
             case AGENTS + ' ensure-personal-assistant':
               if (!window.agents) noAgents();
+              if (window.ensureNotPublished) { window.ensureNotPublished = false; noAgents(); }
               if (window.mayNotMake) throw Object.assign(new Error('Your role in this workspace may not make an agent'), {code: 'not_permitted'});
               window.madeWith = argument;
               // A second device can finish setup between the roster read and the action.
               if (window.raced) { window.agents.push(window.kept('other-device', {name: 'Assistant'})); return done(null); }
               window.agents.push(window.kept('assistant', {name: 'Assistant', created_at: 1794900009000 + window.agents.length,
                 ...(window.wholeRows ? {keeper: ADA, state: 'active'} : {})}));
+              if (window.personal) window.personal[ADA] = 'assistant';
               if (window.late) { window.agents.at(-1).fresh = true; window.hides = window.late; }
               if (window.unanswered) return {invocation: 'i', state: 'accepted'};
               return done(null);
@@ -1284,12 +1286,35 @@ final class TiloSourceTests: XCTestCase {
         XCTAssertEqual(made, #"["assistant"]"#)
     }
 
+    func testFirstUseRetriesPersonalAssistantSetupWhenItsActionIsPublishedAfterTheRosterRead() async throws {
+        try await start(.assistant, livesInOwn: true)
+        try await run("""
+            window.wholeRows = true; window.agents = []; window.personal = {}; window.unlinked = true;
+            window.ensureNotPublished = true;
+            location.hash = '#/@host.example:8443/w/own-7/so.tilo.chat'; return await enter(true, true)
+            """)
+        try await until("the fresh workspace reaches provider setup without another press") {
+            if case .needsProvider = self.setups.last { return true }
+            return false
+        }
+        XCTAssertTrue(source.engine.hosted)
+        let asked = try await page("return JSON.stringify(window.hostAsked.filter(a => a.startsWith('record:so.tilo.assistant: ')))")
+        let actions = try JSONDecoder().decode([String].self, from: Data(asked.utf8))
+        XCTAssertEqual(actions.first, "record:so.tilo.assistant: read")
+        XCTAssertEqual(actions.filter { $0 == "record:so.tilo.assistant: ensure-personal-assistant" }.count, 2)
+        XCTAssertEqual(actions.last, "record:so.tilo.assistant: read")
+        let made = try await agentsKept()
+        XCTAssertEqual(made, #"["assistant"]"#)
+    }
+
     func testWhereTheServerRefusesToMakeOneTheMainChatSaysWhyAndAskingAgainMakesIt() async throws {
         try await start(.assistant)
         try await run("window.byKind = true; window.agents = []; window.mayNotMake = true; location.hash = '#/w/ws-1/so.tilo.chat'; enter(true)")
         try await until("the server's refusal is said") {
             self.setups.last == .noAssistant("Your role in this workspace may not make an agent")
         }
+        let refused = try await page("return String(window.asks.filter(a => a === 'agents ensure-personal-assistant').length)")
+        XCTAssertEqual(refused, "1", "a role refusal must reach the person on the first answer")
         do {
             try await source.send(Draft(text: "Hello"), to: .main)
             XCTFail("something was sent to nobody")
