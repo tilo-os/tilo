@@ -605,6 +605,21 @@ impl Workspaces {
             (admitted, held.committed)
         };
         if committed {
+            // Each admitted device's own row is carried as the device's own change, before
+            // anything this host writes after it: this host's later changes build on it, and a
+            // device that lacked it would ask for this host's whole state, in which every
+            // device's row arrives at once, and each device's row reads as written by the
+            // others. The device signed the row and the host passes it on unchanged, so it goes
+            // out under that device's name, as the row a device signs for itself does
+            // ([`Self::take_own_row`]).
+            if let Ok(answers) = &admitted {
+                for (join, answer) in joins.iter().zip(answers) {
+                    if answer.is_err() || join.admission.is_empty() {
+                        continue;
+                    }
+                    self.carry_own_admission(workspace, join)?;
+                }
+            }
             self.settle(workspace).await?;
             if let Ok(answers) = &admitted {
                 for (join, answer) in joins.iter().zip(answers) {
@@ -625,6 +640,38 @@ impl Workspaces {
             workspace.forget_joined_wait_list();
         }
         admitted
+    }
+
+    /// Carry `join`'s own admission, the changes its device signed for itself, as the device's
+    /// own change: live to the devices linked to `workspace` now, and kept for those that link
+    /// later. A device that entered was admitted by this host's answer, not by a change its own
+    /// link brought, so the row reaches the workspace's other members only by this host passing
+    /// it on.
+    ///
+    /// # Errors
+    /// The row does not encode, or the workspace could not keep or carry it.
+    fn carry_own_admission(
+        &self,
+        workspace: &HostedWorkspace,
+        join: &Redeeming<'_>,
+    ) -> Result<(), CollaborationError> {
+        let row = neighbour_wire::NeighbourMsg::SyncResp {
+            changes: join.admission.to_vec(),
+            workspace: workspace.workspace_id().to_string(),
+        };
+        let body = postcard::to_stdvec(&row)
+            .map_err(|error| CollaborationError::new(error.to_string()))?;
+        self.inner
+            .records
+            .carry(
+                workspace.workspace_id(),
+                join.redemption.certificate().device_public_key,
+                &crate::workspace_documents::HostCommit { body },
+            )
+            .map(drop)
+            .map_err(|error| {
+                CollaborationError::new(format!("the device's own row was not carried: {error}"))
+            })
     }
 
     /// Ask `workspace/members#admit` of the workspace `workspace_id` on this device's dispatch,
