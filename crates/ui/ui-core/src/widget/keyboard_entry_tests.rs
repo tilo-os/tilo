@@ -1,4 +1,3 @@
-use crate::widget::*;
 use tilo_ui_base::widget::{keyboard_entry_rank, Widget};
 
 /// An editor whose whole accessibility subtree (a node per block of a long

@@ -133,7 +133,7 @@ pub(crate) struct VirtualInsertion {
 /// Maps the zero-width break hints used by cosmic-text back onto the application's
 /// unchanged UTF-8 byte space.
 #[derive(Clone, Debug, Default)]
-pub(crate) struct OffsetMap {
+pub struct OffsetMap {
     /// Virtual shaping characters inserted before source byte positions.
     pub(crate) insertions: Vec<VirtualInsertion>,
 }
@@ -286,7 +286,7 @@ impl OffsetMap {
         byte.saturating_sub(added)
     }
 
-    pub(crate) fn shape_text<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+    pub fn shape_text<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
         if self.is_identity() {
             return std::borrow::Cow::Borrowed(text);
         }

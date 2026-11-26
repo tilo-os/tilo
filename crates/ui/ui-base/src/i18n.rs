@@ -211,10 +211,10 @@ enum Role {
     Shared,
 }
 
-struct LoadedBundle {
+pub struct LoadedBundle {
     bundle: Bundle,
     /// The resources added to `bundle`, in order.
-    resources: Vec<Arc<FluentResource>>,
+    pub resources: Vec<Arc<FluentResource>>,
     read: usize,
 }
 

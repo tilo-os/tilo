@@ -145,7 +145,7 @@ pub struct Culling {
     /// Whether the last frame showed a secret: what a frame leaves out still shows it.
     secret: bool,
     /// How many frames left anything out, and how many of those had their widgets drawn again in full.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub tally: (usize, usize),
 }
 
@@ -177,11 +177,11 @@ impl Culling {
     /// A frame that left something out (`left_out`) and whether its widgets were drawn again in full,
     /// for tests to count.
     #[cfg_attr(
-        not(test),
+        not(any(test, feature = "test-support")),
         expect(clippy::needless_pass_by_ref_mut, reason = "only tests keep the count")
     )]
     pub fn tally(&mut self, left_out: bool, redrawn: bool) {
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         {
             self.tally.0 += usize::from(left_out);
             self.tally.1 += usize::from(redrawn);

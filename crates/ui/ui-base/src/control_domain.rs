@@ -110,7 +110,7 @@ impl ControlOwner {
     }
 }
 #[derive(Clone)]
-enum DomainEntry {
+pub enum DomainEntry {
     Producer(Rc<RefCell<Producer>>),
     Child(WeakControlDomain),
 }
