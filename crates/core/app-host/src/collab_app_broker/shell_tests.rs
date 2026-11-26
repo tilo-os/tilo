@@ -941,27 +941,10 @@ fn stands(
 }
 
 /// The device's own identity, which signs what it admits for its person, set up in a home of its
-/// own: the home, the environment and the device key taken as its daemon takes it, all returned
-/// to be kept for the test that made them. An account's identity opens only in the process whose
+/// own, kept for the test that made it. An account's identity opens only in the process whose
 /// device service took the key, so the test takes it before it opens the identity.
-fn device_identity() -> (
-    tempfile::TempDir,
-    tilo_test_env::ScopedEnv,
-    tilo_device_identity::persist::DeviceKeyLock,
-) {
-    let identity = tempfile::tempdir().unwrap();
-    let mut identity_env = tilo_test_env::ScopedEnv::new();
-    identity_env
-        .set("XDG_CONFIG_HOME", identity.path().join("config"))
-        .set("TILO_IDENTITY_ROOT", identity.path().join("identity"))
-        .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-    let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
-        &tilo_identity::store::account_identity_dir(&identity.path().join("config/tilo/identity")),
-        &tilo_device_identity::IdentityPaths::under(identity.path().join("identity")),
-        tilo_identity::provisioning::IdentityStorage::Files,
-    )
-    .expect("the device's identity");
-    (identity, identity_env, taken_key)
+fn device_identity() -> crate::test_support::ProvisionedHome {
+    crate::test_support::ProvisionedHome::new()
 }
 
 /// What a test's step answers, driven on the test's one thread.
@@ -977,7 +960,7 @@ type Driven<'a, T> = std::pin::Pin<Box<dyn std::future::Future<Output = T> + 'a>
 #[tokio::test(flavor = "current_thread")]
 async fn a_page_prompt_the_browser_raises_waits_for_its_person_in_an_asked_record() {
     // The device key, taken as its daemon takes it, is held for as long as the test runs.
-    let (mut asking, _taken_key) = page_asking().await;
+    let (mut asking, _home) = page_asking().await;
     declining_a_sites_prompt(&mut asking).await;
     withdrawing_a_stopped_prompts_call(&mut asking).await;
     approving_a_sites_prompt(&mut asking).await;
@@ -988,8 +971,6 @@ async fn a_page_prompt_the_browser_raises_waits_for_its_person_in_an_asked_recor
 /// asked records; and the person using the Browser: what a page's prompt the Browser raises is
 /// driven through.
 struct PageAsking {
-    _identity: tempfile::TempDir,
-    _identity_env: tilo_test_env::ScopedEnv,
     host: Device,
     workspaces: Workspaces,
     browser: Endpoint,
@@ -1001,25 +982,11 @@ struct PageAsking {
 /// Set the device's identity up, connect the Browser and publish its page's prompt, and read the
 /// person using it. The device key, taken as its daemon takes it, answers beside it, for the test
 /// to keep while it runs.
-fn page_asking() -> Driven<'static, (PageAsking, tilo_device_identity::persist::DeviceKeyLock)> {
+fn page_asking() -> Driven<'static, (PageAsking, crate::test_support::ProvisionedHome)> {
     Box::pin(async move {
         // The device's own identity, which signs what it admits for its person.
-        let identity = tempfile::tempdir().unwrap();
-        let mut identity_env = tilo_test_env::ScopedEnv::new();
-        identity_env
-            .set("XDG_CONFIG_HOME", identity.path().join("config"))
-            .set("TILO_IDENTITY_ROOT", identity.path().join("identity"))
-            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-        let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
-            &tilo_identity::store::account_identity_dir(
-                &identity.path().join("config/tilo/identity"),
-            ),
-            &tilo_device_identity::IdentityPaths::under(identity.path().join("identity")),
-            tilo_identity::provisioning::IdentityStorage::Files,
-        )
-        .expect("the device's identity");
+        let home = device_identity();
         // The person's devices, as the host holding their record answers: this one is listed.
-        tilo_identity::sources::test_trust::install();
         let host = device_with_shell().await;
         let workspaces = host.record_host.workspaces().clone();
         host.launched
@@ -1061,8 +1028,6 @@ fn page_asking() -> Driven<'static, (PageAsking, tilo_device_identity::persist::
         );
         (
             PageAsking {
-                _identity: identity,
-                _identity_env: identity_env,
                 host,
                 workspaces,
                 browser,
@@ -1070,7 +1035,7 @@ fn page_asking() -> Driven<'static, (PageAsking, tilo_device_identity::persist::
                 store,
                 person,
             },
-            taken_key,
+            home,
         )
     })
 }
@@ -1275,9 +1240,7 @@ fn approving_a_sites_prompt(asking: &mut PageAsking) -> Driven<'_, ()> {
 /// published, and the presses the compositor attested there: what a pressed prompt is raised
 /// through.
 struct PressedAsking {
-    _identity: tempfile::TempDir,
-    _identity_env: tilo_test_env::ScopedEnv,
-    _taken_key: tilo_device_identity::persist::DeviceKeyLock,
+    _home: crate::test_support::ProvisionedHome,
     host: Device,
     workspaces: Workspaces,
     browser: Endpoint,
@@ -1292,7 +1255,7 @@ struct PressedAsking {
 fn pressed_asking(window: u64) -> Driven<'static, PressedAsking> {
     Box::pin(async move {
         use runtime_collab::wire::shell::{ShellCall, ShellReply};
-        let (identity, identity_env, taken_key) = device_identity();
+        let home = device_identity();
         let host = device_with_shell().await;
         let workspaces = host.record_host.workspaces().clone();
         host.launched
@@ -1340,9 +1303,7 @@ fn pressed_asking(window: u64) -> Driven<'static, PressedAsking> {
             );
         }
         PressedAsking {
-            _identity: identity,
-            _identity_env: identity_env,
-            _taken_key: taken_key,
+            _home: home,
             host,
             workspaces,
             browser,

@@ -989,10 +989,8 @@ pub(crate) mod signed_test_support {
         pub tree: crate::test_support::WorkspaceTreeHandle,
         certified_host: Option<Arc<dyn tilo_actions::remote::ActionProvider>>,
         _fanout: Arc<FanoutState>,
-        /// The device's key, taken as its daemon takes it, for as long as this lives.
-        _taken_key: tilo_device_identity::persist::DeviceKeyLock,
-        _environment: tilo_test_env::ScopedEnv,
-        directory: tempfile::TempDir,
+        /// The device's key and environment, kept for as long as this lives.
+        home: crate::test_support::ProvisionedHome,
         clock: crate::policy_clock::OwnerPolicyClock,
         policy_origin: crate::policy_clock::PolicyOrigin,
     }
@@ -1009,26 +1007,12 @@ pub(crate) mod signed_test_support {
         /// The fixture in the process's shared test workspace, or, when `fresh`, in a
         /// workspace of its own that no other fixture in the process opened.
         pub fn new(services: ProcessServices, fresh: bool) -> Self {
-            let directory = tempfile::tempdir().unwrap();
-            let mut environment = tilo_test_env::ScopedEnv::new();
-            environment
-                .set("XDG_CONFIG_HOME", directory.path().join("config"))
-                .set("TILO_IDENTITY_ROOT", directory.path().join("identity"))
-                .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-            tilo_identity::sources::test_trust::install();
-            let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
-                &tilo_identity::store::account_identity_dir(
-                    &directory.path().join("config/tilo/identity"),
-                ),
-                &tilo_device_identity::IdentityPaths::under(directory.path().join("identity")),
-                tilo_identity::provisioning::IdentityStorage::Files,
-            )
-            .expect("provision the production receipt signer");
+            let home = crate::test_support::ProvisionedHome::new();
             let (key, certificate) =
                 tilo_identity::trusted_device::current(tilo_peer_state::owner::testing::WORKSPACE)
                     .unwrap();
             let owner = Arc::new(
-                tilo_peer_state::owner::open_file(&directory.path().join("native.json")).unwrap(),
+                tilo_peer_state::owner::open_file(&home.root().join("native.json")).unwrap(),
             );
             // A fixture in a workspace of its own founds one: a workspace no other fixture in
             // this process opened, which its host therefore signs nothing for.
@@ -1067,7 +1051,7 @@ pub(crate) mod signed_test_support {
                 replace_time_on_authorize: Mutex::new(None),
             });
             let config = crate::NativePeerBrokerConfig {
-                journal_root: directory.path().join("journal"),
+                journal_root: home.root().join("journal"),
                 certificate_authority: authority.clone(),
             };
             let fanout = Arc::new(FanoutState::new());
@@ -1107,9 +1091,7 @@ pub(crate) mod signed_test_support {
                 tree,
                 certified_host: None,
                 _fanout: fanout,
-                _taken_key: taken_key,
-                _environment: environment,
-                directory,
+                home,
                 clock,
                 policy_origin,
             }
@@ -1127,7 +1109,7 @@ pub(crate) mod signed_test_support {
         /// [`Self::new_certified_foreign`] and [`Self::new_certified`] make for a test that
         /// iterates both.
         pub(crate) fn certified(services: ProcessServices, foreign: bool) -> Self {
-            let mut fixture = Self::new(services);
+            let mut fixture = Self::new(services, false);
             let (key, certificate) =
                 tilo_identity::trusted_device::current(&fixture.workspace).unwrap();
             // The evidence this fixture's broker keeps is signed as the device it acts as.
@@ -1277,8 +1259,7 @@ pub(crate) mod signed_test_support {
             let mut guard = self.state.journal.lock().unwrap();
             drop(guard.as_mut().unwrap().take());
             *guard = Ok(Some(
-                super::super::InvocationJournal::open(&self.directory.path().join("journal"))
-                    .unwrap(),
+                super::super::InvocationJournal::open(&self.home.root().join("journal")).unwrap(),
             ));
         }
 

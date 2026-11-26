@@ -807,26 +807,8 @@ mod tests {
 
     /// A provisioned device the environment names, whose key this process took as its daemon
     /// does.
-    fn device() -> (
-        tempfile::TempDir,
-        tilo_test_env::ScopedEnv,
-        tilo_device_identity::persist::DeviceKeyLock,
-    ) {
-        let root = tempfile::tempdir().unwrap();
-        let config = root.path().join("config");
-        let system = root.path().join("system");
-        let mut env = tilo_test_env::ScopedEnv::new();
-        env.set("XDG_CONFIG_HOME", &config)
-            .set("TILO_IDENTITY_ROOT", &system)
-            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-        tilo_identity::sources::test_trust::install();
-        let taken = tilo_identity::provisioning::provisioned_as_its_daemon(
-            &tilo_identity::store::account_identity_dir(&config.join("tilo/identity")),
-            &tilo_device_identity::IdentityPaths::under(&system),
-            tilo_identity::provisioning::IdentityStorage::Files,
-        )
-        .unwrap();
-        (root, env, taken)
+    fn device() -> crate::test_support::ProvisionedHome {
+        crate::test_support::ProvisionedHome::new()
     }
 
     fn request() -> InvokeRequest {
@@ -849,7 +831,7 @@ mod tests {
 
     #[test]
     fn an_agent_signs_as_its_own_key_the_persons_root_certified_for_one_agent_in_one_workspace() {
-        let (_root, _env, _taken) = device();
+        let _home = device();
         let root = Arc::new(TestRoot::new());
         let person = root.person();
         let workspace = WorkspaceId::new();
@@ -914,7 +896,7 @@ mod tests {
 
     #[test]
     fn a_grant_nearing_its_expiry_is_certified_again_for_the_same_key() {
-        let (_root, _env, _taken) = device();
+        let _home = device();
         let root = Arc::new(TestRoot::new());
         let person = root.person();
         let workspace = WorkspaceId::new();
@@ -934,7 +916,7 @@ mod tests {
 
     #[test]
     fn a_key_its_person_revoked_is_never_certified_again() {
-        let (_root, _env, _taken) = device();
+        let _home = device();
         let root = Arc::new(TestRoot::new());
         let person = root.person();
         let workspace = WorkspaceId::new();
@@ -951,7 +933,7 @@ mod tests {
     /// granted signs nothing more, and the connection is told why.
     #[test]
     fn a_run_whose_key_its_person_revokes_signs_nothing_from_its_next_call() {
-        let (_root, _env, _taken) = device();
+        let _home = device();
         let root = Arc::new(TestRoot::new());
         let person = root.person();
         let workspace = WorkspaceId::new();
@@ -992,7 +974,7 @@ mod tests {
 
     #[test]
     fn a_device_with_no_answer_for_the_key_signs_nothing() {
-        let (_root, _env, _taken) = device();
+        let _home = device();
         let workspace = WorkspaceId::new();
         let root = Arc::new(TestRoot::new());
         // A person whose root this daemon does not keep: it certifies nothing of theirs.

@@ -317,11 +317,8 @@ pub struct OriginalWorkspace {
     pub directories: Rc<LocalActionDirectoryRegistry>,
     _clock: crate::policy_clock::OwnerPolicyClock,
     _owner_mailbox: crate::test_owner::writes::OwnerCommitMailbox,
-    /// The host's device key, taken for as long as the host lives, as its daemon takes it.
-    _taken_key: tilo_device_identity::persist::DeviceKeyLock,
-    // Restore the environment before removing the identity and journal files.
-    _identity_env: tilo_test_env::ScopedEnv,
-    _root: tempfile::TempDir,
+    /// The host's home and device key, kept for as long as the host lives.
+    home: crate::test_support::ProvisionedHome,
 }
 
 impl OriginalWorkspace {
@@ -380,24 +377,7 @@ impl OriginalWorkspace {
         workspace: Option<tilo_desktop_model::WorkspaceId>,
         current_native: bool,
     ) -> Self {
-        let fixture_root =
-            tempfile::tempdir().expect("private host identity and journal directory");
-        // ScopedEnv's lock is reentrant on this thread: record-content tests
-        // keep two workspaces alive together. Keep the scopes in nesting order.
-        let mut identity_env = tilo_test_env::ScopedEnv::new();
-        identity_env
-            .set("XDG_CONFIG_HOME", fixture_root.path().join("config"))
-            .set("TILO_IDENTITY_ROOT", fixture_root.path().join("identity"))
-            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-        tilo_identity::sources::test_trust::install();
-        let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
-            &tilo_identity::store::account_identity_dir(
-                &fixture_root.path().join("config/tilo/identity"),
-            ),
-            &tilo_device_identity::IdentityPaths::under(fixture_root.path().join("identity")),
-            tilo_identity::provisioning::IdentityStorage::Files,
-        )
-        .expect("provision real host receipt signer");
+        let home = crate::test_support::ProvisionedHome::new();
         let (key, cert, start) = if current_native {
             let (key, cert) = tilo_identity::trusted_device::current(
                 &tilo_desktop_model::WorkspaceId::new().to_string(),
@@ -442,7 +422,7 @@ impl OriginalWorkspace {
         let mut tree = crate::test_support::WorkspaceTree::default();
         tree.workspaces.push(workspace);
         tree.persist_path =
-            Some(persist_path.unwrap_or_else(|| fixture_root.path().join("workspace.json")));
+            Some(persist_path.unwrap_or_else(|| home.root().join("workspace.json")));
         let membership = tree.shared();
         let fanout = Arc::new(FanoutState::new());
         let (owner_handle, owner_mailbox) =
@@ -473,9 +453,7 @@ impl OriginalWorkspace {
             directories: Rc::new(LocalActionDirectoryRegistry::new(bridge_rx)),
             _clock: clock,
             _owner_mailbox: owner_mailbox,
-            _taken_key: taken_key,
-            _identity_env: identity_env,
-            _root: fixture_root,
+            home,
         }
     }
 

@@ -236,14 +236,11 @@ impl crate::services::AgentSessions for Native {
     }
 }
 struct Fixture {
-    _directory: tempfile::TempDir,
+    home: crate::test_support::ProvisionedHome,
     _fanout: Arc<FanoutState>,
     native: Arc<Native>,
     state: Arc<AppBrokerState>,
     directories: Rc<LocalActionDirectoryRegistry>,
-    /// The device's key, taken as its daemon takes it, for as long as this lives.
-    _taken_key: tilo_device_identity::persist::DeviceKeyLock,
-    _identity_env: tilo_test_env::ScopedEnv,
 }
 impl Fixture {
     fn new() -> Self {
@@ -276,23 +273,8 @@ impl Fixture {
         providers: tilo_workspace_service::workspaces::providers::Providers,
         foreign: bool,
     ) -> Self {
-        let directory = tempfile::tempdir().unwrap();
-        let mut identity_env = tilo_test_env::ScopedEnv::new();
-        identity_env
-            .set("XDG_CONFIG_HOME", directory.path().join("config"))
-            .set("TILO_IDENTITY_ROOT", directory.path().join("identity"))
-            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-        tilo_identity::sources::test_trust::install();
-        let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
-            &tilo_identity::store::account_identity_dir(
-                &directory.path().join("config/tilo/identity"),
-            ),
-            &tilo_device_identity::IdentityPaths::under(directory.path().join("identity")),
-            tilo_identity::provisioning::IdentityStorage::Files,
-        )
-        .expect("provision the host admission and terminal receipt signer");
-        let owner =
-            tilo_peer_state::owner::open_file(&directory.path().join("native.json")).unwrap();
+        let home = crate::test_support::ProvisionedHome::new();
+        let owner = tilo_peer_state::owner::open_file(&home.root().join("native.json")).unwrap();
         let key = SigningKey::from_bytes(&[92; 32]);
         let mut certificate = tilo_peer_state::owner::testing::certificate(
             &SigningKey::from_bytes(&[91; 32]),
@@ -343,7 +325,7 @@ impl Fixture {
         .unwrap();
         let fanout = Arc::new(FanoutState::new());
         let config = crate::NativePeerBrokerConfig {
-            journal_root: directory.path().join("journal"),
+            journal_root: home.root().join("journal"),
             certificate_authority: native.clone(),
         };
         let (state, rx) = AppBrokerState::new_configured(
@@ -364,13 +346,11 @@ impl Fixture {
             },
         );
         Self {
-            _directory: directory,
+            home,
             _fanout: fanout,
             native,
             state,
             directories: Rc::new(LocalActionDirectoryRegistry::new(rx)),
-            _taken_key: taken_key,
-            _identity_env: identity_env,
         }
     }
     /// The workspace's record of its agents names the fixture's agent, kept by its person.

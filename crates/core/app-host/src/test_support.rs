@@ -133,6 +133,45 @@ pub fn serve_the_test_signer(workspaces: impl IntoIterator<Item = String>) {
     }
 }
 
+/// A fixture's own home: the config and identity directories its daemon reads, named in the
+/// environment, and the device key its daemon took, let go of with it.
+pub struct ProvisionedHome {
+    /// Restored before the home's files are removed.
+    _env: tilo_test_env::ScopedEnv,
+    root: tempfile::TempDir,
+    _key: tilo_device_identity::persist::DeviceKeyLock,
+}
+
+impl ProvisionedHome {
+    /// Provision this process a daemon's home and take its device key.
+    #[allow(clippy::unwrap_used, reason = "a fixture failing is its test failing")]
+    pub fn new() -> Self {
+        let root = tempfile::tempdir().unwrap();
+        let mut env = tilo_test_env::ScopedEnv::new();
+        env.set("XDG_CONFIG_HOME", root.path().join("config"))
+            .set("TILO_IDENTITY_ROOT", root.path().join("identity"))
+            .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+        tilo_identity::sources::test_trust::install();
+        let key = tilo_identity::provisioning::provisioned_as_its_daemon(
+            &tilo_identity::store::account_identity_dir(&root.path().join("config/tilo/identity")),
+            &tilo_device_identity::IdentityPaths::under(root.path().join("identity")),
+            tilo_identity::provisioning::IdentityStorage::Files,
+        )
+        .expect("provision real host receipt signer");
+        Self {
+            _env: env,
+            root,
+            _key: key,
+        }
+    }
+
+    /// The home's root, under which its config and identity directories live.
+    #[must_use]
+    pub fn root(&self) -> &std::path::Path {
+        self.root.path()
+    }
+}
+
 impl WorkspaceTreeHandle {
     /// The workspaces this tree describes, which the fixture's host serves.
     fn opened(&self) -> Vec<String> {

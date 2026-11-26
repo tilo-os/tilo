@@ -5,7 +5,7 @@ mod durable_local_matrix {
     };
     use super::*;
     struct Environment {
-        root: tempfile::TempDir,
+        home: crate::test_support::ProvisionedHome,
         cert: tilo_user_identity::DeviceCert,
         key: SigningKey,
         person: SigningKey,
@@ -18,23 +18,6 @@ mod durable_local_matrix {
         owner_task: tokio::task::JoinHandle<crate::test_owner::SessionOwner>,
         /// Whether this host opened its workspaces: a host that opened none signs nothing.
         served: bool,
-    }
-    struct ProvisionedEnvironment {
-        environment: Environment,
-        /// The device's key, taken as its daemon takes it, for as long as this lives.
-        _taken_key: tilo_device_identity::persist::DeviceKeyLock,
-        _identity_env: tilo_test_env::ScopedEnv,
-    }
-    impl std::ops::Deref for ProvisionedEnvironment {
-        type Target = Environment;
-        fn deref(&self) -> &Environment {
-            &self.environment
-        }
-    }
-    impl std::ops::DerefMut for ProvisionedEnvironment {
-        fn deref_mut(&mut self) -> &mut Environment {
-            &mut self.environment
-        }
     }
     impl Environment {
         /// The person's agent `id`: an agent their certified device runs.
@@ -67,28 +50,10 @@ mod durable_local_matrix {
         }
         /// The fixture's environment, whose host signs and opened its workspaces when `served`
         /// and signs nothing when not.
-        #[expect(
-            clippy::new_ret_no_self,
-            reason = "the thread-bound identity guard stays separate from the Send broker fixture"
-        )]
-        fn new(served: bool) -> ProvisionedEnvironment {
-            let root = tempfile::tempdir().unwrap();
-            let mut identity_env = tilo_test_env::ScopedEnv::new();
-            identity_env
-                .set("XDG_CONFIG_HOME", root.path().join("config"))
-                .set("TILO_IDENTITY_ROOT", root.path().join("identity"))
-                .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
-            tilo_identity::sources::test_trust::install();
-            let taken_key = tilo_identity::provisioning::provisioned_as_its_daemon(
-                &tilo_identity::store::account_identity_dir(
-                    &root.path().join("config/tilo/identity"),
-                ),
-                &tilo_device_identity::IdentityPaths::under(root.path().join("identity")),
-                tilo_identity::provisioning::IdentityStorage::Files,
-            )
-            .expect("provision real host receipt signer");
+        fn new(served: bool) -> Self {
+            let home = crate::test_support::ProvisionedHome::new();
             let mut owner =
-                crate::test_owner::SessionOwner::initialize(&root.path().join("owner")).unwrap();
+                crate::test_owner::SessionOwner::initialize(&home.root().join("owner")).unwrap();
             let cert = owner.device();
             let key = owner.signing_key().clone();
             let person = owner.person_key().clone();
@@ -127,7 +92,7 @@ mod durable_local_matrix {
             );
             let mut tree = WorkspaceTree::default();
             tree.workspaces.push(workspace);
-            tree.persist_path = Some(root.path().join("workspace.json"));
+            tree.persist_path = Some(home.root().join("workspace.json"));
             let membership = tree.shared();
             let (handle, mut mailbox) = crate::test_owner::writes::OwnerCommitMailbox::bounded(8);
             let publisher = PeerPublisher::with_commits(Arc::new(handle));
@@ -138,24 +103,24 @@ mod durable_local_matrix {
                 owner
             });
             let authority = CurrentHost::new(&route, &cert, Some(origin.capture().unwrap()));
-            ProvisionedEnvironment {
-                environment: Self {
-                    root,
-                    cert,
-                    key,
-                    person,
-                    route,
-                    membership,
-                    publisher,
-                    authority,
-                    origin,
-                    control,
-                    owner_task,
-                    served,
-                },
-                _taken_key: taken_key,
-                _identity_env: identity_env,
+            Self {
+                home,
+                cert,
+                key,
+                person,
+                route,
+                membership,
+                publisher,
+                authority,
+                origin,
+                control,
+                owner_task,
+                served,
             }
+        }
+        /// The home the fixture's files live under.
+        fn root(&self) -> &std::path::Path {
+            self.home.root()
         }
     }
     impl Drop for Environment {
@@ -364,7 +329,7 @@ mod durable_local_matrix {
             };
             let original_call = (self.originals)(&request).unwrap();
             original_call.check_lifecycle().unwrap();
-            let path = env.root.path().join("effect-count");
+            let path = env.root().join("effect-count");
             let prior = std::fs::read_to_string(&path).map_or(0, |n| n.parse::<usize>().unwrap());
             std::fs::write(path, (prior + 1).to_string()).unwrap();
             delivered.id

@@ -418,7 +418,7 @@ async fn dispatcher_retained_evidence_survives_uncertain_recovery_and_rejects_in
 
             // Recovery compacted the journal into a snapshot: a changed
             // retained field no longer matches the signed admission.
-            let root = env.root.path().join("workspace.json.invocations");
+            let root = env.root().join("workspace.json.invocations");
             let path = root.join("records.json");
             let bytes = std::fs::read(&path).unwrap();
             let snapshot: serde_json::Value = serde_json::from_slice(&bytes).unwrap();

@@ -25,7 +25,7 @@ fn next_wire_id(rig: &Rig) -> u64 {
 }
 
 fn effect_count(env: &Environment) -> Option<String> {
-    std::fs::read_to_string(env.root.path().join("effect-count")).ok()
+    std::fs::read_to_string(env.root().join("effect-count")).ok()
 }
 
 /// The person's agent `agent`, working in the files application on
@@ -846,7 +846,7 @@ async fn host_execution_retirement_refuses_actual_retained_worker_ownership() {
 async fn delivered_effect(rig: &Rig, env: &Environment, id: tilo_actions::InvocationId) -> u64 {
     let delivered = rig.stream.as_ref().unwrap().read().await.unwrap();
     assert_eq!(delivered.invocation_uuid, *id.0.as_bytes());
-    let path = env.root.path().join("effect-count");
+    let path = env.root().join("effect-count");
     let prior = std::fs::read_to_string(&path).map_or(0, |n| n.parse::<usize>().unwrap());
     std::fs::write(path, (prior + 1).to_string()).unwrap();
     delivered.id
