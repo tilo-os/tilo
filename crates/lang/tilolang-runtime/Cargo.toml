@@ -79,7 +79,6 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
 tilo-wasm-host = { version = "0.1.0", path = "../../core/tilo-wasm-host", default-features = false }
 # Why a module stays on wasmi or why its artifact was not used.
 tracing.workspace = true
-tilo-files = { version = "0.1.0", path = "../../platform/tilo-files" }
 # What a file is called, and the most it may hold: one reading of a file's media type and size,
 # shared with the window that hands a dropped file over.
 tilo-content-types = { version = "0.1.0", path = "../../core/content-types" }
