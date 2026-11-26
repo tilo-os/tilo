@@ -926,7 +926,6 @@ fn a_view_reads_the_login_and_the_layouts_workspaces() {
     // nothing of the reading, never a silent success.
     let mut env = tilo_test_env::ScopedEnv::new();
     env.remove(tilo_api::calls::KEY_FILE_ENV);
-    env.set(tilo_api::calls::DESKTOP_ENV, "/nonexistent/tilo-api.sock");
     let ticket = serde_json::json!({"ticket": "tilo1-a-ticket"});
     harness
         .session
@@ -967,7 +966,6 @@ fn a_revocation_that_reaches_no_daemon_fails_and_says_so() {
     }
     let mut env = tilo_test_env::ScopedEnv::new();
     env.remove(tilo_api::calls::KEY_FILE_ENV);
-    env.set(tilo_api::calls::DESKTOP_ENV, "/nonexistent/tilo-api.sock");
     let device = serde_json::json!({"device": "00"});
     harness
         .session

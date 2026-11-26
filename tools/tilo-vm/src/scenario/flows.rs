@@ -583,8 +583,8 @@ fn adding_computer(read: &str) -> Option<(String, String)> {
 
 /// Answer the ask `invocation` in `workspace` as `from`'s person, with the call their card
 /// makes: the asked record's resolve, approving it. The person's own dispatch is the login they
-/// entered at their server, else the desktop session's, which their shell answers their card
-/// through: both are the person's own, never an agent's.
+/// entered at their server, else this computer's daemon, which admits their account as them:
+/// both are the person's own, never an agent's.
 fn answer_as_person(
     fleet: &mut dyn Fleet,
     from: Guest,
@@ -602,10 +602,7 @@ fn answer_as_person(
     let session = fleet
         .ssh(
             from,
-            &format!(
-                "TILO_API_SOCKET=$(ls /run/user/*/tilo-session/api.sock 2>/dev/null | head -n 1) \
-                 tilo do {resolve}"
-            ),
+            &format!("tilo do {resolve}"),
         )
         .err();
     match session {

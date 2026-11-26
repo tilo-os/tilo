@@ -9,8 +9,9 @@
 //!   second one. It serves the workspace this computer logged in to, or the one it founded.
 //! - **A key file** (`--key-file`, `TILO_KEY_FILE`): the key enters its host's session as itself
 //!   ([`crate::direct::Direct`]), and the same walk runs there.
-//! - **A Tilo desktop**: the desktop serves its own API socket ([`desktop_socket`]), and a call is
-//!   one `tools/call` of the MCP session it serves there.
+//!
+//! A program inside a Tilo desktop reaches the same daemon at the same socket: the desktop is a
+//! view of the daemon's device, never a second way in.
 //!
 //! A call the workspace was not ready for, or left unanswered, is asked again for a while; a call
 //! that ran is never run twice, since an action is invoked under an id of its own.
@@ -42,10 +43,6 @@ pub const NATIVE_FD_ENV: &str = tilo_actions::remote::handed::NATIVE_FD_ENV;
 
 /// Names the workspace an app the launcher started acts in.
 pub const WORKSPACE_ENV: &str = tilo_actions::remote::handed::WORKSPACE_ENV;
-
-/// Names the desktop's own API socket, as `TILO_MCP_SERVER` names the agent socket: a program of
-/// a login whose runtime directory is not the one the desktop was started in finds it here.
-pub const DESKTOP_ENV: &str = "TILO_API_SOCKET";
 
 /// How long a call the workspace was not ready for is asked again: a workspace that does not
 /// serve this computer yet is on its way.
@@ -199,8 +196,6 @@ enum At {
         crate::direct::Direct,
         tokio::sync::Mutex<std::collections::HashMap<String, String>>,
     ),
-    /// A Tilo desktop's own API socket.
-    Desktop(Desktop),
 }
 
 /// The servers of the workspaces besides its own a daemon's calls reached, by workspace.
@@ -226,8 +221,7 @@ impl Calls {
         .await
     }
 
-    /// The actions `reach` names: a desktop's when one serves this login and no key is named;
-    /// the key file's own session when it names a key other than this computer's; else this
+    /// The actions `reach` names: the key file's own session when it names a key other than this computer's; else this
     /// computer's daemon, connected to by `daemon` (which starts one when none listens).
     ///
     /// # Errors
@@ -236,14 +230,6 @@ impl Calls {
         reach: Reach<'_>,
         daemon: impl FnOnce() -> Result<tilo_files::native::socket::Stream, String>,
     ) -> Result<Self> {
-        if reach.key_file.is_none()
-            && let Some(socket) = desktop_socket()
-        {
-            return Ok(Self {
-                at: At::Desktop(Desktop::new(socket)),
-                app: false,
-            });
-        }
         if let Some(path) = reach.key_file
             && !reach.as_device()?
         {
@@ -362,16 +348,6 @@ impl Calls {
         }
     }
 
-    /// The actions of the Tilo desktop serving its own API socket at `socket`: a nested
-    /// session's, which [`desktop_socket`] does not find.
-    #[must_use]
-    pub fn desktop(socket: PathBuf) -> Self {
-        Self {
-            at: At::Desktop(Desktop::new(socket)),
-            app: false,
-        }
-    }
-
     /// The same actions, with a program session of their own: what a program run through them
     /// continues is what their own programs left, never what this one's did.
     #[must_use]
@@ -395,7 +371,6 @@ impl Calls {
                 }
             }
             At::Key(direct, _) => At::Key(direct.clone(), tokio::sync::Mutex::default()),
-            At::Desktop(desktop) => At::Desktop(Desktop::new(desktop.socket.clone())),
         };
         Self { at, app: self.app }
     }
@@ -405,7 +380,7 @@ impl Calls {
     pub fn served_workspace(&self) -> Option<&str> {
         match &self.at {
             At::Daemon { workspace, .. } => Some(workspace),
-            At::Key(..) | At::Desktop(_) => None,
+            At::Key(..) => None,
         }
     }
 
@@ -726,15 +701,6 @@ impl Calls {
         let answer = match &self.at {
             At::Daemon { server, .. } => Box::pin(server.handle(request)).await.unwrap_or_default(),
             At::Key(direct, _) => direct.mcp(request).await.map_err(anyhow::Error::msg)?,
-            At::Desktop(desktop) => {
-                let refused = |error: ApiError| anyhow::Error::new(Refusal::said(&error));
-                let session = desktop.session().await.map_err(refused)?;
-                let (_, answer) = desktop
-                    .post(Some(&session), &request)
-                    .await
-                    .map_err(refused)?;
-                answer
-            }
         };
         answer.pointer("/result/tools").cloned().ok_or_else(|| {
             anyhow!(
@@ -810,7 +776,6 @@ impl Calls {
                 }
                 _ => direct.typed(workspace, tool, arguments, group).await,
             },
-            At::Desktop(desktop) => desktop.typed(workspace, tool, arguments, group).await,
         }
     }
 
@@ -1670,23 +1635,6 @@ pub fn daemon_socket() -> Result<PathBuf, String> {
     Ok(crate::daemon::this_computer()?.native())
 }
 
-/// The socket this login's desktop serves its own API to its person's programs at, when one
-/// serves it: `API_SOCKET_FILE` in the session's directory under the login's runtime directory
-/// ([`tilo_paths::login::session_dir`]), or the one [`DESKTOP_ENV`] names.
-#[must_use]
-pub fn desktop_socket() -> Option<PathBuf> {
-    if let Some(named) = std::env::var_os(DESKTOP_ENV)
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-    {
-        return Some(named);
-    }
-    let directory = tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR"))?;
-    let socket = directory.join(tilo_paths::login::API_SOCKET_FILE);
-    // A socket that answers is one this session serves still; one a session left behind is not.
-    tilo_files::native::socket::is_bound(&socket).then_some(socket)
-}
-
 /// The key a script was approved (`token`, as `tilo do account/keys#create` answers it), as a key file
 /// reaching where this computer's login reaches: a key of its own, never the device's, so the
 /// script's session and the computer's each have one session. `None` when this computer did not
@@ -1717,158 +1665,4 @@ pub fn script_key(token: &str) -> Result<Option<crate::direct::KeyFile>> {
             }),
     };
     Ok(Some(file.with_token(token).map_err(anyhow::Error::msg)?))
-}
-
-/// A Tilo desktop's MCP session at the API socket it serves: opened on the first call, and
-/// asked one `tools/call` a call.
-struct Desktop {
-    socket: PathBuf,
-    session: tokio::sync::Mutex<Option<String>>,
-}
-
-impl Desktop {
-    fn new(socket: PathBuf) -> Self {
-        Self {
-            socket,
-            session: tokio::sync::Mutex::new(None),
-        }
-    }
-
-    async fn typed(
-        &self,
-        workspace: Option<&str>,
-        tool: &str,
-        mut arguments: Value,
-        group: Option<Value>,
-    ) -> Result<Value, ApiError> {
-        if let (Some(fields), Some(workspace)) = (arguments.as_object_mut(), workspace) {
-            fields.insert(crate::session::WORKSPACE_ARGUMENT.into(), json!(workspace));
-        }
-        let mut meta = json!({"structured": true});
-        if let (Some(fields), Some(group)) = (meta.as_object_mut(), group) {
-            fields.insert("invocation".into(), group);
-        }
-        let session = self.session().await?;
-        let (_, answer) = self
-            .post(
-                Some(&session),
-                &json!({"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
-                    "name": tool, "arguments": arguments, "_meta": {"so.tilo.mcp": meta},
-                }}),
-            )
-            .await?;
-        if let Some(error) = answer.get("error") {
-            return Err(ApiError::new(
-                "failed",
-                error
-                    .get("message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("the desktop refused the call"),
-            ));
-        }
-        let result = answer.get("result").cloned().unwrap_or_default();
-        let failed = result.get("isError").and_then(Value::as_bool) == Some(true);
-        match result.get("structuredContent").cloned() {
-            Some(typed) if !failed || tool == "tilo" => Ok(typed),
-            Some(typed) => Err(ApiError::of_answer(typed.get("error"), typed.get("action"))),
-            None => {
-                let said = result
-                    .pointer("/content/0/text")
-                    .and_then(Value::as_str)
-                    .unwrap_or("the desktop answered nothing");
-                Err(ApiError::new(
-                    if failed { "failed" } else { "not_found" },
-                    said,
-                ))
-            }
-        }
-    }
-
-    /// The MCP session, opened the first time.
-    async fn session(&self) -> Result<String, ApiError> {
-        let mut session = self.session.lock().await;
-        if let Some(open) = session.as_ref() {
-            return Ok(open.clone());
-        }
-        let (opened, answer) = self
-            .post(
-                None,
-                &json!({"jsonrpc": "2.0", "id": 0, "method": "initialize", "params": {
-                    "protocolVersion": "2025-06-18", "capabilities": {},
-                    "clientInfo": {"name": "tilo", "version": env!("CARGO_PKG_VERSION")},
-                }}),
-            )
-            .await?;
-        let opened = opened.ok_or_else(|| {
-            ApiError::new(
-                "unavailable",
-                answer
-                    .pointer("/error/message")
-                    .and_then(Value::as_str)
-                    .unwrap_or("the desktop opened no session"),
-            )
-        })?;
-        *session = Some(opened.clone());
-        drop(session);
-        Ok(opened)
-    }
-
-    /// POST `request` to the desktop's MCP endpoint in `session`: the session it named, and its
-    /// answer.
-    async fn post(
-        &self,
-        session: Option<&str>,
-        request: &Value,
-    ) -> Result<(Option<String>, Value), ApiError> {
-        use http_body_util::BodyExt as _;
-        let unavailable = |why: String| ApiError::new("unavailable", why);
-        let stream = tilo_files::native::socket::tokio::connect(&self.socket)
-            .await
-            .map_err(|error| {
-                unavailable(format!(
-                    "the desktop does not answer at {}: {error}",
-                    self.socket.display()
-                ))
-            })?;
-        let (mut sender, connection) =
-            hyper::client::conn::http1::handshake(hyper_util::rt::TokioIo::new(stream))
-                .await
-                .map_err(|error| unavailable(error.to_string()))?;
-        tokio::spawn(connection);
-        let mut asked = hyper::Request::post("/mcp")
-            .header(hyper::header::HOST, "localhost")
-            .header(hyper::header::CONTENT_TYPE, "application/json")
-            .header(hyper::header::ACCEPT, "application/json");
-        if let Some(session) = session {
-            asked = asked.header(crate::session::SESSION_HEADER, session);
-        }
-        let asked = asked
-            .body(http_body_util::Full::new(hyper::body::Bytes::from(
-                request.to_string(),
-            )))
-            .map_err(|error| unavailable(error.to_string()))?;
-        let response = sender
-            .send_request(asked)
-            .await
-            .map_err(|error| unavailable(error.to_string()))?;
-        let named = response
-            .headers()
-            .get(crate::session::SESSION_HEADER)
-            .and_then(|value| value.to_str().ok())
-            .map(str::to_owned);
-        let status = response.status();
-        let body = response
-            .into_body()
-            .collect()
-            .await
-            .map_err(|error| unavailable(error.to_string()))?
-            .to_bytes();
-        let answer = serde_json::from_slice(&body).map_err(|_| {
-            unavailable(format!(
-                "the desktop answered {status}: {}",
-                String::from_utf8_lossy(&body)
-            ))
-        })?;
-        Ok((named, answer))
-    }
 }

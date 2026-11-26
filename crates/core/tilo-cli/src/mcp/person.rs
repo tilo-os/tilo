@@ -1,8 +1,8 @@
 //! `tilo mcp --as-me`: the same tools over stdio, called as the person rather than as an agent
 //! they admit. A program of theirs that is no agent speaks to their workspace through it (the
 //! `tilolang repl`, run as its own program): each call goes where `tilo do` sends it
-//! ([`tilo_api::calls::Calls`]: this login's desktop, the key `--key-file` names, or this
-//! computer's daemon), and what it changes is the person's in History and undo, as `tilo do`'s is.
+//! ([`tilo_api::calls::Calls`]: the key `--key-file` names, or this computer's daemon), and what
+//! it changes is the person's in History and undo, as `tilo do`'s is.
 //!
 //! This is no wider than `tilo do`: any program of this login runs that as the person already.
 //! One server keeps one program session: the `tilo` tool's `let`s and references carry from one
@@ -18,7 +18,7 @@ use std::process::ExitCode;
 
 use anyhow::Result;
 use serde_json::{Value, json};
-use tilo_api::calls::{Calls, DESKTOP_ENV, Reach, Refusal};
+use tilo_api::calls::{Calls, Reach, Refusal};
 
 /// Why the server serves nothing, in the initialize error's `data.reason`: nothing on this
 /// computer signs the person in.
@@ -76,7 +76,7 @@ async fn open(key_file: Option<&Path>, named: Option<&str>) -> Opened {
         json: false,
     };
     let signed_in = key_file.is_some()
-        || tilo_api::calls::desktop_socket().is_some()
+        || crate::login::desktop_runs()
         || crate::login::logged_in();
     if !signed_in {
         return Opened::Refused {
@@ -98,10 +98,6 @@ async fn open(key_file: Option<&Path>, named: Option<&str>) -> Opened {
             Ok(id) => Some((id, named.to_owned())),
             Err(error) => return refused(error),
         }
-    } else if std::env::var_os(DESKTOP_ENV).is_some() {
-        // A desktop named by its socket is another session than this computer's login (a nested
-        // one): the workspace that login entered is not the one this desktop is in.
-        None
     } else {
         match tilo_api::calls::entered_workspace(reach) {
             Ok(entered) => entered,

@@ -499,17 +499,10 @@ mod tests {
         }
     }
 
-    /// A program on this computer reaches the desktop's own API socket as the desktop's own
-    /// device, with no key of its own, one MCP tool call a call: it lists the workspaces the
-    /// desktop is in and lists what one has, which the desktop's own actions answer. The
-    /// account's own actions are not answered.
-    #[tokio::test]
-    async fn a_desktop_serves_its_persons_programs_at_its_socket() {
-        let (key, cert) = ada_laptop(7);
-        let desktop = Desktop::default();
-        let entered = std::sync::Arc::clone(&desktop.entered);
-        let direct = Direct::here(std::sync::Arc::new(desktop), key, cert, "Ada's laptop").unwrap();
-        let dir = std::env::temp_dir().join(format!("tilo-api-here-{}", std::process::id()));
+    /// `Direct::here` serving the desktop's own API socket at a fresh directory: the socket, and
+    /// the directory to remove.
+    fn served_here(direct: Direct, name: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("tilo-api-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let socket = dir.join("api.sock");
         let _ = std::fs::remove_file(&socket);
@@ -518,29 +511,84 @@ mod tests {
         )
         .unwrap();
         tokio::spawn(direct.serve(listener));
+        (socket, dir)
+    }
 
-        let calls = crate::calls::Calls::desktop(socket);
-        let listed = calls.workspaces().await.unwrap();
-        assert_eq!(listed["workspaces"][0]["id"], WORKSPACE, "{listed}");
-        assert_eq!(listed["workspaces"][0]["name"], "Release", "{listed}");
-        let apps = calls.list(Some(WORKSPACE), None, None).await.unwrap();
+    /// One request to the API at `socket`, with no `Authorization`, as a program of the login
+    /// sends it: its status and its JSON body.
+    async fn ask(
+        socket: &std::path::Path,
+        method: &str,
+        uri: &str,
+        body: Option<serde_json::Value>,
+    ) -> (u16, serde_json::Value) {
+        use hyper_util::rt::TokioIo;
+        let stream = tilo_files::native::socket::tokio::connect(socket)
+            .await
+            .unwrap();
+        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
+            .await
+            .unwrap();
+        tokio::spawn(connection);
+        let mut request = hyper::Request::builder().method(method).uri(uri);
+        if body.is_some() {
+            request = request.header("content-type", "application/json");
+        }
+        let request = request
+            .body(http_body_util::Full::new(hyper::body::Bytes::from(
+                body.map(|body| body.to_string()).unwrap_or_default(),
+            )))
+            .unwrap();
+        let answer = sender.send_request(request).await.unwrap();
+        let status = answer.status().as_u16();
+        let body = answer.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&body).unwrap_or_default())
+    }
+
+    /// A program on this computer reaches the desktop's own API socket as the desktop's own
+    /// device, with no key of its own: `/v1` lists the workspaces the desktop is in and lists
+    /// what one has, which the desktop's own actions answer. The account's own actions are not
+    /// answered, and the refusal says so in words.
+    #[tokio::test]
+    async fn a_desktop_serves_its_persons_programs_at_its_socket() {
+        let (key, cert) = ada_laptop(7);
+        let desktop = Desktop::default();
+        let entered = std::sync::Arc::clone(&desktop.entered);
+        let direct = Direct::here(std::sync::Arc::new(desktop), key, cert, "Ada's laptop").unwrap();
+        let (socket, dir) = served_here(direct, "here");
+
+        let (_, listed) = ask(
+            &socket,
+            "POST",
+            "/v1/resources/account/workspaces/actions/list",
+            Some(serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(listed["result"]["workspaces"][0]["id"], WORKSPACE, "{listed}");
+        assert_eq!(listed["result"]["workspaces"][0]["name"], "Release", "{listed}");
+        let (status, apps) = ask(
+            &socket,
+            "GET",
+            &format!("/v1/workspaces/{WORKSPACE}/resources"),
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{apps}");
         assert!(apps["rows"].is_array(), "{apps}");
         assert_eq!(
             *entered.lock().unwrap(),
             [WORKSPACE],
             "the desktop's own actions answer the listing: {apps}"
         );
-        let refused = calls
-            .account(
-                "account/workspaces",
-                "create",
-                &serde_json::json!({"name": "Another"}),
-            )
-            .await
-            .unwrap_err()
-            .to_string();
+        let (_, refused) = ask(
+            &socket,
+            "POST",
+            "/v1/resources/account/workspaces/actions/create",
+            Some(serde_json::json!({"name": "Another"})),
+        )
+        .await;
         assert!(
-            refused.contains("answers its own workspaces only"),
+            refused.to_string().contains("answers its own workspaces only"),
             "{refused}"
         );
         std::fs::remove_dir_all(&dir).unwrap();
@@ -732,7 +780,6 @@ mod tests {
     /// and the desktop acts as the one key it holds.
     #[tokio::test]
     async fn a_request_with_no_bearer_is_answered_as_the_persons_key() {
-        use hyper_util::rt::TokioIo;
         let (key, cert) = ada_laptop(11);
         let direct = Direct::here(
             std::sync::Arc::new(Desktop::default()),
@@ -741,36 +788,16 @@ mod tests {
             "Ada's laptop",
         )
         .unwrap();
-        let dir = std::env::temp_dir().join(format!("tilo-api-here-bare-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let socket = dir.join("api.sock");
-        let _ = std::fs::remove_file(&socket);
-        let listener = tilo_files::native::socket::tokio::listener(
-            tilo_files::native::socket::bind(&socket).unwrap(),
-        )
-        .unwrap();
-        tokio::spawn(direct.serve(listener));
-
+        let (socket, dir) = served_here(direct, "here-bare");
         // No `Authorization` header, as `Client::session` sends none.
-        let stream = tilo_files::native::socket::tokio::connect(&socket)
-            .await
-            .unwrap();
-        let (mut sender, connection) = hyper::client::conn::http1::handshake(TokioIo::new(stream))
-            .await
-            .unwrap();
-        tokio::spawn(connection);
-        let request = hyper::Request::builder()
-            .method("POST")
-            .uri("/v1/resources/account/workspaces/actions/list")
-            .header("content-type", "application/json")
-            .body(http_body_util::Full::new(hyper::body::Bytes::from_static(
-                b"{}",
-            )))
-            .unwrap();
-        let answer = sender.send_request(request).await.unwrap();
-        assert_eq!(answer.status(), 200, "a request with no key is answered");
-        let body = answer.into_body().collect().await.unwrap().to_bytes();
-        let listed: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let (status, listed) = ask(
+            &socket,
+            "POST",
+            "/v1/resources/account/workspaces/actions/list",
+            Some(serde_json::json!({})),
+        )
+        .await;
+        assert_eq!(status, 200, "a request with no key is answered");
         assert_eq!(
             listed["result"]["workspaces"][0]["id"], WORKSPACE,
             "the desktop answers as its own key: {listed}"

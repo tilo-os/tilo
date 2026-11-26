@@ -11,10 +11,10 @@ use crate::support::installed::{Installed, SYSTEM_PATH, plain};
 /// `TILO_FAKE`: `signed-in` (the login's workspace, Home), `account` (no default workspace;
 /// the account lists one, Solo), `accounts` (the account lists two, Solo and Band), `nobody` (nobody signed in) or `old` (a `tilo` from before
 /// `--as-me`, which refuses it). It writes its arguments, then
-/// the desktop socket it was pointed at, then every line it reads, to `TILO_FAKE_LOG`.
+/// the runtime directory it was started in, then every line it reads, to `TILO_FAKE_LOG`.
 const FAKE_TILO: &str = r#"#!/bin/sh
 printf 'args: %s\n' "$*" >> "$TILO_FAKE_LOG"
-printf 'socket: %s\n' "$TILO_API_SOCKET" >> "$TILO_FAKE_LOG"
+printf 'runtime: %s\n' "$XDG_RUNTIME_DIR" >> "$TILO_FAKE_LOG"
 if [ "$TILO_FAKE" = old ]; then
   echo "error: unexpected argument '--as-me' found" >&2
   exit 2
@@ -222,12 +222,12 @@ tilo_test_env::scenario! {
             err.contains("`tilolang repl --session` works in it"),
             "the person reads how to work in the session: {err}"
         );
-        // In that session, `tilo` is pointed at the session's own API.
+        // In that session, `tilo` runs in the session's own login, reaching its daemon.
         let (ok, out, err) =
             repl(&installed, &["--session"], "", "signed-in", SYSTEM_PATH, runtime.path());
         assert!(ok, "{err}");
         assert!(out.contains("in Home"), "{out}");
-        let socket = format!("socket: {}\n", nested.join("tilo-session/api.sock").display());
-        assert!(installed.log().contains(&socket), "{}", installed.log());
+        let reached = format!("runtime: {}\n", nested.display());
+        assert!(installed.log().contains(&reached), "{}", installed.log());
     }
 }

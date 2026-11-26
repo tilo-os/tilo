@@ -39,10 +39,9 @@ COMMAND_SECONDS = 240
 # several command lines: what is kept beside the story and said in a failure
 # carries none of it whole.
 TICKET = re.compile(r"tilo1[0-9a-z]{16,}")
-# Environment that names another Tilo on this machine (a desktop's API, a test
-# control socket, an agent's MCP link): a computer of its own has none of them.
+# Environment that names another Tilo on this machine (a test control socket, an
+# agent's MCP link, a hosted API): a computer of its own has none of them.
 NOT_THIS_COMPUTERS = (
-    "TILO_API_SOCKET",
     "TILO_TEST_CONTROL",
     "TILO_MCP_SERVER",
     "TILO_API_KEY",

@@ -492,11 +492,11 @@ impl Complete for NoCompletion {
 pub fn repl(options: &ReplOptions) -> Result<(), String> {
     let mut editor = Editor::new(Some(crate::state_dir().join("repl-history")));
     style::set(options.color.unwrap_or_else(|| editor.is_terminal()));
-    // `tilo`'s own flags, then its server; a nested session is named by its API socket.
+    // `tilo`'s own flags, then its server; a nested session is reached in its own login.
     let mut args: Vec<OsString> = Vec::new();
-    let mut socket = None;
+    let mut environment = Vec::new();
     if let Some(named) = &options.session {
-        socket = Some(attach(&editor, named.as_deref())?.socket);
+        environment = attach(&editor, named.as_deref())?.environment();
     } else if let Some(key_file) = &options.key_file {
         args.extend(["--key-file".into(), key_file.into()]);
     }
@@ -505,10 +505,9 @@ pub fn repl(options: &ReplOptions) -> Result<(), String> {
     }
     args.extend(["mcp".into(), "--as-me".into()]);
     let program = tilo::find().ok_or_else(|| tilo::TILO_MISSING.to_owned())?;
-    let envs: Vec<(&str, &std::path::Path)> = socket
-        .as_deref()
-        .map(|socket| ("TILO_API_SOCKET", socket))
-        .into_iter()
+    let envs: Vec<(&str, &std::path::Path)> = environment
+        .iter()
+        .map(|(name, value)| (*name, value.as_path()))
         .collect();
     let (mut tilo, served) =
         tilo::Tilo::start(&program, &args, &envs).map_err(|refused| match refused {

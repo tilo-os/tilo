@@ -801,7 +801,6 @@ fn start(
         }
     );
     let mcp_server = options.mcp_server.clone();
-    let api_socket = options.api_socket.clone();
     let test_control = options.test_control.clone();
     let admin_control = options.admin_control.clone();
     tilo_startup_metrics::mark("session-open-start");
@@ -847,7 +846,6 @@ fn start(
             agent: mcp_server.as_deref(),
             test_control: test_control.as_deref(),
             admin: admin_control.as_deref(),
-            api: api_socket.as_deref(),
         },
     )
 }
@@ -861,8 +859,6 @@ struct Sockets<'a> {
     test_control: Option<&'a std::path::Path>,
     /// The owner's control socket (`TILO_ADMIN_CONTROL=`).
     admin: Option<&'a std::path::Path>,
-    /// Tilo's API for the person's own programs (`TILO_API_SOCKET=`).
-    api: Option<&'a std::path::Path>,
 }
 
 /// The session on `backend` 's displays, at `size` where the backend runs in one. `restart` is
@@ -986,11 +982,6 @@ fn run(
     // started.
     if let Some(agent) = sockets.agent.filter(|agent| agent.exists()) {
         println!("TILO_MCP_SERVER={}", agent.display());
-    }
-    // Where a program of this login answers as the person, against the workspaces this device
-    // has: `tilolang repl` and `tilo` reach it there (`tilo_api::calls::desktop_socket`).
-    if let Some(api) = sockets.api.filter(|api| api.exists()) {
-        println!("{}={}", tilo_api::calls::DESKTOP_ENV, api.display());
     }
     // Where `tilo-control` drives it, in a development build started with one.
     if let Some(control) = sockets.test_control.filter(|control| control.exists()) {

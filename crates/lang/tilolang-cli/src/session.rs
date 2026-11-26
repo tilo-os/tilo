@@ -217,6 +217,8 @@ impl SessionFile {
 pub(crate) struct Running {
     pub(crate) state: PathBuf,
     pub(crate) socket: PathBuf,
+    /// Its runtime directory, where its daemon listens.
+    pub(crate) runtime: PathBuf,
 }
 
 impl Running {
@@ -239,7 +241,16 @@ impl Running {
         Ok(Self {
             state: session.state,
             socket,
+            runtime: session.runtime,
         })
+    }
+
+    /// The environment a program runs in to act in this session: its login, so it reaches the
+    /// session's own daemon as `tilo-install` does ([`Session::command`]).
+    pub(crate) fn environment(&self) -> Vec<(&'static str, PathBuf)> {
+        let mut environment = login_environment(&self.state);
+        environment.push(("XDG_RUNTIME_DIR", self.runtime.clone()));
+        environment
     }
 
     /// Every nested session running for this login, by state directory.
@@ -362,13 +373,7 @@ impl Peer {
         let mut command = Command::new(program);
         let state = &self.state;
         command
-            .env("HOME", state.join("home"))
-            .env("XDG_CONFIG_HOME", state.join("config"))
-            .env("XDG_DATA_HOME", state.join("data"))
-            .env("XDG_STATE_HOME", state.join("state"))
-            .env("XDG_CACHE_HOME", state.join("cache"))
-            .env("TILO_IDENTITY_ROOT", state.join("identity"))
-            .env("TILO_APPS_DATA_DIR", state.join("apps"))
+            .envs(login_environment(state))
             .env("TILO_RUNTIME_BUNDLE_DIR", self.runtimes())
             .env(
                 "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE",
@@ -459,6 +464,19 @@ impl Peer {
             None => Ok(()),
         }
     }
+}
+
+/// The login a session on `state` runs in: its home, its directories and its identity.
+fn login_environment(state: &Path) -> Vec<(&'static str, PathBuf)> {
+    vec![
+        ("HOME", state.join("home")),
+        ("XDG_CONFIG_HOME", state.join("config")),
+        ("XDG_DATA_HOME", state.join("data")),
+        ("XDG_STATE_HOME", state.join("state")),
+        ("XDG_CACHE_HOME", state.join("cache")),
+        ("TILO_IDENTITY_ROOT", state.join("identity")),
+        ("TILO_APPS_DATA_DIR", state.join("apps")),
+    ]
 }
 
 /// One request to the daemon's native endpoint, and the line it answers.

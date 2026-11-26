@@ -22,7 +22,7 @@ Three things serve it:
   computer's daemon serves them, with the same library, as the person by the device's key, which
   never leaves the daemon: so a call needs no `Authorization`. The desktop only takes each
   connection there, refuses one from another account or a sandbox, and hands the rest to the
-  daemon over its link. `tilolang repl --session` reaches a development session this way.
+  daemon over its link. The `tilo` command and the SDKs call the daemon at its own socket instead.
 
 MCP is the same calls for agents (`/mcp` on the API server, `tilo mcp` on a computer): its tools
 answer the bodies below as `structuredContent` (see [MCP's typed answers](sdk-wire.md)). One tool

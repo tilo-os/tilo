@@ -44,6 +44,14 @@ pub fn logged_in() -> bool {
     served_device_key(&crate::identity::paths()).is_some()
 }
 
+/// Whether a Tilo desktop runs in this login: its session serves the person's programs at its
+/// API socket, which answers while it runs.
+pub(crate) fn desktop_runs() -> bool {
+    tilo_paths::login::session_dir(std::env::var_os("XDG_RUNTIME_DIR")).is_some_and(|directory| {
+        tilo_files::native::socket::is_bound(&directory.join(tilo_paths::login::API_SOCKET_FILE))
+    })
+}
+
 /// The device this computer is as it enters its person's workspaces, read without the device key
 /// ([`tilo_api::daemon::who::home`]): `None` while its daemon knows no server of theirs, or none
 /// runs.
@@ -353,7 +361,7 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
         );
     }
     let agent = agent::given(agent);
-    if tilo_api::calls::desktop_socket().is_some() {
+    if desktop_runs() {
         bail!(
             "This computer's Tilo desktop is one of your devices already: `tilo` commands and \
              agents here act through it, with no login of their own."
