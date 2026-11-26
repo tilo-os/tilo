@@ -268,10 +268,15 @@ async fn set_under_agents(
     app: &str,
     answer: &str,
 ) {
-    use tilo_resource::{Id, NonBlank, Replica};
+    use collab_types::document::{DocumentCheckout, DocumentId, ResourceType};
+    use tilo_resource::{Id, NonBlank, Replica, Resource};
     use tilo_workspace_agent::{Bound, WorkspaceAgents, workspace_agents};
     let person = hex::encode(owner.user_public_key);
-    let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    let list = collab_types::workspace_document_id(WorkspaceAgents::KIND);
+    let checkout = DocumentCheckout::new(
+        DocumentId::parse(&list).unwrap(),
+        ResourceType::new(WorkspaceAgents::KIND),
+    );
     let bound = vec![Bound {
         node: format!("workspace:{workspace}/app:{app}"),
         kinds: vec!["outside".into()],
@@ -283,11 +288,12 @@ async fn set_under_agents(
             workspaces.governor(),
             (tilo_workspace_agent::OWNER, &list),
             |doc| {
-                let agents = if doc.get_heads().is_empty() {
-                    Replica::<WorkspaceAgents>::new()
-                } else {
-                    Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                };
+                if doc.get_heads().is_empty() {
+                    collaboration::resource::genesis(doc, &checkout, workspace, |doc| {
+                        WorkspaceAgents::initialize(doc).map_err(|error| error.to_string())
+                    })?;
+                }
+                let agents = Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc));
                 let mut agents = agents
                     .as_author(&person)
                     .in_app(tilo_workspace_agent::OWNER, "Chat");
