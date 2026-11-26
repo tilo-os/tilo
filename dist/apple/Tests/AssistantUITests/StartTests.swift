@@ -226,13 +226,28 @@ final class StartTests: XCTestCase {
 
                 drive.press(AssistantWords.revokeChatPermission.said, role: "AXButton")
                 await drive.until("the revocation confirmation") { !drive.window.heldSheets.isEmpty }
-                let sheet = try XCTUnwrap(drive.window.heldSheets.first?.contentView)
+                let alert = try XCTUnwrap(drive.window.heldSheets.first)
+                let sheet = try XCTUnwrap(alert.contentView)
                 await drive.until("the scope under review") { drive.shows(scope, in: sheet) }
                 XCTAssertTrue(drive.shows(AssistantWords.confirmRevokeChatPermission.said, in: sheet))
                 XCTAssertEqual(model.supervision.assistantAccess, permission)
                 let choice = isPending ? AssistantWords.cancel.said : AssistantWords.revokeChatPermission.said
                 let button = try XCTUnwrap(drive.tree(of: sheet).first { $0.isButton && $0.name == choice })
-                drive.press(button, in: sheet)
+                @MainActor func nativeButton(in view: NSView) -> NSButton? {
+                    if let control = view as? NSButton, control.title == choice { return control }
+                    return view.subviews.lazy.compactMap { nativeButton(in: $0) }.first
+                }
+                let control = try XCTUnwrap(button.object as? NSButton ?? nativeButton(in: sheet), "Native alert button for \(choice) (\(type(of: button.object)))")
+                XCTAssertTrue(button.isEnabled)
+                XCTAssertFalse(button.frame.isEmpty)
+                XCTAssertNotNil(control.action)
+                let response = NSApplication.ModalResponse(rawValue: control.tag)
+                control.performClick(nil)
+                // HeldWindow captures beginSheet without attaching the alert. Deliver the pressed
+                // NSAlert button's return code to the completion that AppKit registered for it.
+                if drive.window.heldSheets.contains(alert) {
+                    drive.window.endSheet(alert, returnCode: response)
+                }
                 await drive.until("the confirmation to close") { drive.window.heldSheets.isEmpty }
                 if isPending {
                     XCTAssertEqual(model.supervision.assistantAccess, pending)
