@@ -526,14 +526,18 @@ impl ServerApps {
                 workspaces: self.workspaces.clone(),
                 workspace,
             }),
-            commits: ServiceCommits::new(
-                self.workspaces.workspaces.clone(),
-                self.device,
-                // A new resource's type is the one its installed package declares; until the
-                // server reads packages' declarations, it creates none.
-                Box::new(|_, _| false),
-                self.workspaces.runtime.clone(),
-            ),
+            commits: {
+                // A new resource's type is the one its installed package declares: an app's own
+                // records are created here as its manifest says they exist.
+                let packages = Arc::clone(&self.shipped.kept);
+                let workspace = workspace.to_string();
+                ServiceCommits::new(
+                    self.workspaces.workspaces.clone(),
+                    self.device,
+                    Box::new(move |app, kind| packages.declares(&workspace, app, kind)),
+                    self.workspaces.runtime.clone(),
+                )
+            },
             services: ProcessServices {
                 committed_documents: Some(Arc::new(ServiceReads::new(
                     self.workspaces.workspaces.clone(),

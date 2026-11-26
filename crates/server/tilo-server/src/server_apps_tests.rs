@@ -38,6 +38,9 @@ optional-runtimes = ["tilolang/0.1.0+tilolang"]
 identity = "ed25519:{}"
 signature = ""
 
+[resources]
+kinds = ["fixture.page"]
+
 [sandbox]
 namespaces = ["user", "pid", "mount"]
 seccomp = "tilo-default"
@@ -99,6 +102,22 @@ tilo_test_env::scenario! {
         assert!(
             root.path().join(WORKSPACE).is_dir(),
             "the workspace's packages are kept in a store of its own"
+        );
+    }
+
+    phase a_package_declares_the_records_its_manifest_names;
+    {
+        // A package names the kinds of record it keeps: what a server creates in a workspace
+        // for the app it installed, and nothing else.
+        let (_root, packages, identity) = packages();
+        packages
+            .verified(WORKSPACE, APP, &tilolang_package(APP, &identity))
+            .expect("the installed package verifies");
+        assert!(packages.declares(WORKSPACE, APP, "fixture.page"));
+        assert!(!packages.declares(WORKSPACE, APP, "another.page"));
+        assert!(
+            !packages.declares("6f1c2a52-8a2b-4c39-9d6b-1f3b0e0c7a11", APP, "fixture.page"),
+            "a workspace that installed nothing creates nothing"
         );
     }
 

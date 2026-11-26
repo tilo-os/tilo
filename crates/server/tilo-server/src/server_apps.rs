@@ -92,6 +92,28 @@ impl WorkspacePackages {
         })
     }
 
+    /// Whether `workspace`'s copy of `app` declares the resource kind `kind` in its signed
+    /// manifest: what its own records may be created as here.
+    #[must_use]
+    pub fn declares(&self, workspace: &str, app: &str, kind: &str) -> bool {
+        let Ok(id) = uuid::Uuid::parse_str(workspace) else {
+            return false;
+        };
+        let catalog = package_store::Catalog::at(
+            self.root.join(id.hyphenated().to_string()),
+            self.shipped.clone(),
+        );
+        app_catalogue::apps::read_one(&catalog, app)
+            .ok()
+            .flatten()
+            .is_some_and(|installed| {
+                installed
+                    .declared_resource_kinds()
+                    .iter()
+                    .any(|declared| declared == kind)
+            })
+    }
+
     /// The package store of `workspace`.
     fn store(&self, workspace: &str) -> Result<package_store::PackageStore, String> {
         // A workspace id names a directory: only a real id may.
