@@ -4245,3 +4245,163 @@ fn hiding_a_tile_takes_it_off_the_panel() {
     );
     keep(&mut session, "shell-quick-settings-editor");
 }
+
+/// What the workspace in front shares out is drawn under who has access: the folder given to
+/// Cleo read-only and the document given to Bo writable, each with whom it is shared. Taking one
+/// back through the row's own button drops that row, and the other stays.
+#[test]
+fn the_overviews_shared_out_list_names_what_the_workspace_shares_and_taking_one_back_drops_it() {
+    use collab_types::caps::{Access, CapOverride, Scope};
+    use tilo_action_policy::{Answer, Change, Grant, Grantee, KindSet, MemberId, TreePath};
+
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let mut session = session();
+    until(&mut session, |session| says(session, &time(session).clock));
+    let (workspace, owner) = session.handle().read(|tree| {
+        let workspace = tree.active_workspace().expect("a workspace in front");
+        (
+            workspace.id().to_string(),
+            workspace.policy.owner().map(str::to_owned),
+        )
+    });
+    let handle = session.handle().clone();
+    let mut tree: tilo_desktop_model::Layout = handle.read(Clone::clone);
+    let held = tree
+        .workspaces
+        .iter_mut()
+        .find(|held| held.id().to_string() == workspace)
+        .expect("the workspace in front");
+    // A desktop with no device identity runs as the person it was started for; the workspace it
+    // founds is not yet theirs until someone adopts it.
+    let owner = owner.unwrap_or_else(|| PERSON.to_owned());
+    if held.policy.owner().is_none() {
+        held.policy.set_owner(owner.clone());
+    }
+    held.named_people([("bo", "Bo"), ("cleo", "Cleo")]);
+    held.sandbox.push(
+        CapOverride::grant(
+            Grantee::person("cleo"),
+            Scope::FsPath("/var/workspace/brief".into()),
+            Access::Read,
+        )
+        .with_id("cap-brief")
+        .granted_by(MemberId::person(owner.clone())),
+    );
+    let plan = TreePath::workspace(workspace.clone())
+        .app("so.tilo.notes")
+        .kind("notes.notebook")
+        .resource("plan");
+    held.policy
+        .change_all_as_at(
+            &owner,
+            vec![Change::Grant(Grant::new(
+                "bo-plan",
+                Grantee::person("bo"),
+                plan,
+                KindSet::READ_UNDOABLE,
+                Answer::Allow,
+                Grantee::person(owner.clone()),
+            ))],
+            tilo_clock::unix_now(),
+        )
+        .expect("the owner may share");
+    handle.replace_tree(tree);
+
+    show(&mut session, "overview");
+    until(&mut session, |session| here(session) == "overview");
+    until(&mut session, |session| {
+        says(session, "Shared out of here")
+            && says(session, "brief")
+            && says(session, "Notes › Notebook › plan")
+    });
+    assert!(
+        says(&session, "Take back"),
+        "a share the owner may take back offers that: {:?}",
+        session.accessible_labels()
+    );
+    // The list reads the same in either mode: choosing each look through the appearance
+    // section's own setter, as Quick Settings and Settings do.
+    if session.read("settings/appearance").is_some() {
+        let appearance = |session: &mut Session, mode: &str| {
+            session
+                .invoke(
+                    "settings/appearance",
+                    &settings_store::workspace::verb("mode"),
+                    &serde_json::Map::from_iter([("value".to_owned(), serde_json::json!(mode))]),
+                )
+                .expect("the appearance section takes the mode");
+            until(session, |session| {
+                session
+                    .read("settings/appearance")
+                    .is_some_and(|read| read["mode"] == serde_json::json!(mode))
+            });
+            // The setting reaches the shell on the frames after it is published: step until the
+            // screen stops moving, so the shot is of the look that was asked for.
+            for _ in 0..5 {
+                session
+                    .step(Duration::from_millis(16))
+                    .expect("the shell draws");
+            }
+            for _ in 0..120 {
+                let before = session
+                    .compositor()
+                    .screenshot("HEADLESS-1")
+                    .expect("the screen")
+                    .rgba;
+                session
+                    .step(Duration::from_millis(16))
+                    .expect("the shell draws");
+                let after = session
+                    .compositor()
+                    .screenshot("HEADLESS-1")
+                    .expect("the screen")
+                    .rgba;
+                if before == after {
+                    break;
+                }
+            }
+        };
+        appearance(&mut session, "dark");
+        keep(&mut session, "shell-overview-shared-out-dark");
+        appearance(&mut session, "light");
+        keep(&mut session, "shell-overview-shared-out-light");
+    } else {
+        keep(&mut session, "shell-overview-shared-out");
+    }
+
+    press(&mut session, "Take back");
+    // The row's button ran the workspace's own action: exactly one of the two is taken back, in
+    // the workspace the layout holds and in what the overview draws.
+    until(&mut session, |session| {
+        let (folder, plan) = session.handle().read(|tree| {
+            let held = tree.active_workspace().expect("the workspace in front");
+            (
+                held.sandbox.iter().any(|cap| cap.id == "cap-brief"),
+                held.policy
+                    .grants
+                    .iter()
+                    .any(|grant| grant.id.as_str() == "bo-plan"),
+            )
+        });
+        folder != plan
+    });
+    let (folder_held, plan_held) = session.handle().read(|tree| {
+        let held = tree.active_workspace().expect("the workspace in front");
+        (
+            held.sandbox.iter().any(|cap| cap.id == "cap-brief"),
+            held.policy
+                .grants
+                .iter()
+                .any(|grant| grant.id.as_str() == "bo-plan"),
+        )
+    });
+    until(&mut session, |session| {
+        says(session, "brief") == folder_held
+            && says(session, "Notes › Notebook › plan") == plan_held
+    });
+    assert_ne!(
+        folder_held, plan_held,
+        "one share was taken back, one stays"
+    );
+    keep(&mut session, "shell-overview-shared-out-taken-back");
+}

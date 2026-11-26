@@ -32,6 +32,7 @@ view overview() {
                 on submit: session.search(query: query)
             }
             workspaces_here()
+            shared_out()
             if query == "" {
                 if here.is_empty() {
                     ui.EmptyState(
@@ -92,6 +93,83 @@ fn access_words() -> Text {
     } else {
         std.say("Shared with {name} and {more} others")
     }
+}
+
+/// What the workspace in front shares out of itself, under who has access: each folder, document
+/// or item it gives to somebody besides the person sharing it, with whom it is shared and whether
+/// they read or write it. The list is the workspace's own reading (`workspace.access`), which
+/// answers it to whoever may administer its grants; nothing here is copied, so a share made or
+/// taken back anywhere shows here on the next frame.
+///
+/// A row opens what it shares. One the person may take back offers that too, through the
+/// workspace's own action that takes a grant back, so a script and this button revoke alike.
+view shared_out() {
+    let shares = shares_here()
+    if not shares.is_empty() {
+        stack(gap: .tight) {
+            ui.Text("Shared out of here", role: .label, secondary: true)
+            ui.VirtualList(name: "Shared out", in_column: false) {
+                for share in shares {
+                    ui.ListItem(value: share.id) {
+                        share_row(share)
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// What the workspace in front shares out, as its access reading lists it; nothing for a person
+/// the workspace does not let administer its grants, or before the session has read one.
+fn shares_here() -> List<workspace.SharedOut> {
+    let here = front_workspace()
+    return workspace.access.shares.filter(share -> share.workspace == here)
+}
+
+/// One part of the workspace shared out: what it is, with whom it is shared and what they may do,
+/// opening what it shares and, where the person may, taking the share back.
+view share_row(share: workspace.SharedOut) {
+    ui.ListRow(
+        share.what,
+        secondary: share_words(share),
+        icon: if share.holder_kind == "link" {
+            .link
+        } else if share.holder_kind == "agent" {
+            .sparkles
+        } else if share.holder_kind == "bot" {
+            .bot
+        } else if share.node == "" { .folder } else { .file_text },
+    ) {
+        on activate: if share.node.contains("resource:") {
+            open(resource(share.node, of: host.Resource))
+        } else if share.app != "" {
+            session.open_app(app: share.app)
+        } else { session.show_in_files(path: share.path) }
+        trailing: {
+            if share.can_revoke {
+                ui.Button("Take back", role: .destructive, size: .small) {
+                    on press: workspace.access.revoke(id: share.id)
+                }
+            }
+        }
+    }
+}
+
+/// With whom one part of the workspace is shared and what they may do there: a member, someone
+/// outside it, an agent, a bot or anyone holding the link, then read or write.
+fn share_words(share: workspace.SharedOut) -> Text {
+    let who = if share.holder_kind == "link" {
+        "anyone with the link"
+    } else if share.holder != "" {
+        share.holder
+    } else if share.holder_kind == "member" or share.holder_kind == "outside" {
+        "someone"
+    } else { "an unnamed {share.holder_kind}" }
+    let what = if share.access == "write" { "can edit" } else { "can view" }
+    if share.holder_kind == "outside" and share.holder != "" {
+        return "{who}, outside this workspace, {what}"
+    }
+    return "{who} {what}"
 }
 
 /// One strip: its windows as places leading to trailing, each at its share of the strip's

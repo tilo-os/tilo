@@ -2388,3 +2388,18 @@ d-farfsl4d-filter-leaving = Verlässt
 d-ohzicl6b = Gehendes Fenster
 
 d-q2ljncu4 = Gehender Platz
+
+d-jbsxxbyx = Von hier aus geteilt
+    .w-shared-out-of-here = Von hier aus geteilt
+    .w-shared-out = Von hier aus geteilt
+
+d-ndz2uyn2 = Freigabezeile
+    .w-take-back = Zurücknehmen
+
+d-73qaarxf = Freigabeangabe
+    .w-anyone-with-the-link = jeder mit dem Link
+    .w-someone = jemand
+    .w-an-unnamed = jemand ohne Namen
+    .w-can-edit = darf bearbeiten
+    .w-can-view = darf ansehen
+    .w-outside-this-workspace = { $who }, außerhalb dieses Arbeitsbereichs, { $what }
