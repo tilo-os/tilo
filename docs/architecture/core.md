@@ -991,18 +991,15 @@ Membership is the signed governance log in `tilo-peer-state`
 and grants decided by `action-policy` `WorkspacePolicy`. Beside it are six
 more membership records: `tilo-server-protocol` `WorkspaceRoles`, a
 second role vocabulary; the
-`tilo-workspace-service` `workspace.rs` `Membership` device list
-(`WorkspaceRuntime`, 2,004, used in 23 files); `workspace-join`
+host's copy of the list (`WorkspaceRuntime` `settle_members`, 54 lines); `workspace-join`
 `MemberList` and `MembershipProof` (3,173); `tilo-api` `store.rs` `Grant`
 with `collab_types::WorkspaceGrant`, the API server's own grant file;
 `apps/workspace_memberships`, a path for agents; and `PersonalStore`, which
 is not governed at all.
 
-There are two governors: `tilo-peer-state` `owner/` `NativeWorkspaceOwner`
-(19,843, "workspaces this device governs itself") and the workspace service
-as governor (`workspaces/authority.rs`, `own.rs`, `own_device.rs`), in which
-the server's own person administers every workspace it holds. "Governor"
-still appears in 347 Rust files.
+No device governs a workspace. A host still prunes expired page devices'
+rows and detaches servers as an administrator (`governance.rs`
+`forget_expired_devices`, 160 lines; `hosts.rs` detach, 16).
 
 Per-person stores still on `main`:
 
@@ -1067,7 +1064,7 @@ workspace vault, despite their names.
 
 | Delete | Size |
 |---|---|
-| The self-governing half of `NativeWorkspaceOwner` and the service's governor role, with `workspace.rs` `Membership`, `membership_watch` and the governed-access file: the relay admits the devices of the signed member list, and a hosting server acts in a workspace only by its administrator row there | ~13,500 |
+| The host's role in workspaces it keeps for others: its pruning of expired page devices' rows and its detach of a server, which become the owner's signed changes, and `WorkspaceRuntime`'s copy of the member list (`settle_members`, `admits_person`, `lists`), which reads the replica as `LinkFacts` does. A host is named among the workspace's hosts and holds no role there | ~250 |
 | `WorkspaceRoles.custom_roles` | to be measured |
 | `WorkspaceRuntime`'s live relay path (subscriber routing, presence, the live session, invocation replay), deleted in the push that carries live traffic over `tilo-peer-state` links | ~10,000–20,000 with `peer/` |
 | `tilo-api` grant file, `WorkspaceGrant`, `apps/workspace_memberships` | ~3,000 |
