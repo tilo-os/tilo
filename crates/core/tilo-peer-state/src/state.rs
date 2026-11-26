@@ -135,6 +135,8 @@ mod construction;
 mod durable;
 mod durable_before_call;
 pub(crate) use durable_before_call::frame_before_call;
+mod durable_before_own_removal;
+pub(crate) use durable_before_own_removal::frame_before_own_removal;
 mod written_under;
 pub use durable::DURABLE_VERSION;
 #[cfg(test)]

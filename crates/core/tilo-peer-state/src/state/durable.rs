@@ -17,8 +17,8 @@ use automerge::transaction::Transactable as _;
 
 /// The durable layout this build writes and reads. A change to what is
 /// stored bumps this: a build refuses state of another version by name
-/// rather than reading it as this one's, except the versions since
-/// [`RELABELLED`], which it brings up ([`brought_up`]).
+/// rather than reading it as this one's, except the versions from 10 on,
+/// which it brings up ([`brought_up`]).
 pub const DURABLE_VERSION: u32 = 19;
 
 /// The version before [`DURABLE_VERSION`]: the same layout, whose certificates may not be an
@@ -48,7 +48,8 @@ pub(super) const RELABELLED: u32 = 14;
 /// certificate version 15 wrote reads the same here. Version 14 differs from version 15 only in
 /// what a governance row may say of a device the workspace removed: version 15 marks the row,
 /// and there is no other byte of itself to change. Versions 13 and 12 come up through
-/// [`super::durable_before_call`], their writes kept.
+/// [`super::durable_before_call`], their writes kept, and versions 11 and 10 come up as version
+/// 12 through [`super::durable_before_own_removal`] first.
 pub(super) fn brought_up(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, String> {
     let (version, rest) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
     if (RELABELLED..=PREVIOUS).contains(&version) {
@@ -58,6 +59,17 @@ pub(super) fn brought_up(bytes: &[u8]) -> Result<std::borrow::Cow<'_, [u8]>, Str
         let mut kept = postcard::to_allocvec(&DURABLE_VERSION).map_err(err)?;
         kept.extend_from_slice(rest);
         return Ok(kept.into());
+    }
+    if super::durable_before_own_removal::BEFORE_OWN_REMOVAL.contains(&version) {
+        // Layouts 10 and 11, the released build's: written as layout 12 without the member's own
+        // records, then brought up as it is.
+        return super::durable_before_own_removal::brought_up(bytes, DURABLE_VERSION)
+            .map(Into::into)
+            .map_err(|error| {
+                format!(
+                    "this state is of durable layout {version} and does not read as it: {error}"
+                )
+            });
     }
     if super::durable_before_call::BEFORE_CALL.contains(&version) {
         // Layouts 12 and 13: their writes' claims name no call, and come up as this build's
@@ -953,6 +965,14 @@ type TailFields<'a> = (
     Option<&'a [u8]>,
 );
 
+/// Why a state of durable layout `version` does not read as that layout, as a person reads it.
+fn unreadable(version: u32, error: &str) -> String {
+    format!(
+        "this state is of durable layout {version} and does not read as it: {error}. Move the \
+         state directory aside, or start with an empty one"
+    )
+}
+
 /// One document's part of a durable encoding: its `DurableDocument`, and its
 /// entry of the sealed histories after every document, when it has one.
 #[derive(Clone, Debug)]
@@ -1040,12 +1060,26 @@ impl DurableParts {
     /// # Errors
     /// The bytes are not a durable encoding this build reads.
     pub(crate) fn read(bytes: &[u8]) -> Result<Self, String> {
+        let (version, _) = postcard::take_from_bytes::<u32>(bytes).map_err(err)?;
+        if super::durable_before_own_removal::BEFORE_OWN_REMOVAL.contains(&version) {
+            // A state of layout 10 or 11 is split as it was written: a journal its build appended
+            // beside it is a delta of these stretches, and replays against them before the state
+            // comes up whole.
+            return super::durable_before_own_removal::ReaderSets::first_read(
+                version,
+                |reader_sets| Self::read_as(bytes, Some(reader_sets)),
+            );
+        }
         let bytes = brought_up(bytes)?;
-        Self::read_today(&bytes)
+        Self::read_as(&bytes, None)
     }
 
-    /// [`Self::read`] of a state in this build's layout, as [`brought_up`] left it.
-    fn read_today(bytes: &[u8]) -> Result<Self, String> {
+    /// [`Self::read`] of a state in this build's layout, as [`brought_up`] left it, or, with
+    /// `before_own_removal`, of a state of layout 10 or 11 as it was written.
+    fn read_as(
+        bytes: &[u8],
+        before_own_removal: Option<super::durable_before_own_removal::ReaderSets>,
+    ) -> Result<Self, String> {
         fn take<'a, T: Deserialize<'a>>(rest: &mut &'a [u8]) -> Result<T, String> {
             let (value, after) = postcard::take_from_bytes(rest).map_err(|error| {
                 format!(
@@ -1063,7 +1097,12 @@ impl DurableParts {
         };
         let mut rest = bytes;
         let version: u32 = take(&mut rest)?;
-        if version != DURABLE_VERSION {
+        let written = if before_own_removal.is_some() {
+            super::durable_before_own_removal::BEFORE_OWN_REMOVAL.contains(&version)
+        } else {
+            version == DURABLE_VERSION
+        };
+        if !written {
             return Err(format!(
                 "this state is of durable layout {version}, and this build reads layout \
                  {DURABLE_VERSION}. Move the state directory aside, or start with an empty one"
@@ -1075,7 +1114,14 @@ impl DurableParts {
         let mut documents = crate::ordered::Ordered::default();
         for _ in 0..count {
             let from = at(rest);
-            let route = take::<DurableDocument>(&mut rest)?.route;
+            let route = if before_own_removal.is_some() {
+                let (route, after) = super::durable_before_own_removal::document(rest)
+                    .map_err(|error| unreadable(version, &error))?;
+                rest = after;
+                route
+            } else {
+                take::<DurableDocument>(&mut rest)?.route
+            };
             documents.insert(
                 route,
                 DocumentParts {
@@ -1085,12 +1131,23 @@ impl DurableParts {
             );
         }
         let tail_from = at(rest);
-        let _fields: TailFields<'_> = take(&mut rest)?;
+        if let Some(reader_sets) = before_own_removal {
+            rest = super::durable_before_own_removal::after_waiting(rest, reader_sets)
+                .map_err(|error| unreadable(version, &error))?;
+        } else {
+            let _fields: TailFields<'_> = take(&mut rest)?;
+        }
         let sealed: usize = take(&mut rest)?;
         let tail = part(tail_from, at(rest));
         for _ in 0..sealed {
             let from = at(rest);
-            let (route, _): (Route, Vec<collab_types::SignedOp>) = take(&mut rest)?;
+            // The sealed writes of a state of layout 10 or 11 are kept as their authors signed
+            // them, with claims that name no call.
+            let route = if before_own_removal.is_some() {
+                take::<(Route, Vec<collab_types::before_call::SignedOpBeforeCall>)>(&mut rest)?.0
+            } else {
+                take::<(Route, Vec<collab_types::SignedOp>)>(&mut rest)?.0
+            };
             let held: &mut DocumentParts = documents
                 .get_mut(&route)
                 .ok_or("a sealed history names a document the state does not hold")?;

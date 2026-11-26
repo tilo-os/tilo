@@ -416,7 +416,19 @@ fn write_at_13(key: &ed25519_dalek::SigningKey) -> (Vec<u8>, OpAt13, Vec<u8>) {
 /// A state of layout `version` (12 or 13) holding `write` for a prerequisite and `op` as its one
 /// record's sealed write, with the exact index `exact`, as those layouts wrote it.
 fn written_at_13(version: u32, write: &[u8], op: &OpAt13, exact: &[u8]) -> Vec<u8> {
-    let document = kept_document();
+    written_with(version, vec![kept_document()], None, write, op, exact)
+}
+
+/// [`written_at_13`] of `documents`, each followed by `own` when it is given: the member's own
+/// record layouts 10 and 11 kept with each document.
+fn written_with(
+    version: u32,
+    documents: Vec<DurableDocument>,
+    own: Option<&[u8]>,
+    write: &[u8],
+    op: &OpAt13,
+    exact: &[u8],
+) -> Vec<u8> {
     let certificates = vec![kept_certificate()];
     let revocations = vec![kept_revocation()];
     let receipts: BTreeMap<String, Vec<u8>> = BTreeMap::new();
@@ -425,7 +437,7 @@ fn written_at_13(version: u32, write: &[u8], op: &OpAt13, exact: &[u8]) -> Vec<u
         workspace: KEPT_WORKSPACE.into(),
         owner: [1; 32],
         workspace_bytes: Some(b"\x85\x6f\x4a\x83".to_vec()),
-        documents: vec![document],
+        documents,
         receipts: receipts.clone(),
         certificates: certificates.clone(),
         revocations: revocations.clone(),
@@ -444,6 +456,7 @@ fn written_at_13(version: u32, write: &[u8], op: &OpAt13, exact: &[u8]) -> Vec<u
     .unwrap();
     for document in &held.documents {
         bytes.extend(postcard::to_stdvec(document).unwrap());
+        bytes.extend_from_slice(own.unwrap_or_default());
     }
     bytes.extend(postcard::to_stdvec(&(&receipts, &certificates, &revocations, 1_usize)).unwrap());
     bytes.extend_from_slice(&[7; 32]);
@@ -604,5 +617,281 @@ tilo_test_env::scenario! {
         assert_eq!(reloaded.committed_document().queued_changes().count(), 0);
         let again = restore(&rewritten).unwrap();
         assert_eq!(again.workspace_heads(), Some(doc.get_heads()));
+    }
+}
+
+/// Bytes kept as hex in a fixture, as a test reads them: whitespace between them is the file's.
+fn fixture(hex: &str) -> Vec<u8> {
+    hex::decode(hex.split_whitespace().collect::<String>()).unwrap()
+}
+
+/// The released build's [`KEPT`], layout 10, as its own code wrote it: one document kept with the
+/// member's own record it is, one heartbeat waiting, a certificate with its issuer and a
+/// revocation.
+const KEPT_AT_10: &str = include_str!("fixtures/durable-10.hex");
+
+/// The released build's [`KEPT_SEALED`], layout 10, as its own code wrote it: [`KEPT_AT_10`] with
+/// an exact index and one record's sealed write.
+const KEPT_SEALED_AT_10: &str = include_str!("fixtures/durable-10-sealed.hex");
+
+/// A state the released build's own code wrote, layout 10: [`KEPT_AT_10`]'s document,
+/// certificate and revocation, a signed document write waiting to be sent that names the
+/// member's own record it is and claims one change by a person, a heartbeat waiting after it, the
+/// same signed write as record `so.tilo.chat`/`lounge`'s one sealed write, and an exact index
+/// naming that write by its bytes as the released build wrote them.
+const WRITES_AT_10: &str = include_str!("fixtures/durable-10-writes.hex");
+
+/// The record [`KEPT_AT_10`]'s document is: a member's own record of kind `settings.root`, named
+/// as the released build named it.
+const KEPT_AT_10_RECORD: &str = "uuid:6503160d-6aa1-8198-b766-107101e9a74a";
+
+tilo_test_env::scenario! {
+    /// What the released build kept of a workspace, layout 10, comes up as this build's layout:
+    /// every document, certificate, revocation, waiting write, exact admission and sealed write
+    /// it held, only the member's own record each document and write named dropped.
+    fn the_released_builds_kept_states_come_up_with_everything_they_held;
+
+    phase its_kept_state_comes_up;
+    {
+        let kept = fixture(KEPT_AT_10);
+        assert_eq!(postcard::take_from_bytes::<u32>(&kept).unwrap().0, 10);
+        let brought = brought_up(&kept).expect("layout 10 comes up");
+        let read = Durable::read(&brought, KEPT_WORKSPACE).expect("it reads as this build's layout");
+        assert_eq!(read.version, DURABLE_VERSION);
+        assert_eq!(read.owner, [1; 32]);
+        assert_eq!(read.workspace_bytes.as_deref(), Some(b"\x85\x6f\x4a\x83".as_slice()));
+        assert_eq!(read.documents.len(), 1);
+        let document = &read.documents[0];
+        assert_eq!(
+            (document.route.app.as_str(), document.route.record.as_str()),
+            ("so.tilo.settings", KEPT_AT_10_RECORD)
+        );
+        assert_eq!(document.bytes, b"\x85\x6f\x4a\x83");
+        assert_eq!(document.watermarks, vec![([3; 32], 4)]);
+        assert_eq!(read.certificates.len(), 1);
+        let certificate = &read.certificates[0];
+        assert_eq!(certificate.device_public_key, [4; 32]);
+        assert_eq!(certificate.device_label, "Framework 16");
+        assert!(certificate.capabilities.can_own_workspaces);
+        assert!(certificate.capabilities.browser_pages);
+        assert_eq!(
+            certificate.capabilities.agent,
+            Some(tilo_user_identity::AgentScope::Workspace([9; 16]))
+        );
+        assert_eq!(certificate.signature, [5; 64]);
+        let issuer = certificate.issuer.as_deref().expect("its issuer");
+        assert_eq!(issuer.device_public_key, [6; 32]);
+        assert!(issuer.capabilities.can_admit_devices);
+        assert_eq!(read.revocations.len(), 1);
+        assert_eq!(read.revocations[0].reason, tilo_user_identity::RevocationReason::Retired);
+        assert_eq!(read.revocations[0].revoked_device_public_key, [4; 32]);
+        assert_eq!(read.pending, kept_pending(), "the waiting write and its flag");
+        let measured = crate::postcard_sink::encoded_len(&read.pending[0].1, usize::MAX).unwrap();
+        assert_eq!(read.pending_bytes, measured, "the waiting bytes are counted as this build writes them");
+        assert!(read.exact.is_none());
+        assert!(read.sealed.is_empty());
+        // What this build keeps of it is what it would write of the same state.
+        assert_eq!(
+            brought.as_ref(),
+            postcard::to_stdvec(&Durable {
+                version: DURABLE_VERSION,
+                workspace: KEPT_WORKSPACE.into(),
+                owner: [1; 32],
+                workspace_bytes: Some(b"\x85\x6f\x4a\x83".to_vec()),
+                documents: vec![DurableDocument {
+                    route: Route {
+                        app: "so.tilo.settings".into(),
+                        record: KEPT_AT_10_RECORD.into(),
+                    },
+                    ..kept_document()
+                }],
+                receipts: BTreeMap::new(),
+                certificates: read.certificates.clone(),
+                revocations: read.revocations.clone(),
+                pending: kept_pending(),
+                pending_bytes: measured,
+                exact: None,
+                sealed: Vec::new(),
+            })
+            .unwrap()
+        );
+    }
+
+    phase its_kept_state_with_a_sealed_history_comes_up;
+    {
+        let kept = fixture(KEPT_SEALED_AT_10);
+        let brought = brought_up(&kept).expect("layout 10 comes up");
+        let read = Durable::read(&brought, KEPT_WORKSPACE).expect("it reads as this build's layout");
+        assert_eq!(read.documents.len(), 1);
+        assert_eq!(read.certificates.len(), 1);
+        assert_eq!(read.revocations.len(), 1);
+        assert_eq!(read.pending, kept_pending());
+        let index = crate::admission::ExactAdmissions::decode(read.exact.unwrap()).unwrap();
+        assert_eq!(index.len(), 1, "the exact index comes up");
+        assert_eq!(read.sealed.len(), 1, "the sealed history comes up");
+        let (route, writes) = &read.sealed[0];
+        assert_eq!((route.app.as_str(), route.record.as_str()), ("so.tilo.chat", "lounge"));
+        assert_eq!(writes.len(), 1);
+        assert_eq!(writes[0].payload, b"sealed");
+        assert_eq!(writes[0].author.as_bytes(), &[3; 32]);
+        assert_eq!(writes[0].seq, 4);
+    }
+
+    phase its_writes_come_up_and_verify_as_their_authors_signed_them;
+    {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+        let kept = fixture(WRITES_AT_10);
+        let brought = brought_up(&kept).expect("layout 10 comes up");
+        let read = Durable::read(&brought, KEPT_WORKSPACE).expect("it reads as this build's layout");
+        assert_eq!(read.pending.len(), 2, "every waiting write");
+        let ([7, ..], NeighbourMsg::AppDocument { app_id, document_id, envelope, readers, .. }, false) =
+            &read.pending[0]
+        else {
+            panic!("the first waiting write is the document write, not yet sent");
+        };
+        assert_eq!((app_id.as_str(), document_id.as_str()), ("so.tilo.notes", "uuid:1c2f"));
+        assert_eq!(*readers, None, "a write kept before reader sets names none");
+        assert_eq!(envelope.author.as_bytes(), &key.verifying_key().to_bytes());
+        assert_eq!(envelope.claims.len(), 1);
+        assert!(envelope.claims[0].invoker.is_some(), "its claim names who made it");
+        collab_types::verify_op(envelope).expect("the waiting write verifies as its author signed it");
+        assert_eq!(read.pending[1], ([8; 32], NeighbourMsg::Heartbeat { peer: 1, ts: 5 }, true));
+        let measured: usize = read
+            .pending
+            .iter()
+            .map(|(_, message, _)| crate::postcard_sink::encoded_len(message, usize::MAX).unwrap())
+            .sum();
+        assert_eq!(read.pending_bytes, measured, "the waiting bytes are counted as this build writes them");
+        assert_eq!(read.sealed.len(), 1);
+        let sealed = &read.sealed[0].1;
+        assert_eq!(sealed.len(), 1);
+        collab_types::verify_op(&sealed[0]).expect("the sealed write verifies as its author signed it");
+        assert_eq!(sealed[0].signature, envelope.signature, "its signature is its author's");
+        let index = crate::admission::ExactAdmissions::decode(read.exact.unwrap()).unwrap();
+        let now = crate::admission::DocumentAdmission::from_op(
+            KEPT_WORKSPACE,
+            "so.tilo.chat",
+            "lounge",
+            &sealed[0],
+        )
+        .unwrap();
+        assert_eq!(
+            index.get(&now.key),
+            Some(&now.operation_id),
+            "the exact index names the write by its bytes as this build writes them"
+        );
+    }
+
+    phase it_is_split_as_it_was_written;
+    // A journal the released build appended beside such a state is a delta of the stretches it
+    // split the state into, so a state of layout 10 is split as it was written and replays
+    // against them.
+    {
+        let kept = fixture(KEPT_AT_10);
+        let parts = DurableParts::read(&kept).expect("layout 10 splits as it was written");
+        assert_eq!(parts.to_vec(), kept, "its stretches are its bytes");
+        assert_eq!(parts.documents.len(), 1);
+        let route = Route {
+            app: "so.tilo.settings".into(),
+            record: KEPT_AT_10_RECORD.into(),
+        };
+        let document = parts.documents.get(&route).expect("its document's stretch");
+        let own = postcard::to_stdvec(&Some(("settings.root".to_owned(), [2_u8; 32]))).unwrap();
+        assert!(
+            document.document.concat().ends_with(&own),
+            "a document's stretch holds the own record it was written with"
+        );
+    }
+}
+
+tilo_test_env::scenario! {
+    /// A state of layout 11, or of layout 10 in either of its layouts, comes up as layout 12 of
+    /// the same state does: only the member's own record each document and waiting write named
+    /// goes.
+    fn a_state_kept_with_own_records_comes_up_as_it_would_without_them;
+
+    phase every_layout_comes_up_as_layout_12;
+    {
+        let key = ed25519_dalek::SigningKey::from_bytes(&[4; 32]);
+        let (write, op, _) = write_at_13(&key);
+        let exact = kept_exact();
+        // Two documents, in the order of their routes as every layout writes them: one of them
+        // the record the sealed write is of.
+        let documents = || {
+            vec![
+                DurableDocument {
+                    route: Route {
+                        app: "so.tilo.chat".into(),
+                        record: "lounge".into(),
+                    },
+                    ..kept_document()
+                },
+                kept_document(),
+            ]
+        };
+        let at_12 = written_with(12, documents(), None, &write, &op, &exact);
+        let today = brought_up(&at_12).expect("layout 12 comes up").into_owned();
+        let own = postcard::to_stdvec(&Some(("notes.page".to_owned(), [2_u8; 32]))).unwrap();
+        // The write ends with the reader set it names: none.
+        let (without_readers, readers) = write.split_at(write.len() - 1);
+        assert_eq!(readers, [0]);
+        let with_own_then_readers = [without_readers, &own, readers].concat();
+        let with_own = [without_readers, &own].concat();
+        for (version, kept_write) in [(11_u32, &with_own_then_readers), (10, &with_own_then_readers), (10, &with_own)] {
+            let kept = written_with(version, documents(), Some(&own), kept_write, &op, &exact);
+            let brought = brought_up(&kept).expect("the state comes up");
+            assert_eq!(brought.as_ref(), today.as_slice(), "layout {version} comes up as layout 12 does");
+            let parts = DurableParts::read(&kept).expect("it splits as it was written");
+            assert_eq!(parts.to_vec(), kept, "layout {version}: its stretches are its bytes");
+            assert_eq!(parts.documents.len(), 2);
+        }
+    }
+
+    phase a_device_state_kept_at_layout_10_restores_as_it_was;
+    {
+        let (peer, _, _, _, now) = crate::admission_tests::seeded();
+        let workspace = peer.workspace_id().to_owned();
+        let owner = peer.owner_certificates()[0].clone();
+        let restore = |bytes: &[u8]| {
+            StatePeer::restore(
+                bytes,
+                &workspace,
+                owner.clone(),
+                vec![owner.clone()],
+                RevocationList::new(),
+                now,
+            )
+        };
+        let today = peer.durable().unwrap();
+        let durable = Durable::read(&today, &workspace).unwrap();
+        assert!(durable.pending.is_empty() && durable.sealed.is_empty(), "a state of documents alone");
+        // As layout 10 wrote it: each document named the own record it was, here none.
+        let mut kept = postcard::to_stdvec(&(
+            10_u32,
+            &durable.workspace,
+            &durable.owner,
+            &durable.workspace_bytes,
+            durable.documents.len(),
+        ))
+        .unwrap();
+        for document in &durable.documents {
+            kept.extend(postcard::to_stdvec(document).unwrap());
+            kept.extend(postcard::to_stdvec(&None::<(String, [u8; 32])>).unwrap());
+        }
+        kept.extend(
+            postcard::to_stdvec(&(
+                &durable.receipts,
+                &durable.certificates,
+                &durable.revocations,
+                0_usize,
+                0_usize,
+                durable.exact,
+                &durable.sealed,
+            ))
+            .unwrap(),
+        );
+        let restored = restore(&kept).expect("a state kept at layout 10 restores");
+        assert_eq!(restored.durable().unwrap(), today, "it keeps what it held");
+        assert_eq!(restored.workspace_heads(), peer.workspace_heads());
     }
 }
