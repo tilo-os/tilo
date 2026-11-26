@@ -205,6 +205,9 @@ fn field_schema(meta: &Meta, field: &FieldMeta) -> FieldSchema {
         FieldKind::Counter => FieldSchema::new(&field.id, MergeKind::Counter),
         FieldKind::Text => FieldSchema::new(&field.id, MergeKind::Text),
         FieldKind::RichText => FieldSchema::new(&field.id, MergeKind::RichText),
+        // Bytes keep the content store's stored form, written whole: a composite register the
+        // runtime reads as `Bytes` by the field's kind.
+        FieldKind::Bytes => FieldSchema::new(&field.id, MergeKind::Register).composite(),
         FieldKind::Set => FieldSchema::new(&field.id, MergeKind::Set),
         FieldKind::Map => FieldSchema::new(&field.id, MergeKind::Map),
         FieldKind::Collection => {

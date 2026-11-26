@@ -71,6 +71,9 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         // filter and a view then agree on it.
         Ty::Text | Ty::Date | Ty::Time | Ty::Identifier => Value::text(""),
         Ty::RichText => Value::Rich(crate::rich::RichValue::default()),
+        // A record never given bytes reads as bytes of nothing: a view that counts its output
+        // before an engine wrote one counts none rather than failing to read.
+        Ty::Bytes => Value::Bytes(Rc::new(Vec::new())),
         // A file a record was never given reads as a file of nothing: a view that shows its
         // name before an action put one there shows no name rather than failing to open.
         Ty::File => Value::File(Rc::new(crate::blob::FileValue::new("", "", 0, ""))),
@@ -92,7 +95,6 @@ fn type_default(ty: &Ty) -> Result<Value, String> {
         | Ty::Filter(_)
         | Ty::Sort(_)
         | Ty::Result(..)
-        | Ty::Bytes
         | Ty::Response
         | Ty::Json
         | Ty::Error => {
@@ -423,10 +425,14 @@ impl Core {
         // its reading, as the session published it.
         if crate::foreign::is_foreign(target) {
             let registry = self.registry.borrow();
-            return self
-                .foreign
-                .borrow_mut()
-                .field(target, field, author, &registry);
+            let blobs = self.blobs.borrow();
+            return self.foreign.borrow_mut().field(
+                target,
+                field,
+                author,
+                &registry,
+                blobs.as_deref(),
+            );
         }
         let fv = match self.store.borrow().read(target, &spec(field)) {
             Ok(fv) => fv,
@@ -445,6 +451,9 @@ impl Core {
                         .to_owned(),
                 ),
                 FieldKind::RichText => FieldValue::Rich(crate::rich::RichValue::default()),
+                FieldKind::Bytes => {
+                    FieldValue::Bytes(crate::store::BytesData::Inline(Rc::new(Vec::new())))
+                }
                 FieldKind::Register => FieldValue::Absent,
             },
             Err(e) => return Err(e.to_string()),
@@ -566,6 +575,14 @@ impl Core {
             }),
             (FieldKind::Text, FieldValue::Text(t)) => Ok(Value::Text(t)),
             (FieldKind::RichText, FieldValue::Rich(r)) => Ok(Value::Rich(r)),
+            (FieldKind::Bytes, FieldValue::Bytes(data)) => self.bytes_value(data),
+            // A store that reads a record's bytes from what its key held (the platform's, at a
+            // past version) hands them as the stored form.
+            (FieldKind::Bytes, FieldValue::Scalar(Scalar::Json(json))) => {
+                crate::store::BytesData::from_json(&json)
+                    .and_then(|data| self.bytes_value(data))
+                    .map_err(|why| format!("`{}` of `{}`: {why}", field.name, target.id_string()))
+            }
             (FieldKind::Collection, FieldValue::Items(ids)) => {
                 let one = match inner_ty(&field.ty) {
                     Some(Ty::Union(_)) => None,
@@ -628,6 +645,41 @@ impl Core {
                 field.name
             )),
         }
+    }
+
+    /// The bytes of `data` as a value: the data itself, or what the device's content store holds
+    /// at the address it names.
+    pub(crate) fn bytes_value(&self, data: crate::store::BytesData) -> Result<Value, String> {
+        match data {
+            crate::store::BytesData::Inline(bytes) => Ok(Value::Bytes(bytes)),
+            crate::store::BytesData::Kept { hash, .. } => {
+                let held = self
+                    .blobs
+                    .borrow()
+                    .as_ref()
+                    .and_then(|blobs| blobs.read(&hash));
+                match held {
+                    Some(bytes) => Ok(Value::Bytes(Rc::new(bytes))),
+                    None => Err(format!("its bytes (`{hash}`) are not on this device yet")),
+                }
+            }
+        }
+    }
+
+    /// `v` (`Bytes`) as the field stores it: the data itself when it is small, else kept in the
+    /// device's content store, named by its hash and length.
+    pub(crate) fn bytes_data(&self, v: &Value) -> Result<crate::store::BytesData, String> {
+        let Value::Bytes(data) = v else {
+            return Err(format!("expected bytes, got {}", v.kind_name()));
+        };
+        Ok(crate::store::BytesData::of(data, || {
+            let kept = self
+                .blobs
+                .borrow()
+                .as_ref()
+                .and_then(|blobs| blobs.keep("bytes", "application/octet-stream", data).ok());
+            kept.map(|file| (file.hash, u64::try_from(data.len()).unwrap_or(u64::MAX)))
+        }))
     }
 
     fn keys_value(
@@ -950,6 +1002,10 @@ impl Core {
                     value: r.clone(),
                 },
                 other => return trap(format!("expected rich text, got {}", other.kind_name())),
+            },
+            FieldKind::Bytes => Mutation::SetBytes {
+                field: id,
+                data: self.bytes_data(v)?,
             },
             FieldKind::Counter => {
                 return trap("`=` on a counter field loses concurrent updates; use res_add");
@@ -1274,6 +1330,10 @@ impl Core {
                 (FieldKind::RichText, Value::Rich(r)) => Mutation::SetRich {
                     field: f.id.clone(),
                     value: r.clone(),
+                },
+                (FieldKind::Bytes, v @ Value::Bytes(_)) => Mutation::SetBytes {
+                    field: f.id.clone(),
+                    data: self.bytes_data(v)?,
                 },
                 _ => {
                     return trap(format!(

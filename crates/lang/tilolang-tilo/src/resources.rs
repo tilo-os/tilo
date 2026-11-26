@@ -37,10 +37,10 @@ use tilolang_runtime::Journal;
 use tilolang_runtime::ids::{Actor, DocId, FieldId, ItemId, RunId, TypeId};
 use tilolang_runtime::meta::{FieldKind, Meta, Ty};
 use tilolang_runtime::store::{
-    ANY_FIELD, Applied, ChangeNote, ChangeSummary, ClockField, DeliveryState, EffectEntry,
-    EffectState, FieldKey, FieldRead, FieldSpec, FieldValue, Link, LinkHow, Listing, Lit, Mutation,
-    NewResource, NextChange, PagedItems, Pred, RecordReach, Scalar, Settled, Store, StoreError,
-    SubId, Txn, Version, VersionKind, doc_of, field_json, field_of, ordered_cmp,
+    ANY_FIELD, Applied, BytesData, ChangeNote, ChangeSummary, ClockField, DeliveryState,
+    EffectEntry, EffectState, FieldKey, FieldRead, FieldSpec, FieldValue, Link, LinkHow, Listing,
+    Lit, Mutation, NewResource, NextChange, PagedItems, Pred, RecordReach, Scalar, Settled, Store,
+    StoreError, SubId, Txn, Version, VersionKind, doc_of, field_json, field_of, ordered_cmp,
 };
 use tilolang_runtime::value::ResourceRef;
 
@@ -799,6 +799,12 @@ impl ResourceStore {
             (FieldKind::RichText, None) => {
                 FieldValue::Rich(tilolang_runtime::rich::RichValue::default())
             }
+            // Bytes keep the content store's stored form: the data itself when small, else the
+            // address the store holds it at.
+            (FieldKind::Bytes, Some(json)) => {
+                FieldValue::Bytes(BytesData::from_json(json).map_err(StoreError::Invalid)?)
+            }
+            (FieldKind::Bytes, None) => FieldValue::Bytes(BytesData::Inline(Rc::new(Vec::new()))),
             (FieldKind::Map, Some(Json::Object(map))) => FieldValue::Entries(
                 map.iter()
                     .filter_map(|(key, value)| match field_of(value) {
@@ -3478,6 +3484,10 @@ impl ResourceStore {
             Mutation::SetRich { value, .. } => edits.push(Edit::Set {
                 field: name.clone(),
                 value: serde_json::to_value(value).map_err(backend)?,
+            }),
+            Mutation::SetBytes { data, .. } => edits.push(Edit::Set {
+                field: name.clone(),
+                value: data.to_json(),
             }),
             Mutation::AddCounter { delta, .. } => edits.push(Edit::Add {
                 field: name.clone(),
@@ -6205,6 +6215,7 @@ fn field_written(m: &Mutation) -> Option<String> {
         | Mutation::AddCounter { field, .. }
         | Mutation::SetText { field, .. }
         | Mutation::SetRich { field, .. }
+        | Mutation::SetBytes { field, .. }
         | Mutation::SetAdd { field, .. }
         | Mutation::SetRemove { field, .. }
         | Mutation::MapPut { field, .. }

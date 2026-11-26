@@ -709,6 +709,12 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         ),
         // Text read as a document, which is what it is.
         Value::Json(json) => (**json).clone(),
+        // Bytes as the data itself: a value a field keeps or a reading carries, never an address
+        // (the record's own store writes the address in [`crate::store::BytesData`]).
+        Value::Bytes(bytes) => tagged(
+            "inline",
+            Json::Array(bytes.iter().map(|b| Json::from(*b)).collect()),
+        ),
         Value::Node(_)
         | Value::Coll(_)
         | Value::Event
@@ -718,7 +724,6 @@ pub fn to_json(v: &Value) -> Result<Json, String> {
         | Value::AtEvent { .. }
         | Value::Map(_)
         | Value::Offered(_)
-        | Value::Bytes(_)
         | Value::Response(_)
         | Value::Missing => {
             return Err(format!("a {} cannot be stored", v.kind_name()));
@@ -865,6 +870,11 @@ fn from_json_object(m: &Map<String, Json>) -> Result<Value, String> {
     }
     if let Some(items) = m.get("tuple") {
         return Ok(Value::Tuple(from_json_items(items)?));
+    }
+    if let Some(data) = m.get("inline") {
+        let bytes: Vec<u8> = serde_json::from_value(data.clone())
+            .map_err(|error| format!("inline bytes are not a list of bytes: {error}"))?;
+        return Ok(Value::Bytes(Rc::new(bytes)));
     }
     if let Some(inner) = m.get("some") {
         return Ok(Value::some(from_json(inner)?));

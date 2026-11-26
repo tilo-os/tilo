@@ -408,6 +408,32 @@ fn scalar_at(doc: &AutoCommit, obj: &ObjId, key: &str) -> Result<Option<Scalar>,
     }
 }
 
+/// The bytes `key` holds, in the stored form [`crate::store::BytesData::to_json`] writes: the
+/// reference store keeps every value in the document, so the form is the document's own JSON.
+fn bytes_at(
+    doc: &AutoCommit,
+    obj: &ObjId,
+    key: &str,
+) -> Result<Option<crate::store::BytesData>, StoreError> {
+    match doc.get(obj, key).map_err(backend)? {
+        Some((Value::Scalar(v), _)) => match v.as_ref() {
+            ScalarValue::Bytes(bytes) => {
+                let json: Json = serde_json::from_slice(bytes).map_err(backend)?;
+                crate::store::BytesData::from_json(&json)
+                    .map(Some)
+                    .map_err(StoreError::Invalid)
+            }
+            other => Err(StoreError::Invalid(format!(
+                "field `{key}` is no bytes: {other:?}"
+            ))),
+        },
+        Some((Value::Object(_), _)) => Err(StoreError::Invalid(format!(
+            "field `{key}` holds an object, expected bytes"
+        ))),
+        None => Ok(None),
+    }
+}
+
 fn read_field(doc: &AutoCommit, obj: &ObjId, field: &FieldSpec) -> Result<FieldValue, StoreError> {
     let key = field.id.as_str();
     match field.kind {
@@ -434,6 +460,10 @@ fn read_field(doc: &AutoCommit, obj: &ObjId, field: &FieldSpec) -> Result<FieldV
             Some(rich) => crate::rich::read_under(doc, &rich),
             None => crate::rich::RichValue::default(),
         })),
+        FieldKind::Bytes => Ok(FieldValue::Bytes(
+            bytes_at(doc, obj, key)?
+                .unwrap_or_else(|| crate::store::BytesData::Inline(Rc::new(Vec::new()))),
+        )),
         FieldKind::Collection => Err(StoreError::Invalid(format!(
             "collection `{key}` is read from its items' placements"
         ))),
@@ -476,7 +506,7 @@ fn init_fields(
         let key = f.id.as_str();
         match f.kind {
             // A collection is its items' placements; nothing of it is stored with its holder.
-            FieldKind::Register | FieldKind::Collection => {}
+            FieldKind::Register | FieldKind::Collection | FieldKind::Bytes => {}
             FieldKind::Counter => doc
                 .put(obj, key, ScalarValue::counter(0))
                 .map_err(backend)?,
@@ -544,6 +574,7 @@ fn field_of(m: &Mutation) -> Option<&FieldId> {
         | Mutation::AddCounter { field, .. }
         | Mutation::SetText { field, .. }
         | Mutation::SetRich { field, .. }
+        | Mutation::SetBytes { field, .. }
         | Mutation::CollInsert { field, .. }
         | Mutation::CollRemove { field, .. }
         | Mutation::CollMove { field, .. }
@@ -721,6 +752,11 @@ impl Inner {
             Mutation::SetRich { field, value } => {
                 let rich = crate::rich::ensure_field(doc, &obj, field).map_err(backend)?;
                 crate::rich::store_under(doc, &rich, value).map_err(backend)?;
+            }
+            Mutation::SetBytes { field, data } => {
+                let json = serde_json::to_vec(&data.to_json()).map_err(backend)?;
+                doc.put(&obj, field.as_str(), ScalarValue::Bytes(json))
+                    .map_err(backend)?;
             }
             Mutation::SetAdd { field, key } => {
                 let set = require_child(doc, &obj, field)?;

@@ -4331,11 +4331,19 @@ impl Checker<'_> {
                     Ty::RichText,
                 )
             }
-            // The body of a response, and bytes, read as their text; bytes counted.
+            // The body of a response, and bytes, read as their text; bytes counted, and asked
+            // whether they hold nothing.
             (Ty::Response | Ty::Bytes, "text") if args.is_empty() => {
                 Ex::host(Imp::WebText, vec![r], Ty::Text)
             }
             (Ty::Bytes, "len") if args.is_empty() => Ex::host(Imp::BytesLength, vec![r], Ty::Int),
+            (Ty::Bytes, "is_empty") if args.is_empty() => {
+                let len = Ex::host(Imp::BytesLength, vec![r], Ty::Int);
+                Ex::new(
+                    Ek::Bin(ir::BinOp::Eq, Box::new(len), Box::new(Ex::int(0))),
+                    Ty::Bool,
+                )
+            }
             // A file: what it is called, its media type, its size, where its bytes are, and its
             // content as text.
             (Ty::File, "name" | "media" | "url") if args.is_empty() => {

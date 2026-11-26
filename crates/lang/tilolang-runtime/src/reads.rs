@@ -651,7 +651,8 @@ impl Core {
         let fields = Self::text_fields(info);
         let values = {
             let registry = self.registry.borrow();
-            crate::foreign::Foreign::values(target, info, reading, &registry)
+            let blobs = self.blobs.borrow();
+            crate::foreign::Foreign::values(target, info, reading, &registry, blobs.as_deref())
         };
         let mut parts = Vec::new();
         let mut others = Vec::new();

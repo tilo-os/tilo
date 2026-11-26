@@ -47,6 +47,109 @@ pub struct FieldSpec {
     pub kind: FieldKind,
 }
 
+/// The bytes of a [`FieldValue::Bytes`]: the data itself when it is small, or where the
+/// device's content store keeps it.
+///
+/// A value is inline up to [`BYTES_INLINE_LIMIT`]; larger data is kept once in the content
+/// store and the record names it by its hash and length, so a replica keeps the reference and
+/// the bytes travel once.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum BytesData {
+    /// The data itself, at most [`BYTES_INLINE_LIMIT`] bytes.
+    Inline(Rc<Vec<u8>>),
+    /// Data kept in the device's content store: its BLAKE3 hash in hex, and how many bytes.
+    Kept {
+        /// The content's address, as the store's [`BlobHost`](crate::blob::BlobHost) reads it.
+        hash: String,
+        /// How many bytes the data is.
+        len: u64,
+    },
+}
+
+/// Bytes up to this size live inside the record; larger ones are kept by the content store.
+pub const BYTES_INLINE_LIMIT: usize = 1024;
+
+impl BytesData {
+    /// `data` inside the record when it is small, else [`BytesData::Kept`] of `kept` (its hash
+    /// and length): what a writer that kept it already names it by.
+    #[must_use]
+    pub fn of(data: &[u8], kept: impl FnOnce() -> Option<(String, u64)>) -> Self {
+        if data.len() <= BYTES_INLINE_LIMIT {
+            return Self::Inline(Rc::new(data.to_vec()));
+        }
+        kept().map_or_else(
+            || Self::Inline(Rc::new(data.to_vec())),
+            |(hash, len)| Self::Kept { hash, len },
+        )
+    }
+
+    /// The bytes as JSON, in the content store's stored form: `null` for none, `{"inline":
+    /// [bytes]}` for data inside the record, and `blake3:<hash>:<len>` for data kept by the
+    /// content store. The form `tilo_resource::Bytes` writes and reads.
+    #[must_use]
+    pub fn to_json(&self) -> Json {
+        match self {
+            Self::Inline(data) if data.is_empty() => Json::Null,
+            Self::Inline(data) => serde_json::json!({ "inline": data }),
+            Self::Kept { hash, len } => Json::String(format!("blake3:{hash}:{len}")),
+        }
+    }
+
+    /// The bytes `json` names, in the stored form [`Self::to_json`] writes.
+    ///
+    /// # Errors
+    ///
+    /// A shape that is no bytes.
+    pub fn from_json(json: &Json) -> Result<Self, String> {
+        match json {
+            Json::Null => Ok(Self::Inline(Rc::new(Vec::new()))),
+            Json::Object(fields) => {
+                let data: Vec<u8> = fields
+                    .get("inline")
+                    .cloned()
+                    .map(serde_json::from_value)
+                    .transpose()
+                    .map_err(|error| format!("inline bytes are not a list of bytes: {error}"))?
+                    .unwrap_or_default();
+                Ok(Self::Inline(Rc::new(data)))
+            }
+            Json::String(text) => {
+                let rest = text
+                    .strip_prefix("blake3:")
+                    .ok_or_else(|| format!("`{text}` is no content reference"))?;
+                let mut parts = rest.splitn(3, ':');
+                let hash = parts
+                    .next()
+                    .filter(|hash| hash.len() == 64)
+                    .ok_or_else(|| format!("`{text}` is no content reference"))?;
+                let len = parts
+                    .next()
+                    .and_then(|len| len.parse().ok())
+                    .ok_or_else(|| format!("`{text}` is no content reference"))?;
+                Ok(Self::Kept {
+                    hash: hash.to_owned(),
+                    len,
+                })
+            }
+            other => Err(format!("{other} is no bytes")),
+        }
+    }
+
+    /// How many bytes it is, without reading data the content store holds.
+    #[must_use]
+    pub fn len(&self) -> u64 {
+        match self {
+            Self::Inline(data) => u64::try_from(data.len()).unwrap_or(u64::MAX),
+            Self::Kept { len, .. } => *len,
+        }
+    }
+
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 /// A predicate over the items of a collection, which [`Store::listing_where`] answers (see
 /// [`tilolang::pred`]).
 pub type Pred = tilolang::pred::Pred<FieldRead>;
@@ -109,6 +212,8 @@ pub fn lit_of(id: &str, value: FieldValue, absent: &Lit) -> Result<Lit, StoreErr
         FieldValue::Scalar(Scalar::Text(t)) | FieldValue::Text(t) => Ok(Lit::Text(t)),
         // What rich text says depends on who reads it (its references): a filter compares none.
         FieldValue::Rich(_) => Err(invalid(&"rich text")),
+        // Bytes are compared by nothing a filter reads.
+        FieldValue::Bytes(_) => Err(invalid(&"bytes")),
         FieldValue::Scalar(Scalar::Json(j)) => Lit::of_json(&j).ok_or_else(|| invalid(&j)),
         FieldValue::Keys(keys) => Ok(Lit::Set(keys.into_iter().map(Lit::Text).collect())),
         FieldValue::Items(items) => Ok(Lit::Int(i64::try_from(items.len()).unwrap_or(i64::MAX))),
@@ -217,8 +322,9 @@ impl FieldRead {
         let absent = match kind {
             FieldKind::Counter | FieldKind::Collection => Lit::Int(0),
             FieldKind::Text | FieldKind::RichText => Lit::Text(String::new()),
+            // Bytes and maps are no filter's field.
+            FieldKind::Bytes | FieldKind::Map => return None,
             FieldKind::Set => Lit::Set(Vec::new()),
-            FieldKind::Map => return None,
             FieldKind::Register => match default {
                 Some(json) => Lit::of_json(json)?,
                 None => match ty {
@@ -284,6 +390,12 @@ pub enum Mutation {
     SetRich {
         field: FieldId,
         value: crate::rich::RichValue,
+    },
+    /// Replace the bytes, written whole: the data itself when small, else the content store's
+    /// address of it.
+    SetBytes {
+        field: FieldId,
+        data: BytesData,
     },
     /// Insert a new item; `index` of `None` appends.
     CollInsert {
@@ -361,6 +473,8 @@ pub enum FieldValue {
     Text(String),
     /// A rich text's paragraphs.
     Rich(crate::rich::RichValue),
+    /// Bytes, inside the record or named by the content store.
+    Bytes(BytesData),
     /// Collection items in order.
     Items(Vec<ItemId>),
     /// Set elements, sorted.
@@ -2276,6 +2390,7 @@ pub fn field_json(value: &FieldValue) -> Json {
         FieldValue::Counter(count) => serde_json::json!({"counter": count}),
         FieldValue::Text(text) => serde_json::json!({"text": text}),
         FieldValue::Rich(rich) => serde_json::json!({"rich": rich}),
+        FieldValue::Bytes(data) => serde_json::json!({"bytes": data.to_json()}),
         FieldValue::Items(items) => serde_json::json!({"items": items}),
         FieldValue::Keys(keys) => serde_json::json!({"keys": keys}),
         FieldValue::Entries(entries) => serde_json::json!({
@@ -2305,6 +2420,7 @@ pub fn field_of(json: &Json) -> Result<FieldValue, String> {
         "rich" => FieldValue::Rich(
             serde_json::from_value::<crate::rich::RichValue>(value.clone()).map_err(|_| bad())?,
         ),
+        "bytes" => FieldValue::Bytes(BytesData::from_json(value)?),
         "items" | "keys" => {
             let texts = value
                 .as_array()

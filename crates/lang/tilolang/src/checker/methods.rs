@@ -194,7 +194,7 @@ pub fn described(ty: &Ty) -> String {
              text, markdown, references, people)"
                 .to_owned()
         }
-        Ty::Bytes => "text, len".to_owned(),
+        Ty::Bytes => "text, len, is_empty".to_owned(),
         Ty::File => {
             "text, files, here, image_info, cropped, turned, resized, encoded, thumbnail (and the \
              members name, media, size, url, path)"

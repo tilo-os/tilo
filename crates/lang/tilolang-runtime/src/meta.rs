@@ -24,6 +24,10 @@ pub enum FieldKind {
     Collection,
     Set,
     Map,
+    /// Binary data (`Bytes`): the bytes themselves when small, else the content store's address
+    /// of them, written whole. Last, so the kinds a compact encoding names by their place keep
+    /// theirs.
+    Bytes,
 }
 
 /// Parse a type as written in metadata; unqualified record names belong to `app`.
@@ -38,6 +42,7 @@ pub fn field_kind(field: &FieldMeta, ty: &Ty) -> FieldKind {
         (Ty::Set(_), _) => FieldKind::Set,
         (Ty::Map(_), _) => FieldKind::Map,
         (Ty::RichText, _) => FieldKind::RichText,
+        (Ty::Bytes, _) => FieldKind::Bytes,
         (_, MergeKind::Counter) => FieldKind::Counter,
         (_, MergeKind::Text) => FieldKind::Text,
         (_, MergeKind::Register | MergeKind::Structural) => FieldKind::Register,

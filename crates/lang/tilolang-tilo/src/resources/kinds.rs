@@ -52,9 +52,11 @@ impl FieldEntry {
         match self.kind {
             FieldKind::Register | FieldKind::Text => kinds.scalar(&self.ty),
             FieldKind::Set => true,
-            FieldKind::Counter | FieldKind::RichText | FieldKind::Collection | FieldKind::Map => {
-                false
-            }
+            FieldKind::Counter
+            | FieldKind::RichText
+            | FieldKind::Bytes
+            | FieldKind::Collection
+            | FieldKind::Map => false,
         }
     }
 }

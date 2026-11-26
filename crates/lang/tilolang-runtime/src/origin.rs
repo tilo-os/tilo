@@ -377,6 +377,10 @@ impl Runtime {
                     field: f.id.clone(),
                     value,
                 }],
+                (FieldKind::Bytes, v @ Value::Bytes(_)) => vec![Mutation::SetBytes {
+                    field: f.id.clone(),
+                    data: self.core.bytes_data(&v).map_err(RuntimeError::BadArgs)?,
+                }],
                 (FieldKind::Counter, Value::Int(want)) => {
                     let spec = FieldSpec {
                         id: f.id.clone(),

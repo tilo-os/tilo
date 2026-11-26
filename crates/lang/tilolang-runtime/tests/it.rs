@@ -16,6 +16,8 @@ mod abi_parity;
 mod authority;
 #[path = "boundaries.rs"]
 mod boundaries;
+#[path = "bytes.rs"]
+mod bytes;
 #[path = "calendar.rs"]
 mod calendar;
 #[path = "clipboard.rs"]

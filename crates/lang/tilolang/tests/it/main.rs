@@ -10,6 +10,7 @@ mod abi_additions;
 mod actor;
 mod agent;
 mod blocks;
+mod bytes;
 mod calendar_origins;
 mod capture;
 mod common;

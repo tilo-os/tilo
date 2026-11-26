@@ -23,7 +23,7 @@ use tilo_actions::api::{PlacedAction, survey_placed_level};
 use tilolang_runtime::ids::Actor;
 use tilolang_runtime::meta::{ActionMeta, FieldKind, Meta, Ty, TypeMeta};
 use tilolang_runtime::store::{
-    ANY_FIELD, ChangeNote, FieldSpec, FieldValue, Listing, Mutation, Scalar, Store as _,
+    ANY_FIELD, BytesData, ChangeNote, FieldSpec, FieldValue, Listing, Mutation, Scalar, Store as _,
 };
 use tilolang_runtime::value::ResourceRef;
 use tilolang_runtime::words::Words;
@@ -2401,6 +2401,13 @@ pub fn edit_action(
         (FieldKind::Register, value) => Mutation::SetRegister {
             field: field_id.clone(),
             value: scalar_of(value),
+        },
+        // Bytes as the stored form names them: the data itself when small, else the content
+        // store's address of it, which the invoking side kept.
+        (FieldKind::Bytes, value) => Mutation::SetBytes {
+            field: field_id.clone(),
+            data: BytesData::from_json(value)
+                .map_err(|why| format!("the field `{field}` takes bytes: {why}"))?,
         },
         // A rich text comes as its words, a paragraph a line, or as the runtime's encoding of
         // it where it carries more than words.

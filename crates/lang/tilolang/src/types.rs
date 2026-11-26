@@ -79,8 +79,10 @@ pub enum Ty {
     /// Formatted text with references to resources, held as tilo-doc's rich text. A field of it
     /// merges by splices and marks.
     RichText,
-    /// The answer of a service as it came; `.text()` reads it as text. A value a run holds, not a
-    /// field's type.
+    /// Binary data: a run's answer as it came, a file's content read whole. A field of it keeps
+    /// the bytes small values inside the record, larger ones by the content store's address; a
+    /// field of it merges as one value and is written whole. `.text()` reads it as text and
+    /// `.len()` counts it.
     Bytes,
     /// What `web.get` and `web.post` answer: `ok`, `status`, `status_text`, `headers`, `body:
     /// Bytes`, `duration_ms`, and `.text()`. A value a run holds, not a field's type.
@@ -462,10 +464,7 @@ pub fn named(dotted: &[&str]) -> Option<Ty> {
 /// holds.
 #[must_use]
 pub fn is_transient(ty: &Ty) -> bool {
-    matches!(
-        ty,
-        Ty::Action | Ty::View | Ty::Bytes | Ty::Response | Ty::Json
-    )
+    matches!(ty, Ty::Action | Ty::View | Ty::Response | Ty::Json)
 }
 
 /// Whether `ty` is a JSON document or holds one anywhere inside it (`List<json.Value>`,

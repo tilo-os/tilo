@@ -187,6 +187,25 @@ A resource's document body is its `RichText` field, whether it is kept as `RichT
 paragraphs, lists, quotes, tables and code kept as such) or as `Text` (the body kept as
 Markdown); the document's own view places the editor for it, `ui.BlockEditor(bind: note.body)`.
 
+## Binary data
+
+A `Bytes` field holds binary data: a command's output, a capture, an attachment. Small values
+stay inside the record; larger ones are kept in the device's content store and the record holds
+their address, so they travel once and sync like the rest of it. A field of it is written whole,
+last writer wins, and reads back as the bytes it holds:
+
+```
+type Run {
+    output: Bytes
+}
+
+action took(r: Run, data: Bytes) { r.output = data }
+```
+
+`b.len()` counts its bytes, `b.is_empty()` whether it holds none, and `b.text()` reads it as
+text, lossily where it is not UTF-8. Bytes come from what a run holds (`file.bytes()`, a
+response's `body`, `Bytes.from_base64(text)`); the language has no other byte operations.
+
 ## Opening files
 
 An action that takes a `File` says which kinds of file open the app with it:

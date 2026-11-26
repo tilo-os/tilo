@@ -183,9 +183,13 @@ impl Core {
                 let items = {
                     let author = self.frames.borrow().top()?.module.clone();
                     let registry = self.registry.borrow();
-                    self.foreign
-                        .borrow_mut()
-                        .listed(&key, Some(&author), &registry)?
+                    let blobs = self.blobs.borrow();
+                    self.foreign.borrow_mut().listed(
+                        &key,
+                        Some(&author),
+                        &registry,
+                        blobs.as_deref(),
+                    )?
                 };
                 self.query_foreign(items, &pred, order.as_ref())
             }

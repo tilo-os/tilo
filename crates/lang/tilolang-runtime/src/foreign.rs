@@ -204,6 +204,7 @@ impl Foreign {
         info: &crate::registry::TypeInfo,
         reading: &Json,
         registry: &Registry,
+        blobs: Option<&dyn crate::blob::BlobHost>,
     ) -> BTreeMap<String, Result<Value, String>> {
         let mut values = BTreeMap::new();
         for f in &info.fields {
@@ -213,6 +214,7 @@ impl Foreign {
             let mut decoder = Decoder {
                 author: None,
                 registry,
+                blobs,
                 base: target.id_string(),
                 steps: Vec::new(),
                 records: Vec::new(),
@@ -613,6 +615,7 @@ impl Foreign {
         field: &crate::registry::FieldInfo,
         author: Option<&ModuleHash>,
         registry: &Registry,
+        blobs: Option<&dyn crate::blob::BlobHost>,
     ) -> Result<Value, String> {
         let at = Self::key(target);
         // What the host holds of it, now: a program reading a resource its session publishes
@@ -684,6 +687,7 @@ impl Foreign {
             let mut decoder = Decoder {
                 author,
                 registry,
+                blobs,
                 base: target.id_string(),
                 steps: base,
                 records: Vec::new(),
@@ -714,6 +718,7 @@ impl Foreign {
         key: &TypeKey,
         author: Option<&ModuleHash>,
         registry: &Registry,
+        blobs: Option<&dyn crate::blob::BlobHost>,
     ) -> Result<Vec<Value>, String> {
         let target = listing_of(&format!("{}#{}", key.app, key.name));
         let at = Self::key(&target);
@@ -735,6 +740,7 @@ impl Foreign {
             let mut decoder = Decoder {
                 author,
                 registry,
+                blobs,
                 base: target.id_string(),
                 steps: Vec::new(),
                 records: Vec::new(),
@@ -1129,6 +1135,9 @@ impl FailedViews {
 struct Decoder<'a> {
     author: Option<&'a ModuleHash>,
     registry: &'a Registry,
+    /// The device's content store, for bytes a reading names by address: none where the reader
+    /// keeps no content.
+    blobs: Option<&'a dyn crate::blob::BlobHost>,
     /// The id of the record the field read belongs to: what a record without an id of its own
     /// is named after.
     base: String,
@@ -1212,12 +1221,21 @@ impl Decoder<'_> {
                 encoded => crate::value::from_json(encoded),
             },
             Ty::Result(..) | Ty::RichText => crate::value::from_json(json),
+            // Bytes as the stored form a reading carries: the data itself when small, else the
+            // content store's address, read here when this device holds it.
+            Ty::Bytes => crate::store::BytesData::from_json(json).and_then(|data| match data {
+                crate::store::BytesData::Inline(bytes) => Ok(Value::Bytes(bytes)),
+                crate::store::BytesData::Kept { hash, .. } => self
+                    .blobs
+                    .and_then(|blobs| blobs.read(&hash))
+                    .map(|bytes| Value::Bytes(Rc::new(bytes)))
+                    .ok_or_else(|| format!("the bytes (`{hash}`) are not on this device")),
+            }),
             Ty::Map(inner) => self.map(json, inner),
             Ty::Action
             | Ty::View
             | Ty::Choice(_)
             | Ty::Sort(_)
-            | Ty::Bytes
             | Ty::Response
             | Ty::Json
             | Ty::File
