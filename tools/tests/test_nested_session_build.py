@@ -32,6 +32,38 @@ class NestedSessionBuildEnvRuntimeTests(unittest.TestCase):
         self.assertEqual(result.returncode, 1, result.stderr)
         self.assertIn(MESSAGE, result.stderr)
 
+    def test_a_person_s_default_build_comes_from_t_and_compiles_nothing_here(self):
+        # A fake `t` answers `t outputs nested-session --to DIR` the way t lays a check's
+        # outputs out; no cargo is on PATH, so a build here would fail.
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            bin_dir = work / "bin"
+            bin_dir.mkdir()
+            (bin_dir / "t").write_text(
+                "#!/bin/bash\n"
+                '[[ $1 == outputs && $2 == nested-session && $3 == --to ]] || exit 9\n'
+                'mkdir -p "$4/target/nested-session/bin" && echo built > "$4/target/nested-session/bin/tilo-session"\n'
+            )
+            (bin_dir / "t").chmod(0o755)
+            for tool in ("bash", "find", "mkdir", "rm", "mv", "dirname", "realpath", "uname", "cat"):
+                found = subprocess.run(["bash", "-c", f"command -v {tool}"], capture_output=True,
+                                       text=True, check=True).stdout.strip()
+                (bin_dir / tool).symlink_to(found)
+            environment = {"PATH": str(bin_dir), "HOME": directory,
+                           "CARGO_TARGET_DIR": str(work / "target")}
+            out = work / "session"
+            result = subprocess.run(
+                ["bash", "dist/dev/nested-session-build.sh", str(out)],
+                cwd=ROOT,
+                env=environment,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual((out / "bin" / "tilo-session").read_text(), "built\n")
+            self.assertFalse((work / "target" / "nested-session.fetching").exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -56,6 +56,29 @@ if [[ -n ${TILO_ENV_RUNTIME_TREES:-} ]]; then
         || { echo "no env-runtime tree for $arch in $env_runtime_trees" >&2; exit 1; }
 fi
 target=$(realpath -m "${CARGO_TARGET_DIR:-target}")
+# A person's checkout with t at hand takes the whole build from the `nested-session` check, which
+# builds this default app set on t from the tree as it stands here, local edits included, and
+# answers at once when nothing it reads changed. Nothing compiles on this machine, and the
+# build is the one every other checkout of this state shares. A build of other apps
+# (TILO_NESTED_APPS) is made below.
+if [[ -z ${T_RUN_ID:-}${T_COMMIT:-} && -z $env_runtime_trees && -z ${TILO_NESTED_APPS+set} ]] \
+    && command -v t >/dev/null; then
+    out=${out:-$target/nested-session}
+    fetched=$target/nested-session.fetching
+    rm -rf "$fetched"
+    mkdir -p "$fetched"
+    echo "==> building the session on t (the nested-session check)" >&2
+    t outputs nested-session --to "$fetched" >&2 \
+        || { echo "t gave no session build; see \`t log nested-session\`" >&2; exit 1; }
+    built=$(find "$fetched" -type d -name nested-session -print -quit)
+    [[ -n $built && -d $built/bin ]] || { echo "no session build in what t gave ($fetched)" >&2; exit 1; }
+    rm -rf "$out"
+    mkdir -p "$(dirname "$out")"
+    mv "$built" "$out"
+    rm -rf "$fetched"
+    echo "==> the session build is in $out" >&2
+    exit 0
+fi
 if [[ -z $env_runtime_trees ]]; then
     # A person's checkout takes the tree that check published for this commit, through t,
     # which builds it first if no run has: one command, `cargo headless`, works from a
