@@ -1100,6 +1100,7 @@ impl App {
             |request_id, request| made = Some((request_id, request)),
         )?;
         if let Some((request_id, request)) = made {
+            self.note_started_window_invocation(request.invocation, address);
             self.actions
                 .broker_requests
                 .insert(BrokerReply::Receipt(request.invocation), request_id);
@@ -1577,6 +1578,7 @@ impl App {
                 self.actions
                     .local_invocations
                     .insert(id, (target.address.address.clone(), kind));
+                self.note_started_window_invocation(id, &target.address.address);
             }
         }
         Ok(started)
@@ -1697,6 +1699,77 @@ impl App {
             self.dispatch_semantic_click(at.x, at.y);
         }
         Ok(started)
+    }
+
+    #[cfg(feature = "model")]
+    /// The invocation this window's own last call went out as, and the address it names: what a
+    /// caller that did not go through the broker's own receipt reads that call's answer by
+    /// ([`Self::window_invocation_answer`]). Taken, so a caller reads the call it made and never
+    /// one a press beside it made.
+    pub fn take_started_window_invocation(
+        &mut self,
+    ) -> Option<(tilo_actions::InvocationId, tilo_actions::ActionAddress)> {
+        self.actions.started_window_invocation.take()
+    }
+
+    #[cfg(feature = "model")]
+    /// Note the invocation this window's call `address` went out as, and the address it names,
+    /// for a caller that reads its answer ([`Self::take_started_window_invocation`]).
+    fn note_started_window_invocation(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        address: &tilo_actions::ActionAddress,
+    ) {
+        self.actions.started_window_invocation = Some((invocation, address.clone()));
+    }
+
+    #[cfg(feature = "model")]
+    /// Keep what the call `invocation` ended as, for a caller that could not wait where it
+    /// invoked ([`Self::take_window_invocation_answer`]): the most recent [`runtime::ANSWERS_KEPT`].
+    pub(super) fn keep_window_answer(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        update: &tilo_actions::InvocationUpdate,
+    ) {
+        self.actions
+            .window_answers
+            .push_back((invocation, update.clone()));
+        while self.actions.window_answers.len() > runtime::ANSWERS_KEPT {
+            self.actions.window_answers.pop_front();
+        }
+    }
+
+    #[cfg(feature = "model")]
+    /// What the call `invocation` ended as, when it has: kept after the call returned
+    /// ([`Self::take_window_invocation_answer`]).
+    #[must_use]
+    pub fn window_invocation_answer(
+        &self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<&tilo_actions::InvocationUpdate> {
+        self.actions
+            .window_answers
+            .iter()
+            .find(|(id, _)| *id == invocation)
+            .map(|(_, update)| update)
+    }
+
+    #[cfg(feature = "model")]
+    /// Take what the call `invocation` ended as.
+    #[must_use]
+    pub fn take_window_invocation_answer(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+    ) -> Option<tilo_actions::InvocationUpdate> {
+        let at = self
+            .actions
+            .window_answers
+            .iter()
+            .position(|(id, _)| *id == invocation)?;
+        self.actions
+            .window_answers
+            .remove(at)
+            .map(|(_, update)| update)
     }
 
     #[cfg(feature = "model")]
@@ -2069,6 +2142,7 @@ impl App {
                 self.actions
                     .local_invocations
                     .insert(operation_invocation, (address.clone(), kind));
+                self.note_started_window_invocation(operation_invocation, address);
             }
             if matches!(
                 started,
@@ -2234,6 +2308,7 @@ impl App {
             appearance: None,
             signed: None,
         };
+        self.note_started_window_invocation(request.invocation, &request.target.address);
         self.actions
             .broker_requests
             .insert(BrokerReply::Receipt(request.invocation), request_id);
@@ -2493,6 +2568,12 @@ impl App {
             if update.is_terminal() || invalid_identity {
                 self.actions.bound_invocations.remove(&invocation);
                 self.actions.local_invocations.remove(&invocation);
+            }
+            // A caller that invoked from beside the window — the display-less driver runs a
+            // scenario's steps and keeps what a step bound — could not wait where it invoked:
+            // what the call ended as is kept for it, as the broker keeps what it answers.
+            if update.is_terminal() {
+                self.keep_window_answer(invocation, &update);
             }
             if (update.is_terminal() || invalid_identity)
                 && kind == tilo_actions::OperationKind::Effect

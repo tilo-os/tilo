@@ -247,6 +247,12 @@ pub struct Driver {
 /// by their targets.
 pub const WINDOW_PARTS: &str = "window-parts";
 
+/// How long a step that reads a call's answer — what it binds, or the refusal it expects — waits
+/// for an app that runs the call off this window's thread. A hosted app answers in a frame or two;
+/// one that never answers fails the step, naming the action, rather than holding the drive.
+#[cfg(feature = "model")]
+const ANSWER_WAIT: crate::time::Duration = crate::time::Duration::from_secs(30);
+
 impl Driver {
     /// The driver over `app`, a window the launch built
     /// ([`crate::launch::LaunchSpec::build_window`]), in a surface of `viewport` logical pixels,
@@ -3286,25 +3292,117 @@ impl Driver {
 
     /// Invoke what `invocation` names; what a completed action returned (`None` when it runs on or
     /// was refused as expected).
+    ///
+    /// An app hosted beside this window runs a call off the frame, so a step that binds what the
+    /// call made, or expects the refusal it ended as, waits for the answer the app keeps
+    /// ([`App::take_window_invocation_answer`]) instead of reading the call's start.
     #[cfg(feature = "model")]
     fn perform_invocation(
         &mut self,
         invocation: &crate::headless::Invocation,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {
+        use tilo_actions::InvocationUpdate;
         let address = tilo_actions::ActionAddress::new(&invocation.resource, &invocation.action);
         // A step the person allowed comes back with their approve, carrying the phrase they typed.
         let approval = (invocation.confirm || invocation.confirmation_phrase.is_some())
             .then(|| self.approval_typing(invocation.confirmation_phrase.as_deref()));
+        // A press the call causes may start a call of its own: the one this step reads is the
+        // call it made, whatever ran beside it.
+        let _ = self.app.take_started_window_invocation();
         let result = self.invoke_action(&address, &invocation.args, approval.as_ref());
+        // A call the window hands the workspace is addressed to the provider as that window
+        // publishes it (its own alias for the app's resource), so what tells this step's call
+        // apart is the action it names.
+        let runs_on = self
+            .app
+            .take_started_window_invocation()
+            .filter(|(_, started)| started.action == address.action)
+            .map(|(invocation, _)| invocation);
         self.retain_invocation_outcome(&address, &result)?;
-        match (result, invocation.expect_error.as_deref()) {
-            (Ok(start), None) => Ok(start.completed()),
-            (Ok(_), Some(code)) => Err(format!(
-                "expected the API to refuse with {code}, but the action ran"
-            )),
-            (Err(error), Some(code)) if error.code() == code => Ok(None),
-            (Err(error), _) => Err(format!("{}: {error}", error.code())),
+        match result {
+            Ok(tilo_ui_base::widget::ResourceOperationStart::Completed(output)) => {
+                if let Some(code) = invocation.expect_error.as_deref() {
+                    return Err(format!(
+                        "expected the API to refuse with {code}, but the action ran"
+                    ));
+                }
+                Ok(Some(output))
+            }
+            Ok(tilo_ui_base::widget::ResourceOperationStart::Accepted) => {
+                // Only a call this window started keeps its answer here: one it cannot read
+                // leaves a step that binds nothing to bind, and one that expects a refusal with
+                // the call it made.
+                let reads_the_answer =
+                    invocation.bind.is_some() || invocation.expect_error.is_some();
+                let Some(runs_on) = runs_on.filter(|_| reads_the_answer) else {
+                    if let Some(code) = invocation.expect_error.as_deref() {
+                        return Err(format!(
+                            "expected the API to refuse with {code}, but the action ran"
+                        ));
+                    }
+                    return Ok(None);
+                };
+                let answer = self.await_answer(runs_on, &address)?;
+                match (&answer, invocation.expect_error.as_deref()) {
+                    (InvocationUpdate::Succeeded { output, .. }, None) => Ok(Some(output.clone())),
+                    (InvocationUpdate::Succeeded { .. }, Some(code)) => Err(format!(
+                        "expected the API to refuse with {code}, but the action ran"
+                    )),
+                    (InvocationUpdate::Failed { error, .. }, Some(code)) if error.code == code => {
+                        Ok(None)
+                    }
+                    (InvocationUpdate::Failed { error, .. }, _) => Err(format!(
+                        "{} on {:?}: {}: {}",
+                        address.action, address.resource, error.code, error.message
+                    )),
+                    (InvocationUpdate::Cancelled { message, .. }, _) => {
+                        let why = message
+                            .as_deref()
+                            .map(|message| format!(": {message}"))
+                            .unwrap_or_default();
+                        Err(format!(
+                            "{} on {:?} was cancelled{why}",
+                            address.action, address.resource
+                        ))
+                    }
+                    _ => Err(format!(
+                        "{} on {:?} answered no end a step reads",
+                        address.action, address.resource
+                    )),
+                }
+            }
+            Err(error) => match invocation.expect_error.as_deref() {
+                Some(code) if error.code() == code => Ok(None),
+                _ => Err(format!("{}: {error}", error.code())),
+            },
         }
+    }
+
+    /// Wait, bounded ([`ANSWER_WAIT`]), for what the call `invocation` ended as: an app hosted
+    /// beside this window takes the call to run it off the frame, and keeps its answer for a
+    /// caller that cannot wait where it invoked.
+    #[cfg(feature = "model")]
+    fn await_answer(
+        &mut self,
+        invocation: tilo_actions::InvocationId,
+        address: &tilo_actions::ActionAddress,
+    ) -> Result<tilo_actions::InvocationUpdate, String> {
+        let unanswered = || {
+            format!(
+                "{} on {:?} answered nothing within {} ms; the app may still be running it",
+                address.action,
+                address.resource,
+                ANSWER_WAIT.as_millis()
+            )
+        };
+        if !self.wait_until(ANSWER_WAIT, |driver| {
+            driver.app.window_invocation_answer(invocation).is_some()
+        }) {
+            return Err(unanswered());
+        }
+        self.app
+            .take_window_invocation_answer(invocation)
+            .ok_or_else(unanswered)
     }
 }
 

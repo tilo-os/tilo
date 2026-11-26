@@ -30,6 +30,7 @@ const COUNT: &str = "test.worker.count";
 const WAIT: &str = "test.worker.wait";
 const ERASE: &str = "test.worker.erase";
 const FAIL: &str = "test.worker.fail";
+const ANSWER: &str = "test.worker.answer";
 const UNHANDLED: &str = "test.worker.unhandled";
 
 /// A resource whose operations a caller starts as jobs: `count` reports a step of progress and
@@ -106,6 +107,13 @@ impl tilo_ui_base::widget::resources::PublishesResources for Worker {
             .with_action(erase)
             .with_action(
                 ActionSpec::operation("fail", "Fail", OperationKind::Effect, FAIL, &()).unwrap(),
+            )
+            .with_action(
+                ActionSpec::operation("answer", "Answer", OperationKind::Effect, ANSWER, &())
+                    .unwrap()
+                    .returns(tilo_actions::ResultSpec::Json {
+                        schema: serde_json::json!({ "type": "object" }),
+                    }),
             );
         if self.opens_photos {
             resource = resource.with_action(photos().spec(
@@ -132,6 +140,7 @@ impl tilo_ui_base::widget::ResourceOperations for Worker {
             WAIT,
             ERASE,
             FAIL,
+            ANSWER,
             tilo_actions::remote::ApplicationLaunch::TYPE,
         ]
     }
@@ -153,6 +162,13 @@ impl tilo_ui_base::widget::ResourceOperations for Worker {
                 )));
             }
             FAIL => return Err("the disk is full".into()),
+            ANSWER => {
+                let output = tilo_actions::ActionOutput {
+                    value: Some(serde_json::json!({ "id": "made-1" })),
+                    resources: vec!["made-1".to_owned()],
+                };
+                return Ok(Some(ResourceOperationStart::Completed(output)));
+            }
             _ => return Ok(None),
         }
         Ok(Some(ResourceOperationStart::Accepted))
@@ -214,6 +230,53 @@ fn address(action: &str) -> ActionAddress {
 
 fn no_arguments() -> serde_json::Map<String, serde_json::Value> {
     serde_json::Map::new()
+}
+
+/// The one step `payload` names, as a drive runs it.
+fn step(payload: &str) -> crate::headless::Step {
+    let spec = crate::headless::parse_spec(payload).expect("the step parses");
+    crate::headless::steps_of(&spec)
+        .into_iter()
+        .next()
+        .expect("one step")
+}
+
+// USER REQUIREMENT: a scenario's step that binds what its call made reads the answer of a call
+// the window hands the workspace, not the call's start.
+#[test]
+fn a_step_binds_what_the_call_answered_when_the_window_hands_it_the_workspace() {
+    let mut driver = worker_driver(Worker::default());
+    let mut bindings = crate::headless::Bindings::new();
+    let bound = step(
+        r#"{"actions":[{"invoke":{"resource":"test.worker","action":"answer","args":{},"bind":"made"}}]}"#,
+    );
+    driver
+        .perform_bound(&bound, &mut bindings)
+        .expect("the call is answered and bound");
+    assert_eq!(
+        bindings.get("made"),
+        Some(&serde_json::json!({ "value": { "id": "made-1" }, "resources": ["made-1"] })),
+        "what the app answered is what the step bound"
+    );
+}
+
+// USER REQUIREMENT: a call the app refuses fails the step that reads its answer, in the app's
+// words, and binds nothing.
+#[test]
+fn a_step_fails_with_what_the_app_answered_when_it_refused_the_call() {
+    let mut driver = worker_driver(Worker::default());
+    let mut bindings = crate::headless::Bindings::new();
+    let refused = step(
+        r#"{"actions":[{"invoke":{"resource":"test.worker","action":"fail","args":{},"bind":"made"}}]}"#,
+    );
+    let error = driver
+        .perform_bound(&refused, &mut bindings)
+        .expect_err("a refused call fails the step");
+    assert!(
+        error.contains("the disk is full"),
+        "the app's reason names the failure: {error}"
+    );
+    assert!(!bindings.contains_key("made"), "nothing is bound");
 }
 
 #[test]
@@ -631,7 +694,7 @@ fn a_hosted_component_lists_its_resources_whole_by_instance_and_by_id() {
         .iter()
         .map(|action| action.id.as_str())
         .collect::<Vec<_>>();
-    assert_eq!(actions, ["count", "wait", "erase", "fail"]);
+    assert_eq!(actions, ["count", "wait", "erase", "fail", "answer"]);
     let instance = driver.component_instance_id().unwrap();
     assert_eq!(
         ids(&driver.bound_resources_of(Some(instance), None).unwrap()),

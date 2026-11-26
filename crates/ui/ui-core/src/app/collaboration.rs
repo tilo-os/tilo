@@ -1088,6 +1088,13 @@ impl App {
         request_id: u64,
         result: Result<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate), String>,
     ) {
+        // What the call this window made ended as is kept for a caller that could not wait where
+        // it invoked, whatever the answer goes on to settle here.
+        if let Ok((invocation, update)) = &result
+            && update.is_terminal()
+        {
+            self.keep_window_answer(*invocation, update);
+        }
         if self.settle_follow_up(request_id, &result)
             || self.settle_hosted(request_id, &result)
             || self.close_broker_result(request_id, &result)

@@ -412,6 +412,11 @@ impl InputRuntime {
     }
 }
 
+/// How many answers of this window's own calls are kept for a caller that could not wait for them
+/// where it invoked: enough for every caller in flight at once, never a log.
+#[cfg(feature = "model")]
+pub(super) const ANSWERS_KEPT: usize = 16;
+
 /// Action discovery, dispatch, and invocation state.
 ///
 /// Actions remain connected to the retained widget tree; this boundary
@@ -556,6 +561,17 @@ pub(super) struct ActionRuntime {
         tilo_actions::InvocationId,
         (tilo_actions::ActionAddress, tilo_actions::OperationKind),
     >,
+    #[cfg(feature = "model")]
+    /// The invocation this window's own last call went out as, and the address it names, until
+    /// a caller reads it ([`App::take_started_window_invocation`]): a call the window hands the
+    /// workspace answers later, and the caller that wants its answer reads it by this.
+    pub(super) started_window_invocation:
+        Option<(tilo_actions::InvocationId, tilo_actions::ActionAddress)>,
+    #[cfg(feature = "model")]
+    /// What this window's calls ended as, the most recent [`ANSWERS_KEPT`], for a caller that
+    /// cannot wait where it invoked ([`App::take_window_invocation_answer`]).
+    pub(super) window_answers:
+        std::collections::VecDeque<(tilo_actions::InvocationId, tilo_actions::InvocationUpdate)>,
     pub(super) pending_application_launches:
         std::collections::HashMap<u64, tilo_actions::InvocationId>,
     /// Requests to the session action host awaiting their answer, keyed by
@@ -674,6 +690,10 @@ impl ActionRuntime {
             held_answers: Vec::new(),
             answers_await_route: false,
             local_invocations: std::collections::HashMap::new(),
+            #[cfg(feature = "model")]
+            started_window_invocation: None,
+            #[cfg(feature = "model")]
+            window_answers: std::collections::VecDeque::new(),
             pending_application_launches: std::collections::HashMap::new(),
             broker_requests: std::collections::HashMap::new(),
             held_own_invocations: std::collections::VecDeque::new(),
