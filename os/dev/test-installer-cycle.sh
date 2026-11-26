@@ -734,9 +734,9 @@ fi
 phase=target
 target_boot_started="$(date +%s)"
 if [ "$software_tpm" -eq 1 ]; then
-  "$vm" boot-target "$display_arg" --tpm
+  "$vm" boot-target "$display_arg" --tpm --serial-socket
 else
-  "$vm" boot-target "$display_arg" --no-tpm
+  "$vm" boot-target "$display_arg" --no-tpm --serial-socket
 fi
 
 # The sealed boot has no serial-console test instrumentation.  The installed
@@ -775,25 +775,13 @@ if [ "$oobe_started" -ne 1 ]; then
     tesseract "$out/07-first-boot-timeout.png" stdout 2>/dev/null > "$out/07-first-boot-timeout.txt" || true
   fi
   # The screen alone does not say why. The account has its password from the
-  # installer and is in wheel, so sign in on the second text console and write
-  # this boot's warnings and the account's own log to the serial line, which
-  # the evidence keeps (target-serial.log).
-  "$vm" keys ctrl-alt-f2
-  sleep 3
-  "$vm" type "$TILO_USER"
-  "$vm" keys ret
-  sleep 3
-  printf '%s' "$TILO_PASS" | "$vm" type -
-  "$vm" keys ret
-  sleep 8
-  "$vm" type 'sudo -S sh -c "journalctl -b -o short-monotonic --no-pager -p 4 >/dev/ttyS0; journalctl -b -o short-monotonic --no-pager _UID=1000 >/dev/ttyS0"'
-  "$vm" keys ret
-  sleep 2
-  printf '%s' "$TILO_PASS" | "$vm" type -
-  "$vm" keys ret
-  sleep 90
-  "$vm" shot 07-first-boot-console >/dev/null 2>&1 \
-    && cp -f "$run/07-first-boot-console.png" "$out/07-first-boot-console.png" || true
+  # installer and is in wheel, which reads the system journal: sign in on the
+  # serial console and keep this boot's warnings and the account's own log.
+  python3 "$dev_dir/serial-console.py" "$run/serial.sock" \
+    --log "$out/target-console.log" --login "$TILO_USER:$TILO_PASS" \
+    --timeout 60 --deadline 120 \
+    --run 'journalctl -b -o short-monotonic --no-pager -p 4; journalctl -b -o short-monotonic --no-pager _UID=$(id -u)' \
+    > "$out/target-journal.txt" 2> "$out/target-journal-console.txt" || true
   die "first installed boot did not reach direct OOBE"
 fi
 wait_screen 08-oobe-intro 'Create[[:space:]]+your[[:space:]]+local' 10 1 \
