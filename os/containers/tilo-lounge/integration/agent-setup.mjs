@@ -397,7 +397,7 @@ for (const line of [
   {jsonrpc: '2.0', method: 'notifications/initialized'},
   {jsonrpc: '2.0', id: 2, method: 'tools/call', params: {name: 'tilo_ls', arguments: {}}},
 ]) mcp.stdin.write(`${JSON.stringify(line)}\n`);
-const beside = `(() => { const row = (${peopleOf}).find(person => person.label?.includes(agentName)); return !!row && JSON.stringify(row).includes(${JSON.stringify(doing)}); })()`;
+const beside = `(() => { const row = (${peopleOf}).find(person => person.label?.includes(${JSON.stringify(agentName)})); return !!row && JSON.stringify(row).includes(${JSON.stringify(doing)}); })()`;
 // Its MCP server's own answers, on a failure: whether the tool call was
 // answered tells a slow presence from a call that never ran.
 if (!await first.waitFor(beside, {timeout: stepLimit(3)}).catch(() => false)) {
