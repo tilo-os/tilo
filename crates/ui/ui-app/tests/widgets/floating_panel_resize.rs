@@ -73,7 +73,7 @@ fn the_trailing_edge_resizes_the_panel_and_says_its_width() {
         "the edge takes hold"
     );
     host.dispatch_to_root(&synthetic_input::cursor_moved(rect.x1 + 100.0, middle));
-    host.relayout();
+    host.relayout_at((800, 600)).expect("the panel lays out");
     let following = host.root_widget().get_rect();
     assert!(
         (following.width() - 400.0).abs() < 0.5,
