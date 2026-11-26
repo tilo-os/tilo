@@ -902,12 +902,12 @@ mod tests {
             .in_workspace(workspace)
     }
 
-    /// [`write`] from the app's own process, the route a windowless app serves its record on,
-    /// with the invocations `serving` the route was delivered and has answered.
+    /// [`write`] from the app's own process, the route an app with no window serves its record
+    /// on, with the invocations `serving` the route was delivered and has answered.
     async fn write_as_app(
         workspaces: &Workspaces,
         workspace: &str,
-        record: &str,
+        (kind, record): (&str, &str),
         changes: Vec<u8>,
         serving: &[(tilo_actions::InvocationId, tilo_actions::Acting)],
     ) -> Result<Reply, String> {
@@ -919,7 +919,7 @@ mod tests {
         .of_app_process()
         .serving(serving.to_vec())
         .on_record(record)
-        .of_kind(Some(NOTE.to_owned()));
+        .of_kind(Some(kind.to_owned()));
         workspaces
             .resource_command(
                 &context,
@@ -1064,45 +1064,6 @@ mod tests {
         assert_eq!(heads(workspaces, &workspace, "plan").await, kept);
     }
 
-    /// An app's own process keeps the person's store on their device: the changes that store
-    /// hands the workspace are that person's, and land. One naming anybody else is refused, as
-    /// from any other route.
-    #[tokio::test(flavor = "current_thread")]
-    async fn an_apps_process_writes_its_persons_record_in_their_name_alone() {
-        let dir = tempfile::tempdir().unwrap();
-        let (host, workspace) = kitchen(dir.path()).await;
-        let workspaces = host.workspaces();
-        let me = caller_of(workspaces, &workspace).acting().by.clone();
-        let someone_else = Actor::Member(MemberId::person("someone-else"));
-
-        let mut ours = automerge::AutoCommit::new();
-        ours.put(automerge::ROOT, "title", "From the app's store")
-            .unwrap();
-        commit(&mut ours, &typed_by(&me));
-        write_as_app(workspaces, &workspace, "app-ours", ours.save(), &[])
-            .await
-            .expect("the app's process writes its person's record in their name");
-        assert!(
-            !heads(workspaces, &workspace, "app-ours").await.is_empty(),
-            "the change landed"
-        );
-
-        let mut forged = automerge::AutoCommit::new();
-        forged.put(automerge::ROOT, "title", "Not mine").unwrap();
-        commit(&mut forged, &typed_by(&someone_else));
-        let refused = write_as_app(workspaces, &workspace, "app-forged", forged.save(), &[]).await;
-        assert!(
-            refused
-                .as_ref()
-                .is_err_and(|error| error.contains("names someone other than the caller")),
-            "{refused:?}"
-        );
-        assert!(
-            heads(workspaces, &workspace, "app-forged").await.is_empty(),
-            "the app's process may name no one but its person"
-        );
-    }
-
     /// A save an app makes for an invocation its route was delivered and has answered is that
     /// invoker's, though nothing is pending on it any more: the app writes what it carried out
     /// as it answers. A route that was given no such invocation may not name one.
@@ -1135,7 +1096,7 @@ mod tests {
         write_as_app(
             workspaces,
             &workspace,
-            "answered",
+            (NOTE, "answered"),
             ran.save(),
             &[(served, agent.clone())],
         )
@@ -1154,7 +1115,14 @@ mod tests {
                 ..Stamp::default()
             },
         );
-        let refused = write_as_app(workspaces, &workspace, "unserved", asked.save(), &[]).await;
+        let refused = write_as_app(
+            workspaces,
+            &workspace,
+            (NOTE, "unserved"),
+            asked.save(),
+            &[],
+        )
+        .await;
         assert!(
             refused
                 .as_ref()
@@ -1164,6 +1132,100 @@ mod tests {
         assert!(
             heads(workspaces, &workspace, "unserved").await.is_empty(),
             "an invocation the route was never given names nobody"
+        );
+    }
+
+    /// An app's process writes by itself, never as a person: installing the app gave it a grant
+    /// for its own records, and a change it makes naming the person, with no invocation behind
+    /// it, is refused, also on a record that grant does not cover.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_apps_process_writes_as_the_app_and_a_change_naming_a_person_is_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let (host, workspace) = kitchen(dir.path()).await;
+        let workspaces = host.workspaces();
+        let person = caller_of(workspaces, &workspace).acting().by.clone();
+        let installed_by = caller_of(workspaces, &workspace)
+            .acting()
+            .person_id()
+            .expect("the device's person")
+            .to_owned();
+        // Installing the app gave it its own records: the grant its own writes are decided by.
+        crate::workspaces::fixtures::record_grants(
+            workspaces,
+            &workspace,
+            &[tilo_action_policy::roles::app_records_grant(
+                &workspace,
+                NOTES,
+                &installed_by,
+            )],
+        )
+        .await;
+
+        let app = tilo_actions::Acting::by_app(NOTES);
+        let mut ours = automerge::AutoCommit::new();
+        ours.put(automerge::ROOT, "title", "The app's own").unwrap();
+        commit(
+            &mut ours,
+            &Stamp {
+                verb: Stamp::TYPE_VERB.to_owned(),
+                invoker: Stamp::by(&app.by),
+                ..Stamp::default()
+            },
+        );
+        write_as_app(workspaces, &workspace, (NOTE, "app-own"), ours.save(), &[])
+            .await
+            .expect("the app's own record takes the app's change under its grant");
+
+        // Naming the person buys nothing, with no invocation behind it: not on its own records,
+        // and not on another app's, which installing it gave it no reach of.
+        let mut named = automerge::AutoCommit::new();
+        named
+            .put(automerge::ROOT, "title", "As its person")
+            .unwrap();
+        commit(&mut named, &typed_by(&person));
+        let refused = write_as_app(
+            workspaces,
+            &workspace,
+            (NOTE, "app-named"),
+            named.save(),
+            &[],
+        )
+        .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.contains("names someone other than the caller")),
+            "{refused:?}"
+        );
+        assert!(
+            heads(workspaces, &workspace, "app-named").await.is_empty(),
+            "an app's process writes as the app, never as its person"
+        );
+
+        let mut elsewhere = automerge::AutoCommit::new();
+        elsewhere
+            .put(automerge::ROOT, "body", "Not the app's")
+            .unwrap();
+        commit(&mut elsewhere, &typed_by(&person));
+        let refused = write_as_app(
+            workspaces,
+            &workspace,
+            ("so.tilo.chat.message", "chat-1"),
+            elsewhere.save(),
+            &[],
+        )
+        .await;
+        assert!(
+            refused
+                .as_ref()
+                .is_err_and(|error| error.contains("names someone other than the caller")),
+            "{refused:?}"
+        );
+        assert!(
+            heads_of(workspaces, &workspace, ("so.tilo.chat.message", "chat-1"))
+                .await
+                .is_empty(),
+            "the app's grant covers its own records, and no write of it names a person"
         );
     }
 

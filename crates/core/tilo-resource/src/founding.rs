@@ -46,8 +46,12 @@ impl Scope<'_> {
 }
 
 /// The containers at the root of `surface`'s record that its top-level fields keep their items
-/// in, by field name: a collection, map or set in a map, a list in a list, a record of its own
-/// in a map: what [`structure`] makes.
+/// in, by field name: a collection, map, set or outbox in a map, a list in a list, a record of
+/// its own in a map: what [`structure`] makes.
+///
+/// An outbox is one of them: it is a unit the kind declares, empty when the record is founded,
+/// and a record whose every field is read-only takes no write to make it. Built by its creator
+/// instead, it would be the one change such a kind could not take, from the app or anyone.
 #[must_use]
 pub fn containers(surface: &Surface) -> Vec<(String, ObjType)> {
     let mut containers: Vec<(String, ObjType)> = surface
@@ -57,7 +61,10 @@ pub fn containers(surface: &Surface) -> Vec<(String, ObjType)> {
         .filter_map(|field| {
             let container = match &field.ty {
                 // A set is a map whose keys are its members, as the resource types keep one.
-                FieldType::Collection(_) | FieldType::Map(_) | FieldType::Set(_) => ObjType::Map,
+                FieldType::Collection(_)
+                | FieldType::Map(_)
+                | FieldType::Set(_)
+                | FieldType::Outbox(_) => ObjType::Map,
                 FieldType::List(_) => ObjType::List,
                 FieldType::Named(_) if field.stored == "record" => ObjType::Map,
                 _ => return None,
@@ -297,6 +304,41 @@ mod tests {
     fn items(doc: &AutoCommit) -> Vec<String> {
         let (_, items) = doc.get(ROOT, "items").unwrap().unwrap();
         doc.keys(&items).collect()
+    }
+
+    /// A kind's outbox is one of its containers, founded empty on every holder alike: a record
+    /// whose every field is read-only would take no change to make it, from the app or anyone.
+    #[test]
+    fn a_kinds_queue_is_founded_with_its_containers() {
+        let surface: crate::Surface = serde_json::from_value(serde_json::json!({
+            "kind": "terminal.session",
+            "label": "Terminal",
+            "version": 1,
+            "fields": [
+                {
+                    "path": "requests",
+                    "type": {"outbox": {"named": "CommandRequest"}},
+                    "readonly": true,
+                    "unit": true
+                }
+            ],
+            "verbs": [],
+            "types": []
+        }))
+        .unwrap();
+        assert_eq!(
+            super::containers(&surface),
+            vec![("requests".to_owned(), ObjType::Map)],
+            "the outbox is founded like a map the kind keeps its items in"
+        );
+        let founding = super::structure(SCOPE, &super::containers(&surface)).unwrap();
+        let mut doc = AutoCommit::new();
+        doc.apply_incoming([founding]).unwrap();
+        assert_eq!(
+            doc.get(ROOT, "requests").unwrap().map(|(value, _)| value),
+            Some(automerge::Value::Object(ObjType::Map)),
+            "founded, and empty"
+        );
     }
 
     #[test]

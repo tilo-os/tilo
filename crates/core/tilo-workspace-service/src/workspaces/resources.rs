@@ -2365,16 +2365,8 @@ impl Workspaces {
         // The invocations the changes named, as their labels write them: once the write lands,
         // the route that served them answers for them no more.
         let invoked = std::sync::Mutex::new(Vec::new());
-        // An app's own process keeps the person's store on their device: the changes that store
-        // hands the workspace are that person's, and say so. It may name that person alone.
-        let app_person = context
-            .serves_app_process()
-            .then(|| context.caller().acting().person_id())
-            .flatten()
-            .map(|person| tilo_action_policy::Acting::person(person).by);
-        // A change's label names whoever made it: the caller writing, the invoker of an
-        // invocation the app serves for them, or the person whose store the app's process
-        // keeps. One naming nobody is its signer's own.
+        // A change's label names whoever made it: the caller writing, or the invoker of an
+        // invocation the app serves for them. One naming nobody is its signer's own.
         let names_caller = |stamp: &tilo_resource_store::Stamp| {
             use tilo_lock::MutexRecover as _;
             if !stamp.invocation.is_empty() {
@@ -2387,7 +2379,6 @@ impl Workspaces {
                 None => true,
                 Some(named) => {
                     acting == Some(&named)
-                        || app_person.as_ref() == Some(&named)
                         || context
                             .invoker_of(&stamp.invocation)
                             .is_some_and(|invoker| invoker.by == named)
