@@ -129,32 +129,52 @@ fn every_kind_a_write_path_names_is_declared_in_the_store_a_start_builds() {
 
     // The platform's own writes on a record that store declares: a queued outside effect handed
     // over, and each verb no app declares, which every schema has as it has the move.
+    // A record of `kind` with its first text field, as the platform's write `verb` puts it.
+    let text_field = |surface: &tilo_actions::surface::Surface| {
+        surface
+            .fields
+            .iter()
+            .find(|field| matches!(&field.ty, FieldType::Text) && !field.path.contains('.'))
+            .map(|field| field.path.clone())
+    };
     let effect = surfaces
         .resources()
         .into_iter()
         .map(|(_, surface)| surface)
         .find(|surface| surface.kind == EFFECT)
         .expect("every app's surface declares the record an outside effect waits in");
-    let field = effect
-        .fields
-        .iter()
-        .find(|field| matches!(&field.ty, FieldType::Text) && !field.path.contains('.'))
-        .expect("a queued effect holds text")
-        .path
-        .clone();
+    let effect_field = text_field(&effect).expect("a queued effect holds text");
+    // A kind an outside service keeps in step (`imap.message`): the only kind the origin's
+    // write lands in.
+    let (origin_kind, origin_field) = surfaces
+        .resources()
+        .into_iter()
+        .map(|(_, surface)| surface)
+        .filter_map(|surface| store.schema().get(&surface.kind).cloned())
+        .filter(|ty| ty.origin.is_some())
+        .find_map(|ty| {
+            ty.fields
+                .iter()
+                .find(|field| {
+                    field.value == tilo_resource_store::Expected::Text
+                        && field.kind == tilo_resource_store::FieldKind::Scalar
+                })
+                .map(|field| (ty.name.clone(), field.name.clone()))
+        })
+        .expect("an app the workspace ships keeps a kind an outside service keeps in step");
     let author = [7; 32];
-    let carries = |store: &mut Store, verb: &str, id: String| {
+    let check = |store: &mut Store, kind: &str, field: &str, verb: &str, id: String| {
         let written = wire::draft(
             store,
             Command::Put {
-                kind: EFFECT.to_owned(),
+                kind: kind.to_owned(),
                 id: id.clone(),
                 resource: Resource {
                     readers: String::new(),
                     parent: None,
                     order: None,
                     fields: BTreeMap::from([(
-                        field.clone(),
+                        field.to_owned(),
                         Cell::One(Value::Text("walk".into())),
                     )]),
                 },
@@ -167,18 +187,45 @@ fn every_kind_a_write_path_names_is_declared_in_the_store_a_start_builds() {
             },
         )
         .unwrap_or_else(|refused| panic!("{verb} writes a declared record: {refused}"));
-        store
-            .check_batch(&written, author)
-            .unwrap_or_else(|refused| panic!("{verb} is refused: {refused:?}"));
+        store.check_batch(&written, author)
     };
-    carries(&mut store, "$send", "queued-1".to_owned());
+    let carries = |store: &mut Store, kind: &str, field: &str, verb: &str, id: String| {
+        check(store, kind, field, verb, id)
+            .unwrap_or_else(|refused| panic!("{verb} on {kind} is refused: {refused:?}"));
+    };
     carries(
         &mut store,
+        EFFECT,
+        &effect_field,
+        "$send",
+        "queued-1".to_owned(),
+    );
+    carries(
+        &mut store,
+        &origin_kind,
+        &origin_field,
         tilo_resource_store::ORIGIN_VERB,
         "origin-1".to_owned(),
     );
+    assert!(
+        check(
+            &mut store,
+            EFFECT,
+            &effect_field,
+            tilo_resource_store::ORIGIN_VERB,
+            "origin-2".to_owned(),
+        )
+        .is_err(),
+        "the origin's write never lands in a kind no outside service keeps"
+    );
     for (index, verb) in tilo_resource_store::PLATFORM_VERBS.iter().enumerate() {
-        carries(&mut store, verb, format!("platform-{index}"));
+        carries(
+            &mut store,
+            EFFECT,
+            &effect_field,
+            verb,
+            format!("platform-{index}"),
+        );
     }
 
     let mut named = person_records();
