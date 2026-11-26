@@ -298,13 +298,19 @@ def catalogue(ask, needle: str = "") -> list:
     frame and answers the frame that came back."""
     start = {"needle": needle, "max_results": 64}
     rows, query = [], start
+    # What the listing did, for the failure that says it never ended: a listing restarted on
+    # every stale cursor names how often, and how many revisions it saw, so a catalogue that
+    # keeps changing under it is told from one that pages without end.
+    restarts, revisions = 0, set()
     for _ in range(256):
         answer = ask(frame({"CatalogueRequest": {"correlation": 1, "query": query}}))
         result = answer["message"]["CatalogueResponse"]["result"]
         if "Ok" not in result:
             raise Refused("listing", refusal(result.get("Err", result)))
         page = result["Ok"]
+        revisions.add(page.get("revision"))
         if page.get("stale_cursor"):
+            restarts += 1
             rows, query = [], start
             continue
         if page.get("budget_exhausted"):
@@ -315,7 +321,9 @@ def catalogue(ask, needle: str = "") -> list:
         if not page.get("next_cursor"):
             raise Failed(f"the listing for {needle!r} ended with no cursor and not exhausted")
         query = {**start, "cursor": page["next_cursor"], "revision": page["revision"]}
-    raise Failed(f"the listing for {needle!r} ran past 256 pages")
+    raise Failed(f"the listing for {needle!r} ran past 256 pages: restarted {restarts} times on "
+                 f"a stale cursor, {len(revisions)} revisions seen, {len(rows)} rows since the "
+                 f"last restart")
 
 
 def record(ask, workspace: str, app: str, record_id: str, wait_ms: int | None = None) -> dict:
