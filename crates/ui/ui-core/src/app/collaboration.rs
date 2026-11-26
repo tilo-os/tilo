@@ -1206,5 +1206,9 @@ impl App {
 }
 
 #[cfg(test)]
+#[path = "cold_construction_tests.rs"]
+mod cold_construction_tests;
+
+#[cfg(test)]
 #[path = "person_colour_tests.rs"]
 mod person_colour_tests;

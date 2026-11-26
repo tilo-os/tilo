@@ -1,5 +1,7 @@
 include!("hosted_model_tests.rs");
 
+include!("hosted_pump_dirty_tests.rs");
+
 include!("deferred_remote_tests.rs");
 
 include!("application_handoff_tests.rs");
@@ -2212,6 +2214,48 @@ fn action_directory_pages_caps_and_cursors_fail_closed() {
         assert_eq!(tail.rows[0].resource, "test.counter:128");
         assert!(tail.exhausted);
     }
+}
+
+#[test]
+fn directory_cursor_saturation_evicts_old_cursors_as_stale() {
+    let mut app = app();
+    let revision = app.action_directory_revision();
+    let first = app.action_directory_next_cursor(ActionDirectoryCursor {
+        revision: revision.clone(),
+        needle: String::new(),
+        parent_resource: String::new(),
+        provider_index: 0,
+        provider_cursor: None,
+        browse_offset: 0,
+        root_widget_index: 0,
+        root_provider_cursor: None,
+    });
+    for offset in 1..=ACTION_DIRECTORY_MAX_CURSORS {
+        let _ = app.action_directory_next_cursor(ActionDirectoryCursor {
+            revision: revision.clone(),
+            needle: String::new(),
+            parent_resource: String::new(),
+            provider_index: 0,
+            provider_cursor: None,
+            browse_offset: offset,
+            root_widget_index: 0,
+            root_provider_cursor: None,
+        });
+    }
+    assert!(app.actions.action_directory_cursors.len() <= ACTION_DIRECTORY_MAX_CURSORS);
+    let page = app.action_directory_page(runtime_collab::ActionDirectoryQuery {
+        peer_id: 1,
+        revision,
+        cursor: first,
+        needle: String::new(),
+        parent_resource: String::new(),
+        max_results: 1,
+        max_bytes: 1_024,
+        max_work: 1,
+        max_depth: 1,
+        resource_name: String::new(),
+    });
+    assert!(page.stale_cursor);
 }
 
 #[test]

@@ -429,6 +429,149 @@ tilo_test_env::scenario! {
                 .all(|pin| pin.strong_count() == 0)
         );
     }
+
+    phase retained_local_directory_rejects_oversized_snapshot;
+    {
+        // 64 resources with 32 KiB labels: several times the pin budget in
+        // memory actually held, not only in the estimate.
+        let (mut app, _) = declared_directory(64);
+        app.state_mut_for_test()
+            .doc
+            .put(ROOT, "large-label", true)
+            .unwrap();
+        publish_declared_directory(&mut app);
+        let revision = app.action_directory_revision();
+        assert!(
+            app.try_pin_local_document_action_directory(&revision)
+                .ok()
+                .is_none()
+        );
+        assert!(app.actions.local_document_directory_pins.is_empty());
+    }
+
+    phase a_snapshot_is_estimated_only_when_an_input_pins_it;
+    // Every publication builds a snapshot, and serializing each of its actions
+    // to estimate what it holds cost an app with many resources most of a
+    // publication: the estimate waits for the local input that pins it.
+    {
+        let (mut app, _) = declared_directory(40);
+        publish_declared_directory(&mut app);
+        let snapshot = app.actions.action_directory_snapshot.clone().unwrap();
+        assert!(
+            !snapshot.retention_estimated(),
+            "a publication estimated a snapshot nothing pinned"
+        );
+        let revision = app.action_directory_revision();
+        let _pin = app
+            .try_pin_local_document_action_directory(&revision)
+            .ok()
+            .unwrap();
+        assert!(snapshot.retention_estimated(), "a pin is bounded by it");
+    }
+
+    phase retained_local_directory_distinct_revision_limit_preserves_pending_reports;
+    {
+        let (mut app, _) = declared_directory(1);
+        publish_declared_directory(&mut app);
+        let old = app.action_directory_revision();
+        #[expect(
+            clippy::collection_is_never_read,
+            reason = "the pins are guards: holding them fills the limit, popping one frees a slot"
+        )]
+        let mut pins = vec![
+            app.try_pin_local_document_action_directory(&old)
+                .ok()
+                .unwrap(),
+        ];
+        // Tiny subsequent snapshots isolate the count limit from the byte limit.
+        for generation in 1..64 {
+            app.state_mut_for_test()
+                .doc
+                .put(ROOT, "generation", generation)
+                .unwrap();
+            publish_declared_directory(&mut app);
+            let revision = app.action_directory_revision();
+            assert_ne!(revision, old);
+            pins.push(
+                app.try_pin_local_document_action_directory(&revision)
+                    .ok()
+                    .unwrap(),
+            );
+        }
+        assert_eq!(app.actions.local_document_directory_pins.len(), 64);
+        app.state_mut_for_test()
+            .doc
+            .put(ROOT, "generation", 64)
+            .unwrap();
+        publish_declared_directory(&mut app);
+        let revision = app.action_directory_revision();
+        assert!(
+            app.try_pin_local_document_action_directory(&revision)
+                .ok()
+                .is_none()
+        );
+        assert!(matches!(
+            app.resolve_local_document_action_directory(&old, "declared:0", "inspect"),
+            runtime_collab::ActionDirectoryResolution::Found { .. }
+        ));
+        pins.pop();
+        assert!(
+            app.try_pin_local_document_action_directory(&revision)
+                .ok()
+                .is_some()
+        );
+    }
+
+    phase retained_local_directory_byte_pressure_preserves_old_revision_and_reclaims_dropped_pins;
+    {
+        let (mut app, _) = declared_directory(1);
+        app.state_mut_for_test()
+            .doc
+            .put(ROOT, "large-label", true)
+            .unwrap();
+        publish_declared_directory(&mut app);
+        let old = app.action_directory_revision();
+        let mut pins = vec![
+            app.try_pin_local_document_action_directory(&old)
+                .ok()
+                .unwrap(),
+        ];
+        let mut rejected = None;
+        for generation in 1..64 {
+            app.state_mut_for_test()
+                .doc
+                .put(ROOT, "generation", generation)
+                .unwrap();
+            publish_declared_directory(&mut app);
+            let revision = app.action_directory_revision();
+            if let Ok(pin) = app.try_pin_local_document_action_directory(&revision) {
+                pins.push(pin);
+            } else {
+                rejected = Some(revision);
+                break;
+            }
+        }
+        let rejected = rejected.expect("byte budget must be reached before the revision limit");
+        assert!(pins.len() < 64);
+        assert!(matches!(
+            app.resolve_local_document_action_directory(&old, "declared:0", "inspect"),
+            runtime_collab::ActionDirectoryResolution::Found { .. }
+        ));
+        assert!(matches!(
+            app.resolve_local_document_action_directory(&rejected, "declared:0", "inspect"),
+            runtime_collab::ActionDirectoryResolution::StaleRevision
+        ));
+        pins.clear();
+        assert!(
+            app.try_pin_local_document_action_directory(&rejected)
+                .ok()
+                .is_some()
+        );
+        assert!(matches!(
+            app.resolve_local_document_action_directory(&old, "declared:0", "inspect"),
+            runtime_collab::ActionDirectoryResolution::StaleRevision
+        ));
+    }
 }
 
 struct ExtendedDirectory;
@@ -824,6 +967,152 @@ tilo_test_env::scenario! {
             ));
             assert_eq!(semantics.get(), surveyed);
             assert_eq!(calls.get(), 1);
+        }
+    }
+
+    phase directory_snapshot_revision_evicts_on_every_semantic_change;
+    {
+        {
+            let (mut app, calls) = declared_directory(1);
+            app.actions.resource_generation.set(u64::MAX);
+            publish_declared_directory(&mut app);
+            let revision = app.action_directory_revision();
+            publish_declared_directory(&mut app);
+            assert_eq!(app.action_directory_revision(), revision);
+            assert_eq!(calls.get(), 1);
+            app.state_mut_for_test()
+                .doc
+                .put(ROOT, "removed", true)
+                .unwrap();
+            assert!(matches!(
+                app.resolve_action_directory(&revision, "declared:0", "inspect"),
+                runtime_collab::ActionDirectoryResolution::StaleRevision
+            ));
+            let invalid = app.action_directory_page(directory_query("", "", 8, 8192, 8));
+            assert!(invalid.rows.is_empty());
+            assert_eq!(
+                calls.get(),
+                1,
+                "invalidation does not permit remote rebuilding"
+            );
+            publish_declared_directory(&mut app);
+            assert!(
+                app.action_directory_page(directory_query("", "", 8, 8192, 8))
+                    .rows
+                    .is_empty()
+            );
+            assert_eq!(calls.get(), 2);
+            let address = tilo_actions::ActionAddress::new("declared:0", "inspect");
+            let actor = tilo_actions::Actor::Member(app.local_author.clone());
+            assert!(
+                app.invoke_resource_action(ResourceInvocation::new(&address, &actor))
+                    .is_err()
+            );
+        }
+
+        {
+            let (mut app, calls) = declared_directory(1);
+            app.state_mut_for_test()
+                .doc
+                .put(ROOT, "pending", 1_i64)
+                .unwrap();
+            let pending = app.state.doc.pending_ops();
+            assert!(pending > 0);
+            publish_declared_directory(&mut app);
+            let revision = app.action_directory_revision();
+            app.action_directory_page(directory_query("", "", 1, 8192, 1));
+            assert_eq!(
+                app.state.doc.pending_ops(),
+                pending,
+                "discovery must not close the undo transaction"
+            );
+            app.actions.permission_generation.set(u64::MAX);
+            app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+                &crate::permissions::MemberId::person("restricted"),
+            ));
+            assert_ne!(app.action_directory_revision(), revision);
+            assert!(
+                app.action_directory_page(directory_query("", "", 8, 8192, 8))
+                    .rows
+                    .is_empty()
+            );
+            assert_eq!(calls.get(), 1);
+            publish_declared_directory(&mut app);
+            let restricted = app.action_directory_revision();
+            app.set_permission_ctx(PermissionContext::permissive());
+            assert_ne!(app.action_directory_revision(), restricted);
+            assert!(
+                app.action_directory_page(directory_query("", "", 8, 8192, 8))
+                    .rows
+                    .is_empty()
+            );
+        }
+
+        {
+            let (mut app, _) = declared_directory(2);
+            publish_declared_directory(&mut app);
+            let page = app.action_directory_page(directory_query("", "", 1, 8192, 8));
+            let mut resources = app.publication_resources();
+            let descriptors = tilo_actions::api::survey(&resources);
+            let child = resources.pop().unwrap();
+            resources[0].children.push(child);
+            assert_eq!(tilo_actions::api::survey(&resources), descriptors);
+            app.capture_action_directory_snapshot(&resources, &descriptors);
+            assert_ne!(app.action_directory_revision(), page.revision);
+            let mut query = directory_query(&page.revision, "", 1, 8192, 8);
+            query.cursor = page.next_cursor;
+            assert!(app.action_directory_page(query).stale_cursor);
+            let parent = app.action_directory_page(directory_query("", "declared:0", 8, 8192, 8));
+            assert_eq!(parent.rows.len(), 2);
+            assert_eq!(parent.rows[1].resource, "declared:1");
+        }
+
+        {
+            let provider = LargeDirectoryProvider::new(1);
+            let catalog = provider.catalog.clone();
+            let mut app = App::new_with_controlled_inputs(
+                State::new(),
+                Box::new(CounterCard::with_directory_provider(provider)),
+            );
+            app.action_registry_mut()
+                .register::<CounterAction>(COUNTER_TYPE);
+            publish_declared_directory(&mut app);
+            let revision = app.action_directory_revision();
+            catalog
+                .upsert_resource(
+                    crate::search::SearchItem::new(
+                        "test.item:1",
+                        crate::search::SearchResult::for_action(
+                            "Large directory",
+                            "1",
+                            tilo_actions::ActionAddress::new("test.item:1", "open"),
+                        ),
+                    )
+                    .field("New record", crate::text_match::FieldWeight::UNRANKED),
+                )
+                .unwrap();
+            assert_ne!(app.action_directory_revision(), revision);
+            assert!(app.actions.action_directory_snapshot.is_none());
+        }
+
+        {
+            let (mut app, _) = declared_directory(1);
+            publish_declared_directory(&mut app);
+            let revision = app.action_directory_revision();
+            assert!(matches!(
+                app.resolve_action_directory(&revision, "declared:0", "inspect"),
+                runtime_collab::ActionDirectoryResolution::Found { .. }
+            ));
+            app.state_mut_for_test()
+                .doc
+                .put(ROOT, "changed-contract", true)
+                .unwrap();
+            let address = tilo_actions::ActionAddress::new("declared:0", "inspect");
+            let actor = tilo_actions::Actor::Member(app.local_author.clone());
+            let error = app
+                .invoke_resource_action(ResourceInvocation::new(&address, &actor))
+                .unwrap_err();
+            assert_eq!(error, tilo_actions::ApiError::ConfirmationRequired);
         }
     }
 

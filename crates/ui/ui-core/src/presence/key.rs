@@ -97,6 +97,92 @@ mod view_key_tests {
                 assert_eq!(local_workspace_key(), None);
             }
         }
+
+        phase pointer_keys_pin_their_ordinals_and_carry_their_space;
+        {
+            // phase: the_pointer_key_ordinals_are_the_ones_the_bridge_mirrors
+            // The ordinals in the postcard key wire contract are written
+            // against, pinned as bytes.
+            //
+            // Postcard tags variants by ordinal, so inserting `Pointer` anywhere but
+            // last, or swapping `Desktop` and `Surface`, decodes on the bridge side as
+            // a different variant or not at all — and a pointer publish that silently
+            // stops arriving looks exactly like a peer who is not moving. The two
+            // enums are separate declarations in separate crates and neither mentions
+            // the other, so this is the only guard.
+            {
+                assert_eq!(
+                    postcard::to_stdvec(&PresenceKey::shell_pointer("r")).unwrap(),
+                    vec![5u8, 0, 1, b'r'],
+                    "PresenceKey::Pointer must stay variant 5 and PointerSpace::Shell variant 0",
+                );
+                assert_eq!(
+                    postcard::to_stdvec(&PresenceKey::surface_pointer("s")).unwrap(),
+                    vec![5u8, 1, 1, b's'],
+                    "PointerSpace::Surface must stay variant 1",
+                );
+                assert_eq!(
+                    postcard::to_stdvec(&PresenceKey::tile_pointer("r", 7)).unwrap(),
+                    vec![5u8, 2, 1, b'r', 7],
+                    "PointerSpace::Tile must stay variant 2",
+                );
+            }
+            // phase: a_pointer_key_carries_its_space_across_the_wire_encoding
+            // The space is what a pointer key is *for*, and it has to survive the
+            // encoding the wire uses — the whole failure was a space that existed at
+            // one end and not the other.
+            {
+                for key in [
+                    PresenceKey::shell_pointer("workspace-7"),
+                    PresenceKey::surface_pointer("so.tilo.word-processor"),
+                    PresenceKey::tile_pointer("workspace-7", 0x1234_5678_9abc),
+                ] {
+                    let bytes = postcard::to_stdvec(&key).expect("a pointer key encodes");
+                    let back: PresenceKey =
+                        postcard::from_bytes(&bytes).expect("and decodes to the same key");
+                    assert_eq!(back, key, "the space must survive the round trip");
+                    assert!(
+                        back.pointer_space().is_some(),
+                        "a pointer key with no readable space is the bug this variant exists to stop",
+                    );
+                }
+            }
+            // phase: two_surfaces_are_two_spaces
+            // Two surfaces are two spaces. A file manager cannot answer for a
+            // position measured in a word processor, and this is where that is
+            // decided — before anything has been drawn, from the key alone.
+            {
+                let wp = PresenceKey::surface_pointer("so.tilo.word-processor");
+                let fm = PresenceKey::surface_pointer("so.tilo.files");
+                assert_ne!(wp.pointer_space(), fm.pointer_space());
+                assert!(!wp.scopes_a_shell_pointer());
+                assert!(!fm.scopes_a_shell_pointer());
+            }
+            // phase: every_spelling_of_the_desktop_reads_as_the_desktop
+            // The two older spellings of the desktop still mean it: a session's
+            // workspace-scoped republish, and the tag the old keyless cursor path was
+            // re-keyed to.
+            {
+                assert!(PresenceKey::shell_pointer("r").scopes_a_shell_pointer());
+                assert!(PresenceKey::Workspace { id: "r".into() }.scopes_a_shell_pointer());
+                assert!(PresenceKey::pointer_default().scopes_a_shell_pointer());
+                // A pointer placed over a tab's tile is drawn by the compositor
+                // above every window, like any desktop pointer.
+                assert!(PresenceKey::tile_pointer("r", 1).scopes_a_shell_pointer());
+                // A position inside a document is not a position on a screen.
+                assert!(
+                    !PresenceKey::Widget {
+                        path: vec![PathSegment::Index(0)]
+                    }
+                    .scopes_a_shell_pointer()
+                );
+                assert_eq!(
+                    PresenceKey::Tab { id: "t".into() }.pointer_space(),
+                    None,
+                    "a tab is an object, not a coordinate space",
+                );
+            }
+        }
     }
 }
 

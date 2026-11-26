@@ -1021,6 +1021,231 @@ fn component(host: &ProbeHarness, instance: u64) -> AppComponent {
         .unwrap()
 }
 
+#[allow(
+    clippy::too_many_lines,
+    reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
+)]
+#[test]
+fn reentry_and_replacement_respect_record_borrows_and_retry_failures() {
+    {
+        let host = ProbeHarness::new();
+        let first = component(&host, 1);
+        let checkout = first.record().clone();
+        let definition = definition(factory);
+        let target = crate::support::application::existing(&checkout);
+        let context = host.prepare(&definition, 2, &target).unwrap();
+        let second = definition
+            .instantiate(context, target, RestoreInput::None)
+            .unwrap();
+        let third = component(&host, 3);
+        let mut root = Column::new()
+            .push(Box::new(TileHost::from_component(first)))
+            .push(Box::new(TileHost::from_component(second)))
+            .push(Box::new(TileHost::from_component(third)));
+        let mut tree = taffy::TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let node = root.build_layout(&mut tree, &tilo_ui::Theme::dark(), &mut nodes);
+        let mut bindings = BoundNodeMap::new();
+        let mut outer = AutoCommit::new();
+        // SAFETY: this fixture exclusively owns an unchanged live tree; each target is a distinct leaf.
+        unsafe {
+            bindings.rebuild(&root, &tree, node, &nodes);
+            let mut leaves = vec![];
+            for &node in nodes.keys() {
+                if invoke_bound_node(
+                    &bindings,
+                    &nodes,
+                    node,
+                    &mut outer,
+                    &ROOT,
+                    |widget, doc, _| {
+                        (widget.name() == "Leaf").then(|| {
+                            doc.get(ROOT, "marker")
+                                .unwrap()
+                                .unwrap()
+                                .0
+                                .as_str()
+                                .unwrap()
+                                .to_owned()
+                        })
+                    },
+                )
+                .unwrap()
+                .is_some_and(|marker| {
+                    leaves.push((node, marker));
+                    true
+                }) {}
+            }
+            let same: Vec<_> = leaves
+                .iter()
+                .filter(|(_, marker)| marker == checkout.id.as_str())
+                .map(|(node, _)| *node)
+                .collect();
+            let different = leaves
+                .iter()
+                .find(|(_, marker)| marker != checkout.id.as_str())
+                .unwrap()
+                .0;
+            assert_eq!(same.len(), 2);
+            invoke_bound_node(
+                &bindings,
+                &nodes,
+                same[0],
+                &mut outer,
+                &ROOT,
+                |_, doc, _| {
+                    invoke_bound_node(
+                        &bindings,
+                        &nodes,
+                        same[1],
+                        doc,
+                        &ROOT,
+                        |widget, doc, root| {
+                            widget.perform_action(
+                                &tilo_ui::a11y::Action::Focus,
+                                &[],
+                                &mut tilo_ui::widget::Edits::lend(doc),
+                                root,
+                            )
+                        },
+                    )
+                    .unwrap();
+                    assert!(matches!(
+                        invoke_bound_node::<()>(
+                            &bindings,
+                            &nodes,
+                            different,
+                            doc,
+                            &ROOT,
+                            |_, _, _| panic!("cross-record callback executed")
+                        ),
+                        Err(BoundDispatchError::CrossResourceReentry)
+                    ));
+                },
+            )
+            .unwrap();
+        }
+    }
+
+    {
+        let host = ProbeHarness::new();
+        let mut tile = TileHost::from_component(component(&host, 1));
+        let mut tree = taffy::TaffyTree::new();
+        let mut nodes = HashMap::new();
+        let layout = tile.build_layout(&mut tree, &tilo_ui::Theme::dark(), &mut nodes);
+        let mut bindings = BoundNodeMap::new();
+        // SAFETY: admission inspects only this matching live layout.
+        unsafe {
+            bindings.rebuild(&tile, &tree, layout, &nodes);
+        }
+        let mut outer = AutoCommit::new();
+        let invocation = tilo_actions::InvocationId::new();
+        assert!(matches!(
+            start_operation(
+                &mut tile,
+                &tilo_ui::host_operation::ResourceOperation::local(
+                    invocation,
+                    tilo_actions::OperationKind::Effect,
+                    "probe",
+                    &[]
+                ),
+                &mut tilo_ui::widget::Edits::lend(&mut outer),
+                &ROOT
+            )
+            .unwrap(),
+            Some(tilo_ui::host_operation::ResourceOperationStart::Accepted)
+        ));
+        CANCELLED.set(0);
+        CLOSED_DROPS.set(0);
+        let report = tile.replace_component(component(&host, 1)).pop().unwrap();
+        assert!(report.recovery.is_some());
+        assert_eq!(CANCELLED.get(), 1);
+        assert_eq!(CLOSED_DROPS.get(), 1);
+        // SAFETY: each retained actual old pointer has CLOSED admission metadata.
+        // Closed refusal occurs before dereference; no stale OPEN delivery is attempted.
+        for &node in nodes.keys() {
+            unsafe {
+                assert!(matches!(
+                    invoke_bound_node::<()>(
+                        &bindings,
+                        &nodes,
+                        node,
+                        &mut outer,
+                        &ROOT,
+                        |_, _, _| panic!("stale callback executed")
+                    ),
+                    Err(BoundDispatchError::ClosedLifetime)
+                ));
+            }
+        }
+    }
+
+    {
+        let host = ProbeHarness::new();
+        let component = component(&host, 1);
+        let checkout = component.record().clone();
+        let replace = std::rc::Rc::new(Cell::new(false));
+        let mut driver = tilo_ui::headless::Driver::new_with_controlled_inputs(
+            tilo_ui::State::new(),
+            Box::new(ReplacingHost(
+                TileHost::from_component(component),
+                replace.clone(),
+            )),
+            (400, 300),
+            tilo_ui::Theme::dark(),
+            tilo_ui::font_catalog::fixture_renderer(),
+            tilo_ui::permissions::MemberId::person("probe-author"),
+        );
+        host.records.try_flush().unwrap();
+        host.workspace.refuse.set(true);
+        host.records
+            .with(&checkout.id, |doc| {
+                doc.put(ROOT, "unsaved", "retained").unwrap();
+            })
+            .unwrap();
+        replace.set(true);
+        driver.relayout();
+        assert_eq!(driver.component_close_reports().len(), 1);
+        driver.close_components();
+        assert_eq!(
+            driver.component_close_reports().len(),
+            1,
+            "close duplicated recovery"
+        );
+        let mut reports = driver.take_component_close_reports();
+        drop(driver);
+        drop(host.records);
+        drop(host.owners);
+        let report = reports.last_mut().unwrap();
+        assert!(report.view_error.is_some());
+        assert!(report.resource_error.is_some());
+        assert!(report.recovery.is_some());
+        assert_eq!(
+            report
+                .record_retry
+                .as_ref()
+                .unwrap()
+                .read(&checkout.id, |doc| doc
+                    .get(ROOT, "unsaved")
+                    .unwrap()
+                    .unwrap()
+                    .0
+                    .as_str()
+                    .unwrap()
+                    .to_owned())
+                .unwrap(),
+            "retained"
+        );
+        host.workspace.refuse.set(false);
+        report.retry_view().unwrap();
+        report.retry_resource().unwrap();
+        assert!(report.view_retry.is_none());
+        assert!(report.record_retry.is_none());
+        assert!(report.view_error.is_none());
+        assert!(report.resource_error.is_none());
+    }
+}
+
 #[test]
 #[allow(
     clippy::too_many_lines,
@@ -1270,13 +1495,491 @@ fn driver_tiles_route_root_callbacks_and_paint_with_current_permissions() {
     }
 }
 
+fn assert_closed_reentry() {
+    REENTRY.with_borrow(|entry| {
+        if let Some((bindings, nodes, node)) = entry {
+            // SAFETY: only actual CLOSED metadata is delivered during owning cleanup.
+            // The refused callback neither dereferences nor aliases its current ancestor.
+            assert!(matches!(
+                unsafe {
+                    invoke_bound_node::<()>(
+                        bindings,
+                        nodes,
+                        *node,
+                        &mut AutoCommit::new(),
+                        &ROOT,
+                        |_, _, _| panic!("closed reentry executed"),
+                    )
+                },
+                Err(BoundDispatchError::ClosedLifetime)
+            ));
+        }
+    });
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"
+)]
+#[test]
+fn operation_captures_are_destroyed_under_the_closed_owner_on_every_exit() {
+    {
+        for panic_cancel in [false, true] {
+            let host = ProbeHarness::new();
+            let mut component = component(&host, 1);
+            let (tx, rx) = std::sync::mpsc::channel();
+            component
+                .mount(move |event| {
+                    tx.send(event).unwrap();
+                })
+                .unwrap();
+            let mut tile = TileHost::from_component(component);
+            let mut tree = taffy::TaffyTree::new();
+            let mut nodes = HashMap::new();
+            let node = tile.build_layout(&mut tree, &tilo_ui::Theme::dark(), &mut nodes);
+            let mut bindings = BoundNodeMap::new();
+            // SAFETY: this admission uses the fixture's live matching topology.
+            unsafe {
+                bindings.rebuild(&tile, &tree, node, &nodes);
+            }
+            start_operation(
+                &mut tile,
+                &tilo_ui::host_operation::ResourceOperation::local(
+                    tilo_actions::InvocationId::new(),
+                    tilo_actions::OperationKind::Effect,
+                    "probe",
+                    &[],
+                ),
+                &mut tilo_ui::widget::Edits::lend(&mut AutoCommit::new()),
+                &ROOT,
+            )
+            .unwrap();
+            REENTRY.with_borrow_mut(|entry| *entry = Some((bindings, nodes, node)));
+            PANIC_CANCEL.set(panic_cancel);
+            CANCELLED.set(0);
+            CLOSED_DROPS.set(0);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| drop(tile)));
+            assert_eq!(result.is_err(), panic_cancel);
+            assert_eq!(CANCELLED.get(), 1);
+            assert_eq!(CLOSED_DROPS.get(), 1);
+            assert!(rx.try_recv().is_err());
+            REENTRY.with_borrow_mut(|entry| *entry = None);
+        }
+    }
+
+    {
+        let host = ProbeHarness::new();
+        let mut tile = TileHost::from_component(component(&host, 1));
+        let id = tilo_actions::InvocationId::new();
+        let mut doc = AutoCommit::new();
+        start_operation(
+            &mut tile,
+            &tilo_ui::host_operation::ResourceOperation::local(
+                id,
+                tilo_actions::OperationKind::Effect,
+                "probe",
+                &[],
+            ),
+            &mut tilo_ui::widget::Edits::lend(&mut doc),
+            &ROOT,
+        )
+        .unwrap();
+        FINISH_OPERATION.set(true);
+        assert!(
+            poll_resource_operation(&mut tile, id, false, &doc, &ROOT)
+                .unwrap()
+                .is_terminal()
+        );
+        FINISH_OPERATION.set(false);
+        CANCELLED.set(0);
+        tilo_ui::component_lifecycle::close_components(&mut tile);
+        assert_eq!(CANCELLED.get(), 0, "terminal work was cancelled twice");
+    }
+
+    {
+        let host = ProbeHarness::new();
+        for create in [
+            factory_then_error as tilo_ui::application::ComponentFactory,
+            factory_then_unwind,
+        ] {
+            CLOSED_DROPS.set(0);
+            let definition = definition(create);
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                definition.instantiate(
+                    host.prepare(&definition, 1, &LaunchTarget::New).unwrap(),
+                    LaunchTarget::New,
+                    RestoreInput::None,
+                )
+            }));
+            assert!(result.is_err() || result.unwrap().is_err());
+            assert_eq!(CLOSED_DROPS.get(), 1);
+        }
+        INVALID_VIEW.set(true);
+        CLOSED_DROPS.set(0);
+        let definition = definition(factory);
+        assert!(
+            definition
+                .instantiate(
+                    host.prepare(&definition, 1, &LaunchTarget::New).unwrap(),
+                    LaunchTarget::New,
+                    RestoreInput::None
+                )
+                .is_err()
+        );
+        assert_eq!(CLOSED_DROPS.get(), 1);
+        INVALID_VIEW.set(false);
+        let mut component = component(&host, 1);
+        CLOSED_DROPS.set(0);
+        let first = component.suspend();
+        let second = component.close();
+        assert_eq!(
+            first.recovery.as_ref().unwrap().instance_id,
+            second.recovery.as_ref().unwrap().instance_id
+        );
+        assert_eq!(CLOSED_DROPS.get(), 1);
+    }
+
+    {
+        let host = ProbeHarness::new();
+        let mut tile = TileHost::from_component(component(&host, 1));
+        CLOSED_DROPS.set(0);
+        PANIC_VIEW.set(true);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                tilo_ui::component_lifecycle::close_components(&mut tile)
+            }))
+            .is_err()
+        );
+        assert_eq!(
+            CLOSED_DROPS.get(),
+            1,
+            "close unwind left a live root in the tile"
+        );
+        tile.on_external_event(
+            "refused",
+            &mut tilo_ui::widget::Edits::lend(&mut AutoCommit::new()),
+            &ROOT,
+        );
+        assert_eq!(CLOSED_DROPS.get(), 1);
+    }
+}
+
 thread_local! {
     static NESTED_REPLACE: RefCell<Option<std::rc::Rc<Cell<bool>>>> = const { RefCell::new(None) };
     static NESTED: RefCell<Option<AppComponent>> = const { RefCell::new(None) };
     static INVALID_VIEW: Cell<bool> = const { Cell::new(false) };
 }
+fn nested_factory(
+    mut context: ProcessContext,
+    _: LaunchTarget,
+    _: RestoreInput,
+) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
+    let record = context.record().id.as_str().to_owned();
+    context
+        .initialize_new_resource(|doc| {
+            doc.put(ROOT, "marker", record.clone())
+                .map_err(|e| e.to_string())
+        })
+        .map_err(tilo_ui::launch::LaunchError::Record)?;
+    let child = NESTED.with_borrow_mut(Option::take).unwrap();
+    let tile = TileHost::from_component(child);
+    let child: Box<dyn Widget> = if let Some(replace) = NESTED_REPLACE.with_borrow_mut(Option::take)
+    {
+        Box::new(ReplacingHost(tile, replace))
+    } else {
+        Box::new(tile)
+    };
+    Ok(AppComponent::new(
+        context,
+        Box::new(Root(Column::new().push(child), record, false)),
+        tilo_actions::ActionRegistry::new(),
+    ))
+}
+#[test]
+#[allow(
+    clippy::too_many_lines,
+    reason = "one nested replacement must preserve live parent, independent recovery ownership and durable retry"
+)]
+fn nested_close_replacement_and_mount_failures_report_each_original_once() {
+    {
+        let host = ProbeHarness::new();
+        let child = component(&host, 2);
+        NESTED.with_borrow_mut(|nested| *nested = Some(child));
+        let definition = definition(nested_factory);
+        let parent = definition
+            .instantiate(
+                host.prepare(&definition, 1, &LaunchTarget::New).unwrap(),
+                LaunchTarget::New,
+                RestoreInput::None,
+            )
+            .unwrap();
+        host.workspace.refuse.set(true);
+        let mut tile = TileHost::from_component(parent);
+        let mut reports = tilo_ui::component_lifecycle::close_components(&mut tile);
+        assert_eq!(reports.len(), 2);
+        assert!(tilo_ui::component_lifecycle::close_components(&mut tile).is_empty());
+        assert!(tilo_ui::component_lifecycle::take_component_close_reports(&mut tile).is_empty());
+        drop(tile);
+        let mut instances = reports
+            .iter()
+            .map(|report| report.recovery.as_ref().unwrap().instance_id)
+            .collect::<Vec<_>>();
+        instances.sort_unstable();
+        assert_eq!(instances, vec![1, 2]);
+        host.workspace.refuse.set(false);
+        for report in &mut reports {
+            let id = report.recovery.as_ref().unwrap().instance_id;
+            assert!(report.view_error.is_some());
+            report.retry_view().unwrap();
+            assert!(
+                host.saved_view(id).is_some(),
+                "the retried view of instance {id} is in the workspace"
+            );
+        }
+    }
+
+    {
+        for native in [false, true] {
+            let host = ProbeHarness::new();
+            NESTED.with_borrow_mut(|nested| *nested = Some(component(&host, 2)));
+            let definition = definition(nested_factory);
+            let mut parent = definition
+                .instantiate(
+                    host.prepare(&definition, 1, &LaunchTarget::New).unwrap(),
+                    LaunchTarget::New,
+                    RestoreInput::None,
+                )
+                .unwrap();
+            parent.mount(|_| {}).unwrap();
+            host.workspace.refuse.set(true);
+            let error = if native {
+                tilo_ui::App::from_component(parent, crate::support::application::runner_inputs())
+                    .err()
+                    .unwrap()
+            } else {
+                tilo_ui::headless::Driver::from_component(
+                    parent,
+                    (320, 180),
+                    crate::support::application::runner_inputs(),
+                )
+                .err()
+                .unwrap()
+            };
+            let tilo_ui::launch::LaunchError::ComponentSetup { recovery, .. } = error else {
+                panic!("missing setup recovery");
+            };
+            let mut reports = recovery.into_close_reports().unwrap();
+            assert_eq!(reports.len(), 2);
+            reports.sort_by_key(|report| report.recovery.as_ref().unwrap().instance_id);
+            host.workspace.refuse.set(false);
+            for (index, report) in reports.iter_mut().enumerate() {
+                assert_eq!(report.recovery.as_ref().unwrap().instance_id, [1, 2][index]);
+                assert!(report.view_error.is_some());
+                report.retry_view().unwrap();
+                assert!(host.saved_view([1, 2][index]).is_some());
+            }
+        }
+    }
+
+    {
+        let child_host = ProbeHarness::new();
+        let child = component(&child_host, 2);
+        let checkout = child.record().clone();
+        child_host.records.try_flush().unwrap();
+        child_host.workspace.refuse.set(true);
+        child_host
+            .records
+            .with(&checkout.id, |doc| {
+                doc.put(ROOT, "unsaved", "nested-retained").unwrap();
+            })
+            .unwrap();
+        NESTED.with_borrow_mut(|n| *n = Some(child));
+        let replace = std::rc::Rc::new(Cell::new(false));
+        NESTED_REPLACE.with_borrow_mut(|n| *n = Some(replace.clone()));
+        let parent_host = ProbeHarness::new();
+        let definition = definition(nested_factory);
+        let mut parent = definition
+            .instantiate(
+                parent_host
+                    .prepare(&definition, 1, &LaunchTarget::New)
+                    .unwrap(),
+                LaunchTarget::New,
+                RestoreInput::None,
+            )
+            .unwrap();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        parent
+            .mount(move |event| {
+                sender.send(event).unwrap();
+            })
+            .unwrap();
+        let mut driver = controlled_driver(Box::new(TileHost::from_component(parent)), (400, 300));
+        replace.set(true);
+        CAPTURES.with_borrow_mut(Vec::clear);
+        driver.relayout();
+        assert_eq!(
+            driver.component_close_reports().len(),
+            1,
+            "open parent hid its replaced child's recovery"
+        );
+        let mut reports = driver.take_component_close_reports();
+        assert!(
+            driver.take_component_close_reports().is_empty(),
+            "nested report transferred twice"
+        );
+        let live = CAPTURES.with_borrow(|c| {
+            c.iter()
+                .find(|(_, label, _)| *label == "draw-permissions")
+                .unwrap()
+                .2
+                .clone()
+        });
+        assert!(
+            live.writer().try_set(1),
+            "parent was closed to obtain child recovery"
+        );
+        assert!(receiver.try_recv().is_ok());
+        drop(driver);
+        assert!(!live.writer().try_set(2));
+        drop(child_host.records);
+        drop(child_host.owners);
+        drop(child_host.views);
+        drop(parent_host);
+        let report = reports.last_mut().unwrap();
+        assert_eq!(report.recovery.as_ref().unwrap().instance_id, 2);
+        assert!(report.view_error.is_some() && report.resource_error.is_some());
+        assert_eq!(
+            report
+                .record_retry
+                .as_ref()
+                .unwrap()
+                .read(&checkout.id, |doc| {
+                    doc.get(ROOT, "unsaved")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .as_str()
+                        .unwrap()
+                        .to_owned()
+                })
+                .unwrap(),
+            "nested-retained"
+        );
+        child_host.workspace.refuse.set(false);
+        report.retry_view().unwrap();
+        report.retry_resource().unwrap();
+        assert!(report.view_retry.is_none() && report.record_retry.is_none());
+        let mut owners =
+            tilo_ui::resource::ResourceOwners::writing(std::rc::Rc::clone(&child_host.workspace)
+                as std::rc::Rc<dyn tilo_ui::resource::DocumentPort>);
+        let saved = owners
+            .open(
+                crate::support::application::APP,
+                crate::support::application::WORKSPACE,
+            )
+            .unwrap();
+        saved.try_open_resource(&checkout).unwrap();
+        assert_eq!(
+            saved
+                .read(&checkout.id, |doc| {
+                    doc.get(ROOT, "unsaved")
+                        .unwrap()
+                        .unwrap()
+                        .0
+                        .as_str()
+                        .unwrap()
+                        .to_owned()
+                })
+                .unwrap(),
+            "nested-retained"
+        );
+    }
+}
+
+fn factory_then_error(
+    context: ProcessContext,
+    target: LaunchTarget,
+    restore: RestoreInput,
+) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
+    let _owned = factory(context, target, restore)?;
+    Err(tilo_ui::launch::LaunchError::Operation(
+        "controlled post-owner error".into(),
+    ))
+}
+#[allow(
+    clippy::panic_in_result_fn,
+    reason = "fixture deliberately unwinds after installing its guarded component owner"
+)]
+fn factory_then_unwind(
+    context: ProcessContext,
+    target: LaunchTarget,
+    restore: RestoreInput,
+) -> Result<AppComponent, tilo_ui::launch::LaunchError> {
+    let _owned = factory(context, target, restore)?;
+    panic!("controlled post-owner unwind")
+}
 
 thread_local! { static PANIC_VIEW: Cell<bool> = const { Cell::new(false) }; }
+
+struct ReplacingHost(TileHost, std::rc::Rc<Cell<bool>>);
+impl Widget for ReplacingHost {
+    fn update(&mut self, doc: &AppModel, path: &ModelPath) -> bool {
+        if self.1.replace(false) {
+            self.0
+                .replace_content(tilo_ui::widget::TileContent::Notice {
+                    title: "Closed".into(),
+                    detail: "Fixture replacement".into(),
+                });
+        }
+        self.0.update(doc, path)
+    }
+    fn build_layout(
+        &mut self,
+        tree: &mut taffy::TaffyTree<()>,
+        theme: &tilo_ui::Theme,
+        nodes: &mut HashMap<taffy::NodeId, *mut dyn Widget>,
+    ) -> taffy::NodeId {
+        let child = self.0.build_layout(tree, theme, nodes);
+        tree.new_with_children(taffy::Style::default(), &[child])
+            .unwrap()
+    }
+    fn apply_layout(
+        &mut self,
+        tree: &taffy::TaffyTree<()>,
+        node: taffy::NodeId,
+        origin: vello::kurbo::Point,
+    ) {
+        self.0
+            .apply_layout(tree, tree.children(node).unwrap()[0], origin);
+    }
+    fn draw(&mut self, ctx: &mut tilo_ui::draw::DrawCtx<'_>) {
+        #[allow(
+            unused_variables,
+            unused_mut,
+            reason = "a draw binds only the parts it uses"
+        )]
+        let (scene, transform, text, theme, mut env) = ctx.parts();
+        self.0.draw(&mut tilo_ui::draw::DrawCtx::new(
+            scene,
+            transform,
+            text,
+            theme,
+            env.clone(),
+        ));
+    }
+    fn name(&self) -> &'static str {
+        "ReplacingHost"
+    }
+    fn get_rect(&self) -> vello::kurbo::Rect {
+        self.0.get_rect()
+    }
+    fn children(&self) -> Vec<&dyn Widget> {
+        vec![&self.0]
+    }
+    fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
+        vec![&mut self.0]
+    }
+}
 
 // Registration-only uniqueness must not mistake this retained wrapper for
 // its sole registered inline child. Name/address are deliberately identical.
@@ -1330,28 +2033,6 @@ impl Widget for SameNameUnregisteredWrapper {
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         vec![&mut self.0]
     }
-}
-
-fn assert_closed_reentry() {
-    REENTRY.with_borrow(|entry| {
-        if let Some((bindings, nodes, node)) = entry {
-            // SAFETY: only actual CLOSED metadata is delivered during owning cleanup.
-            // The refused callback neither dereferences nor aliases its current ancestor.
-            assert!(matches!(
-                unsafe {
-                    invoke_bound_node::<()>(
-                        bindings,
-                        nodes,
-                        *node,
-                        &mut AutoCommit::new(),
-                        &ROOT,
-                        |_, _, _| panic!("closed reentry executed"),
-                    )
-                },
-                Err(BoundDispatchError::ClosedLifetime)
-            ));
-        }
-    });
 }
 
 fn controlled_driver(root: Box<dyn Widget>, viewport: (u32, u32)) -> tilo_ui::headless::Driver {

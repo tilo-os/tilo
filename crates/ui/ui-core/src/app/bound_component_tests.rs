@@ -1017,6 +1017,7 @@ include!("owner_publication_tests.rs");
 include!("action_directory_snapshot_bound_tests.rs");
 include!("local_input_capture_tests.rs");
 include!("bound_document_sync_tests.rs");
+include!("shared_forest_tests.rs");
 
 #[test]
 fn background_document_job_is_broker_admitted_before_its_canonical_edit() {
@@ -1096,6 +1097,495 @@ fn background_document_job_is_broker_admitted_before_its_canonical_edit() {
     clippy::too_many_lines,
     reason = "one controlled lifetime traces publication through refusal and delivery"
 )]
+#[test]
+fn bound_publication_and_cache_keep_contracts_and_id_lifetimes() {
+    {
+        let mut fixture = ActionFixture::broker();
+        let outer = fixture.app.state.doc.get_heads();
+        let address = tilo_actions::ActionAddress::new("bound:probe", "follow-up");
+        let actor = tilo_actions::Actor::Member(fixture.app.local_author.clone());
+        let error = fixture
+            .app
+            .invoke_resource_action(
+                ResourceInvocation::new(&address, &actor)
+                    .approval(Some(&crate::app_core::TEST_APPROVAL)),
+            )
+            .unwrap_err();
+        assert_eq!(
+            crate::bound_dispatch::api_error_code(&error),
+            "ambiguous_action_target"
+        );
+        let resources = fixture.app.publication_resources();
+        let first = fixture
+            .app
+            .actions
+            .bound_publication
+            .alias(&fixture.bindings[0], "bound:probe")
+            .unwrap();
+        let second = fixture
+            .app
+            .actions
+            .bound_publication
+            .alias(&fixture.bindings[1], "bound:probe")
+            .unwrap();
+        assert_ne!(first, second);
+        let descriptor = |id: &str| {
+            tilo_actions::api::resolve(
+                &resources,
+                &tilo_actions::ActionAddress::new(id, "follow-up"),
+            )
+            .unwrap()
+        };
+        assert_eq!(
+            descriptor(&first).contract.confirmation,
+            tilo_actions::ConfirmationPolicy::None
+        );
+        assert_eq!(
+            descriptor(&second).contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        let revision = fixture.app.action_directory_revision();
+        assert!(matches!(
+            fixture
+                .app
+                .resolve_action_directory(&revision, &second, "follow-up"),
+            runtime_collab::ActionDirectoryResolution::Found { .. }
+        ));
+        fixture
+            .app
+            .invoke_resource_action(
+                ResourceInvocation::new(
+                    &tilo_actions::ActionAddress::new(&second, "follow-up"),
+                    &actor,
+                )
+                .approval(Some(&crate::app_core::TEST_APPROVAL))
+                .broker_admitted(true)
+                .invocation(Some(tilo_actions::InvocationId::new())),
+            )
+            .unwrap();
+        assert!(
+            fixture
+                .records
+                .read_history(&fixture.bindings[0].checkout.id, |doc, history| history
+                    .next_undo_in(doc, &fixture.bindings[0].author, 11)
+                    .is_none())
+                .unwrap()
+        );
+        fixture
+            .records
+            .with_history(&fixture.bindings[1].checkout.id, |doc, history| {
+                assert!(doc.get(ROOT, "follow-up").unwrap().is_some());
+                assert_eq!(
+                    history
+                        .next_undo_in(doc, &fixture.bindings[1].author, 12)
+                        .unwrap()
+                        .instance_id,
+                    Some(12)
+                );
+            })
+            .unwrap();
+        assert_eq!(fixture.app.state.doc.get_heads(), outer);
+    }
+
+    {
+        let mut fixture = ActionFixture::new();
+        DISCOVERY_COUNT.set(0);
+        let _ = fixture.app.collect_resources();
+        let first = DISCOVERY_COUNT.get();
+        let _ = fixture.app.collect_resources();
+        assert_eq!(DISCOVERY_COUNT.get(), first);
+        let expired = fixture.permissions.borrow().clone().at_unix_time(120);
+        fixture.permissions.set(expired);
+        let resources = fixture.app.collect_resources();
+        assert!(
+            tilo_actions::api::resolve(
+                &resources,
+                &tilo_actions::ActionAddress::new("bound:probe", "follow-up")
+            )
+            .is_none()
+        );
+        assert!(DISCOVERY_COUNT.get() > first);
+        let expired = fixture.permissions.borrow().clone();
+        fixture.permissions.set(expired.at_unix_time(100));
+        fixture
+            .records
+            .with_action_state(&fixture.bindings[0].checkout.id, |_, _, state| {
+                state.generation = Some(u64::MAX);
+            })
+            .unwrap();
+        fixture.bindings[0]
+            .with_document(&mut fixture.app.state.doc, |_, _| {})
+            .unwrap();
+        let _ = fixture.app.collect_resources();
+        let before = DISCOVERY_COUNT.get();
+        let _ = fixture.app.collect_resources();
+        assert!(DISCOVERY_COUNT.get() > before);
+        assert_eq!(
+            fixture
+                .records
+                .action_generation(&fixture.bindings[0].checkout.id)
+                .unwrap(),
+            None
+        );
+    }
+
+    {
+        let mut fixture = ActionFixture::new();
+        fixture.app.refresh_semantic_tree();
+        let targets = fixture
+            .app
+            .accessibility
+            .semantic_tree
+            .bound_actions_for_test();
+        let (id, _) = targets
+            .iter()
+            .find(|(_, target)| {
+                target.address.instance_id == 12 && target.address.address.action == "view"
+            })
+            .unwrap();
+        let outer = fixture.app.state.doc.get_heads();
+        assert!(
+            fixture
+                .app
+                .invoke_semantic_action(id, "view", None)
+                .unwrap()
+        );
+        fixture.app.open_action_palette();
+        let target = fixture.target(0, "view");
+        assert!(
+            fixture
+                .app
+                .actions
+                .action_palette
+                .as_deref_mut()
+                .unwrap()
+                .activate_bound(&target)
+        );
+        let pending = fixture
+            .app
+            .actions
+            .action_palette
+            .as_deref_mut()
+            .unwrap()
+            .take_operation()
+            .unwrap();
+        assert!(
+            pending
+                .bound
+                .as_ref()
+                .unwrap()
+                .binding
+                .same_component(&target.binding)
+        );
+        assert_eq!(fixture.app.state.doc.get_heads(), outer);
+        fixture.app.close_components();
+        let actor = tilo_actions::Actor::Member(fixture.app.local_author.clone());
+        assert!(
+            fixture
+                .app
+                .invoke_bound_target(
+                    &target,
+                    &ResourceInvocation::new(&target.address.address, &actor)
+                        .approval(Some(&crate::app_core::TEST_APPROVAL))
+                )
+                .is_err()
+        );
+    }
+
+    {
+        let mut fixture = ActionFixture::broker();
+        let query = runtime_collab::ActionDirectoryQuery {
+            peer_id: 1,
+            revision: String::new(),
+            cursor: vec![],
+            needle: String::new(),
+            parent_resource: String::new(),
+            max_results: 1,
+            max_bytes: 8192,
+            max_work: 16,
+            max_depth: 8,
+            resource_name: String::new(),
+        };
+        let first = fixture.app.action_directory_page(query.clone());
+        assert_eq!(first.rows.len(), 1);
+        assert!(!first.next_cursor.is_empty());
+        let second = fixture
+            .app
+            .action_directory_page(runtime_collab::ActionDirectoryQuery {
+                revision: first.revision.clone(),
+                cursor: first.next_cursor.clone(),
+                ..query.clone()
+            });
+        assert_eq!(second.rows.len(), 1);
+        assert_ne!(first.rows[0].resource, second.rows[0].resource);
+        assert_eq!(
+            first.rows[0]
+                .visibility
+                .as_ref()
+                .map(|visibility| visibility.action.as_str()),
+            Some("view")
+        );
+        assert_eq!(
+            second.rows[0]
+                .visibility
+                .as_ref()
+                .map(|visibility| visibility.action.as_str()),
+            Some("follow-up")
+        );
+        let eager = fixture.app.publication_resources();
+        for page in [&first, &second] {
+            assert!(
+                eager
+                    .iter()
+                    .any(|resource| resource.id.as_str() == page.rows[0].resource)
+            );
+        }
+        let alias = second.rows[0].resource.clone();
+        let previous_permissions = fixture.permissions.borrow().clone();
+        fixture.permissions.set(
+            crate::permissions::PermissionContext::stranger(&crate::permissions::MemberId::person(
+                "fixture-user",
+            ))
+            .at_unix_time(100),
+        );
+        let stale = fixture
+            .app
+            .action_directory_page(runtime_collab::ActionDirectoryQuery {
+                revision: first.revision.clone(),
+                cursor: first.next_cursor,
+                ..query
+            });
+        assert!(stale.stale_cursor);
+        assert!(
+            fixture
+                .app
+                .resolve_publication_resource(&alias, "follow-up")
+                .is_none()
+        );
+        let actor = tilo_actions::Actor::Member(fixture.app.local_author.clone());
+        assert!(
+            fixture
+                .app
+                .invoke_resource_action(
+                    ResourceInvocation::new(
+                        &tilo_actions::ActionAddress::new(&alias, "follow-up"),
+                        &actor,
+                    )
+                    .approval(Some(&crate::app_core::TEST_APPROVAL))
+                    .broker_admitted(true),
+                )
+                .is_err()
+        );
+        fixture.permissions.set(previous_permissions);
+        for malformed in [
+            format!("{}broken", crate::bound_dispatch::PUBLICATION_PREFIX),
+            format!("{alias}:extra"),
+            format!(
+                "{}{}",
+                crate::bound_dispatch::PUBLICATION_PREFIX,
+                "x".repeat(4096)
+            ),
+        ] {
+            assert!(
+                fixture
+                    .app
+                    .actions
+                    .bound_publication
+                    .target(&tilo_actions::ActionAddress::new(&malformed, "view"))
+                    .is_err()
+            );
+            assert!(
+                fixture
+                    .app
+                    .resolve_publication_resource(&malformed, "view")
+                    .is_none()
+            );
+        }
+        fixture.app.close_components();
+        assert!(
+            fixture
+                .app
+                .resolve_publication_resource(&alias, "follow-up")
+                .is_none()
+        );
+        let mut replacement = ActionFixture::broker();
+        fixture.app.actions.bound_broker_route_for_test =
+            replacement.app.actions.bound_broker_route_for_test.clone();
+        fixture.app.root_widget = std::mem::replace(
+            &mut replacement.app.root_widget,
+            Box::new(crate::widget::Text::new("empty")),
+        );
+        fixture.app.invalidate_widget_resource_cache();
+        let replacements = fixture.app.publication_resources();
+        assert!(!replacements.is_empty());
+        assert!(
+            replacements
+                .iter()
+                .all(|resource| resource.id.as_str() != alias)
+        );
+        assert!(
+            fixture
+                .app
+                .resolve_publication_resource(&alias, "view")
+                .is_none()
+        );
+    }
+
+    {
+        let mut fixture = ActionFixture::broker();
+        let alias = fixture
+            .app
+            .actions
+            .bound_publication
+            .alias(&fixture.bindings[1], "bound:probe")
+            .unwrap();
+        let old = std::mem::replace(
+            &mut fixture.app.root_widget,
+            Box::new(crate::widget::Text::new("empty")),
+        );
+        fixture.app.root_widget = Box::new(
+            Column::new()
+                .push(Box::new(Probe {
+                    collision: Some(alias.clone()),
+                    ..Probe::default()
+                }))
+                .push(old),
+        );
+        fixture
+            .app
+            .actions
+            .action_registry
+            .register::<FollowUp>("bound.apply");
+        fixture.app.invalidate_widget_resource_cache();
+        let resources = fixture.app.publication_resources();
+        assert_eq!(
+            resources
+                .iter()
+                .filter(|resource| resource.id.as_str() == alias)
+                .count(),
+            1
+        );
+        let descriptor = tilo_actions::api::resolve(
+            &resources,
+            &tilo_actions::ActionAddress::new(&alias, "follow-up"),
+        )
+        .unwrap();
+        assert_eq!(
+            descriptor.contract.confirmation,
+            tilo_actions::ConfirmationPolicy::Confirm
+        );
+        assert!(
+            fixture
+                .app
+                .actions
+                .bound_publication
+                .alias(&fixture.bindings[0], &"x".repeat(4096))
+                .is_err()
+        );
+    }
+
+    {
+        let mut fixture = ActionFixture::new();
+        fixture.app.layout.walks = crate::app::runtime::TreeWalks::default();
+        CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
+        fixture.app.refresh_control_action_availability();
+        assert_eq!(
+            CONTROL_AUTHORITY.with_borrow(Clone::clone),
+            vec![(false, true), (true, true)]
+        );
+        fixture.permissions.set(
+            crate::permissions::PermissionContext::stranger(&crate::permissions::MemberId::person(
+                "fixture-user",
+            ))
+            .at_unix_time(100),
+        );
+        CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
+        fixture.app.refresh_control_action_availability();
+        assert_eq!(
+            CONTROL_AUTHORITY.with_borrow(Clone::clone),
+            vec![(false, false), (true, false)]
+        );
+    }
+}
+
+/// The host's view of the person's authority over a bound component's
+/// actions is read when the host changes it, never by a frame.
+#[test]
+fn bound_controls_read_the_host_authority_only_when_it_changes() {
+    use collab_types::action_authority::AppActionAuthorityProjection;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::{Arc, Mutex};
+    const WORKSPACE: &str = "00000000-0000-0000-0000-000000000004";
+    const APP: &str = "so.tilo.binding-probe";
+    let owner = AppActionAuthorityProjection::project(
+        &tilo_action_policy::WorkspacePolicy::new(WORKSPACE, "fixture-user"),
+        APP,
+        "fixture-user",
+        false,
+    );
+    let held = Arc::new(Mutex::new(serde_json::to_vec(&owner).unwrap()));
+    let reads = Arc::new(AtomicUsize::new(0));
+    let read: tilo_process_services::action_authority::AuthoritySource = {
+        let (held, reads) = (held.clone(), reads.clone());
+        Arc::new(move || {
+            reads.fetch_add(1, Ordering::SeqCst);
+            Ok(Some(held.lock().unwrap().clone()))
+        })
+    };
+    let (watch, changed) = crate::application::manual_authority_watch();
+    let mut fixture = ActionFixture::new();
+    fixture.permissions.set(
+        crate::application::follow_process_authority(
+            crate::permissions::PermissionContext::member_of(
+                WORKSPACE,
+                &crate::permissions::MemberId::person("fixture-user"),
+                crate::permissions::Role::Viewer,
+            ),
+            read,
+            watch,
+            WORKSPACE,
+            APP,
+        )
+        .unwrap(),
+    );
+    assert_eq!(
+        reads.load(Ordering::SeqCst),
+        1,
+        "read once as it is followed"
+    );
+    CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
+    fixture.app.refresh_control_action_availability();
+    assert_eq!(
+        CONTROL_AUTHORITY.with_borrow(Clone::clone),
+        vec![(false, true), (true, true)]
+    );
+    // Every frame the native runner draws pushes availability first.
+    CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
+    for _ in 0..120 {
+        fixture.app.refresh_control_action_availability();
+    }
+    assert_eq!(reads.load(Ordering::SeqCst), 1, "a frame reads no file");
+    assert!(
+        CONTROL_AUTHORITY.with_borrow(Vec::is_empty),
+        "a frame walks no control"
+    );
+    assert_eq!(fixture.app.permissions_change_at(), None);
+    // The host withdraws the person's ownership.
+    let mut revoked = owner.clone();
+    revoked.policy.owner = None;
+    *held.lock().unwrap() = serde_json::to_vec(&revoked).unwrap();
+    let revision = crate::permissions::shared_revision();
+    changed();
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
+    assert_ne!(crate::permissions::shared_revision(), revision);
+    fixture.app.refresh_control_action_availability();
+    assert_eq!(
+        CONTROL_AUTHORITY.with_borrow(Clone::clone),
+        vec![(false, false), (true, false)]
+    );
+    assert_eq!(reads.load(Ordering::SeqCst), 2);
+}
+
 #[test]
 fn compound_bound_effects_preserve_typing_ownership_and_redo() {
     {
@@ -2467,6 +2957,111 @@ fn input_surfaces_keep_their_controls_without_native_document_chrome() {
         );
         app.close_components();
     }
+}
+
+/// A frame that hands over the same component snapshot reuses what was
+/// derived from it (the controls' allowed addresses, the component's semantic
+/// nodes) instead of copying and walking the whole published tree again, and
+/// a changed snapshot or permission still produces exactly what a fresh
+/// derivation would.
+#[test]
+fn unchanged_component_snapshots_keep_their_controls_and_semantic_nodes() {
+    let mut fixture = ActionFixture::new();
+    // What constructing the fixture pushed is owed again.
+    fixture.app.layout.walks = crate::app::runtime::TreeWalks::default();
+    let at = |fixture: &ActionFixture, time| {
+        let moved = fixture.permissions.borrow().clone().at_unix_time(time);
+        fixture.permissions.set(moved);
+    };
+    let availability = |fixture: &mut ActionFixture| {
+        CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
+        fixture.app.refresh_control_action_availability();
+        CONTROL_AUTHORITY.with_borrow(Clone::clone)
+    };
+    assert_eq!(
+        availability(&mut fixture),
+        vec![(false, true), (true, true)]
+    );
+    assert_eq!(
+        availability(&mut fixture),
+        vec![],
+        "a frame that changed nothing, permissions included, walks no component"
+    );
+    // Owed again as after any change of the tree.
+    fixture.app.layout.walks = crate::app::runtime::TreeWalks::default();
+    assert_eq!(
+        availability(&mut fixture),
+        vec![(false, true), (true, true)],
+        "a reused derivation answers as the first did"
+    );
+    at(&fixture, 120);
+    assert_eq!(
+        availability(&mut fixture),
+        vec![(false, false), (true, false)],
+        "an expired grant withdraws the controls"
+    );
+    at(&fixture, 100);
+    assert_eq!(
+        availability(&mut fixture),
+        vec![(false, true), (true, true)]
+    );
+
+    fixture.app.refresh_semantic_tree();
+    let (id, _) = fixture
+        .app
+        .accessibility
+        .semantic_tree
+        .bound_actions_for_test()
+        .into_iter()
+        .find(|(_, target)| target.address.instance_id == 11)
+        .expect("a bound component action in the semantic tree");
+    let before = std::ptr::from_ref(
+        fixture
+            .app
+            .accessibility
+            .semantic_tree
+            .node(&id)
+            .expect("the component's resource node"),
+    );
+    assert!(
+        fixture.app.refresh_semantic_tree().is_empty(),
+        "nothing changed"
+    );
+    assert!(
+        std::ptr::eq(
+            before,
+            fixture
+                .app
+                .accessibility
+                .semantic_tree
+                .node(&id)
+                .expect("the component's resource node"),
+        ),
+        "an unchanged snapshot keeps its nodes rather than rebuilding them"
+    );
+
+    at(&fixture, 120);
+    assert!(
+        !fixture.app.refresh_semantic_tree().is_empty(),
+        "withdrawn actions change the tree"
+    );
+    let content = |tree: &crate::a11y_tree::SemanticTree| {
+        let mut bound = tree
+            .bound_actions_for_test()
+            .into_iter()
+            .map(|(id, target)| (id, target.address.address.action))
+            .collect::<Vec<_>>();
+        bound.sort();
+        (tree.iter().cloned().collect::<Vec<_>>(), bound, tree.len())
+    };
+    let retained = content(&fixture.app.accessibility.semantic_tree);
+    fixture.app.accessibility.semantic_tree = crate::a11y_tree::SemanticTree::new();
+    fixture.app.refresh_semantic_tree();
+    assert_eq!(
+        retained,
+        content(&fixture.app.accessibility.semantic_tree),
+        "the retained tree is the tree a fresh refresh builds"
+    );
 }
 
 #[test]

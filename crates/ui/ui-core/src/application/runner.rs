@@ -682,6 +682,25 @@ impl FollowedAuthority {
     }
 }
 
+/// `context` deciding `app`'s actions by the host's view `read` gives of its person's authority in
+/// `workspace`, read again whenever `watch` reports a change.
+#[cfg(test)]
+pub(crate) fn follow_process_authority(
+    context: PermissionContext,
+    read: tilo_process_services::action_authority::AuthoritySource,
+    watch: AuthorityWatcher,
+    workspace: &str,
+    app: &str,
+) -> Result<PermissionContext, String> {
+    let person = context.user().clone();
+    let followed =
+        FollowedAuthority::follow(HostAuthority { read, watch }, workspace, app, &person)?;
+    Ok(context.with_action_authority(
+        app.to_owned(),
+        std::sync::Arc::new(move || followed.current()),
+    ))
+}
+
 /// A watch a test reports the host's changes through, as the kernel would.
 #[cfg(test)]
 pub(crate) fn manual_authority_watch() -> (AuthorityWatcher, std::sync::Arc<dyn Fn() + Send + Sync>)

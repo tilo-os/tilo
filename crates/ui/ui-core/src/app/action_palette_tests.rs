@@ -203,6 +203,31 @@ impl crate::widget::resources::PublishesResources for Viewer {
     }
 }
 
+struct CountingPublisher(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+impl Widget for CountingPublisher {
+    crate::provides!(dyn crate::widget::resources::PublishesResources);
+
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _theme: &Theme,
+        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.widget_leaf(taffy::Style::default(), node_map, self)
+    }
+    fn name(&self) -> &'static str {
+        "counting-publisher"
+    }
+}
+
+impl crate::widget::resources::PublishesResources for CountingPublisher {
+    fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
+        self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        vec![ResourceSpec::new("test.cache:1", "test.cache", "Cached")]
+    }
+}
+
 include!("../resource_projection_tests.rs");
 
 pub(super) fn synth_enter() -> WindowEvent {
@@ -398,6 +423,178 @@ fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
 
 tilo_test_env::scenario! {
     fn the_action_palette_materializes_dispatches_and_hosts_commands;
+
+    phase palette_catalog_materializes_once_per_generation_under_fresh_authority;
+    {
+        {
+            use std::sync::atomic::Ordering;
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut app = App::new_with_controlled_inputs(
+                State::new(),
+                Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
+            );
+            for _ in 0..3 {
+                app.invalidate_widget_resource_cache();
+                app.refresh_control_action_availability();
+            }
+            assert_eq!(calls.load(Ordering::Relaxed), 0);
+            app.actions.last_control_availability = Some((
+                app.resource_cache_key(),
+                app.actions.permission_generation.get(),
+            ));
+            app.refresh_control_action_availability();
+            assert!(app.actions.last_control_availability.is_none());
+            assert!(
+                app.collect_resources()
+                    .iter()
+                    .any(|r| r.id.as_str() == "test.cache:1")
+            );
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+        }
+
+        {
+            use std::sync::atomic::Ordering;
+
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut app = App::new_with_controlled_inputs(
+                State::new(),
+                Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
+            );
+            let _ = app.collect_resources();
+            let _ = app.collect_resources();
+            app.refresh_control_action_availability();
+            app.refresh_control_action_availability();
+            assert_eq!(calls.load(Ordering::Relaxed), 1);
+
+            app.state_mut_for_test()
+                .doc
+                .put(&ROOT, "cache-version", 1_i64)
+                .expect("test document mutation");
+            let _ = app.collect_resources();
+            assert_eq!(calls.load(Ordering::Relaxed), 2);
+
+            app.invalidate_widget_resource_cache();
+            let _ = app.collect_resources();
+            assert_eq!(calls.load(Ordering::Relaxed), 3);
+        }
+
+        {
+            use std::sync::atomic::Ordering;
+
+            let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut app = App::new_with_controlled_inputs(
+                State::new(),
+                Box::new(CountingPublisher(std::sync::Arc::clone(&calls))),
+            );
+            app.actions.resource_generation.set(u64::MAX);
+
+            let _ = app.collect_resources();
+            app.invalidate_widget_resource_cache();
+            let _ = app.collect_resources();
+
+            assert_eq!(app.actions.resource_generation.get(), u64::MAX);
+            assert_eq!(
+                calls.load(Ordering::Relaxed),
+                2,
+                "each invalidation at the terminal generation rematerializes"
+            );
+        }
+
+        {
+            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
+            app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+            assert_eq!(app.collect_local_resources().len(), 1);
+            app.actions.permission_generation.set(u64::MAX);
+
+            app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+                &crate::permissions::MemberId::person("restricted"),
+            ));
+
+            assert_eq!(app.actions.permission_generation.get(), u64::MAX);
+            assert!(
+                app.collect_local_resources().is_empty(),
+                "the cached write action cannot survive a permission change"
+            );
+        }
+
+        {
+            let mut app = App::new(State::new(), Box::new(Publisher));
+            app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+
+            app.open_action_palette();
+            let first = app
+                .actions
+                .open_resource_search_cache
+                .borrow()
+                .as_ref()
+                .expect("first open builds the live-resource index")
+                .provider
+                .clone();
+            app.close_action_palette();
+            app.open_action_palette();
+            let second = app
+                .actions
+                .open_resource_search_cache
+                .borrow()
+                .as_ref()
+                .expect("second open retains the index")
+                .provider
+                .clone();
+            assert!(first.shares_storage_with(&second));
+
+            app.invalidate_widget_resource_cache();
+            assert!(app.actions.open_resource_search_cache.borrow().is_none());
+        }
+
+        {
+            let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
+            app.action_registry_mut().register::<Flip>(FLIP_TYPE);
+            app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
+                &crate::permissions::MemberId::person("restricted"),
+            ));
+            app.open_action_palette();
+            app.actions
+                .action_palette
+                .as_deref_mut()
+                .unwrap()
+                .set_query("restricted");
+            // A query advances one provider page immediately; remaining providers
+            // (including the host's open resources) advance on later frames.
+            // Bound the drain so a pagination regression still fails this test.
+            let mut progress = app
+                .actions
+                .action_palette
+                .as_deref_mut()
+                .unwrap()
+                .advance_search_page();
+            for _ in 0..8 {
+                if !progress.pending {
+                    break;
+                }
+                progress = app
+                    .actions
+                    .action_palette
+                    .as_deref_mut()
+                    .unwrap()
+                    .advance_search_page();
+            }
+            assert!(!progress.pending, "the tiny provider set must be exhausted");
+            assert_eq!(
+                app.action_palette().unwrap().result_labels(),
+                vec!["Restricted lazy action"]
+            );
+
+            assert!(app.action_palette_handle_key(&synth_enter()));
+            assert!(
+                app.state.doc.get(&ROOT, "lazy-flipped").unwrap().is_none(),
+                "the provider hit cannot bypass the host's current permission context"
+            );
+            assert!(
+                app.action_palette().is_some(),
+                "a refused row leaves search open instead of pretending it ran"
+            );
+        }
+    }
 
     phase palette_dispatch_routes_through_the_app_and_its_visible_controls;
     {

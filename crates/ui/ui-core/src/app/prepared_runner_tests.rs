@@ -2,7 +2,9 @@ use super::*;
 use crate::application::{AppComponent, LaunchTarget, RestoreInput};
 use crate::application_test_support::*;
 use crate::widget::TileHost;
+use automerge::ReadDoc;
 use std::rc::Rc;
+use winit::keyboard::{Key, NamedKey};
 
 fn editable_component(host: &ProbeHarness, instance: u64) -> AppComponent {
     runner_probe_definition()
@@ -18,6 +20,130 @@ fn editable_component(host: &ProbeHarness, instance: u64) -> AppComponent {
             RestoreInput::None,
         )
         .unwrap()
+}
+
+#[test]
+fn prepared_services_and_theme_polls_keep_explicit_presentation_inputs() {
+    {
+        fn services(
+            inputs: crate::application::ComponentRunnerInputs,
+            binding: &crate::bound_dispatch::CallbackBinding,
+        ) -> AppConstructionInputs {
+            let mut services = AppConstructionInputs::controlled();
+            services.debug_mode = || true;
+            let mut presence = PresenceCtx::empty();
+            presence.set_own_identity([crate::permissions::MemberId::person("announced-handle")]);
+            services.presence_ctx = ConstructionValue::Ready(presence);
+            AppConstructionInputs::component_with_services(inputs, binding, services)
+        }
+        let host = ProbeHarness::new();
+        let component = editable_component(&host, 11);
+        let mut app =
+            App::from_component_using(component, presentation_inputs(2.0), services).unwrap();
+        assert_eq!(app.local_author(), &author());
+        assert!(app.presence_ctx.is_own_identity(&author()));
+        assert!(
+            app.presence_ctx
+                .is_own_identity(&crate::permissions::MemberId::person("announced-handle"))
+        );
+        assert!(app.debug_mode);
+        assert!(app.watch_system_settings);
+        assert_presentation(&app.theme, 1.5, 1.25);
+        let due = app.last_theme_store_check + Duration::from_millis(750);
+        assert!(app.reconcile_configured_theme_with(
+            due,
+            || Some(settings_store::SettingsStamp(0)),
+            |app| {
+                app.accessibility.base_theme = Theme::light();
+            },
+        ));
+        assert_eq!(app.theme.name, Theme::light().name);
+        assert_eq!(app.theme.text_scale, 1.5);
+        assert_eq!(app.theme.ui_scale, 1.25);
+        assert!(app.theme.reduce_motion);
+        draw_prepared_component_test_frame(&mut app);
+        app.close_components();
+        assert_eq!(app.component_close_reports().len(), 1);
+        assert!(app.component_close_reports()[0].resource_error.is_none());
+    }
+
+    {
+        let host = ProbeHarness::new();
+        let component = editable_component(&host, 11);
+        let mut app = App::from_component(component, presentation_inputs(2.0)).unwrap();
+        let observed = observe_presentation();
+        let checks = std::cell::Cell::new(0);
+        let applies = std::cell::Cell::new(0);
+        let due = app.last_theme_store_check + Duration::from_millis(750);
+        let changed = app.reconcile_configured_theme_with(
+            due,
+            || {
+                checks.set(checks.get() + 1);
+                Some(settings_store::SettingsStamp(0))
+            },
+            |app| {
+                applies.set(applies.get() + 1);
+                app.accessibility.base_theme = Theme::light();
+                // This controlled stand-in never creates a narrator or reads settings.
+                app.accessibility.a11y.screen_reader = true;
+            },
+        );
+        draw_prepared_component_test_frame(&mut app);
+        assert_eq!(
+            checks.get(),
+            0,
+            "prepared polling must not consult its source"
+        );
+        assert_eq!(applies.get(), 0);
+        assert!(!changed);
+        assert!(app.theme_store_stamp.is_none());
+        assert!(app.accessibility.screen_reader.is_none());
+        assert!(!app.accessibility.a11y.screen_reader);
+        assert_presentation(&app.accessibility.base_theme, 2.0, 1.25);
+        let observation = observed.borrow();
+        let (theme, renderer_scale) = observation.draws.last().unwrap();
+        assert_eq!(*renderer_scale, 1.5);
+        assert_presentation(theme, 1.5, 1.25);
+        app.close_components();
+    }
+
+    {
+        let mut app = App::from_factory_with_controlled_inputs(State::new(), || {
+            Box::new(crate::widget::Column::new())
+        });
+        let start = app.last_theme_store_check;
+        let checks = std::cell::Cell::new(0);
+        let applies = std::cell::Cell::new(0);
+        let stamp = Some(settings_store::SettingsStamp(0));
+        for (millis, source_stamp, expected_checks, expected_applies, expected_changed) in [
+            (749, stamp, 0, 0, false),
+            (750, stamp, 1, 1, true),
+            (1500, stamp, 2, 1, false),
+            (2250, None, 3, 2, true),
+        ] {
+            app.layout.layout_dirty = false;
+            app.layout.structure_dirty = false;
+            let changed = app.reconcile_configured_theme_with(
+                start + Duration::from_millis(millis),
+                || {
+                    checks.set(checks.get() + 1);
+                    source_stamp
+                },
+                |app| {
+                    applies.set(applies.get() + 1);
+                    app.accessibility.base_theme = Theme::light();
+                },
+            );
+            assert_eq!(changed, expected_changed);
+            assert_eq!(checks.get(), expected_checks);
+            assert_eq!(applies.get(), expected_applies);
+            assert_eq!(app.layout.layout_dirty, expected_changed);
+            assert_eq!(app.layout.structure_dirty, expected_changed);
+            assert!(app.accessibility.screen_reader.is_none());
+        }
+        assert!(app.theme_store_stamp.is_none());
+        assert_eq!(app.theme.name, Theme::light().name);
+    }
 }
 
 #[test]
@@ -576,6 +702,279 @@ impl Runner {
             }
         }
     }
+}
+
+#[allow(
+    clippy::too_many_lines,
+    reason = "one source record and View are compared across three real runner paths"
+)]
+#[test]
+fn prepared_runners_share_factory_view_action_and_palette_behaviour() {
+    {
+        let seed = ProbeHarness::new();
+        let mut component = runner_probe_definition()
+            .instantiate(
+                seed.prepare(runner_probe_definition(), 11, &LaunchTarget::New)
+                    .unwrap(),
+                LaunchTarget::New,
+                RestoreInput::None,
+            )
+            .unwrap();
+        let checkout = component.record().clone();
+        component
+            .restore_local_view(&crate::view::View {
+                scroll: vec![37.0],
+                focus: Some(crate::view::FocusView {
+                    ordinal: 0,
+                    ephemeral: "caret=9".into(),
+                }),
+                ..crate::view::View::default()
+            })
+            .unwrap();
+        let saved = component.close().recovery.unwrap();
+        let bytes = seed
+            .records
+            .with(&checkout.id, automerge::AutoCommit::save)
+            .unwrap();
+        let mut results = Vec::new();
+        for mode in 0..3 {
+            // A workspace that holds the record it was left on.
+            let workspace = Rc::new(crate::resource::MemoryWorkspace::default());
+            let mut written = crate::resource::DocumentPort::write(
+                &*workspace,
+                APP,
+                WORKSPACE,
+                checkout.id.route(),
+                checkout.kind.as_str(),
+                bytes.clone(),
+            );
+            let _ = written(std::time::Duration::ZERO);
+            let host = ProbeHarness::over(workspace);
+            let target = existing(&checkout);
+            let permissions = runner_permissions();
+            let context = host
+                .prepare_with_permissions(
+                    runner_probe_definition(),
+                    11,
+                    &target,
+                    permissions.clone(),
+                )
+                .unwrap();
+            let component = runner_probe_definition()
+                .instantiate(context, target, RestoreInput::Local(saved.clone()))
+                .unwrap();
+            assert_eq!(calls(), 1);
+            assert_eq!(initializations(), 0);
+            assert_eq!(body(&host.records, &checkout), "initialized");
+            assert_eq!(component.capture_local_view().unwrap(), saved.view);
+            host.records
+                .with(&checkout.id, |doc| {
+                    use automerge::transaction::Transactable;
+                    assert_eq!(doc.pending_ops(), 0);
+                    // A fresh CRDT actor sorts before the copied historical actors.
+                    // It is independent of the authenticated member identity.
+                    doc.set_actor(automerge::ActorId::from([0_u8].as_slice()));
+                    assert_eq!(doc.pending_ops(), 0);
+                })
+                .unwrap();
+            let mut runner = Runner::new(mode, component);
+            runner.invoke("view").unwrap();
+            runner.invoke("effect").unwrap();
+            assert_eq!(
+                *operation_observations()[0].borrow(),
+                vec!["View", "Effect"]
+            );
+            runner.invoke("edit").unwrap();
+            assert_eq!(body(&host.records, &checkout), "edited");
+            host.records
+                .read_history(&checkout.id, |doc, history| {
+                    assert!(history.next_undo_in(doc, &author(), 11).is_some());
+                })
+                .unwrap();
+            permissions.set(
+                crate::permissions::PermissionContext::stranger(
+                    &crate::permissions::MemberId::person("probe-author"),
+                )
+                .at_unix_time(100),
+            );
+            assert!(runner.invoke("edit").is_err());
+            assert_eq!(body(&host.records, &checkout), "edited");
+            assert_eq!(
+                *operation_observations()[0].borrow(),
+                vec!["View", "Effect"]
+            );
+            let reports = runner.close();
+            assert_eq!(reports.len(), 1);
+            assert_eq!(reports[0].recovery.as_ref().unwrap().view, saved.view);
+            assert!(reports[0].view_error.is_none());
+            results.push(
+                serde_json::to_vec(
+                    &host
+                        .records
+                        .read(&checkout.id, |doc| {
+                            doc.get(automerge::ROOT, "body")
+                                .unwrap()
+                                .unwrap()
+                                .0
+                                .as_str()
+                                .unwrap()
+                                .to_owned()
+                        })
+                        .unwrap(),
+                )
+                .unwrap(),
+            );
+            host.records
+                .with_history(&checkout.id, |doc, history| {
+                    assert!(history.undo_in(doc, &author(), 11, None, None).is_some());
+                    assert!(history.next_undo_in(doc, &author(), 11).is_none());
+                })
+                .unwrap();
+            assert_eq!(body(&host.records, &checkout), "initialized");
+        }
+        assert_eq!(results, vec![b"\"edited\"".to_vec(); 3]);
+    }
+
+    {
+        let host = ProbeHarness::new();
+        let component = runner_probe_definition()
+            .instantiate(
+                host.prepare_with_permissions(
+                    runner_probe_definition(),
+                    11,
+                    &LaunchTarget::New,
+                    runner_permissions(),
+                )
+                .unwrap(),
+                LaunchTarget::New,
+                RestoreInput::None,
+            )
+            .unwrap();
+        let checkout = component.record().clone();
+        let mut renderer =
+            TextRenderer::with_font_catalog(&crate::font_catalog::fixture_catalog_in("de-DE"))
+                .expect("prepared canonical renderer fixture");
+        renderer.set_text_scale(1.5);
+        renderer.bump_generation();
+        let mut app = App::from_component(
+            component,
+            crate::application::ComponentRunnerInputs {
+                theme: Theme::dark(),
+                text_renderer: renderer,
+            },
+        )
+        .unwrap();
+        assert_eq!(app.local_author(), &author());
+        app.init_layout();
+        app.open_action_palette();
+        let before = app.text_renderer.cache_stats();
+        palette_frame(&mut app);
+        assert!(
+            app.text_renderer.cache_stats().1 > before.1,
+            "measurement uses the host cache"
+        );
+        palette_key(&mut app, Key::Character("P".into()), Some("P"));
+        assert_eq!(app.action_palette().unwrap().query(), "P");
+        palette_frame(&mut app);
+        activate_palette_action(&mut app, "prompt");
+        assert!(app.action_palette().unwrap().in_argument_mode());
+        palette_frame(&mut app);
+        palette_key(&mut app, Key::Named(NamedKey::Escape), None);
+        assert!(!app.action_palette().unwrap().in_argument_mode());
+        palette_frame(&mut app);
+        activate_palette_action(&mut app, "prompt");
+        app.actions
+            .action_palette
+            .as_deref_mut()
+            .unwrap()
+            .set_query("prompted");
+        palette_key(&mut app, Key::Named(NamedKey::Enter), None);
+        assert_eq!(body(&host.records, &checkout), "prompted");
+        app.open_action_palette();
+        palette_frame(&mut app);
+        activate_palette_action(&mut app, "typed");
+        palette_frame(&mut app);
+        app.actions
+            .action_palette
+            .as_deref_mut()
+            .unwrap()
+            .set_query(r#"{"value":"typed","enabled":true}"#);
+        palette_key(&mut app, Key::Named(NamedKey::Enter), None);
+        assert_eq!(body(&host.records, &checkout), "typed");
+        app.open_action_palette();
+        activate_palette_action(&mut app, "confirm");
+        palette_frame(&mut app);
+        assert_eq!(
+            body(&host.records, &checkout),
+            "typed",
+            "a confirmed action waits for the answer"
+        );
+        palette_key(&mut app, Key::Named(NamedKey::Enter), None);
+        assert_eq!(body(&host.records, &checkout), "confirmed");
+        app.open_action_palette();
+        let before = app.text_renderer.cache_stats();
+        app.text_renderer.bump_generation();
+        palette_frame(&mut app);
+        assert!(app.text_renderer.cache_stats().1 > before.1);
+        host.records
+            .read_history(&checkout.id, |doc, history| {
+                assert_eq!(
+                    history
+                        .next_undo_in(doc, &author(), 11)
+                        .unwrap()
+                        .author
+                        .as_ref(),
+                    Some(&author())
+                );
+            })
+            .unwrap();
+        app.close_components();
+    }
+}
+
+fn palette_key(app: &mut App, key: Key, text: Option<&str>) {
+    let mut event = action_palette_tests::synth_enter();
+    if let WindowEvent::KeyboardInput { event, .. } = &mut event {
+        event.logical_key = key;
+        event.text = text.map(Into::into);
+    }
+    assert!(app.action_palette_handle_key(&event));
+}
+
+fn palette_frame(app: &mut App) {
+    let mut scene = Scene::new();
+    draw_frame_content(app, &mut scene, 800, 600, 1.0, None);
+    let palette = app.action_palette().unwrap();
+    assert!(palette.rect().width() > 0.0 && palette.rect().height() > 0.0);
+    assert_eq!(
+        crate::action_palette::observed_field_language(palette),
+        "de-DE"
+    );
+    assert_eq!(app.text_renderer.text_scale(), 1.5);
+}
+fn activate_palette_action(app: &mut App, action: &str) {
+    // This font/lifecycle fixture chooses the same mounted owner directly;
+    // an open modal deliberately does not publish background actions.
+    let resources = crate::bound_dispatch::discover_bound_resources(
+        app.root_widget.as_ref(),
+        &app.state.doc,
+        None,
+    )
+    .unwrap();
+    let target = crate::bound_dispatch::select_bound_target(
+        &resources,
+        &tilo_actions::ActionAddress::new("probe:shared", action),
+        Some(11),
+    )
+    .unwrap()
+    .unwrap();
+    assert!(
+        app.actions
+            .action_palette
+            .as_deref_mut()
+            .unwrap()
+            .activate_bound(&target)
+    );
 }
 
 /// The component a window shows asking for another record of its app, as an

@@ -177,3 +177,6 @@ pub(crate) mod tests;
 
 #[cfg(test)]
 pub(crate) use tests::allocations::allocations_only as measure_test_allocations;
+
+#[cfg(test)]
+pub(crate) use tests::probe as retirement_test_probe;

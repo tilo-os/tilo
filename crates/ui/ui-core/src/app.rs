@@ -62,6 +62,8 @@ mod model_lifecycle;
 #[cfg(feature = "model")]
 mod presences;
 mod retirement_assembly;
+#[cfg(test)]
+mod retirement_lifecycle_tests;
 #[cfg(feature = "model")]
 mod surface_route;
 include!("app/floating.rs");
@@ -118,6 +120,8 @@ mod driver_host_style_tests;
 mod driver_jobs_tests;
 #[cfg(test)]
 mod driver_layout_check_tests;
+#[cfg(test)]
+mod driver_metrics_tests;
 #[cfg(test)]
 mod driver_owner_tests;
 #[cfg(test)]
@@ -1328,6 +1332,18 @@ impl App {
                 crate::collaboration::native_initial::take_manager().unwrap_or_default(),
             );
         }
+        inputs.control_domain = Some(domain);
+        *Self::with_parts(Some(scope), state, root, inputs)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn from_scoped_parts_with_controlled_ownership(
+        scope: crate::WakeScope,
+        state: State,
+        root: Box<dyn Widget>,
+        domain: crate::ControlDomain,
+    ) -> Self {
+        let mut inputs = AppConstructionInputs::controlled();
         inputs.control_domain = Some(domain);
         *Self::with_parts(Some(scope), state, root, inputs)
     }

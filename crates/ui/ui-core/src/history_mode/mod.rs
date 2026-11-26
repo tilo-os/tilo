@@ -637,6 +637,10 @@ pub(crate) mod host_tests;
 
 #[cfg(feature = "model")]
 #[cfg(test)]
+pub(crate) mod focus_tests;
+
+#[cfg(feature = "model")]
+#[cfg(test)]
 pub(crate) mod isolation_tests;
 
 #[cfg(feature = "model")]
