@@ -10,7 +10,12 @@ use super::super::route_keys::RouteKeys;
 /// How soon a route waiting for keys is asked about again after anything
 /// changed, and how often every route is asked when the broker does not say
 /// when keys change (`groupKeysChanged`).
+#[cfg(not(test))]
 const CHANNEL_KEY_REFRESH: Duration = Duration::from_secs(1);
+/// Tests wait out whole rounds of this timer; a fake identity service
+/// answers in milliseconds.
+#[cfg(test)]
+const CHANNEL_KEY_REFRESH: Duration = Duration::from_millis(250);
 
 /// The longest a route waiting for keys goes unasked while nothing changes,
 /// when nothing tells it about a change: an identity service that refused or
@@ -174,7 +179,7 @@ mod tests {
     /// The timer only covers routes still waiting for keys while the broker
     /// pushes changes, backing off while nothing changes; a change asks at
     /// once and starts the backoff over. Without pushes, every route is
-    /// asked every second.
+    /// asked every refresh.
     #[test]
     fn key_schedule_polls_only_what_is_not_pushed() {
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -189,15 +194,25 @@ mod tests {
         );
         assert!(schedule.timed(true), "a waiting route is polled");
         let mut waits = vec![schedule.wait];
-        for _ in 0..6 {
+        for _ in 0..8 {
             let round = schedule.timer_round();
             assert!(round.waiting && !round.all, "{round:?}");
             waits.push(schedule.wait);
         }
         assert_eq!(
-            waits,
-            [1, 2, 4, 8, 16, 30, 30].map(Duration::from_secs),
-            "waiting routes back off to the longest wait"
+            waits[0], CHANNEL_KEY_REFRESH,
+            "a waiting route starts at the refresh"
+        );
+        assert!(
+            waits
+                .windows(2)
+                .all(|pair| pair[0] <= pair[1] && pair[1] <= pair[0] * 2),
+            "waiting routes back off, never faster than doubling: {waits:?}"
+        );
+        assert_eq!(
+            waits[waits.len() - 2..],
+            [CHANNEL_KEY_WAIT_LONGEST; 2],
+            "waiting routes back off to the longest wait: {waits:?}"
         );
 
         schedule.note(KeySignal::Changed("route".into()));
@@ -214,7 +229,7 @@ mod tests {
         );
         for _ in 0..3 {
             assert!(schedule.timer_round().all);
-            assert_eq!(schedule.wait, CHANNEL_KEY_REFRESH, "every second");
+            assert_eq!(schedule.wait, CHANNEL_KEY_REFRESH, "every refresh");
         }
     }
 }

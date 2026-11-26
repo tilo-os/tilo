@@ -17,7 +17,7 @@ use tilo_lock::MutexRecover as _;
 #[cfg(not(test))]
 pub(super) const ROUTE_JOIN_WAIT: Duration = Duration::from_secs(60);
 #[cfg(test)]
-pub(super) const ROUTE_JOIN_WAIT: Duration = Duration::from_secs(5);
+pub(super) const ROUTE_JOIN_WAIT: Duration = Duration::from_secs(2);
 
 /// What a route's join running beside the shovel holds of the shovel's own
 /// connection and identity.
