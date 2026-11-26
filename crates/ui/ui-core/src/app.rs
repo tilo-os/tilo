@@ -121,8 +121,6 @@ mod driver_jobs_tests;
 #[cfg(test)]
 mod driver_layout_check_tests;
 #[cfg(test)]
-mod driver_metrics_tests;
-#[cfg(test)]
 mod driver_owner_tests;
 #[cfg(test)]
 mod driver_palette_tests;

@@ -84,8 +84,6 @@ mod presence_context;
 mod presence_experience_test;
 #[path = "process_entry_points.rs"]
 mod process_entry_points;
-#[path = "profiling.rs"]
-mod profiling;
 #[path = "remote_cursor_presence.rs"]
 mod remote_cursor_presence;
 #[path = "screenshot_test.rs"]

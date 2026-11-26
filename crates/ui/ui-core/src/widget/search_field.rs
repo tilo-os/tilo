@@ -1423,11 +1423,6 @@ impl Widget for Filtered {
 }
 
 #[cfg(test)]
-pub(crate) fn observed_language(field: &SearchField) -> &str {
-    field.input.spell_language()
-}
-
-#[cfg(test)]
 mod tests {
     use super::*;
     use crate::presence::PresenceCtx;

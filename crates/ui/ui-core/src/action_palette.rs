@@ -2655,11 +2655,6 @@ impl ActionPalette {
 mod widget;
 
 #[cfg(test)]
-pub(crate) fn observed_field_language(palette: &ActionPalette) -> &str {
-    crate::widget::search_field::observed_language(&palette.field)
-}
-
-#[cfg(test)]
 pub(crate) fn observed_history_editor(
     palette: &ActionPalette,
 ) -> (String, Option<(usize, usize)>, &'static str) {

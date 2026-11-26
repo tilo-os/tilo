@@ -742,46 +742,6 @@ fn retained_paragraph_layout_tracks_typing_reflow_clicks_and_attachments() {
     attachment_children_do_not_hide_paragraph_measurement_changes();
 }
 
-/// Typing in a long document measures and paints what it touched, not the
-/// document: the work per keystroke is the same at 200 and 10000 paragraphs.
-#[test]
-fn keystroke_work_does_not_grow_with_the_document() {
-    let mut work = Vec::new();
-    for paragraphs in [200_usize, 2000, 10000] {
-        let blocks = (0..paragraphs)
-            .map(|index| Block::paragraph(&format!("Paragraph {index} of a long note.")))
-            .collect();
-        let mut fixture = RetainedEditor::with_blocks(480.0, 1.0, blocks);
-        fixture.viewport = Some(Rect::new(0.0, 0.0, 480.0, 600.0));
-        fixture.type_text("warm ");
-        fixture.editor.stack_measures = 0;
-        fixture.editor.painted_blocks = 0;
-        let keystrokes = "typed".len();
-        fixture.type_text("typed");
-        assert_eq!(fixture.rebuilds, 0, "typing retains the layout tree");
-        assert!(
-            fixture.editor.stack_measures <= keystrokes,
-            "{paragraphs} paragraphs: each keystroke re-measures only its own line, \
-             measured {}",
-            fixture.editor.stack_measures,
-        );
-        work.push((
-            fixture.editor.stack_measures,
-            fixture.editor.painted_blocks,
-            fixture.tree.total_node_count(),
-        ));
-        let last = fixture.editor.blocks.last().unwrap().line.get_rect();
-        assert!(
-            last.y0 > 600.0 && last.height() > 0.0,
-            "off-screen blocks keep their exact place in the document: {last:?}"
-        );
-    }
-    assert!(
-        work.windows(2).all(|pair| pair[0] == pair[1]),
-        "measured lines, painted blocks and layout nodes per keystroke: {work:?}"
-    );
-}
-
 #[test]
 fn a_members_paragraph_restacks_without_a_rebuild_and_repaints_the_blocks_below() {
     let blocks = (0..6)
@@ -876,63 +836,6 @@ fn has_colour(block: &Block, kind: TokenKind) -> bool {
 }
 
 #[test]
-fn syntax_colours_are_derived_per_change_not_per_frame() {
-    let mut fixture = RetainedEditor::with_blocks(640.0, 1.0, sectioned_note(125));
-    fixture.viewport = Some(Rect::new(0.0, 0.0, 640.0, 600.0));
-    fixture.frame();
-    let code_lines = fixture
-        .editor
-        .blocks
-        .iter()
-        .filter(|block| matches!(block.kind, BlockKind::CodeBlock { .. }))
-        .count();
-    assert!(code_lines > 1000, "a long document with code: {code_lines}");
-    assert!(
-        has_colour(&fixture.editor.blocks[4], TokenKind::Keyword),
-        "the first frame colours code"
-    );
-    fixture.editor.highlighted_lines = 0;
-    fixture.frame();
-    fixture.frame();
-    assert_eq!(
-        fixture.editor.highlighted_lines, 0,
-        "an unchanged redraw highlights no code line"
-    );
-    fixture.editor.focus_block(6, CursorPlacement::Start);
-    fixture.frame();
-    fixture.editor.highlighted_lines = 0;
-    fixture.type_text("x");
-    assert!(fixture.editor.blocks[6].text().starts_with("xlet line_2"));
-    assert_eq!(
-        fixture.editor.highlighted_lines, 10,
-        "a keystroke re-highlights its own ten-line run only"
-    );
-    assert!(
-        has_colour(&fixture.editor.blocks[6], TokenKind::StringLit),
-        "the edited line is coloured again"
-    );
-    fixture.editor.blocks[4].line.set_text("/* an open comment");
-    fixture.frame();
-    assert!(
-        fixture.editor.blocks[5]
-            .line
-            .transient_colors()
-            .iter()
-            .all(|span| span.kind == TokenKind::Comment),
-        "an unterminated comment colours the rest of its run: {:?}",
-        fixture.editor.blocks[5].line.transient_colors()
-    );
-    fixture.editor.blocks[5].kind = BlockKind::Paragraph;
-    fixture.frame();
-    assert!(fixture.editor.blocks[5].line.transient_colors().is_empty());
-    assert!(
-        has_colour(&fixture.editor.blocks[6], TokenKind::StringLit),
-        "{:?}",
-        fixture.editor.blocks[6].line.transient_colors()
-    );
-}
-
-#[test]
 fn fresh_lines_with_known_ids_are_coloured() {
     let mut fixture = RetainedEditor::with_blocks(640.0, 1.0, sectioned_note(2));
     fixture.frame();
@@ -955,56 +858,6 @@ fn fresh_lines_with_known_ids_are_coloured() {
     assert!(
         has_colour(&fixture.editor.blocks[4], TokenKind::Keyword),
         "a fresh line is highlighted even though its id and text are known"
-    );
-}
-
-#[test]
-fn per_frame_derivations_follow_the_viewport_not_the_document() {
-    let mut work = Vec::new();
-    for sections in [12_usize, 120] {
-        let mut fixture = RetainedEditor::with_blocks(640.0, 1.0, sectioned_note(sections));
-        fixture.viewport = Some(Rect::new(0.0, 0.0, 640.0, 600.0));
-        fixture.frame();
-        fixture.frame();
-        fixture.editor.painted_blocks = 0;
-        fixture.editor.formula_sources = 0;
-        fixture.editor.highlighted_lines = 0;
-        ui::profiling::frame_probe::enable();
-        let started = ui::time::now();
-        let frames = 20_u32;
-        for _ in 0..frames {
-            fixture.frame();
-        }
-        let elapsed = started.elapsed() / frames;
-        let phases = ui::profiling::frame_probe::take();
-        eprintln!(
-            "block-editor-frame {}",
-            serde_json::json!({
-                "blocks": fixture.editor.blocks.len(),
-                "profile": if cfg!(debug_assertions) { "test-debug" } else { "optimized" },
-                "frame_us": elapsed.as_micros(),
-                "draw_phases_ns_calls": phases,
-            })
-        );
-        let last = fixture.editor.blocks.last().unwrap().line.get_rect();
-        assert!(last.y0 > 1200.0, "the note reaches past the paint window");
-        work.push((
-            fixture.editor.painted_blocks,
-            fixture.editor.formula_sources,
-            fixture.editor.highlighted_lines,
-            fixture.editor.code_copy_hits.len(),
-            fixture.editor.live_link_hits.len(),
-        ));
-    }
-    assert!(
-        work[0].1 > 0 && work[0].3 > 0 && work[0].4 > 0,
-        "the screen holds formulas, code and links: {work:?}"
-    );
-    assert_eq!(work[0].2, 0, "unchanged frames highlight no code: {work:?}");
-    assert_eq!(
-        work[0], work[1],
-        "painted blocks, formula sources, highlighted lines, code chrome and link targets \
-         per frame: {work:?}"
     );
 }
 

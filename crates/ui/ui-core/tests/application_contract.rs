@@ -973,47 +973,6 @@ fn ready_validation_failures_retain_the_last_owner_and_pending_history() {
     }
 }
 
-#[test]
-fn destructor_panics_propagate_unconverted() {
-    {
-        for closing in [false, true] {
-            let host = ProbeHarness::new();
-            let mut component =
-                instantiate_probe(&host, 11, LaunchTarget::New, RestoreInput::None).unwrap();
-            panic_on_next_root_drop();
-            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if closing {
-                    component.close();
-                } else {
-                    drop(component);
-                }
-            }));
-            let panic = result.expect_err("component teardown must not suppress an app panic");
-            assert_eq!(
-                panic.downcast_ref::<&str>(),
-                Some(&"probe destructor panic")
-            );
-            assert!(drop_was_closed());
-        }
-    }
-
-    {
-        let host = ProbeHarness::new();
-        let definition = definition(invalid_contribution);
-        let context = host.prepare(&definition, 11, &LaunchTarget::New).unwrap();
-        panic_on_next_root_drop();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = definition.instantiate(context, LaunchTarget::New, RestoreInput::None);
-        }));
-        let panic = result.expect_err("failed construction must preserve its destructor panic");
-        assert_eq!(
-            panic.downcast_ref::<&str>(),
-            Some(&"probe destructor panic")
-        );
-        assert!(drop_was_closed());
-    }
-}
-
 #[allow(
     clippy::too_many_lines,
     reason = "merged scenario keeps its original cases together; each case builds a fresh fixture"

@@ -388,17 +388,6 @@ impl SemanticTree {
             false,
         )
     }
-    #[cfg(test)]
-    #[cfg(feature = "model")]
-    pub(crate) fn bound_actions_for_test(
-        &self,
-    ) -> Vec<(SemanticId, crate::bound_dispatch::BoundActionTarget)> {
-        self.components
-            .iter()
-            .flat_map(|component| &component.bound_actions)
-            .map(|((id, _), target)| (id.clone(), target.clone()))
-            .collect()
-    }
     #[cfg(feature = "model")]
     pub(crate) fn bound_target(
         &self,

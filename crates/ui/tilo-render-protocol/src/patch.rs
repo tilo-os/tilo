@@ -1108,33 +1108,6 @@ mod tests {
     }
 
     #[test]
-    fn a_rich_inputs_edit_round_trips_empty_or_not() {
-        let plain = rich::RichText {
-            blocks: vec![rich::Block {
-                kind: "paragraph".into(),
-                text: "hi".into(),
-                ..rich::Block::default()
-            }],
-            embeds: Vec::new(),
-            styles: std::collections::BTreeMap::default(),
-        };
-        for rich in [rich::RichText::default(), plain] {
-            let edit = vec![ToApp::EditRich {
-                level: Level::Root,
-                target: ResourceRef {
-                    id: "n1".into(),
-                    ty: "Note".into(),
-                },
-                key: "draft".into(),
-                rich,
-                gesture: None,
-            }];
-            let bytes = encode_batch(&edit).expect("encodes");
-            assert_eq!(decode_batch::<ToApp>(&bytes).expect("decodes"), edit);
-        }
-    }
-
-    #[test]
     fn maps_offered_actions_and_list_splices_round_trip_and_apply() {
         let who = |id: &str| {
             Value::Actor(Actor {

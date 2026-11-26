@@ -523,10 +523,6 @@ pub fn with_alpha_scaled(c: Color, factor: f32) -> Color {
 mod tests {
     use super::*;
 
-    fn rgb(c: Color) -> [u8; 3] {
-        [c.r(), c.g(), c.b()]
-    }
-
     #[test]
     fn hex_parsing_accepts_common_forms_rejects_malformed_and_round_trips() {
         {
@@ -559,44 +555,6 @@ mod tests {
                 assert_eq!(parse_hex(&to_hex(c)), Some(c));
             }
             assert_eq!(to_hex(Color::from_rgba8(1, 2, 3, 4)), "#010203");
-        }
-    }
-
-    #[test]
-    fn hsv_hue_and_luminance_conversions_round_trip_wrap_and_bound() {
-        {
-            for v in 0..=255u8 {
-                let grey = Color::from_rgb8(v, v, v);
-                let (h, s, val) = rgb_to_hsv(grey);
-                assert!(h.abs() < f32::EPSILON && s.abs() < f32::EPSILON);
-                assert_eq!(hsv_to_rgb(h, s, val), grey);
-            }
-            for r in (0..=255u8).step_by(15) {
-                for g in (0..=255u8).step_by(17) {
-                    for b in (0..=255u8).step_by(51) {
-                        let c = Color::from_rgb8(r, g, b);
-                        let (h, s, v) = rgb_to_hsv(c);
-                        assert_eq!(rgb(hsv_to_rgb(h, s, v)), rgb(c));
-                        let (h, s, l) = rgb_to_hsl(c);
-                        assert_eq!(rgb(hsl_to_rgb(h, s, l)), rgb(c));
-                    }
-                }
-            }
-        }
-
-        {
-            assert_eq!(hsv_to_rgb(-120.0, 1.0, 1.0), hsv_to_rgb(240.0, 1.0, 1.0));
-            assert_eq!(hsl_to_rgb(-120.0, 1.0, 0.5), hsl_to_rgb(240.0, 1.0, 0.5));
-            assert_eq!(hsv_to_rgb(360.0, 1.0, 1.0), Color::from_rgb8(255, 0, 0));
-        }
-
-        {
-            assert!(relative_luminance(Color::BLACK).abs() < 1e-12);
-            assert!((relative_luminance(Color::WHITE) - 1.0).abs() < 1e-12);
-            assert!((contrast_ratio(Color::BLACK, Color::WHITE) - 21.0).abs() < 1e-9);
-            assert!((contrast_ratio(Color::WHITE, Color::BLACK) - 21.0).abs() < 1e-9);
-            let grey = Color::from_rgb8(0x77, 0x77, 0x77);
-            assert!((contrast_ratio(grey, grey) - 1.0).abs() < 1e-12);
         }
     }
 

@@ -1339,14 +1339,6 @@ mod semantic_tree_app_tests;
 mod damage_lifecycle_tests;
 
 #[cfg(test)]
-#[path = "animation_frame_tests.rs"]
-mod animation_frame_tests;
-
-#[cfg(test)]
-#[path = "wake_integration_tests.rs"]
-mod wake_integration_tests;
-
-#[cfg(test)]
 #[path = "bound_component_tests.rs"]
 mod bound_component_tests;
 

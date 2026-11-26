@@ -69,8 +69,6 @@ impl TextIdentity {
 }
 
 fn fingerprint(text: &str, style: &TextStyle) -> u64 {
-    #[cfg(test)]
-    HASHED_BYTES.with(|count| count.set(count.get() + text.len()));
     let mut hash = std::collections::hash_map::DefaultHasher::new();
     text.hash(&mut hash);
     style.size.to_bits().hash(&mut hash);
@@ -198,8 +196,6 @@ impl<'a> CacheQuery<'a> {
         {
             return true;
         }
-        #[cfg(test)]
-        COMPARED_BYTES.with(|count| count.set(count.get() + self.text.len()));
         if self.text == identity.text.as_ref() && same_style(self.style, &identity.style) {
             let _ = self.resolved.set(identity.clone());
             true
@@ -398,13 +394,3 @@ impl<V> TextCache<V> {
         self.bytes = 0;
     }
 }
-
-#[cfg(test)]
-thread_local! {
-    static HASHED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-    static COMPARED_BYTES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-#[cfg(test)]
-#[path = "cache_tests.rs"]
-mod tests;

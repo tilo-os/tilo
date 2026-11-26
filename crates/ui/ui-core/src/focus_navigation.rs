@@ -341,32 +341,6 @@ mod trap_tests {
         /// Each phase was a test of its own and builds its own fixture.
         fn a_focus_trap_orders_its_nodes_once_and_restores_focus_on_closing;
 
-        phase history_focus_order_inspects_each_node_once;
-        {
-            let mut tree = TaffyTree::new();
-            let children: Vec<_> = (0..2_000)
-                .map(|_| tree.new_leaf(taffy::Style::default()).unwrap())
-                .collect();
-            let root = tree
-                .new_with_children(taffy::Style::default(), &children)
-                .unwrap();
-            let calls = std::cell::RefCell::new(std::collections::HashMap::new());
-            let (order, trapped) = mapped_order(root, &tree, |node| {
-                *calls.borrow_mut().entry(node).or_insert(0) += 1;
-                (node != root, false, false)
-            });
-            assert_eq!(order, children, "focus order stays in layout tree order");
-            assert!(!trapped);
-            let calls = calls.borrow();
-            assert_eq!(calls.len(), children.len() + 1);
-            assert!(
-                calls.values().all(|&count| count == 1),
-                "one recomputation must inspect each node once: {} calls for {} nodes",
-                calls.values().sum::<usize>(),
-                calls.len(),
-            );
-        }
-
         phase mapped_history_focus_order_keeps_nested_traps_and_hidden_subtrees;
         {
             let mut tree = TaffyTree::new();

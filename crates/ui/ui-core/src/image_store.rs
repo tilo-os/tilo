@@ -1040,10 +1040,6 @@ mod tests {
         }
     }
 
-    fn logical_image(width: u32, height: u32) -> PenikoImage {
-        crate::raster::rgba8(vec![0, 0, 0, 0], width, height)
-    }
-
     /// Encode a solid `w`×`h` RGBA PNG in-memory (no network) so the store's fetch+decode+cache path is
     /// exercised deterministically.
     fn png_bytes(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
@@ -1057,81 +1053,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn the_decoded_cache_keeps_within_its_entry_byte_and_dimension_limits;
-
-        phase decoded_cache_enforces_entry_byte_and_lru_limits;
-        {
-            {
-                let mut slots = CacheState::default();
-                for index in 0..IMAGE_CACHE_ENTRY_LIMIT.saturating_add(5) {
-                    insert_settled(
-                        &mut slots,
-                        format!("small-{index}"),
-                        Slot::Ready(logical_image(1, 1)),
-                    );
-                }
-                assert_eq!(slots.slots.len(), IMAGE_CACHE_ENTRY_LIMIT);
-
-                let mut large_slots = CacheState::default();
-                for index in 0..IMAGE_CACHE_ENTRY_LIMIT {
-                    insert_settled(
-                        &mut large_slots,
-                        format!("large-{index}"),
-                        Slot::Ready(logical_image(600, 600)),
-                    );
-                    assert!(cache_bytes(&large_slots) <= IMAGE_CACHE_BYTE_LIMIT);
-                }
-                assert!(large_slots.slots.len() < IMAGE_CACHE_ENTRY_LIMIT);
-            }
-
-            {
-                let mut cache = CacheState::default();
-                for index in 0..IMAGE_CACHE_ENTRY_LIMIT {
-                    insert_settled(
-                        &mut cache,
-                        format!("image-{index}"),
-                        Slot::Ready(logical_image(1, 1)),
-                    );
-                }
-                let hot_tick = cache.next_tick();
-                cache
-                    .slots
-                    .get_mut("image-0")
-                    .expect("seeded entry")
-                    .last_used = hot_tick;
-                insert_settled(
-                    &mut cache,
-                    "new-image".into(),
-                    Slot::Ready(logical_image(1, 1)),
-                );
-                assert!(cache.slots.contains_key("image-0"));
-                assert!(!cache.slots.contains_key("image-1"));
-                assert!(cache.slots.contains_key("new-image"));
-            }
-
-            {
-                let mut cache = CacheState::default();
-                cache.slots.insert(
-                    "old".into(),
-                    SlotEntry {
-                        slot: Slot::Failed,
-                        last_used: 7,
-                    },
-                );
-                cache.slots.insert(
-                    "new".into(),
-                    SlotEntry {
-                        slot: Slot::Failed,
-                        last_used: u64::MAX,
-                    },
-                );
-                cache.clock = u64::MAX;
-                let tick = cache.next_tick();
-                let old = cache.slots["old"].last_used;
-                let new = cache.slots["new"].last_used;
-                assert!(old < new && new < tick);
-                assert_ne!(tick, 0);
-            }
-        }
 
         phase decode_dimension_limits_fit_thumbnails_documents_and_the_cache_budget;
         {

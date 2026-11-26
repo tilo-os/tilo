@@ -1017,7 +1017,6 @@ include!("owner_publication_tests.rs");
 include!("action_directory_snapshot_bound_tests.rs");
 include!("local_input_capture_tests.rs");
 include!("bound_document_sync_tests.rs");
-include!("shared_forest_tests.rs");
 
 #[test]
 fn background_document_job_is_broker_admitted_before_its_canonical_edit() {

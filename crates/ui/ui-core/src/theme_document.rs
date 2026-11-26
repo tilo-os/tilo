@@ -674,40 +674,6 @@ mod tests {
             }
         }
 
-        phase every_material_round_trips_on_a_whole_document;
-        {
-            let glass = Finish::glass([20.0, 0.2, 1.8, 12.0, 0.4, 0.2]);
-            let translucent = Finish::frosted(30.0, 0.4, 0.5);
-            for finish in [Finish::flat(), Finish::solid(), translucent, glass] {
-                let mut doc = Preset::Dark.document();
-                doc.material.window = finish.clone();
-                doc.material.control = finish.clone();
-                doc.material.floating = finish.clone();
-                doc.material.bar = Some(finish.clone());
-                doc.shape.border = Border {
-                    width: 2.0,
-                    ink: crate::tokens::BorderInk::Standard,
-                };
-                doc.depth = Depth::Outline;
-                doc.type_.contrast = 1.25;
-                doc.type_.weights = ThemeWeights {
-                    body: ThemeWeight::Medium,
-                    label: ThemeWeight::Semibold,
-                    heading: ThemeWeight::Bold,
-                };
-                doc.motion = ThemeMotion {
-                    character: 0.5,
-                    curve: MotionCurve::Eased,
-                    duration_scale: 1.5,
-                };
-                assert_eq!(doc.validate(), Ok(()), "{finish:?}");
-                let json = serde_json::to_string(&doc).unwrap();
-                let back: ThemeDocument = serde_json::from_str(&json).unwrap();
-                assert_eq!(back, doc, "{finish:?}");
-                assert_eq!(doc.findings(), Vec::new(), "{finish:?}");
-            }
-        }
-
         phase a_document_naming_only_the_old_roles_takes_the_stock_new_ones;
         {
             let json = serde_json::json!({

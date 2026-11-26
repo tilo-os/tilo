@@ -820,11 +820,6 @@ impl OpenResourceSearch {
             resources: Arc::new(indexed),
         }
     }
-
-    #[cfg(test)]
-    pub(crate) fn shares_storage_with(&self, other: &Self) -> bool {
-        Arc::ptr_eq(&self.resources, &other.resources)
-    }
 }
 
 impl SearchProvider for OpenResourceSearch {

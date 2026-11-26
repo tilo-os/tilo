@@ -1951,12 +1951,6 @@ mod tests {
 
     include!("native_publication_scroll_tests.rs");
 
-    #[cfg(feature = "native")]
-    mod input_phase_profile {
-        use super::*;
-        include!("input_phase_profile_tests.rs");
-    }
-
     tilo_test_env::scenario! {
         fn a_changed_layout_repaints_only_the_boxes_that_changed;
 

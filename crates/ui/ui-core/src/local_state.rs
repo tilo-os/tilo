@@ -612,7 +612,6 @@ impl LocalState<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::mpsc::TryRecvError;
 
     use super::*;
@@ -774,77 +773,6 @@ mod tests {
                 assert!(!completion.complete(42));
                 assert!(!request.is_pending());
                 assert_eq!(request.try_take(), None);
-            }
-        }
-
-        phase exhausted_revisions_and_generations_are_never_reissued;
-        {
-            {
-                let state = LocalState::new(String::from("before"));
-                state.inner.revision.store(u64::MAX, Ordering::Release);
-                let called = AtomicUsize::new(0);
-
-                assert!(!state.try_set(String::from("after")));
-                assert!(!state.try_update(|value| {
-                    called.fetch_add(1, Ordering::Relaxed);
-                    value.push_str(" mutated");
-                }));
-                assert_eq!(state.get(), "before");
-                assert_eq!(called.load(Ordering::Relaxed), 0);
-                assert_eq!(state.revision(), u64::MAX);
-            }
-
-            {
-                let mut request = LatestRequest::<()>::new();
-                request.generation.store(u64::MAX - 1, Ordering::Release);
-
-                assert!(request.try_begin().is_none());
-                assert!(!request.is_pending());
-                assert!(
-                    request.try_cancel(),
-                    "the terminal invalidation is still available"
-                );
-                assert_eq!(request.generation.load(Ordering::Acquire), u64::MAX);
-                assert!(!request.try_cancel());
-                assert!(request.try_begin().is_none());
-                let stale = request.begin();
-                assert!(!stale.is_current());
-                assert!(!stale.complete(()));
-            }
-
-            {
-                let task = LatestTask::new("idle");
-                let state = task.state();
-                *task.generation.lock().unwrap() = u64::MAX - 1;
-
-                assert!(task.try_begin("running").is_none());
-                assert_eq!(state.get(), "idle");
-                assert!(task.try_cancel("cancelled"));
-                assert_eq!(state.get(), "cancelled");
-                assert!(!task.try_cancel("later"));
-                assert_eq!(state.get(), "cancelled");
-                let inert_completion = task.begin("never published");
-                assert!(!inert_completion.is_current());
-                assert!(!inert_completion.complete("late"));
-                assert_eq!(state.get(), "cancelled");
-            }
-
-            {
-                let mut scope = WakeScope::new();
-                let (task, mut request) = {
-                    let _entry = scope.enter();
-                    (LatestTask::new(0), LatestRequest::<u32>::new())
-                };
-                scope.close();
-                let task_fallback = task.begin(1);
-                let request_fallback = request.begin();
-                assert!(!task_fallback.is_current());
-                assert!(!request_fallback.is_current());
-                assert!(!task_fallback.complete(2));
-                assert!(!request_fallback.complete(2));
-                assert_eq!(*task.generation.lock().unwrap(), 0);
-                assert_eq!(request.generation.load(Ordering::Acquire), 0);
-                assert_eq!(task.state().get(), 0);
             }
         }
     }

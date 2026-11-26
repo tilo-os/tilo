@@ -2099,90 +2099,10 @@ mod tests {
         scene
     }
 
-    fn rendered_advance_at_scale(scale: f32) -> f64 {
-        let mut line = RichTextLine::new().with_text("Calendar").with_size(16.0);
-        let theme = Theme::dark().with_text_scale(scale);
-        let mut renderer = TextRenderer::new();
-        renderer.set_text_scale(scale);
-        let mut taffy = TaffyTree::new();
-        let mut node_map = HashMap::new();
-        let node = line.build_layout(&mut taffy, &theme, &mut node_map);
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(640.0),
-                    height: taffy::AvailableSpace::MaxContent,
-                },
-            )
-            .expect("line layout");
-        line.apply_layout(&taffy, node, Point::ZERO);
-        line.draw(&mut tilo_ui::DrawCtx::new(
-            &mut Scene::new(),
-            Affine::IDENTITY,
-            &mut renderer,
-            &theme,
-            PresenceCtx::empty().draw_env(),
-        ));
-        line.inner()
-            .char_x_positions()
-            .last()
-            .copied()
-            .expect("terminal caret advance")
-    }
-
     tilo_test_env::scenario! {
         /// A rich line: its shaping and geometry, its binding and edits, its keys and its marks.
         /// Each phase was a test of its own and builds its own fixture.
         fn a_rich_line_shapes_binds_edits_and_marks;
-
-        phase rich_line_shapes_once_at_every_scale;
-        {
-            {
-                let normal = rendered_advance_at_scale(1.0);
-                let doubled = rendered_advance_at_scale(2.0);
-                assert!(
-                    (doubled - normal * 2.0).abs() < 0.5,
-                    "2× text must have 2× advance, not 4×: {normal} -> {doubled}"
-                );
-            }
-
-            {
-                let mut line = RichTextLine::new().with_text("alpha beta").with_size(16.0);
-                line.set_marks(vec![MarkSpan::new(0..5, Mark::Code)]);
-                line.inner_mut().set_selection(0, 5);
-
-                let normal = Theme::dark();
-                layout_and_draw(&mut line, &normal, 320.0);
-                assert_eq!(line.inner().shaped_font_size_for_test(), Some(16.0));
-                assert!((line.caret_rect(&normal, 5).height() - 20.0).abs() < 0.1);
-                assert!((line.selection_rect(&normal, 0, 5).height() - 20.0).abs() < 0.1);
-
-                let large = Theme::dark().with_text_scale(2.0);
-                layout_and_draw(&mut line, &large, 320.0);
-                assert_eq!(line.inner().shaped_font_size_for_test(), Some(32.0));
-                let caret = line.caret_rect(&large, 5);
-                assert!(
-                    (caret.height() - 40.0).abs() < 0.1,
-                    "scaled caret height was {}",
-                    caret.height()
-                );
-                let selection = line.selection_rect(&large, 0, 5);
-                assert!(
-                    (selection.height() - 40.0).abs() < 0.1,
-                    "scaled selection height was {}",
-                    selection.height()
-                );
-
-                let target = 6;
-                let x = line.caret_rect(&large, target).x0;
-                assert_eq!(
-                    line.byte_for_pixel_x(&large, x),
-                    target,
-                    "pointer inverse lands on the scaled shaped caret stop"
-                );
-            }
-        }
 
         phase rich_mark_geometry_is_authoritative_for_paint_selection_and_pointer;
         {

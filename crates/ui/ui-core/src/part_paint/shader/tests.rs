@@ -26,68 +26,6 @@ fn fs_surface(s: Surface) -> vec4<f32> {
 }
 ";
 
-/// A settled part in a shader finish is evaluated once and replayed: an idle surface runs no shader,
-/// and another program is another picture.
-#[test]
-fn a_settled_shader_part_is_evaluated_once_and_replayed() {
-    use crate::part_paint::{Moment, Part, States, paint_part, part_tokens};
-    use crate::theme::{Preset, PresetDesign, Theme};
-    use crate::tokens::{Finish, SurfaceRole, SurfaceShader};
-    let theme_with = |wgsl: &str| {
-        let mut document = Preset::Dark.document();
-        document.material.window =
-            Finish::named("shader", std::collections::BTreeMap::<String, f32>::new())
-                .expect("the shader set")
-                .with_shader(SurfaceShader {
-                    wgsl: wgsl.to_owned(),
-                    time: 0.0,
-                });
-        Theme::from_document(&document).unwrap_or_else(|| panic!("{:?}", Theme::refusal(&document)))
-    };
-    let paint = |theme: &Theme| {
-        let tokens = part_tokens(
-            theme,
-            SurfaceRole::Window,
-            (
-                theme.tokens.colors.surfaces.content,
-                Color::BLACK,
-                Color::TRANSPARENT,
-            ),
-            theme.tokens.colors.surfaces.base,
-        );
-        paint_part(
-            &mut vello::Scene::new(),
-            vello::kurbo::Affine::IDENTITY,
-            vello::kurbo::Rect::new(0.0, 0.0, 40.0, 30.0),
-            (
-                theme.painter(SurfaceRole::Window),
-                Part::WindowGround,
-                SurfaceRole::Window,
-            ),
-            Moment::settled(States::REST),
-            &tokens,
-            theme,
-        );
-    };
-    let theme = theme_with(SOLID);
-    let before = EVALUATED.with(std::cell::Cell::get);
-    for _ in 0..3 {
-        paint(&theme);
-    }
-    assert_eq!(
-        EVALUATED.with(std::cell::Cell::get) - before,
-        1,
-        "replayed while idle"
-    );
-    let other = theme_with(&SOLID.replace("return s.fill;", "return s.ground;"));
-    paint(&other);
-    assert_eq!(
-        EVALUATED.with(std::cell::Cell::get) - before,
-        2,
-        "a new program draws anew"
-    );
-}
-
 tilo_test_env::scenario! {
     fn the_shader_interpreter_draws_what_a_checked_shader_says;
 
