@@ -59,8 +59,7 @@ struct PreviousEntry {
     _answered: Vec<earlier::Answered>,
     #[serde(rename = "unanswered")]
     _unanswered: Vec<earlier::Unanswered>,
-    #[serde(rename = "writes")]
-    _writes: [Vec<earlier::Stretch>; 3],
+    writes: [Vec<earlier::Stretch>; 3],
     frames: Vec<FrameStretch>,
     head: Vec<Op>,
     documents: Vec<(Route, Option<DocumentOps>)>,
@@ -90,8 +89,7 @@ struct EntryBeforeFrames {
     _answered: Vec<earlier::Answered>,
     #[serde(rename = "unanswered")]
     _unanswered: Vec<earlier::Unanswered>,
-    #[serde(rename = "writes")]
-    _writes: [Vec<earlier::Stretch>; 3],
+    writes: [Vec<earlier::Stretch>; 3],
     head: Vec<Op>,
     documents: Vec<(Route, Option<DocumentOps>)>,
     tail: Vec<Op>,
@@ -391,6 +389,158 @@ pub(super) fn replay(
              version {OLDEST_LAYOUT} to {LAYOUT_VERSION}"
         )),
     }
+}
+
+/// Writes this device made that an earlier build's ownership held and had not sent, in the order
+/// it would have sent them: its governance and its head ([`Self::writes`]), the runs it kept beside
+/// the record ([`Self::runs`]), then its tail ([`Self::tail`]). Each is the message it would have
+/// sent, as that build encoded it. The step to version 11 drops that ownership, and a device
+/// offline keeps there every write it made: they go on as this build's own frames instead.
+#[derive(Debug, Default)]
+pub(super) struct Unsent {
+    pub(super) writes: Vec<Vec<u8>>,
+    /// Each run by its hash, with how many of its writes the host had taken already.
+    pub(super) runs: Vec<([u8; 32], u32)>,
+    pub(super) tail: Vec<Vec<u8>>,
+}
+
+/// A write ownership kept to send, as a snapshot's fields hold it.
+#[derive(Deserialize)]
+struct HeldWrite {
+    #[serde(deserialize_with = "crate::owner::stored::base64_bytes::deserialize")]
+    bytes: Vec<u8>,
+}
+
+/// A run of ownership's writes kept beside the record, as its fields name it.
+#[derive(Deserialize)]
+struct HeldRun {
+    hash: [u8; 32],
+    taken: u32,
+}
+
+/// Ownership as an earlier build's fields held it: only what names a write not sent yet.
+#[derive(Deserialize, Default)]
+struct HeldOwnership {
+    #[serde(default)]
+    governance: Vec<HeldWrite>,
+    #[serde(default)]
+    entries: Vec<HeldWrite>,
+    #[serde(default)]
+    tail: Vec<HeldWrite>,
+    #[serde(default)]
+    spilled: Vec<HeldRun>,
+}
+
+/// What the writes of an earlier build's journal entry did to ownership's lists, if its layout
+/// carried them apart from its fields.
+type ListStretches = Option<[Vec<earlier::Stretch>; 3]>;
+
+/// The entries of an earlier build's journal: each one's change to the fields, and to ownership's
+/// lists when its layout carried them apart.
+type EntryChanges = Vec<(Vec<Op>, ListStretches)>;
+
+/// An earlier build's fields, read for the ownership they held.
+#[derive(Deserialize)]
+struct HeldFields {
+    #[serde(default)]
+    publication: Option<HeldOwnership>,
+}
+
+/// The writes this device made that `stored`, a snapshot of version `layout` an earlier build
+/// wrote, and the entries of its journal `log` leave unsent ([`Unsent`]); `held` is what the
+/// snapshot held that this build's record leaves out ([`held_before`]). Nothing for a snapshot of
+/// this build's version, which keeps its frames itself.
+///
+/// # Errors
+/// The snapshot's ownership or the journal does not read.
+pub(super) fn unsent(
+    stored: &StoredWorkspace,
+    layout: u32,
+    held: Option<&serde_json::Value>,
+    log: Option<&[u8]>,
+) -> Result<Unsent, String> {
+    let mut rest = log.unwrap_or_default();
+    let (fields, lists, entries): (Arc<[u8]>, _, EntryChanges) = match layout {
+        OLDEST_LAYOUT => {
+            let fields = held
+                .map(serde_json::to_vec)
+                .transpose()
+                .map_err(|error| error.to_string())?
+                .ok_or("the snapshot's fields were not read")?;
+            let entries = std::iter::from_fn(|| take::<EntryOfFields>(&mut rest).transpose())
+                .map(|entry| entry.map(|entry| (entry.fields, None)))
+                .collect::<Result<_, _>>()?;
+            (fields.into(), None, entries)
+        }
+        WRITES_APART..=PREVIOUS_LAYOUT => {
+            let ownership: HeldOwnership = held
+                .map(|held| serde_json::from_value(held.clone()))
+                .transpose()
+                .map_err(|error| format!("the snapshot's ownership does not read: {error}"))?
+                .unwrap_or_default();
+            let bytes = |list: Vec<HeldWrite>| list.into_iter().map(|write| write.bytes).collect();
+            let lists: [Vec<Vec<u8>>; 3] = [
+                bytes(ownership.governance),
+                bytes(ownership.entries),
+                bytes(ownership.tail),
+            ];
+            let entries = if layout == PREVIOUS_LAYOUT {
+                std::iter::from_fn(|| take::<PreviousEntry>(&mut rest).transpose())
+                    .map(|entry| entry.map(|entry| (entry.fields, Some(entry.writes))))
+                    .collect::<Result<_, _>>()?
+            } else {
+                std::iter::from_fn(|| take::<EntryBeforeFrames>(&mut rest).transpose())
+                    .map(|entry| entry.map(|entry| (entry.fields, Some(entry.writes))))
+                    .collect::<Result<_, _>>()?
+            };
+            (previous_fields(stored, layout, held)?, Some(lists), entries)
+        }
+        _ => return Ok(Unsent::default()),
+    };
+    let mut fields = Rope::of(&fields);
+    let mut lists = lists;
+    for (ops, stretches) in entries {
+        fields = fields.apply(ops)?;
+        if let (Some(lists), Some(stretches)) = (lists.as_mut(), stretches) {
+            *lists = earlier::replay_stretches(lists, stretches)?;
+        }
+    }
+    let held_fields: HeldFields = serde_json::from_slice(&fields.to_vec())
+        .map_err(|error| format!("the record's ownership does not read: {error}"))?;
+    // Fields that held no ownership left no write unsent.
+    let ownership = held_fields.publication.unwrap_or_default();
+    let bytes = |list: Vec<HeldWrite>| list.into_iter().map(|write| write.bytes).collect();
+    // A build of version 8 to 10 carried the lists apart from the fields, which held them empty.
+    let [governance, entries, tail]: [Vec<Vec<u8>>; 3] = lists.unwrap_or_else(|| {
+        [
+            bytes(ownership.governance),
+            bytes(ownership.entries),
+            bytes(ownership.tail),
+        ]
+    });
+    Ok(Unsent {
+        writes: governance.into_iter().chain(entries).collect(),
+        runs: ownership
+            .spilled
+            .into_iter()
+            .map(|run| (run.hash, run.taken))
+            .collect(),
+        tail,
+    })
+}
+
+/// The writes of a run an earlier build's ownership kept beside its record, `bytes` as it kept
+/// them, in their order: the run is named by its hash, which `hash` is.
+///
+/// # Errors
+/// The bytes are not the run named, or do not read.
+pub(super) fn run_writes(bytes: &[u8], hash: [u8; 32]) -> Result<Vec<Vec<u8>>, String> {
+    if *blake3::hash(bytes).as_bytes() != hash {
+        return Err("a run of writes kept beside the record is not the one it names".into());
+    }
+    let writes: Vec<earlier::Outgoing> =
+        postcard::from_bytes(bytes).map_err(|error| error.to_string())?;
+    Ok(writes.into_iter().map(|write| write.bytes).collect())
 }
 
 /// What a snapshot `bytes` an earlier build wrote held that this build's record leaves out, which
@@ -1135,11 +1285,39 @@ mod earlier {
     pub(super) struct Outgoing {
         ordinal: u64,
         id: [u8; 32],
-        bytes: Vec<u8>,
+        pub(super) bytes: Vec<u8>,
         binding: Binding,
         timestamp_ns: u64,
         channel: [u8; 32],
         incremental: bool,
+    }
+
+    /// The lists `stretches` make of `old`, ownership's governance, head and tail before an entry:
+    /// a write kept is named by its place over the three in turn.
+    pub(super) fn replay_stretches(
+        old: &[Vec<Vec<u8>>; 3],
+        stretches: [Vec<Stretch>; 3],
+    ) -> Result<[Vec<Vec<u8>>; 3], String> {
+        let old: Vec<&Vec<u8>> = old.iter().flatten().collect();
+        let mut lists: [Vec<Vec<u8>>; 3] = Default::default();
+        for (list, stretches) in lists.iter_mut().zip(stretches) {
+            for stretch in stretches {
+                match stretch {
+                    Stretch::Kept { from, len } => {
+                        let from = usize::try_from(from).map_err(|e| e.to_string())?;
+                        let len = usize::try_from(len).map_err(|e| e.to_string())?;
+                        let kept = old
+                            .get(from..from.saturating_add(len))
+                            .ok_or("a journal entry keeps writes ownership did not hold")?;
+                        list.extend(kept.iter().map(|write| (*write).clone()));
+                    }
+                    Stretch::Writes(writes) => {
+                        list.extend(writes.into_iter().map(|write| write.bytes));
+                    }
+                }
+            }
+        }
+        Ok(lists)
     }
 
     /// What a write was bound to.

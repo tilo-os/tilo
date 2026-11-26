@@ -376,15 +376,88 @@ impl Journaled {
                 "the record names {workspace}'s chunks and their list is missing"
             ));
         }
+        let unsent = journal::unsent(
+            &stored,
+            read.version,
+            read.held.as_ref(),
+            read.entries.as_deref(),
+        )
+        .map_err(|error| format!("{workspace}'s writes not sent yet do not read: {error}"))?;
         if let Some(entries) = read.entries {
             let (replayed, _) = journal::replay(stored, &entries, read.version, read.held.as_ref())
                 .map_err(|error| format!("{workspace}'s journal does not read: {error}"))?;
             stored = replayed;
         }
+        self.keep_unsent(parts, &mut stored, read.version, unsent)?;
         if stored.workspace != workspace {
             return Err(format!("{workspace}'s record holds another workspace"));
         }
         Ok(stored)
+    }
+
+    /// Keep the writes of this device's own that the earlier build had not sent yet ([`Unsent`])
+    /// as frames of `stored`, after those it keeps already: they go out as any write of this
+    /// device's does, and the workspace's host takes or refuses each under its rules now, a
+    /// refusal reaching the person as any refused write of theirs does. Each comes up as this
+    /// build's message with the signature its author made. A write that does not come up stops
+    /// the open, saying so, and the pair the earlier build wrote stays as it was, that write in it.
+    ///
+    /// [`Unsent`]: journal::Unsent
+    fn keep_unsent(
+        &mut self,
+        parts: &dyn JournalParts,
+        stored: &mut StoredWorkspace,
+        version: u32,
+        unsent: journal::Unsent,
+    ) -> Result<(), String> {
+        let workspace = stored.workspace;
+        let mut writes = unsent.writes;
+        for (hash, taken) in unsent.runs {
+            let hex = blake3::Hash::from_bytes(hash).to_hex();
+            // Stores kept a run under the second name for a while, and read it from there.
+            let names = [
+                format!("{workspace}.custody.{hex}"),
+                format!("{workspace}.ownership.{hex}"),
+            ];
+            let mut found = None;
+            for name in names {
+                if let Some(bytes) = parts.read_part(&name)? {
+                    self.written.insert(name);
+                    found = Some(bytes);
+                    break;
+                }
+            }
+            let bytes = found.ok_or_else(|| {
+                format!(
+                    "{workspace} names writes this device made and had not sent yet, kept \
+                     beside its record, and they are missing"
+                )
+            })?;
+            let run = journal::run_writes(&bytes, hash)
+                .map_err(|error| format!("{workspace}'s writes not sent yet: {error}"))?;
+            writes.extend(
+                run.into_iter()
+                    .skip(usize::try_from(taken).unwrap_or(usize::MAX)),
+            );
+        }
+        writes.extend(unsent.tail);
+        for write in writes {
+            let message = earlier_message(&write, version).map_err(|error| {
+                format!(
+                    "{workspace} holds a write this device made and had not sent yet that this \
+                     build cannot read ({error}); the workspace stays as the earlier build kept it"
+                )
+            })?;
+            let bytes: std::sync::Arc<[u8]> = postcard::to_stdvec(&message)
+                .map_err(|error| error.to_string())?
+                .into();
+            if !stored.frames.iter().any(|kept| kept.bytes == bytes) {
+                stored
+                    .frames
+                    .push(crate::owner::stored::FrameToSend { bytes });
+            }
+        }
+        Ok(())
     }
 
     /// Name the pairs just written in the index, the commit point of the record, and let go the
@@ -707,6 +780,26 @@ fn read_list(bytes: &[u8]) -> Result<Vec<[u8; DIGEST]>, String> {
         return Err("a snapshot's list of chunks does not read".into());
     }
     Ok(digests.to_vec())
+}
+
+/// `bytes`, a message a build of owner workspace document `version` kept to send, as this build's
+/// message, with the signature its author made. The released build, of version 7, kept it before
+/// own records went; the builds of version 8 to 10 that followed kept it in that layout, before
+/// claims named a call, or as this build writes it, each read whole and the oldest first.
+fn earlier_message(bytes: &[u8], version: u32) -> Result<crate::NeighbourMsg, String> {
+    let before_own = crate::state::frame_before_own_removal(bytes);
+    if version == journal::OLDEST_LAYOUT {
+        return before_own;
+    }
+    before_own
+        .or_else(|_| crate::state::frame_before_call(bytes))
+        .or_else(
+            |_| match postcard::take_from_bytes::<crate::NeighbourMsg>(bytes) {
+                Ok((message, [])) => Ok(message),
+                Ok(_) => Err("trailing bytes after the message".into()),
+                Err(error) => Err(error.to_string()),
+            },
+        )
 }
 
 pub(crate) fn snapshot_name(workspace: WorkspaceId, revision: u64) -> String {
@@ -1352,6 +1445,153 @@ mod tests {
         check(
             read.stored(workspace).map(|stored| stored.generation) == Some(7),
             "the entry's change reads on",
+        )?;
+        Ok(())
+    }
+
+    /// What the released build kept of a workspace this device wrote to twice and sent neither
+    /// write of: its snapshot, holding the first among the writes it had not sent, and the entry
+    /// that build appended, holding the second, which claimed a resource as the device's own.
+    const RELEASED_UNSENT: &str =
+        include_str!("../../golden/owner-workspace-journal/v7-unsent.parts");
+
+    /// The parts [`RELEASED_UNSENT`] holds, each as `PART name`, its bytes and `END`.
+    fn released_unsent() -> Result<Memory, Box<dyn std::error::Error>> {
+        let parts = Memory::default();
+        let mut lines = RELEASED_UNSENT.lines();
+        while let Some(line) = lines.next() {
+            let name = line
+                .strip_prefix("PART ")
+                .ok_or("a part starts with its name")?;
+            let hex: Vec<&str> = lines.by_ref().take_while(|line| *line != "END").collect();
+            parts.write_part(name, &golden_bytes(&hex.join(" "))?)?;
+        }
+        let workspace = WorkspaceId::parse("40267648-f762-4c8d-89ad-c5ab27aa13b8")
+            .ok_or("the golden entry's workspace")?;
+        let mut held = serde_json::Map::new();
+        held.insert(workspace.to_string(), 1.into());
+        parts.write_part(
+            INDEX_NAME,
+            &serde_json::to_vec(&serde_json::json!({
+                "version": INDEX_VERSION,
+                "revision": 1,
+                "held": held
+            }))?,
+        )?;
+        Ok(parts)
+    }
+
+    /// The payload of the document write `frame` sends, and whether it claims a resource.
+    fn sent_write(frame: &[u8]) -> Result<(Vec<u8>, bool), Box<dyn std::error::Error>> {
+        let message: crate::NeighbourMsg = postcard::from_bytes(frame)?;
+        let crate::NeighbourMsg::AppDocument {
+            app_id,
+            document_id,
+            envelope,
+            ..
+        } = message
+        else {
+            return Err("the write is a document's".into());
+        };
+        check(
+            app_id == "so.tilo.notes" && document_id == "plan",
+            "the write keeps its document",
+        )?;
+        let collab_types::DocumentMutation::Incremental(payload) =
+            collab_types::DocumentMutation::decode(&envelope.payload)?
+        else {
+            return Err("the write is a change".into());
+        };
+        Ok((
+            payload,
+            frame.windows(13).any(|run| run == b"settings.root"),
+        ))
+    }
+
+    /// A device on the released build that updates before it sent what it wrote keeps those
+    /// writes: they open as its own, waiting to be sent the way this build sends any, and the host
+    /// judges them under today's rules. The claim the second made is not carried, because this
+    /// build no longer claims resources by a write.
+    #[test]
+    fn writes_the_released_build_had_not_sent_open_waiting_to_be_sent()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parts = released_unsent()?;
+        let (mut journaled, read) = Journaled::open(&parts)?.ok_or("the record is not kept")?;
+        let (&workspace, stored) = read
+            .workspaces
+            .iter()
+            .next()
+            .ok_or("the workspace is kept")?;
+        let sent = stored
+            .frames
+            .iter()
+            .map(|frame| sent_write(&frame.bytes))
+            .collect::<Result<Vec<_>, _>>()?;
+        check(
+            sent == vec![(b"first".to_vec(), false), (b"second".to_vec(), false)],
+            "both writes wait to be sent, in the order they were made",
+        )?;
+
+        journaled.publish(
+            &parts,
+            &read,
+            &Change::Workspace {
+                workspace,
+                shown: false,
+            },
+        )?;
+        let again = Journaled::open(&parts)?.ok_or("the record is not kept")?.1;
+        check(
+            again.stored(workspace).map(frames_of) == Some(frames_of(stored)),
+            "the writes still wait once this build has written its own snapshot",
+        )?;
+        Ok(())
+    }
+
+    /// A write the released build had not sent that this build cannot read stops the open in
+    /// plain words, and the record stays as that build kept it: the write is never dropped.
+    #[test]
+    fn a_write_not_sent_that_does_not_read_keeps_the_earlier_record()
+    -> Result<(), Box<dyn std::error::Error>> {
+        let parts = released_unsent()?;
+        let snapshot_name = {
+            let kept = parts.parts.lock().map_err(|error| error.to_string())?;
+            kept.keys()
+                .find(|name| name.starts_with('w'))
+                .cloned()
+                .ok_or("a snapshot is kept")?
+        };
+        // The journal's entry splices the snapshot's bytes where they stand, so the write is
+        // spoiled in place: its leading bytes become ones no message starts with.
+        let mut snapshot = parts.read_part(&snapshot_name)?.ok_or("the snapshot")?;
+        let held: serde_json::Value = serde_json::from_slice(&snapshot)?;
+        let first = held
+            .pointer("/publication/entries/0/bytes")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("the snapshot holds the first write")?;
+        let at = snapshot
+            .windows(first.len())
+            .position(|run| run == first.as_bytes())
+            .ok_or("the write stands in the snapshot")?;
+        snapshot[at..at + 8].copy_from_slice(b"////////");
+        parts.write_part(&snapshot_name, &snapshot)?;
+        let before = parts
+            .parts
+            .lock()
+            .map_err(|error| error.to_string())?
+            .clone();
+
+        let Err(error) = Journaled::open(&parts) else {
+            return Err("the record opens without the write".into());
+        };
+        check(
+            error.contains("had not sent yet")
+                && error.contains("stays as the earlier build kept it"),
+            format!("the refusal says what is kept: {error}"),
+        )?;
+        check(
+            *parts.parts.lock().map_err(|error| error.to_string())? == before,
+            "every part the earlier build wrote stays",
         )?;
         Ok(())
     }
