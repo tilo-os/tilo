@@ -71,20 +71,13 @@ fn a_create_answers_the_issue_it_made_and_the_issue_reads_back() {
                     .await,
             );
             assert!(!is_error, "the create is made: {answer}");
-            // The create answers the issue it made, by the address its answer names: the task
-            // is read where it stands, and it says the title it was made with.
+            // The create answers the issue it made, by the path its answer names: the task is
+            // read where it stands, and it says the title it was made with.
             let issue = answer
                 .lines()
                 .find_map(|line| line.strip_prefix("-> "))
                 .unwrap_or_else(|| panic!("the answer names it: {answer}"));
-            let (task, is_error) = said(
-                &agent
-                    .tool(
-                        "tilo_read",
-                        &json!({"path": format!("so.tilo.tasks/{issue}")}),
-                    )
-                    .await,
-            );
+            let (task, is_error) = said(&agent.tool("tilo_read", &json!({"path": issue})).await);
             assert!(!is_error, "the issue reads where it was made: {task}");
             assert!(task.contains(title), "it reads back: {task}");
             made.push(answer);
@@ -177,7 +170,14 @@ fn a_write_under_the_oldest_of_many_issues_lands() {
                     "a create answers what it made: {text}"
                 );
                 if oldest.is_null() {
-                    oldest = made[0].clone();
+                    // The task as the tools take it: the path its answer names it under.
+                    oldest = json!(
+                        made[0]
+                            .as_str()
+                            .and_then(|task| task.strip_prefix("tl:so.tilo.tasks:"))
+                            .map(|id| format!("so.tilo.tasks/{id}"))
+                            .unwrap_or_else(|| panic!("a task the workspace keeps: {}", made[0]))
+                    );
                 }
             }
         }

@@ -133,14 +133,23 @@ async fn open_app(host: &host::Host, app: &str) {
 }
 
 /// The address of what `answer`, a call that made one thing, names, under the app `app` that
-/// made it.
+/// made it: the path the tools take it at.
 fn made_address(answer: &Value, app: &str) -> String {
+    let shown = |resource: &str| {
+        resource
+            .strip_prefix("tl:")
+            .and_then(|rest| rest.split_once(':'))
+            .map_or_else(|| resource.to_owned(), |(app, id)| format!("{app}/{id}"))
+    };
     for field in ["resources", "made"] {
         if let Some(entry) = answer[field].as_array().and_then(|made| made.first()) {
             if let Some(address) = entry["address"].as_str().or_else(|| entry["path"].as_str()) {
-                return address.to_owned();
+                return shown(address);
             }
-            if let Some(id) = entry.as_str().or_else(|| entry["id"].as_str()) {
+            if let Some(id) = entry.as_str() {
+                return shown(id);
+            }
+            if let Some(id) = entry["id"].as_str() {
                 return format!("{app}/{id}");
             }
         }

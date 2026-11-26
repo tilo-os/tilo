@@ -428,11 +428,14 @@ async fn told_skill(host: &Host, name: &str) -> String {
     let output = host::output(host, target, json!({"name": name}))
         .await
         .expect("the person starts a skill");
-    output
+    let made = output
         .resources
         .first()
         .cloned()
-        .unwrap_or_else(|| panic!("new_skill names the skill it made: {output:?}"))
+        .unwrap_or_else(|| panic!("new_skill names the skill it made: {output:?}"));
+    made.strip_prefix(&format!("tl:{CHAT}:"))
+        .unwrap_or_else(|| panic!("the skill is a resource of Chat: {made}"))
+        .to_owned()
 }
 
 /// A turn on the workspace's host changes the workspace's skill through the same actions its

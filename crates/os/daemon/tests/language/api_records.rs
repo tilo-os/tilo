@@ -103,7 +103,7 @@ async fn opened_and_written(key: &host::Key, workspace: &str) {
 }
 
 /// The channel `name` made in the workspace's chat through `key`: the address its messages go
-/// to, as the call that made it names the resource.
+/// to, as the call that made it names the resource, inside Chat as the app's paths name it.
 async fn did_channel(key: &host::Key, workspace: &str, name: &str) -> String {
     let answer = act(key, workspace, CHAT, "new_channel", &json!({"name": name})).await;
     assert_eq!(answer["status"], "ok", "{CHAT}#new_channel: {answer}");
@@ -111,8 +111,12 @@ async fn did_channel(key: &host::Key, workspace: &str, name: &str) -> String {
         .as_array()
         .and_then(|made| made.first())
         .and_then(Value::as_str)
+        .map(|made| {
+            made.strip_prefix(&format!("tl:{CHAT}:"))
+                .unwrap_or(made)
+                .to_owned()
+        })
         .unwrap_or_else(|| panic!("the call names the channel it made: {answer}"))
-        .to_owned()
 }
 
 /// Every message Chat lists in the conversation at `path`, read at the path the listing gave

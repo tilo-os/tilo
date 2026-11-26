@@ -890,7 +890,7 @@ impl Host {
     }
 
     /// The app whose package declares the type `ty`.
-    fn app_of_type(&self, ty: &str) -> Option<String> {
+    pub(crate) fn app_of_type(&self, ty: &str) -> Option<String> {
         self.find_in_packages(|package| {
             package
                 .meta

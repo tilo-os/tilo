@@ -396,6 +396,16 @@ fn asked_words(value: &Value) -> String {
     )
 }
 
+/// What a resource an invocation's answer names is called in a tool's text: one a tilolang app
+/// publishes (`tl:<app>:<id>`) by the path `tilo_read` takes it at (`<app>/<id>`), and a
+/// package's own (`tl:<app>`) by its app (`<app>`), so an agent goes on with the line alone;
+/// any other address as it is.
+fn shown_resource(resource: &str) -> String {
+    resource
+        .strip_prefix("tl:")
+        .map_or_else(|| resource.to_owned(), |rest| rest.replacen(':', "/", 1))
+}
+
 /// What an invocation's final update says, as an agent reads it.
 pub(super) fn outcome(value: &Value) -> Reply {
     let state = value
@@ -428,7 +438,7 @@ pub(super) fn outcome(value: &Value) -> Reply {
                 .filter_map(Value::as_str)
                 .take(8)
             {
-                let _ = write!(text, "\n-> {resource}");
+                let _ = write!(text, "\n-> {}", shown_resource(resource));
             }
             text
         }

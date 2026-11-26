@@ -753,7 +753,7 @@ pub fn task_id(address: &str) -> Option<&str> {
 }
 
 /// The id of the record of `app` that `answer` (an action's value) says its call made, by the
-/// address each record it made is published at (`<app>/<id>`).
+/// published id each record it made is named by (`tl:<app>:<id>`).
 pub fn made_by<'a>(answer: &'a Value, app: &str) -> Option<&'a str> {
     answer
         .get("made")?
@@ -762,8 +762,9 @@ pub fn made_by<'a>(answer: &'a Value, app: &str) -> Option<&'a str> {
         .filter_map(|made| {
             made.get("address")?
                 .as_str()?
+                .strip_prefix("tl:")?
                 .strip_prefix(app)?
-                .strip_prefix('/')
+                .strip_prefix(':')
         })
         .find(|id| !id.is_empty())
 }
@@ -796,5 +797,19 @@ mod tests {
             "Tasks/12 Book the venue the date"
         );
         assert_eq!(folder_of(&task(" ... ")), "Tasks/12");
+    }
+
+    /// What a call made is named by its published id: the record of the app asked for, by the
+    /// id inside that app.
+    #[test]
+    fn a_record_a_call_made_is_read_by_its_published_id() {
+        let answer = json!({"made": [
+            {"id": "root-a/i1", "address": "tl:so.tilo.notes:root-a/i1"},
+            {"id": "root-b/i2", "address": "tl:so.tilo.tasks:root-b/i2"},
+        ]});
+        assert_eq!(made_by(&answer, NOTES), Some("root-a/i1"));
+        assert_eq!(made_by(&answer, TASKS), Some("root-b/i2"));
+        assert_eq!(made_by(&answer, "so.tilo.other"), None);
+        assert_eq!(made_by(&json!({"value": "said in words"}), TASKS), None);
     }
 }

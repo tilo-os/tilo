@@ -580,18 +580,30 @@ fn published_roots(meta: &Meta) -> Meta {
     meta
 }
 
-/// The id every resource `value` names, in the order it names them: what an invocation's output
-/// lists as the resources it made or revealed, each by the id its app names it by (`issues/i1`),
-/// which a path or an action takes under its app (`so.tilo.tasks/issues/i1`).
-fn resources_named(value: &Value, out: &mut Vec<String>) {
+/// The published id of every resource `value` names, in the order it names them: what an
+/// invocation's output lists as the resources it made or revealed, each as its app publishes it
+/// (`tl:<app>:<id>`). `app_of` names the app whose package declares a resource's type; `app` is
+/// the app the action ran in, for a type no package here declares.
+fn resources_named(
+    value: &Value,
+    app: &str,
+    app_of: &dyn Fn(&str) -> Option<String>,
+    out: &mut Vec<String>,
+) {
     match value {
-        Value::Ref(made) => out.push(made.target.id_string()),
+        Value::Ref(made) => {
+            let owner = app_of(&made.target.ty).unwrap_or_else(|| app.to_owned());
+            out.push(crate::publish::resource_id(
+                &owner,
+                &made.target.id_string(),
+            ));
+        }
         Value::List(items) | Value::Tuple(items) => {
             for item in items {
-                resources_named(item, out);
+                resources_named(item, app, app_of, out);
             }
         }
-        Value::Opt(Some(inner)) => resources_named(inner, out),
+        Value::Opt(Some(inner)) => resources_named(inner, app, app_of, out),
         _ => {}
     }
 }
@@ -1503,16 +1515,17 @@ impl Host {
 
     /// What `action` of `app` answered as `value`, as the output of its invocation: the value
     /// its declared result carries as data ([`crate::publish::result_ty`]), and the resources it
-    /// made or touched, by their published ids.
+    /// made or touched, by their published ids (`tl:<app>:<id>`).
     ///
     /// A value of a type the API carries no data for (a file, the bytes of a response) names
     /// the resource it made alone: the app shows it rather than reading it out.
     ///
     /// What the call made is answered beside what it declared, as a native write answers it
     /// ([`tilo_actions::contract::MADE_FIELDS`]): each record the store created while the action
-    /// ran, by its id and the path its app publishes it at, so a caller reaches what it made with
-    /// the answer alone (`tilo_do` answers it). `value` is the returned value, when the action's
-    /// run answered one: a run that made records and declared no result answers them still.
+    /// ran, by its id and the published id its app names it by (`tl:<app>:<id>`), so a caller
+    /// reaches what it made with the answer alone (`tilo_do` answers it). `value` is the returned
+    /// value, when the action's run answered one: a run that made records and declared no result
+    /// answers them still.
     ///
     /// # Errors
     /// The value is not of the action's declared result type, or a type it names is in a package
@@ -1543,9 +1556,10 @@ impl Host {
                 Err(format!("no action {action} in {app}"))
             };
         };
+        let app_of = |ty: &str| self.app_of_type(ty);
         let mut output = tilo_actions::ActionOutput::default();
         if let Some(value) = value {
-            resources_named(value, &mut output.resources);
+            resources_named(value, app, &app_of, &mut output.resources);
             if let Some(ty) = crate::publish::result_ty(&package.meta, declared) {
                 let owner = |app: &str| {
                     self.inner
@@ -1562,10 +1576,12 @@ impl Host {
             let mut entries = Vec::with_capacity(made.len());
             for made in made {
                 let id = made.id_string();
-                if seen.insert(id.clone()) {
-                    output.resources.push(id.clone());
+                let owner = app_of(&made.ty).unwrap_or_else(|| app.to_owned());
+                let address = crate::publish::resource_id(&owner, &id);
+                if seen.insert(address.clone()) {
+                    output.resources.push(address.clone());
                 }
-                entries.push(serde_json::json!({"id": id, "address": format!("{app}/{id}")}));
+                entries.push(serde_json::json!({"id": id, "address": address}));
             }
             // A result the API carries as data is an object, which the answer rides beside; an
             // answer that is not one (a summary in words) is kept as it is, and `resources`

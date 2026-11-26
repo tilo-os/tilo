@@ -51,20 +51,13 @@ fn a_computers_own_tasks_are_made_and_answered_done() {
                 "so.tilo.tasks#new_task {title} as the person: {answer}"
             );
             assert!(!answer.contains("pending"), "{title} settled: {answer}");
-            // The create answers the issue it made, by the address its answer names: the task
-            // is read where it stands, as the fields the app answers for it.
+            // The create answers the issue it made, by the path its answer names: the task is
+            // read where it stands, as the fields the app answers for it.
             let issue = answer
                 .lines()
                 .find_map(|line| line.strip_prefix("-> "))
                 .unwrap_or_else(|| panic!("the create answers the issue it made: {answer}"));
-            let (task, is_error) = said(
-                &computer
-                    .tool(
-                        "tilo_read",
-                        &json!({"path": format!("so.tilo.tasks/{issue}")}),
-                    )
-                    .await,
-            );
+            let (task, is_error) = said(&computer.tool("tilo_read", &json!({"path": issue})).await);
             assert!(!is_error, "{title} reads where it was made: {task}");
             assert!(task.contains(title), "the workspace keeps {title}: {task}");
         }
@@ -88,12 +81,15 @@ fn a_members_device_takes_what_its_role_lets_it() {
             .await;
         let (words, is_error) = said(&filed);
         assert!(!is_error, "{words}");
-        // The issue the create answered, by the address its answer names: the resources it
-        // made, each on a line of its own as `-> <address>`.
+        // The issue the create answered, by the path its answer names: the resources it made,
+        // each on a line of its own as `-> <path>`. The store and a reference name it inside
+        // Tasks.
         let issue = words
             .lines()
             .find_map(|line| line.strip_prefix("-> "))
             .unwrap_or_else(|| panic!("the create answers the issue it made: {words}"))
+            .strip_prefix(&format!("{TASKS}/"))
+            .unwrap_or_else(|| panic!("the issue is a task of Tasks: {words}"))
             .to_owned();
 
         // Tasks' own create, at the address it publishes it: what a member's device calls to
@@ -294,7 +290,7 @@ fn a_filed_report_reads_back_in_the_feedback_channel_and_its_filer_is_refused_tr
                     triage,
                     Err(ActionCallError::NotPermitted | ActionCallError::Refused { .. })
                 ),
-            "a member does not triage: {triage:?}"
+            "a member does not triage {report}: {triage:?}"
         );
     });
 }

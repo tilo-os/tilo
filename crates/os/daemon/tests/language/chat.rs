@@ -121,19 +121,22 @@ pub(crate) async fn opens(host: &host::Host) -> Result<(), String> {
         .map_err(|refused| format!("{refused:?}"))
 }
 
-/// What `result`, a tool's answer to a call that made something, names it by.
+/// What `result`, a tool's answer to a call that made something, names it by: the resource
+/// inside the app, as the app's paths take it.
 pub(crate) fn made(result: &Value) -> String {
     let made = field(result, "resources");
     made.as_array()
         .and_then(|made| made.first())
         .and_then(|made| {
             made.as_str()
-                .or_else(|| made.get("id").and_then(Value::as_str))
+                .map(|made| {
+                    made.strip_prefix(&format!("tl:{CHAT}:"))
+                        .unwrap_or(made)
+                        .to_owned()
+                })
+                .or_else(|| made.get("id").and_then(Value::as_str).map(str::to_owned))
         })
-        .map_or_else(
-            || panic!("the call names what it made: {result}"),
-            str::to_owned,
-        )
+        .unwrap_or_else(|| panic!("the call names what it made: {result}"))
 }
 
 /// The agent makes the channel `name` in the workspace's chat, and names it by the id a post
