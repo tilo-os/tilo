@@ -854,21 +854,6 @@ impl Store {
         self.read(|state| state.grants.get(id).is_some_and(|grant| !grant.live()))
     }
 
-    /// The live grants `parent` minted, newest first.
-    #[must_use]
-    pub fn minted_by(&self, parent: &str) -> Vec<Grant> {
-        let mut grants: Vec<Grant> = self.read(|state| {
-            state
-                .grants
-                .values()
-                .filter(|grant| grant.parent() == Some(parent) && grant.live())
-                .cloned()
-                .collect()
-        });
-        grants.sort_by(|a, b| b.created_ms.cmp(&a.created_ms).then(a.id.cmp(&b.id)));
-        grants
-    }
-
     /// Forget one token (RFC 7009). Revoking a refresh token revokes the
     /// whole grant, as the RFC allows: the client asked to be forgotten.
     /// Answers the grants that were revoked: the grant and what it minted.

@@ -995,31 +995,6 @@ impl Calls {
         .await
     }
 
-    /// Run `action` on `resource` in `workspace` as the step `step` of the invocation `run`,
-    /// titled `title` in History: its answer, which is `pending` while it runs on. Every call
-    /// under one `run` is grouped in History as one change, and a step asked again under the
-    /// same `step` runs once.
-    ///
-    /// # Errors
-    /// The action was refused or failed.
-    pub async fn act_invoked(
-        &self,
-        workspace: &str,
-        resource: &str,
-        action: &str,
-        args: &Value,
-        (run, title, step): (&str, &str, &str),
-    ) -> Result<Value> {
-        self.invoke(
-            Some(workspace),
-            &format!("{resource}#{action}"),
-            args,
-            Some(json!({"id": run, "title": title})),
-            Some(step),
-        )
-        .await
-    }
-
     /// The invocation `run` in `workspace` (the account with none), followed while it is
     /// pending for up to `wait` seconds: its answer, `pending` while it still is.
     ///

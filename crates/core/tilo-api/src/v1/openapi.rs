@@ -337,13 +337,13 @@ mod tests {
 
     #[test]
     fn every_operation_and_every_schema_it_names_is_described() {
-        // An app's surface travels in the form it is kept by: its JSON, every
-        // object's keys in order.
-        let surface = r#"{"resources":[{"kind":"notes.notebook","label":"Notebook","version":1,"verbs":[{"id":"rename","kind":"undoable","params":[{"name":"title","required":true,"schema":{"type":"string"},"type":"text"}]}]}]}"#;
+        // An app's surface travels in the form it is kept by: its compiled, canonical JSON.
+        let surface = collab_types::surface::canonical_json(r#"{"resources":[{"kind":"notes.notebook","label":"Notebook","version":1,"verbs":[{"id":"rename","kind":"undoable","params":[{"name":"title","required":true,"schema":{"type":"string"},"type":"text"}]}]}]}"#)
+        .unwrap();
         let described = document(&[App {
             id: "so.tilo.notes".into(),
             title: "Notes".into(),
-            surface: surface.into(),
+            surface,
         }])
         .unwrap();
         let text = described.to_string();
