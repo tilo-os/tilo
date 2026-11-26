@@ -959,8 +959,29 @@ function start() {
       console.warn('sign-in: the browsers waiting', error);
     }
   };
-  lookForSignIns();
-  setInterval(lookForSignIns, 2000);
+  // The person's root and the site's runtime that holds it are heavy, and the page someone came
+  // to use is theirs before any of it is asked for: the first look waits for the page's own
+  // answer, and a look falls in the browser's idle time, never in the middle of their typing.
+  let looking = false;
+  const lookWhenSettled = () => {
+    if (looking || document.documentElement.dataset.arrival !== 'done') return;
+    // The page's own first answer is up before any of the site's runtime is read: what the
+    // person came for is never behind it.
+    if (!page.querySelector('[data-p]')) return;
+    const active = document.activeElement;
+    if (active?.isContentEditable || /^(INPUT|TEXTAREA)$/.test(active?.tagName ?? '')) return;
+    const idle = globalThis.requestIdleCallback
+      ? callback => globalThis.requestIdleCallback(callback, {timeout: 8000})
+      : callback => setTimeout(callback, 250);
+    idle(() => {
+      // The person went back to their work while this waited: the next look asks.
+      if (looking || document.activeElement !== active) return;
+      looking = true;
+      void lookForSignIns().finally(() => { looking = false; });
+    });
+  };
+  setTimeout(lookWhenSettled, 1500);
+  setInterval(lookWhenSettled, 3000);
 
   const connect = async () => {
     if (!config.link || !globalThis.WebTransport) { say('refused', 'This browser cannot open this page.'); return; }
