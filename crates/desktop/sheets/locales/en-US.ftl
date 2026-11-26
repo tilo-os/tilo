@@ -339,7 +339,6 @@ portal-auth-rejected = That password was not accepted.
 
 ## File chooser
 
-
 ## The lock screen.
 lock-title = Locked
 lock-unlock = Unlock
@@ -430,27 +429,6 @@ portal-allowed-title = Allowed for good
 portal-allowed-detail = { $app } may now use { $what } without asking. Take it back to make Tilo ask again next time.
 portal-revoke = Take back
 
-## Adding a program the person downloaded to their apps, and uninstalling an app
-add-app-title = Add { $name } to apps?
-add-app-add = Add to apps
-add-app-decline = Don't add
-add-app-move = Move to Applications
-add-app-move-detail = Keeps it in the Applications folder in your files
-uninstall-title = Uninstall { $name }?
-uninstall-action = Uninstall
-uninstall-cancel = Cancel
-uninstall-remove-data = Remove its data
-uninstall-remove-data-detail = Your settings and saved files go to the Trash, where you can restore them.
-uninstall-device-body = It's removed for everyone on this computer.
-uninstall-files = { $count ->
-    [one] Its file goes to the Trash, where you can restore it.
-   *[other] All { $count } copies go to the Trash, where you can restore them.
-}
-uninstall-home-folder = Home
-uninstall-documents-body = Your documents stay in your workspaces.
-uninstall-from-apps-title = Remove { $name } from apps?
-uninstall-from-apps-action = Remove from apps
-uninstall-entry-body = It's part of the system, so it stays on this computer and no longer shows in your apps.
 
 ## The MCP server: a program of this login (an AI agent in a terminal) asks to
 ## work in a workspace as an agent member.
@@ -496,20 +474,11 @@ agent-ask-pick = Pick an answer.
 power-session = Power
 lock-screen = Lock screen
 dictation-session = Dictation
-uninstall-question = Uninstall
-add-app-question = Add to apps
 shortcut-guide-guide = Keyboard shortcuts
 workspace-directory-listing = Public workspaces
 display-sheet-layouts = Displays
 display-confirm-question = Display change
 workspace-settings-lens = Workspace settings
-
-# Deleting a workspace, asked wherever it was asked from: the confirm sheet
-# and the workspace settings' own question say the same words.
-workspace-delete-title = Delete { $name }?
-workspace-delete-body = Everything in this workspace goes with it: its windows, its groups, its history. It disappears from every device that has it.
-workspace-delete-confirm = Delete
-workspace-delete-keep = Keep
 
 # Inviting people: the link into the workspace in front, and the links that
 # still work.
@@ -554,11 +523,6 @@ sheets-workspace-person = Person { $number }
 
 ## Actions
 
-so-tilo-add-app-add = Add to your apps
-so-tilo-add-app-decline = Do not ask about this file again
-delete-workspace-question = Delete workspace
-so-tilo-delete-workspace-answer-delete = Delete it and everything in it
-so-tilo-delete-workspace-answer-keep = Keep it
 so-tilo-workspace-directory-join-clear-note = Dismiss the notice
 so-tilo-workspace-directory-join-done = Done
 so-tilo-workspace-directory-join-join = Join a public workspace
@@ -599,8 +563,6 @@ so-tilo-lock-screen-type-password = Type the password
 so-tilo-lock-screen-unlock = Unlock
 so-tilo-shortcut-guide-edit-listen = Change the shortcut
 so-tilo-shortcut-guide-edit-reset = Reset the shortcuts
-so-tilo-uninstall-cancel = Keep it
-so-tilo-uninstall-confirm = Uninstall
 so-tilo-workspace-settings-change-add-agent = Add an agent
 so-tilo-workspace-settings-change-add-emoji = Add an emoji
 so-tilo-workspace-settings-change-add-server = Have another server keep the workspace as well

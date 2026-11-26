@@ -1,25 +1,24 @@
-//! The questions about the person's apps, on their sheets: whether to add a program they downloaded
-//! to their apps ([`tilo_sheets::add_app`]), and whether to uninstall one
-//! ([`tilo_sheets::uninstall`]).
+//! The questions about the person's apps: whether to add a program they downloaded to their
+//! apps, and whether to uninstall one.
 //! Both are about what the registry of the person's downloaded programs
 //! ([`tilo_app_launch::downloaded`]) keeps, and both are answered through it: the reading lists a
 //! program running with no entry as an offer, so a program is asked about once while it is offered,
 //! and the answer is the registry's own action. Nothing here adds or uninstalls an app by itself:
-//! everything is asked first, and whether it happened is read off the registry again rather than
-//! assumed.
+//! everything is asked first, as the desktop's own question the person answers on the asking view
+//! like every other ([`crate::program_asks`]), and whether it happened is read off the registry
+//! again rather than assumed.
 
 use std::cell::{Cell, RefCell};
 use std::collections::{BTreeSet, VecDeque};
-use std::path::PathBuf;
+use std::future::Future as _;
+use std::path::Path;
 use std::rc::Rc;
 
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use tilo_actions::remote::downloaded_apps::{self as wire, DownloadedApps, DownloadedDoing};
 use tilo_app_launch::downloaded;
-use tilo_service::Services;
-use tilo_sheets::SheetState as _;
-use tilo_sheets::add_app::{AddAppEffect, AddState, Offer};
-use tilo_sheets::uninstall::{App, Going, Removal, UninstallEffect, UninstallState};
+use tilo_service::{Answer, AskSender, Asked, Question, Services};
 
 use crate::Shared;
 use crate::i18n::{t, t_args};
@@ -27,22 +26,73 @@ use crate::platform::notice::{Notice, Notices};
 use tilo_session_core::desktop::notifications::NotificationIconKind;
 use ui::i18n::ArgValue;
 
-/// The two app sheets, and what they were answered.
+/// The kind of the question that adds a downloaded program to the person's apps.
+pub(crate) const ADD_KIND: &str = "app.add";
+/// The kind of the question that uninstalls one of the person's apps.
+pub(crate) const UNINSTALL_KIND: &str = "app.uninstall";
+
+/// What the add question shows: a program that just started and has no entry in the person's
+/// apps. The program has already started; the question only decides whether it gets an entry.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct AddQuestion {
+    /// What it calls itself.
+    pub(crate) name: String,
+    /// The file that starts it; its answer names it.
+    pub(crate) file: String,
+    /// Whether the file is an `AppImage`: one self-contained file by design, the only kind that
+    /// may be moved. A program from a tarball or a loose binary may need the files beside it.
+    pub(crate) appimage: bool,
+    /// Its artwork, when the program brings a file of it.
+    #[serde(default)]
+    pub(crate) artwork: Option<String>,
+}
+
+impl AddQuestion {
+    /// The file's name, as the question names it.
+    pub(crate) fn file_name(&self) -> String {
+        Path::new(&self.file).file_name().map_or_else(
+            || self.file.clone(),
+            |name| name.to_string_lossy().into_owned(),
+        )
+    }
+}
+
+/// The answer to the add question that adds the program and moves its `AppImage` into
+/// Applications; the other adds it where it is.
+pub(crate) const MOVE_CHOICE: usize = 1;
+
+/// What the uninstall question shows: the app, and every copy of it that goes to the Trash.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct UninstallQuestion {
+    /// The app's entry.
+    pub(crate) desktop_id: String,
+    /// The name the person knows it by.
+    pub(crate) name: String,
+    /// The files that go to the Trash, the one it starts first.
+    pub(crate) copies: Vec<String>,
+    /// The person's home, which the folders are said from.
+    #[serde(default)]
+    pub(crate) home: Option<String>,
+}
+
+/// The two questions about the person's apps, and what they were answered.
 pub(crate) struct AppSheets {
-    /// The add sheet's state; `None` when the sheet did not mount.
-    add: Option<AddState>,
-    /// The uninstall sheet's state; `None` when the sheet did not mount.
-    uninstall: Option<UninstallState>,
+    /// Where the person is asked.
+    questions: AskSender,
+    /// The add question up for the person, and the program it is about.
+    adding: RefCell<Option<(Asked, AddQuestion)>>,
+    /// The uninstall question up for the person, and the app it is about.
+    removing: RefCell<Option<(Asked, UninstallQuestion)>>,
     /// The registry's actions and reading, as the session publishes them.
     services: Rc<RefCell<Services>>,
     /// The person's notices: what an answer did.
     notices: Rc<dyn Notices>,
-    /// The files the add sheet asked about, so a program that keeps running is asked about once. A
-    /// file the registry no longer offers is forgotten, so a program whose app was taken off the
-    /// apps is asked about again when it runs.
+    /// The files the add question asked about, so a program that keeps running is asked about
+    /// once. A file the registry no longer offers is forgotten, so a program whose app was taken
+    /// off the apps is asked about again when it runs.
     asked: RefCell<BTreeSet<String>>,
-    /// The apps the person asked to uninstall, waiting for the sheet; they are asked about one at a
-    /// time.
+    /// The apps the person asked to uninstall, waiting for the question; they are asked about one
+    /// at a time.
     wanted: RefCell<VecDeque<String>>,
     /// The uninstalls answered, until the registry's reading shows them gone.
     uninstalling: RefCell<Vec<Uninstalling>>,
@@ -54,25 +104,34 @@ pub(crate) struct AppSheets {
     told: Cell<bool>,
 }
 
-/// An app the person said to uninstall, and what the sheet said would go.
+/// An app the person said to uninstall, and what the question said would go.
 #[derive(Clone, Debug)]
 struct Uninstalling {
     desktop_id: String,
     name: String,
-    removal: Removal,
-    going: Going,
+    copies: usize,
+}
+
+/// What a question the person was asked came to, polled on the session's loop: their answer, or
+/// `None` for one they declined, and nothing yet while it still stands.
+fn answered(asked: &mut Asked) -> Option<Option<Answer>> {
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match std::pin::Pin::new(asked).poll(&mut context) {
+        std::task::Poll::Ready(answer) => Some(answer),
+        std::task::Poll::Pending => None,
+    }
 }
 
 impl AppSheets {
     pub(crate) fn new(
-        add: Option<AddState>,
-        uninstall: Option<UninstallState>,
+        questions: AskSender,
         services: Rc<RefCell<Services>>,
         notices: Rc<dyn Notices>,
     ) -> Self {
         Self {
-            add,
-            uninstall,
+            questions,
+            adding: RefCell::new(None),
+            removing: RefCell::new(None),
             services,
             notices,
             asked: RefCell::new(BTreeSet::new()),
@@ -83,19 +142,8 @@ impl AppSheets {
         }
     }
 
-    /// The add sheet's state: whether it is up and what it asks; `None` when the sheet did not
-    /// mount.
-    pub(crate) fn add(&self) -> Option<&AddState> {
-        self.add.as_ref()
-    }
-
-    /// The uninstall sheet's state; `None` when the sheet did not mount.
-    pub(crate) fn uninstall(&self) -> Option<&UninstallState> {
-        self.uninstall.as_ref()
-    }
-
     /// Ask the person whether to uninstall `app` , named by its entry's id or by the name they know
-    /// it by: the question stands on the uninstall sheet until they answer it. Asked about its id,
+    /// it by: the question stands until they answer it. Asked about its id,
     /// so the same app asked about twice is asked once.
     pub(crate) fn ask_uninstall(&self, app: &str, reading: Option<&DownloadedApps>) {
         let asked = reading
@@ -107,7 +155,7 @@ impl AppSheets {
         }
     }
 
-    /// Carry out what the person answered on either sheet, ask the next question, and say what a
+    /// Carry out what the person answered to either question, ask the next question, and say what a
     /// finished uninstall did — or why one did not happen.
     pub(crate) fn follow(&self, reading: Option<&DownloadedApps>) {
         self.follow_add(reading);
@@ -118,49 +166,37 @@ impl AppSheets {
     /// Whether a question about the person's apps is up: they are asked one at a time, in front of
     /// what they are doing.
     fn is_asking(&self) -> bool {
-        self.add
-            .as_ref()
-            .is_some_and(|state| state.presentation().is_open())
-            || self
-                .uninstall
-                .as_ref()
-                .is_some_and(|state| state.presentation().is_open())
+        self.adding.borrow().is_some() || self.removing.borrow().is_some()
     }
 
-    /// Add programs: the answer to the add sheet, then the next program the registry offers that
-    /// the person has not been asked about.
+    /// Add programs: the answer to the add question, then the next program the registry offers
+    /// that the person has not been asked about.
     fn follow_add(&self, reading: Option<&DownloadedApps>) {
-        let Some(state) = &self.add else {
-            return;
-        };
         let offers: &[wire::DownloadedOffer] = reading.map_or(&[], |reading| &reading.offers);
         // A file the registry no longer offers is asked about again when it runs, as an app taken
         // off the apps comes back as a program with no entry.
         self.asked
             .borrow_mut()
             .retain(|file| offers.iter().any(|offer| offer.file == *file));
-        for effect in state.take_asked() {
-            // The answer is about the program the sheet showed.
-            let Some(offer) = state.offer() else {
-                continue;
-            };
-            let file = offer.file.to_string_lossy().into_owned();
-            state.presentation().close();
-            self.asked.borrow_mut().insert(file.clone());
+        let came = {
+            let mut adding = self.adding.borrow_mut();
+            let came = adding.as_mut().and_then(|(asked, _)| answered(asked));
+            came.and_then(|answer| adding.take().map(|(_, offer)| (answer, offer)))
+        };
+        if let Some((answer, offer)) = came {
+            self.asked.borrow_mut().insert(offer.file.clone());
             let mut arguments = Map::new();
-            arguments.insert(wire::FILE_PARAM.to_owned(), Value::from(file));
-            match effect {
-                AddAppEffect::Add {
-                    move_to_applications,
-                } => {
-                    if let Some(moved) = move_to_applications {
-                        arguments.insert(wire::MOVE_PARAM.to_owned(), Value::from(moved));
+            arguments.insert(wire::FILE_PARAM.to_owned(), Value::from(offer.file));
+            match answer {
+                Some(answer) => {
+                    if offer.appimage && answer.choice == Some(MOVE_CHOICE) {
+                        arguments.insert(wire::MOVE_PARAM.to_owned(), Value::from(true));
                     }
                     self.invoke(downloaded::RESOURCE, wire::ADD, &arguments, false);
                 }
-                AddAppEffect::Decline => {
-                    self.invoke(downloaded::RESOURCE, wire::DECLINE, &arguments, false);
-                }
+                // Any other way of putting the question away is an answer too: that file is not
+                // asked about again.
+                None => self.invoke(downloaded::RESOURCE, wire::DECLINE, &arguments, false),
             }
         }
         if self.is_asking() {
@@ -172,34 +208,38 @@ impl AppSheets {
         else {
             return;
         };
-        state.show(offer_of(offer));
-        state.presentation().open(false);
+        let offer = offer_of(offer);
+        let asked = self.questions.ask(Question {
+            handle: format!("{ADD_KIND}:{}", offer.file),
+            kind: ADD_KIND.to_owned(),
+            app_id: None,
+            label: offer.name.clone(),
+            details: serde_json::to_value(&offer).unwrap_or_default(),
+        });
+        *self.adding.borrow_mut() = Some((asked, offer));
     }
 
-    /// Uninstall an app: the answer to the uninstall sheet, what the reading says came of an
+    /// Uninstall an app: the answer to the uninstall question, what the reading says came of an
     /// earlier one, then the next app the person asked about.
     fn follow_uninstall(&self, reading: Option<&DownloadedApps>) {
-        let Some(state) = &self.uninstall else {
-            return;
+        let came = {
+            let mut removing = self.removing.borrow_mut();
+            let came = removing.as_mut().and_then(|(asked, _)| answered(asked));
+            came.and_then(|answer| removing.take().map(|(_, app)| (answer, app)))
         };
-        for effect in state.take_asked() {
-            let Some(app) = state.app() else {
-                continue;
-            };
-            state.presentation().close();
-            if let UninstallEffect::Confirm { .. } = effect {
-                let (action, confirmed) = match app.removal {
-                    Removal::Uninstall => (wire::UNINSTALL, true),
-                    Removal::FromApps => (wire::REMOVE, false),
-                };
-                self.uninstalling.borrow_mut().push(Uninstalling {
-                    desktop_id: app.desktop_id.clone(),
-                    name: app.name.clone(),
-                    removal: app.removal,
-                    going: app.going.clone(),
-                });
-                self.invoke(&wire::app(&app.desktop_id), action, &Map::new(), confirmed);
-            }
+        if let Some((Some(_), app)) = came {
+            self.uninstalling.borrow_mut().push(Uninstalling {
+                desktop_id: app.desktop_id.clone(),
+                name: app.name.clone(),
+                copies: app.copies.len(),
+            });
+            // The person answered the question the registry's uninstall asks.
+            self.invoke(
+                &wire::app(&app.desktop_id),
+                wire::UNINSTALL,
+                &Map::new(),
+                true,
+            );
         }
         if let Some(reading) = reading {
             let mut finished = Vec::new();
@@ -225,8 +265,14 @@ impl AppSheets {
         };
         match question(reading, &asked) {
             Some(app) => {
-                state.show(app);
-                state.presentation().open(false);
+                let asked = self.questions.ask(Question {
+                    handle: format!("{UNINSTALL_KIND}:{}", app.desktop_id),
+                    kind: UNINSTALL_KIND.to_owned(),
+                    app_id: None,
+                    label: app.name.clone(),
+                    details: serde_json::to_value(&app).unwrap_or_default(),
+                });
+                *self.removing.borrow_mut() = Some((asked, app));
             }
             None => {
                 self.notices.show(
@@ -243,7 +289,7 @@ impl AppSheets {
     }
 
     /// Invoke one of the registry's actions on `resource` : the route [`crate::Session::invoke`]
-    /// takes, `confirmed` where the person answered the question this sheet asked them.
+    /// takes, `confirmed` where the person answered the question asked them.
     fn invoke(
         &self,
         resource: &str,
@@ -303,19 +349,11 @@ impl AppSheets {
     /// Say what a finished uninstall did, as the question said what would go.
     fn tell_uninstalled(&self, pending: &Uninstalling) {
         let name = ArgValue::Text(pending.name.clone());
-        let (title, body) = match pending.removal {
-            Removal::FromApps => (t_args("app-list-removed", &[("name", name)]), String::new()),
-            Removal::Uninstall => {
-                let title = t_args("app-list-uninstalled", &[("name", name)]);
-                let body = match &pending.going {
-                    Going::Files { copies, .. } if copies.len() > 1 => {
-                        t("app-list-uninstalled-files")
-                    }
-                    Going::Files { .. } => t("app-list-uninstalled-file"),
-                    Going::Data { .. } | Going::Entry | Going::Documents => String::new(),
-                };
-                (title, body)
-            }
+        let title = t_args("app-list-uninstalled", &[("name", name)]);
+        let body = if pending.copies > 1 {
+            t("app-list-uninstalled-files")
+        } else {
+            t("app-list-uninstalled-file")
         };
         self.notices.show(
             &Notice::new(t("app-list-app-name"), 1, title, body)
@@ -348,35 +386,28 @@ impl Shared {
         }
     }
 
-    /// Ask the person whether to uninstall `app`, as the registry reads now;
-    /// false when this session shows no uninstall question.
+    /// Ask the person whether to uninstall `app`, as the registry reads now.
     pub(crate) fn ask_uninstall(&self, app: &str) -> bool {
-        if self.app_sheets.uninstall().is_none() {
-            return false;
-        }
         let reading = self.downloaded_apps();
         self.app_sheets.ask_uninstall(app, reading.as_ref());
         true
     }
 }
 
-/// What the uninstall sheet is asked: the app `asked` names, and every copy of it that would go to
+/// What the uninstall question asks: the app `asked` names, and every copy of it that would go to
 /// the Trash.
-fn question(reading: Option<&DownloadedApps>, asked: &str) -> Option<App> {
+fn question(reading: Option<&DownloadedApps>, asked: &str) -> Option<UninstallQuestion> {
     let app = app_named(reading?, asked)?;
-    let copies: Vec<PathBuf> = if app.copies.is_empty() {
-        vec![PathBuf::from(&app.file)]
+    let copies = if app.copies.is_empty() {
+        vec![app.file.clone()]
     } else {
-        app.copies.iter().map(PathBuf::from).collect()
+        app.copies.clone()
     };
-    Some(App {
+    Some(UninstallQuestion {
         desktop_id: app.desktop_id.clone(),
         name: app.name.clone(),
-        removal: Removal::Uninstall,
-        going: Going::Files {
-            copies,
-            home: tilo_paths::home(),
-        },
+        copies,
+        home: tilo_paths::home().map(|home| home.to_string_lossy().into_owned()),
     })
 }
 
@@ -396,13 +427,13 @@ fn app_named<'a>(reading: &'a DownloadedApps, asked: &str) -> Option<&'a wire::D
         })
 }
 
-/// The program an offer asks about, as the add sheet shows it.
-fn offer_of(offer: &wire::DownloadedOffer) -> Offer {
-    Offer {
-        file: PathBuf::from(&offer.file),
+/// The program an offer asks about, as the add question shows it.
+fn offer_of(offer: &wire::DownloadedOffer) -> AddQuestion {
+    AddQuestion {
+        file: offer.file.clone(),
         name: offer.name.clone(),
         appimage: offer.kind == wire::DownloadedKind::AppImage,
-        artwork: offer.artwork.as_deref().map(PathBuf::from),
+        artwork: offer.artwork.clone(),
     }
 }
 
@@ -410,6 +441,7 @@ fn offer_of(offer: &wire::DownloadedOffer) -> Offer {
 mod tests {
     use super::*;
 
+    use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
     use desktop_entry::downloaded::{Identity, ProcessFacts, Program, ProgramKind, Store};
@@ -433,8 +465,8 @@ mod tests {
         sheets: AppSheets,
         services: Rc<RefCell<Services>>,
         notices: crate::notifications::told::Told,
-        add: AddState,
-        uninstall: UninstallState,
+        /// The person's side of the questions the session asks.
+        person: tilo_service::AskReceiver,
         home: TestHome,
     }
 
@@ -467,11 +499,9 @@ mod tests {
         services.add(Box::new(registry));
         let services = Rc::new(RefCell::new(services));
         let notices = crate::notifications::told::Told::default();
-        let add = AddState::default();
-        let uninstall = UninstallState::default();
+        let (asker, person) = tilo_service::asks::channel();
         let sheets = AppSheets::new(
-            Some(add.clone()),
-            Some(uninstall.clone()),
+            asker,
             Rc::clone(&services),
             Rc::new(notices.clone()) as Rc<dyn Notices>,
         );
@@ -479,8 +509,7 @@ mod tests {
             sheets,
             services,
             notices,
-            add,
-            uninstall,
+            person,
             home,
         }
     }
@@ -587,6 +616,52 @@ mod tests {
         fn notices(&self) -> Vec<(String, String)> {
             self.notices.told()
         }
+
+        /// The questions the person is asked now, of `kind`.
+        fn asked(&self, kind: &str) -> Vec<tilo_service::Question> {
+            self.person
+                .pending()
+                .into_iter()
+                .filter(|question| question.kind == kind)
+                .collect()
+        }
+
+        /// The one add question asked now, as it reads.
+        fn adding(&self) -> Option<(String, AddQuestion)> {
+            let question = self.asked(ADD_KIND).pop()?;
+            let asked = serde_json::from_value(question.details).expect("an add question");
+            Some((question.handle, asked))
+        }
+
+        /// The one uninstall question asked now, as it reads.
+        fn removing(&self) -> Option<(String, UninstallQuestion)> {
+            let question = self.asked(UNINSTALL_KIND).pop()?;
+            let asked = serde_json::from_value(question.details).expect("an uninstall question");
+            Some((question.handle, asked))
+        }
+
+        /// The person picks the `choice` th answer to the question `handle`, or says yes where it
+        /// offers no choices.
+        fn answer(&self, handle: &str, choice: Option<usize>) {
+            assert!(
+                self.person.answer(
+                    handle,
+                    tilo_service::Answer {
+                        choice,
+                        ..tilo_service::Answer::default()
+                    }
+                ),
+                "the question waits for its answer"
+            );
+        }
+
+        /// The person declines the question `handle`.
+        fn decline(&self, handle: &str) {
+            assert!(
+                self.person.decline(handle),
+                "the question waits for its answer"
+            );
+        }
     }
 
     #[test]
@@ -596,24 +671,21 @@ mod tests {
             &[("org.example.Krita", "Downloads/Krita.AppImage")],
         );
         session.until("the question about the program", || {
-            session.add.offer().is_some()
+            session.adding().is_some()
         });
 
         // The question names the program and the file it runs from, and offers to move it, since an
         // AppImage is one self-contained file.
-        let asked = session.add.offer().expect("the question");
+        let (handle, asked) = session.adding().expect("the question");
         assert_eq!(asked.name, "Krita");
         assert_eq!(
-            asked.file,
+            PathBuf::from(&asked.file),
             session.home.home().join("Downloads/Krita.AppImage")
         );
         assert!(asked.appimage);
-        assert!(session.add.offers_move());
 
         // Answered with the move, the program becomes an app in Applications.
-        session.add.answer(AddAppEffect::Add {
-            move_to_applications: Some(true),
-        });
+        session.answer(&handle, Some(MOVE_CHOICE));
         session.until("the app", || !session.apps().is_empty());
         let moved = session.home.home().join("Applications/Krita.AppImage");
         assert!(moved.is_file(), "the AppImage is in Applications");
@@ -632,11 +704,7 @@ mod tests {
             session.offers().is_empty(),
             "the question was answered, so there is no offer left"
         );
-        assert_eq!(
-            session.add.presentation().phase(),
-            tilo_sheets::Phase::Leaving,
-            "the question's card leaves the screen; a shell reports it gone"
-        );
+        assert!(session.adding().is_none(), "and it is asked no more");
     }
 
     #[test]
@@ -646,11 +714,10 @@ mod tests {
             &[("org.example.Krita", "Downloads/Krita.AppImage")],
         );
         session.until("the question about the program", || {
-            session.add.offer().is_some()
+            session.adding().is_some()
         });
-        session.add.answer(AddAppEffect::Add {
-            move_to_applications: None,
-        });
+        let (handle, _) = session.adding().expect("the question");
+        session.answer(&handle, Some(0));
         session.until("the app", || !session.apps().is_empty());
         let downloaded = session.home.home().join("Downloads/Krita.AppImage");
         assert!(downloaded.is_file(), "the file stays where it was");
@@ -668,9 +735,10 @@ mod tests {
             &[("org.example.Krita", "Downloads/Krita.AppImage")],
         );
         session.until("the question about the program", || {
-            session.add.offer().is_some()
+            session.adding().is_some()
         });
-        session.add.answer(AddAppEffect::Decline);
+        let (handle, _) = session.adding().expect("the question");
+        session.decline(&handle);
         session.until("the answer", || {
             session.offers().first().is_some_and(|offer| offer.declined)
         });
@@ -684,17 +752,12 @@ mod tests {
                 .join("Downloads/Krita.AppImage")
                 .is_file()
         );
-        assert_eq!(
-            session.add.presentation().phase(),
-            tilo_sheets::Phase::Leaving,
-            "the question's card leaves the screen; a shell reports it gone"
-        );
 
         // It keeps running, and it is not asked about again.
         for _ in 0..4 {
             session.settle();
         }
-        assert!(!session.add.presentation().is_open(), "asked only once");
+        assert!(session.adding().is_none(), "asked only once");
     }
 
     #[test]
@@ -711,7 +774,8 @@ mod tests {
         );
         session.until("both programs offered", || session.offers().len() == 2);
         session.settle();
-        let first = session.add.offer().expect("one of them is asked about");
+        assert_eq!(session.asked(ADD_KIND).len(), 1, "never both at once");
+        let (handle, first) = session.adding().expect("one of them is asked about");
         assert!(
             session
                 .offers()
@@ -720,14 +784,14 @@ mod tests {
             "the question is about one of the programs offered"
         );
 
-        // Answering it, the other program is asked about; never both at once.
-        session.add.answer(AddAppEffect::Decline);
+        // Answering it, the other program is asked about.
+        session.decline(&handle);
         session.until("the other program", || {
-            session.add.offer().map(|offer| offer.name) != Some(first.name.clone())
+            session
+                .adding()
+                .is_some_and(|(_, asked)| asked.name != first.name)
         });
-        let second = session.add.offer().expect("the other program");
-        assert_ne!(second.name, first.name, "the question moved on");
-        assert!(session.add.presentation().is_open(), "and it is shown");
+        assert_eq!(session.asked(ADD_KIND).len(), 1, "one question stands");
     }
 
     #[test]
@@ -757,22 +821,25 @@ mod tests {
         let reading = session.reading();
         session.sheets.ask_uninstall(&desktop_id, reading.as_ref());
         session.until("the question about the app", || {
-            session.uninstall.app().is_some()
+            session.removing().is_some()
         });
-        let asked = session.uninstall.app().expect("the question");
+        let (handle, asked) = session.removing().expect("the question");
         assert_eq!(asked.name, "Tilo Imager");
-        assert_eq!(asked.removal, Removal::Uninstall);
-        let Going::Files { copies, home } = &asked.going else {
-            panic!("a downloaded program goes with its files");
-        };
-        assert_eq!(*copies, vec![downloads.clone(), applications.clone()]);
-        assert_eq!(home.as_deref(), Some(session.home.home()));
+        assert_eq!(
+            asked.copies,
+            vec![
+                downloads.to_string_lossy().into_owned(),
+                applications.to_string_lossy().into_owned()
+            ]
+        );
+        assert_eq!(
+            asked.home.as_deref().map(PathBuf::from).as_deref(),
+            Some(session.home.home())
+        );
 
         // Answered, both copies are in the Trash, the app is off their apps,
         // and the notice names both.
-        session
-            .uninstall
-            .answer(UninstallEffect::Confirm { remove_data: None });
+        session.answer(&handle, None);
         session.until("every copy to go", || {
             !applications.exists() && !downloads.exists()
         });
@@ -806,15 +873,12 @@ mod tests {
         let reading = session.reading();
         session.sheets.ask_uninstall(&desktop_id, reading.as_ref());
         session.until("the question about the app", || {
-            session.uninstall.app().is_some()
+            session.removing().is_some()
         });
-        session.uninstall.answer(UninstallEffect::Cancel);
+        let (handle, _) = session.removing().expect("the question");
+        session.decline(&handle);
         session.settle();
-        assert_eq!(
-            session.uninstall.presentation().phase(),
-            tilo_sheets::Phase::Leaving,
-            "the question's card leaves the screen; a shell reports it gone"
-        );
+        assert!(session.removing().is_none(), "the question is answered");
         assert!(file.is_file(), "the app's file stays");
         assert_eq!(session.apps().len(), 1, "and so does the app");
         assert!(session.notices().is_empty(), "nothing to report");
@@ -829,10 +893,7 @@ mod tests {
             .sheets
             .ask_uninstall("tilo-downloaded-not-here", reading.as_ref());
         session.until("the notice", || !session.notices().is_empty());
-        assert!(
-            !session.uninstall.presentation().is_drawn(),
-            "nothing is asked"
-        );
+        assert!(session.removing().is_none(), "nothing is asked");
         assert_eq!(
             session.notices(),
             [(

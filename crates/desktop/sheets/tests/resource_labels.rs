@@ -6,25 +6,23 @@
 //! up on a German desktop is published as the German name — and keeps its
 //! declared one where a catalogue has no entry for it.
 
-use tilo_sheets::add_app::AddToApps;
 use tilo_sheets::dictation::Dictation;
 use tilo_sheets::directory::WorkspaceDirectory;
 use tilo_sheets::display_confirm::DisplayConfirm;
 use tilo_sheets::displays::DisplaySheet;
 use tilo_sheets::lock::LockScreen;
 use tilo_sheets::shortcut_guide::ShortcutGuide;
-use tilo_sheets::uninstall::Uninstall;
 use tilo_sheets::workspace_settings::WorkspaceSettings;
 use ui::tilo_resource::{Resource, label};
 
 /// The catalogue every sheet's words are in: this crate's.
-const SHEETS: Option<&'static label::Catalogue> = Uninstall::CATALOGUE;
+const SHEETS: Option<&'static label::Catalogue> = LockScreen::CATALOGUE;
 
 /// Each sheet's resource: its kind, the name it declares, what an English
 /// desktop reads it by, and what a German one does.
 type Sheet = (&'static str, &'static str, &'static str, &'static str);
 
-fn sheets() -> [Sheet; 9] {
+fn sheets() -> [Sheet; 7] {
     [
         (
             LockScreen::KIND,
@@ -33,18 +31,6 @@ fn sheets() -> [Sheet; 9] {
             "Sperrbildschirm",
         ),
         (Dictation::KIND, Dictation::LABEL, "Dictation", "Diktat"),
-        (
-            Uninstall::KIND,
-            Uninstall::LABEL,
-            "Uninstall",
-            "Deinstallieren",
-        ),
-        (
-            AddToApps::KIND,
-            AddToApps::LABEL,
-            "Add to apps",
-            "Zu den Apps hinzufügen",
-        ),
         // The glossary's one name for the F1 sheet, in both languages.
         (
             ShortcutGuide::KIND,
@@ -107,11 +93,21 @@ fn a_resource_a_sheet_names_itself_keeps_that_name() {
     // A publisher that names the resource itself (the app a question is
     // about, say) is not read through the kind's entry.
     assert_eq!(
-        label::published(Uninstall::KIND, "Frogs, by name", Uninstall::LABEL, SHEETS),
+        label::published(
+            LockScreen::KIND,
+            "Frogs, by name",
+            LockScreen::LABEL,
+            SHEETS
+        ),
         "Frogs, by name"
     );
     assert_eq!(
-        label::published(Uninstall::KIND, Uninstall::LABEL, Uninstall::LABEL, SHEETS),
-        "Deinstallieren"
+        label::published(
+            LockScreen::KIND,
+            LockScreen::LABEL,
+            LockScreen::LABEL,
+            SHEETS
+        ),
+        "Sperrbildschirm"
     );
 }

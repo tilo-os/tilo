@@ -1110,12 +1110,9 @@ impl Session {
             workspace_settings,
             directory,
             invite,
-            delete_workspace,
             display_confirm,
             displays: displays_sheet,
             shortcut_guide: guide_sheet,
-            add_app,
-            uninstall,
             lock_view,
         } = sheets;
         // Where a report about Tilo itself goes, as this computer is told:
@@ -1688,8 +1685,7 @@ impl Session {
         // The questions about the person's apps answer through the registry
         // of their downloaded programs, which is one of the services.
         let app_sheets = crate::app_sheets::AppSheets::new(
-            add_app,
-            uninstall,
+            asker.clone(),
             Rc::clone(&services),
             crate::notifications::RoleNotices::of(&notifications),
         );
@@ -1870,7 +1866,6 @@ impl Session {
             directory,
             invite,
             inviting,
-            delete_workspace,
             delete_workspace_ask: RefCell::default(),
             deletions: RefCell::default(),
             directory_store,

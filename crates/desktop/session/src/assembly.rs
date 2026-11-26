@@ -251,10 +251,10 @@ pub(crate) struct Shared {
     /// from, and what it made in this opening.
     pub(crate) invite: Option<tilo_sheets::invite::InviteState>,
     pub(crate) inviting: crate::invite::Invite,
-    /// The question deleting a workspace asks, and the workspace it is about.
-    #[cfg(target_os = "linux")]
-    pub(crate) delete_workspace: Option<tilo_sheets::delete_workspace::DeleteWorkspaceState>,
-    pub(crate) delete_workspace_ask: RefCell<Option<tilo_desktop_model::WorkspaceId>>,
+    /// The question deleting a workspace asks the person, and the workspace it is about, until
+    /// they answer it.
+    pub(crate) delete_workspace_ask:
+        RefCell<Option<(tilo_service::Asked, tilo_desktop_model::WorkspaceId)>>,
     /// The deletions this device's daemon was asked for, by workspace and name, until it answers.
     pub(crate) deletions: RefCell<Vec<AskedDeletion>>,
     /// What the sites this computer knows list as public workspaces, read

@@ -278,6 +278,15 @@ pub struct AskedFacts {
     /// the call needs that is none of its arguments.
     #[serde(default)]
     pub form: Vec<crate::DraftField>,
+    /// What declining is called where it does something of its own (`Keep` the workspace, `Don't
+    /// add` the program): the asking view words its way out with it. `None` where declining only
+    /// says no.
+    #[serde(default)]
+    pub decline: Option<String>,
+    /// A picture of what is asked about, as a `data:` URL the asking view shows beside who asks:
+    /// a downloaded program's own artwork. `None` for none.
+    #[serde(default)]
+    pub picture: Option<String>,
 }
 
 /// The dispatch a call only the person's root signs is kept under, made on a device that keeps

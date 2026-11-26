@@ -6,15 +6,12 @@
 use tilo_compositor::Compositor;
 use tilo_session_core::surfaces::Surfaces;
 use tilo_sheets::SheetState as _;
-use tilo_sheets::add_app::AddState;
-use tilo_sheets::delete_workspace::DeleteWorkspaceState;
 use tilo_sheets::directory::DirectoryState;
 use tilo_sheets::display_confirm::ConfirmState;
 use tilo_sheets::displays::DisplaysState;
 use tilo_sheets::invite::InviteState;
 use tilo_sheets::lock::LockState;
 use tilo_sheets::shortcut_guide::GuideState;
-use tilo_sheets::uninstall::UninstallState;
 use tilo_sheets::workspace_settings::WorkspaceSettingsState;
 
 use crate::Options;
@@ -25,12 +22,9 @@ pub(crate) struct Sheets {
     pub(crate) workspace_settings: Option<WorkspaceSettingsState>,
     pub(crate) directory: Option<DirectoryState>,
     pub(crate) invite: Option<InviteState>,
-    pub(crate) delete_workspace: Option<DeleteWorkspaceState>,
     pub(crate) display_confirm: Option<ConfirmState>,
     pub(crate) displays: Option<DisplaysState>,
     pub(crate) shortcut_guide: Option<GuideState>,
-    pub(crate) add_app: Option<AddState>,
-    pub(crate) uninstall: Option<UninstallState>,
     /// The lock screen, drawn in the session's own process when the app that normally draws it is
     /// not there.
     pub(crate) lock_view: Option<LockState>,
@@ -48,11 +42,8 @@ impl Sheets {
             of(self.workspace_settings.as_ref()),
             of(self.directory.as_ref()),
             of(self.invite.as_ref()),
-            of(self.delete_workspace.as_ref()),
             of(self.display_confirm.as_ref()),
             of(self.displays.as_ref()),
-            of(self.add_app.as_ref()),
-            of(self.uninstall.as_ref()),
         ]
         .into_iter()
         .flatten()
@@ -90,16 +81,6 @@ pub(crate) fn mount_sheets(
         who,
         options,
     );
-    // The question deleting a workspace asks: over whatever the person was looking at, whichever
-    // surface asked it.
-    let delete_workspace = mount_sheet(
-        compositor,
-        surfaces,
-        tilo_sheets::delete_workspace::definition(),
-        DeleteWorkspaceState::default(),
-        who,
-        options,
-    );
     let shortcut_guide = mount_sheet(
         compositor,
         surfaces,
@@ -109,18 +90,14 @@ pub(crate) fn mount_sheets(
         options,
     );
     let (display_confirm, displays) = mount_displays(compositor, surfaces, who, options);
-    let (add_app, uninstall) = mount_app_questions(compositor, surfaces, who, options);
     let lock_view = mount_lock_view(compositor, surfaces, who, options);
     Sheets {
         workspace_settings,
         directory,
         invite,
-        delete_workspace,
         display_confirm,
         displays,
         shortcut_guide,
-        add_app,
-        uninstall,
         lock_view,
     }
 }
@@ -187,33 +164,6 @@ fn mount_lock_view(
             None
         }
     }
-}
-
-/// The questions about the person's apps: adding one from an installer, and uninstalling one — each
-/// its own sheet over the shell.
-fn mount_app_questions(
-    compositor: &mut Compositor,
-    surfaces: &mut Surfaces,
-    who: (&str, &str),
-    options: &Options,
-) -> (Option<AddState>, Option<UninstallState>) {
-    let add_app = mount_sheet(
-        compositor,
-        surfaces,
-        tilo_sheets::add_app::definition(),
-        AddState::default(),
-        who,
-        options,
-    );
-    let uninstall = mount_sheet(
-        compositor,
-        surfaces,
-        tilo_sheets::uninstall::definition(),
-        UninstallState::default(),
-        who,
-        options,
-    );
-    (add_app, uninstall)
 }
 
 fn mount_sheet<S: tilo_sheets::SheetState + 'static>(

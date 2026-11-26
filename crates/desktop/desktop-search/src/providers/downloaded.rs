@@ -194,13 +194,12 @@ fn app_row(
 }
 
 /// The rows that act on one app of the person's, under the app's own row:
-/// uninstalling it, which asks them on the uninstall sheet first, the one
-/// question every action API asks, and taking it off the apps while its file
+/// uninstalling it, which asks them first, the one question every action
+/// API asks, and taking it off the apps while its file
 /// stays.
 fn app_action_rows(workspace: &str, app: &DownloadedApp) -> [(Vec<(String, FieldWeight)>, Hit); 2] {
-    // Uninstalling goes to the session, whose uninstall sheet holds the
-    // question; the answer is the registry's own action, as from the sheet
-    // the app list opens.
+    // Uninstalling goes to the session, which asks the person; the answer
+    // is the registry's own action, as from the question the app list asks.
     let mut ask = serde_json::Map::new();
     ask.insert(
         APP_PARAM.to_owned(),

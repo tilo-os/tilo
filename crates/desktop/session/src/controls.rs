@@ -97,8 +97,7 @@ pub enum SessionCommand {
     /// Type in the next of the person's keyboard input sources.
     NextInputSource,
     /// Ask the person whether to uninstall `app` , by its entry's id or the name they know it by:
-    /// the question stands on the uninstall sheet until they answer it, as it does when the app
-    /// list asks.
+    /// the question stands until they answer it, as it does when the app list asks.
     AskUninstall { app: String },
     /// Switch the machine to virtual terminal `vt` , numbered from 1, as `Ctrl+Alt+F1..F12` asks:
     /// the way out to a text console when the desktop cannot give the machine back.

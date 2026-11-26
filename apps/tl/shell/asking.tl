@@ -351,6 +351,7 @@ view question_body(key: Text, here: Bool, a: invocations.Asked, headline: Text) 
                         ui.Button(
                             c,
                             size: .small,
+                            role: if a.destructive { .destructive } else { .secondary },
                             enabled: not unfilled,
                             description: "Fill in what it asks for first",
                         ) {
@@ -364,7 +365,7 @@ view question_body(key: Text, here: Bool, a: invocations.Asked, headline: Text) 
                     }
                     spacer
                     ui.Button(
-                        "Don't answer",
+                        a.decline ?? "Don't answer",
                         size: .small,
                         role: .plain,
                         default_focus: a.pressed == .none,
@@ -381,7 +382,7 @@ view question_body(key: Text, here: Bool, a: invocations.Asked, headline: Text) 
                     // Where the answer itself is given on the device that asked, the way out is
                     // the only answer this surface offers.
                     ui.Button(
-                        "Don't allow",
+                        a.decline ?? "Don't allow",
                         size: .small,
                         role: .secondary,
                         default_focus: a.pressed == .none or not here,
@@ -542,13 +543,18 @@ fn asker_name(a: invocations.Asked) -> Text {
 /// with who wrote it beneath, and the workspace the call acts in.
 view asker(a: invocations.Asked) {
     row(gap: .related, align: .center) {
-        ui.Icon(
-            if a.by.agent != .none {
-                .bot
-            } else if a.by.device != .none {
-                .monitor
-            } else if a.by.program != .none { .terminal } else { .app_window },
-        )
+        if let picture = a.picture {
+            // What the question is about shows itself: a program's own artwork.
+            ui.Avatar(name: asker_name(a), picture: picture, square: true)
+        } else {
+            ui.Icon(
+                if a.by.agent != .none {
+                    .bot
+                } else if a.by.device != .none {
+                    .monitor
+                } else if a.by.program != .none { .terminal } else { .app_window },
+            )
+        }
         stack(gap: .tight) {
             ui.Text(asker_name(a), role: .caption)
             if let author = a.by.app?.author {

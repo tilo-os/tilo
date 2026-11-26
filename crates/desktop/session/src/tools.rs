@@ -47,7 +47,7 @@ pub(crate) enum Ask {
         route: WorkspaceSettingsRoute,
         reply: SyncSender<Result<(), String>>,
     },
-    /// Ask the person whether to uninstall `app` , in the sheet that owns that question.
+    /// Ask the person whether to uninstall `app` .
     Uninstall {
         app: String,
         reply: SyncSender<Result<(), String>>,
@@ -694,8 +694,7 @@ fn open_tool(inner: &Inner, caller: &Caller, request: &ToolRequest) -> ToolReply
     }
 }
 
-/// Ask the person whether to uninstall `app` , in the sheet that owns that question: the loop puts
-/// it up on its next pass.
+/// Ask the person whether to uninstall `app` : the loop asks it on its next pass.
 fn uninstall(inner: &Inner, caller: &Caller, app: &str) -> ToolReply {
     if caller.app != files() {
         return refused("an app is uninstalled from Files alone");

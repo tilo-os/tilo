@@ -739,3 +739,25 @@ session-host-account = Hosting-Konto
 
 daemon-reconnecting = Verbinde…
 daemon-unreachable = Der Dienst dieses Geräts läuft nicht; verbinde…
+
+# Deleting a workspace: the question the desktop asks wherever deleting was
+# asked for, drawn like every other question the person answers.
+workspace-delete-title = { $name } löschen?
+workspace-delete-body = Alles in diesem Arbeitsbereich geht mit ihm: seine Fenster, seine Gruppen, seine Geschichte. Er verschwindet von jedem Gerät, auf dem er ist.
+workspace-delete-confirm = Löschen
+workspace-delete-keep = Behalten
+
+# Adding a program the person downloaded to their apps, and uninstalling an app.
+add-app-title = { $name } zu den Apps hinzufügen?
+add-app-add = Zu den Apps hinzufügen
+add-app-decline = Nicht hinzufügen
+add-app-move = In „Programme“ verschieben
+add-app-move-detail = Bewahrt sie im Ordner „Programme“ in deinen Dateien auf
+uninstall-title = { $name } deinstallieren?
+uninstall-action = Deinstallieren
+uninstall-cancel = Abbrechen
+uninstall-files = { $count ->
+    [one] Ihre Datei kommt in den Papierkorb, wo du sie wiederherstellen kannst.
+   *[other] Alle { $count } Kopien kommen in den Papierkorb, wo du sie wiederherstellen kannst.
+}
+uninstall-home-folder = Persönlicher Ordner

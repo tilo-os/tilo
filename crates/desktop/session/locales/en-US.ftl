@@ -735,3 +735,25 @@ session-host-account = Hosting account
 
 daemon-reconnecting = Reconnecting…
 daemon-unreachable = The device's service is not running; reconnecting…
+
+# Deleting a workspace: the question the desktop asks wherever deleting was
+# asked for, drawn like every other question the person answers.
+workspace-delete-title = Delete { $name }?
+workspace-delete-body = Everything in this workspace goes with it: its windows, its groups, its history. It disappears from every device that has it.
+workspace-delete-confirm = Delete
+workspace-delete-keep = Keep
+
+# Adding a program the person downloaded to their apps, and uninstalling an app.
+add-app-title = Add { $name } to apps?
+add-app-add = Add to apps
+add-app-decline = Don't add
+add-app-move = Move to Applications
+add-app-move-detail = Keeps it in the Applications folder in your files
+uninstall-title = Uninstall { $name }?
+uninstall-action = Uninstall
+uninstall-cancel = Cancel
+uninstall-files = { $count ->
+    [one] Its file goes to the Trash, where you can restore it.
+   *[other] All { $count } copies go to the Trash, where you can restore them.
+}
+uninstall-home-folder = Home

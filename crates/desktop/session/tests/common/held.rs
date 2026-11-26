@@ -377,6 +377,20 @@ pub fn hosted_in_env(
 /// [`WORKSPACE`] owned by the person whose root key is `root`, as the shell of the device daemon
 /// started on the state `state` holds.
 pub fn hosted_session(state: &Path, root: &[u8; 32]) -> Hosted {
+    hosted_session_with(state, root, None)
+}
+
+/// [`hosted_session`], whose questions for the person are asked on this thread
+/// ([`crate::common::person_asked`]), for the test to answer as the person.
+pub fn hosted_session_asked(state: &Path, root: &[u8; 32]) -> Hosted {
+    hosted_session_with(state, root, Some(crate::common::person_asked()))
+}
+
+fn hosted_session_with(
+    state: &Path,
+    root: &[u8; 32],
+    asks: Option<(tilo_service::AskSender, tilo_service::AskReceiver)>,
+) -> Hosted {
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("XDG_STATE_HOME", state);
     let mut hosted = hosted(
@@ -384,6 +398,7 @@ pub fn hosted_session(state: &Path, root: &[u8; 32]) -> Hosted {
             collab: true,
             person: "Ada".to_owned(),
             state: Some(state.to_path_buf()),
+            asks,
             ..Options::default()
         },
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],

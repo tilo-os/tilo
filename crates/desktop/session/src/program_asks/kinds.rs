@@ -361,6 +361,12 @@ pub(crate) fn put(question: &Question, retry: Option<Retry>) -> Option<Put> {
         crate::mcp_server::KIND => admitted(&who, details)?,
         crate::network_reach::KIND => reach(&who, details)?,
         #[cfg(target_os = "linux")]
+        crate::workspace_delete::KIND => delete_workspace(details)?,
+        #[cfg(target_os = "linux")]
+        crate::app_sheets::ADD_KIND => add_app(details)?,
+        #[cfg(target_os = "linux")]
+        crate::app_sheets::UNINSTALL_KIND => uninstall(details)?,
+        #[cfg(target_os = "linux")]
         tilo_app_host::nearby_send::VERIFY_QUESTION => receiver(details)?,
         _ => return None,
     };
@@ -530,6 +536,146 @@ fn reach(who: &str, details: Value) -> Kind {
         }
     }
     Some((facts, Reply::Confirm))
+}
+
+/// Deleting one of the person's own workspaces, which takes everything in it from every device
+/// that has it: Undo cannot bring it back, so the yes is the destructive answer and declining it,
+/// the answer under the keyboard, keeps the workspace.
+#[cfg(target_os = "linux")]
+fn delete_workspace(details: Value) -> Kind {
+    let asked: crate::workspace_delete::DeleteQuestion = serde_json::from_value(details).ok()?;
+    let name = [("name", ui::i18n::ArgValue::Text(asked.name))];
+    let mut facts = asking(
+        crate::i18n::t_args("workspace-delete-title", &name),
+        Some(crate::i18n::t("workspace-delete-body")),
+    );
+    facts.destructive = true;
+    facts.verb = crate::i18n::t("workspace-delete-confirm");
+    facts.decline = Some(crate::i18n::t("workspace-delete-keep"));
+    facts.by = desktop();
+    Some((facts, Reply::Confirm))
+}
+
+/// The desktop itself, as the asker of its own questions: deleting a workspace, adding and
+/// uninstalling apps are the shell's own doing, whoever asked for them.
+#[cfg(target_os = "linux")]
+fn desktop() -> AskedBy {
+    AskedBy::App {
+        app: crate::session_package::APP.to_owned(),
+        title: crate::i18n::t("crash-notice-app-name"),
+        author: None,
+    }
+}
+
+/// "Add Krita to apps?": a program the person downloaded runs with no entry in their apps. The
+/// program is shown as it will be listed (its artwork, its name, the file it runs from), and only
+/// answers that cannot break anything are offered: adding it where it is, and for an `AppImage`,
+/// one self-contained file by design, moving it into Applications too. Declining it is an answer
+/// as well: that file is not asked about again.
+#[cfg(target_os = "linux")]
+fn add_app(details: Value) -> Kind {
+    use crate::i18n::{t, t_args};
+    let asked: crate::app_sheets::AddQuestion = serde_json::from_value(details).ok()?;
+    let mut facts = asking(
+        t_args(
+            "add-app-title",
+            &[("name", ui::i18n::ArgValue::Text(asked.name.clone()))],
+        ),
+        Some(asked.file_name()),
+    );
+    facts.by = desktop();
+    facts.picture = asked.artwork.as_deref().and_then(artwork);
+    facts.decline = Some(t("add-app-decline"));
+    if asked.appimage {
+        facts
+            .facts
+            .push(fact(t("add-app-move"), t("add-app-move-detail")));
+        // The choices stand in the order their answers are numbered: adding where it is first.
+        facts.choices = vec![t("add-app-add"), t("add-app-move")];
+        return Some((
+            facts,
+            Reply::Choose(vec![0, crate::app_sheets::MOVE_CHOICE]),
+        ));
+    }
+    facts.verb = t("add-app-add");
+    Some((facts, Reply::Confirm))
+}
+
+/// The largest artwork a question carries: a program's icon, never a document.
+#[cfg(target_os = "linux")]
+const MAX_ARTWORK_BYTES: u64 = 256 * 1024;
+
+/// A program's artwork file as a picture its question carries, for the formats a picture is drawn
+/// from; none for a file that is missing, too large to be an icon, or of another kind.
+#[cfg(target_os = "linux")]
+fn artwork(path: &str) -> Option<String> {
+    use base64::Engine as _;
+    let path = std::path::Path::new(path);
+    let media = match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
+        "png" => "image/png",
+        "svg" => "image/svg+xml",
+        "jpg" | "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => return None,
+    };
+    if std::fs::metadata(path).ok()?.len() > MAX_ARTWORK_BYTES {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    Some(format!(
+        "data:{media};base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
+}
+
+/// "Uninstall Tilo Imager?": the one question asked before an app the person downloaded leaves
+/// their apps, whichever surface it was asked from (Files, search, an agent). Every copy of it goes
+/// to the Trash, each named with the folder it is in, so the person can restore any of them.
+#[cfg(target_os = "linux")]
+fn uninstall(details: Value) -> Kind {
+    use crate::i18n::{t, t_args};
+    let asked: crate::app_sheets::UninstallQuestion = serde_json::from_value(details).ok()?;
+    let count = u32::try_from(asked.copies.len()).map_or(f64::MAX, f64::from);
+    let mut facts = asking(
+        t_args(
+            "uninstall-title",
+            &[("name", ui::i18n::ArgValue::Text(asked.name.clone()))],
+        ),
+        Some(t_args(
+            "uninstall-files",
+            &[("count", ui::i18n::ArgValue::Number(count))],
+        )),
+    );
+    let home = asked.home.as_deref().map(std::path::Path::new);
+    facts.facts.extend(asked.copies.iter().map(|copy| {
+        let (file, folder) = copy_label(std::path::Path::new(copy), home);
+        fact(folder, file)
+    }));
+    facts.by = desktop();
+    facts.destructive = true;
+    facts.verb = t("uninstall-action");
+    facts.decline = Some(t("uninstall-cancel"));
+    Some((facts, Reply::Confirm))
+}
+
+/// A copy's file name and the folder it is in, as the person knows it: `Downloads` under their
+/// home, the full path elsewhere, and their home folder itself named as Home.
+#[cfg(target_os = "linux")]
+fn copy_label(copy: &std::path::Path, home: Option<&std::path::Path>) -> (String, String) {
+    let name = copy.file_name().map_or_else(
+        || copy.display().to_string(),
+        |name| name.to_string_lossy().into_owned(),
+    );
+    let folder = copy.parent().map_or_else(String::new, |folder| {
+        match home.and_then(|home| folder.strip_prefix(home).ok()) {
+            Some(inside) if inside.as_os_str().is_empty() => {
+                crate::i18n::t("uninstall-home-folder")
+            }
+            Some(inside) => inside.display().to_string(),
+            None => folder.display().to_string(),
+        }
+    });
+    (name, folder)
 }
 
 /// A program of this login wants to work in a workspace as an agent.
@@ -1215,6 +1361,130 @@ mod tests {
                 "portal-access-title",
                 &[("app", "Mail"), ("what", &word("portal-access-network"))]
             )
+        );
+    }
+
+    /// "Delete Design studio?": the question names the workspace and what goes with it, its yes is
+    /// the destructive answer that says it deletes, and declining it (the answer under the
+    /// keyboard) is the one that keeps it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn deleting_a_workspace_names_it_and_its_yes_is_the_destructive_one() {
+        crate::i18n::ensure();
+        let (facts, reply) = delete_workspace(serde_json::json!({"name": "Design studio"}))
+            .expect("the question is shown");
+        assert!(matches!(reply, Reply::Confirm));
+        assert_eq!(facts.words, "Delete Design studio?");
+        assert_eq!(facts.facts.len(), 1);
+        assert!(
+            facts.facts[0]
+                .value
+                .starts_with("Everything in this workspace goes with it")
+        );
+        assert!(facts.destructive, "Undo cannot bring a workspace back");
+        assert_eq!(facts.verb, "Delete", "the yes says what it does");
+        assert_eq!(
+            facts.decline.as_deref(),
+            Some("Keep"),
+            "and the way out keeps it"
+        );
+        assert!(facts.plural.is_none(), "and is never answered for good");
+    }
+
+    /// "Add Krita to apps?": an `AppImage` is shown as it will be listed and is offered the move;
+    /// a program from a tarball is offered none; declining is worded as not adding it.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn adding_a_program_shows_it_and_offers_the_move_only_for_an_appimage() {
+        let home = tempfile::tempdir().expect("a folder");
+        let icon = home.path().join("krita.png");
+        std::fs::write(&icon, b"\x89PNG").expect("an icon");
+        let (facts, reply) = add_app(serde_json::json!({
+            "name": "Krita",
+            "file": "/home/ute/Downloads/krita-5.2.AppImage",
+            "appimage": true,
+            "artwork": icon,
+        }))
+        .expect("the question is shown");
+        assert_eq!(facts.words, "Add Krita to apps?");
+        assert_eq!(
+            facts.facts[0].value, "krita-5.2.AppImage",
+            "the file it runs from"
+        );
+        assert_eq!(facts.choices, ["Add to apps", "Move to Applications"]);
+        assert!(
+            matches!(reply, Reply::Choose(ref choices) if *choices == [0, crate::app_sheets::MOVE_CHOICE])
+        );
+        assert_eq!(facts.decline.as_deref(), Some("Don't add"));
+        assert!(
+            facts
+                .picture
+                .as_deref()
+                .is_some_and(|picture| picture.starts_with("data:image/png;base64,")),
+            "the program's own artwork stands beside the question"
+        );
+        assert!(!facts.destructive, "adding takes nothing away");
+
+        let (loose, reply) = add_app(serde_json::json!({
+            "name": "Krita",
+            "file": "/home/ute/Downloads/krita-5.2/bin/krita",
+            "appimage": false,
+        }))
+        .expect("the question is shown");
+        assert!(loose.choices.is_empty(), "a loose program is never moved");
+        assert_eq!(loose.verb, "Add to apps");
+        assert!(loose.picture.is_none());
+        assert!(matches!(reply, Reply::Confirm));
+    }
+
+    /// "Uninstall Tilo Imager?": every copy that goes to the Trash, each named with the folder it is
+    /// in as the person knows it, and Cancel as the way out.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn uninstalling_names_every_copy_and_the_folder_it_is_in() {
+        let (facts, reply) = uninstall(serde_json::json!({
+            "desktop_id": "tilo-downloaded-tilo-imager",
+            "name": "Tilo Imager",
+            "copies": [
+                "/home/ute/Applications/tilo-imager.AppImage",
+                "/home/ute/tilo-imager.AppImage",
+                "/opt/tools/tilo-imager.AppImage",
+            ],
+            "home": "/home/ute",
+        }))
+        .expect("the question is shown");
+        assert!(matches!(reply, Reply::Confirm));
+        assert_eq!(facts.words, "Uninstall Tilo Imager?");
+        assert_eq!(
+            facts.facts[0].value,
+            "All 3 copies go to the Trash, where you can restore them."
+        );
+        assert_eq!(
+            facts.facts[1..],
+            [
+                fact("Applications".to_owned(), "tilo-imager.AppImage".to_owned()),
+                fact("Home".to_owned(), "tilo-imager.AppImage".to_owned()),
+                fact("/opt/tools".to_owned(), "tilo-imager.AppImage".to_owned()),
+            ]
+        );
+        assert_eq!(facts.verb, "Uninstall");
+        assert_eq!(facts.decline.as_deref(), Some("Cancel"));
+        assert!(facts.destructive);
+
+        let (one, _) = uninstall(serde_json::json!({
+            "desktop_id": "tilo-downloaded-tilo-imager",
+            "name": "Tilo Imager",
+            "copies": ["/home/ute/Downloads/tilo-imager"],
+            "home": "/home/ute",
+        }))
+        .expect("the question is shown");
+        assert_eq!(
+            one.facts[0].value,
+            "Its file goes to the Trash, where you can restore it."
+        );
+        assert_eq!(
+            one.facts[1],
+            fact("Downloads".to_owned(), "tilo-imager".to_owned())
         );
     }
 }

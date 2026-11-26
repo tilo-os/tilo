@@ -15,12 +15,10 @@ use tilo_session_core::surface::{ShellSurface, SurfaceLayer};
 
 use tilo_session_core::surfaces::Published;
 use tilo_sheets::SheetState;
-use tilo_sheets::delete_workspace::DeleteWorkspaceState;
 use tilo_sheets::directory::DirectoryState;
 use tilo_sheets::display_confirm::ConfirmState;
 use tilo_sheets::invite::InviteState;
 use tilo_sheets::shortcut_guide::GuideState;
-use tilo_sheets::uninstall::UninstallState;
 use tilo_sheets::workspace_settings::WorkspaceSettingsState;
 use ui::application::{ApplicationDefinition, ComponentRunnerInputs, prepare_private_surface};
 use ui::host_operation::ResourceOperationStart;
@@ -532,20 +530,6 @@ impl Session {
         .flatten()
     }
 
-    /// The add sheet's state: the program the person is asked about, when one is; `None` when the
-    /// sheet did not mount.
-    #[must_use]
-    pub fn add_app_sheet(&self) -> Option<&tilo_sheets::add_app::AddState> {
-        self.shared.app_sheets.add()
-    }
-
-    /// The uninstall sheet's state: the app the person is asked about, when one is; `None` when the
-    /// sheet did not mount.
-    #[must_use]
-    pub fn uninstall_sheet(&self) -> Option<&UninstallState> {
-        self.shared.app_sheets.uninstall()
-    }
-
     /// Ask the person whether to uninstall `app` , by its entry's id in the downloaded programs'
     /// registry or by the name they know it by.
     pub fn ask_uninstall(&self, app: &str) {
@@ -562,13 +546,6 @@ impl Session {
     #[must_use]
     pub fn invite_sheet(&self) -> Option<&InviteState> {
         self.shared.invite.as_ref()
-    }
-
-    /// The delete question's state: the workspace it is asking about, shown when the person asks to
-    /// delete one.
-    #[must_use]
-    pub fn delete_workspace_sheet(&self) -> Option<&DeleteWorkspaceState> {
-        self.shared.delete_workspace.as_ref()
     }
 
     /// The workspace directory's state: the workspaces this computer may join or open, shown when

@@ -1,6 +1,6 @@
-//! "Uninstall \<app\> and remove its data?", as a person on a headless shell meets it: asking about
-//! a program they downloaded puts the question on the shell, listing every copy that goes, and its
-//! answers reach the registry of their downloaded programs — the one place their apps are kept.
+//! "Uninstall \<app\>?", as a person on a headless shell meets it: asking about a program they
+//! downloaded asks them, listing every copy that goes, and their answer reaches the registry of
+//! their downloaded programs — the one place their apps are kept.
 //! Uninstalling takes every copy to the Trash and says so; keeping the app changes nothing; and
 //! asking about an app that is not there any more says so rather than leaving a question open
 //! about it.
@@ -21,7 +21,9 @@
 use std::path::Path;
 use std::time::Duration;
 
-use crate::common::publisher;
+use crate::common::{
+    person_answers, person_asked, person_asked_next, person_asked_now, person_declines,
+};
 use tilo_actions::ResourceSpec;
 use tilo_session::{Options, Session};
 use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_RESOURCE};
@@ -30,6 +32,7 @@ use tilo_session_core::desktop::verbs::{SEARCH_RESOURCE, SEARCH_ROW_KIND, SHELL_
 fn session() -> Session {
     crate::common::headless(Options {
         collab: false,
+        asks: Some(person_asked()),
         ..Options::default()
     })
 }
@@ -175,20 +178,24 @@ fn until(session: &mut Session, what: &str, mut done: impl FnMut(&Session) -> bo
     crate::common::wait_for(session, what, |session| done(session).then_some(()));
 }
 
-/// Press the question's `action` , as the person does.
-fn answer(session: &mut Session, action: &str) {
-    let sheet = publisher(session, action).unwrap_or_else(|| panic!("no question offers {action}"));
-    assert_eq!(
-        sheet, "uninstall.question",
-        "the answer is the uninstall question's"
-    );
-    let arguments = serde_json::json!({})
-        .as_object()
-        .expect("an object")
-        .clone();
-    session
-        .invoke(&sheet, action, &arguments)
-        .expect("the session takes the answer");
+/// The uninstall question the person is asked next: its handle and the copies it says go.
+#[track_caller]
+fn asked_to_uninstall(session: &mut Session, name: &str) -> (String, Vec<String>) {
+    let question = person_asked_next(session);
+    assert_eq!(question.kind, "app.uninstall", "the uninstall question");
+    assert_eq!(question.details["name"], name, "naming the app");
+    let copies = question.details["copies"]
+        .as_array()
+        .expect("the copies that go")
+        .iter()
+        .map(|copy| copy.as_str().expect("a file").to_owned())
+        .collect();
+    (question.handle, copies)
+}
+
+/// The person says yes to the question that stands.
+fn uninstall(session: &mut Session) {
+    person_answers(session, tilo_service::Answer::default());
 }
 
 #[test]
@@ -210,29 +217,18 @@ fn uninstalling_an_app_takes_every_copy_to_the_trash_and_says_so() {
 
     // Asked to uninstall it, the question names the app and lists both copies that go.
     session.ask_uninstall(&desktop_id);
-    until(&mut session, "the question", |session| {
-        publisher(session, "confirm").is_some()
-    });
-    let labels = session.accessible_labels();
-    assert!(
-        labels.iter().any(|label| label == "Uninstall Tilo Imager?"),
-        "the question names the app: {labels:?}"
-    );
-    assert!(
-        labels
-            .iter()
-            .any(|label| label.contains("All 2 copies go to the Trash")),
-        "the question says what goes: {labels:?}"
-    );
+    let (_, copies) = asked_to_uninstall(&mut session, "Tilo Imager");
     for copy in [&applications, &downloads] {
-        let name = copy.file_name().expect("a name").to_string_lossy();
         assert!(
-            labels.iter().any(|label| label.contains(name.as_ref())),
-            "the question lists {name}: {labels:?}"
+            copies
+                .iter()
+                .any(|listed| Path::new(listed) == copy.as_path()),
+            "the question lists {}: {copies:?}",
+            copy.display()
         );
     }
 
-    answer(&mut session, "confirm");
+    uninstall(&mut session);
     until(&mut session, "both copies to go", |_| {
         !applications.exists() && !downloads.exists()
     });
@@ -261,8 +257,8 @@ fn uninstalling_an_app_takes_every_copy_to_the_trash_and_says_so() {
         )]
     );
     assert!(
-        publisher(&session, "confirm").is_none(),
-        "and the question is taken down"
+        person_asked_now().is_empty(),
+        "and nothing is asked any more"
     );
 }
 
@@ -278,18 +274,10 @@ fn uninstalling_the_only_copy_says_its_file_is_in_the_trash() {
     });
 
     session.ask_uninstall(&desktop_id);
-    until(&mut session, "the question", |session| {
-        publisher(session, "confirm").is_some()
-    });
-    let labels = session.accessible_labels();
-    assert!(
-        labels
-            .iter()
-            .any(|label| label.contains("Its file goes to the Trash")),
-        "the question says what goes: {labels:?}"
-    );
+    let (_, copies) = asked_to_uninstall(&mut session, "Dropped Tool");
+    assert_eq!(copies.len(), 1, "one file goes");
 
-    answer(&mut session, "confirm");
+    uninstall(&mut session);
     until(&mut session, "the app to leave their apps", |session| {
         !published(session, &desktop_id)
     });
@@ -320,13 +308,14 @@ fn keeping_an_app_leaves_it_and_its_file_alone() {
     });
 
     session.ask_uninstall(&desktop_id);
-    until(&mut session, "the question", |session| {
-        publisher(session, "confirm").is_some()
-    });
-    answer(&mut session, "cancel");
-    until(&mut session, "the question to go", |session| {
-        publisher(session, "confirm").is_none()
-    });
+    let (handle, _) = asked_to_uninstall(&mut session, "Tilo Imager");
+    assert!(
+        person_declines(&handle),
+        "the question waits for its answer"
+    );
+    for _ in 0..4 {
+        session.step(Duration::from_millis(1)).expect("a frame");
+    }
     assert!(file.is_file(), "the app's file stays");
     assert!(
         published(&session, &desktop_id),
@@ -345,7 +334,7 @@ fn asking_about_an_app_that_is_not_there_any_more_says_so() {
         !notices(session).is_empty()
     });
     assert!(
-        publisher(&session, "confirm").is_none(),
+        person_asked_now().is_empty(),
         "no question is left in place about it"
     );
     assert_eq!(
@@ -383,18 +372,10 @@ fn the_uninstall_row_of_a_downloaded_app_asks_the_question() {
         "one row uninstalls the app, and it is the one that asks"
     );
     choose_row(&mut session, "Uninstall Tilo Imager");
-    until(&mut session, "the question", |session| {
-        publisher(session, "confirm").is_some()
-    });
-    until(&mut session, "the question's title", |session| {
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| label == "Uninstall Tilo Imager?")
-    });
+    asked_to_uninstall(&mut session, "Tilo Imager");
     assert!(file.is_file(), "nothing goes before the person answers");
 
-    answer(&mut session, "confirm");
+    uninstall(&mut session);
     until(&mut session, "the app to leave their apps", |session| {
         !published(session, &desktop_id)
     });
@@ -433,15 +414,7 @@ fn the_uninstall_question_takes_the_app_by_name() {
     session
         .invoke(APPS_RESOURCE, ASK_UNINSTALL, &arguments)
         .expect("the question is offered");
-    until(&mut session, "the question", |session| {
-        publisher(session, "confirm").is_some()
-    });
-    until(&mut session, "the question's title", |session| {
-        session
-            .accessible_labels()
-            .iter()
-            .any(|label| label == "Uninstall Tilo Imager?")
-    });
+    asked_to_uninstall(&mut session, "Tilo Imager");
     assert!(file.is_file(), "nothing goes before the person answers");
 }
 
@@ -461,10 +434,8 @@ fn an_uninstall_that_cannot_trash_the_file_says_so() {
     });
 
     session.ask_uninstall(&desktop_id);
-    until(&mut session, "the question", |session| {
-        publisher(session, "confirm").is_some()
-    });
-    answer(&mut session, "confirm");
+    asked_to_uninstall(&mut session, "Dropped Tool");
+    uninstall(&mut session);
     until(&mut session, "the notice", |session| {
         !notices(session).is_empty()
     });
@@ -482,10 +453,7 @@ fn an_uninstall_that_cannot_trash_the_file_says_so() {
         published(&session, &desktop_id),
         "and the app stays in their apps"
     );
-    assert!(
-        publisher(&session, "confirm").is_none(),
-        "the question is taken down"
-    );
+    assert!(person_asked_now().is_empty(), "the question is answered");
 }
 
 /// A registry of the person's apps that publishes a reading this build does not read: what a

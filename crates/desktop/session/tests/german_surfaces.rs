@@ -132,10 +132,6 @@ fn the_surviving_surfaces_speak_the_persons_language() {
         named(&session, "desktop.power-menu").as_deref(),
         Some("Power menu")
     );
-    assert_eq!(
-        named(&session, "uninstall.question").as_deref(),
-        Some("Uninstall")
-    );
 }
 
 /// A sheet names the resource it publishes: the name its declaration gives it,
@@ -158,12 +154,6 @@ fn sheets_name_themselves(session: &tilo_session::Session) {
     confirm.presentation().open(false);
     let displays = session.display_sheet().expect("the display sheet mounted");
     displays.presentation().open(false);
-    let add = session.add_app_sheet().expect("the add sheet mounted");
-    add.presentation().open(false);
-    let uninstall = session
-        .uninstall_sheet()
-        .expect("the uninstall sheet mounted");
-    uninstall.presentation().open(false);
 
     for (kind, german) in [
         ("desktop.power-menu", "Ein/Aus-Menü"),
@@ -172,8 +162,6 @@ fn sheets_name_themselves(session: &tilo_session::Session) {
         ("shortcut-guide.guide", "Tastenkürzel"),
         ("display-confirm.question", "Anzeigeänderung"),
         ("display-sheet.layouts", "Anzeige"),
-        ("add-app.question", "Zu den Apps hinzufügen"),
-        ("uninstall.question", "Deinstallieren"),
     ] {
         assert_eq!(
             named(session, kind).as_deref(),

@@ -8,11 +8,12 @@ use std::time::Duration;
 use tilo_app_test_host::TestApp;
 use tilo_session::Session;
 use tilo_session_core::desktop::i18n::t;
-use tilo_sheets::SheetState as _;
-use tilo_sheets::delete_workspace::DeleteWorkspaceEffect;
 use tilo_sheets::workspace_settings::WorkspaceSettingsApp;
 
-use crate::common::held::{WORKSPACE, hosted_session, this_computer, workspace_held_here};
+use crate::common::held::{
+    WORKSPACE, hosted_session, hosted_session_asked, this_computer, workspace_held_here,
+};
+use crate::common::{person_answers, person_asked_next, person_asked_now, person_declines};
 
 fn settle(session: &mut Session) {
     for _ in 0..6 {
@@ -34,22 +35,36 @@ fn front(session: &Session) -> String {
 /// The name the workspace held here is founded under, which its governance keeps.
 const SHARED_NAME: &str = "Shared browser workspace";
 
-/// The session's delete question, as it asks it now.
-fn asked(session: &Session) -> String {
-    session
-        .delete_workspace_sheet()
-        .expect("the session hosts the delete question")
-        .asked()
-        .name
+/// A session of this computer showing the workspace held here, whose questions the test answers
+/// as the person.
+fn asked_session() -> (
+    crate::common::held::Hosted,
+    tempfile::TempDir,
+    tilo_test_env::TestHome,
+) {
+    tilo_secrets::keep_in_memory_for_process();
+    let mut home = tilo_test_env::TestHome::new().expect("a test home");
+    let (_identity, key, cert) = this_computer(home.env());
+    let state = tempfile::tempdir().expect("a state directory");
+    workspace_held_here(state.path(), WORKSPACE, &cert, &key);
+    let mut session = hosted_session_asked(state.path(), &cert.user_public_key);
+    settle(&mut session);
+    (session, state, home)
 }
 
-fn delete_sheet_open(session: &Session) -> bool {
+/// Ask the shell to delete the workspace in front, as an agent that answered nothing would.
+fn ask_to_delete(session: &mut Session) {
     session
-        .delete_workspace_sheet()
-        .is_some_and(|state| state.presentation().is_open())
+        .invoke(
+            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
+            "delete-workspace",
+            &serde_json::Map::new(),
+        )
+        .expect("the shell is asked to delete the workspace");
+    settle(session);
 }
 
-/// Whether the shell is asking the person anything on a banner.
+/// Whether the shell is asking the person anything on a banner of its own.
 fn asking_on_a_banner(session: &Session) -> bool {
     let centre = session.notifications();
     let log = centre.log();
@@ -58,81 +73,62 @@ fn asking_on_a_banner(session: &Session) -> bool {
         .any(tilo_session_core::desktop::state::is_host_offer)
 }
 
-/// The session keeps the workspace until the person says yes.
+/// The session keeps the workspace until the person says yes: deleting asks the person, as the
+/// desktop's own question, and declining it deletes nothing.
 #[test]
-fn deleting_a_workspace_asks_in_its_own_question_and_keep_deletes_nothing() {
+fn deleting_a_workspace_asks_the_person_and_declining_deletes_nothing() {
     let _settled = ui::motion::testing::settled();
-    tilo_secrets::keep_in_memory_for_process();
-    let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    let (_identity, key, cert) = this_computer(home.env());
-    let state = tempfile::tempdir().expect("a state directory");
-    workspace_held_here(state.path(), WORKSPACE, &cert, &key);
-    let mut session = hosted_session(state.path(), &cert.user_public_key);
-    settle(&mut session);
+    let (mut session, _state, _home) = asked_session();
     let shown = front(&session);
 
-    // An agent asks the shell to delete it without having answered anything: the person's own
-    // question stands instead, and nothing is deleted.
-    session
-        .invoke(
-            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
-            "delete-workspace",
-            &serde_json::Map::new(),
-        )
-        .expect("the shell is asked to delete the workspace");
-    settle(&mut session);
-    assert_eq!(front(&session), shown, "the workspace stays");
-    // The workspace is named as its governance names it: the one its host founded it under.
+    ask_to_delete(&mut session);
+    let question = person_asked_next(&mut session);
     assert_eq!(
-        asked(&session),
-        SHARED_NAME,
+        front(&session),
+        shown,
+        "the workspace stays while it is asked"
+    );
+    // The workspace is named as its governance names it: the one its host founded it under.
+    assert_eq!(question.kind, "workspace.delete");
+    assert_eq!(
+        question.details["name"], SHARED_NAME,
         "the question names the workspace"
     );
-    assert!(delete_sheet_open(&session), "the question stands");
     assert!(
         !asking_on_a_banner(&session),
-        "deleting is a question of its own, not a banner"
+        "deleting is a question of its own, not a banner offer"
     );
-    crate::common::shot(&mut session, "delete-asked");
 
-    // Keep: the question goes and the workspace stays, with everything in it.
-    let state = session
-        .delete_workspace_sheet()
-        .expect("the delete question")
-        .clone();
-    state.answer(DeleteWorkspaceEffect::Keep);
+    // Asking again replaces the question that stands rather than stacking a second one.
+    ask_to_delete(&mut session);
+    let again = person_asked_next(&mut session);
+    assert_eq!(again.handle, question.handle);
+    assert_eq!(
+        person_asked_now().len(),
+        1,
+        "one question about one workspace"
+    );
+
+    // Declining: the question goes and the workspace stays, with everything in it.
+    assert!(
+        person_declines(&again.handle),
+        "the question waits for its answer"
+    );
     settle(&mut session);
-    assert_eq!(front(&session), shown, "keeping deletes nothing");
-    assert!(!delete_sheet_open(&session), "the question is answered");
+    assert_eq!(front(&session), shown, "declining deletes nothing");
+    assert!(person_asked_now().is_empty(), "the question is answered");
 }
 
 /// The person's yes is what deletes the workspace, from here and from this device's record.
 #[test]
 fn the_persons_yes_deletes_the_workspace() {
     let _settled = ui::motion::testing::settled();
-    tilo_secrets::keep_in_memory_for_process();
-    let mut home = tilo_test_env::TestHome::new().expect("a test home");
-    let (_identity, key, cert) = this_computer(home.env());
-    let state = tempfile::tempdir().expect("a state directory");
-    workspace_held_here(state.path(), WORKSPACE, &cert, &key);
-    let mut session = hosted_session(state.path(), &cert.user_public_key);
-    settle(&mut session);
+    let (mut session, _state, _home) = asked_session();
     let shown = front(&session);
 
-    session
-        .invoke(
-            tilo_session_core::desktop::verbs::CHROME_RESOURCE,
-            "delete-workspace",
-            &serde_json::Map::new(),
-        )
-        .expect("the shell is asked to delete the workspace");
+    ask_to_delete(&mut session);
+    person_answers(&mut session, tilo_service::Answer::default());
     settle(&mut session);
-    session
-        .delete_workspace_sheet()
-        .expect("the delete question")
-        .answer(DeleteWorkspaceEffect::Delete);
-    settle(&mut session);
-
     assert!(
         session.handle().read(|tree| tree
             .workspaces
@@ -140,7 +136,7 @@ fn the_persons_yes_deletes_the_workspace() {
             .all(|held| held.id().to_string() != shown)),
         "the workspace is gone from the shell"
     );
-    assert!(!delete_sheet_open(&session), "the question is answered");
+    assert!(person_asked_now().is_empty(), "the question is answered");
     let centre = session.notifications();
     let log = centre.log();
     let told = log

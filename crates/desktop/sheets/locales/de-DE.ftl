@@ -338,7 +338,6 @@ portal-auth-rejected = Dieses Passwort wurde nicht angenommen.
 
 ## File chooser
 
-
 ## The lock screen.
 lock-title = Gesperrt
 lock-unlock = Entsperren
@@ -429,27 +428,6 @@ portal-allowed-title = Dauerhaft erlaubt
 portal-allowed-detail = { $app } darf { $what } jetzt ohne Nachfrage nutzen. Nimm es zurück, damit Tilo beim nächsten Mal wieder fragt.
 portal-revoke = Zurücknehmen
 
-## Adding a program the person downloaded to their apps, and uninstalling an app
-add-app-title = { $name } zu den Apps hinzufügen?
-add-app-add = Zu den Apps hinzufügen
-add-app-decline = Nicht hinzufügen
-add-app-move = In „Programme“ verschieben
-add-app-move-detail = Bewahrt sie im Ordner „Programme“ in deinen Dateien auf
-uninstall-title = { $name } deinstallieren?
-uninstall-action = Deinstallieren
-uninstall-cancel = Abbrechen
-uninstall-remove-data = Ihre Daten entfernen
-uninstall-remove-data-detail = Deine Einstellungen und gespeicherten Dateien kommen in den Papierkorb, wo du sie wiederherstellen kannst.
-uninstall-device-body = Sie wird für alle auf diesem Computer entfernt.
-uninstall-files = { $count ->
-    [one] Ihre Datei kommt in den Papierkorb, wo du sie wiederherstellen kannst.
-   *[other] Alle { $count } Kopien kommen in den Papierkorb, wo du sie wiederherstellen kannst.
-}
-uninstall-home-folder = Persönlicher Ordner
-uninstall-documents-body = Deine Dokumente bleiben in deinen Arbeitsbereichen.
-uninstall-from-apps-title = { $name } aus den Apps entfernen?
-uninstall-from-apps-action = Aus Apps entfernen
-uninstall-entry-body = Sie gehört zum System, bleibt also auf diesem Computer und erscheint nicht mehr unter deinen Apps.
 
 ## Der Agenten-Zugang: ein Programm dieser Anmeldung (ein KI-Agent in einem
 ## Terminal) bittet darum, in einem Arbeitsbereich als Agenten-Mitglied zu
@@ -497,20 +475,11 @@ agent-ask-pick = Wähle eine Antwort.
 power-session = Ein/Aus
 lock-screen = Sperrbildschirm
 dictation-session = Diktat
-uninstall-question = Deinstallieren
-add-app-question = Zu den Apps hinzufügen
 shortcut-guide-guide = Tastenkürzel
 workspace-directory-listing = Öffentliche Arbeitsbereiche
 display-sheet-layouts = Anzeige
 display-confirm-question = Anzeigeänderung
 workspace-settings-lens = Arbeitsbereich-Einstellungen
-
-# Deleting a workspace, asked wherever it was asked from: the confirm sheet
-# and the workspace settings' own question say the same words.
-workspace-delete-title = { $name } löschen?
-workspace-delete-body = Alles in diesem Arbeitsbereich geht mit ihm: seine Fenster, seine Gruppen, seine Geschichte. Er verschwindet von jedem Gerät, auf dem er ist.
-workspace-delete-confirm = Löschen
-workspace-delete-keep = Behalten
 
 # Inviting people: the link into the workspace in front, and the links that
 # still work.
@@ -555,11 +524,6 @@ sheets-workspace-person = Person { $number }
 
 ## Actions
 
-so-tilo-add-app-add = Zu deinen Apps hinzufügen
-so-tilo-add-app-decline = Nicht mehr nach dieser Datei fragen
-delete-workspace-question = Arbeitsbereich löschen
-so-tilo-delete-workspace-answer-delete = Löschen, mit allem darin
-so-tilo-delete-workspace-answer-keep = Behalten
 so-tilo-workspace-directory-join-clear-note = Den Hinweis verwerfen
 so-tilo-workspace-directory-join-done = Fertig
 so-tilo-workspace-directory-join-join = Einem öffentlichen Arbeitsbereich beitreten
@@ -600,8 +564,6 @@ so-tilo-lock-screen-type-password = Das Passwort eingeben
 so-tilo-lock-screen-unlock = Entsperren
 so-tilo-shortcut-guide-edit-listen = Das Tastenkürzel ändern
 so-tilo-shortcut-guide-edit-reset = Die Tastenkürzel zurücksetzen
-so-tilo-uninstall-cancel = Behalten
-so-tilo-uninstall-confirm = Deinstallieren
 so-tilo-workspace-settings-change-add-agent = Einen Agenten hinzufügen
 so-tilo-workspace-settings-change-add-emoji = Ein Emoji hinzufügen
 so-tilo-workspace-settings-change-add-server = Einen weiteren Server den Arbeitsbereich behalten lassen
