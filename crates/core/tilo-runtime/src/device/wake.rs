@@ -214,8 +214,9 @@ fn interfaces() -> Vec<WakeRoute> {
     Vec::new()
 }
 
-/// Each interface's first IPv4 subnet.
-#[cfg(target_os = "linux")]
+/// Each interface's first IPv4 subnet. Android's bionic has `getifaddrs` too: the VPN exit on a
+/// phone reads its home networks here.
+#[cfg(any(target_os = "linux", target_os = "android"))]
 #[must_use]
 pub fn ipv4_subnets() -> std::collections::BTreeMap<String, Ipv4Subnet> {
     let mut subnets = std::collections::BTreeMap::new();
