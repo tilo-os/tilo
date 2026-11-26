@@ -21,18 +21,7 @@ const durableHost=createDurableHost({runtime,acquireStorage});
  * certified peer). `flush()` resolves when writes are durable; call
  * `release()` once. */
 export async function openProfileStorage(profile,device,options={}){await ready();return durableHost.open(profile,device,options);}
-/** The certified peer's code is a module of its own when a bundle splits it
- * (`lazy_exports!`): fetched as soon as this module runs, beside the start
- * module's compile, and every entry waits for it. */
-const peerCode=retryableMemo(async()=>{
-  const split=await import('./pkg/__wasm_split.js').catch(()=>null);
-  // Downloading and compiling it needs nothing of the start module: it runs
-  // while the start module compiles, and only its instantiation waits.
-  void split?.prefetch('peer');
-  await ready();
-  await split?.load('peer');
-});
-void peerCode().catch(()=>{});
-/** The wasm runtime module, once loaded with the peer's code (its codec and
- * certificates). */
-export async function loadRuntime(){await peerCode();return runtime;}
+/** The wasm runtime module, once its start module is in. The bundle is one
+ * module: the peer's code (its codec and certificates) is part of it, not a
+ * split chunk fetched beside it. */
+export async function loadRuntime(){await ready();return runtime;}
