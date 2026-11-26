@@ -2289,6 +2289,7 @@ impl ResourceStore {
     }
 
     fn command(&self, command: Command) -> Result<Reply, StoreError> {
+        let _phase = tilo_resource::profiling::Phase::start("store.command");
         if command.writes() {
             self.forget_versions_of(&command);
             // A write may bring back what was read as none (an undo of a removal).

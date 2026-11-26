@@ -214,6 +214,13 @@ fn window_phrases(base: &Phrases, spec: &Spec, bundle: &Bundle) -> Phrases {
     base.for_window(language, &shipped)
 }
 
+/// How many surfaces a window keeps surveyed, by the inputs they were surveyed from: enough for
+/// going back and forth between what a person looks at.
+const SURVEYED: usize = 8;
+
+/// The identity of the next surface built, in this process: see `Surface::generation`.
+static GENERATIONS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
 /// What a [`Surface`]'s resources are built from: the published documents' revision, the
 /// loaded packages, the updates that saw a change, and the resources the window shows (its
 /// rows, as published ids) — a change in what a person can reach publishes too.
@@ -238,6 +245,9 @@ struct Surface {
     /// The verbs of its window: "Show this window", in the person's language, a window's alone,
     /// and reading what it shows.
     window: Vec<tilo_actions::ActionSpec>,
+    /// This surface's identity, which a surface built after it never shares: what the survey a
+    /// window kept of it is kept by.
+    generation: u64,
     /// Whether the surface publishes the resources anyone may call on, since no view bounds what
     /// it holds: a call that shows nothing, whose caller names what it calls.
     everything: bool,
@@ -267,6 +277,7 @@ impl Surface {
         let surface = Self {
             app: app.to_owned(),
             window,
+            generation: GENERATIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             everything,
             host: host.clone(),
             planner,
@@ -1545,6 +1556,10 @@ pub struct Hosted {
     /// The surface and its inputs ([`Surface::inputs`]) the broker's copy was built from: while
     /// they are the same, a turn publishes without building anything.
     published_from: Option<(Rc<Surface>, SurfaceInputs)>,
+    /// The descriptors each surface surveyed into, by the inputs it was surveyed from: what the
+    /// window offers, kept for [`SURVEYED`] of them, so a window that goes back to what it
+    /// showed reads the actions it read then rather than surveying the surface again.
+    surveyed: BTreeMap<(u64, SurfaceInputs), Vec<ActionDescriptor>>,
     /// Why the surface was last refused instead of published: empty once it publishes.
     refused: Vec<tilo_actions::ContractViolation>,
     /// What can run on the rows the window shows, and what reading each answer read: a scroll or
@@ -2002,6 +2017,7 @@ impl Hosted {
             directory_behind: false,
             directory_from: None,
             published_from: None,
+            surveyed: BTreeMap::new(),
             refused: Vec::new(),
             answers: Answers::default(),
             wake,
@@ -4320,69 +4336,14 @@ impl Hosted {
             return;
         }
         let _phase = tilo_resource::profiling::Phase::start("tl.host.publish");
-        let resources = surface.resources((!surface.everything).then_some(shown.as_slice()));
-        let handlers: HashSet<String> = HashSet::from([
-            <HostEffect as tilo_resource::Effect>::OPERATION.to_owned(),
-            <OpenEffect as tilo_resource::Effect>::OPERATION.to_owned(),
-            VIEW_TYPE.to_owned(),
-            EDIT_TYPE.to_owned(),
-            tilo_resource::read::TYPE.to_owned(),
-            tilo_actions::remote::APPLICATION_ACTIVATE_TYPE.to_owned(),
-            // The system's own verbs every resource with a view offers, which this host mints
-            // ([`tilolang_tilo::share`]) rather than the app.
-            tilo_resource::share::SHARE_TYPE.to_owned(),
-            tilo_resource::share::SHARE_INVITE_TYPE.to_owned(),
-            // The link into an app that opens links, which this host answers by running the
-            // app's own `open_link` ([`Self::open_link_from_action`]).
-            tilo_actions::remote::APPLICATION_OPEN_LINK_TYPE.to_owned(),
-            // What the window shows, read as lines (`crate::outline`).
-            tilo_actions::remote::APPLICATION_OUTLINE_TYPE.to_owned(),
-        ]);
-        let registry = tilo_actions::ActionRegistry::with(tilolang_tilo::action::register_actions);
-        let violations = tilo_actions::validate_surface(&resources, &registry, &handlers);
-        if !violations.is_empty() {
-            for violation in &violations {
-                tracing::error!(
-                    address = %violation.address,
-                    reason = %violation.reason,
-                    "refusing to publish an invalid resource/action surface"
-                );
+        let descriptors = match self.survey(&surface, &inputs, &shown) {
+            Ok(descriptors) => descriptors,
+            Err(violations) => {
+                self.refuse(violations);
+                return;
             }
-            // A stale catalogue that looks valid is worse than none.
-            self.directory.withdraw();
-            self.directory_behind = false;
-            self.directory_from = None;
-            if self.published.is_none() {
-                // The window may hold a surface the broker did not take: it holds none now.
-                say_surface(
-                    &mut self.instance,
-                    &SurfaceDelta {
-                        reset: true,
-                        ..SurfaceDelta::default()
-                    },
-                );
-            }
-            if self
-                .published
-                .as_ref()
-                .is_some_and(|(held, _)| !held.is_empty())
-            {
-                let (delta, state) = SurfacePublication::next(
-                    self.published.as_ref().map(|(d, s)| (s, d.as_slice())),
-                    &[],
-                );
-                if self.send_surface(delta) {
-                    self.published = Some((Vec::new(), state));
-                    self.published_from = None;
-                }
-            }
-            self.refused = violations;
-            return;
-        }
+        };
         self.refused.clear();
-        let mut descriptors = tilo_actions::api::survey(&resources);
-        self.answer_what_the_window_shows(&mut descriptors);
-        self.apply_document_grants(&mut descriptors);
         // The directory is built when a caller asks for it: what the surface holds is the
         // snapshot's input, not the answer to a question nobody asked.
         if self
@@ -4407,6 +4368,96 @@ impl Hosted {
             self.published = None;
             self.published_from = None;
         }
+    }
+
+    /// What the surface `surface` surveys into for the resources `shown` the window reaches,
+    /// from `inputs`: one read of the surface for what a window shows, and, when the window
+    /// comes back to a scene it showed before, the survey it kept of it. `Err` with the
+    /// violations that refuse the surface.
+    fn survey(
+        &mut self,
+        surface: &Rc<Surface>,
+        inputs: &SurfaceInputs,
+        shown: &[String],
+    ) -> Result<Vec<ActionDescriptor>, Vec<tilo_actions::ContractViolation>> {
+        let key = (surface.generation, inputs.clone());
+        if let Some(descriptors) = self.surveyed.get(&key) {
+            return Ok(descriptors.clone());
+        }
+        let resources = surface.resources((!surface.everything).then_some(shown));
+        let handlers: HashSet<String> = HashSet::from([
+            <HostEffect as tilo_resource::Effect>::OPERATION.to_owned(),
+            <OpenEffect as tilo_resource::Effect>::OPERATION.to_owned(),
+            VIEW_TYPE.to_owned(),
+            EDIT_TYPE.to_owned(),
+            tilo_resource::read::TYPE.to_owned(),
+            tilo_actions::remote::APPLICATION_ACTIVATE_TYPE.to_owned(),
+            // The system's own verbs every resource with a view offers, which this host mints
+            // ([`tilolang_tilo::share`]) rather than the app.
+            tilo_resource::share::SHARE_TYPE.to_owned(),
+            tilo_resource::share::SHARE_INVITE_TYPE.to_owned(),
+            // The link into an app that opens links, which this host answers by running the
+            // app's own `open_link` ([`Self::open_link_from_action`]).
+            tilo_actions::remote::APPLICATION_OPEN_LINK_TYPE.to_owned(),
+            // What the window shows, read as lines (`crate::outline`).
+            tilo_actions::remote::APPLICATION_OUTLINE_TYPE.to_owned(),
+        ]);
+        let registry = tilo_actions::ActionRegistry::with(tilolang_tilo::action::register_actions);
+        let violations = tilo_actions::validate_surface(&resources, &registry, &handlers);
+        if !violations.is_empty() {
+            return Err(violations);
+        }
+        let mut descriptors = tilo_actions::api::survey(&resources);
+        self.answer_what_the_window_shows(&mut descriptors);
+        self.apply_document_grants(&mut descriptors);
+        if self.surveyed.len() >= SURVEYED
+            && let Some(oldest) = self.surveyed.keys().next().cloned()
+        {
+            self.surveyed.remove(&oldest);
+        }
+        self.surveyed.insert(key, descriptors.clone());
+        Ok(descriptors)
+    }
+
+    /// Refuse the surface the violations name: the directory is told none, and the window holds
+    /// none of what it offered.
+    fn refuse(&mut self, violations: Vec<tilo_actions::ContractViolation>) {
+        for violation in &violations {
+            tracing::error!(
+                address = %violation.address,
+                reason = %violation.reason,
+                "refusing to publish an invalid resource/action surface"
+            );
+        }
+        // A stale catalogue that looks valid is worse than none.
+        self.directory.withdraw();
+        self.directory_behind = false;
+        self.directory_from = None;
+        if self.published.is_none() {
+            // The window may hold a surface the broker did not take: it holds none now.
+            say_surface(
+                &mut self.instance,
+                &SurfaceDelta {
+                    reset: true,
+                    ..SurfaceDelta::default()
+                },
+            );
+        }
+        if self
+            .published
+            .as_ref()
+            .is_some_and(|(held, _)| !held.is_empty())
+        {
+            let (delta, state) = SurfacePublication::next(
+                self.published.as_ref().map(|(d, s)| (s, d.as_slice())),
+                &[],
+            );
+            if self.send_surface(delta) {
+                self.published = Some((Vec::new(), state));
+                self.published_from = None;
+            }
+        }
+        self.refused = violations;
     }
 
     /// Run the next action the person chose at the window as their own step: the same api an
