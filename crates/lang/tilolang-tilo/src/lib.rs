@@ -37,6 +37,7 @@ pub mod call;
 pub mod catalogue;
 pub mod clock;
 pub mod content;
+pub mod dispatched;
 pub mod effects;
 #[cfg(any(unix, windows))]
 pub mod held;
