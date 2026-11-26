@@ -415,18 +415,21 @@ def instances(root: Path, check: dict) -> set[str]:
 
 
 def change_checks(root: Path) -> set[str]:
-    """The checks t.toml runs for a change: its default ones and those it names `default = true`.
+    """The checks t.toml runs for a change: its default ones, those it names `default = true`,
+    and those every head of stable runs (`on` naming `stable`), which a release is cut onto
+    and stabilized on before it ships.
 
-    A check that only names an `on` runs there and when asked, so it checks no change. A
-    templated name is listed as the template and as each instance its matrix makes, so a
-    suite names the instance that runs it.
+    A check that names only other places in its `on` (idle, dispatch, a schedule) runs there
+    and when asked, so it checks no change. A templated name is listed as the template and as
+    each instance its matrix makes, so a suite names the instance that runs it.
     """
     declared = tomllib.loads((root / "t.toml").read_text(encoding="utf-8")).get("check", [])
     names: set[str] = set()
     for check in declared:
         if not isinstance(check.get("name"), str):
             continue
-        if check.get("default", "on" not in check) is False:
+        on = check.get("on", [])
+        if check.get("default", "on" not in check) is False and "stable" not in on:
             continue
         names |= instances(root, check)
     return names
@@ -498,7 +501,8 @@ def audit(root: Path, tracked: list[str], manifest: Manifest | None = None) -> l
         for suite, check in sorted(manifest.checks.items()):
             if check not in change_check_names:
                 problems.append(
-                    f"{suite}: covering check {check} is not a check t.toml runs for a change")
+                    f"{suite}: covering check {check} is not a check t.toml runs for a change "
+                    "or at every head of stable")
     if manifest.unrequired_checks:
         commands = check_commands(root)
         for suite, check in sorted(manifest.unrequired_checks.items()):

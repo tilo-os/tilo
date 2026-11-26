@@ -182,10 +182,16 @@ check = "sdk-python"
             "t.toml": '[[check]]\nname = "sdk-python"\nrun = "bash tools/ci/sdk-python.sh"\n',
         }
         self.assertEqual(self.audit(files, manifest), [])
-        # A check that only names an `on`, or is default = false, runs there and when asked:
-        # it checks no change, so it cannot prove a suite runs.
-        for declaration in ('on = ["stable"]\n', 'default = false\n',
-                            'on = ["stable"]\ndefault = false\n'):
+        # Every head of stable runs a check whose `on` names it, idle on main or not: a release
+        # is stabilized there, so the suite runs before it ships.
+        for declaration in ('on = ["stable"]\n', 'on = ["idle", "stable"]\n', 'on = ["stable"]\ndefault = false\n'):
+            with self.subTest(declaration=declaration):
+                self.assertEqual(self.audit(
+                    dict(files, **{"t.toml": '[[check]]\nname = "sdk-python"\nrun = "true"\n' + declaration}),
+                    manifest), [])
+        # A check that names only other places in its `on`, or is default = false, runs there and
+        # when asked: it checks no change, so it cannot prove a suite runs.
+        for declaration in ('on = ["idle"]\n', 'on = ["dispatch"]\n', 'default = false\n'):
             with self.subTest(declaration=declaration):
                 problems = self.audit(
                     dict(files, **{"t.toml": '[[check]]\nname = "sdk-python"\nrun = "true"\n' + declaration}),

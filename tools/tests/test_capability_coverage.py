@@ -1,11 +1,12 @@
-"""Every test group of .config/nextest-capabilities.toml runs on main somewhere its probe passes.
+"""Every test group of .config/nextest-capabilities.toml runs somewhere its probe passes, on main's
+heads or on stable's.
 
 tools/ci/capability_filter.py leaves a group out of a run whose job lacks the group's capability
 and reports its tests as not run; the run still passes. A group whose package is tested only in
 jobs that lack the capability therefore runs nowhere, and `t main` has nothing to show for it.
 So each group is run by a t.toml cargo family whose isolation for its package gives the probe
 what it needs, or names in `checks` the t.toml checks that run it, and those checks run on main
-with an isolation that gives the probe what it needs.
+or stable with an isolation that gives the probe what it needs.
 """
 from __future__ import annotations
 
@@ -46,12 +47,13 @@ PASSES = {
 
 
 def on_main(entry: dict) -> bool:
-    """Whether t runs a check or family on every head of main by itself: a default one (no
-    `on`), one that says `default = true`, or one whose `on` names main. An `idle` one runs only
-    when t has room, which leaves most heads without its verdict."""
+    """Whether t runs a check or family by itself at every head of main or of stable: a default
+    one (no `on`), one that says `default = true`, or one whose `on` names main or stable, the
+    branch a release is stabilized on before it ships. An `idle` one alone runs only when t has
+    room, which leaves most heads without its verdict and no release waiting for one."""
     if "on" not in entry:
         return entry.get("default", True)
-    return entry.get("default", False) or "main" in entry["on"]
+    return entry.get("default", False) or "main" in entry["on"] or "stable" in entry["on"]
 
 
 def family_packages(family: dict, members: set[str]) -> set[str]:
@@ -116,7 +118,7 @@ class Coverage:
                     if probe not in self.passes(check):
                         found.append(f"{name} ({probe}) names check {check_name!r}, whose {isolation} isolation fails the probe")
                     if not on_main(check):
-                        found.append(f"{name} ({probe}) names check {check_name!r}, which t does not run on every head of main (`on = {check['on']}`)")
+                        found.append(f"{name} ({probe}) names check {check_name!r}, which t runs at no head of main or stable (`on = {check['on']}`)")
                 for package in sorted(set(capability.PACKAGE.findall(group["filter"]))):
                     in_family = any(
                         on_main(family)
@@ -173,13 +175,15 @@ class CapabilityCoverage(unittest.TestCase):
         }
         self.assertEqual(
             Coverage(manifest, config, {"alpha"}).problems(),
-            ["Root (root-identity) names check 'alpha-root', which t does not run on every head of main (`on = ['dispatch']`)"],
+            ["Root (root-identity) names check 'alpha-root', which t runs at no head of main or stable (`on = ['dispatch']`)"],
         )
         config["check"][1]["on"] = ["dispatch", "idle"]
         self.assertEqual(
             Coverage(manifest, config, {"alpha"}).problems(),
-            ["Root (root-identity) names check 'alpha-root', which t does not run on every head of main (`on = ['dispatch', 'idle']`)"],
+            ["Root (root-identity) names check 'alpha-root', which t runs at no head of main or stable (`on = ['dispatch', 'idle']`)"],
         )
+        config["check"][1]["on"] = ["idle", "stable"]
+        self.assertEqual(Coverage(manifest, config, {"alpha"}).problems(), [])
         del config["check"][1]["on"]
         self.assertEqual(Coverage(manifest, config, {"alpha"}).problems(), [])
 
