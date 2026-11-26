@@ -1010,6 +1010,7 @@ fn lay_out_window(
             });
         }
         app.layout.placed_partly = again;
+        app.layout.placed_scale = f64::from(crate::widget::layout::device_scale());
         t_apply_us = t_apply_us.saturating_add(start.elapsed().as_micros());
         #[cfg(test)]
         drop(place_probe);
@@ -1174,6 +1175,7 @@ impl App {
             return;
         }
         if let Some(root) = self.layout.root_node {
+            let _grid = crate::widget::layout::enter_device_scale(self.layout.placed_scale);
             self.apply_history_presentation(root);
         }
         self.layout.placed_partly = false;
@@ -1183,6 +1185,10 @@ impl App {
 #[cfg(test)]
 #[path = "window_title_tests.rs"]
 mod window_title_tests;
+
+#[cfg(test)]
+#[path = "place_all_tests.rs"]
+mod place_all_tests;
 
 #[cfg(test)]
 #[allow(
