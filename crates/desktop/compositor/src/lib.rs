@@ -2346,18 +2346,6 @@ impl Compositor {
                 .state
                 .mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
         }
-        let over_window = self
-            .data
-            .state
-            .surfaces
-            .iter()
-            .find_map(|surface| surface.drawn_over_window());
-        if self.data.state.over_window != over_window {
-            self.data.state.over_window = over_window;
-            self.data
-                .state
-                .mark_redraw_all(tilo_frame_metrics::paint_reason::SESSION);
-        }
         // A frame can move windows (a strip panning, a group resizing): the policy places them
         // where the surfaces just laid them out.
         self.data.state.rearrange();

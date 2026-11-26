@@ -12,8 +12,8 @@ use std::collections::HashMap;
 use tilo_desktop_model::commands::{DesktopCommand, apply_command};
 use tilo_desktop_model::{CanvasPlace, FloatPlace, GroupId, Layout, StripId, TabId, Workspace};
 use tilo_ui_base::{num::f64_of_i64, num::i32_of_f64, num::u32_of_f64};
+use ui::floating_layer::FLOAT_CARD_SIZE;
 use ui::kurbo::{Point, Rect};
-use ui::widget::FLOAT_CARD_SIZE;
 
 use super::Shared;
 
@@ -376,7 +376,7 @@ impl super::DesktopHandle {
             snap_into(&mut shared, &carried, before);
             return true;
         }
-        let at = ui::widget::keep_float_inside(carried.area, carried.at);
+        let at = ui::floating_layer::keep_float_inside(carried.area, carried.at);
         let place = FloatPlace::of_rect(area_of(carried.area), place_of(at));
         if !set(&mut shared, carried.strip, carried.group, Some(place)) {
             // Let go where it was: the window goes back where the record keeps it.

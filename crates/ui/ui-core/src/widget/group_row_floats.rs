@@ -13,18 +13,15 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use super::GroupRow;
+use crate::floating_layer::{FLOAT_SIZE, keep_float_inside};
 use crate::widget::floating_surface::card_radius;
 use crate::widget::primitives::paint_floating_window_card;
 use tilo_ui_base::num::f32_of_f64;
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
-use tilo_ui_base::tokens::Spacing;
 use tilo_ui_base::widget::Widget as _;
 
-pub const FLOAT_SIZE: (f64, f64) = (640.0, 480.0);
-pub const FLOAT_CARD_SIZE: (f64, f64) = (360.0, 520.0);
 const FLOAT_GRAB: (f64, f64) = (80.0, 14.0);
-pub const FLOAT_CARD_MARGIN: f64 = Spacing::BASE.s2 as f64;
 
 /// Where a float the person moved or let go goes, for the host to keep in the workspace's
 /// record.
@@ -366,23 +363,4 @@ impl GroupRow {
             }
         }
     }
-}
-
-/// `at` kept inside `area`, clear of its edge by [`FLOAT_CARD_MARGIN`]: the card a
-/// float draws round its window — the band of its own ground and the focus ring outside it
-/// — stays whole.
-#[must_use]
-pub fn keep_float_inside(area: Rect, at: Rect) -> Rect {
-    let spare = FLOAT_CARD_MARGIN;
-    let x = at
-        .x0
-        .min(area.x1 - spare - at.width())
-        .max(area.x0 + spare)
-        .max(0.0);
-    let y = at
-        .y0
-        .min(area.y1 - spare - at.height())
-        .max(area.y0 + spare)
-        .max(0.0);
-    Rect::from_origin_size(Point::new(x, y), at.size())
 }

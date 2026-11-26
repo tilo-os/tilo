@@ -229,7 +229,7 @@ tilo_test_env::scenario! {
         relayout_strip(&mut row, display);
         assert_eq!(row.groups[0].width(), WindowWidth::Normal);
 
-        let card = 320.0 + 2.0 * crate::widget::FLOAT_CARD_MARGIN;
+        let card = 320.0 + 2.0 * crate::floating_layer::FLOAT_CARD_MARGIN;
         assert!(row.share_with_floating_neighbour(200, card));
         let mut floats = HashMap::new();
         floats.insert(

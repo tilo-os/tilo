@@ -454,10 +454,6 @@ where
         // The part of this output the window may draw on: all of it, or where the policy cut it to
         // (a strip's window shows on its own display only).
         let area = drawable_area(state, window, location, origin, scale, bounds);
-        // What the shells draw over this window itself is over it and the windows behind it.
-        if let Some(over) = state.over_of(window) {
-            covers.push(physical(over, origin, scale));
-        }
         // What this window still shows through: what the shells cover it with for the windows in
         // front of it.
         let visible = area.map_or_else(Vec::new, |area| outside(area, &covers));

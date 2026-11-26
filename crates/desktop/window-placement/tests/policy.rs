@@ -641,7 +641,10 @@ fn a_fixed_size_window_without_a_parent_takes_a_tab() {
     };
     policy.map(fixed).unwrap();
     settle(&mut policy);
-    assert!(!policy.is_floating(2), "a fixed size alone is no dialog");
+    assert!(
+        policy.placement().floating.is_empty(),
+        "a fixed size alone is no dialog"
+    );
     assert!(policy.tab_of(2).is_some(), "it gets a tab of its own");
     assert_eq!(
         groups(&policy).len(),
@@ -663,7 +666,16 @@ fn a_fixed_size_window_without_a_parent_takes_a_tab() {
         })
         .unwrap();
     settle(&mut policy);
-    assert!(policy.is_floating(3), "its parent decides, not its size");
+    assert_eq!(
+        policy
+            .placement()
+            .floating
+            .iter()
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>(),
+        [3],
+        "its parent decides, not its size"
+    );
     assert!(policy.tab_of(3).is_none(), "a dialog takes no tab");
     assert_eq!(groups(&policy).len(), 2, "and opens no window of its own");
     assert_eq!(shown(&policy.placement()), [1, 2], "a dialog takes no tab");
@@ -681,7 +693,6 @@ fn a_dialog_floats_over_its_parent_and_answers_for_it() {
         })
         .unwrap();
     settle(&mut policy);
-    assert!(policy.is_floating(2));
     assert!(policy.tab_of(2).is_none(), "a dialog takes no tab");
     let layout = policy.placement();
     assert_eq!(shown(&layout), [1], "a dialog takes no tab");
@@ -692,17 +703,12 @@ fn a_dialog_floats_over_its_parent_and_answers_for_it() {
 
     policy.unmap(1);
     settle(&mut policy);
-    assert!(
-        policy.is_floating(2),
-        "its parent gone, it floats on the display in use"
-    );
     assert_eq!(
         policy.placement().floating,
         [(2, Rect::new(0.0, 0.0, WIDTH / 2.0, 800.0))],
         "its parent gone, it floats on the display in use"
     );
     policy.unmap(2);
-    assert!(!policy.is_floating(2));
     assert!(policy.tab_of(2).is_none());
     assert!(policy.placement().floating.is_empty());
 }

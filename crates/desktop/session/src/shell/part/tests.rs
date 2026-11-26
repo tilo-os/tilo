@@ -2078,7 +2078,7 @@ fn a_float_covers_the_windows_under_it_once_its_window_fills_it() {
     // cover is that card alone, so the windows behind show under the shadow it casts.
     assert_eq!(
         (f64::from(cover.rect.2), f64::from(cover.rect.3)),
-        ui::widget::FLOAT_CARD_SIZE,
+        ui::floating_layer::FLOAT_CARD_SIZE,
         "the card's bar and body, as the shell draws it: {:?}",
         cover.rect
     );

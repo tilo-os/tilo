@@ -98,7 +98,7 @@ impl DesktopHandle {
     /// the work area of the display it stands on. Whether the tree changed.
     pub fn float_over(&self, strip: StripId, group: GroupId, area: ui::kurbo::Rect) -> bool {
         let mut shared = self.shared.borrow_mut();
-        let (width, height) = ui::widget::FLOAT_SIZE;
+        let (width, height) = ui::floating_layer::FLOAT_SIZE;
         let at = ui::kurbo::Rect::from_center_size(
             area.center(),
             (width.min(area.width()), height.min(area.height())),

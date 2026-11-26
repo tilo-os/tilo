@@ -925,13 +925,6 @@ impl DesktopPolicy {
         self.handle.display_of(group)
     }
 
-    /// Whether `window` is a dialog floating over its parent, or a card an
-    /// app draws over the shell.
-    #[must_use]
-    pub fn is_floating(&self, window: u64) -> bool {
-        self.floating.contains_key(&window)
-    }
-
     /// Place the cards the session authorises: where the floating layer puts
     /// each one is the session's to say, and this shell's to lay out.
     pub fn use_cards(&mut self, cards: cards::Placements) {
@@ -2168,14 +2161,6 @@ impl DesktopPolicy {
     #[must_use]
     pub fn covering_window(&self) -> Option<u64> {
         self.handle.read(covering_window)
-    }
-
-    /// The window covering its display whose own bar the shell draws over it, and where, in
-    /// surface coordinates: the window is drawn around it, and a press there is the shell's.
-    #[must_use]
-    pub fn covering_bar(&self) -> Option<(u64, Rect)> {
-        let (tab, bar) = self.handle.covering_bar()?;
-        Some((self.handle.read(|tree| window_of(tree, tab))?, bar))
     }
 
     /// The windows whose tabs the person closed since the last call: the

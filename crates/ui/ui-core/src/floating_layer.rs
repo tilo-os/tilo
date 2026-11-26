@@ -19,6 +19,31 @@ pub const NARROW_PX: f64 = 720.0;
 /// The most cards expanded at once; the least recently touched folds into the pill when another
 /// arrives.
 pub const MAX_CARDS: usize = 3;
+/// The size a window takes when it floats over the shell.
+pub const FLOAT_SIZE: (f64, f64) = (640.0, 480.0);
+/// The size of the card a window opened over the shell draws.
+pub const FLOAT_CARD_SIZE: (f64, f64) = (360.0, 520.0);
+/// How far a floated window's card keeps from the work area's edges.
+pub const FLOAT_CARD_MARGIN: f64 = tilo_ui_base::tokens::Spacing::BASE.s2 as f64;
+
+/// `at` kept inside `area`, clear of its edge by [`FLOAT_CARD_MARGIN`]: the card a
+/// float draws round its window — the band of its own ground and the focus ring outside it
+/// — stays whole.
+#[must_use]
+pub fn keep_float_inside(area: Rect, at: Rect) -> Rect {
+    let spare = FLOAT_CARD_MARGIN;
+    let x = at
+        .x0
+        .min(area.x1 - spare - at.width())
+        .max(area.x0 + spare)
+        .max(0.0);
+    let y = at
+        .y0
+        .min(area.y1 - spare - at.height())
+        .max(area.y0 + spare)
+        .max(0.0);
+    Rect::from_origin_size(Point::new(x, y), at.size())
+}
 
 const CARD_PADDING: f64 = 14.0;
 const CARD_HEADER: f64 = 24.0;

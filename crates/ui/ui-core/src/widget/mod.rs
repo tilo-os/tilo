@@ -399,13 +399,11 @@ mod group_row;
 #[cfg(feature = "model")]
 pub use {
     group_row::CANVAS_ZOOM_MAX, group_row::CANVAS_ZOOM_MIN, group_row::CanvasView,
-    group_row::CrossStripDetach, group_row::FLOAT_CARD_MARGIN, group_row::FLOAT_CARD_SIZE,
-    group_row::FLOAT_SIZE, group_row::FloatAsk, group_row::GroupRow, group_row::GroupTopology,
-    group_row::JUMP_PX_PER_DETENT, group_row::OutputSpan, group_row::Pan,
+    group_row::CrossStripDetach, group_row::FloatAsk, group_row::GroupRow,
+    group_row::GroupTopology, group_row::JUMP_PX_PER_DETENT, group_row::OutputSpan, group_row::Pan,
     group_row::STRIP_BOTTOM_GUTTER_PX, group_row::STRIP_EDGE_GUTTER_PX,
     group_row::STRIP_TOP_GAP_PX, group_row::StripSection, group_row::TabDropTarget,
-    group_row::WheelJumpAccum, group_row::keep_float_inside, group_row::pan_within_canvas,
-    group_row::wheel_jump_detents,
+    group_row::WheelJumpAccum, group_row::pan_within_canvas, group_row::wheel_jump_detents,
 };
 mod finger_path;
 pub mod tooltip;

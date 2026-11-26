@@ -40,7 +40,7 @@ mod crossing;
 use crossing::LetGo;
 #[path = "group_row_floats.rs"]
 mod floats;
-pub use floats::{FLOAT_CARD_MARGIN, FLOAT_CARD_SIZE, FLOAT_SIZE, FloatAsk, keep_float_inside};
+pub use floats::FloatAsk;
 #[path = "group_row_pictures.rs"]
 mod pictures;
 #[path = "group_row_scroll.rs"]

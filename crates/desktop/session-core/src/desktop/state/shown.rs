@@ -2,11 +2,9 @@
 //! and the bounds of the tab it shows. Every display shows a strip of its own, so that is every row
 //! the shell draws, not only the one the person works in.
 use tilo_desktop_model::{LayoutKind, StripId, TileContent};
+use ui::floating_layer::{FLOAT_CARD_MARGIN, FLOAT_CARD_SIZE};
 use ui::kurbo::Rect;
-use ui::widget::{
-    FLOAT_CARD_MARGIN, FLOAT_CARD_SIZE, HANDLE_SLOT_PX, STRIP_BOTTOM_GUTTER_PX,
-    STRIP_EDGE_GUTTER_PX, STRIP_TOP_GAP_PX,
-};
+use ui::widget::{HANDLE_SLOT_PX, STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, STRIP_TOP_GAP_PX};
 
 use super::{DesktopHandle, GroupId, Shared, TabId, displays, floats};
 
@@ -41,21 +39,6 @@ impl DesktopHandle {
                         .is_some_and(|id| tilo_desktop_model::apps::app_ids_match(&id, app))
             })
         })
-    }
-
-    /// The top of the drawn windows' content, in the surface's coordinates,
-    /// as of the last layout: where the transients pinned into the display's
-    /// top-right corner start, below the windows' bars. Zero with no window.
-    pub fn content_top(&self) -> f64 {
-        self.shared.borrow().shown_tabs.content_top()
-    }
-
-    /// The window covering its display whose own bar stands over its content, as the person
-    /// reached for the bar over the display, and where that bar stands, in the surface's
-    /// coordinates, as of the last layout. The window is drawn around it, and a press there is the
-    /// bar's.
-    pub fn covering_bar(&self) -> Option<(TabId, Rect)> {
-        self.shared.borrow().shown_tabs.bar_over_content()
     }
 
     /// Each window floating over the shell, and the rect the shell draws over the windows under it
@@ -104,9 +87,6 @@ pub struct ShownTab {
     pub window: Rect,
     /// The bounds of the tab's content, once its window laid it out.
     pub content: Option<Rect>,
-    /// The window's bar where it stands over that content: a window covering its display shows it
-    /// there while the person reaches for the bar over the display.
-    pub bar_over_content: Option<Rect>,
     /// Whether the window floats over the shell rather than laid out in its strip.
     pub floated: bool,
 }
@@ -148,14 +128,6 @@ impl ShownTabs {
             .collect()
     }
 
-    /// The window whose bar stands over its own content, and where: the shell draws there over
-    /// what the window shows.
-    pub fn bar_over_content(&self) -> Option<(TabId, Rect)> {
-        self.0
-            .iter()
-            .find_map(|shown| Some((shown.tab, shown.bar_over_content?)))
-    }
-
     /// Where the whole window of `tab` stands, its bar and content together.
     pub fn window_rect(&self, tab: TabId) -> Option<Rect> {
         let shown = self.0.iter().find(|shown| shown.tab == tab)?;
@@ -170,19 +142,6 @@ impl ShownTabs {
             .iter()
             .map(|shown| (shown.group, shown.content.unwrap_or(shown.window).size()))
             .collect()
-    }
-
-    /// The top of the strips' windows' content: where banners start, below the windows' bars, which
-    /// pinned to the strip's top would cover their own controls. A floating window stands lower,
-    /// and banners keep clear of it whole ([`DesktopHandle::float_covers`]) rather than start
-    /// under its bar, over what it shows.
-    pub fn content_top(&self) -> f64 {
-        self.0
-            .iter()
-            .filter(|shown| !shown.floated)
-            .filter_map(|shown| shown.content)
-            .map(|content| content.y0)
-            .fold(0.0, f64::max)
     }
 }
 
@@ -389,7 +348,6 @@ fn lay_out_section(
         group: group.id,
         window,
         content: Some(Rect::new(window.x0, window.y0 + bar, window.x1, window.y1)),
-        bar_over_content: None,
         floated,
     };
     // A window covering its display, or one the person maximised, is the one its display shows:
