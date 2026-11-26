@@ -14,7 +14,7 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::agents::{AGENTS_PROVIDER, AgentGrantAction, AgentGrantApp, GrantState};
 use tilo_user_identity::DeviceCert;
 
-use super::{RosterProvisioning, personal_entry};
+use super::{RosterProvisioning, check_the_persons_session, personal_entry};
 
 impl RosterProvisioning {
     /// Advertise the provider beside the workspace apps. A query addressed to the provider
@@ -33,10 +33,12 @@ impl RosterProvisioning {
         };
         let apps = match query.provider.as_deref() {
             Some(AGENTS_PROVIDER) => None,
+            // Only a person's root catalogue can gain this provider. Other callers use the apps directly.
             None if query.canonical_route.is_none()
                 && query.view_resource.is_none()
                 && query.action.is_none()
-                && query.target.is_none() =>
+                && query.target.is_none()
+                && check_the_persons_session(caller, cert).is_ok() =>
             {
                 Some(apps()?)
             }

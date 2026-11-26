@@ -2159,6 +2159,75 @@ impl PersonalAssistant {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_members_program_discovers_the_workspace_without_its_assistant_grant() {
+    use tilo_actions::remote::workspace_invocations;
+    use tilo_server_protocol::agents::AGENTS_PROVIDER;
+
+    let (owner, _) = tilo_user_identity::UserIdentity::generate("Host owner", 1);
+    let host = enrol(&owner, "host", DeviceCapabilities::member());
+    let state = crate::support::scratch_dir();
+    let server = start(&owner, &host, state.path()).await;
+    let mut assistant = PersonalAssistant::open(&server, &host).await;
+    let workspace = assistant.workspace_id.to_string();
+    let member_catalogue = assistant
+        .page
+        .catalogue(CatalogueQuery::default())
+        .await
+        .unwrap();
+    assert!(
+        member_catalogue
+            .providers
+            .iter()
+            .any(|row| row.provider == AGENTS_PROVIDER)
+    );
+
+    let program = enrol(
+        &assistant.member,
+        "Member's program",
+        DeviceCapabilities::server_key_grant(),
+    );
+    let peer = Browser::session(&server.server, &program, &host);
+    let events = peer.events();
+    crate::support::ready(&[&peer]).await;
+    let device = tilo_session_client::device::Device::of(
+        peer.clone(),
+        program.cert.clone(),
+        host.cert.clone(),
+        "Member's program",
+    );
+    assert_eq!(
+        device
+            .enter_workspace(&workspace, "Member's program")
+            .await
+            .unwrap(),
+        assistant.workspace_id,
+    );
+    let mut page = Browser::joined((peer, events), &program, &host, &workspace);
+    let root = page.catalogue(CatalogueQuery::default()).await.unwrap();
+    assert!(root.providers.iter().any(|row| {
+        row.provider == workspace_invocations::PROVIDER
+            && row.browsable
+            && row.workspace == workspace
+    }));
+    assert!(
+        root.providers
+            .iter()
+            .all(|row| row.provider != AGENTS_PROVIDER)
+    );
+    let directed = page
+        .catalogue(CatalogueQuery {
+            provider: Some(AGENTS_PROVIDER.into()),
+            ..Default::default()
+        })
+        .await
+        .unwrap();
+    assert!(directed.rows.is_empty());
+    assert!(directed.providers.is_empty());
+    page.peer.close();
+    assistant.page.peer.close();
+}
+
 /// The stable id from first use works for the root-approved Chat grant and a restarted host.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_member_approves_the_chat_grant_for_their_new_personal_assistant() {
