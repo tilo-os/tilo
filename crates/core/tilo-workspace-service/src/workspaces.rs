@@ -1064,7 +1064,8 @@ struct WorkspacesInner {
     listing_themselves: std::sync::Mutex<std::collections::BTreeSet<(WorkspaceId, [u8; 32])>>,
     /// What hears a device's hello this build's peer protocol does not work with
     /// ([`Workspaces::observing_versions`]): the daemon tells the person which side updates.
-    versions: std::sync::Arc<std::sync::Mutex<Vec<std::sync::Arc<tilo_peer_state::direct::Versions>>>>,
+    versions:
+        std::sync::Arc<std::sync::Mutex<Vec<std::sync::Arc<tilo_peer_state::direct::Versions>>>>,
     /// The agent sessions this device serves, present on it while each connection lasts.
     agent_sessions: personal::AgentSessions,
     /// What the workspaces kept here hold, read and written in process.
@@ -2381,13 +2382,11 @@ impl Workspaces {
 
     /// `hosted`'s people as every list showing them has them: the ones its
     /// governance has, its owner among them — without this host's own person
-    /// where it runs workspaces of people's own. There the host runs for
-    /// everyone and is no person of theirs, though its device founds each
-    /// workspace and so is the owner its policy names.
+    /// where it runs workspaces of people's own and this one is no workspace of
+    /// theirs ([`Self::member_list_without`]).
     fn people(&self, hosted: &HostedWorkspace) -> WorkspaceSummary {
         let mut summary = hosted.summary();
-        if self.own().is_some() {
-            let host = hex::encode(self.inner.host.cert.user_public_key);
+        if let Some(host) = self.member_list_without(hosted.workspace()) {
             summary
                 .members
                 .retain(|member| member.id.person_id() != Some(host.as_str()));
@@ -2396,6 +2395,18 @@ impl Workspaces {
                 .retain(|id, _| id.person_id() != Some(host.as_str()));
         }
         summary
+    }
+
+    /// The one person a listing of `workspace`'s people leaves out: this
+    /// host's own person, where it keeps workspaces of people's own and this
+    /// one is no workspace of theirs. There the host runs for everyone and is
+    /// no person of the workspace's, though its device founds each and so is
+    /// the owner its policy first names. On the host's own person's workspace
+    /// their row is theirs as any member's, so an owner who hands the
+    /// workspace on stays in it.
+    fn member_list_without(&self, workspace: &str) -> Option<String> {
+        let host = self.inner.host.cert.user_public_key;
+        (self.own().is_some() && !self.owns(&host, workspace)).then(|| hex::encode(host))
     }
 
     /// `workspace` as a listing names it: its name and generation, read

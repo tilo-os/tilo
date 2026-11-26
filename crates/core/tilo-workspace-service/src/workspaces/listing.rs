@@ -196,9 +196,12 @@ fn person(hex_key: &str) -> Result<[u8; 32], CollaborationError> {
 
 /// Whether `hosted` lists a device of `person`'s own now: one of the person's
 /// devices, never a key acting for them nor a device that serves the workspace.
+/// The workspace's owner is the one person its keeping device is a device of:
+/// that device is in the workspace, and they add another from it.
 fn has_device_of(hosted: &HostedWorkspace, person: [u8; 32]) -> bool {
     // One read of the workspace, kept across the row it reads: its peer is not locked twice.
     let peer = hosted.peer();
+    let owner = peer.owner() == person;
     let keeping: BTreeSet<[u8; 32]> = peer
         .governance()
         .keeping_devices()
@@ -223,9 +226,9 @@ fn has_device_of(hosted: &HostedWorkspace, person: [u8; 32]) -> bool {
                 .devices
                 .get(&tilo_action_policy::MemberId::person(hex::encode(person)))
                 .is_some_and(|devices| {
-                    devices
-                        .iter()
-                        .any(|device| their_devices.contains(device) && !keeping.contains(device))
+                    devices.iter().any(|device| {
+                        their_devices.contains(device) && (owner || !keeping.contains(device))
+                    })
                 })
         })
 }
@@ -712,12 +715,15 @@ impl Workspaces {
                 return Err(EntryRefusal::Removed);
             }
             let part = policy.active_role(&hex::encode(user));
-            // An open entry admits strangers, so a person whose device is
-            // already in the workspace brings another device in as theirs, on
-            // the device that is in. An invitation-only entry takes only whom
-            // the workspace declares or invites, and a declared person's
-            // devices come in at the part the workspace gave them.
-            if !entry.invitation_only && part.is_some() && has_device_of(&hosted, user) {
+            let owner = policy.is_owner(&hex::encode(user));
+            // A person whose device is already in the workspace brings another
+            // device in as theirs, on the device that is in. An open entry says
+            // so to everyone; an invitation-only entry says so to the
+            // workspace's owner, whose own device it already has, rather than
+            // minting an invitation the host signs for them. An invitation-only
+            // entry still takes whom the workspace declares or invites where no
+            // device of theirs is in yet.
+            if part.is_some() && has_device_of(&hosted, user) && (!entry.invitation_only || owner) {
                 return Err(EntryRefusal::refused(
                     tilo_peer_state::workspace::membership::ENTRY_NAMES_ANOTHER_DEVICE,
                 ));

@@ -3253,9 +3253,11 @@ impl Workspaces {
     /// The people in `workspace`, one row each, as the members' resource's one builder lists
     /// them ([`crate::workspaces::resources::member_rows`]).
     pub(super) async fn members(&self, workspace: &str) -> Result<Vec<Value>, CollaborationError> {
+        let without = self.member_list_without(workspace);
         let hosted = self.workspace(workspace).await?;
         let hosted = hosted.lock().await;
-        crate::workspaces::resources::member_rows(&hosted.peer()).map_err(CollaborationError::new)
+        crate::workspaces::resources::member_rows(&hosted.peer(), without.as_deref())
+            .map_err(CollaborationError::new)
     }
 
     /// An invitation, answered with the link that hands it over.

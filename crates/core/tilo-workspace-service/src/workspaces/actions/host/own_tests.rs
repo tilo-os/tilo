@@ -1396,13 +1396,17 @@ async fn a_key_of_the_person_a_workspace_was_handed_to_enters_it() {
     server.shutdown().await;
 }
 
-/// An owner's server key lets a person in by their key, at once, as an
-/// administrator: that person's own key then enters and brings others in, as
-/// far as they may. Handing the workspace on is the owner's own to sign, so
-/// the host refuses to do it for them. An administrator makes administrators
-/// but no owner, and an editor's key adds nobody.
+/// An owner's key makes the workspace and holds it, but a key is no device of
+/// the person's own: it hands the workspace on to nobody and makes no
+/// administrator, and the workspace's refusal names the rule for each. A
+/// device of the owner's makes an administrator, whose own key then brings
+/// people in at a role; a key makes no owner, and an editor's key adds nobody.
 #[tokio::test]
-async fn an_owners_key_adds_an_administrator_by_key_whose_own_key_then_brings_people_in() {
+#[expect(
+    clippy::too_many_lines,
+    reason = "one workspace's keys, the one device that administers it, and who brings whom in are one story"
+)]
+async fn an_owners_key_administers_nothing_and_a_device_of_theirs_makes_an_administrator() {
     let dir = tempfile::tempdir().unwrap();
     let (key, owner) = hosting_device();
     let server = test_host(dir.path(), &key, &owner).await;
@@ -1424,14 +1428,14 @@ async fn an_owners_key_adds_an_administrator_by_key_whose_own_key_then_brings_pe
         "the workspace Ada made here is hers"
     );
 
-    // Grace has never been here. The host does not hand Ada's workspace to
-    // her: that is Ada's to sign on a device of her own.
+    // Grace has never been here. Ada's key hands the workspace to nobody: that
+    // is the owner's own, signed on a device of hers.
     let grace = SigningKey::from_bytes(&rand::random());
     let grace_person = grace.verifying_key().to_bytes();
     let handed = add_member(&host, workspace, &ada_key, &grace, "owner").await;
     assert!(
         matches!(&handed, Err(ActionCallError::Refused { reason, .. })
-            if reason.contains("only the workspace's owner makes this change, and from a device of their own")),
+            if reason.contains("only the workspace's owner hands the workspace to someone else")),
         "{handed:?}"
     );
     assert!(
@@ -1440,8 +1444,38 @@ async fn an_owners_key_adds_an_administrator_by_key_whose_own_key_then_brings_pe
             .await
     );
 
-    // Ada's key makes Grace an administrator by her key.
-    let listed = add_member(&host, workspace, &ada_key, &grace, "administrator")
+    // Nor does Ada's key make Grace an administrator: the administration is a
+    // device of the person's own, and the refusal says so.
+    let made = add_member(&host, workspace, &ada_key, &grace, "administrator").await;
+    assert!(
+        matches!(&made, Err(ActionCallError::Refused { reason, .. })
+            if reason.contains("may not make administrators")),
+        "{made:?}"
+    );
+    assert_eq!(
+        access(workspaces, &workspace.workspace, grace_person).await,
+        None,
+        "a key making nobody an administrator left Grace out"
+    );
+
+    // A device of Ada's makes Grace an administrator by her key.
+    let ada_device = certified_as(
+        &ada,
+        &SigningKey::from_bytes(&rand::random()),
+        DeviceCapabilities::member(),
+        "Ada's laptop",
+    );
+    workspaces
+        .set_member_administrator(
+            &workspace.workspace,
+            &ada_device,
+            rand::random(),
+            grace_person,
+            Some("Someone"),
+        )
+        .await
+        .unwrap();
+    let listed = govern(&host, workspace, &ada_key, super::super::MEMBERS, json!({}))
         .await
         .unwrap();
     let row = listed
@@ -1456,42 +1490,44 @@ async fn an_owners_key_adds_an_administrator_by_key_whose_own_key_then_brings_pe
         (json!(false), json!(true))
     );
 
-    // Her own key enters, before any device of hers joined, and makes Hal an
-    // administrator.
+    // Her own key enters, before any device of hers joined, and brings Hal in
+    // at a role: letting people in is the one governance a key keeps.
     let grace_key = entered(&host, workspaces, workspace, &grace).await;
     let hal = SigningKey::from_bytes(&rand::random());
-    add_member(&host, workspace, &grace_key, &hal, "administrator")
+    add_member(&host, workspace, &grace_key, &hal, "editor")
         .await
         .unwrap();
     let hal_person = hal.verifying_key().to_bytes();
     assert_eq!(
         access(workspaces, &workspace.workspace, hal_person).await,
-        Some((Role::Editor, true))
+        Some((Role::Editor, false))
+    );
+
+    // The administration is no key's, hers included: she makes no
+    // administrator and no owner.
+    let made_administrator = add_member(&host, workspace, &grace_key, &hal, "administrator").await;
+    assert!(
+        matches!(&made_administrator, Err(ActionCallError::Refused { reason, .. })
+            if reason.contains("may not make administrators")),
+        "{made_administrator:?}"
+    );
+    assert_eq!(
+        access(workspaces, &workspace.workspace, hal_person).await,
+        Some((Role::Editor, false)),
+        "the refusal changed nothing"
+    );
+    let refused = add_member(&host, workspace, &grace_key, &hal, "owner").await;
+    assert!(
+        matches!(&refused, Err(ActionCallError::Refused { reason, .. })
+            if reason.contains("only the workspace's owner hands the workspace to someone else")),
+        "{refused:?}"
     );
     assert!(!workspaces.is_owner(&workspace.workspace, hal_person).await);
 
-    // Hal administers: he adds an editor, but makes no owner.
+    // Hal, an editor, adds nobody: the action is not his.
     let hal_key = entered(&host, workspaces, workspace, &hal).await;
-    let ivy = SigningKey::from_bytes(&rand::random());
-    add_member(&host, workspace, &hal_key, &ivy, "editor")
-        .await
-        .unwrap();
-    let ivy_person = ivy.verifying_key().to_bytes();
-    assert_eq!(
-        access(workspaces, &workspace.workspace, ivy_person).await,
-        Some((Role::Editor, false))
-    );
-    let refused = add_member(&host, workspace, &hal_key, &ivy, "owner").await;
-    assert!(
-        matches!(refused, Err(ActionCallError::Refused { .. })),
-        "{refused:?}"
-    );
-    assert!(!workspaces.is_owner(&workspace.workspace, ivy_person).await);
-
-    // Ivy, an editor, adds nobody: the action is not hers.
-    let ivy_key = entered(&host, workspaces, workspace, &ivy).await;
     let stranger = SigningKey::from_bytes(&rand::random());
-    let by_editor = add_member(&host, workspace, &ivy_key, &stranger, "viewer").await;
+    let by_editor = add_member(&host, workspace, &hal_key, &stranger, "viewer").await;
     assert!(by_editor.is_err(), "{by_editor:?}");
     server.shutdown().await;
 }

@@ -1841,7 +1841,7 @@ impl Workspaces {
                 .ok_or_else(|| "this server does not hold that workspace".to_owned())?;
             let peer = reading.replica.read(tilo_peer_state::StatePeer::clone);
             return Ok(collab_types::store::wire::Reply::Content(Some(
-                workspace_members(self, &peer, &agents_named(&reading, workspace))?,
+                workspace_members(self, workspace, &peer, &agents_named(&reading, workspace))?,
             )));
         }
         if let Some(answer) = self.read_record_now(workspace, reader, command) {
@@ -1975,11 +1975,14 @@ pub(super) fn place(owner: bool, administrator: bool, role: Option<&str>) -> Opt
 }
 
 /// The workspace's members as its governance lists them, one row each: their actor, what it calls
-/// them, their role, and whether they own or administer it. The host's own person is listed like
-/// anyone: on a person's computer they are its person, and an owner who hands the workspace on
-/// stays in it as an administrator.
+/// them, their role, and whether they own or administer it. `without` is the one person a listing
+/// leaves out: this host's own person, where it keeps workspaces of people's own and this is no
+/// workspace of theirs, so it serves it without being one of its people. On a person's own
+/// computer that person is the workspace's, and an owner who hands the workspace on stays in it
+/// as an administrator.
 pub(super) fn member_rows(
     peer: &tilo_peer_state::StatePeer,
+    without: Option<&str>,
 ) -> Result<Vec<serde_json::Value>, String> {
     let owner = peer.owner();
     let list = peer.governance().member_list(tilo_clock::wall())?;
@@ -1987,6 +1990,7 @@ pub(super) fn member_rows(
         .members
         .iter()
         .filter(|member| !member.removed)
+        .filter(|member| member.id.person_id() != without)
         .map(|member| {
             let owns = member.root().is_some_and(|root| root == owner);
             let role = member.role.map(tilo_peer_state::join::Role::key);
@@ -2049,21 +2053,28 @@ fn is_workspace_members_read(command: &collab_types::store::wire::Command) -> bo
 /// none who are blocked (they hold nothing), then the agents its grants admit and the bots they
 /// installed. Each row carries what a view shows of them — the name the workspace keeps, their
 /// role, when they joined and the picture they set — so every surface that shows people reads
-/// them here, through the store.
+/// them here, through the store. `workspace` is the one whose people it lists: this host's own
+/// person is left out where it serves the workspace without being one of its people
+/// ([`Workspaces::member_list_without`]).
 fn workspace_members(
     workspaces: &Workspaces,
+    workspace: &str,
     peer: &tilo_peer_state::StatePeer,
     agents: &[AgentRow],
 ) -> Result<serde_json::Value, String> {
     let now = tilo_clock::unix_now_ns() / 1_000_000_000;
     let policy = peer.governance().member_policy()?;
     let listed = peer.governance().member_list(tilo_clock::wall())?;
+    let without = workspaces.member_list_without(workspace);
     let mut rows: Vec<serde_json::Value> = Vec::new();
     for member in &listed.members {
         let Some(root) = member.root() else {
             continue;
         };
         let person = hex::encode(root);
+        if without.as_deref() == Some(person.as_str()) {
+            continue;
+        }
         if !member.removed && policy.is_blocked(&person) {
             continue;
         }
