@@ -69,7 +69,9 @@ fn holder_process() {
         thread::sleep(TICK);
         match behavior.as_str() {
             "advance" | "successor" | "die" => {
-                writeln!(stages(&path), "opening service {step}").unwrap()
+                stages(&path)
+                    .write_all(format!("opening service {step}\n").as_bytes())
+                    .unwrap();
             }
             "stall" if step <= 3 => writeln!(stages(&path), "opening service {step}").unwrap(),
             "replace" => {
@@ -190,6 +192,7 @@ fn reach(launched: &str, another: Option<&str>, has_profile: bool, cap: Duration
     );
     match answer {
         Ok(stream) => {
+            assert!(began.elapsed() >= limits.first);
             assert_eq!(
                 stream.peer_addr().unwrap().as_pathname(),
                 Some(place.socket())
