@@ -115,7 +115,15 @@ tilo_test_env::scenario! {
     {
         let described = super::drawing_component::shape_description();
         let cases: Vec<&str> = described.cases.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(cases, ["rect", "ellipse", "arc", "line", "path", "text"]);
+        // Every shape a drawing can hold: the shapes a mark is drawn with, the surface a chart
+        // shades (a mesh of cells) and the content it carries (a picture by address, a label).
+        assert_eq!(
+            cases,
+            [
+                "rect", "ellipse", "arc", "line", "path", "mesh", "text", "area", "oval", "stroke",
+                "picture", "label"
+            ]
+        );
     }
 
     phase a_text_reads_with_the_themes_roles_and_its_defaults;

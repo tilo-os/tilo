@@ -580,10 +580,13 @@ mod tests {
                     "at {width} px the names read {shown:?}"
                 );
                 if !whole_name {
+                    // A short name reads as whole words (`Week…2026`, never `Week of 12…`), and
+                    // one whose share holds no such reading is left out: its tooltip and its
+                    // accessible name carry all of it. What is shown is never cut inside a word.
                     assert!(
                         shown
                             .iter()
-                            .any(|text| text.starts_with("Week") && text.contains('\u{2026}')),
+                            .all(|text| !text.starts_with("Week") || text.contains('\u{2026}')),
                         "at {width} px the week reads {shown:?}"
                     );
                 }
