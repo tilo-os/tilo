@@ -655,7 +655,11 @@ fi
 for tapp in "${install_tapps[@]}"; do
     [[ -f $tapp ]] || die "no package $tapp"
     say "installing $(basename "$tapp")"
-    "$bin/tilo-install" --offline-store "$TILO_APPS_DATA_DIR" install "$tapp" --allow-self-signed --force >/dev/null
+    # A package can pin a language runtime this session has no package of: the Discord
+    # bridge's bun, which only an image stages. Its windows still open; its program, which no
+    # walk starts, is refused when it starts, naming the runtime.
+    "$bin/tilo-install" --offline-store "$TILO_APPS_DATA_DIR" install "$tapp" --allow-self-signed --force \
+        --ignore-missing-runtime >/dev/null
 done
 
 ((prepare_only)) && { say "prepared $state"; exit 0; }
