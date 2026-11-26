@@ -66,9 +66,11 @@ pub enum Command {
         kind: String,
         parent: Option<String>,
     },
-    /// The resources made by a change stamped as made from the resource `id`, wherever they
-    /// were placed.
-    MadeFrom { id: String },
+    /// The resources made by a change stamped as made from each resource `ids` names, wherever
+    /// they were placed, answered by id in the order asked: what a reader taking a page of
+    /// resources reads in one command rather than one of each. A single resource is a list of
+    /// one.
+    MadeFrom { ids: Vec<String> },
     /// The newest version of each resource `within` names (it, and those whose ids are under
     /// it), of at most `limit` of them, most recent first.
     Newest { within: String, limit: usize },
@@ -267,8 +269,9 @@ pub enum Reply {
     Grouped(Vec<(String, String, Version)>),
     /// Ids of resources.
     Ids(Vec<String>),
-    /// Resources, by kind and id.
-    Resources(Vec<(String, String)>),
+    /// Resources, by kind and id. Retired: [`Command::MadeFrom`] answers [`Self::MadeFrom`],
+    /// which says which asked resource each of them was made from.
+    RetiredResources(Vec<(String, String)>),
     /// Versions, each with the kind and id of the resource it is the newest version of, and
     /// whether there were more than were asked for.
     Newest {
@@ -311,6 +314,10 @@ pub enum Reply {
     ChildrenAt(Option<PastChildren>),
     /// What a restore would change ([`Command::ReviewRestore`]), or why there is nothing to review.
     Review(Result<Review, String>),
+    /// The resources made from each resource [`Command::MadeFrom`] asked of, by kind and id, in
+    /// the order asked: one list per asked resource, each as [`Self::RetiredResources`] answered
+    /// one.
+    MadeFrom(Vec<Vec<(String, String)>>),
 }
 
 impl Reply {

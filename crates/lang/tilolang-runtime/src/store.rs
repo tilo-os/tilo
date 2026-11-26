@@ -2040,6 +2040,28 @@ pub trait Store {
             .collect())
     }
 
+    /// What links to each of `ats`, in their order, each as [`Self::linked`] answers it, or of
+    /// the type `only` names when it names one: what a list of rows reads to draw what waits on
+    /// each, asked once for the page. A store that reads a page of the index and what was made
+    /// from the page answers it in one read however many resources it holds; this reads each
+    /// resource alone.
+    ///
+    /// # Errors
+    ///
+    /// A store that cannot answer it.
+    fn linked_many(
+        &self,
+        ats: &[ResourceRef],
+        only: Option<&str>,
+    ) -> Result<Vec<Vec<Link>>, StoreError> {
+        ats.iter()
+            .map(|at| match only {
+                Some(ty) => self.linked_by(at, ty),
+                None => self.linked(at),
+            })
+            .collect()
+    }
+
     /// The notes of a document's changes, oldest first.
     ///
     /// # Errors

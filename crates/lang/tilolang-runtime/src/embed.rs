@@ -378,7 +378,7 @@ impl Core {
         of: &ResourceRef,
     ) -> Vec<(ResourceRef, crate::InvocationEntry)> {
         self.read_links_of(of);
-        let Ok(links) = self.store.borrow().linked_by(of, INVOCATION_TYPE) else {
+        let Ok(links) = self.links_to(of, Some(INVOCATION_TYPE)) else {
             return Vec::new();
         };
         links

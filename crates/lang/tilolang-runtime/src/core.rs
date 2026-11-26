@@ -308,6 +308,11 @@ pub struct Core {
     /// References to collection items built so far: what a view materialized of the
     /// collections it read.
     pub items_built: std::cell::Cell<u64>,
+    /// What links to each resource of the page of rows a host builds now: the resources the page
+    /// shows and, once a row reads its links, what links to the page's rows, read for the page
+    /// in one ask ([`Self::links_to`]). Dropped when the page is done
+    /// ([`Self::release_links`]), so a row's suggestions cost no read of their own.
+    page_links: RefCell<Option<PageLinks>>,
     /// What the program being run printed and kept, while one runs.
     pub program: RefCell<Option<crate::program::ProgramIo>>,
     /// What finds resources by text for programs' `find`.
@@ -462,6 +467,83 @@ impl Core {
             .unwrap_or_else(|| "local".to_owned())
     }
 }
+
+/// What links to the rows of the page a host builds now: the resources the page shows, and what
+/// links to them as the page's rows read it, by the type asked ([`Core::links_to`]).
+#[derive(Default)]
+struct PageLinks {
+    /// The resources of the page, each once.
+    ats: Vec<crate::value::ResourceRef>,
+    /// The ids of [`Self::ats`]: which reads a page answers.
+    ids: std::collections::HashSet<String>,
+    /// What links to each of the page's resources, by the type asked for (empty for every type).
+    read: std::collections::BTreeMap<
+        String,
+        std::collections::HashMap<String, Vec<crate::store::Link>>,
+    >,
+}
+
+impl Core {
+    /// The page of rows a host is about to build: the resources `ats` it shows. What links to
+    /// them is read when a row first reads it ([`Self::links_to`]), once for the page and the
+    /// type the rows ask for, and kept until the page is done ([`Self::release_links`]). A page
+    /// whose rows read no links costs the store nothing.
+    pub(crate) fn prefetch_links(&self, ats: &[crate::value::ResourceRef]) {
+        let mut page = PageLinks::default();
+        for at in ats {
+            let id = at.id_string();
+            if page.ids.insert(id) {
+                page.ats.push(at.clone());
+            }
+        }
+        *self.page_links.borrow_mut() = Some(page);
+    }
+
+    /// The page of rows is done: what it read of their links is let go, so a later read asks the
+    /// store again.
+    pub(crate) fn release_links(&self) {
+        *self.page_links.borrow_mut() = None;
+    }
+
+    /// What links to `at`, of the type `only` names when it names one: the page's, while the
+    /// host builds the rows it stands in, read in one ask for the page; else the store's own
+    /// read, for the resource alone.
+    pub(crate) fn links_to(
+        &self,
+        at: &crate::value::ResourceRef,
+        only: Option<&str>,
+    ) -> Result<Vec<crate::store::Link>, crate::store::StoreError> {
+        let id = at.id_string();
+        let asked = only.unwrap_or_default().to_owned();
+        let mut page_ats = None;
+        {
+            let page = self.page_links.borrow();
+            if let Some(page) = page.as_ref().filter(|page| page.ids.contains(&id)) {
+                if let Some(links) = page.read.get(&asked).and_then(|links| links.get(&id)) {
+                    return Ok(links.clone());
+                }
+                page_ats = Some(page.ats.clone());
+            }
+        }
+        let Some(ats) = page_ats else {
+            return match only {
+                Some(ty) => self.store.borrow().linked_by(at, ty),
+                None => self.store.borrow().linked(at),
+            };
+        };
+        let read = self.store.borrow().linked_many(&ats, only)?;
+        let answered: std::collections::HashMap<String, Vec<crate::store::Link>> = ats
+            .iter()
+            .map(crate::value::ResourceRef::id_string)
+            .zip(read)
+            .collect();
+        let answer = answered.get(&id).cloned().unwrap_or_default();
+        if let Some(page) = self.page_links.borrow_mut().as_mut() {
+            page.read.entry(asked).or_insert(answered);
+        }
+        Ok(answer)
+    }
+}
 impl Core {
     /// # Errors
     ///
@@ -522,6 +604,7 @@ impl Core {
             week_start: RefCell::new(None),
             zone_name: RefCell::new(None),
             items_built: std::cell::Cell::new(0),
+            page_links: RefCell::new(None),
             program: RefCell::new(None),
             text_search: RefCell::new(None),
             invoking_window: RefCell::new(None),

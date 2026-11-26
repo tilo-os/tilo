@@ -1505,44 +1505,146 @@ impl ResourceStore {
     /// [`tilolang_runtime::store::Store::linked`] and its `linked_by` answer, asking only the
     /// types it may find.
     fn links_to(&self, at: &ResourceRef, only: Option<&str>) -> Result<Vec<Link>, StoreError> {
-        let at = &*self.typed(at);
+        Ok(self
+            .links_to_many(std::slice::from_ref(at), only)?
+            .pop()
+            .unwrap_or_default())
+    }
+
+    /// What links to each of `ats`, in their order, of the type `only` names when it names one:
+    /// one read of the index and one read of what was made from them, answered for the page,
+    /// where [`Self::links_to`] asks each resource alone. What a list of rows reads to draw what
+    /// waits on each of them costs the page, not a pair of commands a row.
+    fn links_to_many(
+        &self,
+        ats: &[ResourceRef],
+        only: Option<&str>,
+    ) -> Result<Vec<Vec<Link>>, StoreError> {
+        let ats: Vec<ResourceRef> = ats.iter().map(|at| (*self.typed(at)).clone()).collect();
+        let mut links: Vec<Vec<Link>> = vec![Vec::new(); ats.len()];
+        // The resources asked for, by type: the types that may link to them are found once for
+        // each type rather than once for each resource. Each is named with its place in `links`.
+        let mut groups: BTreeMap<TypeId, Vec<(usize, ResourceRef)>> = BTreeMap::new();
+        for (index, at) in ats.iter().enumerate() {
+            groups
+                .entry(at.ty.clone())
+                .or_default()
+                .push((index, at.clone()));
+        }
+        for (ty, asked) in groups {
+            let Some(target) = self.inner.kinds.borrow().get(&ty).cloned() else {
+                continue;
+            };
+            self.links_by_field(&asked, &target, only, &mut links)?;
+            self.links_made_from(&asked, only, &mut links)?;
+            self.links_by_mention(&asked, only, &mut links)?;
+        }
+        // What was made from a resource stays in the order it was made, oldest first, as the
+        // store answers it; the other links order by the resource's id.
+        for links in &mut links {
+            links.sort_by(|a, b| {
+                a.how.rank().cmp(&b.how.rank()).then_with(|| {
+                    if a.how == LinkHow::CreatedFrom {
+                        std::cmp::Ordering::Equal
+                    } else {
+                        a.of.id_string().cmp(&b.of.id_string())
+                    }
+                })
+            });
+        }
+        Ok(links)
+    }
+
+    /// What the fields naming one of the asked resources link to them: one page of the index for
+    /// each kind and field, the rows of the page placed under the resource each names.
+    fn links_by_field(
+        &self,
+        asked: &[(usize, ResourceRef)],
+        target: &TypeEntry,
+        only: Option<&str>,
+        links: &mut [Vec<Link>],
+    ) -> Result<(), StoreError> {
         let of_type = |ty: &str| only.is_none_or(|only| only == ty);
-        // Each type with a field that names a resource of this one's type, asked for those
-        // naming it.
-        let Some(target) = self.inner.kinds.borrow().get(&at.ty).cloned() else {
-            return Ok(Vec::new());
+        let ids: Vec<Value> = asked.iter().map(|(_, at)| Value::Text(id_of(at))).collect();
+        // The place in `links` of the asked resource a row names.
+        let named = |value: &Value| {
+            ids.iter()
+                .position(|id| id == value)
+                .and_then(|n| asked.get(n))
+                .map(|(index, _)| *index)
         };
         let referring: Vec<(TypeId, String, String)> = {
             let kinds = self.inner.kinds.borrow();
             let mut out = Vec::new();
             for entry in kinds.types().filter(|entry| of_type(&entry.id)) {
                 for field in entry.fields.values() {
-                    if refers_to(&field.ty, &target) {
+                    if refers_to(&field.ty, target) {
                         out.push((entry.id.clone(), entry.kind.clone(), field.name.clone()));
                     }
                 }
             }
             out
         };
-        let mut links = Vec::new();
-        for (ty, kind, field) in referring {
-            let query = Query::of(kind, PAGE).filter(Filter::Is(field, Value::Text(id_of(at))));
-            for id in self.query_all(query)? {
-                if let Some(of) = ResourceRef::parse_id(&id, ty.clone()) {
-                    links.push(Link {
-                        of,
-                        how: LinkHow::Field,
-                    });
+        for (refty, kind, field) in referring {
+            let filters = ids
+                .iter()
+                .map(|id| Filter::Is(field.clone(), id.clone()))
+                .collect();
+            let mut query = Query::of(kind.clone(), PAGE).filter(Filter::Any(filters));
+            loop {
+                let page = match self.command(Command::Query(query.clone()))? {
+                    Reply::Page(page) => page,
+                    other => return Err(backend(format!("a query answered {other:?}"))),
+                };
+                let shown = !page.resources.is_empty();
+                for (id, indexed) in page.resources {
+                    let row = named(&indexed.scalar(&field));
+                    self.inner
+                        .cache
+                        .borrow_mut()
+                        .entry(id.clone())
+                        .or_insert_with(|| Some(Held::of(&kind, indexed)));
+                    if let Some(index) = row
+                        && let Some(of) = ResourceRef::parse_id(&id, refty.clone())
+                        && let Some(links) = links.get_mut(index)
+                    {
+                        links.push(Link {
+                            of,
+                            how: LinkHow::Field,
+                        });
+                    }
+                }
+                match page.next {
+                    Some(next) if shown => query.after = Some(next),
+                    _ => break,
                 }
             }
         }
-        // What an action made from it, wherever it placed them, as the changes that made them
-        // say.
-        if let Reply::Resources(made) = self.command(Command::MadeFrom { id: id_of(at) })? {
+        Ok(())
+    }
+
+    /// What an action made from the asked resources, wherever it placed them, as the changes
+    /// that made them say: one read of the page's ids.
+    fn links_made_from(
+        &self,
+        asked: &[(usize, ResourceRef)],
+        only: Option<&str>,
+        links: &mut [Vec<Link>],
+    ) -> Result<(), StoreError> {
+        let of_type = |ty: &str| only.is_none_or(|only| only == ty);
+        let ids: Vec<String> = asked.iter().map(|(_, at)| id_of(at)).collect();
+        let Reply::MadeFrom(made) = self.command(Command::MadeFrom { ids })? else {
+            return Ok(());
+        };
+        for (n, made) in made.into_iter().enumerate() {
+            let Some((index, _)) = asked.get(n) else {
+                continue;
+            };
             for (kind, id) in made {
                 if let Some(entry) = self.entry_of_kind(&kind)
                     && of_type(&entry.id)
                     && let Some(of) = ResourceRef::parse_id(&id, entry.id)
+                    && let Some(links) = links.get_mut(*index)
                 {
                     links.push(Link {
                         of,
@@ -1551,8 +1653,19 @@ impl ResourceStore {
                 }
             }
         }
-        // What mentions it in its rich text, as the index holds each text's mentions.
-        let wanted = id_of(at);
+        Ok(())
+    }
+
+    /// What mentions any of the asked resources in its rich text, as the index holds each text's
+    /// mentions: one page of the index for each kind that has a text, the rows of the page
+    /// placed under each resource they name.
+    fn links_by_mention(
+        &self,
+        asked: &[(usize, ResourceRef)],
+        only: Option<&str>,
+        links: &mut [Vec<Link>],
+    ) -> Result<(), StoreError> {
+        let of_type = |ty: &str| only.is_none_or(|only| only == ty);
         let mentioning: Vec<(TypeId, String, Vec<String>)> = {
             let kinds = self.inner.kinds.borrow();
             kinds
@@ -1569,37 +1682,64 @@ impl ResourceStore {
                 })
                 .collect()
         };
-        for (ty, kind, texts) in mentioning {
-            let names = Filter::Any(
-                texts
-                    .into_iter()
-                    .map(|text| Filter::Has(text, Value::Text(wanted.clone())))
+        for (refty, kind, texts) in mentioning {
+            let wanted = Filter::Any(
+                asked
+                    .iter()
+                    .flat_map(|(_, at)| {
+                        let at = Value::Text(id_of(at));
+                        texts
+                            .iter()
+                            .map(move |text| Filter::Has(text.clone(), at.clone()))
+                    })
                     .collect(),
             );
-            for id in self.query_all(Query::of(kind, PAGE).filter(names))? {
-                if id == wanted {
-                    continue;
+            let mut query = Query::of(kind.clone(), PAGE).filter(wanted);
+            loop {
+                let page = match self.command(Command::Query(query.clone()))? {
+                    Reply::Page(page) => page,
+                    other => return Err(backend(format!("a query answered {other:?}"))),
+                };
+                let shown = !page.resources.is_empty();
+                for (id, indexed) in page.resources {
+                    // A row naming several of the asked resources links to each of them.
+                    let names: Vec<usize> = asked
+                        .iter()
+                        .filter(|(_, at)| id != id_of(at))
+                        .filter(|(_, at)| {
+                            let at = Value::Text(id_of(at));
+                            texts.iter().any(|text| {
+                                matches!(
+                                    indexed.fields.get(text),
+                                    Some(Cell::Set(members)) if members.contains(&at)
+                                )
+                            })
+                        })
+                        .map(|(index, _)| *index)
+                        .collect();
+                    self.inner
+                        .cache
+                        .borrow_mut()
+                        .entry(id.clone())
+                        .or_insert_with(|| Some(Held::of(&kind, indexed)));
+                    for index in names {
+                        if let Some(of) = ResourceRef::parse_id(&id, refty.clone())
+                            && let Some(links) = links.get_mut(index)
+                        {
+                            links.push(Link {
+                                of: of.clone(),
+                                how: LinkHow::Mention,
+                            });
+                        }
+                    }
                 }
-                if let Some(of) = ResourceRef::parse_id(&id, ty.clone()) {
-                    links.push(Link {
-                        of,
-                        how: LinkHow::Mention,
-                    });
+                match page.next {
+                    Some(next) if shown => query.after = Some(next),
+                    _ => break,
                 }
             }
         }
-        // What was made from it stays in the order it was made, oldest first, as the store
-        // answers it; the other links order by the resource's id.
-        links.sort_by(|a, b| {
-            a.how.rank().cmp(&b.how.rank()).then_with(|| {
-                if a.how == LinkHow::CreatedFrom {
-                    std::cmp::Ordering::Equal
-                } else {
-                    a.of.id_string().cmp(&b.of.id_string())
-                }
-            })
-        });
-        Ok(links)
+        Ok(())
     }
 
     /// The fields `fields` of every resource of the type `ty`, each by its id as [`Store::read`] reads it,
@@ -4085,9 +4225,13 @@ impl ResourceStore {
     /// The versions that made what was made from `at`, as changes of `at` of none of its
     /// fields, each the version of what it made.
     fn made_from(&self, at: &ResourceRef) -> Result<Vec<Version>, StoreError> {
-        let Reply::Resources(made) = self.command(Command::MadeFrom { id: id_of(at) })? else {
+        let Reply::MadeFrom(mut made) = self.command(Command::MadeFrom {
+            ids: vec![id_of(at)],
+        })?
+        else {
             return Ok(Vec::new());
         };
+        let made = made.pop().unwrap_or_default();
         let mut out = Vec::with_capacity(made.len());
         for (kind, id) in made {
             let Some(entry) = self.entry_of_kind(&kind) else {
@@ -5935,6 +6079,14 @@ impl Store for ResourceStore {
 
     fn linked_by(&self, at: &ResourceRef, ty: &str) -> Result<Vec<Link>, StoreError> {
         self.links_to(at, Some(ty))
+    }
+
+    fn linked_many(
+        &self,
+        ats: &[ResourceRef],
+        only: Option<&str>,
+    ) -> Result<Vec<Vec<Link>>, StoreError> {
+        self.links_to_many(ats, only)
     }
 
     fn history(&self, doc: &DocId) -> Result<Vec<ChangeNote>, StoreError> {

@@ -384,6 +384,42 @@ impl Virtual {
         self.template.coll_row_id(coll, self.open.as_deref()?)
     }
 
+    /// The resources the rows `range` show, each once: what a host reads their links for, in one
+    /// read, before it builds them.
+    pub(super) fn refs(
+        &self,
+        core: &Core,
+        range: std::ops::Range<usize>,
+    ) -> Vec<crate::value::ResourceRef> {
+        let mut ats: Vec<crate::value::ResourceRef> = Vec::new();
+        for index in range {
+            let Some(Value::Ref(item)) = self.rows.item(core, index) else {
+                continue;
+            };
+            if !ats
+                .iter()
+                .any(|seen| seen.id_string() == item.target.id_string())
+            {
+                ats.push(item.target.as_ref().clone());
+            }
+        }
+        ats
+    }
+
+    /// The items of the rows built for the boundaries in `which`, each row's once: what the reads
+    /// that rerender those rows need of what links to them, in one page.
+    pub(super) fn refs_of(
+        &self,
+        core: &Core,
+        which: &std::collections::BTreeSet<BoundId>,
+    ) -> Vec<Value> {
+        self.built
+            .iter()
+            .filter(|(_, bound)| which.contains(bound))
+            .filter_map(|(index, _)| self.rows.item(core, *index))
+            .collect()
+    }
+
     /// The items of the rows built now (the visible rows and the overscan): what the window
     /// shows of this list.
     pub(super) fn shown_items(&self, core: &Core) -> Vec<Value> {

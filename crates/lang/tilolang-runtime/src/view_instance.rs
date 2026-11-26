@@ -495,6 +495,19 @@ impl ViewInstance {
         self.live.row_key(list, index)
     }
 
+    /// The page of rows the host is about to build: the resources `range` of `list` shows. What
+    /// links to them is read once for the page, when a row first reads it ([`Self::row`]), not
+    /// once for each row.
+    pub fn prefetch_links(&mut self, list: &str, range: std::ops::Range<usize>) {
+        self.live.prefetch_links(&self.core, list, range);
+    }
+
+    /// The page of rows is done: what it read of their links is let go, so a later read asks the
+    /// store again.
+    pub fn release_links(&mut self) {
+        self.core.release_links();
+    }
+
     /// Row `index` of `list`, rendered now if it was not shown before: what a virtual list
     /// asks for each visible row (plus overscan). Later changes to what the row read come as
     /// patches until the row is hidden again.

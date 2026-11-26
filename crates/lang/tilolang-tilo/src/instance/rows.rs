@@ -135,6 +135,9 @@ impl ListRows {
             // changes them.
             view.open_row(&self.list, open);
             view.menu_row(&self.list, menu);
+            // The page of rows about to be built: what links to them is read once for the page
+            // when a row first reads it, not once for each row.
+            view.prefetch_links(&self.list, range.clone());
             for patch in view.hide_rows(&self.list, range.clone()) {
                 if let Patch::Remove { parent, .. } = patch
                     && let Some(row) = parent.last()
@@ -159,6 +162,7 @@ impl ListRows {
                     Err(error) => tracing::warn!(%error, "a row of the list did not render"),
                 }
             }
+            view.release_links();
         }
         // How many rows the list has, as reading them left it: a listing that sizes itself
         // before its pages are read says the most it can hold until a row past its end is read,

@@ -321,13 +321,7 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
         Command::Removed { kind, parent } => {
             Reply::Ids(store.removed(kind, parent.as_deref(), may_read))
         }
-        Command::MadeFrom { id } => Reply::Resources(
-            store
-                .made_from(id)
-                .into_iter()
-                .filter(|(kind, id)| store.get(kind, id, may_read).is_some())
-                .collect(),
-        ),
+        Command::MadeFrom { ids } => made_from_reply(store, ids, may_read),
         Command::Newest { within, limit } => {
             let (versions, more) = store.newest(within, *limit, may_read);
             Reply::Newest { versions, more }
@@ -369,6 +363,22 @@ pub fn read(store: &Store, command: &Command, may_read: &dyn Fn(&str) -> bool) -
         | Command::Steps { .. }
         | Command::Records => return None,
     })
+}
+
+/// What was made from each of `ids`, in their order, of only the resources `may_read` admits: the
+/// answer [`Command::MadeFrom`] reads.
+fn made_from_reply(store: &Store, ids: &[String], may_read: &dyn Fn(&str) -> bool) -> Reply {
+    Reply::MadeFrom(
+        ids.iter()
+            .map(|id| {
+                store
+                    .made_from(id)
+                    .into_iter()
+                    .filter(|(kind, id)| store.get(kind, id, may_read).is_some())
+                    .collect()
+            })
+            .collect(),
+    )
 }
 
 /// The page `query` finds, each resource cut down to `fields`.

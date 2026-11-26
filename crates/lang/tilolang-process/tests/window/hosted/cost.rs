@@ -1465,6 +1465,130 @@ fn checking_tasks_one_after_another_keeps_the_list_rendering() {
     }
 }
 
+/// What a place switch read of the store: the rows the place showed, the page's reads of what
+/// links to them (the index query and the read of what was made from the page, and every read
+/// sent), and the rows' own reads of their history.
+#[derive(Clone, Copy, Debug)]
+struct Switched {
+    rows: usize,
+    /// Index queries for what links to the page of rows (the suggestions waiting on each).
+    link_queries: usize,
+    /// Reads of what was made from the page of rows: one per page, whatever rows it holds.
+    page_made_from: usize,
+    /// Every read of what was made from a row alone: the row's history, read as its mark.
+    row_made_from: usize,
+    commands: usize,
+}
+
+/// Choosing Todos from the Inbox over `bus`'s workspace — a place whose rows the window has not
+/// built yet — in a window `viewport` tall when one is given, and what the window read of the
+/// store for it.
+fn place_switch_reads(
+    bus: &Rc<tilolang_process::testing::Bus>,
+    viewport: Option<(u32, u32)>,
+) -> Switched {
+    let route = RouteSpec::app(TASKS, uuid::Uuid::new_v4());
+    let mut session = match viewport {
+        None => opened_at_rest_in(bus, &route),
+        Some(viewport) => {
+            let mut session =
+                Session::on_bus_window(bus, &route, spec_of(&route, "ada"), |hosted| {
+                    Window::in_harness_sized(hosted, viewport)
+                });
+            session.settle();
+            show_inbox(&mut session);
+            session
+        }
+    };
+    session.settle();
+    session.forget_sent();
+    let (x, y) = place_at(&mut session, "Todos");
+    session.window.click_at(x, y);
+    session.settle();
+    assert!(
+        chosen(&mut session, "Todos"),
+        "the sidebar shows Todos chosen"
+    );
+    let rows = session.titles().len();
+    let sent = session.sent.borrow();
+    let mut switched = Switched {
+        rows,
+        link_queries: 0,
+        page_made_from: 0,
+        row_made_from: 0,
+        commands: 0,
+    };
+    for request in sent.iter() {
+        let CollabRequest::ResourceCommand { command, .. } = request else {
+            continue;
+        };
+        switched.commands = switched.commands.saturating_add(1);
+        let Ok(command) = serde_json::from_slice::<collab_types::store::wire::Command>(command)
+        else {
+            continue;
+        };
+        match command {
+            // The index query for what waits on the page's rows: the host's invocation
+            // records, which name the resource they ask about.
+            collab_types::store::wire::Command::Query(query)
+                if query.kind.ends_with("Invocation") =>
+            {
+                switched.link_queries = switched.link_queries.saturating_add(1);
+            }
+            collab_types::store::wire::Command::MadeFrom { ids } if ids.len() > 1 => {
+                switched.page_made_from = switched.page_made_from.saturating_add(1);
+            }
+            collab_types::store::wire::Command::MadeFrom { .. } => {
+                switched.row_made_from = switched.row_made_from.saturating_add(1);
+            }
+            _ => {}
+        }
+    }
+    switched
+}
+
+/// A place switch reads what waits on the rows it shows in one read for the page, not a pair of
+/// reads a row: the same two reads over a workspace ten times the size and a window showing twice
+/// the rows.
+#[test]
+fn switching_places_reads_the_page_of_rows_not_a_row() {
+    let _motion = ui::motion::testing::settled();
+    let short = place_switch_reads(&seeded_tasks(SMALL), None);
+    let tall = place_switch_reads(&seeded_tasks(SEEDED), Some((1280, 1600)));
+    eprintln!(
+        "switch place: {} rows read {short:?}; {} rows read {tall:?}",
+        short.rows, tall.rows
+    );
+    assert!(
+        tall.rows > short.rows.saturating_add(8),
+        "the taller window shows more rows to read for: {short:?}, {tall:?}"
+    );
+    // A row reads what waits on it through the page: one query for the page's rows and one read
+    // of what was made from them, whether the page holds 26 rows or 81, and whether the
+    // workspace holds a thousand tasks or ten thousand. Reading each row alone would make that
+    // a pair of reads a row.
+    for switched in [short, tall] {
+        assert!(
+            switched.rows > 8,
+            "the place shows rows to read for: {switched:?}"
+        );
+        assert!(
+            switched.link_queries <= 2,
+            "a place switch over {} rows read what links to them in {} index queries, not the \
+             page's one: {switched:?}",
+            switched.rows,
+            switched.link_queries
+        );
+        assert!(
+            switched.page_made_from <= 2,
+            "a place switch over {} rows read what was made from them in {} reads, not the page's \
+             one: {switched:?}",
+            switched.rows,
+            switched.page_made_from
+        );
+    }
+}
+
 /// The boundaries choosing `place` runs.
 fn choose(session: &mut Session, place: &str) -> u64 {
     let (x, y) = place_at(session, place);

@@ -1441,11 +1441,45 @@ impl Live {
     pub fn poll(&mut self, core: &Rc<Core>) -> Result<Vec<Patch>, RuntimeError> {
         let mut patches = Vec::new();
         self.follow_collections(core, &mut patches)?;
+        // The rows about to be rendered again read what links to them once for their page, not
+        // once for each row: a place switch marks every row it shows stale.
+        let page = !self.dirty.is_empty();
+        if page {
+            self.prefetch_dirty_rows(core);
+        }
         while let Some(id) = self.next_dirty() {
-            self.rerender(core, id, &mut patches)?;
+            if let Err(error) = self.rerender(core, id, &mut patches) {
+                if page {
+                    core.release_links();
+                }
+                return Err(error);
+            }
+        }
+        if page {
+            core.release_links();
         }
         self.mine_items.clear();
         Ok(patches)
+    }
+
+    /// The page the stale rows of virtual lists read what links to them from: the resources those
+    /// rows show, read in one ask when a row first needs them.
+    fn prefetch_dirty_rows(&self, core: &Core) {
+        let mut ats: Vec<crate::value::ResourceRef> = Vec::new();
+        for rows in self.lists.values() {
+            for item in rows.refs_of(core, &self.dirty) {
+                let crate::value::Value::Ref(item) = item else {
+                    continue;
+                };
+                if !ats
+                    .iter()
+                    .any(|seen| seen.id_string() == item.target.id_string())
+                {
+                    ats.push(item.target.as_ref().clone());
+                }
+            }
+        }
+        core.prefetch_links(&ats);
     }
 
     /// The stale boundary to re-run next: the shallowest rendered one. A stale row that is not
@@ -1982,6 +2016,18 @@ impl Live {
         self.shown.entry(list.to_owned()).or_default().insert(id);
         self.release(core);
         Ok(Some(key))
+    }
+
+    /// The page of rows the host is about to build: the resources the rows `range` of `list`
+    /// show. What links to them is read once for the page when a row first reads it, not once
+    /// for each row.
+    pub fn prefetch_links(&self, core: &Core, list: &str, range: std::ops::Range<usize>) {
+        let ats = self
+            .lists
+            .get(list)
+            .map(|rows| rows.refs(core, range))
+            .unwrap_or_default();
+        core.prefetch_links(&ats);
     }
 
     /// Forget the rendered rows of `list` outside `keep`: they render again when shown.

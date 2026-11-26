@@ -2197,9 +2197,7 @@ impl Core {
         }
         self.read_links_of(at);
         let links = self
-            .store
-            .borrow()
-            .linked(at)
+            .links_to(at, None)
             .map_err(|e| crate::engine::HostFail::Trap(e.to_string()))?;
         Ok(Value::List(
             links
