@@ -1050,17 +1050,19 @@ fn said<T: Serialize>(answer: &T) -> Result<Value, Failure> {
     serde_json::to_value(answer).map_err(|error| Box::new(refused(error.to_string())))
 }
 
-/// A request's argument as an object: empty where it names none.
-pub(crate) fn argument_value(argument: Option<&str>) -> Value {
-    argument
-        .filter(|argument| !argument.trim().is_empty())
-        .and_then(|argument| {
-            tilo_failure::ignored!(
-                "an argument that does not read names nothing, which every action refuses as invalid in its own words",
-                serde_json::from_str(argument).ok()
-            )
-        })
-        .unwrap_or_else(|| Value::Object(Map::new()))
+/// A request's argument as an object: the named arguments a caller sent as they are, a text
+/// read as one, and empty where it names none.
+pub(crate) fn argument_value(argument: &tilo_actions::remote::InvokeArgument) -> Value {
+    use tilo_actions::remote::InvokeArgument;
+    match argument {
+        InvokeArgument::Json(named) => Value::Object(named.clone()),
+        InvokeArgument::Text(text) if !text.trim().is_empty() => tilo_failure::ignored!(
+            "an argument that does not read names nothing, which every action refuses as invalid in its own words",
+            serde_json::from_str(text).ok()
+        )
+        .unwrap_or_else(|| Value::Object(Map::new())),
+        InvokeArgument::Text(_) | InvokeArgument::None => Value::Object(Map::new()),
+    }
 }
 
 impl WorkspaceEvents {
@@ -1111,8 +1113,7 @@ impl tilo_actions::remote::Admits for WorkspaceEvents {
             .ok_or("the events were asked in no workspace of this device")?
             .to_owned();
         let action = request.target.address.action.clone();
-        let slot = request.argument.to_slot();
-        let argument = argument_value(slot.as_deref());
+        let argument = argument_value(&request.argument);
         runtime.spawn(async move {
             let answered = events
                 .answer(&workspace, &asker, &action, argument)

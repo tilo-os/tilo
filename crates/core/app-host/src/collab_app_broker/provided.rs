@@ -1498,6 +1498,10 @@ mod identity_admin_tests {
                 Some(tree.shared().authority()),
                 crate::services::ProcessServices {
                     providers: Some(providers(host.clone())),
+                    agents: Some(Arc::new(
+                        crate::test_support::KeptAgents::default()
+                            .listing(&workspace_id, ("planner", owner.as_str())),
+                    )),
                     ..Default::default()
                 },
             );
@@ -1540,7 +1544,12 @@ mod identity_admin_tests {
             let elsewhere = Caller::delegated_agent("planner", person, grant.device_public_key)
                 .in_workspace(workspace_id.clone())
                 .on_roster(1, person);
-            let here = elsewhere.clone().in_engine_turn_here();
+            // The turn's calls name its session, and go while its run does.
+            let here = elsewhere
+                .clone()
+                .in_agent_session("agent-session:host-turn")
+                .in_new_execution()
+                .in_engine_turn_here();
             let unfound = invoked(&state, &elsewhere, &signed(device_tickets::IDENTITIES));
             assert!(
                 matches!(unfound, Err(ActionCallError::UnknownAction)),
@@ -1567,6 +1576,11 @@ mod identity_admin_tests {
                         && actor.agent_id() == Some("planner")),
                 "the step is the agent's own, not its person's: {started:?}"
             );
+            // Once the turn ended, a call in its name is refused, and starts nothing.
+            here.execution_lease().unwrap().close();
+            let after = invoked(&state, &here, &signed(device_tickets::IDENTITIES));
+            assert!(after.is_err(), "a call of a turn that ended is refused: {after:?}");
+            assert_eq!(host.started.lock().unwrap().len(), 1, "nothing more started");
         }
 
         phase a_host_service_is_listed_when_only_publishers_are_asked;

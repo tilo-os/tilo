@@ -1411,6 +1411,7 @@ impl ServerAgents {
         // [`going::Going`] holds.
         let mut reply = scope.reply(&turn);
         reply.claim = Some((claim, going.stop_flag()));
+        let _run = TurnRun(reply.caller.execution_lease());
         Box::pin(self.answer_by_model(workspace, (scope, turn, reply), going)).await
     }
 
@@ -1790,6 +1791,18 @@ impl TurnUsage {
 /// How a turn ended.
 pub use tilo_agent_turn::Outcome;
 
+/// A turn's run, which ends with the turn however the turn ends: a call its agent makes after
+/// that, in that turn's name, is refused.
+struct TurnRun(Option<tilo_actions::remote::ExecutionLease>);
+
+impl Drop for TurnRun {
+    fn drop(&mut self) {
+        if let Some(run) = &self.0 {
+            run.close();
+        }
+    }
+}
+
 /// Whom a turn's agent acts for in a workspace, and through what: the same for every ask the
 /// turn goes on with.
 struct TurnScope {
@@ -1824,12 +1837,15 @@ impl TurnScope {
         );
         let cause =
             tilo_action_policy::turn::Turn::new(turn.conversation.clone(), turn.cause.clone());
+        // The turn's own run: its calls are admitted while it goes, and refused once it ended
+        // ([`TurnRun`]).
         let caller = self
             .agent
             .clone()
             .in_agent_session(&session)
             .asked(&turn.asked)
-            .on_roster_turn(cause);
+            .on_roster_turn(cause)
+            .in_new_execution();
         Reply {
             provider: self.provider.clone(),
             caller,

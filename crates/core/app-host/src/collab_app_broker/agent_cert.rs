@@ -14,12 +14,39 @@ impl AppBrokerState {
         caller: Option<&tilo_actions::remote::Caller>,
         workspace: &str,
     ) -> Option<Result<crate::services::GoingSession, String>> {
-        let acting = caller?.acting();
+        let caller = caller?;
+        let acting = caller.acting();
         let (session, agent) = acting
             .agent_session
             .as_ref()
             .zip(acting.member_id().filter(|member| member.is_agent()))?;
+        // A turn this device's agent engine runs is a session the engine holds, not a connection
+        // the person admitted: it goes while the turn's run does, which the engine ends with the
+        // turn.
+        if caller.is_engine_turn_here() {
+            return Some(self.lists_agent(workspace, agent).and_then(|()| {
+                caller
+                    .execution_is_live()
+                    .then(crate::services::GoingSession::default)
+                    .ok_or_else(|| "the turn the agent answers is over".to_owned())
+            }));
+        }
         Some(self.turn_session_goes(workspace, agent, session.as_str()))
+    }
+
+    /// That the workspace lists `agent`, of its person, as active.
+    fn lists_agent(
+        &self,
+        workspace: &str,
+        agent: &tilo_action_policy::MemberId,
+    ) -> Result<(), String> {
+        self.services
+            .agents
+            .as_deref()
+            .ok_or("this host reads no workspace's agents")?
+            .lists(workspace, agent)
+            .then_some(())
+            .ok_or_else(|| format!("the workspace lists no agent {}", agent.id()))
     }
 
     /// The session `session` of `agent`, while it answers a turn in `workspace`: the workspace
@@ -30,13 +57,7 @@ impl AppBrokerState {
         agent: &tilo_action_policy::MemberId,
         session: &str,
     ) -> Result<crate::services::GoingSession, String> {
-        self.services
-            .agents
-            .as_deref()
-            .ok_or("this host reads no workspace's agents")?
-            .lists(workspace, agent)
-            .then_some(())
-            .ok_or_else(|| format!("the workspace lists no agent {}", agent.id()))?;
+        self.lists_agent(workspace, agent)?;
         self.services
             .agent_sessions
             .as_deref()
