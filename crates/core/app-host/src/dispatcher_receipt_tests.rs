@@ -272,14 +272,10 @@ async fn an_authenticated_dispatch_without_a_host_signer_is_refused() {
             let env = Environment::new_unserved();
             let rig = Rig::new(&env).await;
             publish_receipt_read(&rig).await;
-            let paths = tilo_identity::provisioning::collaboration_identity_paths();
-            std::fs::remove_file(paths.device_privkey).unwrap();
             let before = receipt_barriers(&rig);
             let receipt = ask_own_read(&rig, own_read("unsigned")).await;
-            assert!(
-                format!("{receipt:?}").contains("action_evidence_unavailable"),
-                "{receipt:?}"
-            );
+            let refusal = format!("{receipt:?}");
+            assert!(refusal.contains("action_evidence_unavailable"), "{refusal}");
             assert_eq!(
                 receipt_barriers(&rig),
                 before,
@@ -480,12 +476,12 @@ async fn dispatcher_retained_evidence_survives_uncertain_recovery_and_rejects_in
 async fn dispatcher_terminal_without_signer_retains_outcome_without_fabricating_receipt() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new_unserved();
+            let env = Environment::new();
             let rig = Rig::new(&env).await;
             publish_receipt_read(&rig).await;
             let (wire, admitted) = dispatch_receipt_read(&rig).await;
-            let paths = tilo_identity::provisioning::collaboration_identity_paths();
-            std::fs::remove_file(paths.device_privkey).unwrap();
+            // The host lets go of the workspace while its dispatch is in flight.
+            tilo_invocation_journal::closed(&env.route.cluster_id);
             let before = receipt_barriers(&rig);
             rig.worker
                 .handle

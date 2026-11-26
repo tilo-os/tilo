@@ -14,8 +14,6 @@ use std::sync::Arc;
 use std::sync::LazyLock;
 
 use collab_types::signer::DeviceSigner;
-#[cfg(any(test, feature = "test-support"))]
-use parking_lot::Mutex;
 #[cfg(not(target_family = "wasm"))]
 use parking_lot::RwLock;
 use tilo_user_identity::DeviceCert;
@@ -26,11 +24,6 @@ use tilo_user_identity::DeviceCert;
 type SharedHost = Arc<HostIdentity>;
 #[cfg(target_family = "wasm")]
 type SharedHost = Rc<HostIdentity>;
-
-/// One-shot fault injection. Admission signs on a blocking thread, so a test
-/// installs the hook from any thread.
-#[cfg(any(test, feature = "test-support"))]
-pub static BEFORE_SIGN: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
 
 /// What this process signs as: the certificate its device holds and the key it took, named by the
 /// host that serves the calls.
@@ -152,13 +145,6 @@ pub fn serves_a_signer() -> bool {
 /// No host named what signs here, the certificate is invalid at the clock, or its person's
 /// devices record took the device back or confined it to another workspace.
 pub fn sign(workspace: &str, bytes: &[u8]) -> Result<(DeviceCert, [u8; 64]), String> {
-    #[cfg(any(test, feature = "test-support"))]
-    {
-        let hook = BEFORE_SIGN.lock().take();
-        if let Some(hook) = hook {
-            hook();
-        }
-    }
     let now = tilo_clock::try_unix_now_ns().ok_or("receipt signing clock is unavailable")?;
     let host = named_host().ok_or("no host names what signs this process's receipts")?;
     if !host.has_opened(workspace) {

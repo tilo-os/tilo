@@ -589,11 +589,6 @@ mod tests {
                     f.authority
                         .revoked
                         .store(true, std::sync::atomic::Ordering::SeqCst);
-                } else {
-                    std::fs::remove_file(
-                        tilo_identity::provisioning::collaboration_identity_paths().device_privkey,
-                    )
-                    .unwrap();
                 }
                 let asked = request(&invocation(SETTINGS));
                 assert!(f.invoke(&asked).is_err());

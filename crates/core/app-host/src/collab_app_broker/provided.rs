@@ -553,16 +553,14 @@ impl AppBrokerState {
             return Err(abandon(ActionCallError::NotPermitted));
         };
         let argument = request.argument.to_slot();
-        let Some(descriptor) =
-            described.or_else(|| {
-                self.services.providers.as_ref()?.descriptor(
-                    registered,
-                    caller,
-                    &request.target.address,
-                    argument.as_deref(),
-                )
-            })
-        else {
+        let Some(descriptor) = described.or_else(|| {
+            self.services.providers.as_ref()?.descriptor(
+                registered,
+                caller,
+                &request.target.address,
+                argument.as_deref(),
+            )
+        }) else {
             // Its listing has not answered yet: asked again once it does, nothing reserved.
             if let Ok(mut log) = self.remote_invocations.lock() {
                 log.abandon(&request.invocation);
@@ -1893,11 +1891,6 @@ mod identity_admin_tests {
                     f.authority
                         .revoked
                         .store(true, std::sync::atomic::Ordering::SeqCst);
-                } else {
-                    std::fs::remove_file(
-                        tilo_identity::provisioning::collaboration_identity_paths().device_privkey,
-                    )
-                    .unwrap();
                 }
                 let asked = request(device_tickets::REMOVE_IDENTITY, Some(crate::collab_app_broker::person_approved("workspace", tilo_actions::InvocationId::new())));
                 assert!(f.invoke(&asked).is_err());

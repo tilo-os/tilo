@@ -70,16 +70,11 @@ mod durable_local_matrix {
             reason = "the thread-bound identity guard stays separate from the Send broker fixture"
         )]
         fn new() -> ProvisionedEnvironment {
-            Self::with_owner_initializer(crate::test_owner::SessionOwner::initialize)
+            Self::with_owner_initializer_served(crate::test_owner::SessionOwner::initialize, true)
         }
         /// An environment whose host opened none of its workspaces: its calls sign nothing.
         fn new_unserved() -> ProvisionedEnvironment {
             Self::with_owner_initializer_served(crate::test_owner::SessionOwner::initialize, false)
-        }
-        fn with_owner_initializer(
-            initialize: impl FnOnce(&std::path::Path) -> Result<crate::test_owner::SessionOwner, String>,
-        ) -> ProvisionedEnvironment {
-            Self::with_owner_initializer_served(initialize, true)
         }
         fn with_owner_initializer_served(
             initialize: impl FnOnce(&std::path::Path) -> Result<crate::test_owner::SessionOwner, String>,
@@ -204,6 +199,8 @@ mod durable_local_matrix {
         }
     }
     struct Rig {
+        /// Held as a session holds it: the broker's own reference to it is weak.
+        fanout: Arc<FanoutState>,
         state: Arc<AppBrokerState>,
         directories: Rc<LocalActionDirectoryRegistry>,
         worker: Connection,
@@ -263,6 +260,8 @@ mod durable_local_matrix {
                         .is_ok()
                 );
             }
+            fanout.attach_app_broker(Arc::clone(&state));
+            assert!(fanout.app_broker().is_some(), "the fanout holds its broker");
             state
                 .invocation_host()
                 .expect("actual broker journal available after normal stop/open");
@@ -287,6 +286,7 @@ mod durable_local_matrix {
                 }
             });
             Self {
+                fanout,
                 state,
                 directories,
                 worker,
@@ -343,6 +343,10 @@ mod durable_local_matrix {
             let _ = (&mut self.worker.server).await;
             let _ = (&mut self.worker.client).await;
             self.state.stop();
+            assert!(
+                self.fanout.app_broker().is_none(),
+                "a stopped broker answers no ask"
+            );
         }
         /// Stop this broker and open the host's journal again in a new one.
         async fn restarted(self, env: &Environment) -> Self {

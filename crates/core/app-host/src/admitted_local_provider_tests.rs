@@ -809,6 +809,30 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
         .await;
 }
 
+/// A device whose first signature waits for the test's UI thread: a ledger held across signing
+/// would deadlock that thread.
+struct HeldSigner(
+    SigningKey,
+    std::sync::mpsc::Sender<()>,
+    std::sync::Mutex<Option<std::sync::mpsc::Receiver<()>>>,
+);
+
+impl collab_types::signer::DeviceSigner for HeldSigner {
+    fn device_public_key(&self) -> [u8; 32] {
+        self.0.verifying_key().to_bytes()
+    }
+    fn sign(&self, message: Vec<u8>) -> collab_types::signer::SignFuture<'_> {
+        if let Some(proceed) = self.2.lock().unwrap().take() {
+            let _ = self.1.send(());
+            let _ = proceed.recv();
+        }
+        Box::pin(std::future::ready(Ok(ed25519_dalek::Signer::sign(
+            &self.0, &message,
+        )
+        .to_bytes())))
+    }
+}
+
 /// The real signer waits for a separate UI thread to perform its ordinary
 /// lookup, cancellation and enqueue calls. A log held across signing would
 /// deadlock that thread before it can acknowledge the check.
@@ -840,50 +864,53 @@ async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
                 "failed admission must abandon its UUID reservation"
             );
             let fresh = local_host_request(false);
-            let state = rig.state.clone();
-            let ui_caller = caller.clone();
-            let ui_request = request.clone();
-            let ui_fresh = fresh.clone();
-            let (send, receive) = std::sync::mpsc::channel();
-            let (done, completed) = std::sync::mpsc::channel();
-            let ui = std::thread::spawn(move || {
-                let facade =
-                    crate::collab_broker::AppActionBroker::from_state_for_test(state.clone());
-                let host = facade
-                    .certified_local_action_provider(&ui_caller, &evidence, false)
-                    .unwrap();
-                receive.recv().unwrap();
-                assert!(
-                    state
-                        .remote_job(&ui_caller, &ui_request.invocation)
-                        .is_none()
-                );
-                assert!(matches!(
-                    host.cancel(&ui_caller, &ui_request.invocation).poll_ready(),
-                    tilo_actions::remote::PendingPoll::Ready(Err(
-                        tilo_actions::remote::ActionCallError::UnknownInvocation
-                    ))
-                ));
-                // Keep both pending answers alive: the duplicate must reuse the
-                // eventual job; the fresh UUID must enqueue without waiting.
-                let retry = host.invoke(&ui_caller, ui_request);
-                let next = host.invoke(&ui_caller, ui_fresh);
-                done.send((retry, next)).unwrap();
-            });
+            let (signing, signing_started) = std::sync::mpsc::channel();
+            let (proceed, may_sign) = std::sync::mpsc::channel();
             let (answers, queued) = std::sync::mpsc::channel();
-            *tilo_invocation_journal::BEFORE_SIGN.lock() = Some(Box::new(move || {
-                send.send(()).unwrap();
-                let pending = tilo_test_env::recv(
-                    "UI lookup/cancel/enqueue to finish while signing is stalled",
-                    &completed,
-                );
-                answers.send(pending).unwrap();
-            }));
+            tilo_invocation_journal::serve_as(
+                env.cert.clone(),
+                Arc::new(HeldSigner(
+                    env.key.clone(),
+                    signing,
+                    std::sync::Mutex::new(Some(may_sign)),
+                )),
+            );
+            tilo_invocation_journal::opened(&env.route.cluster_id);
+            let ui = {
+                let state = rig.state.clone();
+                let (ui_caller, ui_request, ui_fresh) =
+                    (caller.clone(), request.clone(), fresh.clone());
+                std::thread::spawn(move || {
+                    let facade =
+                        crate::collab_broker::AppActionBroker::from_state_for_test(state.clone());
+                    let host = facade
+                        .certified_local_action_provider(&ui_caller, &evidence, false)
+                        .unwrap();
+                    signing_started.recv().unwrap();
+                    assert!(
+                        state
+                            .remote_job(&ui_caller, &ui_request.invocation)
+                            .is_none()
+                    );
+                    assert!(matches!(
+                        host.cancel(&ui_caller, &ui_request.invocation).poll_ready(),
+                        tilo_actions::remote::PendingPoll::Ready(Err(
+                            tilo_actions::remote::ActionCallError::UnknownInvocation
+                        ))
+                    ));
+                    // Keep both pending answers alive: the duplicate must reuse the
+                    // eventual job; the fresh UUID must enqueue without waiting.
+                    let retry = host.invoke(&ui_caller, ui_request);
+                    let next = host.invoke(&ui_caller, ui_fresh);
+                    answers.send((retry, next)).unwrap();
+                    proceed.send(()).unwrap();
+                })
+            };
             let original = local_host_answer(host.invoke(&caller, request.clone()))
                 .await
                 .unwrap();
-            let (retry, next) = queued.recv().unwrap();
             ui.join().unwrap();
+            let (retry, next) = queued.recv().unwrap();
             // The duplicate was enqueued while the first admission was still
             // signing: the broker may tell it to ask again, and asking again
             // then answers with the same invocation.
