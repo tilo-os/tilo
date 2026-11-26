@@ -4,7 +4,8 @@
 
 #![allow(
     clippy::unwrap_used,
-    reason = "test fixture: a failure is the assertion"
+    clippy::disallowed_methods,
+    reason = "test fixture: a failure is the assertion, and the probe paints through the widget contract"
 )]
 
 use super::Button;
@@ -20,7 +21,7 @@ struct Sends {
 const SEND_OPERATION: &str = "fixture.send";
 
 /// The fixture, its button named `go`: `sent` runs only when the action is admitted.
-pub(crate) fn sends(sent: impl FnMut() + 'static) -> tilo_ui_base::widget::Element {
+pub fn sends(sent: impl FnMut() + 'static) -> tilo_ui_base::widget::Element {
     sends_through(sent, |binding| {
         Box::new(Button::new("go", "Send").on_action(binding))
     })
@@ -28,7 +29,7 @@ pub(crate) fn sends(sent: impl FnMut() + 'static) -> tilo_ui_base::widget::Eleme
 
 /// The fixture with the control `control` makes over the send action in its button's place: any
 /// control a person presses to send, whatever input it takes (the action has no parameters).
-pub(crate) fn sends_through<I: 'static>(
+pub fn sends_through<I: 'static>(
     sent: impl FnMut() + 'static,
     control: impl FnOnce(tilo_actions::ActionBinding<I>) -> tilo_ui_base::widget::Element,
 ) -> tilo_ui_base::widget::Element {

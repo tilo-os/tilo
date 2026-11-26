@@ -1,9 +1,38 @@
 //! The controls a finger reaches: a station of a stepper, a link's line, a shortcut's keycaps — each as
 //! large as the input the host has.
 
-use super::*;
+use std::cell::*;
+use std::collections::*;
+use std::path::*;
+use std::rc::*;
+use std::sync::atomic::*;
+use std::sync::*;
+use std::time::*;
+use tilo_ui::app::driver::Driver;
+use tilo_ui::headless::*;
+use tilo_ui::kurbo::*;
+use tilo_ui::retained_present::*;
+use tilo_ui::testing::*;
+use tilo_ui::vello::*;
+use tilo_ui::widget::*;
+use tilo_ui::widget::{Autocomplete, Column, Link, ShortcutRecorder, Stepper};
+use tilo_ui_base::a11y::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::i18n::*;
+use tilo_ui_base::icons::*;
 use tilo_ui_base::interaction::InteractionEnvironment;
+use tilo_ui_base::interaction::*;
+use tilo_ui_base::paint::*;
+use tilo_ui_base::presence::*;
+use tilo_ui_base::synthetic_input::*;
+use tilo_ui_base::text_selection::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::*;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::*;
 use tilo_ui_base::{component::Bound, component::Described};
+use winit::event::*;
+use winit::keyboard::*;
 
 fn finger() -> f64 {
     f64::from(InteractionEnvironment::TOUCH.minimum_target())
@@ -30,8 +59,8 @@ tilo_test_env::scenario! {
             (InteractionEnvironment::default(), false),
             (InteractionEnvironment::TOUCH, true),
         ] {
-            let mut host = crate::app::driver::Driver::for_root(
-                crate::State::new(),
+            let mut host = tilo_ui::app::driver::Driver::for_root(
+                tilo_ui::State::new(),
                 stepper(),
                 (600, 200),
                 Theme::light(),
@@ -50,7 +79,7 @@ tilo_test_env::scenario! {
                 .children
                 .iter()
                 .filter_map(|station| station.bounds)
-                .map(|bounds| bounds.to_rect())
+                .map(tilo_ui_base::AccessBounds::to_rect)
                 .collect::<Vec<_>>();
             assert_eq!(announced.len(), 2, "two steps are done: {input:?}");
             for rect in announced {
@@ -75,7 +104,7 @@ tilo_test_env::scenario! {
         let bounds = link
             .accessibility()
             .and_then(|node| node.bounds)
-            .map(|bounds| bounds.to_rect())
+            .map(tilo_ui_base::AccessBounds::to_rect)
             .expect("a link says where it is");
         assert_eq!(bounds, target, "assistive technology meets the same target");
     }
@@ -86,8 +115,8 @@ tilo_test_env::scenario! {
         let state = tilo_ui_base::LocalState::new("Ctrl+K".to_owned());
         let recorder: Box<dyn Widget> = Box::new(ShortcutRecorder::new("open", &state, "Ctrl+K"));
         let field = Auto::field("to", "ada@example.com");
-        let mut host = crate::app::driver::Driver::for_root(
-            crate::State::new(),
+        let mut host = tilo_ui::app::driver::Driver::for_root(
+            tilo_ui::State::new(),
             Column::new().push(recorder).push(field),
             (400, 300),
             Theme::light(),
@@ -117,9 +146,9 @@ impl Auto {
             path: Vec::new(),
             identity: None,
         };
-        let props = crate::widget::AutocompleteProps {
+        let props = tilo_ui::widget::AutocompleteProps {
             value: bound,
-            ..crate::widget::AutocompleteProps::default()
+            ..tilo_ui::widget::AutocompleteProps::default()
         };
         Box::new(<Autocomplete as Described>::from_props(key, props))
     }

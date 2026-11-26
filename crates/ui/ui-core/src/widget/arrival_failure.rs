@@ -124,7 +124,3 @@ impl Widget for WindowFailure {
         self.rect
     }
 }
-
-#[cfg(test)]
-#[path = "arrival_failure_tests.rs"]
-mod tests;

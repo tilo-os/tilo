@@ -2,6 +2,11 @@
 //! effect action per label and records each the window runs, as an application's `on_action`
 //! does. A right-click changes it, as a canvas picking the mark under it does, so the next frame
 //! rebuilds the tree.
+#![allow(
+    clippy::expect_used,
+    clippy::unwrap_used,
+    reason = "a test fixture builds its actions and panics when the toolkit refuses one"
+)]
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -15,11 +20,11 @@ use tilo_ui_base::{
 };
 
 /// The record the rows act on.
-pub(crate) const MENU_ROW_RESOURCE: &str = "test:menu";
+pub const MENU_ROW_RESOURCE: &str = "test:menu";
 /// The operation a row's action is.
 pub(crate) const MENU_ROW_TYPE: &str = "test.menu.row";
 
-pub(crate) struct MenuRows {
+pub struct MenuRows {
     inner: Spacer,
     labels: &'static [&'static str],
     ran: Rc<RefCell<Vec<String>>>,
@@ -28,7 +33,7 @@ pub(crate) struct MenuRows {
 
 impl MenuRows {
     /// A view publishing one action per label of `labels`, recording the ones it runs in `ran`.
-    pub(crate) fn new(labels: &'static [&'static str], ran: Rc<RefCell<Vec<String>>>) -> Self {
+    pub fn new(labels: &'static [&'static str], ran: Rc<RefCell<Vec<String>>>) -> Self {
         Self {
             inner: Spacer::fixed(300.0),
             labels,
@@ -38,7 +43,7 @@ impl MenuRows {
     }
 
     /// The action the row labelled `label` runs.
-    pub(crate) fn action_of(label: &str) -> String {
+    pub fn action_of(label: &str) -> String {
         label.to_lowercase()
     }
 }
@@ -147,7 +152,7 @@ impl tilo_ui_base::widget::ResourceOperations for MenuRows {
 
 /// A press bound to the published action `action` of `resource`, as a view binds a control or a
 /// menu row: what choosing it runs is that action, at its address.
-pub(crate) fn bound_press(resource: &str, action: &str) -> tilo_ui_base::widget::Press {
+pub fn bound_press(resource: &str, action: &str) -> tilo_ui_base::widget::Press {
     let spec = tilo_actions::ResourceSpec::new(resource, "test.bound", resource).with_action(
         tilo_actions::ActionSpec::operation(
             action,

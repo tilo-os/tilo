@@ -337,7 +337,3 @@ impl CaptureStudio {
         true
     }
 }
-
-#[cfg(test)]
-#[path = "semantics_tests.rs"]
-mod tests;

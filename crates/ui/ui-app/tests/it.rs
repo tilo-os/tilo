@@ -11,11 +11,22 @@
     clippy::panic,
     clippy::unreachable,
     clippy::float_cmp,
+    clippy::arithmetic_side_effects,
+    clippy::items_after_statements,
+    clippy::used_underscore_binding,
+    clippy::redundant_closure,
+    clippy::too_many_lines,
+    clippy::unnecessary_literal_bound,
     reason = "in a test these are the assertion, not a hazard"
 )]
 #![allow(
     clippy::disallowed_methods,
     reason = "integration tests may time and wait on the real clock; the rule guards the library"
+)]
+#![allow(
+    unused_imports,
+    clippy::wildcard_imports,
+    reason = "a moved widget test opens the toolkit's names with one prelude and uses a subset"
 )]
 
 #[path = "support/mod.rs"]
@@ -132,3 +143,32 @@ mod resource_reservation;
 
 #[path = "slide_box.rs"]
 mod slide_box;
+
+// Widget unit tests that drive the app runner: they reach the toolkit through
+// its public API and its `test-support` feature.
+#[path = "widgets/arrival_failure_tests.rs"]
+mod arrival_failure_tests;
+#[path = "widgets/button_touch_tests.rs"]
+mod button_touch_tests;
+#[path = "widgets/capture_studio_semantics_tests.rs"]
+mod capture_studio_semantics_tests;
+#[path = "widgets/context_menu_area_tests.rs"]
+mod context_menu_area_tests;
+#[path = "widgets/control_hand_on_tests.rs"]
+mod control_hand_on_tests;
+#[path = "widgets/control_touch_tests.rs"]
+mod control_touch_tests;
+#[path = "widgets/disclosure_band_tests.rs"]
+mod disclosure_band_tests;
+#[path = "widgets/docked_tests.rs"]
+mod docked_tests;
+#[path = "widgets/document_viewport_copy_tests.rs"]
+mod document_viewport_copy_tests;
+#[path = "widgets/document_viewport_layers_tests.rs"]
+mod document_viewport_layers_tests;
+#[path = "widgets/drop_zone_tests.rs"]
+mod drop_zone_tests;
+#[path = "widgets/graph_canvas_tests.rs"]
+mod graph_canvas_tests;
+#[path = "widgets/group_row_keyboard_tests.rs"]
+mod group_row_keyboard_tests;

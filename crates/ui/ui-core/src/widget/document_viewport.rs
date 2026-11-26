@@ -1869,11 +1869,3 @@ mod tests {
         find(&harness.inspection().root, id).expect("the canvas button is laid out")
     }
 }
-
-#[cfg(test)]
-#[path = "document_viewport_copy_tests.rs"]
-mod copy_tests;
-
-#[cfg(all(test, feature = "native"))]
-#[path = "document_viewport_layers_tests.rs"]
-mod layers_tests;

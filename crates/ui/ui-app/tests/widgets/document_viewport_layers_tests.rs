@@ -1,5 +1,5 @@
 //! A pan in a [`DocumentViewport`] drawn as layers
-//! ([`crate::strip_layers::LayerRecording`]) and presented from retained layer textures, as
+//! ([`tilo_ui::strip_layers::LayerRecording`]) and presented from retained layer textures, as
 //! an app's render worker presents it: the backdrop is never rasterised again, the content
 //! only where the pan uncovered it, the chrome only where it changed, and every frame
 //! captured from the target equals a full render of the frame.
@@ -16,13 +16,46 @@
     reason = "test scenes and pixel tallies: failures are the assertion"
 )]
 
-use super::*;
-use crate::app::{App, AppSurface, SurfaceDamage};
-use crate::strip_layers::{
+use std::cell::*;
+use std::collections::*;
+use std::path::*;
+use std::rc::*;
+use std::sync::atomic::*;
+use std::sync::*;
+use std::time::*;
+use tilo_ui::app::driver::Driver;
+use tilo_ui::app::{App, AppSurface, SurfaceDamage};
+use tilo_ui::headless::*;
+use tilo_ui::kurbo::*;
+use tilo_ui::kurbo::{Affine, Rect};
+use tilo_ui::retained_present::*;
+use tilo_ui::strip_layers::{
     ChromeDamage, LayerPresenter, LayerRecording, QueuedRaster, WorkspaceWork, tiles,
 };
+use tilo_ui::testing::*;
+use tilo_ui::vello::Scene;
+use tilo_ui::vello::peniko::Fill;
+use tilo_ui::vello::*;
+use tilo_ui::widget::DocumentViewport;
+use tilo_ui::widget::*;
+use tilo_ui_base::a11y::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::i18n::*;
+use tilo_ui_base::icons::*;
+use tilo_ui_base::interaction::*;
 use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::paint::*;
+use tilo_ui_base::presence::*;
+use tilo_ui_base::synthetic_input::*;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::text_selection::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::*;
+use tilo_ui_base::widget::*;
 use vello::wgpu;
+use winit::event::*;
+use winit::event::{MouseScrollDelta, WindowEvent};
+use winit::keyboard::*;
 
 struct Window;
 
@@ -62,22 +95,22 @@ fn canvas(theme: &Theme) -> App {
             },
         ),
     );
-    let mut app = App::new_with_controlled_inputs(crate::state::State::new(), Box::new(viewport));
+    let mut app = App::new_with_controlled_inputs(tilo_ui::state::State::new(), Box::new(viewport));
     app.set_theme(theme.clone());
     app
 }
 
 fn sheet(theme: &Theme) -> App {
-    let mut column = crate::widget::Column::new().with_intrinsic_height();
+    let mut column = tilo_ui::widget::Column::new().with_intrinsic_height();
     for row in 0..60 {
-        column = column.push(Box::new(crate::widget::Toggle::given(
+        column = column.push(Box::new(tilo_ui::widget::Toggle::given(
             &format!("switch-{row}"),
             false,
         )));
     }
     let mut viewport = DocumentViewport::new(Box::new(column));
     viewport.set_content_size(400.0, 60.0 * 44.0);
-    let mut app = App::new_with_controlled_inputs(crate::state::State::new(), Box::new(viewport));
+    let mut app = App::new_with_controlled_inputs(tilo_ui::state::State::new(), Box::new(viewport));
     app.set_theme(theme.clone());
     app
 }

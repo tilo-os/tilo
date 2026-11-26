@@ -259,7 +259,3 @@ mod graph_canvas_component;
 pub use graph_canvas_component::{
     Connection, GraphCanvasProps, GraphNodeProps, connection_description,
 };
-
-#[cfg(test)]
-#[path = "graph_canvas/tests.rs"]
-mod tests;

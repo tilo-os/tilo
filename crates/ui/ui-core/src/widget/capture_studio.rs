@@ -397,6 +397,9 @@ pub struct CaptureStudio {
     regions: Vec<Rect>,
     drag: Option<Drag>,
     cursor: Point,
+    #[cfg(any(test, feature = "test-support"))]
+    pub include_pointer: bool,
+    #[cfg(not(any(test, feature = "test-support")))]
     include_pointer: bool,
     audio: AudioCaptureMode,
     system_audio_available: bool,

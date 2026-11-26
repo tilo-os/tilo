@@ -50,6 +50,12 @@ pub(crate) fn title_band(theme: &tilo_ui_base::theme::Theme, title: &str) -> f64
     f64::from(title_style(theme).line_height_px()) + f64::from(theme.tokens.spacing.rhythm.related)
 }
 
+/// [`title_band`] for a test that checks a chart's own title against the band it takes.
+#[cfg(any(test, feature = "test-support"))]
+pub fn title_band_for_tests(theme: &tilo_ui_base::theme::Theme, title: &str) -> f64 {
+    title_band(theme, title)
+}
+
 /// A chart's title on the chart's own top-left corner, where the words over and beside the chart
 /// start.
 pub(crate) fn draw_title(

@@ -1228,46 +1228,11 @@ impl tilo_ui_base::widget::controls::ActionControls for ContextMenuArea {
 mod tests {
     use std::cell::Cell;
 
-    use winit::keyboard::{Key, NamedKey};
+    use winit::keyboard::NamedKey;
 
+    use super::test_support::*;
     use super::*;
     use tilo_ui_base::widget::Spacer;
-
-    fn moved(at: Point) -> WindowEvent {
-        tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y)
-    }
-
-    fn right_release() -> WindowEvent {
-        tilo_ui_base::synthetic_input::mouse_input(ElementState::Released, MouseButton::Right)
-    }
-
-    /// What the entry just chosen ran: the typed action it names, taken from the press the area
-    /// keeps for it.
-    fn chosen_action(area: &mut ContextMenuArea) -> Option<String> {
-        tilo_ui_base::widget::controls::take_control_invocation(area)
-            .map(|ran| ran.address.action.clone())
-    }
-
-    fn opening_menu() -> (ContextMenuArea, Point) {
-        let mut area = ContextMenuArea::new(Box::new(Spacer::fixed(10.0)), |_| {
-            (1..=4)
-                .map(|index| {
-                    MenuEntry::bound(
-                        format!("Action {index}"),
-                        crate::testing::bound_press("test:menu", &format!("action-{index}")),
-                    )
-                })
-                .collect()
-        });
-        let at = Point::new(20.0, 20.0);
-        crate::testing::dispatch(&mut area, &moved(at));
-        assert!(area.open_at(at, true));
-        (area, at)
-    }
-
-    fn named_key(key: NamedKey) -> WindowEvent {
-        tilo_ui_base::synthetic_input::key_input(&Key::Named(key), ElementState::Pressed)
-    }
 
     #[test]
     fn movement_during_opening_keeps_the_pointer_row_for_enter() {
@@ -1353,67 +1318,6 @@ mod tests {
         assert!(!area.is_open());
     }
 
-    /// The other kind of entry: a row that is the widget's own declared action. An agent
-    /// activating it runs that action where the widget stands and the menu closes — the copy is
-    /// the link's own, not a press on the row.
-    #[test]
-    fn an_agent_chooses_a_widgets_own_action_from_its_row() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = tilo_ui_base::motion::testing::settled();
-        use crate::clipboard::{ClipboardBackend as _, ClipboardTarget, InProcessClipboard};
-        let clipboard = std::sync::Arc::new(InProcessClipboard::default());
-        let services = crate::process::ProcessServices::null().with_clipboard(clipboard.clone());
-        crate::process::scoped(&services, || {
-            let area = ContextMenuArea::new(
-                Box::new(
-                    crate::widget::Link::new("https://example.org/page").with_label("The page"),
-                ),
-                |_| {
-                    vec![MenuEntry::bound(
-                        "Open",
-                        crate::testing::bound_press("test:menu", "open"),
-                    )]
-                },
-            );
-            let mut harness = crate::headless::Driver::for_root(
-                crate::State::new(),
-                area,
-                (400, 120),
-                tilo_ui_base::theme::Theme::dark(),
-            );
-            harness.relayout();
-            let page = harness
-                .root::<ContextMenuArea>()
-                .content()
-                .get_rect()
-                .center();
-            harness.send(&tilo_ui_base::synthetic_input::cursor_moved(page.x, page.y));
-            right_click(&mut harness);
-            let target = tilo_ui_base::a11y_child_route::encode(
-                &[harness.root::<ContextMenuArea>().content().children().len()],
-                Some("context-menu:item:1"),
-            );
-            harness
-                .perform_semantic_named(
-                    "Link",
-                    Some(&target),
-                    &tilo_ui_base::a11y::Action::Activate,
-                )
-                .expect("the link's copy row is reachable");
-            assert_eq!(
-                clipboard.text(ClipboardTarget::Clipboard).as_deref(),
-                Some("https://example.org/page"),
-                "the row ran the link's own action where the link stands"
-            );
-            assert!(
-                !harness.root::<ContextMenuArea>().is_open(),
-                "the menu closed on its choice"
-            );
-        });
-    }
-
-    type Chosen = Rc<std::cell::RefCell<Vec<String>>>;
-
     /// The picker an emoji bar opened stands over the menu, so it is one of the children a
     /// route reaches by index — in the list the walk reads and in the one an action is
     /// dispatched through, at the same place.
@@ -1462,178 +1366,123 @@ mod tests {
         );
     }
 
-    const MENU_LABELS: [&str; 4] = ["First", "Second", "Third", "Fourth"];
+    #[test]
+    fn nothing_to_offer_opens_nothing() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let mut area = ContextMenuArea::new(Box::new(Spacer::fixed(10.0)), |_| {
+            vec![MenuEntry::separator()]
+        });
+        assert!(!area.open_at(Point::new(5.0, 5.0), true));
+        assert!(!area.is_open());
+    }
 
-    /// A 300 px area over an app whose record offers the four rows, in a window whose host
-    /// replays a still pointer after the widgets change, the pointer resting at (100, 100).
-    fn four_entries() -> (crate::headless::Driver, Chosen) {
-        let chosen = Chosen::default();
-        let content = crate::testing::MenuRows::new(&MENU_LABELS, Rc::clone(&chosen));
-        let area = ContextMenuArea::new(Box::new(content), |_| {
-            MENU_LABELS
-                .into_iter()
-                .map(|label| {
+    /// A row an assistive technology or an agent names is the entry the area runs through the
+    /// action the row names: the menu leaves its owner's rows to the area, which runs the app's
+    /// action once and closes the menu. No press lands where the row is drawn.
+    #[test]
+    fn a_row_a_tool_names_is_the_entry_the_area_runs() {
+        // Motion reads at its end: this test checks the resting frame.
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let (mut area, _) = opening_menu();
+        let mut doc = automerge::AutoCommit::new();
+        let target = tilo_ui_base::a11y_child_route::encode(&[0], Some("context-menu:item:1"));
+        assert!(
+            tilo_ui_base::a11y_child_route::perform(
+                &mut area,
+                &target,
+                &tilo_ui_base::a11y::Action::Activate,
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
+                &automerge::ROOT,
+            ),
+            "the area runs the row its menu offers"
+        );
+        assert_eq!(
+            chosen_action(&mut area).as_deref(),
+            Some("action-2"),
+            "the row ran the action it names"
+        );
+        assert!(
+            chosen_action(&mut area).is_none(),
+            "an activation runs the entry once"
+        );
+        assert!(!area.is_open(), "the menu closed on the row");
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    #![allow(
+        dead_code,
+        unused_imports,
+        clippy::disallowed_methods,
+        clippy::wildcard_imports,
+        reason = "test-support helpers are compiled for every test build whether or not a test uses this one"
+    )]
+    use super::*;
+    use std::cell::*;
+    use std::collections::*;
+    use std::path::*;
+    use std::rc::*;
+    use std::sync::atomic::*;
+    use std::sync::*;
+    use std::time::*;
+    use tilo_ui::automerge::*;
+    use tilo_ui::headless::*;
+    use tilo_ui::kurbo::{Affine, Point, Rect};
+    use tilo_ui::retained_present::*;
+    use tilo_ui::testing::*;
+    use tilo_ui::vello::Scene;
+    use tilo_ui::widget::*;
+    use tilo_ui_base::a11y::*;
+    use tilo_ui_base::component::*;
+    use tilo_ui_base::icons::*;
+    use tilo_ui_base::interaction::*;
+    use tilo_ui_base::paint::*;
+    use tilo_ui_base::presence::*;
+    use tilo_ui_base::synthetic_input::*;
+    use tilo_ui_base::theme::Theme;
+    use tilo_ui_base::tokens::*;
+    use tilo_ui_base::widget::*;
+    use winit::event::*;
+    use winit::keyboard::*;
+    pub fn moved(at: Point) -> WindowEvent {
+        tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y)
+    }
+    pub fn right_release() -> WindowEvent {
+        tilo_ui_base::synthetic_input::mouse_input(ElementState::Released, MouseButton::Right)
+    }
+    /// What the entry just chosen ran: the typed action it names, taken from the press the area
+    /// keeps for it.
+    pub fn chosen_action(area: &mut ContextMenuArea) -> Option<String> {
+        tilo_ui_base::widget::controls::take_control_invocation(area)
+            .map(|ran| ran.address.action.clone())
+    }
+    pub fn opening_menu() -> (ContextMenuArea, Point) {
+        let mut area = ContextMenuArea::new(Box::new(Spacer::fixed(10.0)), |_| {
+            (1..=4)
+                .map(|index| {
                     MenuEntry::bound(
-                        label,
-                        crate::testing::bound_press(
-                            crate::testing::MENU_ROW_RESOURCE,
-                            &crate::testing::MenuRows::action_of(label),
-                        ),
+                        format!("Action {index}"),
+                        crate::testing::bound_press("test:menu", &format!("action-{index}")),
                     )
                 })
                 .collect()
         });
-        let mut harness = crate::app::driver::Driver::for_root(
-            crate::State::new(),
-            area,
-            (400, 400),
-            tilo_ui_base::theme::Theme::dark(),
-        );
-        harness.relayout();
-        harness.send(&tilo_ui_base::synthetic_input::cursor_moved(100.0, 100.0));
-        (harness, chosen)
+        let at = Point::new(20.0, 20.0);
+        crate::testing::dispatch(&mut area, &moved(at));
+        assert!(area.open_at(at, true));
+        (area, at)
     }
-
-    fn mouse(harness: &mut crate::app::driver::Driver, state: ElementState, button: MouseButton) {
-        harness.send(&tilo_ui_base::synthetic_input::mouse_input(state, button));
+    pub fn named_key(key: NamedKey) -> WindowEvent {
+        tilo_ui_base::synthetic_input::key_input(&Key::Named(key), ElementState::Pressed)
     }
-
-    /// Right-click where the pointer rests, with the frame that rebuilds
-    /// the changed content and paints the opened menu landing between press
-    /// and release, as it does live.
-    fn right_click(harness: &mut crate::app::driver::Driver) {
-        mouse(harness, ElementState::Pressed, MouseButton::Right);
-        assert!(
-            harness.root::<ContextMenuArea>().is_open(),
-            "a right-click opens the menu"
-        );
-        harness.relayout();
-        mouse(harness, ElementState::Released, MouseButton::Right);
-        assert!(
-            harness.root::<ContextMenuArea>().is_open(),
-            "the release that ends the right-click leaves the menu open"
-        );
-    }
-
-    /// The fourth entry is three rows down, as Canvas's Duplicate is: a
-    /// keyboard row one off lands on another entry.
-    #[test]
-    fn a_right_click_menu_runs_the_entry_the_keyboard_chooses() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = tilo_ui_base::motion::testing::settled();
-        let (mut harness, chosen) = four_entries();
-        right_click(&mut harness);
-        assert_eq!(
-            harness.root::<ContextMenuArea>().menu().hovered(),
-            Some(0),
-            "the menu opens on its first entry, though the still pointer was replayed"
-        );
-        for _ in 0..3 {
-            harness.key("ArrowDown");
-        }
-        harness.key("Enter");
-        assert_eq!(*chosen.borrow(), vec!["Fourth"]);
-        assert!(!harness.root::<ContextMenuArea>().is_open());
-    }
-
-    #[test]
-    fn a_right_click_menu_runs_the_entry_the_pointer_clicks() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = tilo_ui_base::motion::testing::settled();
-        let (mut harness, chosen) = four_entries();
-        right_click(&mut harness);
-        let second = harness
-            .root::<ContextMenuArea>()
-            .menu()
-            .item_rect(1)
-            .expect("the second entry is laid out")
-            .center();
-        harness.send(&tilo_ui_base::synthetic_input::cursor_moved(
-            second.x, second.y,
-        ));
-        assert_eq!(
-            harness.root::<ContextMenuArea>().menu().hovered(),
-            Some(1),
-            "hover follows the pointer once it moves"
-        );
-        mouse(&mut harness, ElementState::Pressed, MouseButton::Left);
-        harness.relayout();
-        mouse(&mut harness, ElementState::Released, MouseButton::Left);
-        assert_eq!(*chosen.borrow(), vec!["Second"]);
-        assert!(!harness.root::<ContextMenuArea>().is_open());
-    }
-
-    /// An open menu's entries are the typed actions behind them: the row names the app's action,
-    /// an agent chooses it by activating the row's node as a screen reader does, and the app's
-    /// action runs on its record and the menu closes. An agent's choice is the action, never a
-    /// press where the row is drawn.
-    #[test]
-    fn an_agent_chooses_a_menu_entry_through_the_action_its_row_names() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = tilo_ui_base::motion::testing::settled();
-        let (mut harness, chosen) = four_entries();
-        right_click(&mut harness);
-        let address = harness
-            .root::<ContextMenuArea>()
-            .menu()
-            .items()
-            .get(2)
-            .and_then(MenuItem::action_address)
-            .expect("the third entry names the action it runs");
-        assert_eq!(
-            address,
-            tilo_actions::ActionAddress::new(crate::testing::MENU_ROW_RESOURCE, "third")
-        );
-        assert_eq!(
-            harness
-                .root::<ContextMenuArea>()
-                .menu()
-                .items()
-                .get(2)
-                .and_then(MenuItem::label),
-            Some("Third")
-        );
-        let record = harness
-            .resources()
-            .into_iter()
-            .find(|resource| resource.id.0 == crate::testing::MENU_ROW_RESOURCE)
-            .expect("the app publishes the record its rows act on");
-        let third = record
-            .actions
-            .iter()
-            .find(|action| action.id == "third")
-            .expect("the third action");
-        assert_eq!(third.kind, tilo_actions::OperationKind::Effect);
-        // The row node an agent reaches, under the area the menu stands over.
-        let target = tilo_ui_base::a11y_child_route::encode(
-            &[harness.root::<ContextMenuArea>().content().children().len()],
-            Some("context-menu:item:2"),
-        );
-        harness
-            .perform_semantic_named(
-                "MenuRows",
-                Some(&target),
-                &tilo_ui_base::a11y::Action::Activate,
-            )
-            .expect("the entry is reachable");
-        assert_eq!(
-            *chosen.borrow(),
-            vec!["Third".to_owned()],
-            "the app's action ran on its record"
-        );
-        assert!(
-            !harness.root::<ContextMenuArea>().is_open(),
-            "the menu closed on its choice"
-        );
-    }
-
     /// Content that holds items, one of which has the keyboard: a list whose
     /// focused row stands at `anchor`.
-    struct RowWithTheKeyboard {
-        inner: Spacer,
-        anchor: Rect,
+    pub struct RowWithTheKeyboard {
+        pub inner: Spacer,
+        pub anchor: Rect,
     }
-
     impl Widget for RowWithTheKeyboard {
         fn build_layout(
             &mut self,
@@ -1679,244 +1528,6 @@ mod tests {
             Some(self.anchor)
         }
     }
-
-    /// The reported capture's gesture: Menu/Shift+F10 on a focused row opens
-    /// its menu under that row, not at the list's foot.
-    #[test]
-    fn the_keyboard_opens_the_menu_under_the_focused_row() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = tilo_ui_base::motion::testing::settled();
-        let anchor = Rect::new(20.0, 200.0, 300.0, 238.0);
-        let area = ContextMenuArea::new(
-            Box::new(RowWithTheKeyboard {
-                inner: Spacer::fixed(300.0),
-                anchor,
-            }),
-            |_| {
-                vec![MenuEntry::bound(
-                    "First",
-                    crate::testing::bound_press("test:menu", "first"),
-                )]
-            },
-        );
-        let mut harness = crate::app::driver::Driver::for_root(
-            crate::State::new(),
-            area,
-            (400, 400),
-            tilo_ui_base::theme::Theme::dark(),
-        );
-        // The frame that gives the area the window its menu stands in.
-        harness.relayout();
-        harness.key("Shift+F10");
-        assert!(
-            harness.root::<ContextMenuArea>().is_open(),
-            "Shift+F10 on the focused item opens its menu"
-        );
-        harness.relayout();
-        let rect = harness.root::<ContextMenuArea>().menu().get_rect();
-        let gap = f64::from(tilo_ui_base::tokens::Spacing::BASE.s1);
-        assert!(
-            rect.y0 >= anchor.y1 && rect.y0 - anchor.y1 <= gap + 0.5,
-            "the menu stands under the row it opened from: {rect:?} vs {anchor:?}"
-        );
-    }
-
-    /// A widget's own action is offered beside its owner's rows where the person right-clicks
-    /// it, and choosing it runs on the widget itself: a link's Copy link copies its address and
-    /// opens nothing.
-    #[test]
-    fn a_link_under_the_pointer_offers_its_copy_beside_the_owners_rows() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = tilo_ui_base::motion::testing::settled();
-        use crate::clipboard::{ClipboardBackend as _, ClipboardTarget, InProcessClipboard};
-        let clipboard = std::sync::Arc::new(InProcessClipboard::default());
-        let services = crate::process::ProcessServices::null().with_clipboard(clipboard.clone());
-        crate::process::scoped(&services, || {
-            let area = ContextMenuArea::new(
-                Box::new(
-                    crate::widget::Link::new("https://example.org/page").with_label("The page"),
-                ),
-                |_| {
-                    vec![MenuEntry::bound(
-                        "Open",
-                        crate::testing::bound_press("test:menu", "open"),
-                    )]
-                },
-            );
-            let mut harness = crate::headless::Driver::for_root(
-                crate::State::new(),
-                area,
-                (400, 120),
-                tilo_ui_base::theme::Theme::dark(),
-            );
-            harness.relayout();
-            let page = harness
-                .root::<ContextMenuArea>()
-                .content()
-                .get_rect()
-                .center();
-            harness.send(&tilo_ui_base::synthetic_input::cursor_moved(page.x, page.y));
-            right_click(&mut harness);
-            let labels: Vec<String> = harness
-                .root::<ContextMenuArea>()
-                .menu()
-                .items()
-                .iter()
-                .filter_map(MenuItem::label)
-                .map(str::to_owned)
-                .collect();
-            assert_eq!(
-                labels
-                    .iter()
-                    .take(2)
-                    .map(String::as_str)
-                    .collect::<Vec<_>>(),
-                ["Open", "Copy link"],
-                "the link's copy stands beside what its row offers"
-            );
-            let copy = harness
-                .root::<ContextMenuArea>()
-                .menu()
-                .item_rect(1)
-                .expect("the copy row is laid out")
-                .center();
-            harness.send(&tilo_ui_base::synthetic_input::cursor_moved(copy.x, copy.y));
-            mouse(&mut harness, ElementState::Pressed, MouseButton::Left);
-            harness.relayout();
-            mouse(&mut harness, ElementState::Released, MouseButton::Left);
-            assert_eq!(
-                clipboard.text(ClipboardTarget::Clipboard).as_deref(),
-                Some("https://example.org/page"),
-                "choosing the copy put the address it goes to on the clipboard"
-            );
-            assert!(
-                !harness.root::<ContextMenuArea>().is_open(),
-                "the menu closed after its choice"
-            );
-        });
-    }
-
-    /// A widget that offers no action of its own adds no row: the menu is its owner's alone.
-    #[test]
-    fn a_widget_with_no_own_action_adds_no_row() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = tilo_ui_base::motion::testing::settled();
-        let (mut harness, _) = four_entries();
-        right_click(&mut harness);
-        let labels: Vec<String> = harness
-            .root::<ContextMenuArea>()
-            .menu()
-            .items()
-            .iter()
-            .filter_map(MenuItem::label)
-            .map(str::to_owned)
-            .collect();
-        assert_eq!(
-            labels
-                .iter()
-                .take(4)
-                .map(String::as_str)
-                .collect::<Vec<_>>(),
-            ["First", "Second", "Third", "Fourth"]
-        );
-    }
-
-    #[test]
-    fn nothing_to_offer_opens_nothing() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = tilo_ui_base::motion::testing::settled();
-        let mut area = ContextMenuArea::new(Box::new(Spacer::fixed(10.0)), |_| {
-            vec![MenuEntry::separator()]
-        });
-        assert!(!area.open_at(Point::new(5.0, 5.0), true));
-        assert!(!area.is_open());
-    }
-
-    /// A row whose menu the host has not answered yet opens no menu: not even the rows the menu
-    /// adds itself — the one that asks what is typed, and the send row after it — which would
-    /// show a menu of nothing and never take the row's commands. It opens where it was asked
-    /// once the row comes.
-    #[test]
-    fn a_menu_waiting_for_its_row_opens_on_the_row_and_not_on_the_rows_it_adds() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = tilo_ui_base::motion::testing::settled();
-        crate::shared_selection::set_send_host_available(true);
-        let arrived = Rc::new(Cell::new(false));
-        let area = ContextMenuArea::new(Box::new(Spacer::fixed(300.0)), {
-            let arrived = Rc::clone(&arrived);
-            move |_| {
-                if arrived.get() {
-                    vec![MenuEntry::bound(
-                        "Delete",
-                        crate::testing::bound_press("test:menu", "delete"),
-                    )]
-                } else {
-                    Vec::new()
-                }
-            }
-        })
-        .waiting_on({
-            let arrived = Rc::clone(&arrived);
-            move |_, _| !arrived.get()
-        });
-        let mut harness = crate::app::driver::Driver::for_root(
-            crate::State::new(),
-            area,
-            (400, 400),
-            tilo_ui_base::theme::Theme::dark(),
-        );
-        harness.relayout();
-        let at = Point::new(100.0, 100.0);
-        let press =
-            tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
-        crate::widget::context_menu::note_input(&press);
-        harness.send(&tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y));
-        harness.send(&press);
-        assert!(
-            !harness.root::<ContextMenuArea>().is_open(),
-            "the menu waits for the row rather than opening on the rows it adds itself"
-        );
-        // The app answers with the row, and the frame that lays it out opens the menu on it.
-        arrived.set(true);
-        harness.relayout();
-        let area = harness.root::<ContextMenuArea>();
-        assert!(area.is_open(), "the menu opened on the row that came");
-        assert_eq!(
-            area.menu().items().first().and_then(MenuItem::label),
-            Some("Delete")
-        );
-        crate::shared_selection::set_send_host_available(false);
-    }
-
-    /// A row an assistive technology or an agent names is the entry the area runs through the
-    /// action the row names: the menu leaves its owner's rows to the area, which runs the app's
-    /// action once and closes the menu. No press lands where the row is drawn.
-    #[test]
-    fn a_row_a_tool_names_is_the_entry_the_area_runs() {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = tilo_ui_base::motion::testing::settled();
-        let (mut area, _) = opening_menu();
-        let mut doc = automerge::AutoCommit::new();
-        let target = tilo_ui_base::a11y_child_route::encode(&[0], Some("context-menu:item:1"));
-        assert!(
-            tilo_ui_base::a11y_child_route::perform(
-                &mut area,
-                &target,
-                &tilo_ui_base::a11y::Action::Activate,
-                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
-                &automerge::ROOT,
-            ),
-            "the area runs the row its menu offers"
-        );
-        assert_eq!(
-            chosen_action(&mut area).as_deref(),
-            Some("action-2"),
-            "the row ran the action it names"
-        );
-        assert!(
-            chosen_action(&mut area).is_none(),
-            "an activation runs the entry once"
-        );
-        assert!(!area.is_open(), "the menu closed on the row");
-    }
+    pub type Chosen = Rc<std::cell::RefCell<Vec<String>>>;
+    pub const MENU_LABELS: [&str; 4] = ["First", "Second", "Third", "Fourth"];
 }

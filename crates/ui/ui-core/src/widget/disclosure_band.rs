@@ -325,6 +325,3 @@ impl Drop for DisclosureBand {
         self.band.leave(key, self.rect, true);
     }
 }
-
-#[cfg(test)]
-mod tests;

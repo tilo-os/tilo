@@ -5960,8 +5960,6 @@ mod edge_tests;
 #[path = "group_row_float_tests.rs"]
 mod float_tests;
 #[cfg(test)]
-#[path = "group_row_keyboard_tests.rs"]
-mod keyboard_tests;
 #[cfg(test)]
 #[path = "group_row_presence_tests.rs"]
 mod presence_tests;

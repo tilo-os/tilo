@@ -2864,7 +2864,3 @@ mod tests;
 
 mod component;
 pub use component::ButtonProps;
-
-#[cfg(test)]
-#[path = "button_touch_tests.rs"]
-mod touch_tests;

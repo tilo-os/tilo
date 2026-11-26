@@ -1,8 +1,35 @@
-use super::*;
-use crate::app::driver::Driver;
-use crate::state::State;
-use crate::time::testing::with_monotonic_time;
-use crate::widget::{Column, Text};
+use std::cell::*;
+use std::collections::*;
+use std::path::*;
+use std::rc::*;
+use std::sync::atomic::*;
+use std::sync::*;
+use std::time::*;
+use tilo_ui::app::driver::Driver;
+use tilo_ui::headless::*;
+use tilo_ui::kurbo::*;
+use tilo_ui::retained_present::*;
+use tilo_ui::state::State;
+use tilo_ui::testing::*;
+use tilo_ui::time::testing::with_monotonic_time;
+use tilo_ui::vello::*;
+use tilo_ui::widget::*;
+use tilo_ui::widget::{Column, DisclosureBand, Text};
+use tilo_ui_base::a11y::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::i18n::*;
+use tilo_ui_base::icons::*;
+use tilo_ui_base::interaction::*;
+use tilo_ui_base::paint::*;
+use tilo_ui_base::presence::*;
+use tilo_ui_base::synthetic_input::*;
+use tilo_ui_base::text_selection::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::*;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::widget::*;
+use winit::event::*;
+use winit::keyboard::*;
 
 fn details(key: &str) -> DisclosureBand {
     DisclosureBand::new(
@@ -47,7 +74,7 @@ fn offset_of(d: &Driver, index: usize) -> f64 {
 
 #[test]
 fn a_band_built_after_the_window_has_shown_arrives_over_what_follows() {
-    let start = crate::time::now();
+    let start = tilo_ui::time::now();
     let mut d = with_monotonic_time(start, || rooted(Column::new()));
     with_monotonic_time(start, || rebuild(&mut d, None));
     let empty_y = d.targets()["below"].y0;
@@ -68,7 +95,7 @@ fn a_band_built_after_the_window_has_shown_arrives_over_what_follows() {
     );
     assert!(with_monotonic_time(start, || offset_of(&d, 1)).abs() < 0.5);
 
-    let midway = start + crate::time::Duration::from_millis(90);
+    let midway = start + tilo_ui::time::Duration::from_millis(90);
     let moved = with_monotonic_time(midway, || {
         d.relayout();
         offset_of(&d, 1)
@@ -133,7 +160,7 @@ fn a_band_there_from_the_first_frame_rests_and_built_again_stays() {
 
 #[test]
 fn a_band_its_view_stops_building_leaves_and_what_follows_moves_up() {
-    let start = crate::time::now();
+    let start = tilo_ui::time::now();
     let mut d = with_monotonic_time(start, || {
         rooted(
             Column::new()
@@ -156,11 +183,11 @@ fn a_band_its_view_stops_building_leaves_and_what_follows_moves_up() {
         (empty_y + at_start - shown_y).abs() < 0.5,
         "and is drawn where it stood: {at_start}"
     );
-    let later = with_monotonic_time(start + crate::time::Duration::from_millis(90), || {
+    let later = with_monotonic_time(start + tilo_ui::time::Duration::from_millis(90), || {
         offset_of(&d, 0)
     });
     assert!(later < at_start - 0.5, "it moves up with the edge: {later}");
-    with_monotonic_time(start + crate::time::Duration::from_secs(2), || {
+    with_monotonic_time(start + tilo_ui::time::Duration::from_secs(2), || {
         d.relayout();
         assert!(d.root::<Column>().drawn_offsets().is_none());
         assert!(!d.root_widget().needs_animation_frame());
@@ -169,7 +196,7 @@ fn a_band_its_view_stops_building_leaves_and_what_follows_moves_up() {
 
 #[test]
 fn a_band_with_another_key_arrives_as_the_one_before_leaves() {
-    let start = crate::time::now();
+    let start = tilo_ui::time::now();
     let mut d = with_monotonic_time(start, || {
         rooted(
             Column::new()

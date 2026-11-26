@@ -1,15 +1,43 @@
 //! What a docked column reports when what stands in it changes.
 
-use super::{Docked, DockedProps};
+use std::cell::*;
+use std::collections::*;
+use std::path::*;
+use std::rc::*;
+use std::sync::atomic::*;
+use std::sync::*;
+use std::time::*;
+use tilo_ui::app::driver::Driver;
+use tilo_ui::headless::*;
+use tilo_ui::kurbo::*;
+use tilo_ui::retained_present::*;
+use tilo_ui::testing::*;
+use tilo_ui::vello::*;
+use tilo_ui::widget::*;
+use tilo_ui::widget::{Docked, DockedProps};
+use tilo_ui_base::a11y::*;
 use tilo_ui_base::component::Described;
+use tilo_ui_base::component::*;
+use tilo_ui_base::i18n::*;
+use tilo_ui_base::icons::*;
+use tilo_ui_base::interaction::*;
+use tilo_ui_base::paint::*;
+use tilo_ui_base::presence::*;
+use tilo_ui_base::synthetic_input::*;
+use tilo_ui_base::text_selection::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::*;
+use tilo_ui_base::widget::*;
 use tilo_ui_base::{widget::StructureChange, widget::Widget};
+use winit::event::*;
+use winit::keyboard::*;
 
 struct InPlace {
     pending: bool,
 }
 
 impl Widget for InPlace {
-    crate::testing::inert_widget_methods!(leaf_layout, name = "InPlace");
+    tilo_ui::testing::inert_widget_methods!(leaf_layout, name = "InPlace");
 
     fn take_structure_dirty(&mut self) -> bool {
         self.pending
@@ -56,7 +84,7 @@ tilo_test_env::scenario! {
 
     phase a_bar_under_a_page_column_stands_where_its_content_is_read;
     {
-        fn widths(node: &crate::headless::InspectionNode, out: &mut Vec<f64>) {
+        fn widths(node: &tilo_ui::headless::InspectionNode, out: &mut Vec<f64>) {
             if node.widget == "Page"
                 && let Some(row) = node.children.first()
             {
@@ -66,20 +94,20 @@ tilo_test_env::scenario! {
                 widths(child, out);
             }
         }
-        let measure = f64::from(crate::widget::arrange::MEASURE_REM)
-            * f64::from(crate::widget::arrange::rem_of(&tilo_ui_base::theme::Theme::dark()));
+        let measure = f64::from(tilo_ui::widget::arrange::MEASURE_REM)
+            * f64::from(tilo_ui::widget::arrange::rem_of(&tilo_ui_base::theme::Theme::dark()));
         let page = || {
             Box::new(
-                crate::widget::arrange::Page::new().push(Box::new(crate::widget::Text::new(
+                tilo_ui::widget::arrange::Page::new().push(Box::new(tilo_ui::widget::Text::new(
                     "Words read at the measure",
                 ))),
             ) as tilo_ui_base::widget::Element
         };
         let scroll = |content: tilo_ui_base::widget::Element| {
             Box::new(
-                crate::widget::Scrollable::new_vertical()
+                tilo_ui::widget::Scrollable::new_vertical()
                     .fit_content_height()
-                    .with_child(Box::new(crate::widget::Stack::new().push(content))),
+                    .with_child(Box::new(tilo_ui::widget::Stack::new().push(content))),
             ) as tilo_ui_base::widget::Element
         };
         let held = |content: tilo_ui_base::widget::Element| {
@@ -87,11 +115,11 @@ tilo_test_env::scenario! {
                 "docked",
                 DockedProps {
                     content: Some(content),
-                    foot: Some(Box::new(crate::widget::Text::new("Add a note"))),
+                    foot: Some(Box::new(tilo_ui::widget::Text::new("Add a note"))),
                 },
             );
-            let mut harness = crate::app::driver::Driver::for_root(
-                crate::State::new(),
+            let mut harness = tilo_ui::app::driver::Driver::for_root(
+                tilo_ui::State::new(),
                 docked,
                 (1600, 900),
                 tilo_ui_base::theme::Theme::dark(),
@@ -105,9 +133,9 @@ tilo_test_env::scenario! {
             ("a page", page()),
             (
                 "a page a host reached in a decorator",
-                Box::new(crate::widget::Fitted::new(
+                Box::new(tilo_ui::widget::Fitted::new(
                     page(),
-                    crate::widget::arrange::Fit::fill(1.0),
+                    tilo_ui::widget::arrange::Fit::fill(1.0),
                 )) as tilo_ui_base::widget::Element,
             ),
             ("a scroll around a page", scroll(page())),
@@ -133,7 +161,7 @@ tilo_test_env::scenario! {
 
     phase a_column_in_content_put_in_later_follows_that_content;
     {
-        fn widths(node: &crate::headless::InspectionNode, out: &mut Vec<f64>) {
+        fn widths(node: &tilo_ui::headless::InspectionNode, out: &mut Vec<f64>) {
             if node.widget == "Page"
                 && let Some(row) = node.children.first()
             {
@@ -143,20 +171,20 @@ tilo_test_env::scenario! {
                 widths(child, out);
             }
         }
-        let measure = f64::from(crate::widget::arrange::MEASURE_REM)
-            * f64::from(crate::widget::arrange::rem_of(&tilo_ui_base::theme::Theme::dark()));
+        let measure = f64::from(tilo_ui::widget::arrange::MEASURE_REM)
+            * f64::from(tilo_ui::widget::arrange::rem_of(&tilo_ui_base::theme::Theme::dark()));
         let mut docked = Docked::from_props(
             "docked",
             DockedProps {
                 content: None,
-                foot: Some(Box::new(crate::widget::Text::new("Add a note"))),
+                foot: Some(Box::new(tilo_ui::widget::Text::new("Add a note"))),
             },
         );
         let content = Box::new(
-            crate::widget::Scrollable::new_vertical()
+            tilo_ui::widget::Scrollable::new_vertical()
                 .fit_content_height()
-                .with_child(Box::new(crate::widget::Stack::new().push(Box::new(
-                    crate::widget::arrange::Page::new().push(Box::new(crate::widget::Text::new(
+                .with_child(Box::new(tilo_ui::widget::Stack::new().push(Box::new(
+                    tilo_ui::widget::arrange::Page::new().push(Box::new(tilo_ui::widget::Text::new(
                         "Words read at the measure",
                     ))),
                 )))),
@@ -165,8 +193,8 @@ tilo_test_env::scenario! {
             panic!("a column changes its content in place");
         };
         views.insert(0, content);
-        let mut harness = crate::app::driver::Driver::for_root(
-            crate::State::new(),
+        let mut harness = tilo_ui::app::driver::Driver::for_root(
+            tilo_ui::State::new(),
             docked,
             (1600, 900),
             tilo_ui_base::theme::Theme::dark(),
@@ -189,7 +217,7 @@ tilo_test_env::scenario! {
 
     phase a_dock_with_nothing_at_its_foot_paints_no_bar;
     {
-        fn pages(node: &crate::headless::InspectionNode, out: &mut usize) {
+        fn pages(node: &tilo_ui::headless::InspectionNode, out: &mut usize) {
             if node.widget == "Page" {
                 *out += 1;
             }
@@ -197,8 +225,8 @@ tilo_test_env::scenario! {
                 pages(child, out);
             }
         }
-        let mut harness = crate::app::driver::Driver::for_root(
-            crate::State::new(),
+        let mut harness = tilo_ui::app::driver::Driver::for_root(
+            tilo_ui::State::new(),
             docked(false),
             (1600, 900),
             tilo_ui_base::theme::Theme::dark(),
@@ -214,7 +242,7 @@ tilo_test_env::scenario! {
 
     phase a_bar_given_to_a_dock_later_stands_at_its_foot;
     {
-        fn pages(node: &crate::headless::InspectionNode, out: &mut usize) {
+        fn pages(node: &tilo_ui::headless::InspectionNode, out: &mut usize) {
             if node.widget == "Page" {
                 *out += 1;
             }
@@ -226,9 +254,9 @@ tilo_test_env::scenario! {
         let Some(views) = tilo_ui_base::component::Described::part_views(&mut docked, "foot") else {
             panic!("a column takes a bar after it was built");
         };
-        views.insert(0, Box::new(crate::widget::Text::new("Outline")));
-        let mut harness = crate::app::driver::Driver::for_root(
-            crate::State::new(),
+        views.insert(0, Box::new(tilo_ui::widget::Text::new("Outline")));
+        let mut harness = tilo_ui::app::driver::Driver::for_root(
+            tilo_ui::State::new(),
             docked,
             (1600, 900),
             tilo_ui_base::theme::Theme::dark(),

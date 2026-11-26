@@ -37,8 +37,6 @@ pub use control_size::ControlSize;
 mod bool_control;
 pub(crate) use bool_control::BoolAction;
 mod checkbox;
-#[cfg(test)]
-mod control_hand_on_tests;
 pub use {
     checkbox::CheckGlyph, checkbox::CheckMotion, checkbox::CheckPose, checkbox::Checkbox,
     checkbox::CheckboxFace, checkbox::CheckboxProps,
@@ -932,11 +930,8 @@ pub use qr_component::QrProps;
 mod a11y_tree_tests;
 #[cfg(test)]
 pub(crate) mod control_result_probe;
-#[cfg(test)]
-#[path = "control_touch_tests.rs"]
-mod control_touch_tests;
-#[cfg(test)]
-pub(crate) mod effect_fixture;
+#[cfg(any(test, feature = "test-support"))]
+pub mod effect_fixture;
 pub mod keyboard_map;
 #[cfg(test)]
 mod refused_press_tests;
@@ -951,3 +946,7 @@ pub use {
     graph_canvas::GraphCanvasNode, graph_canvas::GraphCanvasProps, graph_canvas::GraphNodeProps,
     graph_canvas::connection_description,
 };
+
+// The helpers a widget's own tests share with the app runner's tests.
+#[cfg(any(test, feature = "test-support"))]
+pub use context_menu_area::test_support as context_menu_area_test_support;

@@ -195,7 +195,3 @@ impl Docked {
         self.content().and_then(column_of)
     }
 }
-
-#[cfg(test)]
-#[path = "docked_tests.rs"]
-mod tests;

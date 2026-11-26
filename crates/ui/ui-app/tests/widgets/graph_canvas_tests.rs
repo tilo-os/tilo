@@ -1,7 +1,33 @@
-use super::*;
-use crate::app::driver::Driver;
-use crate::headless::InspectionNode;
-use crate::widget::Button;
+use std::cell::*;
+use std::collections::*;
+use std::path::*;
+use std::rc::*;
+use std::sync::atomic::*;
+use std::sync::*;
+use std::time::*;
+use tilo_ui::app::driver::Driver;
+use tilo_ui::headless::InspectionNode;
+use tilo_ui::headless::*;
+use tilo_ui::kurbo::*;
+use tilo_ui::retained_present::*;
+use tilo_ui::testing::*;
+use tilo_ui::vello::*;
+use tilo_ui::widget::*;
+use tilo_ui::widget::{Button, GraphCanvas, GraphCanvasConnection, GraphCanvasNode};
+use tilo_ui_base::a11y::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::i18n::*;
+use tilo_ui_base::icons::*;
+use tilo_ui_base::interaction::*;
+use tilo_ui_base::paint::*;
+use tilo_ui_base::presence::*;
+use tilo_ui_base::synthetic_input::*;
+use tilo_ui_base::text_selection::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::*;
+use tilo_ui_base::widget::*;
+use winit::event::*;
+use winit::keyboard::*;
 
 fn target<'a>(node: &'a InspectionNode, id: &str) -> Option<&'a InspectionNode> {
     if node.test_id.as_deref() == Some(id) {
@@ -27,7 +53,7 @@ fn retained_ports_have_real_accessibility_and_authored_positions() {
         },
     ];
     let mut harness = Driver::new(
-        crate::State::new(),
+        tilo_ui::State::new(),
         Box::new(GraphCanvas::new(
             nodes,
             vec![GraphCanvasConnection {
@@ -58,14 +84,14 @@ fn a_titled_graph_shows_its_title_over_its_nodes() {
         content: Box::new(Button::new("output", "Source output")),
     }];
     let harness = Driver::new(
-        crate::State::new(),
+        tilo_ui::State::new(),
         Box::new(GraphCanvas::new(nodes, Vec::new()).with_title(Some("Release pipeline".into()))),
         (500, 300),
     );
     let inspection = harness.inspection();
     let output = target(&inspection.root, "output").expect("the node");
     let theme = tilo_ui_base::Theme::light();
-    let band = crate::widget::chart_navigation::title_band(&theme, "Release pipeline");
+    let band = tilo_ui::widget::chart_navigation::title_band_for_tests(&theme, "Release pipeline");
     assert!(
         (output.rect[1] - band).abs() < 1.0,
         "the nodes start a chart's title band under the title: {:?}, band {band}",

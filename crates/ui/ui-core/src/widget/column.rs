@@ -307,11 +307,11 @@ impl Widget for Column {
 
 flow_capabilities!(Column);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl Column {
     /// How far below its laid-out place each child is drawn this frame,
     /// then how much taller the column is drawn; `None` at rest.
-    pub(crate) fn drawn_offsets(&self) -> Option<Vec<f64>> {
+    pub fn drawn_offsets(&self) -> Option<Vec<f64>> {
         self.flow.follower_shifts()
     }
 }

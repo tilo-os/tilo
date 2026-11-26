@@ -9,11 +9,11 @@ thread_local! {
 }
 
 /// A click handler that records a click named `name`.
-pub(crate) fn record_click(name: &'static str) -> impl FnMut() + 'static {
+pub fn record_click(name: &'static str) -> impl FnMut() + 'static {
     move || CLICKS.with_borrow_mut(|clicks| *clicks.entry(name).or_default() += 1)
 }
 
 /// How many clicks named `name` were recorded on this thread.
-pub(crate) fn clicks(name: &'static str) -> usize {
+pub fn clicks(name: &'static str) -> usize {
     CLICKS.with_borrow(|clicks| clicks.get(name).copied().unwrap_or_default())
 }

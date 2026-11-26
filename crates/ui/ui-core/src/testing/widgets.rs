@@ -2,8 +2,17 @@
 //! inside an `impl Widget for ...` (or produces the whole `impl AppWidget`) so a probe
 //! only spells out the methods it observes.
 
+#![allow(
+    dead_code,
+    clippy::disallowed_methods,
+    clippy::unwrap_used,
+    clippy::expect_used,
+    reason = "a probe emits only the methods it observes, and the test-support build compiles every probe whether or not a test uses it"
+)]
+
 /// Stubs for [`Widget`](tilo_ui_base::widget::Widget) methods a probe does not observe; it emits
 /// exactly the named pieces.
+#[macro_export]
 macro_rules! inert_widget_methods {
     (@ leaf_layout) => {
         fn build_layout(
@@ -45,6 +54,7 @@ macro_rules! inert_widget_methods {
     };
 }
 
+#[macro_export]
 macro_rules! delegate_widget_methods {
     (@ $field:tt sync) => {
         fn sync(&mut self, doc: &::tilo_ui_base::widget::AppModel, path: &::tilo_ui_base::widget::ModelPath) {
@@ -98,6 +108,7 @@ macro_rules! delegate_widget_methods {
     };
 }
 
+#[macro_export]
 macro_rules! test_app_widget {
     (@ or , $default:expr) => {
         $default
@@ -137,9 +148,7 @@ macro_rules! test_app_widget {
     };
 }
 
-pub(crate) use {delegate_widget_methods, inert_widget_methods, test_app_widget};
-
-#[cfg(feature = "model")]
+#[cfg(all(test, feature = "model"))]
 /// Two editor windows side by side, as the shell's strip lays them out: 400x300 each in
 /// a surface that fills its parent.
 pub(crate) struct TwoWindows {
@@ -147,7 +156,7 @@ pub(crate) struct TwoWindows {
     rect: ::vello::kurbo::Rect,
 }
 
-#[cfg(feature = "model")]
+#[cfg(all(test, feature = "model"))]
 impl TwoWindows {
     /// Two stub windows labelled `labels`.
     pub(crate) fn new(labels: [&str; 2]) -> Self {
@@ -163,7 +172,7 @@ impl TwoWindows {
     }
 }
 
-#[cfg(feature = "model")]
+#[cfg(all(test, feature = "model"))]
 impl tilo_ui_base::widget::Widget for TwoWindows {
     fn build_layout(
         &mut self,
@@ -250,7 +259,7 @@ enum LeafSize {
 
 /// What a [`TestLeaf`] was shown and sent, shared with the test that placed it.
 #[derive(Clone, Default)]
-pub(crate) struct Seen(::std::rc::Rc<::std::cell::RefCell<SeenLog>>);
+pub struct Seen(::std::rc::Rc<::std::cell::RefCell<SeenLog>>);
 
 #[derive(Default)]
 struct SeenLog {
@@ -287,7 +296,7 @@ impl Seen {
 /// answers to a test id, can take focus on a press and swallow the events it is sent, and
 /// records what reached it in a [`Seen`] the test keeps. Containers in tests are the real
 /// ones (`Column`, `Row`, `Scrollable`), holding these leaves.
-pub(crate) struct TestLeaf {
+pub struct TestLeaf {
     pub(crate) id: &'static str,
     pub(crate) rect: ::vello::kurbo::Rect,
     size: LeafSize,
