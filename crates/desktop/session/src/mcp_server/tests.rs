@@ -124,7 +124,6 @@ fn a_workspace_apps_record_is_read_without_the_sessions_pass() {
     let records = ServiceRecords {
         state: None,
         session: Arc::new(SessionServices::new(Arc::new(|| {}), "person")),
-        agent_session: None,
     };
     let started = std::time::Instant::now();
     let read = tilo_rt::block_on(records.read(
@@ -408,7 +407,6 @@ fn a_live_reading_that_changes_reaches_its_follower() {
     let records = Arc::new(super::records::ServiceRecords {
         state: None,
         session: Arc::clone(&session),
-        agent_session: None,
     });
     let caller = Caller::local_person("person");
     let asks = [ResourceAsk {
@@ -523,7 +521,6 @@ fn a_reading_is_the_callers_only_where_the_read_is_theirs() {
     let records = super::records::ServiceRecords {
         state: None,
         session: Arc::clone(&session),
-        agent_session: None,
     };
     let offered = serde_json::json!({"offered": []});
     // The loop's pass, answering the reading asked of it with the styles, published under the

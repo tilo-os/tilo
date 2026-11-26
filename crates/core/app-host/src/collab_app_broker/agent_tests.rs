@@ -264,20 +264,7 @@ impl Fixture {
         launcher: Option<Arc<dyn crate::services::LauncherServices>>,
         providers: tilo_workspace_service::workspaces::providers::Providers,
     ) -> Self {
-        Self::with_origin(launcher, providers, None)
-    }
-    /// As [`Self::with_services`], with `resource_changes` the origin of the
-    /// workspace's records.
-    #[allow(
-        clippy::too_many_lines,
-        reason = "one scenario, end to end, reads as one test"
-    )]
-    fn with_origin(
-        launcher: Option<Arc<dyn crate::services::LauncherServices>>,
-        providers: tilo_workspace_service::workspaces::providers::Providers,
-        resource_changes: Option<Arc<dyn crate::services::DocumentChangeServices>>,
-    ) -> Self {
-        Self::built(launcher, providers, resource_changes, false)
+        Self::built(launcher, providers, false)
     }
     /// The fixture, its signed device `foreign` to this host or one of its own.
     #[allow(
@@ -287,7 +274,6 @@ impl Fixture {
     fn built(
         launcher: Option<Arc<dyn crate::services::LauncherServices>>,
         providers: tilo_workspace_service::workspaces::providers::Providers,
-        resource_changes: Option<Arc<dyn crate::services::DocumentChangeServices>>,
         foreign: bool,
     ) -> Self {
         let directory = tempfile::tempdir().unwrap();
@@ -374,7 +360,6 @@ impl Fixture {
                 agent_sessions: Some(native.clone()),
                 workspace_memberships: Some(native.clone()),
                 providers: Some(providers),
-                resource_changes,
                 ..Default::default()
             },
         );

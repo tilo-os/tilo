@@ -260,10 +260,6 @@ impl ActionProvider for Stopped {
         self.api.resource_reads()
     }
 
-    fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
-        self.api.resource_changes()
-    }
-
     fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
         self.api.resource_search()
     }
@@ -337,7 +333,6 @@ impl Current {
             kept: crate::mcp_server::ServiceRecords {
                 state: None,
                 session: Arc::clone(&self.services),
-                agent_session: None,
             },
             services: Arc::clone(&self.services),
             provider: self.provider(),
@@ -345,12 +340,11 @@ impl Current {
     }
 }
 
-/// The records a session's programs read and change, as the person's own REPL does at the
-/// session's MCP server: the records the session keeps itself (the tilolang apps it serves) on the
-/// loop's pass, as the session's services decide them for the caller, and every other app's
-/// through the run's own api. Without the first, a turn's program could neither read Tasks nor
-/// add a task ("this desktop applies no task's changes at a record's origin"): the session keeps
-/// those records and the broker has no origin for them.
+/// The records a session's programs read, as the person's own REPL does at the session's MCP
+/// server: the records the session keeps itself (the tilolang apps it serves) on the loop's pass,
+/// as the session's services decide them for the caller, and every other app's through the run's
+/// own api. Without the first, a turn's program could not read Tasks: the session keeps those
+/// records and the workspace has no copy of them.
 struct TurnRecords {
     kept: crate::mcp_server::ServiceRecords,
     services: Arc<crate::mcp_server::SessionServices>,
@@ -413,24 +407,6 @@ impl tilo_actions::remote::ResourceReads for TurnRecords {
     }
 }
 
-impl tilo_actions::remote::ResourceChanges for TurnRecords {
-    fn apply(
-        &self,
-        caller: &tilo_actions::remote::Caller,
-        change: &tilo_actions::remote::ResourceChange,
-    ) -> Result<serde_json::Value, tilo_actions::remote::ActionCallError> {
-        if self.services.keeps(&change.app) {
-            return self.kept.apply(caller, change);
-        }
-        self.provider
-            .resource_changes()
-            .ok_or_else(|| tilo_actions::remote::ActionCallError::Unavailable {
-                reason: "this desktop applies no task's changes at a record's origin".to_owned(),
-            })?
-            .apply(caller, change)
-    }
-}
-
 impl ActionProvider for Current {
     fn retire_execution(&self, caller: &tilo_actions::remote::Caller) {
         self.provider().retire_execution(caller);
@@ -448,10 +424,11 @@ impl ActionProvider for Current {
     fn invoke(
         &self,
         caller: &tilo_actions::remote::Caller,
-        request: tilo_actions::remote::InvokeRequest,
+        mut request: tilo_actions::remote::InvokeRequest,
     ) -> Pending<
         Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>,
     > {
+        self.services.address_kept(&mut request);
         self.provider().invoke(caller, request)
     }
 
@@ -511,10 +488,6 @@ impl ActionProvider for Current {
     }
 
     fn resource_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
-        Some(Arc::new(self.records()))
-    }
-
-    fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
         Some(Arc::new(self.records()))
     }
 

@@ -24,7 +24,7 @@ mod task_hosts;
 use environments::Origin;
 pub(crate) use room::{Place, Room};
 pub(crate) use service_steps::invoke_service_step;
-use service_steps::{arguments_of, change_through, with_turn_beside};
+use service_steps::{arguments_of, with_turn_beside};
 use task_hosts::SessionCatalogue;
 
 use std::collections::HashMap;
@@ -1123,14 +1123,6 @@ enum ApiAsk {
         resource: String,
         done: tilo_actions::remote::Completer<Option<Published>>,
     },
-    /// Run the change `change` of a record a service keeps for a package the session runs itself,
-    /// as `actor` , on the pass: its answer as the services give it, or `None` when no service keeps
-    /// that app's record.
-    Change {
-        actor: tilo_action_policy::Acting,
-        change: tilo_actions::remote::ResourceChange,
-        done: tilo_actions::remote::Completer<Option<Result<serde_json::Value, ActionCallError>>>,
-    },
 }
 
 /// The boundary between the server's connections and the session's own services.
@@ -1272,6 +1264,17 @@ impl SessionServices {
     /// read and changed on the loop's pass, every other app's are the workspace's.
     pub(crate) fn keeps(&self, app: &str) -> bool {
         self.kept.lock_recover().contains(app)
+    }
+
+    /// Address an action of a record the session's services keep (a package it runs itself) to
+    /// the session's own provider: the session is that record's origin, so its action is one of
+    /// the session's own steps.
+    pub(crate) fn address_kept(&self, request: &mut InvokeRequest) {
+        if tilo_actions::remote::resource_parts(&request.target.provider)
+            .is_some_and(|(app, _)| self.keeps(app))
+        {
+            wire_provider().clone_into(&mut request.target.provider);
+        }
     }
 
     /// The services `wake` wakes the loop for, shared by every connection that asks the session's own
@@ -1705,11 +1708,6 @@ impl SessionServices {
                         }),
                     );
                 }
-                ApiAsk::Change {
-                    actor,
-                    change,
-                    done,
-                } => done.complete(change_through(services, &actor, &change)),
             }
         }
         // A step that ran here may have moved what the services publish: a follow of a reading
@@ -1880,8 +1878,13 @@ impl Host {
     fn invoke_within(
         &self,
         caller: &Caller,
-        request: InvokeRequest,
+        mut request: InvokeRequest,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        // The record an action of a record's own provider changes, before it is addressed to the
+        // session when the session keeps that record.
+        let record = tilo_actions::remote::resource_parts(&request.target.provider)
+            .map(|(app, record)| (app.to_owned(), record.to_owned()));
+        self.session.address_kept(&mut request);
         // An app of a workspace this device is not admitted to yet takes part in nothing there:
         // asked of it, an action would wait for an app that never answers. It is refused now, with
         // the reason, for the person and an agent alike.
@@ -1925,6 +1928,11 @@ impl Host {
         }
         if !person && let Some(session) = &self.agent_session {
             session.acting(&request);
+            // A record's own action is a change of that record: one that taking the session's
+            // work back undoes.
+            if let Some((app, record)) = &record {
+                session.sessions.changed(&session.session, app, record);
+            }
         }
         // The session's own steps run on the loop, where the layout and the windows are. A step
         // its own API publishes nothing of is a host step's — the person's own tilolang line,
@@ -2222,11 +2230,6 @@ impl ActionProvider for Host {
         Some(Arc::new(self.service_records()))
     }
 
-    /// The changes a connection makes to those records: a package the session runs itself is
-    /// changed through its own services, and any other app's at its record's origin.
-    fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
-        Some(Arc::new(self.service_records()))
-    }
 }
 
 impl Host {
@@ -2234,10 +2237,6 @@ impl Host {
         ServiceRecords {
             state: self.state.as_ref().map(Arc::downgrade),
             session: Arc::clone(&self.session),
-            agent_session: self
-                .agent_session
-                .as_ref()
-                .map(|at| (Arc::clone(&at.sessions), at.session.clone())),
         }
     }
 }

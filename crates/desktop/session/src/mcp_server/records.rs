@@ -5,9 +5,8 @@
 use std::sync::Arc;
 
 use tilo_actions::remote::{ActionCallError, Caller};
-use tilo_lock::MutexRecover as _;
 
-use super::{ApiAsk, SessionServices, WAIT, unanswered};
+use super::SessionServices;
 
 /// The records a connection reads and changes as any app's: those the session's services keep for
 /// packages it runs itself (the shell), on the loop's pass, and the workspace's through the device's
@@ -15,34 +14,9 @@ use super::{ApiAsk, SessionServices, WAIT, unanswered};
 pub(crate) struct ServiceRecords {
     pub(crate) state: Option<std::sync::Weak<super::Dispatch>>,
     pub(crate) session: Arc<SessionServices>,
-    /// The agent session an admitted connection is, when it is one: the records it changes are
-    /// kept there, as what taking its work back undoes.
-    pub(crate) agent_session: Option<(
-        Arc<crate::agent_sessions::AgentSessions>,
-        tilo_action_policy::AgentSessionId,
-    )>,
 }
 
 impl ServiceRecords {
-    /// The session's answer to `ask` about `app`'s record, on its pass: `None` when no service keeps
-    /// it, and then without waiting for a pass. A session that does not answer may still act on
-    /// the ask: answering from the workspace's copy instead would answer from somewhere else.
-    fn on_pass<T>(
-        &self,
-        app: &str,
-        ask: impl FnOnce(tilo_actions::remote::Completer<Option<T>>) -> ApiAsk,
-    ) -> Result<Option<T>, ActionCallError> {
-        if !self.session.kept.lock_recover().contains(app) {
-            return Ok(None);
-        }
-        let (done, answered) = tilo_actions::remote::pending();
-        self.session.ask(ask(done));
-        answered
-            .wait_timeout(WAIT)
-            .map(Option::flatten)
-            .map_err(|_| unanswered())
-    }
-
     /// The device's reader of the workspaces' records, which decides each read as the caller.
     fn workspace_reads(
         &self,
@@ -135,30 +109,5 @@ impl ServiceRecords {
             published.reading,
             None,
         )))
-    }
-}
-
-impl tilo_actions::remote::ResourceChanges for ServiceRecords {
-    fn apply(
-        &self,
-        caller: &Caller,
-        change: &tilo_actions::remote::ResourceChange,
-    ) -> Result<serde_json::Value, ActionCallError> {
-        // The session hears of every record this connection changes, whichever end applies it:
-        // one of the records taking its work back undoes.
-        if let Some((sessions, session)) = &self.agent_session {
-            sessions.changed(session, &change.app, &change.record);
-        }
-        let asked = (caller.acting().clone(), change.clone());
-        if let Some(answer) = self.on_pass(&change.app, |done| ApiAsk::Change {
-            actor: asked.0,
-            change: asked.1,
-            done,
-        })? {
-            return answer;
-        }
-        Err(ActionCallError::Unavailable {
-            reason: "this desktop applies no task's changes at a record's origin".to_owned(),
-        })
     }
 }

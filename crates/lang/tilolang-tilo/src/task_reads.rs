@@ -113,44 +113,6 @@ impl TaskReads {
         self.with_host(app, |host| host.runtime().answer_read(&request))
     }
 
-    /// What the action `call` (`{app, resource, action, arguments}`) would write, planned with
-    /// the app's package over its resources as this program read them, for `caller`: the preview
-    /// the app's origin compares its own run with. The origin runs the action again against the
-    /// resources as they are then, so this decides nothing.
-    ///
-    /// # Errors
-    /// The call names no action the app publishes, or it does not plan.
-    pub fn plan(
-        &self,
-        call: &Json,
-        caller: Option<&crate::publish::Caller>,
-    ) -> Result<Json, String> {
-        let app = call["app"].as_str().ok_or("a call names its app")?;
-        let action = call["action"].as_str().ok_or("a call names its action")?;
-        let prefix = crate::publish::resource_id(app, "");
-        let resource = call["resource"]
-            .as_str()
-            .and_then(|id| id.strip_prefix(&prefix));
-        let empty = serde_json::Map::new();
-        let args = call["arguments"].as_object().unwrap_or(&empty);
-        let published = call["resource"].as_str().unwrap_or_default();
-        self.with_host(app, |host| {
-            let action = host
-                .published_action(published, action)
-                .ok_or_else(|| format!("{app} publishes no action {action}"))?;
-            let planned = host.plan(&crate::publish::PlanRequest {
-                app,
-                kind: "",
-                action_id: &action.id,
-                resource,
-                args,
-                caller,
-                from: None,
-            })?;
-            serde_json::to_value(&planned).map_err(|error| error.to_string())
-        })
-    }
-
     fn with_host<T>(
         &self,
         app: &str,

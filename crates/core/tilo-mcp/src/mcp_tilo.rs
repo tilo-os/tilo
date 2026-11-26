@@ -1685,18 +1685,15 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 .lock_recover()
                 .records
                 .insert(app.to_owned(), record.to_owned());
-            let change = tilo_actions::remote::ResourceChange {
-                app: app.to_owned(),
-                record: record.to_owned(),
-                resource: resource.to_owned(),
-                action: action.to_owned(),
-                arguments: call["arguments"].as_object().cloned().unwrap_or_default(),
-                preview: call
-                    .get("preview")
-                    .cloned()
-                    .filter(|preview| !preview.is_null()),
-            };
-            return self.task_change(change).await;
+            return self
+                .task_change(
+                    app,
+                    record,
+                    resource,
+                    action,
+                    call["arguments"].as_object().cloned().unwrap_or_default(),
+                )
+                .await;
         }
         // An action of a resource the session itself publishes (its shell, its layout) goes
         // to the session's own provider, as every other caller of the desktop reaches it.
@@ -1723,67 +1720,35 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             wait_ms: Some(PROGRAM_WAIT_MS),
         }))
         .await;
-        match value {
-            Ok(value) => match value.pointer("/update/state").and_then(Value::as_str) {
-                Some("succeeded") => {
-                    let mut output = value
-                        .pointer("/update/output")
-                        .cloned()
-                        .unwrap_or(Value::Null);
-                    // What takes this change back: the invocation it was, as the workspace
-                    // lists it, and so the documents it changed.
-                    if let Some(invocation) = value
-                        .pointer("/update/invocation")
-                        .or_else(|| value.get("invocation_id"))
-                        .and_then(Value::as_str)
-                        && let Some(fields) = output.as_object_mut()
-                    {
-                        fields.insert("invocation".to_owned(), json!(invocation));
-                    }
-                    json!({"ok": output})
-                }
-                // Failed, cancelled, or not finished in time: it may still run, so the
-                // program cannot go on as if it had not.
-                _ => json!({"failed": super::outcome(&value).text}),
-            },
-            Err(why) if refused(&why) => json!({"refused": format!("{action}: {why}")}),
-            Err(why) => json!({"failed": String::from(why)}),
-        }
+        program_answer(action, value)
     }
 
-    /// Send `change` to its record's origin as the task, decided there by the broker: the
-    /// invocation's answer as the task's host reads it.
-    async fn task_change(&self, change: tilo_actions::remote::ResourceChange) -> Value {
-        let Some(changes) = self.host().resource_changes() else {
-            return json!({"failed": "this desktop applies no task's changes at a record's origin"});
-        };
-        let caller = self.execution_caller();
-        let action = change.action.clone();
-        let applied = tokio::task::spawn_blocking(move || changes.apply(&caller, &change)).await;
-        match applied {
-            Ok(Ok(answer)) => {
-                if let Some(output) = answer.get("ok") {
-                    let differs = answer.get("differs").and_then(Value::as_bool) == Some(true);
-                    json!({"ok": output, "differs": differs, "change": answer.get("change")})
-                } else {
-                    json!({"failed": answer.get("failed").and_then(Value::as_str).map_or_else(|| answer.to_string(), str::to_owned)})
-                }
-            }
-            // A program cannot wait inside its run for a person's yes: it goes on with a refusal
-            // saying so.
-            Ok(Err(tilo_actions::remote::ActionCallError::ConfirmationRequired { .. })) => {
-                json!({"refused": format!("{action}: it waits for its person's yes")})
-            }
-            Ok(Err(
-                error @ (tilo_actions::remote::ActionCallError::Refused { .. }
-                | tilo_actions::remote::ActionCallError::NotPermitted
-                | tilo_actions::remote::ActionCallError::UnknownAction),
-            )) => {
-                json!({"refused": format!("{action}: {error}")})
-            }
-            Ok(Err(error)) => json!({"failed": format!("{action}: {error}")}),
-            Err(error) => json!({"failed": format!("the change ended: {error}")}),
-        }
+    /// The task's change of `app`'s record `record`: an action of the record's own provider, run
+    /// through the one dispatch as every other call is, so the workspace's invocations record keeps
+    /// it as this task's step.
+    async fn task_change(
+        &self,
+        app: &str,
+        record: &str,
+        resource: &str,
+        action: &str,
+        arguments: Map<String, Value>,
+    ) -> Value {
+        let value = Box::pin(self.invoke_one(OneCall {
+            provider: Addressed {
+                provider: format!("{}:{app}:{record}", tilo_actions::remote::RESOURCE_PROVIDER),
+                app_id: Some(app.to_owned()),
+            },
+            workspace: false,
+            revision: None,
+            resource: resource.to_owned(),
+            action: action.to_owned(),
+            arguments,
+            invocation_id: None,
+            wait_ms: Some(PROGRAM_WAIT_MS),
+        }))
+        .await;
+        program_answer(action, value)
     }
 
     /// The text of a program's answer, its resources named by references.
@@ -2205,14 +2170,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 let mut arguments = Map::new();
                 arguments.insert("steps".to_owned(), json!(1));
                 let answer = self
-                    .task_change(tilo_actions::remote::ResourceChange {
-                        app: at.app.clone(),
-                        record,
-                        resource: at.resource.clone(),
-                        action: "undo".to_owned(),
-                        arguments,
-                        preview: None,
-                    })
+                    .task_change(&at.app, &record, &at.resource, "undo", arguments)
                     .await;
                 if answer.get("ok").is_none() {
                     let why = ["failed", "refused"]
@@ -2335,6 +2293,37 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             }
         }
         Ok(Reply::ok(text))
+    }
+}
+
+/// A program's answer to its call of `action`: its output when it succeeded, with the invocation
+/// that takes it back, or why it did not.
+fn program_answer(action: &str, value: Result<Value, Failure>) -> Value {
+    match value {
+        Ok(value) => match value.pointer("/update/state").and_then(Value::as_str) {
+            Some("succeeded") => {
+                let mut output = value
+                    .pointer("/update/output")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                // What takes this change back: the invocation it was, as the workspace
+                // lists it, and so the documents it changed.
+                if let Some(invocation) = value
+                    .pointer("/update/invocation")
+                    .or_else(|| value.get("invocation_id"))
+                    .and_then(Value::as_str)
+                    && let Some(fields) = output.as_object_mut()
+                {
+                    fields.insert("invocation".to_owned(), json!(invocation));
+                }
+                json!({"ok": output})
+            }
+            // Failed, cancelled, or not finished in time: it may still run, so the
+            // program cannot go on as if it had not.
+            _ => json!({"failed": super::outcome(&value).text}),
+        },
+        Err(why) if refused(&why) => json!({"refused": format!("{action}: {why}")}),
+        Err(why) => json!({"failed": String::from(why)}),
     }
 }
 

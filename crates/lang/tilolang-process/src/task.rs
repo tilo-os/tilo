@@ -228,23 +228,16 @@ impl TaskApi for Api {
     }
 
     fn invoke(&self, call: &Json) -> Answered {
-        // A change of a document the session changes itself goes there with the document it changes,
-        // and what the task's read of it would write, which the session compares its run with.
-        // Any other app's change is its action, invoked at the app.
+        // A change of a document the session changes itself is an action of that document's own
+        // provider. Any other app's change is its action, invoked at the app.
         let mut call = call.clone();
         if let Some(app) = call.get("app").and_then(Json::as_str).map(str::to_owned)
             && self.changed_at_document.contains(&app)
             && let Some((under, record)) = self.reads.address(&app)
+            && let Some(fields) = call.as_object_mut()
         {
-            let preview = self
-                .reads
-                .plan(&call, self.caller.borrow().as_ref())
-                .unwrap_or(Json::Null);
-            if let Some(fields) = call.as_object_mut() {
-                fields.insert("app".to_owned(), json!(under));
-                fields.insert("record".to_owned(), json!(record));
-                fields.insert("preview".to_owned(), preview);
-            }
+            fields.insert("app".to_owned(), json!(under));
+            fields.insert("record".to_owned(), json!(record));
         }
         let reply = match self.line.ask(&json!({"invoke": call})) {
             Ok(reply) => reply,

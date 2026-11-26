@@ -1044,39 +1044,6 @@ impl ResourceWake {
     }
 }
 
-/// An action to run on one record at the record's origin, as an agent task invokes it: the
-/// record (by its app and its id there), the action's subject resource and the action, its
-/// arguments, and what the task's preview planned, when it planned.
-#[derive(Clone, Debug, PartialEq)]
-pub struct ResourceChange {
-    pub app: String,
-    pub record: String,
-    pub resource: String,
-    pub action: String,
-    pub arguments: serde_json::Map<String, serde_json::Value>,
-    pub preview: Option<serde_json::Value>,
-}
-
-/// A provider's API for an agent task's changes to records outside their apps. A change goes to
-/// the record's origin, which runs the action against the record as it is then, applies what it
-/// wrote as the task's step and answers with its JSON: `{"ok": {value, resources}, "differs":
-/// bool}`, or `{"failed": why}` when the action did not run.
-pub trait ResourceChanges: Send + Sync {
-    /// Apply `change` for `caller`, as `caller` may change the record now.
-    ///
-    /// # Errors
-    ///
-    /// [`ActionCallError::Refused`] for a caller that is not an agent task acting for its
-    /// person or a change the workspace does not allow it, [`ActionCallError::ConfirmationRequired`]
-    /// for one that asks its person first, [`ActionCallError::Unavailable`] when the origin
-    /// cannot be reached.
-    fn apply(
-        &self,
-        caller: &Caller,
-        change: &ResourceChange,
-    ) -> Result<serde_json::Value, ActionCallError>;
-}
-
 #[cfg(test)]
 mod tests {
     use automerge::transaction::Transactable as _;

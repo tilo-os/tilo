@@ -3,7 +3,7 @@
 use super::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ContentGets,
     ContentPuts, InvocationId, InvocationReceipt, InvocationState, InvokeRequest, LiveView,
-    Pending, ResourceChanges, ResourceReads,
+    Pending, ResourceReads,
 };
 
 /// A shared provider is the provider: what lets one be handed to [`super::serve`], which
@@ -111,10 +111,6 @@ impl<H: ActionProvider + ?Sized> ActionProvider for std::sync::Arc<H> {
 
     fn store_commands(&self) -> Option<std::sync::Arc<dyn super::StoreCommands>> {
         (**self).store_commands()
-    }
-
-    fn resource_changes(&self) -> Option<std::sync::Arc<dyn ResourceChanges>> {
-        (**self).resource_changes()
     }
 
     fn resource_search(&self) -> Option<std::sync::Arc<dyn super::ResourceSearch>> {

@@ -385,10 +385,6 @@ impl ActionProvider for Latest {
         self.provider().resource_reads()
     }
 
-    fn resource_changes(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceChanges>> {
-        self.provider().resource_changes()
-    }
-
     fn resource_search(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceSearch>> {
         self.provider().resource_search()
     }
