@@ -106,6 +106,7 @@ mod published_invocation;
 mod record_changes;
 mod resolved_invocation;
 mod route_holds;
+mod shortcut_approval;
 /// A desktop session's app socket, which only a Unix session has.
 #[cfg(unix)]
 pub mod seat;

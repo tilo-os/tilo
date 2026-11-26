@@ -2354,6 +2354,10 @@ impl AppBrokerState {
 
     /// Recheck the original signed ownership while an asynchronous launch waits.
     /// The numeric dispatcher checks it again when capturing the actual offer.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each origin's ownership is rechecked in one ordered match"
+    )]
     pub(super) fn check_launch_origin(
         &self,
         caller: &Caller,
@@ -2448,6 +2452,15 @@ impl AppBrokerState {
                 }
                 self.current_native_person(workspace, certificate)
                     .map_err(refusal)?;
+                None
+            }
+            Some(super::published_invocation::InvocationCaller::Shortcut(approval)) => {
+                self.current_shortcut_approval(
+                    approval,
+                    workspace,
+                    BrokerActor::for_caller(caller).actor(),
+                )
+                .map_err(|reason| ActionCallError::Refused { reason })?;
                 None
             }
             None => None,

@@ -287,6 +287,16 @@ impl AppBrokerState {
                     .map_err(unavailable)?;
                 Some(AppBrokerState::certified_person(certificate))
             }
+            // The run's caller is decided as itself, once the approval still stands for it.
+            Some(InvocationCaller::Shortcut(approval)) => {
+                self.current_shortcut_approval(
+                    approval,
+                    workspace,
+                    BrokerActor::for_caller(caller).actor(),
+                )
+                .map_err(|reason| ActionCallError::Refused { reason })?;
+                None
+            }
             None => None,
         };
         let (workspace, actor, now) = self

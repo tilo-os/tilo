@@ -137,6 +137,24 @@ impl AppBrokerState {
                 );
             }
             Some(time)
+        } else if let Some(InvocationCaller::Shortcut(approval)) = &origin {
+            // A shortcut's approval reaches only the steps its saver approved.
+            self.shortcut_call_owner(
+                approval,
+                &offered.0.route.cluster_id,
+                actor.actor(),
+                (
+                    (
+                        &offered.0.app_id,
+                        &offered.1.resource_kind,
+                        &offered.1.resource,
+                        &offered.1.action,
+                    ),
+                    &tilo_actions::remote::InvokeArgument::from_slot(argument),
+                ),
+            )
+            .map_err(|error| error.to_string())?;
+            approval.time()
         } else {
             None
         };

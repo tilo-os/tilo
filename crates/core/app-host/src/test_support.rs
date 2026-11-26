@@ -78,6 +78,8 @@ fn giver(policy: &tilo_action_policy::WorkspacePolicy, subject: &Grantee) -> Gra
 pub struct WorkspaceTree {
     pub desktop: tilo_desktop_model::Layout,
     pub persist_path: Option<std::path::PathBuf>,
+    /// The device revocations every workspace of the tree records.
+    pub revoked: tilo_user_identity::RevocationList,
 }
 impl std::ops::Deref for WorkspaceTree {
     type Target = tilo_desktop_model::Layout;
@@ -165,11 +167,11 @@ impl WorkspaceTreeHandle {
     }
 }
 impl WorkspaceAuthority for WorkspaceTreeHandle {
-    /// A test tree holds no workspace documents: none of its workspaces revokes a
-    /// device.
+    /// A test tree keeps no workspace documents: its workspaces revoke the devices the tree
+    /// says they do.
     fn workspace_revocations(&self, workspace: &str) -> Option<tilo_user_identity::RevocationList> {
-        crate::services::workspace_in(&self.read().desktop, workspace)
-            .map(|_| tilo_user_identity::RevocationList::new())
+        let tree = self.read();
+        crate::services::workspace_in(&tree.desktop, workspace).map(|_| tree.revoked.clone())
     }
     /// A test tree keeps no workspace document: its registry list is the one the test writes
     /// as `registries.toml` under `TILO_STORE_CONFIG_DIR`.

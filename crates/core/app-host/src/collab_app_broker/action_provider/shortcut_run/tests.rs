@@ -63,6 +63,8 @@ struct Fixture {
     origin: InvocationCaller,
     request: InvokeRequest,
     key: InvocationKey,
+    /// The workspaces this host keeps, as its authority reads them.
+    tree: crate::test_support::WorkspaceTreeHandle,
     _clock_origin: crate::policy_clock::PolicyOrigin,
     _root: tempfile::TempDir,
     /// The device's key, taken as its daemon takes it, for as long as this lives.
@@ -104,6 +106,12 @@ impl Fixture {
         let owner =
             crate::test_owner::SessionOwner::initialize(&scratch.path().join("owner")).unwrap();
         let certificate = owner.device();
+        // The evidence this host admits is signed as its device, as a host that opened its
+        // workspaces names it.
+        tilo_invocation_journal::serve_as(
+            certificate.clone(),
+            Arc::new(owner.signing_key().clone()),
+        );
         let (clock, _control) = crate::policy_clock::OwnerPolicyClock::for_test(
             certificate.issued_at_ns.saturating_add(1_000_000_000),
         );
@@ -179,8 +187,9 @@ impl Fixture {
         }
         let mut tree = WorkspaceTree::default();
         tree.workspaces.push(workspace);
+        let tree = tree.shared();
         let (state, _bridge) = AppBrokerState::test_state(
-            Some(tree.shared().authority()),
+            Some(tree.authority()),
             ProcessServices {
                 shortcut_library: Some(Arc::new(Library(tokio::runtime::Handle::current()))),
                 local_person: Some(person.clone()),
@@ -229,6 +238,7 @@ impl Fixture {
             origin,
             request,
             key,
+            tree,
             _clock_origin: clock_origin,
             _root: scratch,
             _taken_key: taken_key,
@@ -1372,5 +1382,339 @@ async fn a_run_a_pressed_key_started_says_so_in_its_history() {
         let finished = fixture.state.take_finished_invocations();
         assert_eq!(finished.len(), 1);
         assert_eq!(finished[0].report.trigger, kind, "{chord}");
+    }
+}
+
+/// Another member of the fixture's workspace, signed in on a device of theirs that is not this
+/// host: the host's own person is someone else.
+struct Saver {
+    root: ed25519_dalek::SigningKey,
+    certificate: tilo_user_identity::DeviceCert,
+    key: ed25519_dalek::SigningKey,
+}
+
+impl Saver {
+    fn new() -> Self {
+        let root = ed25519_dalek::SigningKey::from_bytes(&[41; 32]);
+        let key = ed25519_dalek::SigningKey::from_bytes(&[42; 32]);
+        let mut certificate = tilo_user_identity::DeviceCert {
+            user_public_key: root.verifying_key().to_bytes(),
+            device_public_key: key.verifying_key().to_bytes(),
+            device_label: "Their laptop".into(),
+            capabilities: tilo_user_identity::DeviceCapabilities::member(),
+            issued_at_ns: 0,
+            expires_at_ns: None,
+            signature: [0; 64],
+            issuer: None,
+        };
+        tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+        Self {
+            root,
+            certificate,
+            key,
+        }
+    }
+
+    fn person(&self) -> String {
+        crate::collab_app_broker::person_id_for_root(self.certificate.user_public_key)
+    }
+
+    /// `shortcut` as this saver's device signs it in `workspace`.
+    fn saves(
+        &self,
+        workspace: &str,
+        mut shortcut: tilo_automation::Shortcut,
+    ) -> tilo_automation::Shortcut {
+        tilo_peer_state::workspace::sign_saved_shortcut(
+            workspace,
+            &mut shortcut,
+            &self.certificate,
+            &self.key,
+        )
+        .unwrap();
+        shortcut
+    }
+
+    /// This saver's device, revoked by their root.
+    fn revoked(&self) -> tilo_user_identity::RevocationEntry {
+        let mut entry = tilo_user_identity::RevocationEntry {
+            user_public_key: self.certificate.user_public_key,
+            revoked_device_public_key: self.certificate.device_public_key,
+            revoked_at_ns: 1,
+            reason: tilo_user_identity::RevocationReason::Lost,
+            signature: [0; 64],
+        };
+        tilo_user_identity::sign_revocation_entry(&mut entry, &self.root).unwrap();
+        entry
+    }
+}
+
+/// Shortcut `id`, which runs `echo` with the arguments `args` when Notes opens.
+fn relay(
+    id: &str,
+    args: std::collections::BTreeMap<String, tilo_automation::Binding>,
+) -> tilo_automation::Shortcut {
+    let mut shortcut = several_steps(0);
+    shortcut.id = id.into();
+    shortcut.name = id.into();
+    shortcut.steps = vec![tilo_automation::Step::new(
+        "child",
+        tilo_automation::StepKind::Invoke {
+            action: tilo_actions::ActionKey::new(
+                SHORTCUTS_APP_ID,
+                tilo_automation::SHORTCUT_RESOURCE_KIND,
+                "run",
+            ),
+            resource: tilo_automation::Selector::Fixed(tilo_automation::shortcut_resource_id(
+                "echo",
+            )),
+            args,
+            appearance: None,
+        },
+    )];
+    shortcut.triggers = vec![notes_opened()];
+    shortcut
+}
+
+fn notes_opened() -> tilo_automation::TriggerSpec {
+    tilo_automation::TriggerSpec::AppOpened {
+        app_id: "notes".into(),
+    }
+}
+
+/// The fixture's workspace with `saver` a member of it and `shortcuts` saved by them.
+fn saved_by(saver: &Saver, shortcuts: Vec<tilo_automation::Shortcut>) -> Fixture {
+    let fixture = Fixture::new();
+    let workspace = fixture.caller.workspace().unwrap().to_owned();
+    {
+        let mut tree = fixture.tree.write();
+        let kept = &mut tree.desktop.workspaces[0];
+        kept.policy
+            .members
+            .insert(saver.person(), tilo_action_policy::Role::Editor);
+        for shortcut in shortcuts {
+            kept.shortcuts.push(tilo_automation::SavedShortcut::encode(
+                &saver.saves(&workspace, shortcut),
+            ));
+        }
+    }
+    fixture
+}
+
+impl Fixture {
+    fn as_saver(&self, saver: &Saver) -> Caller {
+        Caller::local_person(saver.person()).in_workspace(self.caller.workspace().unwrap())
+    }
+
+    /// The api a run of `shortcut`, as it is saved now, calls its steps through on `saver`'s
+    /// approval, and the caller its steps are.
+    fn run_api(&self, saver: &Saver, shortcut: &str) -> (BrokerApi, Caller) {
+        let caller = self.as_saver(saver);
+        let workspace = caller.workspace().unwrap().to_owned();
+        let stored = self
+            .state
+            .saved_shortcut(&caller, &workspace, shortcut)
+            .unwrap();
+        let approval = self
+            .state
+            .shortcut_approval(&caller, &workspace, &stored)
+            .expect("the saver's approval stands");
+        (
+            BrokerApi::for_run(Arc::clone(&self.state), Some(approval)),
+            caller.running_shortcut(shortcut),
+        )
+    }
+
+    /// A step's call of shortcut `target`, with `argument`.
+    fn step_call(
+        &self,
+        target: &str,
+        argument: tilo_actions::remote::InvokeArgument,
+    ) -> InvokeRequest {
+        InvokeRequest {
+            invocation: tilo_actions::InvocationId::new(),
+            target: tilo_actions::remote::RemoteActionTarget {
+                provider: workspace_provider(self.caller.workspace().unwrap()),
+                address: tilo_automation::shortcut_run_address(target),
+            },
+            argument,
+            ..self.request.clone()
+        }
+    }
+}
+
+#[allow(
+    clippy::future_not_send,
+    reason = "the fixture's broker state is thread confined to the test's current-thread runtime"
+)]
+async fn step(
+    api: &BrokerApi,
+    caller: &Caller,
+    request: InvokeRequest,
+) -> Result<InvocationReceipt, ActionCallError> {
+    tilo_actions::remote::ActionProvider::invoke(api, caller, request)
+        .await
+        .unwrap()
+}
+
+fn refused_for(answer: Result<InvocationReceipt, ActionCallError>, why: &str) {
+    match answer {
+        Err(ActionCallError::Refused { reason }) => {
+            assert!(reason.contains(why), "refused for another reason: {reason}");
+        }
+        other => panic!("not refused for {why}: {other:?}"),
+    }
+}
+
+/// A trigger that fires on a host whose own person is someone else runs on the approval its
+/// saver signed: the run is recorded as theirs, and its step runs.
+#[tokio::test(flavor = "current_thread")]
+async fn a_triggered_run_of_another_members_shortcut_runs_on_their_signed_approval() {
+    let saver = Saver::new();
+    let fixture = saved_by(
+        &saver,
+        vec![relay("relay", std::collections::BTreeMap::new())],
+    );
+    let caller = fixture.as_saver(&saver);
+    let invocation = tilo_actions::InvocationId::new();
+    let run = tilo_automation::AutomationInvocationId(invocation.0);
+    fixture
+        .state
+        .start_triggered_shortcut_run(
+            &caller,
+            caller.workspace().unwrap(),
+            "relay",
+            &notes_opened(),
+            run,
+            serde_json::Map::new(),
+        )
+        .expect("the saver's approval admits the run");
+    fixture
+        .state
+        .journal
+        .lock()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .as_ref()
+        .unwrap()
+        .lookup(&InvocationKey {
+            invocation,
+            owner: InvocationOwner::AuthenticatedLocal {
+                root: saver.certificate.user_public_key,
+                device: saver.certificate.device_public_key,
+                agent: None,
+            },
+            ..fixture.key.clone()
+        })
+        .unwrap()
+        .expect("the run is recorded as the saver's");
+    tilo_test_env::within("the run ends", async {
+        while fixture.state.shortcut_run_report(run, "relay").is_none() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    let report = fixture.state.shortcut_run_report(run, "relay").unwrap();
+    assert_eq!(
+        report.outcome,
+        tilo_automation::InvocationOutcome::Completed,
+        "{report:?}"
+    );
+    assert!(
+        matches!(
+            report.steps[0].status,
+            tilo_automation::StepStatus::Succeeded { .. }
+        ),
+        "{report:?}"
+    );
+}
+
+/// The approval covers the run's own steps only: a call of another shortcut, or of its step
+/// with a constant the saver wrote changed or left out, is refused, and so is anyone else's call.
+#[tokio::test(flavor = "current_thread")]
+async fn a_saved_approval_admits_only_the_steps_it_approved() {
+    let saver = Saver::new();
+    let fixture = saved_by(
+        &saver,
+        vec![relay(
+            "relay",
+            std::collections::BTreeMap::from([(
+                "note".to_owned(),
+                tilo_automation::Binding::Literal(serde_json::json!("hi")),
+            )]),
+        )],
+    );
+    let (api, caller) = fixture.run_api(&saver, "relay");
+    let with = |note: serde_json::Value| {
+        tilo_actions::remote::InvokeArgument::Json(serde_json::Map::from_iter([(
+            "note".to_owned(),
+            note,
+        )]))
+    };
+    step(
+        &api,
+        &caller,
+        fixture.step_call("echo", with(serde_json::json!("hi"))),
+    )
+    .await
+    .expect("the approved step is admitted");
+    for call in [
+        fixture.step_call("middle", with(serde_json::json!("hi"))),
+        fixture.step_call("echo", with(serde_json::json!("bye"))),
+        fixture.step_call("echo", tilo_actions::remote::InvokeArgument::None),
+    ] {
+        refused_for(step(&api, &caller, call).await, "has no step");
+    }
+    refused_for(
+        step(
+            &api,
+            &fixture.caller.clone().running_shortcut("relay"),
+            fixture.step_call("echo", with(serde_json::json!("hi"))),
+        )
+        .await,
+        "runs only as the person who saved it",
+    );
+}
+
+/// The approval proves the shortcut only while it stands as signed, its signing device is not
+/// revoked, and its saver is a member: a step after any of those changes is refused.
+#[tokio::test(flavor = "current_thread")]
+async fn a_saved_approval_stops_admitting_once_edited_revoked_or_its_saver_left() {
+    type Change = fn(&mut crate::test_support::WorkspaceTree);
+    let changes: [(&str, Change); 3] = [
+        ("was changed or removed after its saver approved it", |tree| {
+            let saved = tree.desktop.workspaces[0]
+                .shortcuts
+                .iter_mut()
+                .find(|saved| saved.id() == "relay")
+                .unwrap();
+            let mut edited = saved.decode().unwrap();
+            edited.name = "Relay everything".into();
+            *saved = tilo_automation::SavedShortcut::encode(&edited);
+        }),
+        ("the device that signed it was revoked", |tree| {
+            tree.revoked.insert(Saver::new().revoked()).unwrap();
+        }),
+        ("is no longer a member of the workspace", |tree| {
+            tree.desktop.workspaces[0]
+                .policy
+                .members
+                .remove(&Saver::new().person());
+        }),
+    ];
+    let saver = Saver::new();
+    for (why, change) in changes {
+        let fixture = saved_by(
+            &saver,
+            vec![relay("relay", std::collections::BTreeMap::new())],
+        );
+        let (api, caller) = fixture.run_api(&saver, "relay");
+        let call = || fixture.step_call("echo", tilo_actions::remote::InvokeArgument::None);
+        step(&api, &caller, call())
+            .await
+            .expect("the approved step is admitted");
+        change(&mut fixture.tree.write());
+        refused_for(step(&api, &caller, call()).await, why);
     }
 }

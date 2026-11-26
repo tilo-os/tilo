@@ -42,6 +42,9 @@ pub(super) enum InvocationCaller {
         /// the app's, so what its code asks while it runs is decided as them.
         pressed: bool,
     },
+    /// A run its saver's signed approval of the shortcut started, when nobody was at a screen:
+    /// it owns only the run and the steps the approval covers, rechecked at every admission.
+    Shortcut(Box<super::shortcut_approval::ShortcutApproval>),
 }
 #[derive(Clone)]
 pub(super) struct OriginalInvocationData {
@@ -87,6 +90,9 @@ impl OriginalInvocationData {
             data: self.clone(),
         };
         original.check_lifecycle()?;
+        if matches!(self.caller, InvocationCaller::Shortcut(_)) {
+            return Err("A shortcut's run cannot administer device displays.".into());
+        }
         if mutates && original.agent_id().is_some() {
             return Err("An Agent invocation cannot administer device displays.".into());
         }
@@ -187,6 +193,9 @@ impl OriginalInvocationData {
                     .revalidate_admission(route, admitted)
                     .map_err(|error| error.to_string())?;
             }
+            InvocationCaller::Shortcut(_) => {
+                return Err("a shortcut's run has no clipboard of a person at a device".into());
+            }
         }
         Ok(())
     }
@@ -248,6 +257,12 @@ impl OriginalInvocationData {
                     .certificate
                     .clone()
                     .ok_or("original person certificate unavailable")?
+            }
+            InvocationCaller::Shortcut(_) => {
+                return Err(
+                    "this action requires a person at a device, and a shortcut's run has none"
+                        .into(),
+                );
             }
         };
         tilo_user_identity::verify_device_cert_at(&certificate, now)
@@ -447,6 +462,7 @@ impl OriginalInvocation {
             InvocationCaller::Certified { caller, .. } => caller.admitted.certificate.as_ref(),
             InvocationCaller::Local { admitted, .. } => admitted.certificate.as_ref(),
             InvocationCaller::NativePerson { certificate, .. } => Some(&**certificate),
+            InvocationCaller::Shortcut(approval) => Some(approval.certificate()),
         }
         .ok_or_else(|| "original invocation certificate unavailable".into())
     }
@@ -455,6 +471,7 @@ impl OriginalInvocation {
             InvocationCaller::Certified { caller, .. } => caller.admitted.agent_id.as_deref(),
             InvocationCaller::Local { admitted, .. } => admitted.agent_id.as_deref(),
             InvocationCaller::NativePerson { .. } => None,
+            InvocationCaller::Shortcut(approval) => approval.agent(),
         }
     }
     /// Pure ownership check: no owner callback, workspace snapshot or Store open.
@@ -727,6 +744,13 @@ impl OriginalInvocation {
                 state
                     .revalidate_admission(route, admitted)
                     .map_err(|error| error.to_string())?;
+            }
+            InvocationCaller::Shortcut(approval) => {
+                state.current_shortcut_approval(
+                    approval,
+                    &self.data.route.cluster_id,
+                    &approval.actor(),
+                )?;
             }
         }
         let membership = state

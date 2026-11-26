@@ -81,6 +81,21 @@ impl AppBrokerState {
         let actor = BrokerActor::for_caller(caller);
         let owner = match (origin, Self::forwarded_owner(caller, request)) {
             (None, Some(owner)) => owner,
+            // A shortcut's approval owns only the run and the steps it covers.
+            (Some(InvocationCaller::Shortcut(approval)), _) => self.shortcut_call_owner(
+                approval,
+                workspace,
+                actor.actor(),
+                (
+                    (
+                        admission.app_id,
+                        &descriptor.resource_kind,
+                        &descriptor.address.resource,
+                        &descriptor.address.action,
+                    ),
+                    &request.argument,
+                ),
+            )?,
             _ => self.host_action_owner(caller, origin, workspace, request.invocation)?,
         };
         owner.validate().map_err(ActionCallError::unavailable)?;
@@ -246,6 +261,9 @@ impl AppBrokerState {
                     agent: None,
                 }
             }
+            Some(InvocationCaller::Shortcut(approval)) => self
+                .current_shortcut_approval(approval, workspace, actor.actor())
+                .map_err(|reason| ActionCallError::Refused { reason })?,
             None => {
                 // A transport key is not retained certificate ownership. Do not
                 // silently downgrade a certified caller to actor-only ownership.
@@ -535,6 +553,12 @@ impl AppBrokerState {
             }
             InvocationCaller::NativePerson { certificate, .. } => {
                 AppBrokerState::certified_person(certificate)
+            }
+            InvocationCaller::Shortcut(approval) => {
+                let actor = approval.decided_as();
+                self.current_shortcut_approval(approval, approval.workspace(), actor.actor())
+                    .map_err(|reason| ActionCallError::Refused { reason })?;
+                actor
             }
         })
     }

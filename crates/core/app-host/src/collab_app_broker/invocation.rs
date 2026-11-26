@@ -160,6 +160,11 @@ pub(super) enum ContinuingCaller {
         workspace: String,
         admitted: Box<AdmittedJoinIdentity>,
     },
+    /// A shortcut's run on its saver's approval, which is checked again each time.
+    Shortcut {
+        approval: Box<super::shortcut_approval::ShortcutApproval>,
+        direct: tilo_actions::remote::Caller,
+    },
 }
 
 impl ContinuingCaller {
@@ -192,6 +197,10 @@ impl ContinuingCaller {
             } => Self::Admitted {
                 workspace: route.cluster_id.clone(),
                 admitted: admitted.clone(),
+            },
+            InvocationCaller::Shortcut(approval) => Self::Shortcut {
+                direct: approval.caller(),
+                approval: approval.clone(),
             },
         }
     }
@@ -227,6 +236,10 @@ impl ContinuingCaller {
                 caller: caller.clone(),
                 foreign_restriction: *foreign_restriction,
                 direct: Some(direct.clone()),
+            }),
+            (Some(direct), Some(InvocationCaller::Shortcut(approval))) => Some(Self::Shortcut {
+                approval: approval.clone(),
+                direct: direct.clone(),
             }),
             (Some(caller), _) => Some(Self::Caller(caller.clone())),
             (None, _) => origin.map(Self::from_origin),
@@ -269,6 +282,17 @@ impl ContinuingCaller {
                 workspace,
                 admitted,
             } => Some(admitted.caller(workspace)),
+            Self::Shortcut { approval, direct } => {
+                state
+                    .current_shortcut_approval(
+                        approval,
+                        approval.workspace(),
+                        BrokerActor::for_caller(direct).actor(),
+                    )
+                    .ok()?;
+                (direct.execution_id().is_none() || direct.execution_is_live())
+                    .then(|| direct.clone())
+            }
         }
     }
 }

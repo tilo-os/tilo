@@ -109,6 +109,8 @@ fn decided(
         super::published_invocation::InvocationCaller::Local { admitted, time, .. } => {
             Some((admitted.certificate.clone()?, time.clone()?))
         }
+        // A shortcut's approval is no person's device: their device settings are not its.
+        super::published_invocation::InvocationCaller::Shortcut(_) => None,
     });
     let Some((certificate, time)) = kept else {
         return confined();
@@ -149,6 +151,12 @@ pub(super) fn is_local_host_caller(
     if caller.is_foreign_device() {
         return false;
     }
+    // A shortcut's run this host started on its saver's approval, in the workspace it was
+    // approved for, by a saver whose own devices are not foreign here.
+    if let Some(super::published_invocation::InvocationCaller::Shortcut(approval)) = origin {
+        return !approval.certificate().capabilities.foreign
+            && caller.workspace() == Some(approval.workspace());
+    }
     // An agent of the person whose own session the socket admitted acts under its own key: its
     // run is that session's, made for it once the workspace listed the agent, so it is local as
     // the person is, from a device of theirs.
@@ -175,7 +183,10 @@ pub(super) fn is_local_host_caller(
                 certificate,
                 ..
             }) => !certificate.capabilities.foreign,
-            Some(super::published_invocation::InvocationCaller::Certified { .. }) => false,
+            Some(
+                super::published_invocation::InvocationCaller::Certified { .. }
+                | super::published_invocation::InvocationCaller::Shortcut(_),
+            ) => false,
             None => true,
         };
     }
@@ -1187,7 +1198,9 @@ pub(crate) mod signed_test_support {
                         agent: None,
                     }
                 }
-                InvocationCaller::NativePerson { .. } => panic!("authenticated ownership"),
+                InvocationCaller::NativePerson { .. } | InvocationCaller::Shortcut(_) => {
+                    panic!("authenticated ownership")
+                }
             }
         }
 

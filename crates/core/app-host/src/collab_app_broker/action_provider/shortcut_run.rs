@@ -10,6 +10,7 @@ use super::{
 #[cfg(test)]
 mod tests;
 
+#[derive(Clone, Copy)]
 struct ShortcutAdmission<'a> {
     origin: Option<&'a InvocationCaller>,
     request: &'a InvokeRequest,
@@ -463,8 +464,28 @@ impl AppBrokerState {
                 appearance: None,
                 signed: None,
             };
-            origin = self
-                .native_local_person_certificate(caller)
+            let native = self.native_local_person_certificate(caller);
+            // A trigger fires with nobody at a screen, on whichever device of the workspace
+            // takes it: unless the saver is this device's own person, the run's proof is the
+            // approval they signed when they saved the shortcut.
+            let fired = matches!(
+                start.trigger,
+                tilo_automation::InvocationTrigger::Fired(_)
+            );
+            if fired && !matches!(native, Ok(Some(_))) {
+                origin = Some(self.shortcut_approval(caller, workspace, shortcut)?);
+                return self.admit_shortcut_run(
+                    caller,
+                    workspace,
+                    shortcut,
+                    start,
+                    ShortcutAdmission {
+                        origin: origin.as_ref(),
+                        request: &request,
+                    },
+                );
+            }
+            origin = native
                 .map_err(|reason| ActionCallError::Unavailable { reason })?
                 .map(|certificate| -> Result<_, ActionCallError> {
                     let time = self
@@ -484,6 +505,18 @@ impl AppBrokerState {
                 request: &request,
             }
         };
+        self.admit_shortcut_run(caller, workspace, shortcut, start, admission)
+    }
+
+    /// Admit the run of `shortcut` `admission` asks for, owned as its origin says.
+    fn admit_shortcut_run(
+        &self,
+        caller: &Caller,
+        workspace: &str,
+        shortcut: &tilo_automation::Shortcut,
+        start: &automation::InvocationStart,
+        admission: ShortcutAdmission<'_>,
+    ) -> Result<(AdmittedHostAction, Option<InvocationCaller>), ActionCallError> {
         // No runtime task may run until admission crosses the journal barrier.
         let trigger = match &start.trigger {
             tilo_automation::InvocationTrigger::Manual => serde_json::json!({"trigger": "manual"}),

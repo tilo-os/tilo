@@ -87,6 +87,9 @@ impl AppBrokerState {
                     agent: None,
                 }
             }
+            Some(InvocationCaller::Shortcut(approval)) => {
+                self.current_shortcut_approval(approval, workspace, actor.actor())?
+            }
             Some(InvocationCaller::Local {
                 route,
                 admitted,
