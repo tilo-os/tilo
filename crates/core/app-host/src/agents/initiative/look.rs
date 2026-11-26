@@ -413,7 +413,9 @@ verbs = [
         tilo_workspace_service::workspaces::fixtures::declare_app(
             &host,
             "so.tilo.mail",
-            MAIL_SURFACE.as_bytes(),
+            tilo_surface_compile::compile(MAIL_SURFACE)
+                .expect("the surface compiles")
+                .as_bytes(),
         );
         let workspace = workspaces.create("Mail").await.unwrap().workspace;
         let own = Own {
