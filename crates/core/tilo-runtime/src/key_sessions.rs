@@ -106,8 +106,10 @@ struct Opening {
 /// The session a key's call runs in: open, or opened on a thread of its own because the call
 /// came on the app runtime's thread, which never waits on the workspaces it is admitted by.
 enum Run {
-    Open(SessionHost, Caller),
-    Opening(Opening),
+    /// The open session and the caller it serves, boxed: the enum stays a pointer either way.
+    Open(Box<(SessionHost, Caller)>),
+    /// The session opening on its own thread, boxed with it.
+    Opening(Box<Opening>),
 }
 
 impl Opening {
@@ -231,7 +233,10 @@ impl KeySessions {
         if let Some(run) = open.get(&(workspace_id, key.device_public_key))
             && run.cert == *key
         {
-            return Ok(Run::Open(Arc::clone(&run.host), run.caller.clone()));
+            return Ok(Run::Open(Box::new((
+                Arc::clone(&run.host),
+                run.caller.clone(),
+            ))));
         }
         // A key that renewed its certificate starts its run again under the
         // one it shows now.
@@ -255,10 +260,10 @@ impl KeySessions {
         // Opening admits the key in its workspace, which waits on the workspaces: never on the
         // app runtime's own thread, whose every task would wait with it.
         if tilo_rt::app().is_runtime_thread() {
-            return Ok(Run::Opening(opening));
+            return Ok(Run::Opening(Box::new(opening)));
         }
         let (host, caller) = opening.open(&self.open)?;
-        Ok(Run::Open(host, caller))
+        Ok(Run::Open(Box::new((host, caller))))
     }
 
     /// End the run `device` works in on `workspace_id`, if it has one.
@@ -294,8 +299,12 @@ impl AppActionServer for KeySessions {
         message: RemoteActionMessage,
     ) -> Option<Pending<RemoteActionMessage>> {
         match self.run(workspace_id, (caller, certificate), &message) {
-            Ok(Run::Open(host, caller)) => tilo_actions::remote::serve(&host, &caller, message),
+            Ok(Run::Open(open)) => {
+                let (host, caller) = *open;
+                tilo_actions::remote::serve(&host, &caller, message)
+            }
             Ok(Run::Opening(opening)) => {
+                let opening = *opening;
                 let open = Arc::clone(&self.open);
                 let replies = tilo_actions::remote::refuse(
                     &message,
