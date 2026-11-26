@@ -2123,3 +2123,145 @@ fn assert_bound_inputs(
         context["what"]
     );
 }
+
+/// Saves each shortcut the events save, signed as this device's person, as a person's own device
+/// keeps it.
+#[cfg(feature = "agents")]
+struct SignedLibrary {
+    workspaces: Workspaces,
+    signer: (ed25519_dalek::SigningKey, tilo_user_identity::DeviceCert),
+}
+
+#[cfg(feature = "agents")]
+impl crate::services::ShortcutLibraryServices for SignedLibrary {
+    fn keymap(&self) -> settings_store::hardware::ShortcutConfig {
+        settings_store::hardware::ShortcutConfig::default()
+    }
+
+    fn store(
+        &self,
+        request: crate::services::ShortcutLibraryRequest,
+    ) -> crate::services::ShortcutStore {
+        let workspaces = self.workspaces.clone();
+        let (key, cert) = self.signer.clone();
+        Box::pin(async move {
+            let tilo_automation::ShortcutChange::Save(shortcut) = request.change else {
+                return Err("these events only save".to_owned());
+            };
+            save_signed(&workspaces, &request.workspace, *shortcut, (&key, &cert)).await;
+            Ok(())
+        })
+    }
+
+    fn runtime(&self) -> Result<tokio::runtime::Handle, String> {
+        Ok(tokio::runtime::Handle::current())
+    }
+}
+
+/// Ms since the epoch of `at`, a moment written with its offset.
+#[cfg(feature = "agents")]
+fn moment_ms(at: &str) -> u64 {
+    u64::try_from(at.parse::<jiff::Timestamp>().unwrap().as_millisecond()).unwrap()
+}
+
+/// A person in Berlin asks their assistant for something every morning at 8. The assistant sets
+/// it up through the events' own action, naming no zone; the host that keeps it runs in UTC. It
+/// fires at 08:00 in Berlin, an hour apart in UTC across the night clocks go forward, and never
+/// at 08:00 UTC.
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_agents_daily_event_fires_at_its_persons_eight_across_a_clock_change() {
+    use tilo_actions::remote::workspace_events;
+    use tilo_workspace_service::workspaces::fixtures::{ask_agents, lives_in};
+
+    let dir = tempfile::tempdir().unwrap();
+    let (key, cert) = hosting_device();
+    let host = test_host(dir.path(), &key, &cert).await;
+    let workspaces = host.workspaces();
+    lives_in(workspaces, "Europe/Berlin").await;
+    let workspace = workspaces.create("Home").await.unwrap().workspace;
+    let _agents = crate::agents::ServerAgents::on_device(
+        workspaces.clone(),
+        Arc::new(tilo_actions::remote::TestProvider::new()),
+        Arc::new(crate::agent_record_tests::Keyed),
+    );
+    let made = ask_agents(
+        workspaces,
+        &workspace,
+        &cert,
+        (
+            tilo_actions::remote::WORKSPACE_AGENT_CREATE,
+            json!({ "name": "Scout" }),
+        ),
+    )
+    .await
+    .expect("the person makes their assistant");
+    let person = hex::encode(cert.user_public_key);
+    let scout = made["agent"].as_str().unwrap();
+    let events = crate::agents::events::WorkspaceEvents::new(
+        workspaces.clone(),
+        Arc::new(SignedLibrary {
+            workspaces: workspaces.clone(),
+            signer: (key.clone(), cert.clone()),
+        }),
+    );
+    let asker = crate::agents::events::Asker {
+        person: person.clone(),
+        agent: Some(tilo_action_policy::MemberId::agent(scout, &person)),
+    };
+    let clock = Pinned::at(moment_ms("2027-03-27T05:00:00Z"));
+    let set_up = events
+        .answer(
+            &workspace,
+            &asker,
+            workspace_events::SET_UP,
+            json!({
+                "name": "Morning mail",
+                "when": "every day at 08:00",
+                "instruction": "Summarise my unread mail.",
+            }),
+        )
+        .await
+        .unwrap_or_else(|failure| panic!("the assistant sets it up: {failure:?}"));
+    assert_eq!(
+        set_up["when"], "every day at 08:00 in Europe/Berlin",
+        "it is kept on its person's clock: {set_up}"
+    );
+    assert_eq!(
+        set_up["nextAtMs"],
+        json!(moment_ms("2027-03-27T07:00:00Z")),
+        "its next time is 08:00 in Berlin: {set_up}"
+    );
+
+    let started = Arc::new(Started::default());
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    )
+    .in_zone(jiff::tz::TimeZone::UTC);
+    runner.arm().await;
+    let fired = async |runner: &mut Runner, at: &str| {
+        clock.set(moment_ms(at));
+        run_once(runner).await;
+    };
+    fired(&mut runner, "2027-03-27T05:00:00Z").await;
+    fired(&mut runner, "2027-03-27T06:59:59Z").await;
+    assert!(started.0.lock().unwrap().is_empty(), "not before her 08:00");
+    fired(&mut runner, "2027-03-27T07:00:00Z").await;
+    assert_eq!(started.0.lock().unwrap().len(), 1, "08:00 CET is 07:00 UTC");
+    fired(&mut runner, "2027-03-27T08:00:00Z").await;
+    assert_eq!(started.0.lock().unwrap().len(), 1, "never at 08:00 UTC");
+    // Clocks in Berlin go forward at 01:00 UTC on the 28th.
+    fired(&mut runner, "2027-03-28T05:59:59Z").await;
+    assert_eq!(started.0.lock().unwrap().len(), 1, "not before her 08:00");
+    fired(&mut runner, "2027-03-28T06:00:00Z").await;
+    assert_eq!(
+        started.0.lock().unwrap().len(),
+        2,
+        "08:00 CEST is 06:00 UTC"
+    );
+    fired(&mut runner, "2027-03-28T07:00:00Z").await;
+    assert_eq!(started.0.lock().unwrap().len(), 2, "once a day");
+    host.shutdown().await;
+}

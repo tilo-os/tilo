@@ -15,7 +15,7 @@ use tilo_workspace_agent::{OWNER, WorkspaceAgents};
 use super::super::tests::admit;
 use crate::workspaces::SetMemberRoleRequest;
 use crate::workspaces::fixtures::{
-    agents_listed as agents, ask_governance as ask, offered_agents as offered,
+    agents_listed as agents, ask_agents as ask, offered_agents as offered,
 };
 use crate::workspaces::tests::{hosting_device, test_host};
 

@@ -21,7 +21,8 @@ pub const MIN_INTERVAL_SECONDS: u64 = 60;
 
 /// The first fire time of `schedule` strictly after `now`. An interval counts
 /// from the Unix epoch, so every device computes the same fire times whenever
-/// it armed the schedule; a calendar time is a wall-clock time in `zone`.
+/// it armed the schedule; a calendar time is a wall-clock time in its own
+/// zone, else in `zone`.
 #[must_use]
 pub fn next_fire_time(schedule: &Schedule, now: Timestamp, zone: &TimeZone) -> Option<Timestamp> {
     match schedule {
@@ -30,7 +31,13 @@ pub fn next_fire_time(schedule: &Schedule, now: Timestamp, zone: &TimeZone) -> O
             let periods = now.as_second().div_euclid(period).checked_add(1)?;
             Timestamp::from_second(period.checked_mul(periods)?).ok()
         }
-        Schedule::Calendar { at, weekdays } => {
+        Schedule::Calendar {
+            at,
+            weekdays,
+            zone: named,
+        } => {
+            let named = named.as_deref().and_then(zone_named);
+            let zone = named.as_ref().unwrap_or(zone);
             let time = Time::new(
                 i8::try_from(at.hour).ok()?,
                 i8::try_from(at.minute).ok()?,
@@ -45,6 +52,27 @@ pub fn next_fire_time(schedule: &Schedule, now: Timestamp, zone: &TimeZone) -> O
                 .filter_map(|date| local_instant(date, time, zone))
                 .find(|candidate| *candidate > now)
         }
+    }
+}
+
+/// The zone the time-zone database names `name`, from the copy of the
+/// database built in.
+#[must_use]
+pub fn zone_named(name: &str) -> Option<TimeZone> {
+    let (name, data) = jiff_tzdb::get(name)?;
+    TimeZone::tzif(name, data).ok()
+}
+
+/// Where `trigger` keeps the zone it is still to be given: a time of day on
+/// a schedule that names no zone. A schedule saved for a person fires on their
+/// clock, so whoever saves it fills this with theirs.
+pub fn unzoned(trigger: &mut TriggerSpec) -> Option<&mut Option<String>> {
+    match trigger {
+        TriggerSpec::Schedule {
+            schedule: Schedule::Calendar { zone, .. },
+            ..
+        } if zone.is_none() => Some(zone),
+        _ => None,
     }
 }
 

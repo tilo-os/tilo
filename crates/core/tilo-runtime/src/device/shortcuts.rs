@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use collab_types::signer::DeviceSigner;
-use tilo_app_host::automation::{ShortcutChange, validate_trigger};
+use tilo_app_host::automation::{ShortcutChange, unzoned, validate_trigger};
 use tilo_app_host::services::{ShortcutLibraryRequest, ShortcutLibraryServices, ShortcutStore};
 use tilo_peer_state::workspace_membership::{SettingsChange, WorkspaceMembershipCommand};
 use tilo_user_identity::DeviceCert;
@@ -119,6 +119,24 @@ async fn store_shortcut(
     let change = match &request.change {
         ShortcutChange::Save(shortcut) => {
             let mut shortcut = shortcut.as_ref().clone();
+            // A time of day is on the clock of the person it is saved for, whichever device
+            // keeps it later.
+            let saved_for = agent
+                .as_ref()
+                .map_or(device.user_public_key, |(_, root)| *root);
+            let mut zone = None;
+            for trigger in &mut shortcut.triggers {
+                let Some(unzoned) = unzoned(trigger) else {
+                    continue;
+                };
+                if zone.is_none() {
+                    zone = Some(held.zone_of(&saved_for).await.ok_or(
+                        "this device does not know which time zone the shortcut's person lives \
+                         in: name it after the time, as `every day at 08:00 in Europe/Berlin`",
+                    )?);
+                }
+                *unzoned = zone.clone();
+            }
             // A trigger this device cannot watch would be saved into a shortcut that never
             // runs: the person is told now.
             for trigger in &shortcut.triggers {

@@ -1663,6 +1663,22 @@ pub fn admitted_device_of(person: &str) -> Option<(DeviceCert, ed25519_dalek::Si
         .cloned()
 }
 
+/// The person whose device this is lives in `zone`: their own workspace is founded, and the
+/// zone is the one they chose in their region, as their page chooses it.
+pub async fn lives_in(workspaces: &Workspaces, zone: &str) {
+    crate::workspaces::person_workspace::found(workspaces)
+        .await
+        .expect("the person's own workspace");
+    let person = workspaces.device_cert().user_public_key;
+    workspaces
+        .change_region(
+            &person,
+            crate::workspaces::region::Region::CHOOSE_ZONE.with(zone.to_owned()),
+        )
+        .await
+        .expect("the person chooses their zone");
+}
+
 /// Each agent the workspace's record names, by id: its name and whether it still works.
 pub async fn agents_listed(
     workspaces: &Workspaces,
@@ -1690,7 +1706,7 @@ pub async fn agents_listed(
 
 /// `operation` of `workspace`'s agents with `arguments`, asked by the device `device` over this
 /// device's dispatch, as every caller asks it: what it answered, or why not.
-pub async fn ask_governance(
+pub async fn ask_agents(
     workspaces: &Workspaces,
     workspace: &str,
     device: &DeviceCert,

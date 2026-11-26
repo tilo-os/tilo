@@ -210,9 +210,24 @@ impl Workspaces {
         Some((formats, zone))
     }
 
+    /// The zone `person` lives in, as the time-zone database names it: the one they keep in
+    /// their region, else, on a device of theirs, the zone that device is in. None on a device
+    /// that is not theirs and reads no region of theirs: its own zone is never theirs.
+    pub async fn zone_of(&self, person: &[u8; 32]) -> Option<String> {
+        if let Some(zone) = self.region(person).await.and_then(|(_, zone)| zone) {
+            return Some(zone);
+        }
+        self.region_workspace(person)
+            .and_then(|_| tilo_clock::local_zone_name())
+    }
+
     /// Apply `action` to `person`'s region, on a device of theirs that has received
     /// it.
-    async fn change_region(&self, person: &[u8; 32], action: Invoke<Region>) -> Result<(), String> {
+    pub(crate) async fn change_region(
+        &self,
+        person: &[u8; 32],
+        action: Invoke<Region>,
+    ) -> Result<(), String> {
         let workspace = self.region_workspace(person).ok_or(NOT_THEIRS)?;
         if !person_workspace::holds_person_workspace(self).await {
             return Err(NOT_YET.to_owned());

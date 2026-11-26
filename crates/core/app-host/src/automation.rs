@@ -512,7 +512,7 @@ pub fn trigger_summary(trigger: &TriggerSpec) -> String {
                 format!("every {} min", seconds / 60)
             }
             Schedule::Interval { seconds } => format!("every {seconds} s"),
-            Schedule::Calendar { at, weekdays } => {
+            Schedule::Calendar { at, weekdays, zone } => {
                 let days = if weekdays.is_empty() {
                     "every day".to_string()
                 } else {
@@ -520,7 +520,11 @@ pub fn trigger_summary(trigger: &TriggerSpec) -> String {
                         weekdays.iter().map(|day| format!("{day:?}")).collect();
                     format!("on {}", names.join(", "))
                 };
-                format!("{days} at {:02}:{:02}", at.hour, at.minute)
+                let zone = zone
+                    .as_deref()
+                    .map(|zone| format!(" ({zone})"))
+                    .unwrap_or_default();
+                format!("{days} at {:02}:{:02}{zone}", at.hour, at.minute)
             }
         },
         other => format!("on {}", other.kind()),
@@ -870,6 +874,7 @@ pub struct SaveContext<'a> {
 }
 
 pub use tilo_automation::ShortcutChange;
+pub use tilo_automation::schedule::unzoned;
 
 /// What one library invocation does: answer from what is saved, or change it.
 #[derive(Clone, Debug, PartialEq)]

@@ -38,9 +38,9 @@ fn trigger_text(trigger: &TriggerSpec) -> String {
             catch_up,
         } => format!("every {seconds} seconds{}", catch_up_text(*catch_up)),
         TriggerSpec::Schedule {
-            schedule: Schedule::Calendar { at, weekdays },
+            schedule: Schedule::Calendar { at, weekdays, zone },
             catch_up,
-        } => calendar_text(*at, weekdays, *catch_up),
+        } => calendar_text(*at, weekdays, zone.as_deref(), *catch_up),
         TriggerSpec::Once { at_ms } => format!("once at {}", moment_text(*at_ms)),
         TriggerSpec::AppOpened { app_id } => {
             format!("when the app opens {}", quoted(app_id))
@@ -222,6 +222,7 @@ fn span_text(seconds: u64) -> String {
 fn calendar_text(
     at: crate::shortcut::TimeOfDay,
     weekdays: &[crate::shortcut::Weekday],
+    zone: Option<&str>,
     catch_up: crate::shortcut::CatchUp,
 ) -> String {
     let days: Vec<&str> = weekdays.iter().map(|day| weekday_name(*day)).collect();
@@ -230,8 +231,9 @@ fn calendar_text(
     } else {
         days.join(", ")
     };
+    let zone = zone.map(|zone| format!(" in {zone}")).unwrap_or_default();
     format!(
-        "every {when} at {:02}:{:02}{}",
+        "every {when} at {:02}:{:02}{zone}{}",
         at.hour,
         at.minute,
         catch_up_text(catch_up)
@@ -735,6 +737,21 @@ fn schedule_of(rest: &str) -> Result<TriggerSpec, String> {
     let Some((days, at)) = schedule.split_once(" at ") else {
         return Err("write a schedule as `every N seconds` or `every DAY at HH:MM`".to_owned());
     };
+    let (at, zone) = match at.split_once(" in ") {
+        Some((at, zone)) => {
+            let zone = zone.trim();
+            let Some(named) = crate::schedule::zone_named(zone)
+                .and_then(|named| named.iana_name().map(str::to_owned))
+            else {
+                return Err(format!(
+                    "`{zone}` is no time zone: name one as the time-zone database does, \
+                     `every day at 08:00 in Europe/Berlin`"
+                ));
+            };
+            (at, Some(named))
+        }
+        None => (at, None),
+    };
     let (hour, minute) = at
         .split_once(':')
         .ok_or_else(|| "write the time as `HH:MM`".to_owned())?;
@@ -758,7 +775,7 @@ fn schedule_of(rest: &str) -> Result<TriggerSpec, String> {
         weekdays
     };
     Ok(TriggerSpec::Schedule {
-        schedule: Schedule::Calendar { at, weekdays },
+        schedule: Schedule::Calendar { at, weekdays, zone },
         catch_up,
     })
 }

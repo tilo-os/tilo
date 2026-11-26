@@ -2357,6 +2357,7 @@ tilo_test_env::scenario! {
                 schedule: Schedule::Calendar {
                     at: TimeOfDay { hour: 9, minute: 0 },
                     weekdays: vec![Weekday::Monday, Weekday::Friday],
+                    zone: None,
                 },
                 catch_up: CatchUp::RunOnce,
             },

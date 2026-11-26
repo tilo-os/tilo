@@ -900,6 +900,10 @@ impl WorkspaceEvents {
                 }
                 let definition = definition.checked().map_err(refused)?;
                 watched_address(&definition).map_err(refused)?;
+                let definition = self
+                    .in_their_zone(definition, &asker.person)
+                    .await
+                    .map_err(refused)?;
                 // The same event from now on: its runs and its count stay, and a changed
                 // trigger starts its own times. Who set it up stays its author.
                 let changed = Kept {
@@ -938,6 +942,34 @@ impl WorkspaceEvents {
         }
     }
 
+    /// `definition` with a time of day on the clock of `person` (their root, hex): a schedule at
+    /// `08:00` is at their 08:00 whichever device keeps it, so one that names no zone takes
+    /// theirs ([`tilo_workspace_service::workspaces::Workspaces::zone_of`]).
+    ///
+    /// # Errors
+    /// The schedule names no zone and this device knows none of theirs: how to name it.
+    async fn in_their_zone(
+        &self,
+        mut definition: Definition,
+        person: &str,
+    ) -> Result<Definition, String> {
+        let mut trigger = definition.trigger()?;
+        let Some(zone) = tilo_automation::schedule::unzoned(&mut trigger) else {
+            return Ok(definition);
+        };
+        let person = super::assistant::person_of(person)?;
+        let Some(theirs) = self.workspaces.get().await.zone_of(&person).await else {
+            return Err(format!(
+                "this device does not know which time zone its person lives in: name it, as \
+                 `{} in Europe/Berlin`",
+                definition.when
+            ));
+        };
+        *zone = Some(theirs);
+        definition.when = tilo_automation::trigger_line::trigger_line(&trigger);
+        Ok(definition)
+    }
+
     /// Set up `definition` with `note` in `workspace` for `asker`'s person: the shortcut that
     /// is it, told to that person's assistant. Answers its id.
     ///
@@ -953,6 +985,10 @@ impl WorkspaceEvents {
     ) -> Result<String, Failure> {
         let definition = definition.checked().map_err(refused)?;
         watched_address(&definition).map_err(refused)?;
+        let definition = self
+            .in_their_zone(definition, &asker.person)
+            .await
+            .map_err(refused)?;
         let person = super::assistant::person_of(&asker.person).map_err(refused)?;
         let assistant =
             super::assistant::assistant_of(&self.workspaces.get().await, workspace, &person)
@@ -1124,8 +1160,9 @@ fn described(setting_up: bool) -> Vec<ActionParam> {
         needed(
             "when",
             "What starts it, as one line: `once at 2026-11-17T11:32:00Z` (a moment, with its \
-             offset from UTC), `every day at 09:00`, `every Monday, Thursday at 17:30` (the \
-             host's clock), `every 3600 seconds`, `15 minutes before \"start\" in a \
+             offset from UTC), `every day at 09:00`, `every Monday, Thursday at 17:30` (on \
+             the clock of the person it is for; `every day at 09:00 in Europe/Berlin` names \
+             another zone), `every 3600 seconds`, `15 minutes before \"start\" in a \
              \"tl.so.tilo.calendar.Event\" where categories is \"Travel\"` (a moment before, `at` \
              or after the start or the end, `end`, of each entry of the Calendar app, every \
              occurrence of one that repeats; each `where` names a field of the entry and the \

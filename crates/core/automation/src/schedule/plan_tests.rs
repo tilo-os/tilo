@@ -1,6 +1,11 @@
 //! What a key holder does about a fire time, given the progress the
 //! workspace keeps: on time once, a missed time once when the trigger catches
 //! up (never once per period), and a moment once however late.
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "in a test these are the assertion"
+)]
 
 use super::*;
 use crate::CatchUp;
@@ -137,4 +142,29 @@ fn a_moment_fires_once_however_late_and_never_again() {
     assert_eq!(moment.waiting_ms(500, &ZONE), Some(1_000));
     let repeats = every(CatchUp::Skip);
     assert_eq!(repeats.waiting_ms(3_600_001, &ZONE), Some(3_660_000));
+}
+
+/// A time of day written with a zone reads back as that zone's and fires there, whatever zone the
+/// reader is in; a zone the database does not name is refused with how to write one.
+#[test]
+fn a_time_of_day_in_a_zone_is_that_zones_wherever_it_is_read() {
+    let line = "every day at 08:00 in Europe/Berlin";
+    let trigger = crate::trigger_line::trigger_of_line(line).unwrap();
+    assert_eq!(crate::trigger_line::trigger_line(&trigger), line);
+    let Some(Timed::Repeating { schedule, .. }) = Timed::of(&trigger) else {
+        panic!("a schedule: {trigger:?}");
+    };
+    let at = |moment: &str| moment.parse::<Timestamp>().unwrap();
+    // The night Berlin's clocks go forward, 08:00 there moves from 07:00 to 06:00 UTC.
+    assert_eq!(
+        next_fire_time(schedule, at("2027-03-27T05:00:00Z"), &ZONE),
+        Some(at("2027-03-27T07:00:00Z"))
+    );
+    assert_eq!(
+        next_fire_time(schedule, at("2027-03-27T07:00:00Z"), &ZONE),
+        Some(at("2027-03-28T06:00:00Z"))
+    );
+    let refused =
+        crate::trigger_line::trigger_of_line("every day at 08:00 in Mars/Olympus").unwrap_err();
+    assert!(refused.contains("Europe/Berlin"), "{refused}");
 }

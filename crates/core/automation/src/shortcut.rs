@@ -966,11 +966,16 @@ pub enum Schedule {
     /// A fixed period, counted from the Unix epoch so every device the
     /// shortcut reaches agrees on its fire times.
     Interval { seconds: u64 },
-    /// A local wall-clock time on the listed weekdays (every day when empty).
+    /// A wall-clock time on the listed weekdays (every day when empty), in
+    /// `zone` as the time-zone database names it: its person's, so it fires at
+    /// their 08:00 whichever device keeps it. Without one it is the clock of the
+    /// device that runs it.
     Calendar {
         at: TimeOfDay,
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         weekdays: Vec<Weekday>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        zone: Option<String>,
     },
 }
 

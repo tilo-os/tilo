@@ -15,8 +15,8 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::WorkspaceAgents;
 use tilo_workspace_service::work::{self, Ineligible, NotTaken};
 use tilo_workspace_service::workspaces::fixtures::{
-    admit, agents_listed as agents, ask_governance as ask, hosting_device,
-    offered_agents as offered, test_host,
+    admit, agents_listed as agents, ask_agents as ask, hosting_device, offered_agents as offered,
+    test_host,
 };
 use tilo_workspace_service::workspaces::{SetMemberRoleRequest, Workspaces};
 
@@ -47,7 +47,7 @@ async fn saved_triggers(workspaces: &Workspaces, workspace: &str) -> Vec<(String
 
 /// The keys a person's device makes for its agents: one fixed key here, which the engine takes
 /// as the agent's own. What is proved is whether the key acts, so any key will do.
-struct Keyed;
+pub(crate) struct Keyed;
 
 impl AgentKeys for Keyed {
     fn grant(
