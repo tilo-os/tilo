@@ -213,7 +213,7 @@
   },
   "so.tilo.settings settings.mcp-server#set-accept-own-devices": {
     "to": "tilo.mcp-server mcp.server#stop",
-    "test": "crates/core/tilo-runtime/tests/agent_presence.rs:359"
+    "test": "crates/os/daemon/tests/language/agent_presence.rs:340"
   },
   "so.tilo.settings settings.mcp-server#set-act-without-asking": {
     "to": "tilo.invocations workspace.invocations#resolve",
@@ -281,7 +281,7 @@
   },
   "so.tilo.tasks tasks.issues#history": {
     "to": "so.tilo.tasks tl.so.tilo.tasks#history",
-    "test": "crates/core/resource-store/src/history/verbs.rs:522"
+    "test": "crates/core/collab-types/src/history/verbs.rs:975"
   },
   "so.tilo.tasks tasks.issues#link": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Task#relate",
@@ -441,7 +441,7 @@
   },
   "so.tilo.tasks tasks.tracker#history": {
     "to": "so.tilo.tasks tl.so.tilo.tasks#history",
-    "test": "crates/core/resource-store/src/history/verbs.rs:522"
+    "test": "crates/core/collab-types/src/history/verbs.rs:975"
   },
   "so.tilo.tasks tasks.tracker#involve": {
     "to": "so.tilo.tasks tl.so.tilo.tasks.Project#involve",
