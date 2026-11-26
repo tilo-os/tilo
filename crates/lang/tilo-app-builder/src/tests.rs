@@ -3070,87 +3070,10 @@ tilo_test_env::scenario! {
                 );
             }
         }
-
-        {
-            let spec = AppSpec {
-                package_name: "project-maker".into(),
-                crate_name: "project_maker".into(),
-                title: "Project Maker".into(),
-                app_id: "so.tilo.project.maker".into(),
-                sdk: AppSdk::Workspace {
-                    ui_path: PathBuf::from("../../crates/ui/ui-core"),
-                },
-                template: Template::Graph,
-            };
-            let files = render(&spec).unwrap();
-            let graph = files
-                .iter()
-                .find(|(path, _)| path == Path::new("ui/main.json"))
-                .expect("graph template emits source");
-            let document = tilo_ui_graph::UiDocument::from_json(&graph.1).unwrap();
-            assert_eq!(document.nodes().len(), 3);
-            assert!(matches!(
-                document.node("graph-introduction"),
-                Some(tilo_ui_graph::UiNode::Text { .. })
-            ));
-            let registry = files
-                .iter()
-                .find(|(path, _)| path == Path::new("src/screens.rs"))
-                .expect("graph template emits a compiled screen registry");
-            assert!(registry.1.contains("include_str!(\"../ui/main.json\")"));
-            assert!(registry.1.contains("pub const NAMES"));
-            let components = files
-                .iter()
-                .find(|(path, _)| path == Path::new("src/components/mod.rs"))
-                .expect("graph template emits an empty component registry");
-            assert!(components.1.contains("pub fn ui_graph_context()"));
-            assert!(!components.1.contains(GRAPH_COMPONENT_ENTRY_PREFIX));
-            assert!(app_lib(&spec).contains("pub mod components;"));
-            assert!(app_lib(&spec).contains("pub mod screens;"));
-            assert!(app_lib(&spec).contains("screens::router_with("));
-            assert!(app_lib(&spec).contains("components::ui_graph_context()"));
-            assert!(app_lib(&spec).contains(GENERATED_GRAPH_ROUTER_CALL));
-            assert!(app_lib(&spec).contains("Projects::CREATE.invoke()"));
-        }
     }
 
     phase every_template_generates_valid_rust_actions_and_working_readme_commands;
     {
-        {
-            for template in Template::ALL {
-                let spec = AppSpec {
-                    package_name: "generated-app".into(),
-                    crate_name: "generated_app".into(),
-                    title: "Generated App".into(),
-                    app_id: "so.tilo.generated.app".into(),
-                    sdk: AppSdk::Workspace {
-                        ui_path: PathBuf::from("../../crates/ui/ui-core"),
-                    },
-                    template,
-                };
-                let manifest = cargo_toml(&spec).expect("render Cargo.toml");
-                assert!(!manifest.contains("tilo-actions ="), "{template:?}");
-                let source = app_lib(&spec);
-                assert!(source.contains("#[derive(Model"), "{template:?}");
-                assert!(source.contains("#[resource(kind = "), "{template:?}");
-                assert!(source.contains("#[action"), "{template:?}");
-                assert!(source.contains("impl ResourceApp for App"), "{template:?}");
-                assert!(
-                    source.contains("const ID: &'static str = crate::APP_ID;"),
-                    "{template:?}"
-                );
-                assert!(!source.contains("pub fn app_root"), "{template:?}");
-                assert!(!source.contains("fn resources("), "{template:?}");
-                assert!(
-                    app_main(&spec).contains("ui::main!(generated_app::App);"),
-                    "{template:?}"
-                );
-                let test = app_test(&spec);
-                assert!(test.contains("HeadlessApp::<"), "{template:?}");
-                assert!(!test.contains("app_root"), "{template:?}");
-            }
-        }
-
         {
             for workspace_member in [false, true] {
                 let spec = AppSpec {

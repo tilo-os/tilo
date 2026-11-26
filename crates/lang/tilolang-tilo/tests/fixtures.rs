@@ -529,14 +529,6 @@ impl Replica {
             .undo_last(Some(&tilolang_tilo::personal::actor(&self.name)))
             .unwrap()
     }
-
-    /// Make again the last change taken back here, as the window's redo does.
-    pub fn redo_last(&self) -> bool {
-        self.host
-            .store()
-            .redo_last(Some(&tilolang_tilo::personal::actor(&self.name)))
-            .unwrap()
-    }
 }
 
 /// A place as a sidebar draws it, the shape its tests read: its label, and the count the
@@ -605,25 +597,6 @@ pub fn bound_key(view: &ViewInstance, field: &str) -> String {
         node.children.iter().find_map(|child| find(child, field))
     }
     find(view.tree(), field).unwrap_or_else(|| panic!("the view binds {field}"))
-}
-
-/// The documents a native app wrote, as a `legacy/*.hex` fixture keeps them: one document a line,
-/// its document id, a tab, and the saved Automerge document as hex. Each fixture was written by
-/// the native app's own code (`legacy/README.md` says how), never by hand.
-pub fn native_documents(fixture: &str) -> Vec<(String, tilo_resource::Doc)> {
-    fixture
-        .lines()
-        .filter(|line| !line.is_empty())
-        .map(|line| {
-            let (id, hex) = line.split_once('\t').expect("an id and the document");
-            let bytes: Vec<u8> = hex
-                .as_bytes()
-                .chunks(2)
-                .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).unwrap(), 16).unwrap())
-                .collect();
-            (id.to_owned(), tilo_resource::Doc::load(&bytes).unwrap())
-        })
-        .collect()
 }
 
 /// The resource `value` refers to.

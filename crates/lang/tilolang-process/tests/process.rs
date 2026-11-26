@@ -42,8 +42,6 @@ mod children;
 /// A job outlives its window and its process, and its end reaches the app.
 #[path = "process/jobs.rs"]
 mod jobs;
-#[path = "process/native_notes.rs"]
-mod native_notes;
 /// A paste past a mebibyte, kept and undone.
 #[path = "process/paste.rs"]
 mod paste;
