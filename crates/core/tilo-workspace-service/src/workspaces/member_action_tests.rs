@@ -733,6 +733,30 @@ async fn a_workspace_reads_its_own_members_and_no_other_workspaces() {
     );
 }
 
+/// An app reads the members' resource while it answers a call, and whatever waits on that call
+/// may have the workspace locked meanwhile: the read answers from what the workspace is read
+/// through, its record of its agents included, and never waits for the workspace's lock.
+#[cfg(any(feature = "apps", feature = "agents"))]
+#[tokio::test]
+async fn the_members_resource_reads_while_the_workspace_is_locked() {
+    let dir = tempfile::tempdir().unwrap();
+    let (key, owner) = hosting_device();
+    let server = test_host(dir.path(), &key, &owner).await;
+    let workspaces = server.workspaces();
+    let reader = person(owner.user_public_key);
+    let workspace = made_workspace(workspaces, "Locked").await;
+
+    let hosted = workspaces.workspace(&workspace).await.unwrap();
+    let _locked = hosted.lock().await;
+    let read = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        members_read(workspaces, &workspace, &reader),
+    )
+    .await
+    .expect("the members' resource answers while the workspace is locked");
+    assert_eq!(read, vec![reader]);
+}
+
 /// The members' resource names each member as the workspace keeps them, says the role it gave
 /// them and when it admitted them: the one list every surface showing people reads.
 #[cfg(any(feature = "apps", feature = "agents"))]

@@ -1852,7 +1852,7 @@ impl Workspaces {
                 .ok_or_else(|| "this server does not hold that workspace".to_owned())?;
             let peer = reading.replica.read(tilo_peer_state::StatePeer::clone);
             return Ok(collab_types::store::wire::Reply::Content(Some(
-                workspace_members(self, &peer, &self.agents_named(workspace).await)?,
+                workspace_members(self, &peer, &agents_named(&reading, workspace))?,
             )));
         }
         if let Some(answer) = self.read_record_now(workspace, reader, command) {
@@ -1865,33 +1865,6 @@ impl Workspaces {
             .await
             .ok_or_else(|| "this server does not hold that workspace".to_owned())?;
         read_from(&reading, reader, command)
-    }
-
-    /// The agents that work in `workspace`, as its record of its agents names them, for the
-    /// members' resource.
-    #[allow(
-        clippy::unused_async,
-        reason = "a host that serves no apps names no agent, and answers as at once as one that does"
-    )]
-    async fn agents_named(&self, workspace: &str) -> Vec<AgentRow> {
-        #[cfg(feature = "apps")]
-        {
-            self.listed_agents(workspace)
-                .await
-                .into_iter()
-                .map(|agent| AgentRow {
-                    id: agent.id,
-                    name: agent.name,
-                    avatar: agent.avatar,
-                    acts_for: agent.acts_for,
-                })
-                .collect()
-        }
-        #[cfg(not(feature = "apps"))]
-        {
-            let _ = workspace;
-            Vec::new()
-        }
     }
 
     /// Answer `command`, a read of `workspace`'s record as `reader` reads it, from the store the
@@ -2038,6 +2011,39 @@ pub(super) fn member_rows(
             })
         })
         .collect())
+}
+
+/// The agents that work in `workspace`, as its record of its agents names them, for the members'
+/// resource: read from the store `reading` shares, never through the workspace's lock. An app
+/// reads the members' resource while it answers a call, and whatever waits on that call may have
+/// the workspace locked: a read that took the lock would wait for itself.
+fn agents_named(reading: &super::readings::Reading, workspace: &str) -> Vec<AgentRow> {
+    use tilo_lock::MutexRecover as _;
+    let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+    let bytes = reading
+        .store
+        .lock_recover()
+        .content_document(tilo_workspace_agent::KIND, &list)
+        .ok()
+        .flatten()
+        .map(automerge::Automerge::save);
+    let Some(bytes) = bytes else {
+        return Vec::new();
+    };
+    let Ok(agents) = super::actions::agents::read_resource_bytes::<
+        tilo_workspace_agent::WorkspaceAgents,
+    >((workspace, &list), &bytes) else {
+        return Vec::new();
+    };
+    agents
+        .active()
+        .map(|agent| AgentRow {
+            id: agent.id.0.as_str().to_owned(),
+            name: agent.name.clone(),
+            avatar: agent.avatar.clone(),
+            acts_for: agent.acts_for.clone(),
+        })
+        .collect()
 }
 
 /// Whether `command` reads the workspace's members' resource, which its governance answers.
