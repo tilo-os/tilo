@@ -582,7 +582,19 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
             );
             tokio::time::sleep(Duration::from_millis(50)).await;
         }
-        let (_, refused) = ls(&again, None).await;
-        assert!(refused, "a revoked agent's key is refused every call");
+        // The person's devices record the revocation as the change lands, so the run's next
+        // call is refused from then on.
+        let until = Instant::now() + COMES_BACK_WITHIN;
+        loop {
+            let (_, refused) = ls(&again, None).await;
+            if refused {
+                break;
+            }
+            assert!(
+                Instant::now() < until,
+                "a revoked agent's key is refused every call"
+            );
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
     });
 }
