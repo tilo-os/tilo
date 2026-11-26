@@ -121,8 +121,8 @@ pub struct ResourceService {
     /// Where the app's resources open on the web, where this host mints their links
     /// ([`tilolang_tilo::share`]): set by the session that knows the workspace's entry.
     link_home: Option<tilolang_tilo::share::LinkHome>,
-    /// The device's dispatch the app's calls of other apps go through, once the session reaches
-    /// it ([`Service::reach_dispatch`]).
+    /// The connection the app's calls of other apps go over, once the session holds the
+    /// workspace ([`Service::reach_workspace`]).
     out: Option<calls::OutCalls>,
 }
 
@@ -246,12 +246,12 @@ impl ResourceService {
         // packages hand their outside effects is routed to it there too, so a record moved into
         // the workspace keeps reaching the service that keeps it in step.
         self.route_effects();
-        // And the dispatch its app calls other apps through.
+        // And the connection its app calls other apps over.
         self.send_calls();
     }
 
-    /// Send what the app's code calls of other apps through the dispatch the session reached,
-    /// as the app's calls for this service's person. A service that publishes every package it
+    /// Send what the app's code calls of other apps over the connection the daemon vouches for
+    /// as the app. A service that publishes every package it
     /// loads calls nothing as one app.
     fn send_calls(&self) {
         if let (Some(out), Some(app)) = (&self.out, &self.only) {
@@ -657,6 +657,7 @@ impl ResourceService {
         let beside = std::mem::take(&mut self.beside);
         let by = &invoker.acting.by;
         let mut returned: Option<tilo_actions::ActionOutput> = None;
+        let mut later = None;
         // What the action writes is told apart from what was written before it.
         let _ = self.host.store().take_wrote("");
         if action == EDIT_TEXT_ACTION || action == EDIT_FLAG_ACTION {
@@ -707,10 +708,9 @@ impl ResourceService {
                     .action_output(&planned.app, &planned.action_id, returned_value.as_ref())
                     .map_err(ApiError::Failed)?,
             );
-            // A call the run made through the dispatch: the run goes on with its answer.
-            if let Some(out) = &mut self.out {
-                out.wait_on(&self.host);
-            }
+            // A call the run made through the dispatch: the run goes on with its answer, and the
+            // invocation is answered when the run ends.
+            later = self.out.as_mut().and_then(|out| out.wait_on(&self.host));
         }
         if let Some(refused) = self.host.store().take_refusal() {
             return Err(ApiError::Failed(refused));
@@ -723,6 +723,9 @@ impl ResourceService {
             .and_then(|app| self.host.store().take_wrote(app));
         self.publications.update(&self.host, &self.planner);
         self.told();
+        if let Some(later) = later {
+            return Ok(Started::Later(later));
+        }
         let mut output = returned.unwrap_or_default();
         output.value = wrote.and_then(|wrote| ActionOutput::noting_wrote(output.value, &wrote));
         Ok(Started::Done(output))
@@ -1530,13 +1533,13 @@ impl Service for ResourceService {
         self.connect_origin(origin, connection)
     }
 
-    fn reach_dispatch(
+    fn reach_workspace(
         &mut self,
-        dispatch: &tilo_service::Dispatch,
+        connect: &tilo_service::ConnectApp,
         workspace: &str,
         wake: tilo_service::Wake,
     ) {
-        self.out = Some(calls::OutCalls::new(dispatch, workspace, wake));
+        self.out = Some(calls::OutCalls::new(connect, workspace, wake));
         self.send_calls();
     }
 

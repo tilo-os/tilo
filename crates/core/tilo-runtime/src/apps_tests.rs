@@ -1786,7 +1786,8 @@ fn a_launch_asks_the_launcher_for_the_installed_packages_own_program() {
     let launch = block_on_owned({
         let apps = Arc::clone(&apps);
         async move {
-            let launch = apps.start_showing(VIEWER, WORKSPACE, Shows::Nothing, None, &Runs::default())?;
+            let launch =
+                apps.start_showing(VIEWER, WORKSPACE, Shows::Nothing, None, &Runs::default())?;
             apps.started(launch, VIEWER).await
         }
     })

@@ -170,3 +170,28 @@ fn asked_facts(invocation: &Invocation) -> Option<tilo_actions::ActionContext> {
         ..tilo_actions::ActionContext::default()
     })
 }
+
+/// The record an app's connection for `person` in `workspace` names, as its cluster and its
+/// document within it: the person's own document of the workspace for an app whose documents are
+/// each member's own (`documents: .own`), which only their devices are admitted to, else the
+/// workspace's document of the app (no document). What an instance of the app joins, and what a
+/// call the app makes over its connection is decided on.
+#[must_use]
+pub fn app_record(
+    meta: &tilolang::PackageMeta,
+    workspace: uuid::Uuid,
+    person: &str,
+) -> (uuid::Uuid, Option<String>) {
+    if meta.keeps_own_resources()
+        && let Some(profile) = collab_types::person_workspace_of(person)
+    {
+        let kind = format!("tl.{}", meta.app);
+        return (
+            profile,
+            Some(collab_types::person_document_for_workspace(
+                &kind, workspace,
+            )),
+        );
+    }
+    (workspace, None)
+}

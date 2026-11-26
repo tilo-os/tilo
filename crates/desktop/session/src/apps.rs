@@ -2374,6 +2374,42 @@ impl Apps {
         self.start_launched_windowless(launch, workspace)
     }
 
+    /// A collaboration connection the device's daemon vouches for as `app` in `workspace`,
+    /// asked for as a window's is handed over, and attested windowless: what the session's own
+    /// services call other apps over as that app, so the dispatch decides their calls as it
+    /// decides the app's window's.
+    ///
+    /// # Errors
+    /// The session reaches no workspace for its apps, or the daemon refused the connection.
+    pub(crate) fn connection_as(
+        &self,
+        app: &str,
+        workspace: &str,
+    ) -> Result<std::os::fd::OwnedFd, String> {
+        let links = self
+            .state
+            .borrow()
+            .links
+            .clone()
+            .ok_or_else(|| format!("{app} reaches no workspace from this session"))?;
+        Self::no_view_connection(&links, app, workspace).map(|(_, connection)| connection)
+    }
+
+    /// A new instance of `app` in `workspace`, and its collaboration connection attested
+    /// windowless.
+    fn no_view_connection(
+        links: &Links,
+        app: &str,
+        workspace: &str,
+    ) -> Result<(u64, std::os::fd::OwnedFd), String> {
+        let instance = links.next_instance();
+        links
+            .connections()
+            .collaboration_with_no_view(app, workspace, instance)
+            .map(|connection| (instance, connection))
+            .ok_or_else(|| format!("{app} could not reach its workspace with no window"))
+    }
+
     /// Start an instance of `app` in `workspace` in its tilolang host with no window: what an
     /// action that shows nothing runs in, whether an agent invokes it or the workspace starts the
     /// app. The instance gets the connections and grants a window's instance gets, and its
@@ -2388,15 +2424,8 @@ impl Apps {
         let resources = self
             .app_connections(app, &workspace.id)
             .map_err(ApiError::Failed)?;
-        let instance = links.next_instance();
-        let collaboration = links
-            .connections()
-            .collaboration_with_no_view(app, &workspace.id, instance)
-            .ok_or_else(|| {
-                ApiError::Failed(format!(
-                    "{app} could not reach its workspace with no window"
-                ))
-            })?;
+        let (instance, collaboration) =
+            Self::no_view_connection(&links, app, &workspace.id).map_err(ApiError::Failed)?;
         self.state.borrow_mut().handed_over = true;
         processes
             .hand_over(

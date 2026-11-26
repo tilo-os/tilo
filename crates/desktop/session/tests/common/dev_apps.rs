@@ -288,6 +288,20 @@ pub fn install(store: &Path, _scratch: &Path) -> Vec<String> {
     install_named(store, &all)
 }
 
+/// The signed package of `app`, by its package id, as this run built it ([`built`]): what a
+/// workspace's install hands over.
+///
+/// # Panics
+/// The run built no such app, or its package does not read.
+pub fn package(app: &str) -> Vec<u8> {
+    let (_, tapp) = built()
+        .apps
+        .iter()
+        .find(|(built, _)| built == app)
+        .unwrap_or_else(|| panic!("this run built no {app}"));
+    std::fs::read(tapp).expect("the built .tapp reads")
+}
+
 /// Install the apps of [`APPS`] that `apps` names, by package id, from the run's build
 /// ([`built`]): what a session's tests install when they open some of the apps and not all.
 ///

@@ -1526,7 +1526,6 @@ impl Session {
         for service in &mut started {
             service.own_person(&options.person, &own.earlier);
         }
-        let services = mount_services(&mut published, started);
         // The device's dispatch asks the services as the person: a press of one of their actions,
         // and the person's answer to the question it asked. A session no daemon started reaches
         // no dispatch, and its presses run as before.
@@ -1540,6 +1539,7 @@ impl Session {
                 name: crate::i18n::t("session-this-computer"),
             }),
         );
+        let services = mount_services(&mut published, started, &served_services);
         crate::services::app_wire::serve_services(
             std::sync::Arc::clone(&served_services),
             &services.borrow(),

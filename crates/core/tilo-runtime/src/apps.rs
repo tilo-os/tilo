@@ -1016,7 +1016,8 @@ impl Apps {
     /// The workspace is not served here, the app is not installed, no
     /// launcher can start it, or it did not come up.
     pub async fn start(&self, app_id: &str, workspace: &str) -> Result<Launch, String> {
-        let launch = self.start_showing(app_id, workspace, Shows::Window, None, &Runs::default())?;
+        let launch =
+            self.start_showing(app_id, workspace, Shows::Window, None, &Runs::default())?;
         self.started(launch, app_id).await
     }
 

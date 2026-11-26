@@ -47,6 +47,7 @@ mod commits;
 mod compiled;
 mod content;
 mod dev_builds;
+pub use dev_builds::install_package;
 mod dispatch;
 /// The workspace's environments, reached by any app as an ordinary action call and answered by
 /// the shell runtime this device runs.

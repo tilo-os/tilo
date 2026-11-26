@@ -205,24 +205,38 @@ fn session(root: &Path) -> Session {
         None,
         Some(launcher.path().to_owned()),
     ));
+    // The person's own link to their daemon, beside the session's: what installs the client in
+    // the workspace, as the person's own install does.
+    let mut person_link = None;
     let mut session = crate::common::on_its_daemon_with(
         &[tilo_compositor::OutputConfig::new(
             "HEADLESS-1",
             crate::common::WIDTH,
             crate::common::HEIGHT,
         )],
-        |device| Options {
-            collab: true,
-            state: Some(root.join("state")),
-            services: crate::common::seeded_apps_of(device),
-            asks: Some(tilo_service::asks::channel()),
-            app_socket: AppSocket::At(root.join("app_wire.sock")),
-            mcp_server: Some(root.join("agent.sock")),
-            test_control: Some(root.join("test-control.sock")),
-            apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
-            launch: Some(apps),
-            launches: Arc::new(Launches::default()),
-            ..Options::default()
+        |device| {
+            person_link = Some(
+                device
+                    .daemon
+                    .link_shell(tilo_test_env::hang_bound())
+                    .expect("the daemon makes the person's link"),
+            );
+            Options {
+                collab: true,
+                state: Some(root.join("state")),
+                services: crate::common::seeded_apps_of(device),
+                asks: Some(tilo_service::asks::channel()),
+                // The app wire where the launcher hands it to the apps, as a computer's session
+                // serves it: what an app's connection, the session's services' own calls as an
+                // app among them, is attested on and handed to the daemon.
+                app_socket: AppSocket::Launcher,
+                mcp_server: Some(root.join("agent.sock")),
+                test_control: Some(root.join("test-control.sock")),
+                apps: Some(Rc::clone(&apps) as Rc<dyn AppActions>),
+                launch: Some(apps),
+                launches: Arc::new(Launches::default()),
+                ..Options::default()
+            }
         },
     );
     // The shell shows the workspace the daemon holds, and the apps' records are kept there as a
@@ -235,6 +249,9 @@ fn session(root: &Path) -> Session {
         })
     });
     crate::common::kept_in_workspace(&mut session);
+    // The person installs the client in the workspace, through the workspace's own install
+    // action: what lets it keep its records there and use what its package names.
+    install_in_workspace(&mut session, person_link.expect("the person's link"), TUBE);
     // The daemon starts the client's connector through the launcher it was handed, and that
     // process takes the socket the origin is reached over.
     let started = |dir: &Path| {
@@ -248,6 +265,51 @@ fn session(root: &Path) -> Session {
         child_ran(root, "youtube").is_file()
     });
     session
+}
+
+/// Install `app`, as this run built it, in the workspace the session shows, as its person does
+/// over their own link `link`: its package handed to the workspace's install action.
+fn install_in_workspace(
+    session: &mut Session,
+    link: runtime_portal::process_link::Descriptor,
+    app: &str,
+) {
+    let runtime = tilo_rt::app().handle().clone();
+    let shell = tilo_session_client::daemon_documents::DaemonShell::new(
+        tilo_session_client::daemon_documents::inherited_link(Some(link), &runtime)
+            .map(|(link, _)| link),
+        runtime,
+    );
+    let workspace = session
+        .handle()
+        .read(|tree| {
+            tree.active_workspace()
+                .map(|workspace| workspace.id().to_string())
+        })
+        .expect("the workspace the shell shows");
+    let package = crate::common::dev_apps::package(app);
+    tilo_runtime::device::install_package(&package, &mut |verb, arguments| {
+        let request = crate::common::invocation(
+            &tilo_actions::remote::RemoteActionTarget::workspace_governance(&workspace, verb),
+            &arguments,
+            None,
+            None,
+        );
+        let (shell, workspace) = (shell.clone(), workspace.clone());
+        let (answered, answer) = std::sync::mpsc::sync_channel(1);
+        let runtime = shell.runtime().clone();
+        let _task = runtime.spawn(async move {
+            let settled = match shell.link() {
+                Ok(link) => link.dispatch().settled(Some(workspace), request).await,
+                Err(error) => Err(error),
+            };
+            let _ = answered.send(settled);
+        });
+        crate::common::wait_for(session, "the workspace's answer", |_| {
+            answer.try_recv().ok()
+        })
+    })
+    .unwrap_or_else(|error| panic!("the person installs {app} in the workspace: {error}"));
 }
 
 #[test]
@@ -349,8 +411,13 @@ fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() 
     session
         .invoke(&video, &play, &serde_json::Map::new())
         .expect("the video plays");
+    crate::common::until(
+        &mut session,
+        "the video's address in the record",
+        |session| streaming(session, &video),
+    );
     crate::common::until(&mut session, "the player holds the video", |session| {
-        streaming(session, &video) && playing(session, root.id.as_str(), KEY)
+        playing(session, root.id.as_str(), KEY)
     });
 }
 
@@ -382,6 +449,16 @@ fn streaming(session: &Session, id: &str) -> bool {
 /// Whether the client's session plays the video keyed `key`: the playback the root `root` names
 /// as what plays names that video, and is `playing`. A video's page draws its player only then.
 fn playing(session: &Session, root: &str, key: &str) -> bool {
+    /// The id a playback's state reads `playing` under, as the playback package's ids name it:
+    /// a reading names an enum's variant by its id.
+    fn playing_id() -> &'static str {
+        include_str!("../../../../apps/tl/playback/app.ids")
+            .lines()
+            .find_map(|line| line.strip_prefix("PlaybackState.playing = "))
+            .map(str::trim)
+            .expect("the playback package names its playing state")
+    }
+
     let Some(reading) = session.read(root) else {
         return false;
     };
@@ -391,7 +468,7 @@ fn playing(session: &Session, root: &str, key: &str) -> bool {
         session.read(&id).is_some_and(|reading| {
             let mut texts = Vec::new();
             texts_in(&reading, &mut texts);
-            texts.iter().any(|text| text == key) && texts.iter().any(|text| text == "playing")
+            texts.iter().any(|text| text == key) && texts.iter().any(|text| text == playing_id())
         })
     })
 }

@@ -665,7 +665,8 @@ fn run_parsed(
     {
         return Ok(());
     }
-    let attaches = !tilo_ui_base::surface_services::is_surface() && (spec.runtime_attachment)(&args);
+    let attaches =
+        !tilo_ui_base::surface_services::is_surface() && (spec.runtime_attachment)(&args);
     // A window is started by the daemon. A capture is too, when its caller named a profile of
     // its own: the app the daemon starts gets its sandbox, its grants and the connectors the
     // device runs, and captures with them, as a person's app does.

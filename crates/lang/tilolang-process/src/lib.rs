@@ -170,14 +170,12 @@ pub fn route_of(
     workspace: uuid::Uuid,
     person: &str,
 ) -> collaboration::RouteSpec {
-    if meta.keeps_own_resources()
-        && let Some(profile) = collab_types::person_workspace_of(person)
-    {
-        let kind = format!("tl.{}", meta.app);
-        let id = collab_types::person_document_for_workspace(&kind, workspace);
-        return collaboration::RouteSpec::document(&meta.app, profile, id);
+    match tilolang_tilo::dispatched::app_record(meta, workspace, person) {
+        (cluster, Some(document)) => {
+            collaboration::RouteSpec::document(&meta.app, cluster, document)
+        }
+        (cluster, None) => collaboration::RouteSpec::app(meta.app.clone(), cluster),
     }
-    collaboration::RouteSpec::app(meta.app.clone(), workspace)
 }
 
 /// A restricted package closes its window when its read grant is removed.

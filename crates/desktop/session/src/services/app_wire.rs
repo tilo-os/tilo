@@ -30,6 +30,8 @@ pub(crate) fn answered(started: Started) -> ResourceOperationStart {
 /// host for all of them.
 struct ServiceSurface {
     services: Rc<RefCell<Services>>,
+    /// Where what the person pressed and was refused once its work ended is kept for them to see.
+    served: std::sync::Arc<ServedServices>,
 }
 
 /// A surface app reaches the desktop's actions exactly as a person's palette does: through the app wire
@@ -83,11 +85,26 @@ impl Published for ServiceSurface {
         arguments: &serde_json::Map<String, serde_json::Value>,
         _look: &mut tilo_session_core::surfaces::Look<'_>,
     ) -> Result<ResourceOperationStart, ApiError> {
-        match self
-            .services
-            .borrow_mut()
-            .invoke(&address.resource, &address.action, arguments)
-        {
+        // The person's own act on the session's surfaces, which this session draws and whose
+        // input it reads: what the action's code calls of its own app runs as theirs, as a press
+        // in the app's window does, and only a rule that asks them first still waits for them.
+        let invoked = tilolang_tilo::page::answering((None, true), || {
+            self.services
+                .borrow_mut()
+                .invoke(&address.resource, &address.action, arguments)
+        });
+        match invoked {
+            // Its work goes on (a run that waits on what it called): a refusal once it ends is
+            // theirs to see on the shell, in the words it came with.
+            Some(Ok(Started::Later(later))) => {
+                let served = std::sync::Arc::clone(&self.served);
+                later.then(move |landed| {
+                    if let Some(Err(error)) = landed {
+                        served.refuse(&error.to_string());
+                    }
+                });
+                Ok(ResourceOperationStart::Accepted)
+            }
             Some(started) => started.map(answered),
             None => Err(ApiError::Unknown(address.clone())),
         }
@@ -398,6 +415,7 @@ fn calls_service(
 pub(crate) fn mount_services(
     surfaces: &mut Surfaces,
     started: Vec<Box<dyn Service>>,
+    served: &std::sync::Arc<ServedServices>,
 ) -> Rc<RefCell<Services>> {
     let mut services = Services::default();
     for service in started {
@@ -406,6 +424,7 @@ pub(crate) fn mount_services(
     let services = Rc::new(RefCell::new(services));
     surfaces.add(Rc::new(RefCell::new(ServiceSurface {
         services: Rc::clone(&services),
+        served: std::sync::Arc::clone(served),
     })));
     services
 }
@@ -416,6 +435,12 @@ pub(crate) const SERVICES_PROVIDER: &str = "session.services";
 
 /// One call of the session's services the device's dispatch made: what to run, as whom, and
 /// where its answer goes.
+/// How a service answered a call the dispatch made: at once, or once its work ends.
+enum Answered {
+    Now(tilo_actions::remote::InvocationReceipt),
+    Later(tilo_actions::remote::Pending<Result<tilo_actions::ActionOutput, ApiError>>),
+}
+
 struct ServiceCall {
     request: tilo_actions::remote::InvokeRequest,
     reply: tokio::sync::oneshot::Sender<
@@ -555,7 +580,36 @@ impl ServedServices {
                 .unwrap_or_else(std::sync::PoisonError::into_inner),
         );
         for call in calls {
-            let _ = call.reply.send(self.answer(services, &call.request));
+            let invocation = call.request.invocation;
+            match self.answer(services, &call.request) {
+                // Its work goes on after the service answered (a run that waits on what it
+                // called): the dispatch hears how it ended once it has, a refusal in its words.
+                Ok(Answered::Later(later)) => later.then(move |landed| {
+                    use tilo_actions::remote::{InvocationReceipt, ReceiptStatus};
+                    let status = match landed {
+                        Some(Ok(output)) => ReceiptStatus::Completed { output },
+                        Some(Err(error)) => ReceiptStatus::Rejected {
+                            error: tilo_actions::remote::ActionCallError::Refused {
+                                reason: error.to_string(),
+                            },
+                        },
+                        None => ReceiptStatus::Rejected {
+                            error: tilo_actions::remote::ActionCallError::Unavailable {
+                                reason: "the action's work was given up".to_owned(),
+                            },
+                        },
+                    };
+                    let _ = call
+                        .reply
+                        .send(Ok(InvocationReceipt { invocation, status }));
+                }),
+                Ok(Answered::Now(receipt)) => {
+                    let _ = call.reply.send(Ok(receipt));
+                }
+                Err(error) => {
+                    let _ = call.reply.send(Err(error));
+                }
+            }
         }
     }
 
@@ -564,8 +618,7 @@ impl ServedServices {
         &self,
         services: &mut Services,
         request: &tilo_actions::remote::InvokeRequest,
-    ) -> Result<tilo_actions::remote::InvocationReceipt, tilo_actions::remote::ActionCallError>
-    {
+    ) -> Result<Answered, tilo_actions::remote::ActionCallError> {
         use tilo_actions::remote::{ActionCallError, InvocationReceipt, ReceiptStatus};
         let invocation = request.invocation;
         let address = &request.target.address;
@@ -580,14 +633,25 @@ impl ServedServices {
         };
         let resources = services.resources();
         let confirmed = request.approval().is_some();
-        let started = if confirmed {
-            services.invoke_confirmed(&address.resource, &address.action, &arguments)
-        } else {
-            services.invoke(&address.resource, &address.action, &arguments)
-        };
+        // What the host that admitted the call attested of it: the person's approve it came back
+        // with, and whether their own press made it. A tilolang service's run reads both as a
+        // window's does, so what its code calls of its own runs as their act.
+        let context = request.context.as_ref();
+        let answering = (
+            context.and_then(|context| context.approval.clone()),
+            context.is_some_and(|context| context.pressed),
+        );
+        let started = tilolang_tilo::page::answering(answering, || {
+            if confirmed {
+                services.invoke_confirmed(&address.resource, &address.action, &arguments)
+            } else {
+                services.invoke(&address.resource, &address.action, &arguments)
+            }
+        });
         let status = match started {
             Some(Ok(Started::Done(output))) => ReceiptStatus::Completed { output },
-            Some(Ok(Started::Accepted | Started::Later(_))) => ReceiptStatus::Accepted,
+            Some(Ok(Started::Accepted)) => ReceiptStatus::Accepted,
+            Some(Ok(Started::Later(later))) => return Ok(Answered::Later(later)),
             // Its contract waits for the person: the dispatch keeps the call as their asked
             // record, showing what it asks and, where Undo cannot take it back, that it cannot.
             Some(Err(ApiError::ConfirmationRequired)) if !confirmed => {
@@ -602,7 +666,7 @@ impl ServedServices {
             }
             None => return Err(ActionCallError::UnknownAction),
         };
-        Ok(InvocationReceipt { invocation, status })
+        Ok(Answered::Now(InvocationReceipt { invocation, status }))
     }
 
     /// What the person reads before answering a call of `address`: the action by its own label,

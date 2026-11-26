@@ -14,6 +14,7 @@
 #[path = "../../tilolang-tilo/tests/fixtures.rs"]
 mod fixtures;
 
+mod app_calls;
 mod block_edit;
 mod direct_readers;
 mod kept_in_workspace;

@@ -62,31 +62,10 @@ impl DevBuilds {
             return Err(format!("{app} is no development build"));
         }
         let started = std::time::Instant::now();
-        let surface = app_registry::publisher::entry::surface_hex(package)
-            .map_err(|error| format!("the development build {app}: {error:#}"))?;
-        let file = blake3::hash(package).to_hex().to_string();
         let total = package.len() as u64;
-        let mut offset = 0_u64;
-        for piece in package.chunks(PIECE) {
-            let args =
-                json!({"file": file, "offset": offset, "total": total, "data": hex::encode(piece)});
-            self.ask(&app, UPLOAD, args)?;
-            offset = offset.saturating_add(piece.len() as u64);
-        }
-        let uploaded = started.elapsed();
-        self.ask(
-            &app,
-            tilo_action_policy::roles::governance::INSTALL_APP,
-            json!({
-                "app": app,
-                "version": manifest.version,
-                "surface": surface,
-                "package": hex::encode(tapp.meta.id.0),
-                "publisher": hex::encode(tapp.meta.root.publisher_identity),
-                "file": file,
-                "dev": true,
-            }),
-        )?;
+        let uploaded = install_package(package, &mut |verb, arguments| {
+            self.ask(&app, verb, arguments)
+        })?;
         Ok(format!(
             "installed in the workspace as a development build: {app} ({} KiB handed over in {} \
              ms, installed in {} ms)",
@@ -147,6 +126,49 @@ impl DevBuilds {
             )),
         }
     }
+}
+
+/// Install the signed package `package` in a workspace through its own install action, which
+/// `ask` asks as the person installing it (`verb` and its arguments): its file is handed over in
+/// pieces first, then the workspace's install of that file, marked as a development build when the
+/// package is one. How long handing the file over took.
+///
+/// # Errors
+/// The package is unreadable, or `ask`'s refusal of a piece or of the install.
+pub fn install_package(
+    package: &[u8],
+    ask: &mut dyn FnMut(&str, Value) -> Result<Value, String>,
+) -> Result<Duration, String> {
+    let tapp = tilo_app_package::tapp::read(package, &mut tilo_app_package::blobs::DiscardBlobs)
+        .map_err(|error| format!("the package: {error}"))?;
+    let manifest = &tapp.meta.manifest.package;
+    let app = manifest.id.clone();
+    let started = std::time::Instant::now();
+    let surface = app_registry::publisher::entry::surface_hex(package)
+        .map_err(|error| format!("the package {app}: {error:#}"))?;
+    let file = blake3::hash(package).to_hex().to_string();
+    let total = package.len() as u64;
+    let mut offset = 0_u64;
+    for piece in package.chunks(PIECE) {
+        let args =
+            json!({"file": file, "offset": offset, "total": total, "data": hex::encode(piece)});
+        ask(UPLOAD, args)?;
+        offset = offset.saturating_add(piece.len() as u64);
+    }
+    let uploaded = started.elapsed();
+    ask(
+        tilo_action_policy::roles::governance::INSTALL_APP,
+        json!({
+            "app": app,
+            "version": manifest.version,
+            "surface": surface,
+            "package": hex::encode(tapp.meta.id.0),
+            "publisher": hex::encode(tapp.meta.root.publisher_identity),
+            "file": file,
+            "dev": manifest.dev.is_some(),
+        }),
+    )?;
+    Ok(uploaded)
 }
 
 /// What a person reads when the workspace refused installing `app`: a workspace offers its

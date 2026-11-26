@@ -43,20 +43,26 @@ impl crate::Shared {
             }
         };
         if kept == AppStores::Kept {
-            // What the apps' code calls of other apps goes through the device's dispatch in that
-            // workspace, decided as their windows' calls are.
-            match self.daemon.link() {
-                Ok(link) => {
-                    let dispatch: tilo_service::Dispatch = std::sync::Arc::new(link.dispatch());
-                    self.services.borrow_mut().reach_dispatch(
-                        &dispatch,
+            // What the apps' code calls of other apps goes over a connection the daemon vouches
+            // for as that app, decided as their windows' calls are.
+            match self.launch.clone() {
+                Some(apps) => {
+                    let runtime = runtime.clone();
+                    let calls_in = workspace.clone();
+                    let connect: tilo_service::ConnectApp =
+                        std::rc::Rc::new(move |from: &tilo_service::CallsFrom| {
+                            let connection = apps.connection_as(&from.app, &calls_in)?;
+                            AppConnection::over(connection, from, &runtime).map(|calls| {
+                                std::rc::Rc::new(calls) as std::rc::Rc<dyn tilo_service::AppCalls>
+                            })
+                        });
+                    self.services.borrow_mut().reach_workspace(
+                        &connect,
                         &workspace,
                         &self.wake_handle,
                     );
                 }
-                Err(error) => {
-                    tracing::warn!(%error, "the apps' calls of other apps reach no dispatch");
-                }
+                None => tracing::warn!("the apps' calls of other apps reach no workspace"),
             }
         }
         *self.app_stores.borrow_mut() = kept;
@@ -149,5 +155,126 @@ impl tilo_service::WorkspaceStore for HeldStore {
             policy,
             hex::encode(self.view.person()),
         ))
+    }
+}
+
+/// One app's connection to its workspace, which the device's daemon vouches for as that app: its
+/// calls are sent and followed on `runtime`, off the session's loop.
+struct AppConnection {
+    /// The app's record its calls are decided on, on the connection.
+    record: runtime_collab::RecordHandle,
+    runtime: tokio::runtime::Handle,
+    /// Set once the connection ended: a call is then sent over a new one.
+    ended: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// How long one follow of a call waits for it to move before it is asked again.
+const FOLLOW_MS: u32 = 60_000;
+
+impl AppConnection {
+    fn over(
+        connection: std::os::fd::OwnedFd,
+        from: &tilo_service::CallsFrom,
+        runtime: &tokio::runtime::Handle,
+    ) -> Result<Self, String> {
+        let _entered = runtime.enter();
+        let (client, end) = runtime_collab::CollabClient::from_connected_fd(connection)
+            .map_err(|error| format!("the app's connection to its workspace: {error}"))?;
+        let ended = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let marks = std::sync::Arc::clone(&ended);
+        runtime.spawn(async move {
+            end.await;
+            marks.store(true, std::sync::atomic::Ordering::Release);
+        });
+        Ok(Self {
+            record: client.record(&from.record, &from.kind),
+            runtime: runtime.clone(),
+            ended,
+        })
+    }
+}
+
+impl tilo_service::AppCalls for AppConnection {
+    fn send(
+        &self,
+        request: tilo_actions::remote::InvokeRequest,
+        ended: Box<dyn FnOnce(tilo_actions::remote::ReceiptStatus) + Send>,
+    ) -> Result<(), String> {
+        if self.ended.load(std::sync::atomic::Ordering::Acquire) {
+            return Err("the app's connection to its workspace ended".to_owned());
+        }
+        let record = self.record.clone();
+        self.runtime.spawn(async move {
+            ended(followed(&record, request).await);
+        });
+        Ok(())
+    }
+}
+
+/// How the call `request` ended, sent on the app's `record` and followed while it runs or waits for the
+/// person's answer.
+async fn followed(
+    record: &runtime_collab::RecordHandle,
+    request: tilo_actions::remote::InvokeRequest,
+) -> tilo_actions::remote::ReceiptStatus {
+    use tilo_actions::InvocationUpdate;
+    use tilo_actions::remote::{
+        ActionCallError, ReceiptStatus, RemoteActionFrame, RemoteActionMessage, UpdateMark,
+    };
+    let unavailable = |reason: String| ReceiptStatus::Rejected {
+        error: ActionCallError::Unavailable { reason },
+    };
+    let invocation = request.invocation;
+    let ask = |message: RemoteActionMessage| async move {
+        let frame = RemoteActionFrame::new(message)
+            .encode()
+            .map_err(|error| error.to_string())?;
+        let answer = record
+            .remote_action(&frame)
+            .await
+            .map_err(|error| error.to_string())?;
+        RemoteActionFrame::decode(&answer)
+            .map(|frame| frame.message)
+            .map_err(|error| error.to_string())
+    };
+    let mut update = match ask(RemoteActionMessage::Invoke(request)).await {
+        Ok(RemoteActionMessage::Receipt(receipt)) => match receipt.status {
+            ReceiptStatus::Accepted => InvocationUpdate::Accepted { invocation },
+            status => return status,
+        },
+        Ok(other) => return unavailable(format!("the workspace answered a call with {other:?}")),
+        Err(error) => return unavailable(error),
+    };
+    loop {
+        match update {
+            InvocationUpdate::Succeeded { output, .. } => {
+                return ReceiptStatus::Completed { output };
+            }
+            InvocationUpdate::Failed { error, .. } => return ReceiptStatus::Failed { error },
+            InvocationUpdate::Cancelled { message, .. } => {
+                return ReceiptStatus::Cancelled { message };
+            }
+            InvocationUpdate::Accepted { .. }
+            | InvocationUpdate::Progress { .. }
+            | InvocationUpdate::Item { .. } => {}
+        }
+        let observe = RemoteActionMessage::Observe {
+            correlation: 0,
+            invocation,
+            wait_ms: Some(FOLLOW_MS),
+            seen: Some(UpdateMark::of(&update)),
+        };
+        update = match ask(observe).await {
+            Ok(RemoteActionMessage::Update {
+                state: Some(state), ..
+            }) => state.update,
+            Ok(RemoteActionMessage::Update { state: None, .. }) => {
+                return unavailable("the workspace lost the call".to_owned());
+            }
+            Ok(other) => {
+                return unavailable(format!("the workspace answered a follow with {other:?}"));
+            }
+            Err(error) => return unavailable(error),
+        };
     }
 }
