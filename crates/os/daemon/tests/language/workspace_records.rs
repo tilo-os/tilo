@@ -29,6 +29,9 @@ fn field(result: &Value, name: &str) -> Value {
         .unwrap_or(Value::Null)
 }
 
+/// Discussion's package id: the system's comments on any resource of the workspace.
+const DISCUSSION: &str = "so.tilo.lang.discussion";
+
 /// The provider that names the first record `app` keeps in the workspace.
 fn record(app: &str) -> String {
     format!(
@@ -265,10 +268,11 @@ fn a_members_content_steps_answer_and_the_workspace_keeps_what_they_put() {
 }
 
 /// A commenter comments and a moderator makes a channel, by the role the workspace's governance
-/// names for them; the owner files the issue the comment is on.
+/// names for them; the owner files the issue the comment is on, and the comment is Discussion's,
+/// made from that issue.
 #[test]
 fn a_commenter_comments_and_a_moderator_makes_a_channel() {
-    host::run(|host| async move {
+    host::run_with(&["tasks", "discussion"], |host| async move {
         let workspace = host.workspace().to_owned();
         let owner_device = host.member("its owner's computer", &workspace).await;
         let owner = host.agent();
@@ -282,16 +286,43 @@ fn a_commenter_comments_and_a_moderator_makes_a_channel() {
         assert!(!is_error, "{words}");
         let issue = field(&filed, "made")
             .as_array()
-            .map_or(Value::Null, |made| made[0]["id"].clone());
-        assert!(!issue.is_null(), "the issue is answered: {words}");
+            .and_then(|made| made[0]["id"].as_str().map(str::to_owned))
+            .unwrap_or_else(|| panic!("the issue is answered: {words}"));
 
-        // A commenter's comment on it, through the device link as the guest their person is.
+        // A commenter's comment on it, through the device link as the guest their person is: a
+        // comment on a task is the system's discussion, not Tasks' own, so it is Discussion's
+        // `comment`, made from the task it is about.
         let commenter = guest(&host, &owner_device, "commenter", "Cyd").await;
+        host::start_app(host.as_ref(), DISCUSSION)
+            .await
+            .unwrap_or_else(|refused| panic!("Discussion starts with no window: {refused:?}"));
+        let page = host::listed(host.as_ref(), DISCUSSION)
+            .await
+            .expect("Discussion lists what it publishes");
+        let says = page
+            .rows
+            .iter()
+            .filter_map(|row| row.action.as_ref())
+            .find(|action| action.address.action == "comment")
+            .unwrap_or_else(|| panic!("Discussion publishes comment: {page:?}"));
+        let discussion = host::app_action(
+            host.as_ref(),
+            DISCUSSION,
+            &says.address.resource,
+            &says.address.action,
+        );
+        let about = tilo_actions::params::MadeFrom {
+            resource: issue,
+            kind: "tl.so.tilo.tasks.Task".to_owned(),
+        };
         let comment = commenter
             .call(
-                &record("so.tilo.tasks"),
-                tilo_actions::ActionAddress::new("tasks.issues", "comment"),
-                &json!({"issue": issue, "text": "Looks good"}),
+                &discussion.provider,
+                discussion.address.clone(),
+                &json!({
+                    "text": "Looks good",
+                    (tilo_actions::params::FROM_ARGUMENT): about.to_json(),
+                }),
             )
             .await
             .expect("a commenter's comment answers");
