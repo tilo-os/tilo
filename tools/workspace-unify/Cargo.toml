@@ -1059,7 +1059,6 @@ doc = false
 "tilo-capture-studio" = { path = "../../crates/desktop/capture-studio", default-features = false, features = [] }
 "tilo-chip-design-engine" = { path = "../../crates/engines/tilo-chip-design-engine", default-features = false, features = [] }
 "tilo-chromium-blocker" = { path = "../../crates/engines/chromium-blocker", default-features = false, features = [] }
-"tilo-cli-kit" = { path = "../../crates/sdk/cli", default-features = false, features = [] }
 "tilo-clipboard" = { path = "../../crates/platform/tilo-clipboard", default-features = false, features = ["os"] }
 "tilo-clock" = { path = "../../crates/platform/tilo-clock", default-features = false, features = ["local", "test-support"] }
 "tilo-cloud-source" = { path = "../../crates/integrations/cloud-source", default-features = false, features = ["client", "conformance"] }
@@ -3520,7 +3519,6 @@ doc = false
 "tilo-capture" = { path = "../../crates/engines/tilo-capture", default-features = false, features = ["avfoundation", "camera", "codes", "default", "scanner", "test-support"] }
 "tilo-capture-studio" = { path = "../../crates/desktop/capture-studio", default-features = false, features = [] }
 "tilo-chromium-blocker" = { path = "../../crates/engines/chromium-blocker", default-features = false, features = [] }
-"tilo-cli-kit" = { path = "../../crates/sdk/cli", default-features = false, features = [] }
 "tilo-clipboard" = { path = "../../crates/platform/tilo-clipboard", default-features = false, features = [] }
 "tilo-clock" = { path = "../../crates/platform/tilo-clock", default-features = false, features = ["local", "test-support"] }
 "tilo-cloud-source" = { path = "../../crates/integrations/cloud-source", default-features = false, features = ["client", "conformance"] }
@@ -4755,7 +4753,6 @@ doc = false
 "tilo-browser-continuity-core" = { path = "../../crates/core/browser-continuity-core", default-features = false, features = [] }
 "tilo-canonical-json" = { path = "../../crates/platform/tilo-canonical-json", default-features = false, features = [] }
 "tilo-caps" = { path = "../../crates/sdk/tilo-caps", default-features = false, features = [] }
-"tilo-cli-kit" = { path = "../../crates/sdk/cli", default-features = false, features = [] }
 "tilo-clock" = { path = "../../crates/platform/tilo-clock", default-features = false, features = ["local", "test-support"] }
 "tilo-cloud-source" = { path = "../../crates/integrations/cloud-source", default-features = false, features = ["client", "conformance"] }
 "tilo-cloud-source-dav" = { path = "../../crates/integrations/cloud-source-dav", default-features = false, features = ["fake-server"] }
