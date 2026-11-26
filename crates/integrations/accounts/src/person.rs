@@ -86,6 +86,14 @@ pub struct AccountList {
     pub accounts: Collection<ListedAccount>,
 }
 
+impl AccountList {
+    /// The kind its record is of, for a crate that names the record without the resource model.
+    #[must_use]
+    pub fn kind() -> &'static str {
+        <Self as tilo_resource::Resource>::KIND
+    }
+}
+
 #[resource(
     kind = "tilo.accounts",
     read_content = tilo_resource::read::fields

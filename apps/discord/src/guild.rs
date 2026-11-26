@@ -535,46 +535,6 @@ fn overwrite_for<'a>(
     overwrites?.iter().find(|o| o.id == target)
 }
 
-/// Bring a guild resource of version `from` up to this one. Version 1 named
-/// the Chat workspace the server mirrored; Chat runs in its workspace and keeps
-/// no workspaces now, so the server mirrors the workspace's chat and the name is
-/// dropped. Up to version 2 a channel's kind and permission overwrites were
-/// each one JSON string; they are rewritten as the values they held. Up
-/// to version 3 a link began with a code the person sent from Discord;
-/// those codes and the count of wrong ones are dropped, as linking starts
-/// from a one-time token now and a pending code could no longer be used.
-///
-/// # Errors
-/// When `from` is not a version this resource was, or a stored kind or
-/// overwrite list does not read.
-fn migrate(
-    doc: &mut ui::tilo_resource::Doc,
-    from: u32,
-) -> Result<(), ui::tilo_resource::ModelError> {
-    use ui::automerge::{ROOT, ReadDoc as _, transaction::Transactable as _};
-    use ui::tilo_resource::evolution::{map_values, retype_json};
-    if !(1..=3).contains(&from) {
-        return Err(ui::tilo_resource::ModelError::invalid(format!(
-            "no Discord server migration from {from}"
-        )));
-    }
-    if doc.get(ROOT, "workspace")?.is_some() {
-        doc.delete(ROOT, "workspace")?;
-    }
-    if from <= 2 {
-        for (_, channel) in map_values(doc, &ROOT, "channels")? {
-            retype_json::<ChannelKind>(doc, &channel, "kind")?;
-            retype_json::<Vec<OverwriteInfo>>(doc, &channel, "overwrites")?;
-        }
-    }
-    for dropped in ["pending_links", "link_failures"] {
-        if doc.get(ROOT, dropped)?.is_some() {
-            doc.delete(ROOT, dropped)?;
-        }
-    }
-    Ok(())
-}
-
 impl Guild {
     /// What the resource holds: one bridged Discord server — its channels, roles and emojis, and
     /// the mapping between them and the workspace's.
@@ -594,8 +554,6 @@ impl Guild {
 #[resource(
     kind = "discord.guild",
     params = guild,
-    version = 4,
-    migrate = migrate,
     read_content = Guild::read_document
 )]
 impl Guild {
