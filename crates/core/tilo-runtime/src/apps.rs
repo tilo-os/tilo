@@ -1649,13 +1649,17 @@ impl Launched {
     }
 
     /// Whether `pid` is still the process recorded for exactly `app` and
-    /// `workspace`.
+    /// `workspace`: the record names them, and the running process is the one
+    /// recorded, never a later process the kernel gave the same pid.
     fn attest(&self, pid: u32, app: &str, workspace: &str) -> bool {
         let mut launches = self.0.lock_recover();
         let Some(record) = launches.get_mut(&pid) else {
             return false;
         };
-        if record.app != app || record.workspace != workspace {
+        if record.app != app
+            || record.workspace != workspace
+            || process_start_time(pid) != Some(record.start_time)
+        {
             return false;
         }
         record.connected = true;
