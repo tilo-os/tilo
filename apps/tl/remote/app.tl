@@ -7,8 +7,6 @@ app so.tilo.remote "Remote Desktop" (
     web: ["*"],
 )
 
-use so.tilo.device as device
-
 /// What a saved connection speaks.
 enum ConnectionKind {
     /// Secure shell: a terminal on the machine.
@@ -17,8 +15,6 @@ enum ConnectionKind {
     vnc
     /// Remote Desktop Protocol: kept and edited with the others, but Remote opens none.
     rdp
-    /// Another Tilo device: its screen, shared once its owner says yes.
-    tilo
 }
 
 /// How a connection signs in. The secret itself is never here: a password or a key's passphrase
@@ -26,15 +22,13 @@ enum ConnectionKind {
 enum AuthMethod {
     password
     public_key
-    /// The Tilo device network knows both devices: nothing to type.
-    device_identity
 }
 
 /// One saved machine: where it is and how to reach it. Everyone the connections are shared with
 /// sees the same list; a password is kept in the workspace's vault, never in the connection.
 type Connection (title: name, untitled: "Untitled connection") {
     name: Text
-    /// The host name or address, or a Tilo device's exact endpoint id.
+    /// The host name or address.
     host: Text
     port: Int = 22
     user: Text
@@ -168,26 +162,20 @@ type TransferAsk {
 
 // ---------------------------------------------------------------- what a connection is
 fn kind_word(kind: ConnectionKind) -> Text {
-    if kind == .ssh {
-        "SSH"
-    } else if kind == .vnc { "VNC" } else if kind == .rdp { "RDP" } else { "Tilo device" }
+    if kind == .ssh { "SSH" } else if kind == .vnc { "VNC" } else { "RDP" }
 }
 
 fn auth_word(auth: AuthMethod) -> Text {
-    if auth == .password {
-        "Password"
-    } else if auth == .public_key { "Public key" } else { "Device identity" }
+    if auth == .password { "Password" } else { "Public key" }
 }
 
 fn default_port(kind: ConnectionKind) -> Int {
-    if kind == .ssh { 22 } else if kind == .vnc { 5900 } else if kind == .rdp { 3389 } else { 0 }
+    if kind == .ssh { 22 } else if kind == .vnc { 5900 } else { 3389 }
 }
 
 /// The sign-in methods a protocol takes, so the form never offers one its transport ignores.
 fn methods_of(kind: ConnectionKind) -> List<AuthMethod> {
-    if kind == .ssh {
-        [.password, .public_key]
-    } else if kind == .tilo { [.device_identity] } else { [.password] }
+    if kind == .ssh { [.password, .public_key] } else { [.password] }
 }
 
 /// How a protocol signs in unless the person picks another way.
@@ -205,44 +193,13 @@ fn secret_purpose(kind: ConnectionKind, auth: AuthMethod) -> Text {
     if kind == .vnc { "vnc" } else if auth == .public_key { "passphrase" } else { "password" }
 }
 
-/// A Tilo device's id, cut to the part a person tells devices apart by.
-fn compact_endpoint(endpoint: Text) -> Text {
-    if endpoint.len() > 12 { endpoint.slice(0, 12) + "…" } else { endpoint }
-}
-
 /// Where a connection goes, as a row says it: `user@host:port`, the port left out where it is the
-/// protocol's own, and a Tilo device by the start of its id.
+/// protocol's own.
 fn address(c: Connection) -> Text {
-    if c.kind == .tilo {
-        return compact_endpoint(c.host)
-    }
     let at = if c.port == 0 or c.port == default_port(c.kind) {
         c.host
     } else { "{c.host}:{c.port}" }
     if c.kind == .ssh and c.user != "" { "{c.user}@{at}" } else { at }
-}
-
-/// Whether `t` is hex digits from `at` on.
-fn hex_from(t: Text, at: Int) -> Bool {
-    if at >= t.len() {
-        true
-    } else if "0123456789abcdef".contains(t.slice(at, at + 1)) {
-        hex_from(t, at + 1)
-    } else { false }
-}
-
-/// Whether `t` is base32 letters from `at` on, as an endpoint id is written.
-fn base32_from(t: Text, at: Int) -> Bool {
-    if at >= t.len() {
-        true
-    } else if "abcdefghijklmnopqrstuvwxyz234567".contains(t.slice(at, at + 1).lower()) {
-        base32_from(t, at + 1)
-    } else { false }
-}
-
-/// Whether `t` is written as a device's exact endpoint id: 64 hex digits, or 52 base32 letters.
-fn is_endpoint(t: Text) -> Bool {
-    t.len() == 64 and hex_from(t, 0) or t.len() == 52 and base32_from(t, 0)
 }
 
 /// Why a connection cannot be saved or opened as it stands, in words the form shows; empty when
@@ -251,18 +208,11 @@ fn name_problem(name: Text) -> Text {
     if name.trim() == "" { "A connection needs a name" } else { "" }
 }
 
-fn host_problem(kind: ConnectionKind, host: Text) -> Text {
-    if host.trim() == "" {
-        "A connection needs an address"
-    } else if kind == .tilo and not is_endpoint(host.trim()) {
-        "A Tilo device is named by its exact endpoint id"
-    } else { "" }
+fn host_problem(host: Text) -> Text {
+    if host.trim() == "" { "A connection needs an address" } else { "" }
 }
 
-fn port_problem(kind: ConnectionKind, port: Text) -> Text {
-    if kind == .tilo {
-        return ""
-    }
+fn port_problem(port: Text) -> Text {
     if let n = port.trim().to_int() {
         if n >= 1 and n <= 65535 { "" } else { "A port is 1–65535" }
     } else { "A port is 1–65535" }
@@ -275,11 +225,7 @@ fn auth_problem(kind: ConnectionKind, auth: AuthMethod) -> Text {
         "SSH signs in with a password or a key"
     } else if kind == .vnc {
         "VNC signs in with a password"
-    } else if kind == .rdp {
-        "RDP signs in with a password"
-    } else {
-        "A Tilo device signs in with the device's identity"
-    }
+    } else { "RDP signs in with a password" }
 }
 
 /// Whether the form, as typed, has a field the person must change before it saves.
@@ -291,15 +237,15 @@ fn form_problem(
     auth: AuthMethod,
 ) -> Bool {
     name_problem(name) != ""
-        or host_problem(kind, host) != ""
-        or port_problem(kind, port) != ""
+        or host_problem(host) != ""
+        or port_problem(port) != ""
         or auth_problem(kind, auth) != ""
 }
 
 /// Why a saved connection cannot be opened, or empty when it can.
 fn profile_problem(c: Connection) -> Text {
     let auth = auth_problem(c.kind, c.auth)
-    if auth != "" { auth } else { host_problem(c.kind, c.host) }
+    if auth != "" { auth } else { host_problem(c.host) }
 }
 
 /// What a row says on its trailing edge when the connection cannot be opened as it stands.
@@ -310,7 +256,7 @@ fn row_meta(c: Connection) -> Text {
 }
 
 // ---------------------------------------------------------------- keeping the connections
-/// Saves a machine to reach over SSH, VNC or as a Tilo device.
+/// Saves a machine to reach over SSH or VNC.
 primary action add_connection(
     r: Remote,
     name: Text,
@@ -322,8 +268,8 @@ primary action add_connection(
     group: Text = "",
 ) -> Connection (icon: .plus, label: "Add connection", did: "added a connection") {
     require name_problem(name) == "" name_problem(name)
-    require host_problem(kind, host) == "" host_problem(kind, host)
-    require kind == .tilo or port_fits(port ?? default_port(kind)) "A port is 1–65535"
+    require host_problem(host) == "" host_problem(host)
+    require port_fits(port ?? default_port(kind)) "A port is 1–65535"
     require auth_problem(kind, auth ?? first_method(kind)) == "" auth_problem(
         kind,
         auth ?? first_method(kind),
@@ -334,7 +280,7 @@ primary action add_connection(
         Connection(
             name: name.trim(),
             host: host.trim(),
-            port: if kind == .tilo { 0 } else { p },
+            port: p,
             user: if kind == .ssh { (user ?? "").trim() } else { "" },
             kind: kind,
             auth: method,
@@ -356,8 +302,8 @@ action change_connection(
     group: Text,
 ) (icon: .pencil, label: "Change connection", did: "changed a connection") {
     require name_problem(name) == "" name_problem(name)
-    require host_problem(kind, host) == "" host_problem(kind, host)
-    require kind == .tilo or port >= 1 and port <= 65535 "A port is 1–65535"
+    require host_problem(host) == "" host_problem(host)
+    require port >= 1 and port <= 65535 "A port is 1–65535"
     require auth_problem(kind, auth) == "" auth_problem(kind, auth)
     if c.name != name.trim() {
         c.name = name.trim()
@@ -368,9 +314,8 @@ action change_connection(
     if c.kind != kind {
         c.kind = kind
     }
-    let p = if kind == .tilo { 0 } else { port }
-    if c.port != p {
-        c.port = p
+    if c.port != port {
+        c.port = port
     }
     let u = if kind == .ssh { user.trim() } else { "" }
     if c.user != u {
@@ -432,9 +377,7 @@ action mark_used(c: Connection) uses time (label: "Set its last use") {
 /// Why this device opens no session to `c` at all, or empty when it can try.
 fn unreachable(c: Connection) -> Text {
     if c.kind == .rdp {
-        "Remote opens SSH, VNC and Tilo devices, but not RDP. Choose SSH or VNC to keep using this machine."
-    } else if c.kind == .tilo {
-        "This workspace can't show another Tilo device's screen yet."
+        "Remote opens SSH and VNC, but not RDP. Choose SSH or VNC to keep using this machine."
     } else { "" }
 }
 
@@ -732,9 +675,7 @@ view window(r: Remote) {
                     ui.NavItem(
                         "session",
                         "Session",
-                        icon: if c.kind == .ssh {
-                            .square_terminal
-                        } else if c.kind == .tilo { .monitor_smartphone } else { .screen_share },
+                        icon: if c.kind == .ssh { .square_terminal } else { .screen_share },
                     )
                 }
             }
@@ -819,8 +760,6 @@ view window(r: Remote) {
                                 "Not connected",
                                 icon: if c.kind == .ssh {
                                     .square_terminal
-                                } else if c.kind == .tilo {
-                                    .monitor_smartphone
                                 } else { .screen_share },
                                 message: "No session to {c.name} is open.",
                                 action: "Connect",
@@ -898,7 +837,7 @@ action save_form(
     } else {
         add_connection(r, name, host, kind, .some(p), .some(user), .some(auth), group)
     }
-    if secret != "" and kind != .tilo { keep_secret(c, secret) }
+    if secret != "" { keep_secret(c, secret) }
     true
 }
 
@@ -925,7 +864,7 @@ view connection_list(
         ui.EmptyState(
             "No saved connections",
             icon: .monitor,
-            message: "Save a machine to reach it over SSH, VNC or as a Tilo device.",
+            message: "Save a machine to reach it over SSH or VNC.",
             action: "New connection",
         ) {
             on act: set(editing, .none)
@@ -1044,9 +983,7 @@ view connection_row(
     ui.ListRow(
         c.name,
         item: c,
-        icon: if c.kind == .ssh {
-            .square_terminal
-        } else if c.kind == .tilo { .monitor_smartphone } else { .screen_share },
+        icon: if c.kind == .ssh { .square_terminal } else { .screen_share },
         secondary: address(c),
         meta: row_meta(c),
         meta_tone: .warning,
@@ -1113,9 +1050,8 @@ view connection_form(
     checking: Bool,
     screen: State<Text>,
 ) {
-    let kinds = [ConnectionKind.ssh, ConnectionKind.vnc, ConnectionKind.rdp, ConnectionKind.tilo]
+    let kinds = [ConnectionKind.ssh, ConnectionKind.vnc, ConnectionKind.rdp]
     let methods = methods_of(kind)
-    let others = device.devices.devices.filter(d -> not d.local)
     scroll {
         page {
             ui.Section("Machine") {
@@ -1125,7 +1061,6 @@ view connection_form(
                             ui.Segment("SSH")
                             ui.Segment("VNC")
                             ui.Segment("RDP")
-                            ui.Segment("Tilo device")
                             on change(i: Int): set(kind, kinds.at(i) ?? .ssh)
                                 .then(
                                     set(port, "{default_port(kinds.at(i) ?? .ssh)}"),
@@ -1135,74 +1070,45 @@ view connection_form(
                                 )
                         }
                     }
-                    if kind == .tilo and not others.is_empty() {
-                        field("Your devices") {
-                            ui.Section() {
-                                for d in others {
-                                    ui.ListRow(
-                                        d.label,
-                                        icon: .monitor_smartphone,
-                                        secondary: if d.online { "Online" } else { "Offline" },
-                                        selected: host == d.id,
-                                        tone: if d.online { .success } else { .neutral },
-                                    ) {
-                                        on activate: set(host, d.id)
-                                            .then(
-                                                set(name, if name == "" { d.label } else { name }),
-                                            )
-                                    }
-                                }
-                            }
-                        }
-                    }
                     field("Name", error: if checking { name_problem(name) } else { "" }) {
                         ui.TextInput(bind: name, placeholder: "Home server", autofocus: true)
                     }
-                    if kind == .tilo {
-                        field(
-                            "Device",
-                            error: if checking { host_problem(kind, host) } else { "" },
-                        ) {
-                            ui.TextInput(bind: host, placeholder: "Device endpoint id")
+                    field("Host", error: if checking { host_problem(host) } else { "" }) {
+                        ui.TextInput(bind: host, placeholder: "Host name or IP address")
+                    }
+                    field("Port", error: if checking { port_problem(port) } else { "" }) {
+                        ui.TextInput(bind: port, placeholder: "Port")
+                    }
+                    if kind == .ssh {
+                        field("User") {
+                            ui.TextInput(bind: user, placeholder: "User name")
                         }
-                    } else {
-                        field("Host", error: if checking { host_problem(kind, host) } else { "" }) {
-                            ui.TextInput(bind: host, placeholder: "Host name or IP address")
-                        }
-                        field("Port", error: if checking { port_problem(kind, port) } else { "" }) {
-                            ui.TextInput(bind: port, placeholder: "Port")
-                        }
-                        if kind == .ssh {
-                            field("User") {
-                                ui.TextInput(bind: user, placeholder: "User name")
-                            }
-                        }
-                        if methods.len() > 1 {
-                            field("Sign in with") {
-                                ui.ToggleGroup(
-                                    selected: methods.index_of(auth) ?? 0,
-                                    label: "Sign in with",
-                                ) {
-                                    for m in methods {
-                                        ui.Segment(auth_word(m))
-                                    }
-                                    on change(i: Int): set(auth, methods.at(i) ?? .password)
+                    }
+                    if methods.len() > 1 {
+                        field("Sign in with") {
+                            ui.ToggleGroup(
+                                selected: methods.index_of(auth) ?? 0,
+                                label: "Sign in with",
+                            ) {
+                                for m in methods {
+                                    ui.Segment(auth_word(m))
                                 }
+                                on change(i: Int): set(auth, methods.at(i) ?? .password)
                             }
                         }
-                        field(
-                            if auth == .public_key { "Key passphrase" } else { "Password" },
-                            help: "Kept in the workspace's vault.",
-                        ) {
-                            ui.TextInput(
-                                bind: secret,
-                                placeholder: if auth == .public_key { "Optional" } else { "" },
-                                secret: true,
-                            )
-                        }
-                        field("Group") {
-                            ui.TextInput(bind: group, placeholder: "Optional")
-                        }
+                    }
+                    field(
+                        if auth == .public_key { "Key passphrase" } else { "Password" },
+                        help: "Kept in the workspace's vault.",
+                    ) {
+                        ui.TextInput(
+                            bind: secret,
+                            placeholder: if auth == .public_key { "Optional" } else { "" },
+                            secret: true,
+                        )
+                    }
+                    field("Group") {
+                        ui.TextInput(bind: group, placeholder: "Optional")
                     }
                 }
             }
@@ -1246,9 +1152,7 @@ view session_view(
     } else if word.phase == "connecting" {
         ui.EmptyState(
             "Connecting to {c.name}",
-            icon: if c.kind == .ssh {
-                .square_terminal
-            } else if c.kind == .tilo { .monitor_smartphone } else { .screen_share },
+            icon: if c.kind == .ssh { .square_terminal } else { .screen_share },
             message: "Remote is reaching the machine and signing in. It stops on its own after 45 seconds.",
             action: "Stop",
         ) {
@@ -1257,9 +1161,7 @@ view session_view(
     } else if word.phase == "closed" {
         ui.EmptyState(
             "Session ended",
-            icon: if c.kind == .ssh {
-                .square_terminal
-            } else if c.kind == .tilo { .monitor_smartphone } else { .screen_share },
+            icon: if c.kind == .ssh { .square_terminal } else { .screen_share },
             message: "{c.name} closed the session.",
             action: "Reconnect",
         ) {
@@ -1290,9 +1192,7 @@ view session_view(
             if c.kind == .rdp {
                 "Remote can't open RDP connections"
             } else { "Couldn't connect to {c.name}" },
-            icon: if c.kind == .ssh {
-                .square_terminal
-            } else if c.kind == .tilo { .monitor_smartphone } else { .screen_share },
+            icon: if c.kind == .ssh { .square_terminal } else { .screen_share },
             message: unreachable(c),
             error: true,
             action: "Close",
@@ -1302,9 +1202,7 @@ view session_view(
     } else {
         ui.EmptyState(
             "Couldn't connect to {c.name}",
-            icon: if c.kind == .ssh {
-                .square_terminal
-            } else if c.kind == .tilo { .monitor_smartphone } else { .screen_share },
+            icon: if c.kind == .ssh { .square_terminal } else { .screen_share },
             message: word.why,
             error: true,
             action: "Try again",

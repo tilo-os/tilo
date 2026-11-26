@@ -15,7 +15,7 @@ d-zt74w6zn = Verbindung
 d-ssofhrgw = Name
 
 d-dyz6c4fy = Host
-    .doc = Der Hostname oder die Adresse, oder die genaue Endpunkt-ID eines Tilo-Geräts.
+    .doc = Der Hostname oder die Adresse.
 
 d-3zbula3z = Port
 
@@ -256,9 +256,6 @@ d-oxeu4mhs = Virtual Network Computing: der Bildschirm der Maschine, von hier ge
 d-3iijeiru = Remote Desktop Protocol: gespeichert und bearbeitet wie die anderen, aber Remote öffnet keine
     .doc = Remote Desktop Protocol: gespeichert und bearbeitet wie die anderen, aber Remote öffnet keine.
 
-d-6bk2qevf = Ein anderes Tilo-Gerät: sein Bildschirm, geteilt, sobald sein Besitzer zustimmt
-    .doc = Ein anderes Tilo-Gerät: sein Bildschirm, geteilt, sobald sein Besitzer zustimmt.
-
 d-clndfhov = Anmeldeverfahren
     .doc = Wie sich eine Verbindung anmeldet.
 
@@ -266,11 +263,8 @@ d-6wx5iksm = Passwort
 
 d-3gvwro53 = Öffentlicher Schlüssel
 
-d-3ca6rn4z = Das Tilo-Gerätenetz kennt beide Geräte: du musst nichts eintippen
-    .doc = Das Tilo-Gerätenetz kennt beide Geräte: du musst nichts eintippen.
-
 d-glspcxbm = Verbindung hinzufügen
-    .doc = Speichert eine Maschine, um sie über SSH, VNC oder als Tilo-Gerät zu erreichen.
+    .doc = Speichert eine Maschine, um sie über SSH oder VNC zu erreichen.
     .did = hat eine Verbindung hinzugefügt
     .w-a-port-is-1-65535 = Ein Port ist 1–65535
 
@@ -327,7 +321,7 @@ d-mmg5rfeo = Letzte Nutzung setzen
     .doc = Vermerkt, dass jetzt eine Sitzung zu `c` geöffnet wurde.
 
 d-pzurwzcz = Verbinden
-    .doc = Öffnet eine laufende Sitzung zu einer gespeicherten Verbindung: ein Terminal für SSH, den Bildschirm der Maschine für VNC und ein Tilo-Gerät.
+    .doc = Öffnet eine laufende Sitzung zu einer gespeicherten Verbindung: ein Terminal für SSH, den Bildschirm der Maschine für VNC.
     .did = hat sich mit einer Maschine verbunden
 
 d-5idxcote = Trennen
@@ -409,14 +403,12 @@ d-4flbj2vt-secret = Geheimnis
 d-2hsyunxv = Anmeldewort
     .w-password = Passwort
     .w-public-key = Öffentlicher Schlüssel
-    .w-device-identity = Geräteidentität
 
 d-bj7owich = Namensproblem
     .w-a-connection-needs-a-name = Eine Verbindung braucht einen Namen
 
 d-txir7jwg = Hostproblem
     .w-a-connection-needs-an-address = Eine Verbindung braucht eine Adresse
-    .w-a-tilo-device-is-named-by = Ein Tilo-Gerät wird über seine genaue Endpunkt-ID benannt
 
 d-fdzed5uz = Portproblem
     .w-a-port-is-1-65535 = Ein Port ist 1–65535
@@ -425,15 +417,13 @@ d-52xljp76 = Anmeldeproblem
     .w-ssh-signs-in-with-a-password = SSH meldet sich mit einem Passwort oder einem Schlüssel an
     .w-vnc-signs-in-with-a-password = VNC meldet sich mit einem Passwort an
     .w-rdp-signs-in-with-a-password = RDP meldet sich mit einem Passwort an
-    .w-a-tilo-device-signs-in-with = Ein Tilo-Gerät meldet sich mit der Identität des Geräts an
 
 d-fhnzw225 = Zeileninfo
     .w-rdp-isn-t-supported = RDP wird nicht unterstützt
     .w-needs-editing = Muss bearbeitet werden
 
 d-r7g3wi7r = Nicht erreichbar
-    .w-remote-opens-ssh-vnc-and-tilo = Remote öffnet SSH, VNC und Tilo-Geräte, aber kein RDP. Wähle SSH oder VNC, um diese Maschine weiter zu nutzen.
-    .w-this-workspace-can-t-show-another = Dieser Arbeitsbereich kann den Bildschirm eines anderen Tilo-Geräts noch nicht zeigen.
+    .w-remote-opens-ssh-and-vnc-but = Remote öffnet SSH und VNC, aber kein RDP. Wähle SSH oder VNC, um diese Maschine weiter zu nutzen.
 
 d-6xxrt65p = Fenstertitel
     .w-new-connection = Neue Verbindung
@@ -475,14 +465,8 @@ d-bccnijkx = Fenster
     .w-ssh = SSH
     .w-vnc = VNC
     .w-rdp = RDP
-    .w-tilo-device = Tilo-Gerät
-    .w-your-devices = Deine Geräte
-    .w-online = Online
-    .w-offline = Offline
     .w-name = Name
     .w-home-server = Heimserver
-    .w-device = Gerät
-    .w-device-endpoint-id = Endpunkt-ID des Geräts
     .w-host = Host
     .w-host-name-or-ip-address = Hostname oder IP-Adresse
     .w-port = Port
@@ -515,7 +499,7 @@ d-bccnijkx = Fenster
     .w-this-connection-was-deleted = Diese Verbindung wurde gelöscht
     .w-someone-you-share-your-connections-with = Jemand, mit dem du deine Verbindungen teilst, hat sie entfernt.
     .w-no-saved-connections = Keine gespeicherten Verbindungen
-    .w-save-a-machine-to-reach-it = Speichere eine Maschine, um sie über SSH, VNC oder als Tilo-Gerät zu erreichen.
+    .w-save-a-machine-to-reach-it = Speichere eine Maschine, um sie über SSH oder VNC zu erreichen.
     .w-no-pinned-connections = Keine angehefteten Verbindungen
     .w-pin-the-machines-you-use-most = Hefte die Maschinen an, die du am meisten nutzt, damit sie hier bleiben.
     .w-no-connections-match = Keine passenden Verbindungen
