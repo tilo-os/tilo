@@ -603,8 +603,46 @@ git = true
 [[check]]
 name = "policy/unit/{test}"
 run = "python3 tools/policy/run_unit_tests.py tools/tests/test_{test}.py"
+requires = ["arch=any"]
 [check.matrix]
 test = { from = "tools/tests/test_*.py" }
+
+# The suite reads the tree and copies it into temporary directories, so its result is the same
+# on either architecture. These ask the machine itself and stay on x86_64: the OS build is
+# planned for the host's architecture and tests that board, the CET test compiles with the
+# host's compiler for an x86-only marker, the verifier-bundle test hands the check the host's
+# architecture and its own ELF binaries, the extension-manifest test resolves for the machine's
+# architecture (the script refuses any other), and the push-lint test expects the clippy family
+# of the machine's architecture. Two read the host more directly: the environment test reads its
+# tools, PATH and Vulkan drivers, and the Chromium test reads `/proc` and the host's name to find
+# its own processes.
+[[check.matrix.set]]
+when = { test = "build_os" }
+requires = ["arch=x86_64"]
+
+[[check.matrix.set]]
+when = { test = "chrome_process_cleanup" }
+requires = ["arch=x86_64"]
+
+[[check.matrix.set]]
+when = { test = "extension_publish" }
+requires = ["arch=x86_64"]
+
+[[check.matrix.set]]
+when = { test = "pre_push_lint" }
+requires = ["arch=x86_64"]
+
+[[check.matrix.set]]
+when = { test = "shstk_mark" }
+requires = ["arch=x86_64"]
+
+[[check.matrix.set]]
+when = { test = "test_environment" }
+requires = ["arch=x86_64"]
+
+[[check.matrix.set]]
+when = { test = "verifier_bundle_checks" }
+requires = ["arch=x86_64"]
 
 # The tests that ask Git about the tree they run in: the tracked files (`ls-files`), the commit
 # (`rev-parse`) or the log, also through the scripts they run (`tools/ci/build-os.sh`,
