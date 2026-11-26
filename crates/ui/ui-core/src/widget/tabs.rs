@@ -6955,7 +6955,264 @@ mod tests {
             sample_at(&mut b, opened, 16, p, &theme);
             assert!(!chips_open(&b, 1), "another pill's body closes it");
         }
+        phase the_aim_hold_ends_when_the_pointer_turns_away_or_stops_short;
+        // The hold is only for a pointer still heading for the chips: moving
+        // away closes the pill at once, and stopping short releases it once the
+        // hold lapses, handing over to whatever is under the pointer.
+        {
+            use crate::widget::hover_intent::{AIM_HOLD, DWELL};
+            let theme = Theme::dark().with_reduce_motion(true);
+            // Turning away: back to the left, onto pill 0.
+            {
+                let (mut b, opened) = bar_with_pill_one_open(&theme);
+                let idle0 = b.tab_rects()[0];
+                let p = Point::new(idle0.center().x, idle0.center().y);
+                sample_at(&mut b, opened, 8, p, &theme);
+                assert!(
+                    !chips_open(&b, 1),
+                    "moving away closes the open pill at once"
+                );
+                assert!(
+                    !chips_open(&b, 0),
+                    "and the next pill waits out its own dwell"
+                );
+                let dwell = u64::try_from(DWELL.as_millis()).unwrap();
+                layout_at(&mut b, opened, 8 + dwell, &theme);
+                assert!(chips_open(&b, 0));
+            }
+            {
+                let (mut b, opened) = bar_with_pill_one_open(&theme);
+                let r = b.tab_rects()[1];
+                let chip = b.max_rects()[1].center();
+                let start = Point::new(r.x0 + 12.0, r.y1 - 3.0);
+                let short = Point::new(chip.x - 30.0, r.y1 + 3.0);
+                sample_at(&mut b, opened, 0, start, &theme);
+                sample_at(&mut b, opened, 8, short, &theme);
+                assert!(chips_open(&b, 1), "still heading for the chips");
+                assert!(
+                    b.next_wake_deadline().is_some(),
+                    "a running hold wakes the host when it runs out"
+                );
+                let hold = u64::try_from(AIM_HOLD.as_millis()).unwrap();
+                layout_at(&mut b, opened, 8 + hold - 1, &theme);
+                assert!(chips_open(&b, 1));
+                layout_at(&mut b, opened, 8 + hold, &theme);
+                assert!(
+                    !chips_open(&b, 1),
+                    "a pointer resting short of the chips lets go"
+                );
+            }
+        }
+        phase crossing_the_close_button_at_speed_toward_the_chips_expands_the_pill;
+        // Passing over the × is not hovering it.
+        {
+            use crate::widget::hover_intent::DWELL;
+            let theme = Theme::dark().with_reduce_motion(true);
+            let mut b = four_tab_bar();
+            lay_out_at_width_with(&mut b, 900.0, &theme);
+            let r = b.tab_rects()[0];
+            let close = b.close_hit_rect(0).expect("the active pill shows its ×");
+            let y = r.center().y;
+            let from = Point::new(b.tab_rects()[1].x0 + 10.0, y);
+            let to = Point::new(close.x0 - 30.0, y);
+            let t0 = crate::time::now();
+            let mut entered = None;
+            let mut crossed_x = false;
+            // About 2 px/ms (the stretch is about 80 px), a sample per 8 ms frame.
+            let steps = 5;
+            sample_at(&mut b, t0, 0, from, &theme);
+            for (k, p) in path(from, to, steps).into_iter().enumerate() {
+                let ms = 8 * (u64::try_from(k).unwrap() + 1);
+                sample_at(&mut b, t0, ms, p, &theme);
+                if entered.is_none() && r.contains(p) {
+                    entered = Some(ms);
+                }
+                if close.contains(p) {
+                    crossed_x = true;
+                    let wash = at_time(t0 + Duration::from_millis(ms), || {
+                        b.close_chip_color_for_tests(0, &theme)
+                    });
+                    let danger = theme.tokens.colors.semantic.danger.with_alpha_factor(0.8);
+                    assert_ne!(wash, Some(danger), "the × lit up under a passing pointer");
+                }
+            }
+            assert!(crossed_x, "the path crosses the ×");
+            let entered = entered.expect("the path enters the pill");
+            let dwell = u64::try_from(DWELL.as_millis()).unwrap();
+            layout_at(&mut b, t0, entered + dwell, &theme);
+            assert!(chips_open(&b, 0), "crossing the × still opens the pill");
+        }
+        phase stopping_on_the_title_short_of_the_close_button_opens_after_the_aim_hold;
+        // Seeing more takes a pause on the pill's body.
+        {
+            use crate::widget::hover_intent::{AIM_HOLD, DWELL};
+            let theme = Theme::dark().with_reduce_motion(true);
+            let mut b = four_tab_bar();
+            lay_out_at_width_with(&mut b, 900.0, &theme);
+            let r = b.tab_rects()[0];
+            let t0 = crate::time::now();
+            let start = Point::new(r.x0 + 10.0, r.center().y);
+            let stop = Point::new(r.x0 + 30.0, r.center().y);
+            sample_at(&mut b, t0, 0, start, &theme);
+            for (k, p) in path(start, stop, 4).into_iter().enumerate() {
+                sample_at(&mut b, t0, 8 * (u64::try_from(k).unwrap() + 1), p, &theme);
+            }
+            let stopped = 32;
+            let dwell = u64::try_from(DWELL.as_millis()).unwrap();
+            let hold = u64::try_from(AIM_HOLD.as_millis()).unwrap();
+            layout_at(&mut b, t0, stopped + dwell, &theme);
+            assert!(!chips_open(&b, 0), "a bare dwell after heading for the ×");
+            layout_at(&mut b, t0, stopped + hold, &theme);
+            assert!(chips_open(&b, 0), "resting on the title asks to see more");
+        }
+        phase an_open_pill_holds_while_the_pointer_heads_for_a_neighbours_close_button;
+        // Never move a control the pointer is heading for or resting on: with
+        // pill 1 open and pill 2 active (its × showing), a pointer leaving pill
+        // 1 for pill 2's × must not collapse pill 1 on the way, since that
+        // slides pill 2 and its × leftward under the arriving pointer.
+        {
+            let theme = Theme::dark().with_reduce_motion(true);
+            let mut b = four_tab_bar();
+            b.set_active(3);
+            lay_out_at_width_with(&mut b, 900.0, &theme);
+            let r = b.tab_rects()[1];
+            let t0 = crate::time::now();
+            let start = Point::new(r.x0 + 12.0, r.center().y);
+            sample_at(&mut b, t0, 0, start, &theme);
+            let dwell = u64::try_from(crate::widget::hover_intent::DWELL.as_millis()).unwrap();
+            layout_at(&mut b, t0, dwell, &theme);
+            assert!(chips_open(&b, 1), "resting on pill 1's body opens it");
+            let target = b.close_hit_rect(2).expect("the active pill shows its ×");
+            let close_2 = b.close_rects[2];
+            let to = target.center();
+            for (k, p) in path(start, to, 16).into_iter().enumerate() {
+                let ms = dwell + 8 * (u64::try_from(k).unwrap() + 1);
+                sample_at(&mut b, t0, ms, p, &theme);
+                assert_eq!(b.close_rects[2], close_2, "pill 2's × moved at {p:?}");
+            }
+            layout_at(&mut b, t0, dwell + 60_000, &theme);
+            assert_eq!(b.close_rects[2], close_2, "the × under the pointer moved");
+            assert_eq!(b.hover_close_idx, Some(2));
+        }
 
+    }
+
+    tilo_test_env::scenario! {
+        fn a_pill_reads_and_answers_as_what_it_shows;
+
+        // Squeezed pills keep a readable prefix of their own names, so two documents stay told
+        // apart; a pill with room shows its whole name; and the squeeze never pushes a pill past
+        // the bar's edge.
+        phase squeezed_titles_stay_prefixes_that_tell_windows_apart;
+        {
+            let theme = crate::theme::Theme::dark();
+            let mut tr = TextRenderer::new();
+            let mut docs = TabBar::new(
+                "docs",
+                vec![
+                    TabDescriptor::new(1, "Document-000.txt"),
+                    TabDescriptor::new(2, "Document-060.txt"),
+                ],
+                1,
+            );
+            let large = Theme::dark().with_text_scale(2.0);
+            let mut large_tr = TextRenderer::new();
+            large_tr.set_text_scale(2.0);
+            lay_out_at_width(&mut docs, 350.0);
+            let first = docs.visible_title(0, &mut large_tr, &large).unwrap();
+            let second = docs.visible_title(1, &mut large_tr, &large).unwrap();
+            assert_ne!(first, second, "two documents stay told apart at twice the text size");
+            for (width, titles) in [
+                (1300.0, ["Notes", "Files", "Terminal", "file-explorer-preferences"]),
+                (460.0, ["Notes", "Files", "Terminal", "Browser"]),
+                (320.0, ["Notes", "Files", "Terminal", "file-explorer-preferences"]),
+            ] {
+                let tabs = titles
+                    .iter()
+                    .zip(1..)
+                    .map(|(title, id)| TabDescriptor::new(id, *title))
+                    .collect();
+                let mut b = TabBar::new("g1", tabs, 1);
+                lay_out_at_width(&mut b, width);
+                for (i, title) in titles.iter().enumerate() {
+                    let shown = b.visible_title(i, &mut tr, &theme).expect("every pill names itself");
+                    let stem = shown.trim_end_matches('\u{2026}');
+                    assert!(title.starts_with(stem), "{width}: {shown:?} is a prefix of {title:?}");
+                    assert!(stem.chars().count() >= 3, "{width}: {shown:?} keeps a readable stem");
+                    if width > 1000.0 {
+                        assert_eq!(shown, *title, "a pill with room shows its whole name");
+                    }
+                }
+                for r in b.tab_rects() {
+                    assert!(r.x1 <= b.bar_rect().x1 + 0.5, "{width}: {r:?} past the bar");
+                }
+            }
+        }
+
+        // A reader hears each tab by the label its pill shows, and the "+" names itself "New tab"
+        // under the pointer and to a reader at every width, never as words in the bar.
+        phase a_reader_hears_what_the_pills_and_the_new_tab_glyph_show;
+        {
+            let mut b = bar();
+            b.tabs_mut()[1].title = "Inbox".to_owned();
+            let labels: Vec<String> = b.tabs().iter().map(|tab| tab.title.clone()).collect();
+            let names: Vec<String> = Widget::accessibility(&b)
+                .expect("the bar is not presentational")
+                .children
+                .into_iter()
+                .filter(|child| child.role == crate::a11y::Role::Tab)
+                .filter_map(|child| child.name)
+                .collect();
+            assert_eq!(names, labels, "a reader hears what the strip reads");
+
+            let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+            for width in [1200.0, 700.0, 420.0, 320.0] {
+                let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Chat")], 1);
+                b.set_window_controls(true);
+                lay_out_at_width_with(&mut b, width, &theme);
+                let api = b
+                    .bar_layout()
+                    .controls
+                    .into_iter()
+                    .find(|control| control.part == "new-tab")
+                    .expect("a bar with area shows its new-tab control");
+                assert_eq!((api.name.as_str(), api.words), ("New tab", 0.0), "{width}");
+                let at = crate::kurbo::Point::new(
+                    api.rect[0] + api.rect[2] / 2.0,
+                    api.rect[1] + api.rect[3] / 2.0,
+                );
+                assert_eq!(
+                    b.tip_at(at).map(|(_, tip)| tip).as_deref(),
+                    Some("New tab"),
+                    "{width} px: the glyph names itself under the pointer"
+                );
+            }
+        }
+
+        // On an open pill, a press on the search glyph searches and one on maximize maximizes;
+        // neither ever closes the window.
+        phase a_press_on_a_chip_does_what_that_chip_shows;
+        {
+            let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+            let mut b = TabBar::new(
+                "g1",
+                vec![TabDescriptor::new(1, "Notes"), TabDescriptor::new(2, "Files")],
+                1,
+            );
+            lay_out_at_width_with(&mut b, 640.0, &theme);
+            hover_pill(&mut b, 0, 640.0, &theme);
+            let (max, search) = (b.max_rects()[0], b.search_rects()[0]);
+            assert!(max.area() > 0.0 && search.area() > 0.0, "hovering reveals both chips");
+            let mut handled = false;
+            b.last_cursor = Point::new(search.x1 - 1.0, search.center().y);
+            b.on_left_press(&mut handled);
+            assert_eq!(b.pending_search.take(), Some(1), "the search glyph searches");
+            assert_eq!(b.pending_max, None);
+            b.last_cursor = max.center();
+            b.on_left_press(&mut handled);
+            assert_eq!(b.pending_max.take(), Some(1), "maximize maximizes");
+            assert_eq!(b.pending_close, None, "and never closes");
+        }
     }
 
     fn row_geometry(b: &TabBar) -> (Vec<Rect>, Vec<Rect>) {

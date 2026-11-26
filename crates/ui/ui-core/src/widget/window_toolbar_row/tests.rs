@@ -1100,3 +1100,86 @@ fn a_change_a_key_just_asked_for_lands_and_one_of_state_moves_nothing() {
 
 #[path = "reactions_tests.rs"]
 mod reactions;
+
+tilo_test_env::scenario! {
+    fn the_row_says_what_a_person_can_do_and_moves_only_what_they_moved;
+
+    // A window the person may only look at says so after its label, where an editable one says
+    // it was edited.
+    phase a_view_only_window_says_so_after_its_label;
+    {
+        let toolbar = WindowToolbar {
+            location: Some(ToolbarLocation {
+                label: "Plan".into(),
+                edited: true,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let shown = crate::window_toolbar::with_window_owned(Some(toolbar), None, None, true, false)
+            .and_then(|toolbar| toolbar.location)
+            .expect("the location stays");
+        assert!(shown.view_only);
+        assert_eq!(trailing_word(&shown), Some(text("window-toolbar-view-only")));
+        let editable = ToolbarLocation {
+            view_only: false,
+            ..shown
+        };
+        assert_eq!(trailing_word(&editable), Some(text("window-toolbar-edited")));
+    }
+
+    // A compact row never hides a lone action behind a menu: one action stands in the row, and
+    // a menu opens only for two or more.
+    phase a_compact_row_never_folds_one_action_alone_into_the_menu;
+    {
+        for (width, declared) in [(220.0, 1), (220.0, 2), (220.0, 3), (900.0, 1)] {
+            let parts = Parts::lay_out(
+                &file_toolbar(declared),
+                Rect::new(0.0, 0.0, width, 40.0),
+                None,
+                (&LocationForms::default(), &[], &[]),
+            );
+            let folded = declared - parts.actions.len();
+            assert!(folded == 0 || folded >= 2, "{width}, {declared}: the menu holds {folded}");
+            assert_eq!(parts.overflow.area() > 0.0, folded > 0, "{width}, {declared}");
+        }
+    }
+
+    // A part the app takes away fades out where it stood and takes no press on its way; under
+    // reduced motion the parts that move land at once, and what arrives still fades in.
+    phase a_part_taken_away_fades_where_it_stood_and_reduced_motion_lands_the_rest;
+    {
+        use crate::time::testing::with_monotonic_time;
+        let theme = Theme::dark();
+        let t0 = crate::time::now();
+        let mut taken = with_monotonic_time(t0, row);
+        let reload = taken.parts().actions[0];
+        let mut without_reload = browser();
+        without_reload.actions.clear();
+        with_monotonic_time(t0, || {
+            changed_to(&mut taken, &without_reload, &theme);
+            let leaving = taken.part_changes.leaving(t0);
+            assert_eq!(leaving.len(), 1, "reload fades out");
+            assert_eq!(leaving[0].rect, reload, "where it stood");
+            assert!(leaving[0].opacity > 0.95, "from whole");
+            assert_ne!(taken.part_at(reload.center()), Some(Part::Action(0)), "and takes no press");
+        });
+        let end = later(t0);
+        with_monotonic_time(end, || {
+            taken.start_part_change(&theme);
+            assert!(taken.part_changes.leaving(end).is_empty(), "and is gone");
+            assert!(!taken.needs_animation_frame());
+        });
+
+        let still = Theme::dark().with_reduce_motion(true);
+        let mut row = with_monotonic_time(t0, row);
+        let mut with_sidebar = browser();
+        with_sidebar.sidebar = Some(false);
+        with_monotonic_time(t0, || {
+            changed_to(&mut row, &with_sidebar, &still);
+            let poses = row.part_changes.poses(t0);
+            assert!(!poses.contains_key(&part_change::PartKey::Back), "back lands at once");
+            assert!(poses[&part_change::PartKey::Sidebar].0 < 0.05, "the sidebar fades in");
+        });
+    }
+}

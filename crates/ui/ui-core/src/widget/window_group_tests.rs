@@ -574,3 +574,144 @@ fn closing_tab_hosts_fade_out_and_the_last_one_closes_the_group() {
         }
     });
 }
+
+/// What each tab of a window was asked, as a window's lifecycle, history and collaboration walk
+/// the tabs.
+#[derive(Default)]
+struct Reached {
+    unsaved: std::cell::Cell<u32>,
+    checkpoint: std::cell::Cell<u32>,
+    finish: std::cell::Cell<u32>,
+    history: std::cell::Cell<u32>,
+}
+
+struct TabProbe(std::rc::Rc<Reached>);
+
+impl Widget for TabProbe {
+    crate::provides!(
+        dyn crate::history_mode::capability::FrameworkHistoryTopology,
+        dyn crate::component_lifecycle::ComponentLifecycle
+    );
+    crate::testing::inert_widget_methods!(name = "TabProbe");
+    fn build_layout(
+        &mut self,
+        taffy: &mut TaffyTree<()>,
+        _: &Theme,
+        _: &mut HashMap<NodeId, *mut dyn Widget>,
+    ) -> NodeId {
+        taffy.leaf_node(Style::default())
+    }
+}
+
+fn bump(cell: &std::cell::Cell<u32>) {
+    cell.set(cell.get() + 1);
+}
+
+impl crate::component_lifecycle::ComponentLifecycle for TabProbe {
+    fn unsaved_documents(&self, _: &AutoCommit) -> Vec<crate::close_admission::UnsavedDocument> {
+        bump(&self.0.unsaved);
+        vec![]
+    }
+    fn checkpoint_components(&mut self) -> Vec<String> {
+        bump(&self.0.checkpoint);
+        vec![]
+    }
+    fn finish_admitted_close(&mut self) -> Vec<crate::application::ComponentCloseReport> {
+        bump(&self.0.finish);
+        vec![]
+    }
+}
+
+impl crate::history_mode::capability::FrameworkHistoryTopology for TabProbe {
+    fn visit_framework_history(
+        &self,
+        _: &mut dyn FnMut(&crate::history_mode::FrameworkHistorySurface, &dyn Widget),
+    ) {
+        bump(&self.0.history);
+    }
+    fn visit_framework_history_mut(
+        &mut self,
+        _: &mut dyn FnMut(&mut crate::history_mode::FrameworkHistorySurface, &mut dyn Widget),
+    ) {
+        bump(&self.0.history);
+    }
+}
+
+crate::testing::test_app_widget!(
+    TabProbe,
+    "Tab probe",
+    icon = crate::widget::app_widget::IconDescriptor::Glyph("T"),
+    kind = AppKind::Settings
+);
+
+/// A tab in the background is still part of its window: others' collaboration reaches it, a
+/// close asks it for unsaved work and checkpoints and finishes it, and history walks it, as it
+/// does the tab in front.
+#[test]
+fn a_background_tab_is_still_part_of_its_window() {
+    let active = crate::history_mode::isolation_tests::native_effect_probe_parts(
+        "active-session",
+        "fixture.active-session",
+    );
+    let inactive = crate::history_mode::isolation_tests::native_effect_probe_parts(
+        "inactive-session",
+        "fixture.inactive-session",
+    );
+    let heard = [&active.collab_events, &inactive.collab_events].map(std::rc::Rc::clone);
+    let mut group = WindowGroup::new(
+        10,
+        vec![
+            (
+                TabDescriptor::new(1, "Active"),
+                TileContent::App(active.root),
+            ),
+            (
+                TabDescriptor::new(2, "Inactive"),
+                TileContent::App(inactive.root),
+            ),
+        ],
+        1,
+        WindowWidth::Normal,
+    );
+    crate::widget::handle_collab_event(
+        &mut group,
+        &::collaboration::CollabEvent::FollowChanged { peer_id: None },
+    );
+    assert_eq!(
+        heard.map(|events| events.get()),
+        [1, 1],
+        "both tabs hear collaboration"
+    );
+
+    let reached = [std::rc::Rc::<Reached>::default(), std::rc::Rc::default()];
+    let mut group = WindowGroup::new(
+        10,
+        vec![
+            (
+                TabDescriptor::new(1, "Active"),
+                TileContent::App(Box::new(TabProbe(reached[0].clone()))),
+            ),
+            (
+                TabDescriptor::new(2, "Inactive"),
+                TileContent::App(Box::new(TabProbe(reached[1].clone()))),
+            ),
+        ],
+        1,
+        WindowWidth::Normal,
+    );
+    crate::component_lifecycle::unsaved_documents(&group, &AutoCommit::new());
+    crate::component_lifecycle::checkpoint_components(&mut group);
+    crate::component_lifecycle::finish_admitted_close(&mut group);
+    crate::history_mode::capability::visit_framework_history(&group, &mut |_, _| {});
+    crate::history_mode::capability::visit_framework_history_mut(&mut group, &mut |_, _| {});
+    for (tab, reached) in ["active", "background"].into_iter().zip(reached) {
+        assert_eq!(
+            reached.unsaved.get(),
+            1,
+            "{tab}: asked for unsaved work at close"
+        );
+        assert_eq!(reached.checkpoint.get(), 1, "{tab}: checkpointed");
+        assert_eq!(reached.finish.get(), 1, "{tab}: finished");
+        assert_eq!(reached.history.get(), 2, "{tab}: walked by history");
+    }
+}
