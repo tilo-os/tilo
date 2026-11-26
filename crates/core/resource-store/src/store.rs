@@ -55,6 +55,7 @@ use crate::schema::{MIGRATE_VERB, Schema};
 
 mod past;
 mod readers;
+mod recent;
 pub use readers::RecordReader;
 
 /// The most resources one document holds before the next one starts.
@@ -274,6 +275,9 @@ pub struct Store {
     live: BTreeMap<(String, String), Live>,
     /// Grows whenever a resource goes live or stops being.
     live_revision: u64,
+    /// The documents of resources' content by the newest version each holds, the most recent
+    /// first: what [`Self::newest`] reads a page of.
+    recent: std::sync::Mutex<recent::Recent>,
 }
 
 /// A resource that is live now (a track playing, a timer running): its type's condition holds
@@ -322,6 +326,7 @@ impl Store {
             nested_at: HashMap::new(),
             live: BTreeMap::new(),
             live_revision: 0,
+            recent: std::sync::Mutex::default(),
         }
     }
 
@@ -1057,6 +1062,14 @@ impl Store {
         out
     }
 
+    /// The document `doc` is written, read in or let go: [`Self::newest`] places it again.
+    fn written(&mut self, doc: &str) {
+        self.recent
+            .get_mut()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .written(doc);
+    }
+
     /// The document `doc`, read from the source when it is not in memory, made when it is
     /// nowhere.
     fn doc(&mut self, doc: &str) -> Result<&mut Automerge, StoreError> {
@@ -1067,6 +1080,7 @@ impl Store {
             };
             self.docs.insert(doc.to_owned(), Arc::new(read));
         }
+        self.written(doc);
         self.docs
             .get_mut(doc)
             .map(Arc::make_mut)
@@ -1449,6 +1463,7 @@ impl Store {
             self.docs
                 .insert(doc.to_owned(), Arc::new(Automerge::load(&bytes)?));
         }
+        self.written(doc);
         Ok(self.docs.get_mut(doc).map(Arc::make_mut))
     }
 
@@ -2139,21 +2154,6 @@ impl Store {
             }
             docs.push((doc_id, None));
         }
-        // What was written in a resource's content, in a document of its own.
-        for content in self.docs.keys() {
-            let Some((kind, id)) = content_resource(content) else {
-                continue;
-            };
-            if !under(id) || id == within {
-                continue;
-            }
-            let Some(held) = self.index.get(kind, id) else {
-                continue;
-            };
-            if self.index.readers(&held.doc).is_some_and(may_read) {
-                docs.push((content.as_str(), Some((kind, id))));
-            }
-        }
         for (doc_id, _) in &docs {
             if let Some(doc) = self.docs.get(*doc_id) {
                 touches
@@ -2162,6 +2162,22 @@ impl Store {
                     .read(doc, doc_id);
             }
         }
+        // What was written in a resource's content, in a document of its own: the documents in
+        // the order of their newest version, each joining the walk once the page reaches it.
+        let mut recent = self
+            .recent
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let mut contents = recent.read(&self.docs, &mut touches).peekable();
+        // The resource a content document holds the content of, when the page lists it.
+        let lists = |kind: &str, id: &str| {
+            under(id)
+                && id != within
+                && self
+                    .index
+                    .get(kind, id)
+                    .is_some_and(|held| self.index.readers(&held.doc).is_some_and(may_read))
+        };
         // The newest of each resource, most recent first, a page of them: the documents' orders
         // merged, each read only as far as the page goes.
         let mut found: Vec<(String, String, String)> = Vec::new();
@@ -2180,6 +2196,27 @@ impl Store {
                 .collect();
             let mut seen = BTreeSet::new();
             while seen.len() <= limit {
+                // Each content document as recent as the walk has come to joins it.
+                while let Some((newest, content)) = contents.peek().copied()
+                    && next.peek().is_none_or(|(order, _)| newest >= *order)
+                {
+                    contents.next();
+                    let Some((kind, id)) = content_resource(content) else {
+                        continue;
+                    };
+                    if !lists(kind, id) {
+                        continue;
+                    }
+                    let Some(mut walk) =
+                        touches.get(content).map(|held| held.by_newest().peekable())
+                    else {
+                        continue;
+                    };
+                    if let Some((order, _, _)) = walk.peek() {
+                        next.push((*order, walks.len()));
+                    }
+                    walks.push((content, Some((kind, id)), walk));
+                }
                 let Some((_, at)) = next.pop() else {
                     break;
                 };
@@ -2963,6 +3000,7 @@ impl Store {
             .collect();
         self.index.forget(doc_id);
         self.docs.insert(doc_id.to_owned(), Arc::new(doc));
+        self.written(doc_id);
         self.index_resources(doc_id, &readers, None)?;
         for (kind, id, parent) in held {
             if self.index.get(&kind, &id).is_none() {
@@ -3040,6 +3078,7 @@ impl Store {
         }
         self.index.forget(doc);
         self.docs.remove(doc);
+        self.written(doc);
         let count = restored.changes.len();
         for change in &restored.changes {
             if let Change::Put { parent, kind, .. } = change {
@@ -3071,6 +3110,7 @@ impl Store {
         );
         self.index.forget(doc);
         self.docs.remove(doc);
+        self.written(doc);
         self.refused.remove(doc);
         self.waiting.remove(doc);
     }
@@ -3078,6 +3118,7 @@ impl Store {
     /// Lets the document `doc` go from memory, answering it saved; its resources stay indexed,
     /// and it is read again from the source when needed.
     pub fn evict(&mut self, doc: &str) -> Option<Vec<u8>> {
+        self.written(doc);
         self.docs.remove(doc).map(|doc| doc.save())
     }
 
@@ -3105,6 +3146,7 @@ impl Store {
             .collect();
         self.index.forget(doc);
         self.docs.remove(doc);
+        self.written(doc);
         for (id, watched) in &self.watches {
             if kinds.contains(watched) {
                 self.changed.insert(*id);

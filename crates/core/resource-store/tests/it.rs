@@ -1550,7 +1550,22 @@ mod store {
             )
             .unwrap();
         store.remove(ISSUE, "board/c", &at("remove", 6)).unwrap();
-        let newest = |limit| match read(
+        // What is written in a resource's content is a version of it too, in a document of its
+        // own: the second's body is written after all that, and a body elsewhere after that.
+        let body = |store: &mut Store, id: &str, stamp: &Stamp| {
+            use automerge::transaction::Transactable as _;
+            let ((), written) = store
+                .edit_content(ISSUE, id, stamp, |tx, root| {
+                    let text = tx.put_object(root, "body", automerge::ObjType::Text)?;
+                    tx.splice_text(&text, 0, 0, "Hello")?;
+                    Ok(())
+                })
+                .unwrap();
+            assert!(written.is_some(), "the body is written");
+        };
+        body(&mut store, "board/b", &at("b's body", 7));
+        body(&mut store, "elsewhere/d", &at("d's body", 8));
+        let newest = |store: &Store, limit| match read(
             &store,
             &Command::Newest {
                 within: "board".to_owned(),
@@ -1582,21 +1597,27 @@ mod store {
                 .collect()
         };
         assert_eq!(
-            newest(10),
+            newest(&store, 10),
             (
                 owned(&[
+                    ("board/b", "b's body"),
                     ("board/c", "remove"),
                     ("board/a", "change"),
-                    ("board/b", "board/b")
                 ]),
                 false
             )
         );
         assert_eq!(
-            newest(2),
-            (owned(&[("board/c", "remove"), ("board/a", "change")]), true),
+            newest(&store, 2),
+            (
+                owned(&[("board/b", "b's body"), ("board/c", "remove")]),
+                true
+            ),
             "a page, saying there are more"
         );
+        // A body written after the page was read stands first in the next.
+        body(&mut store, "board/a", &at("a's body", 9));
+        assert_eq!(newest(&store, 1), (owned(&[("board/a", "a's body")]), true));
     }
 
     /// A call that made many resources stamps each with its argument: the page of the newest
