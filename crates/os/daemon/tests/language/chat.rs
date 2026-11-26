@@ -312,7 +312,11 @@ fn a_batch_of_posts_is_one_step_and_one_undo_takes_it_back() {
                        "args": {"body": format!("bulk {at}")}})
             })
             .collect();
-        let batch_answer = agent.tool("tilo_do", &json!({"calls": posts})).await;
+        // The batch is one step of 32 invocations: the test asserts each step's outcome, so it
+        // names how long it waits for the app.
+        let batch_answer = agent
+            .tool("tilo_do", &json!({"calls": posts, "wait_ms": 60_000}))
+            .await;
         let (batched, failed) = said(&batch_answer);
         assert!(!failed, "the batch is applied in one call: {batched}");
         let mut kept = 0;
@@ -359,9 +363,12 @@ fn the_chats_api_posts_are_held_in_the_workspaces_records() {
             let (answer, failed) = said(
                 &key.tool(
                     "tilo_do",
+                    // This test asserts the post's outcome, so it names how long it waits for
+                    // the app: a client that names no wait is answered pending as before.
                     &json!({"workspace": host.workspace(),
                             "path": format!("so.tilo.chat/{channel}#send"),
-                            "args": {"body": text}}),
+                            "args": {"body": text},
+                            "wait_ms": 60_000}),
                 )
                 .await,
             );
