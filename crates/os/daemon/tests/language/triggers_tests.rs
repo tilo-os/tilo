@@ -1616,3 +1616,77 @@ async fn a_mention_of_an_agent_with_a_persona_is_answered_under_it() {
     );
     host.shutdown().await;
 }
+
+/// A problem report is a record of the workspace like any other: the message Chat's report files
+/// in the workspace's #feedback channel. An automation watching for messages there fires once on
+/// each report as it arrives, and is handed the report itself, which whatever it starts reads.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_filed_problem_report_fires_the_automation_watching_for_reports() {
+    use tilo_workspace_service::agent_shortcuts::{CHAT, MESSAGE};
+
+    let device = Device::start("Feedback", Some(CHAT)).await;
+    let (key, cert) = (&device.key, &device.cert);
+    let workspaces = device.workspaces();
+    let workspace = device.workspace.clone();
+    // "When a problem report arrives": a message arriving in #feedback, handed to its steps.
+    let mut review: tilo_automation::Shortcut = serde_json::from_value(json!({
+        "id": "review-reports",
+        "name": "Review problem reports",
+        "steps": [],
+        "triggers": [{
+            "trigger": "resource_changed",
+            "kind": MESSAGE,
+            "filter": [{ "field": "item.$in.name", "is": "feedback" }],
+        }],
+    }))
+    .unwrap();
+    review.inputs = vec![tilo_actions::ActionParam::required(
+        tilo_automation::EVENT_INPUT,
+        tilo_actions::ParamType::Object,
+        "The report that arrived",
+    )];
+    save_signed(workspaces, &workspace, review, (key, cert)).await;
+    let started = Arc::new(Started::default());
+    let mut runner = Runner::new(
+        workspaces.clone(),
+        Arc::clone(&started) as Arc<dyn StartRun>,
+        Order::WORKSPACE,
+    );
+    runner.arm().await;
+    let mut writes = workspaces.document_writes();
+
+    let person =
+        tilo_actions::remote::Caller::authenticated(cert.user_public_key, cert.device_public_key)
+            .in_workspace(&workspace);
+    for at in 0..2 {
+        let said = format!("The book failed to open {at}");
+        tilolang_workspace::records::provided::calls::call(
+            workspaces,
+            &person,
+            CHAT,
+            tilo_app_id::chat::REPORT_PROBLEM,
+            json!({ "body": said }),
+        )
+        .await
+        .unwrap_or_else(|refused| panic!("report {at} is filed: {refused}"));
+        let firings = super::fired(&mut runner, &mut writes, &started).await;
+        assert_eq!(
+            firings.len(),
+            1,
+            "report {at} fires the automation once: {firings:?}"
+        );
+        assert_eq!(firings[0].shortcut, "review-reports");
+        let event: DocumentEvent =
+            serde_json::from_value(firings[0].inputs[tilo_automation::EVENT_INPUT].clone())
+                .unwrap();
+        assert_eq!(event.kind, MESSAGE, "{event:?}");
+        assert!(
+            event
+                .after
+                .as_ref()
+                .is_some_and(|report| report.to_string().contains(&said)),
+            "the automation is handed the report it fired on: {event:?}"
+        );
+    }
+    device.shutdown().await;
+}
