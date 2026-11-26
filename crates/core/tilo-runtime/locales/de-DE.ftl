@@ -94,6 +94,10 @@ so-tilo-device-server-set-work-while-charging = Arbeit nur beim Laden annehmen
 so-tilo-clipboard-share = Teilen, was dieses Gerät kopiert hat
 so-tilo-clipboard-receive = Annehmen, was ein anderes Gerät kopiert hat
 
+## Arbeitsbereiche, die das gründende Gerät für die anderen Geräte der Person anlegt
+
+so-tilo-founding-create = Einen Arbeitsbereich anlegen, um den ein anderes deiner Geräte gebeten hat
+
 ## Wo dieses Gerät ist
 
 so-tilo-device-location-locate = Wo dieses Gerät gerade ist, als Breiten- und Längengrad

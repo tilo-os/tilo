@@ -89,6 +89,10 @@ nearby-send-keep-question = Keep “{ $name }” from { $device }?
 so-tilo-clipboard-share = Share what this device copied
 so-tilo-clipboard-receive = Take what another device copied
 
+## Workspaces the device that founds them makes for the person's other devices
+
+so-tilo-founding-create = Make a workspace another of your devices asked for
+
 ## The actions of this device's server settings
 
 so-tilo-device-server-set-service = Offer or withdraw a service

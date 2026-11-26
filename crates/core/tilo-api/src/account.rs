@@ -2511,8 +2511,54 @@ async fn workspaces(key: &Connection, server: &Server, args: &Value) -> Outcome 
     }
 }
 
-/// What a device that founds no workspace itself answers a create with: the code of its refusal.
+/// What a device that founds no workspace itself answers a create with when none of its person's
+/// devices founds their workspaces: the code of its refusal.
 pub const NO_FOUNDING_DEVICE: &str = "no_founding_device";
+/// What it answers a create with when the person's device that founds their workspaces did not
+/// answer in time: the code of its refusal.
+pub const FOUNDING_DEVICE_UNREACHED: &str = "founding_device_unreached";
+
+/// Make the workspace `args` asks for on the person's device that founds their workspaces, as
+/// [`crate::session::Here::create_where_founded`] asks it: its answer as that device gave it.
+async fn create_where_founded(here: &dyn Here, args: &Value) -> Outcome {
+    let Some(name) = field(args, "name") else {
+        return failed(
+            "invalid_arguments",
+            "`name` is required",
+            "pass {name: \"Applicant: Jane Doe\"}",
+        );
+    };
+    let (id, labels) = match (chosen_id(args), labels_of(args)) {
+        (Ok(id), Ok(labels)) => (id, labels),
+        (Err(refused), _) | (_, Err(refused)) => return refused,
+    };
+    let creating = crate::session::Creating {
+        name: name.to_owned(),
+        labels,
+        id,
+    };
+    match here.create_where_founded(creating).await {
+        Ok(answer) => Outcome::Ok(answer),
+        Err(crate::session::NotFounded::NoFoundingDevice) => failed(
+            NO_FOUNDING_DEVICE,
+            "none of your devices makes your workspaces",
+            "make the workspace on the computer you first set Tilo up on",
+        ),
+        Err(crate::session::NotFounded::Unreached { waited }) => failed(
+            FOUNDING_DEVICE_UNREACHED,
+            format!(
+                "the device that makes your workspaces didn't answer within {} seconds",
+                waited.as_secs()
+            ),
+            "turn that device on and connect it to a network, then try again",
+        ),
+        Err(crate::session::NotFounded::Refused(why)) => failed(
+            "refused",
+            format!("the device that makes your workspaces didn't make this one: {why}"),
+            "fix what it names and try again",
+        ),
+    }
+}
 
 /// What a desktop answers `op` with `args`: the workspaces it keeps, kept or left at the
 /// person's word, and everything else but making one as the person's account at their server
@@ -2581,19 +2627,14 @@ async fn here_answers(
         }
         _ => {}
     }
+    // A workspace is founded on the person's device that founds their own: this device founds
+    // none, so it asks that one, and never their server, which founds none for it.
+    if op == Op::CreateWorkspace {
+        return create_where_founded(here, args).await;
+    }
     let Some(account) = here.account().await else {
         return refused(&ServerError::NoAccountHere);
     };
-    // A workspace is founded on the person's device that founded their own, which places it at
-    // their server; this device founds none, and their server founds none for it.
-    if op == Op::CreateWorkspace {
-        return failed(
-            NO_FOUNDING_DEVICE,
-            "this device doesn't make your workspaces, and the device of yours that does can't be \
-             reached from here",
-            "make the workspace on the device that keeps your workspaces",
-        );
-    }
     let asked = match op {
         Op::RenameWorkspace | Op::Unattended | Op::Usage | Op::AskModel => account_target(op, args),
         _ => server_operation(op, args).map(|(action, arguments)| (host(action), arguments)),

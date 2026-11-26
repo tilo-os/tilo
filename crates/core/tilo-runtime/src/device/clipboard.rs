@@ -578,4 +578,4 @@ fn argument<T: serde::de::DeserializeOwned>(request: &InvokeRequest) -> Result<T
 
 #[cfg(test)]
 #[path = "clipboard_tests.rs"]
-mod tests;
+pub(super) mod tests;

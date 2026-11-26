@@ -588,8 +588,8 @@ mod tests {
 
     /// A program on this computer reaches the desktop's own API socket as the desktop's own
     /// device, with no key of its own: `/v1` lists the workspaces the desktop is in and lists
-    /// what one has, which the desktop's own actions answer. The account's own actions are not
-    /// answered, and the refusal says so in words.
+    /// what one has, which the desktop's own actions answer. A workspace is made by none of the
+    /// person's devices here, and the refusal says so in words.
     #[tokio::test]
     async fn a_desktop_serves_its_persons_programs_at_its_socket() {
         let (key, cert) = ada_laptop(7);
@@ -637,8 +637,8 @@ mod tests {
         assert!(
             refused
                 .to_string()
-                .contains("answers its own workspaces only"),
-            "{refused}"
+                .contains("none of your devices makes your workspaces"),
+            "a desktop that reaches no device founding the person's workspaces says so: {refused}"
         );
         std::fs::remove_dir_all(&dir).unwrap();
     }
@@ -738,8 +738,9 @@ mod tests {
     }
 
     /// A device with no login that founds no workspace itself answers the person's account
-    /// itself: it makes no workspace, and never asks their server to, its list says which of
-    /// theirs it keeps, and it enters and leaves one shared with them at their word.
+    /// itself: with no device of theirs that founds their workspaces it makes none, and never
+    /// asks their server to, its list says which of theirs it keeps, and it enters and leaves
+    /// one shared with them at their word.
     #[tokio::test]
     async fn a_device_that_founds_nothing_lists_enters_and_leaves_workspaces_from_its_own_state() {
         let (key, cert) = ada_laptop(13);
@@ -794,7 +795,7 @@ mod tests {
             refused
                 .to_string()
                 .contains(crate::account::NO_FOUNDING_DEVICE),
-            "the person is told the device that makes their workspaces is not reached: {refused}"
+            "the person is told none of their devices makes their workspaces: {refused}"
         );
         assert!(
             home().asked.lock().unwrap().is_empty(),

@@ -282,7 +282,50 @@ pub trait Here: Send + Sync {
     fn account_here(&self) -> Option<Arc<dyn AccountHere>> {
         None
     }
+
+    /// Make a workspace of the person's as `creating` says, on the device of theirs that founds
+    /// their workspaces: asked there by this device, which founds none itself. Its answer as that
+    /// device gave it. A host whose person has no such device refuses it.
+    fn create_where_founded(&self, creating: Creating) -> FoundingAnswer<'_> {
+        let _ = creating;
+        Box::pin(std::future::ready(Err(NotFounded::NoFoundingDevice)))
+    }
 }
+
+/// A workspace the person asks to make, as one of their devices asks the device that founds
+/// their workspaces for it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct Creating {
+    /// What it is called.
+    pub name: String,
+    /// What the person labelled it, for their programs to find it by.
+    #[serde(
+        default,
+        skip_serializing_if = "tilo_server_protocol::workspaces::WorkspaceLabels::is_empty"
+    )]
+    pub labels: tilo_server_protocol::workspaces::WorkspaceLabels,
+    /// The id the caller chose, so a create asked again makes the same workspace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<uuid::Uuid>,
+}
+
+/// Why the device that founds the person's workspaces made none for them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NotFounded {
+    /// None of the person's devices founds their workspaces.
+    NoFoundingDevice,
+    /// The device that founds them did not answer within `waited`.
+    Unreached {
+        /// How long it was waited for.
+        waited: std::time::Duration,
+    },
+    /// It answered, and made none, saying why.
+    Refused(String),
+}
+
+/// What [`Here::create_where_founded`] answers, once the founding device did.
+pub type FoundingAnswer<'a> =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Value, NotFounded>> + Send + 'a>>;
 
 /// What a [`Here`] or an [`AccountServer`] answers, once it did.
 pub type Asked<'a, T> =

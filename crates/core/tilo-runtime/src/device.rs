@@ -71,6 +71,8 @@ mod files_tree_tests;
 pub(crate) mod first_workspace;
 #[cfg(test)]
 mod flow_laptop_phone_server;
+/// A workspace of the person's made on the device that founds their workspaces, asked from another.
+pub(crate) mod founding_create;
 #[cfg(test)]
 mod founding_tests;
 pub(crate) mod home;

@@ -2603,6 +2603,12 @@ impl Daemon {
         // copied is kept here, where their shell reads it as the copies another device offers.
         let clipboard = super::clipboard::Clipboard::new(&workspaces);
         clipboard.register(&workspaces.copies().providers());
+        // A computer that founded its person here makes their workspaces, and makes one for
+        // another of their devices that asks it over the same action service.
+        if own {
+            super::founding_create::FoundingCreate::new(&workspaces)
+                .register(&workspaces.copies().providers());
+        }
         // The interfaces this computer wakes through are kept there too, and the wakes of the
         // person's devices asked there are answered from here: the packets for a device on one
         // of this computer's networks, and the word that this computer is back.
@@ -4618,6 +4624,17 @@ impl tilo_api::session::Here for DaemonHere {
             .keeps_its_own_account()
             .then_some(daemon as Arc<dyn tilo_api::session::AccountHere>)
     }
+
+    fn create_where_founded(
+        &self,
+        creating: tilo_api::session::Creating,
+    ) -> tilo_api::session::FoundingAnswer<'_> {
+        let daemon = self.daemon();
+        Box::pin(async move {
+            let daemon = daemon.map_err(tilo_api::session::NotFounded::Refused)?;
+            tilo_api::session::Here::create_where_founded(&*daemon, creating).await
+        })
+    }
 }
 
 impl tilo_api::session::Here for Daemon {
@@ -4780,6 +4797,17 @@ impl tilo_api::session::Here for Daemon {
             Ok(imported)
         })
     }
+
+    /// Asked of the person's device that founds their workspaces, in their own workspace, which
+    /// both keep: this device signs the ask as itself.
+    fn create_where_founded(
+        &self,
+        creating: tilo_api::session::Creating,
+    ) -> tilo_api::session::FoundingAnswer<'_> {
+        let workspaces = Arc::clone(&self.workspaces);
+        let person = person_workspace_id(&self.cert.user_public_key);
+        Box::pin(async move { super::founding_create::ask(&workspaces, &person, creating).await })
+    }
 }
 
 impl Daemon {
@@ -4857,25 +4885,7 @@ impl tilo_api::session::AccountHere for Daemon {
         let device = self.cert.clone();
         Box::pin(async move {
             known(&device, &key)?;
-            let mut arguments = Map::new();
-            arguments.insert("name".into(), json!(name));
-            // An id the caller chose, so a retried create asks for the same workspace. Without
-            // one the host chooses, and a retry with the same labels answers the workspace they
-            // labelled rather than another beside it.
-            if let Some(id) = id {
-                arguments.insert("workspace".into(), json!(id.to_string()));
-            }
-            if !labels.is_empty() {
-                arguments.insert("labels".into(), json!(labels));
-            }
-            let created: CreatedWorkspace = answer(
-                workspaces
-                    .service()
-                    .ask_own(key.cert(), CREATE_OWN_WORKSPACE, arguments)
-                    .await,
-            )?;
-            enter_here(&workspaces, &created.workspace.workspace, &device).await?;
-            Ok(listed_workspace(created.workspace, &workspaces))
+            create_here(&workspaces, key.cert(), &device, (name, labels, id)).await
         })
     }
 
@@ -5099,6 +5109,40 @@ impl Daemon {
     fn knows(&self, key: &GrantKey) -> bool {
         known(&self.cert, key).is_ok()
     }
+}
+
+/// Make a workspace of `device`'s person's own called `name`, labelled `labels`, under `id` when
+/// the caller chose one, on this device: `acting` asks the workspace service for it, and `device`
+/// signs its way into what was made. What a key of the person's asks here, and what another of
+/// their devices asks this one for ([`super::founding_create`]), are made alike.
+///
+/// # Errors
+/// The service did not make it, or the device could not enter it.
+pub(crate) async fn create_here(
+    workspaces: &ServiceWorkspaces,
+    acting: &DeviceCert,
+    device: &DeviceCert,
+    (name, labels, id): (String, WorkspaceLabels, Option<Uuid>),
+) -> Result<tilo_api::session::Workspace, ServerError> {
+    let mut arguments = Map::new();
+    arguments.insert("name".into(), json!(name));
+    // An id the caller chose, so a retried create asks for the same workspace. Without one the
+    // host chooses, and a retry with the same labels answers the workspace they labelled rather
+    // than another beside it.
+    if let Some(id) = id {
+        arguments.insert("workspace".into(), json!(id.to_string()));
+    }
+    if !labels.is_empty() {
+        arguments.insert("labels".into(), json!(labels));
+    }
+    let created: CreatedWorkspace = answer(
+        workspaces
+            .service()
+            .ask_own(acting, CREATE_OWN_WORKSPACE, arguments)
+            .await,
+    )?;
+    enter_here(workspaces, &created.workspace.workspace, device).await?;
+    Ok(listed_workspace(created.workspace, workspaces))
 }
 
 /// Make `branch`, a branch of `source` called `name`, one of `device`'s person's own, on this

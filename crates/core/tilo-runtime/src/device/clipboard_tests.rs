@@ -33,24 +33,24 @@ use crate::device::ticket_tests::{self, Issuing};
 
 /// Two of one person's devices on this machine, holding one workspace both are members of: the
 /// second logged in with a ticket the first issued.
-struct TwoDevices {
-    person: [u8; 32],
+pub(in crate::device) struct TwoDevices {
+    pub(in crate::device) person: [u8; 32],
     /// The workspace both are members of: where the copies are shared.
-    workspace: String,
-    first: Arc<ServiceWorkspaces>,
-    first_cert: DeviceCert,
-    second: Arc<ServiceWorkspaces>,
-    second_cert: DeviceCert,
+    pub(in crate::device) workspace: String,
+    pub(in crate::device) first: Arc<ServiceWorkspaces>,
+    pub(in crate::device) first_cert: DeviceCert,
+    pub(in crate::device) second: Arc<ServiceWorkspaces>,
+    pub(in crate::device) second_cert: DeviceCert,
     /// The first device's action service, served by the daemon that issued the ticket.
-    _first_router: iroh::protocol::Router,
+    pub(in crate::device) first_router: iroh::protocol::Router,
     /// The second device's action service.
-    _second_router: iroh::protocol::Router,
+    pub(in crate::device) _second_router: iroh::protocol::Router,
     /// The key the second device's daemon holds, as it does until the device ends.
-    _second_daemon: tilo_device_identity::persist::DeviceKeyLock,
-    _state: tempfile::TempDir,
+    pub(in crate::device) _second_daemon: tilo_device_identity::persist::DeviceKeyLock,
+    pub(in crate::device) state: tempfile::TempDir,
 }
 
-async fn two_devices() -> TwoDevices {
+pub(in crate::device) async fn two_devices() -> TwoDevices {
     let Issuing {
         workspace,
         issuer,
@@ -136,16 +136,18 @@ async fn two_devices() -> TwoDevices {
         first_cert,
         second,
         second_cert,
-        _first_router: router,
+        first_router: router,
         _second_router: second_router,
         _second_daemon: second_daemon,
-        _state: state,
+        state,
     }
 }
 
 /// Where `workspaces`' endpoint is bound on this machine, as one of the person's devices says
 /// it.
-fn answers_at(workspaces: &Arc<ServiceWorkspaces>) -> Vec<std::net::SocketAddr> {
+pub(in crate::device) fn answers_at(
+    workspaces: &Arc<ServiceWorkspaces>,
+) -> Vec<std::net::SocketAddr> {
     workspaces
         .endpoint()
         .addr()
