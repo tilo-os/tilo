@@ -1806,7 +1806,7 @@ lay_out_lounge() {
     if [[ -n $apps ]]; then apps_stamp=$(made_from "$apps/bin/tilo-launcher" "$apps/runtime-publishers.txt"); fi
     stamp=$(made_from "$programs/tilo-runtime" "$programs/discord-worker" "$fonts/manifest.toml" \
       "$repo/tools/ci/publish/lounge-context.sh" "$container/Containerfile" "$container/Containerfile.dockerignore" \
-      "$container/entrypoint.sh" "$repo/apps/discord/bridge/program.json")
+      "$container/entrypoint.sh" "$container/install-apps.sh" "$repo/apps/discord/bridge/program.json")
     if [[ $(cat "$native/lounge.made-from" 2>/dev/null) != "$stamp $apps_stamp" || ! -x $native/lounge/bin/tilo-runtime ]]; then
       # The apps the workspace runs: the launcher, the runtimes and the signed packages
       # (lounge-apps.sh), which a caller may hand over, else t builds beside the programs.

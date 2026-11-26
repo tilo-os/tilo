@@ -100,7 +100,7 @@ runtimes=$(find "$root/usr/lib/tilo-runtime" -mindepth 1 -maxdepth 1 -type d | w
   || fail "the image carries $runtimes runtime bundle(s), not the Tilo and tilolang runtime the apps run on"
 [[ -s $root/usr/share/tilo-apps/registry.toml ]] || fail "the image's app store holds no package"
 for app in so.tilo.shell so.tilo.notes; do
-  grep -Fq "id = \"$app\"" "$root/usr/share/tilo-apps/registry.toml" \
+  grep -Eq "^id *= *[\"']?$app[\"']?$" "$root/usr/share/tilo-apps/registry.toml" \
     || fail "the image's app store holds no $app: its page would be refused"
 done
 # The catalog must be this build's: a container has no system fonts, so the
