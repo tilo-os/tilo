@@ -42,8 +42,10 @@ use tilo_remote::{
 use tilo_terminal::FarSide;
 use tilo_terminal::live::Live;
 
+use runtime_dylib::tilo_ui_base::key_input::{
+    self, Button, Held, Key as UiKey, Keys, Named as UiNamed,
+};
 use runtime_dylib::ui;
-use runtime_dylib::ui::key_input::{Button, Held, Key as UiKey, Keys, Named as UiNamed};
 
 /// The one app this device answers remote work for.
 pub const APP: &str = "so.tilo.remote";
@@ -285,7 +287,7 @@ fn vnc_stream(input: &str, frames: Frames) -> Result<String, String> {
         saw,
     )?;
     let desktop = Arc::new(desktop);
-    ui::key_input::provide(
+    key_input::provide(
         &job,
         Arc::new(DesktopInput {
             desktop: Arc::clone(&desktop),
@@ -513,7 +515,7 @@ fn cancel(_device: &Device, job: &str) -> bool {
             tool.close();
         }
         LiveKind::Desktop { .. } => {
-            ui::key_input::withdraw(job);
+            key_input::withdraw(job);
             ui::live_pictures::forget(job);
         }
     }
