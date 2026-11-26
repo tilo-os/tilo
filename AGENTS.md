@@ -120,7 +120,9 @@ ask whether the larger thing could be done a better way; if it could, say so bef
   -p NAME` the tests of the packages you touched, and `t test policy` the policy suite
   (one step: `t test policy/<step>`). t gives each its own job there, keyed by what it
   reads, and keeps the builds those jobs use.
-- Extensive checks (images, macOS, VMs) only when you change what they test.
+- Extensive checks (images, macOS, VMs, `layout-check`, `nested-session`) only when you
+  change what they test, and narrowed to it (`layout-check` takes `--input app=apps/tl/NAME`).
+  Each takes cores from every other agent's builds on the shared server.
 - Session: `t cargo test --locked -p tilo-session MODULE::` names one of the session's
   tests (the desktop, its windows and its strips) there; `t cargo check --locked -p
   tilo-session --tests` type-checks them while you iterate. A test that starts another
