@@ -2,8 +2,8 @@
 # Cap'n Proto, LLVM's llvm-readobj and the pinned Rust/MSVC toolchain must be on PATH.
 [CmdletBinding()]
 param(
-    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'file-explorer', 'word-processor', 'terminal', 'ebook', 'clocks', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'feeds', 'passwords', 'mail')]
-    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'file-explorer', 'word-processor', 'terminal', 'ebook', 'clocks', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'feeds', '),
+    [ValidateSet('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'file-explorer', 'word-processor', 'ebook', 'clocks', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'feeds', 'passwords', 'mail')]
+    [string[]]$Apps = @('calculator', 'notes', 'calendar', 'contacts', 'sheets', 'slides', 'weather', 'file-explorer', 'word-processor', 'ebook', 'clocks', 'hex-editor', 'code-editor', 'api-tester', 'diffmerge', 'snippets', 'db-client', 'feeds', '),
     [ValidateSet('dev', 'release')]
     [string]$Profile = 'release',
     [ValidateRange(1, 256)]

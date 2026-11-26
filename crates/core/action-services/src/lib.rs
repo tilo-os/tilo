@@ -74,8 +74,8 @@ pub mod workspace_invocations;
 
 #[cfg(not(target_arch = "wasm32"))]
 pub use line::{
-    CallLanes, Handover, LineClient, LinePut, Served, Take, serve_lines, serve_lines_handing,
-    serve_lines_with,
+    CallLanes, Handover, LineClient, LinePut, Served, ShellHeard, Take, serve_lines,
+    serve_lines_handing, serve_lines_with,
 };
 #[cfg(not(target_arch = "wasm32"))]
 pub use line::{Carry, CarryAnswer, carry_answer_line, carry_line, carry_request};

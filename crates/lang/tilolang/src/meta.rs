@@ -754,6 +754,11 @@ pub struct ActionMeta {
     /// entry reads with the count (`{ $count -> [one] … *[other] … }`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub did_many: Option<String>,
+    /// `keywords: ["interrupt", "ctrl+c"]`: other words a person finds the action by in the
+    /// system's search, beside its label; an attribute of the action's message
+    /// (`d-<id>.keywords`), the words separated by commas.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub keywords: Vec<String>,
     /// The id of the view that presents the action's state for a target, when its label or icon
     /// follows the target or it declares `on:`. `label` and `icon` above are what shows without
     /// evaluating it.

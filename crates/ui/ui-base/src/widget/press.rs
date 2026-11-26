@@ -14,6 +14,8 @@ pub struct Press {
     /// it is chosen, and the menu is built anew each time it opens).
     action: Option<Rc<RefCell<ActionEmitter<()>>>>,
     view: Option<crate::component::Intent>,
+    /// The value the view's intent carries: a menu row bound to a value edits it to this.
+    edit: Option<crate::component::Value>,
     /// The address a part that runs nothing leads to, opened as a link opens it
     /// ([`crate::widget::Link`]): a menu row that is a way to a page.
     link: Option<Rc<str>>,
@@ -39,13 +41,27 @@ impl Press {
             Event::Action(binding) => Self {
                 action: Some(Rc::new(RefCell::new(ActionEmitter::new(binding)))),
                 view: None,
+                edit: None,
                 link: None,
             },
             Event::View(intent) => Self {
                 action: None,
                 view: Some(intent),
+                edit: None,
                 link: None,
             },
+        }
+    }
+
+    /// A part that edits a bound value to `value` when pressed, as a control bound to it does
+    /// ([`crate::component::Bound::edited`]): a menu row that is a check of a setting.
+    #[must_use]
+    pub fn editing(edits: crate::component::Intent, value: crate::component::Value) -> Self {
+        Self {
+            action: None,
+            view: Some(edits),
+            edit: Some(value),
+            link: None,
         }
     }
 
@@ -101,7 +117,7 @@ impl Press {
             return;
         }
         if let Some(view) = &self.view {
-            view.fire(None);
+            view.fire(self.edit.clone());
             return;
         }
         if let Some(link) = &self.link {

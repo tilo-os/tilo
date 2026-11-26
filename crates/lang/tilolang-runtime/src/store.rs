@@ -576,6 +576,11 @@ pub const ORIGIN_ACTION: &str = "$origin";
 /// does any declared verb, and no catalogue offers it.
 pub const SCENARIO_ACTION: &str = "$scenario";
 
+/// The verb the writes of an `opened action` are stamped with: what opening a resource does,
+/// which the platform runs as the person who opened it and no caller may invoke. Every device's
+/// store admits it on a package's types as it does any declared verb, and no catalogue offers it.
+pub const OPENED_ACTION: &str = "$opened";
+
 /// The action id of a change a bound control makes to the text field it shows.
 pub const EDIT_TEXT_ACTION: &str = "edit-text";
 

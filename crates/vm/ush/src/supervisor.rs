@@ -6,7 +6,7 @@
 //! the guest's network namespace and filter, starts the broker, then spawns `bwrap` and
 //! restarts it if asked.
 //!
-//! An app cannot build a namespace, so `apps/terminal` asks for a guest instead:
+//! An app cannot build a namespace, so Terminal's engine asks for a guest instead:
 //! `tilo-ush serve` listens on a socket `tilo-launcher` passes every app, and one line of
 //! JSON naming a [`Target`] gets back a pty master over `SCM_RIGHTS` — a terminal, never a
 //! namespace or a capability.
@@ -806,7 +806,11 @@ fn serve_request(
             return Ok(Served::Refused);
         }
     };
-    if matches!(req, ServeRequest::OpenSession { .. }) && session_limit_reached(transport, writer)?
+    // One app's connection holds a bounded number of sessions; the daemon's one connection
+    // carries every app's, each app held to that bound on its own line.
+    if matches!(req, ServeRequest::OpenSession { .. })
+        && matches!(caller, crate::host::Caller::App(_))
+        && session_limit_reached(transport, writer)?
     {
         return Ok(Served::Refused);
     }

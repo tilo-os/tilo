@@ -1778,9 +1778,9 @@ pub(super) fn arrow_down(search: &mut DesktopSearch) -> bool {
 /// An action that takes two values, as the workspace's catalogue offers one.
 fn two_valued() -> Vec<PublishedActions> {
     let offer = tilo_actions::published::Offer {
-        resource: "terminal.machine-secrets",
-        resource_kind: "terminal.machine-secrets",
-        action: "add-secret",
+        resource: "tl:so.tilo.terminal:root-tl.so.tilo.terminal.MachineSecrets",
+        resource_kind: "tl.so.tilo.terminal.MachineSecrets",
+        action: "add_secret",
         label: "Add secret",
         description: None,
         kind: tilo_actions::ActionKind::Undoable,

@@ -28,7 +28,7 @@ fn a_shared_workspaces_programs_stay_off_a_members_computer() {
         let opened = laptop
             .call(
                 &provider,
-                ActionAddress::new("terminal.session", "open-terminal"),
+                ActionAddress::new("tl.so.tilo.terminal.Session", "open-terminal"),
                 &json!({"cols": 100, "rows": 30}),
             )
             .await;
@@ -40,7 +40,7 @@ fn a_shared_workspaces_programs_stay_off_a_members_computer() {
         let ran = laptop
             .call(
                 &provider,
-                ActionAddress::new("terminal.session", "run"),
+                ActionAddress::new("tl.so.tilo.terminal.Session", "run"),
                 &json!({"command": "echo hello"}),
             )
             .await;
@@ -50,6 +50,17 @@ fn a_shared_workspaces_programs_stay_off_a_members_computer() {
             }
             other => panic!("a shared workspace's program is refused: {other:?}"),
         }
+        // The shells the Terminal app opens on its own connection ask the same of the device,
+        // on each open.
+        let shells = host
+            .daemon()
+            .workspaces()
+            .runs_programs_here(&workspace)
+            .await;
+        assert!(
+            shells.as_ref().is_err_and(|reason| reason.contains(WORDS)),
+            "a shared workspace's shells are refused: {shells:?}"
+        );
         // Nothing was made: the record was not founded and no command recorded.
         assert!(
             host.daemon()

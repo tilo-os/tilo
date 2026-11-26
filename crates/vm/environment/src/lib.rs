@@ -11,7 +11,6 @@
 //! device whose disk it changes.
 
 pub mod files;
-pub mod machine_secrets;
 
 use std::collections::BTreeMap;
 use std::path::{Component, Path};

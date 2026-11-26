@@ -7,7 +7,7 @@
 use serde_json::{Value, json};
 use tilo_workspace_service::workspaces::terminal::RECORDED_OUTPUT;
 
-use crate::language::agent_fixture::{act, said};
+use crate::language::agent_fixture::{act, open_terminal_allowed, said};
 use crate::language::host;
 
 /// The agent names a command: the host opens its session, runs it in the workspace's shell, and
@@ -15,7 +15,7 @@ use crate::language::host;
 /// sees both recorded on the session as the agent's run.
 #[test]
 fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
-    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
+    host::run_with(&["terminal"], |host| async move {
         let agent = host.agent();
         let (ran, failed) = act(
             &agent,
@@ -40,7 +40,7 @@ fn an_agent_runs_a_command_in_its_workspace_in_one_step() {
 /// its command runs, and the command is refused in words and nothing runs.
 #[test]
 fn an_agent_is_refused_the_devices_own_shell() {
-    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
+    host::run_with(&["terminal"], |host| async move {
         let agent = host.agent();
         let (ran, failed) = act(
             &agent,
@@ -64,7 +64,7 @@ fn an_agent_is_refused_the_devices_own_shell() {
 /// and is recorded on that session.
 #[test]
 fn an_agents_command_lands_after_another_devices_terminal_closed() {
-    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
+    host::run_with(&["terminal"], |host| async move {
         // The person's other device opened the Terminal once, as a window of theirs does.
         let workspace = host.workspace().to_owned();
         let laptop = host.member("Ada's laptop", &workspace).await;
@@ -94,7 +94,7 @@ fn an_agents_command_lands_after_another_devices_terminal_closed() {
         );
         let (session, failed) = said(
             &agent
-                .tool("tilo_read", &json!({"path": "terminal/Terminal session"}))
+                .tool("tilo_read", &json!({"path": "terminal/Terminal"}))
                 .await,
         );
         assert!(
@@ -109,7 +109,7 @@ fn an_agents_command_lands_after_another_devices_terminal_closed() {
 /// the run it stopped.
 #[test]
 fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
-    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
+    host::run_with(&["terminal"], |host| async move {
         let agent = host.agent();
         let invocation = "3f6b8c0e-0000-4000-8000-000000000009";
         let (ran, failed) = said(
@@ -162,28 +162,26 @@ fn an_agents_long_run_shows_its_output_and_its_cancel_ends_it() {
 /// computer is recorded on the session by the host, as the commands it runs are, once each.
 #[test]
 fn a_command_typed_on_a_terminal_the_agent_opened_is_recorded_on_the_session() {
-    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
+    host::run_with(&["terminal"], |host| async move {
         let agent = host.agent();
         let (ran, failed) = act(&agent, "terminal#run", json!({"command": "echo typed-42"})).await;
         assert!(
             !failed && ran.contains("typed-42"),
             "the command runs: {ran}"
         );
-        let (opened, failed) = act(
+        // A terminal reaches beyond the workspace's records: its person allows it first.
+        open_terminal_allowed(
+            host.as_ref(),
             &agent,
-            "terminal#open-terminal",
+            "3f6b8c0e-0000-4000-8000-00000000000b",
             json!({"cols": 100, "rows": 30}),
         )
         .await;
-        assert!(
-            !failed && opened.contains("stream"),
-            "the agent opens a terminal on the workspace's session: {opened}"
-        );
         // The command its shell ran reaches the workspace's shell, and the host records it on
         // the session once, as the agent's.
         let (session, failed) = said(
             &agent
-                .tool("tilo_read", &json!({"path": "terminal/Terminal session"}))
+                .tool("tilo_read", &json!({"path": "terminal/Terminal"}))
                 .await,
         );
         assert!(
@@ -212,7 +210,7 @@ async fn recorded_command(agent: &host::Agent, command: &str) -> Value {
     loop {
         let (session, failed) = said(
             &agent
-                .tool("tilo_read", &json!({"path": "terminal/Terminal session"}))
+                .tool("tilo_read", &json!({"path": "terminal/Terminal"}))
                 .await,
         );
         assert!(!failed, "the agent reads the session: {session}");
@@ -242,7 +240,7 @@ async fn recorded_command(agent: &host::Agent, command: &str) -> Value {
 /// on, which its members are answered with.
 #[test]
 fn a_commands_output_is_kept_on_its_record() {
-    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
+    host::run_with(&["terminal"], |host| async move {
         let agent = host.agent();
         let short = "echo test result: ok. 1 passed";
         let (ran, failed) = act(&agent, "terminal#run", json!({"command": short})).await;
@@ -304,7 +302,7 @@ fn a_commands_output_is_kept_on_its_record() {
 /// agent's.
 #[test]
 fn an_agents_call_to_the_terminal_app_with_no_window_keeps_what_it_wrote() {
-    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
+    host::run_with(&["terminal"], |host| async move {
         let agent = host.agent();
         let command = "echo kept after the app answered";
         let (ran, failed) = act(&agent, "terminal#run", json!({"command": command})).await;

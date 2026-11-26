@@ -20,6 +20,9 @@ use crate::desktop::i18n::t;
 const OUTPUT_HASH: &str = "cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd";
 const OUTPUT: &[u8] = b"\x1b[1m   Compiling\x1b[0m signup v0.1.0\r\nrunning 2 tests\r\ntest signs_up ... ok\r\ntest rejects_taken_names ... FAILED\r\n\r\ntest result: FAILED. 1 passed; 1 failed\r\n";
 
+/// The kind of a Terminal session's record: the record its runs are asked on.
+const SESSION_KIND: &str = "tl.so.tilo.terminal.Session";
+
 /// The test host, with the content a session's runs keep their output in and the undos it carries
 /// out for the activity.
 #[derive(Default)]
@@ -85,10 +88,10 @@ fn ask(
     doc.put(&value, "requested_by", "agent:claude-code")
         .unwrap();
     doc.put(&value, "agent", true).unwrap();
-    let context = tilo_actions::ActionContext::for_resource(record, "terminal.session", "Terminal")
+    let context = tilo_actions::ActionContext::for_resource(record, SESSION_KIND, "Terminal")
         .with_app(TERMINAL_APP, "Terminal")
         .with_described(tilo_actions::Described::new(tilo_actions::Did::verb(
-            tilo_actions::ActionKey::new(TERMINAL_APP, "terminal.session", "run"),
+            tilo_actions::ActionKey::new(TERMINAL_APP, SESSION_KIND, "run"),
             [(
                 "command".to_owned(),
                 tilo_actions::entry::Scalar::argument(&serde_json::json!(command)).unwrap(),
@@ -151,7 +154,7 @@ impl Fixture {
         let workspace = tree.desktop.active_workspace().expect("workspace").id();
         let record = ui::DocumentId::for_tab(7);
         let checkout =
-            ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("terminal.session"));
+            ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new(SESSION_KIND));
         let mut doc = AutoCommit::new();
         ui::resource::init(&mut doc, &record, &checkout.kind, &workspace.to_string());
         doc.commit();
@@ -179,7 +182,7 @@ impl Fixture {
             .workspace_records_held
             .entry(workspace)
             .or_default()
-            .insert(record.to_string(), "terminal.session".to_owned());
+            .insert(record.to_string(), SESSION_KIND.to_owned());
         fixture
     }
 
@@ -851,7 +854,7 @@ impl Connection {
             .id();
         let record = ui::DocumentId::for_tab(3);
         let checkout =
-            ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new("terminal.session"));
+            ui::DocumentCheckout::new(record.clone(), ui::ResourceType::new(SESSION_KIND));
         let mut doc = AutoCommit::new();
         ui::resource::init(&mut doc, &record, &checkout.kind, &workspace.to_string());
         doc.commit();

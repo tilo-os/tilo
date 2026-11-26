@@ -15,9 +15,9 @@ use crate::exec::{ExecCtx, InvokeOutcome};
 use crate::host_res::to_scalar;
 use crate::host_ui::{
     ANSWER_ACTION, BLUR_ACTION, CALL_ACTION, CALL_INPUT_ACTION, CALL_VOLUME_ACTION, CHOOSE_ACTION,
-    CHOOSE_FOLDER_ACTION, COPY_LINK_ACTION, EXPORT_ACTION, KEEP_ACTION, MARK_SEEN_ACTION,
-    OPEN_ACTION, REVIEW_ACTION, RUN_LINE_ACTION, SAVE_ACTION, SET_ACTION, SHORTCUT_ACTION,
-    UNDO_ACTION,
+    CHOOSE_FOLDER_ACTION, CLOSE_ACTION, COPY_LINK_ACTION, EXPORT_ACTION, KEEP_ACTION,
+    MARK_SEEN_ACTION, OPEN_ACTION, REVIEW_ACTION, RUN_LINE_ACTION, SAVE_ACTION, SET_ACTION,
+    SHORTCUT_ACTION, UNDO_ACTION,
 };
 use crate::ids::{Actor, AppId, DocId, ModuleHash};
 use crate::live::{Live, LiveStats};
@@ -68,6 +68,9 @@ pub enum ViewEvent {
     /// `blur()` was applied: the field the keyboard is in ends its edit, as closing its editor
     /// does, so what the person types next goes nowhere until they choose another field.
     EndEdit,
+    /// `close()` was applied: the window the view stands in closes, as the person closing it
+    /// does.
+    CloseWindow,
 }
 
 /// A step of the person's own in the system's call held on a resource.
@@ -1098,6 +1101,10 @@ impl ViewInstance {
             SAVE_ACTION => self.platform_save(aref),
             BLUR_ACTION => {
                 self.events.borrow_mut().push(ViewEvent::EndEdit);
+                Ok(InvokeOutcome::Done(Value::Unit))
+            }
+            CLOSE_ACTION => {
+                self.events.borrow_mut().push(ViewEvent::CloseWindow);
                 Ok(InvokeOutcome::Done(Value::Unit))
             }
             CALL_INPUT_ACTION => self.call_input(aref),

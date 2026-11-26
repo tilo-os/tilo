@@ -245,6 +245,10 @@ impl Session for LiveSession {
         crate::is_public_web_link(url)
     }
 
+    fn allow_clipboard(&self, allow: bool) {
+        self.live.set_allow_clipboard(allow);
+    }
+
     fn events(&self, since: u64) -> (Vec<SessionEvent>, u64) {
         let (events, next) = self.live.events(since);
         let events = events
@@ -256,6 +260,8 @@ impl Session for LiveSession {
                 Event::Lost(why) => SessionEvent::Lost(why),
                 Event::Bell => SessionEvent::Bell,
                 Event::Clipboard(text, primary) => SessionEvent::Clipboard(text, primary),
+                Event::History { key, ask } => SessionEvent::History(history_json(&key, &ask)),
+                Event::Held(held) => SessionEvent::Held(held_json(held.as_ref())),
             })
             .collect();
         (events, next)
@@ -264,6 +270,29 @@ impl Session for LiveSession {
     fn ended(&self) -> bool {
         self.live.ended()
     }
+}
+
+/// The shell's ask for the lines its Up recalls, as the app answers it.
+fn history_json(key: &str, ask: &crate::commands::HistoryAsk) -> String {
+    serde_json::json!({
+        "key": key,
+        "skip": ask.skip,
+        "limit": ask.limit,
+        "matching": ask.matching,
+    })
+    .to_string()
+}
+
+/// A command the session's host holds, as the app shows it; empty once it was let go.
+pub(crate) fn held_json(held: Option<&crate::live::HeldRun>) -> String {
+    held.map_or_else(String::new, |held| {
+        serde_json::json!({
+            "message": held.message,
+            "url": held.add_card.as_deref().unwrap_or_default(),
+            "agent": held.agent,
+        })
+        .to_string()
+    })
 }
 
 /// A finished run as the app records it: what it ran, where, how long, what it printed as text,

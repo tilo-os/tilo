@@ -92,17 +92,23 @@ const DESCRIPTION_CHARS: usize = 200;
 
 /// The verbs of the workspace's own shell: what the device that keeps the workspace's machine
 /// runs on a session record, at `record:so.tilo.terminal:<record>`.
-const SHELL_VERBS: [&str; 3] = ["run", "stop", "open-terminal"];
+const SHELL_VERBS: [&str; 3] = ["run", "stop", OPEN_TERMINAL];
 
-/// The provider naming the workspace's own Terminal record: the default session every device of
-/// the workspace meets on ([`collab_types::document::DocumentId::workspace_default`]), served by
+/// The verb that opens the workspace's shell on a terminal for the device that asks.
+const OPEN_TERMINAL: &str = "open-terminal";
+
+/// The workspace's own Terminal session: the Terminal's root `session`, the one record its
+/// windows show and every device of the workspace meets on. A root's record is `root-<type id>`,
+/// and the Terminal package's ids lock gives `Session` the id `vgkud5dv`, which never changes.
+const WORKSPACE_SESSION: &str = "root-vgkud5dv";
+
+/// The provider naming the workspace's own Terminal session ([`WORKSPACE_SESSION`]), served by
 /// the device that keeps the workspace's machine.
 fn workspace_shell_provider() -> String {
     format!(
-        "{}:{}:{}",
+        "{}:{}:{WORKSPACE_SESSION}",
         tilo_actions::remote::RESOURCE_PROVIDER,
         tilo_app_id::apps::TERMINAL,
-        collab_types::document::DocumentId::workspace_default().as_str()
     )
 }
 
@@ -1585,6 +1591,18 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         }
     }
 
+    /// Whether `action` at `parsed` is one of the workspace's own shell's verbs, which the device
+    /// that serves the workspace answers at its Terminal record rather than the app: every verb
+    /// for the person's own agent there ([`McpServer::with_device_shell`]), and for any agent a
+    /// terminal's open, which the Terminal package declares nothing of and the device judges as
+    /// reaching outside, so the person is asked first.
+    pub(super) fn on_workspace_shell(&self, parsed: &Address, action: &str) -> bool {
+        (self.shell == Shell::Device || action == OPEN_TERMINAL)
+            && below_app(parsed).is_empty()
+            && SHELL_VERBS.contains(&action)
+            && names_terminal(&app_of(parsed))
+    }
+
     /// The app `parsed` names and the provider its `action` runs in, and
     /// whether the path pinned it; `None` for starting the app itself
     /// ([`Self::launch`]). One of an installed app's own actions
@@ -1602,11 +1620,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // the workspace's own shell, which that device serves as its Terminal record: not in a
         // windowless copy of the app, whose `run` may reach the device's host shell and so asks
         // its person first. The app need not be installed here: the shell is the device's.
-        if self.shell == Shell::Device
-            && below_app(parsed).is_empty()
-            && SHELL_VERBS.contains(&action)
-            && names_terminal(&app_of(parsed))
-        {
+        if self.on_workspace_shell(parsed, action) {
             return Ok(Some((
                 tilo_app_id::apps::TERMINAL.to_owned(),
                 workspace_shell_provider(),

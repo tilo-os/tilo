@@ -997,7 +997,6 @@ doc = false
 "target-lexicon-0_13_5" = { package = "target-lexicon", version = "^0.13.5", default-features = false, features = ["default"] }
 "tempfile-3_27_0" = { package = "tempfile", version = "^3.27.0", default-features = false, features = ["default", "getrandom"] }
 "termcolor-1_4_1" = { package = "termcolor", version = "^1.4.1", default-features = false, features = [] }
-"terminal" = { path = "../../apps/terminal", default-features = false, features = ["default", "desktop", "samples"] }
 "test-document-app" = { path = "../../tools/test-document-app", default-features = false, features = [] }
 "test-server" = { path = "../../tools/test-server", default-features = false, features = ["questions"] }
 "thin-vec-0_2_19" = { package = "thin-vec", version = "^0.2.19", default-features = false, features = ["default", "std"] }
@@ -3461,7 +3460,6 @@ doc = false
 "target-lexicon-0_13_5" = { package = "target-lexicon", version = "^0.13.5", default-features = false, features = ["default", "std"] }
 "tempfile-3_27_0" = { package = "tempfile", version = "^3.27.0", default-features = false, features = ["default", "getrandom"] }
 "termcolor-1_4_1" = { package = "termcolor", version = "^1.4.1", default-features = false, features = [] }
-"terminal" = { path = "../../apps/terminal", default-features = false, features = ["default", "desktop", "samples"] }
 "test-server" = { path = "../../tools/test-server", default-features = false, features = ["questions"] }
 "thin-vec-0_2_19" = { package = "thin-vec", version = "^0.2.19", default-features = false, features = ["default", "std"] }
 "thiserror-1_0_69" = { package = "thiserror", version = "^1.0.69", default-features = false, features = [] }

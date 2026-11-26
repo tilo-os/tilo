@@ -27,7 +27,7 @@ fn served_workspace(native: &Path) -> String {
 fn terminals_environments_round_trip_through_ush_at_the_daemon() {
     // Terminal is installed, as it is on every computer: the workspace takes its records, an
     // environment among them, as its surface declares them.
-    host::in_own_process_with_packages(&[("terminal", "terminal")], |profile| {
+    host::in_own_process_with(&["terminal"], |profile| {
         let running = tilo_runtime::daemon::Running::start(profile).unwrap();
         let native = running.native_socket().to_owned();
         let actions = DeviceActions::at(&native);

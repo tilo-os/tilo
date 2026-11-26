@@ -11,7 +11,7 @@ use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 
 use crate::terminal::{GridPos, Line, Modes, Placement, Screen, Session, SessionEvent};
 use crate::testing::Dispatch;
-use crate::{widget::Terminal, widget::TerminalProps};
+use crate::{widget::GridEvents, widget::Terminal, widget::TerminalProps};
 use tilo_ui_base::text_render::TextRenderer;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::Widget;
@@ -43,6 +43,7 @@ struct FakeState {
     placements: Vec<Placement>,
     image: Option<Vec<u8>>,
     ended: bool,
+    clipboard: Vec<bool>,
 }
 
 impl Fake {
@@ -159,6 +160,10 @@ impl Session for Fake {
 
     fn ended(&self) -> bool {
         self.state().ended
+    }
+
+    fn allow_clipboard(&self, allow: bool) {
+        self.state().clipboard.push(allow);
     }
 }
 
@@ -313,18 +318,48 @@ tilo_test_env::scenario! {
         assert_eq!(fake.state().keys.len(), before, "Ctrl+Shift+C is a copy, not Ctrl+C");
     }
 
+    phase zoom_and_the_desktops_tab_chords_are_the_windows_and_ctrl_t_is_the_shells;
+    {
+        let fake = std::sync::Arc::new(Fake::with_lines(&["$"]));
+        let mut widget = Terminal::new(fake.clone());
+        widget.set_focus(true);
+        let (tree, node) = placed(&mut widget);
+        paint(&mut widget);
+        let ctrl = ModifiersState::CONTROL;
+        for zoom in ["+", "-", "0"] {
+            let taken = send_with(
+                &mut widget,
+                &tree,
+                node,
+                &tilo_ui_base::synthetic_input::char_key(zoom),
+                ctrl,
+            );
+            assert!(!taken, "Ctrl+{zoom} zooms the window");
+        }
+        let tab = key(WKey::Named(NamedKey::Tab), ElementState::Pressed);
+        assert!(!send_with(&mut widget, &tree, node, &tab, ctrl), "Ctrl+Tab is the desktop's");
+        let reopen = tilo_ui_base::synthetic_input::char_key("t");
+        assert!(
+            !send_with(&mut widget, &tree, node, &reopen, ctrl | ModifiersState::SHIFT),
+            "Ctrl+Shift+T is the desktop's"
+        );
+        assert!(fake.state().keys.is_empty(), "none of them reached the shell");
+        assert!(
+            send_with(&mut widget, &tree, node, &reopen, ctrl),
+            "Ctrl+T is the shell's"
+        );
+        assert_eq!(fake.state().keys.len(), 1);
+    }
+
     phase a_drag_selects_in_reading_order_and_a_finished_selection_reports_its_text;
     {
         let intents = tilo_ui_base::Intents::default();
         let fake = std::sync::Arc::new(Fake::with_lines(&["hello world", "second line"]));
         let mut widget = Terminal::new(fake.clone());
-        widget.update_events(
-            Event::None,
-            Event::None,
-            Event::None,
-            Event::View(Intent::new(&intents, "terminal", "selected")),
-            Event::None,
-        );
+        widget.update_events(GridEvents {
+            selected: Event::View(Intent::new(&intents, "terminal", "selected")),
+            ..GridEvents::default()
+        });
         let (tree, node) = placed(&mut widget);
         paint(&mut widget);
         send(&mut widget, &tree, node, &moved(1.0, 1.0));
@@ -394,28 +429,53 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase the_grid_reports_the_title_the_marked_runs_and_the_shells_end;
+    phase the_grid_reports_the_title_the_marked_runs_the_shells_asks_and_its_end;
     {
         let intents = tilo_ui_base::Intents::default();
         let fake = std::sync::Arc::new(Fake::with_lines(&["$ "]));
         let mut widget = Terminal::new(fake.clone());
-        widget.update_events(
-            Event::View(Intent::new(&intents, "terminal", "title")),
-            Event::View(Intent::new(&intents, "terminal", "finished")),
-            Event::View(Intent::new(&intents, "terminal", "exit")),
-            Event::None,
-            Event::None,
-        );
+        widget.update_events(GridEvents {
+            title: Event::View(Intent::new(&intents, "terminal", "title")),
+            finished: Event::View(Intent::new(&intents, "terminal", "finished")),
+            exit: Event::View(Intent::new(&intents, "terminal", "exit")),
+            lost: Event::View(Intent::new(&intents, "terminal", "lost")),
+            history: Event::View(Intent::new(&intents, "terminal", "history")),
+            held: Event::View(Intent::new(&intents, "terminal", "held")),
+            ..GridEvents::default()
+        });
         fake.bump(SessionEvent::Title("vim README".to_owned()));
         fake.bump(SessionEvent::Finished("{\"exit\":0}".to_owned()));
         fake.bump(SessionEvent::Exit(3));
+        fake.bump(SessionEvent::Lost("the relay went away".to_owned()));
+        fake.bump(SessionEvent::History("{\"skip\":0}".to_owned()));
+        fake.bump(SessionEvent::Held(String::new()));
         let doc = automerge::AutoCommit::new();
         widget.sync(&doc, &automerge::ROOT);
         let fired = intents.take();
-        let values: Vec<Option<Value>> = fired.into_iter().map(|f| f.value).collect();
+        let values: Vec<Option<Value>> = fired.iter().map(|f| f.value.clone()).collect();
         assert!(values.contains(&Some(Value::Text("vim README".to_owned()))));
         assert!(values.contains(&Some(Value::Text("{\"exit\":0}".to_owned()))));
-        assert!(values.contains(&Some(Value::Text("exit 3".to_owned()))));
+        let said = |event: &str| {
+            fired
+                .iter()
+                .filter(|f| f.event == event)
+                .map(|f| f.value.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(said("exit"), vec![Some(Value::Text("exit 3".to_owned()))]);
+        assert_eq!(
+            said("lost"),
+            vec![Some(Value::Text("the relay went away".to_owned()))],
+            "a lost connection is not the shell exiting"
+        );
+        assert!(
+            values.contains(&Some(Value::Text("{\"skip\":0}".to_owned()))),
+            "the shell's ask for its history reaches the app"
+        );
+        assert!(
+            values.contains(&Some(Value::Text(String::new()))),
+            "a held command let go reaches the app"
+        );
     }
 
     phase an_input_method_commits_text_to_the_shell_and_accessibility_names_the_grid;
@@ -474,6 +534,14 @@ tilo_test_env::scenario! {
             tilo_ui_base::presence::PresenceCtx::default().draw_env(),
         ));
         assert!(!scene.encoding().is_empty(), "the light theme paints the grid");
+    }
+
+    phase a_program_sets_the_clipboard_only_while_the_person_allows_it;
+    {
+        let fake = std::sync::Arc::new(Fake::with_lines(&["$ "]));
+        let mut widget = Terminal::new(fake.clone()).with_allow_clipboard(true);
+        widget.set_allow_clipboard(false);
+        assert_eq!(fake.state().clipboard, vec![true, false]);
     }
 
     phase find_in_the_scrollback_finds_every_row_and_reveals_the_one_chosen;

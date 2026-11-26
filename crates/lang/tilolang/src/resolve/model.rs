@@ -253,6 +253,9 @@ pub struct Presentation {
     pub did: Option<String>,
     /// `did_many: "moved {count} tasks"`: what it did when it changed several.
     pub did_many: Option<String>,
+    /// `keywords: ["interrupt", "ctrl+c"]`: other words a person finds the action by in the
+    /// system's search, beside its label.
+    pub keywords: Vec<String>,
     /// `search: Found`: the type this action's answers are of, where it answers the system's
     /// search over a remote service.
     pub search: Option<String>,

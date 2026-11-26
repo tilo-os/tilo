@@ -78,8 +78,8 @@ t cargo build --locked -p example-counter
 t cargo test --locked -p example-counter
 ```
 
-For an app, `t cargo build --locked -p terminal` builds it on the server, and
-`cargo desktop --apps "terminal"` opens the desktop with it here (replace `terminal`
+For an app, `t cargo build --locked -p messages` builds it on the server, and
+`cargo desktop --apps "messages"` opens the desktop with it here (replace `messages`
 with the package name of the app you changed). Append a test name to `t cargo
 test` to select only that test.
 

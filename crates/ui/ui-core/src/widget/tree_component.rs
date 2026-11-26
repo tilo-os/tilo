@@ -475,7 +475,8 @@ struct Command {
 }
 
 impl Command {
-    fn of(props: MenuItemProps) -> Self {
+    fn of(mut props: MenuItemProps) -> Self {
+        let press = props.press();
         let MenuItemProps {
             label,
             icon,
@@ -485,8 +486,10 @@ impl Command {
             description,
             group,
             key,
-            link,
-            choose,
+            // What choosing it does is the press, taken above.
+            link: _,
+            choose: _,
+            value: _,
             separator: _,
             // A command row here is not a font picker's: no row previews a face.
             sample: _,
@@ -500,7 +503,7 @@ impl Command {
             group,
             enabled: !disabled,
             description,
-            press: Press::of(choose).leading_to(link),
+            press,
         }
     }
 

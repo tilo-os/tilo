@@ -39,6 +39,8 @@ tilo-render-protocol = { version = "0.1.0", path = "../../ui/tilo-render-protoco
 tilo-view = { version = "0.1.0", path = "../../sdk/tilo-view" }
 tilo-doc = { version = "0.1.0", path = "../../sdk/tilo-doc" }
 tilo-resource = { version = "0.1.0", path = "../../core/tilo-resource" }
+# The environments Terminal keeps for its workspace: their record kind, as the model declares it.
+tilo-environment = { version = "0.1.0", path = "../../vm/environment" }
 # The one link grammar a resource's `share-link` renders, which the page reads back.
 tilo-reference = { version = "0.1.0", path = "../../core/reference" }
 tilolang = { version = "0.1.0", path = "../tilolang" }

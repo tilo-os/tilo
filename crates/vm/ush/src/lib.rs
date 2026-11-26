@@ -10,7 +10,7 @@
 //! 2. the guest ([`guest`]), untrusted: the real uid in its own user namespace, a
 //!    network namespace reaching only the hosts its record grants ([`tilo_egress`]),
 //!    and a seccomp filter denying the namespace syscalls so it cannot climb out;
-//! 3. an app, which cannot reach this runtime at all: `apps/terminal` asks the
+//! 3. an app, which cannot reach this runtime at all: Terminal's engine asks the
 //!    supervisor over its service socket for a target and gets back a pty.
 //!
 //! Images are read-only, with no overlay upper: a guest adds software only by asking
@@ -18,12 +18,14 @@
 //! record's `CapOverride`s, evaluated by `decide_capability` ([`policy`]), not a
 //! second system.
 
+pub mod app_shells;
 pub mod approved_checks;
 pub mod audit;
 pub mod branch;
 pub mod broker;
 pub mod command_marks;
 pub mod content;
+pub mod control_line;
 pub mod environment_browsers;
 pub mod environment_commands;
 pub mod environment_terminals;

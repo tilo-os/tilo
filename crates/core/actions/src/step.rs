@@ -487,7 +487,7 @@ mod tests {
             );
             assert_eq!(StepKind::of_did(&made), Some(StepKind::Create));
             let command = Did::verb(
-                crate::ActionKey::new("so.tilo.terminal", "terminal.session", "run"),
+                crate::ActionKey::new("so.tilo.terminal", "tl.so.tilo.terminal.Session", "run"),
                 [(
                     "command".to_owned(),
                     crate::Scalar::from_json(&serde_json::json!("cargo build")).unwrap(),

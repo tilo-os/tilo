@@ -110,6 +110,11 @@ pub const FILES_OPEN: &str = "files.open";
 /// given it. The workspace's grants still decide who may be in the call.
 pub const CALLS: &str = "calls";
 
+/// The capability to open shells the device's shell runtime runs: an app asks its device for one
+/// on its own connection, and only an app whose signed manifest declares this one is given it. A
+/// tilolang app declares it by an action that opens one (`uses shell`).
+pub const SHELLS: &str = "shells";
+
 /// `[capabilities]` — host capabilities by name (`network.http`,
 /// `notifications`, `files.save`, ...). A `required` capability that a host
 /// cannot provide stops the launch; an `optional` one degrades.

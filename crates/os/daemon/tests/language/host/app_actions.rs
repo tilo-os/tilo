@@ -39,20 +39,12 @@ struct App {
     kind: &'static str,
 }
 
-const APPS: &[App] = &[
-    App {
-        package: "messages",
-        bin: "messages",
-        id: "so.tilo.messages",
-        kind: "tilo.messages",
-    },
-    App {
-        package: "terminal",
-        bin: "terminal",
-        id: "so.tilo.terminal",
-        kind: "terminal.session",
-    },
-];
+const APPS: &[App] = &[App {
+    package: "messages",
+    bin: "messages",
+    id: "so.tilo.messages",
+    kind: "tilo.messages",
+}];
 
 /// Every app's package and entrypoint binary, as the run built them.
 fn rust() -> Vec<(&'static str, &'static str)> {

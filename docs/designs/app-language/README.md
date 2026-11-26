@@ -214,7 +214,8 @@ action took(r: Run, data: Bytes) { r.output = data }
 
 `b.len()` counts its bytes, `b.is_empty()` whether it holds none, and `b.text()` reads it as
 text, lossily where it is not UTF-8. Bytes come from what a run holds (`file.bytes()`, a
-response's `body`, `Bytes.from_base64(text)`); the language has no other byte operations.
+response's `body`, `Bytes.from_base64(text)`, and a text's own UTF-8 bytes with
+`Bytes.from_text(text)`); the language has no other byte operations.
 
 ## Opening files
 

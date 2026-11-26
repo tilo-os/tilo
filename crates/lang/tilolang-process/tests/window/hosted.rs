@@ -93,6 +93,9 @@ mod presence;
 mod selection;
 #[path = "hosted/tasks_board.rs"]
 mod tasks_board;
+#[cfg(target_os = "linux")]
+#[path = "hosted/terminal_shell.rs"]
+mod terminal_shell;
 #[path = "hosted/ticking.rs"]
 mod ticking;
 #[path = "hosted/two_windows.rs"]

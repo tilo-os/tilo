@@ -73,13 +73,7 @@ fn id_of(device: [u8; 32], theirs: u32) -> String {
 
 /// Tell `person` that their device `device` speaks peer protocol `theirs`, as a notice in the
 /// record of their devices kept under `own`.
-async fn post(
-    copies: &Workspaces,
-    own: [u8; 32],
-    person: [u8; 32],
-    device: [u8; 32],
-    theirs: u32,
-) {
+async fn post(copies: &Workspaces, own: [u8; 32], person: [u8; 32], device: [u8; 32], theirs: u32) {
     let record = person_workspace::devices::of(copies, &person).await;
     let key = hex::encode(device);
     let name = record
@@ -152,7 +146,10 @@ mod tests {
         let reported = Reported::default();
         let device = [0x11; 32];
         let ours = neighbour_wire::PEER_PROTOCOL_VERSION;
-        assert!(reported.first(device, ours.wrapping_add(2)), "the first refusal is news");
+        assert!(
+            reported.first(device, ours.wrapping_add(2)),
+            "the first refusal is news"
+        );
         assert!(
             !reported.first(device, ours.wrapping_add(2)),
             "the same device at the same version is not told twice"
@@ -179,7 +176,10 @@ mod tests {
             title.contains("Framework 16") && title.contains("newer Tilo"),
             "the device names the title: {title}"
         );
-        assert!(body.contains("restarts"), "the body says what happens here: {body}");
+        assert!(
+            body.contains("restarts"),
+            "the body says what happens here: {body}"
+        );
         let (title, body) = text(older, Some("Framework 16"));
         assert!(
             title.contains("Framework 16") && title.contains("must update"),
@@ -196,7 +196,8 @@ mod tests {
                 "a device the record cannot name is still named plainly: {title}"
             );
             assert!(
-                !title.contains(&hex::encode([0x11; 32])) && !body.contains(&hex::encode([0x11; 32])),
+                !title.contains(&hex::encode([0x11; 32]))
+                    && !body.contains(&hex::encode([0x11; 32])),
                 "an endpoint key is not the person's language"
             );
         }

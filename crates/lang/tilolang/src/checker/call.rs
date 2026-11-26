@@ -278,6 +278,7 @@ impl Checker<'_> {
             "run_block" => return self.builtin_run_block(args, span),
             "set" => return self.builtin_set(args, span),
             "blur" => return self.builtin_blur(args, span),
+            "close" => return self.builtin_close(args, span),
             "open" => return self.builtin_open(args, span),
             "notify" => return self.builtin_notify(args, span),
             "notice" => return self.builtin_notice(args, span),
@@ -1761,6 +1762,30 @@ impl Checker<'_> {
             return Ex::error();
         }
         Ex::host(Imp::ActBlur, Vec::new(), Ty::Action)
+    }
+
+    /// `close()`: the window the view stands in closes, as the person closing it does. A
+    /// terminal whose shell exited is done.
+    fn builtin_close(&mut self, args: &[ast::Arg], span: Span) -> Ex {
+        if self.st.ctx != Ctx::View {
+            let who = self.st.ctx.word();
+            self.err(
+                "E067",
+                span,
+                format!("`close()` is applied from a view, on a control or an event; {who} has no window"),
+            );
+            return Ex::error();
+        }
+        if let Some(arg) = args.first() {
+            self.err(
+                "E022",
+                arg.value.span,
+                "`close` takes nothing: it closes the window the view stands in",
+            );
+            let _ = self.expr(&arg.value, None);
+            return Ex::error();
+        }
+        Ex::host(Imp::ActClose, Vec::new(), Ty::Action)
     }
 
     /// `open(r)`, or `open(r, view: v)`: an action reference that goes to the window of `r`. Views
@@ -3776,15 +3801,21 @@ impl Checker<'_> {
         Ex::host(imp, vec![value], ty)
     }
 
-    /// `Bytes`'s method: `Bytes.from_base64(text)`, the bytes a base64 text holds — how a picture
-    /// or another file an action came by as text becomes bytes it can keep.
+    /// `Bytes`'s methods: `Bytes.from_base64(text)`, the bytes a base64 text holds — how a picture
+    /// or another file an action came by as text becomes bytes it can keep — and
+    /// `Bytes.from_text(text)`, the text's own bytes as UTF-8 (what a run printed, kept as bytes).
     fn bytes_type_method(&mut self, name: &ast::Ident, args: &[ast::Arg], span: Span) -> Ex {
-        if name.name != "from_base64" {
+        let (imp, shown) = match name.name.as_str() {
+            "from_base64" => (Imp::Base64Decode, "`Bytes.from_base64(text)`"),
+            "from_text" => (Imp::TextBytes, "`Bytes.from_text(text)`"),
+            _ => (Imp::Base64Decode, ""),
+        };
+        if shown.is_empty() {
             self.err(
                 "E027",
                 name.span,
                 format!(
-                    "`Bytes` has `from_base64`, not `{}`: `Bytes.from_base64(text)` reads the bytes a base64 text holds (a vCard's PHOTO, a reply's body)",
+                    "`Bytes` has `from_base64` and `from_text`, not `{}`: `Bytes.from_base64(text)` reads the bytes a base64 text holds (a vCard's PHOTO, a reply's body), `Bytes.from_text(text)` keeps a text's own bytes",
                     name.name
                 ),
             );
@@ -3794,18 +3825,14 @@ impl Checker<'_> {
             return Ex::error();
         }
         let [text] = args else {
-            self.err(
-                "E022",
-                span,
-                "`Bytes.from_base64` takes the text: `Bytes.from_base64(text)`",
-            );
+            self.err("E022", span, format!("it takes the text: {shown}"));
             for a in args {
                 let _ = self.expr(&a.value, None);
             }
             return Ex::error();
         };
         let text = self.expr_as(&text.value, &Ty::Text);
-        Ex::host(Imp::Base64Decode, vec![text], Ty::Bytes)
+        Ex::host(imp, vec![text], Ty::Bytes)
     }
 
     /// `File`'s methods: `File.of_text(name, text)`, `File.of_bytes(name, bytes)`, `File.at(name,

@@ -72,6 +72,7 @@ impl MenuPart {
                 key: item.key.clone(),
                 link: item.link.clone(),
                 choose: item.choose.clone(),
+                value: item.value.clone(),
                 separator: item.separator,
                 sample: item.sample.clone(),
             }),

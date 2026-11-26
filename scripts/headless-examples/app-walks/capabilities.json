@@ -2,8 +2,9 @@
   "app": "capabilities",
   "said": "Every capability the shell and the apps publish",
   "live": "tl",
-  "apps": "terminal",
+  "apps": "",
   "packages": [
+    "terminal",
     "notes",
     "sheets",
     "tasks",

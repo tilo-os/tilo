@@ -6,22 +6,29 @@
 
 use serde_json::json;
 
-use crate::language::agent_fixture::{act, said};
+use crate::language::agent_fixture::{act, open_terminal_allowed};
 use crate::language::host;
 
 /// What the person keeps in the vault: nothing but a program in the machine may read it.
 const TOKEN: &str = "placeholder-token-for-a-program-in-the-machine";
 const VARIABLE: &str = "CLAUDE_CODE_OAUTH_TOKEN";
-/// The workspace's machine secrets record, as a member's app addresses it.
-const DOCUMENT: &str = "derived:terminal.machine-secrets@tab:0000000000000000";
+/// The kind of the records naming an item for the machine, as Terminal keeps them.
+const MACHINE_SECRET: &str = "tl.so.tilo.terminal.MachineSecret";
 
-fn secrets_record() -> String {
-    format!(
-        "{}:{}:{}",
-        tilo_actions::remote::RESOURCE_PROVIDER,
-        "so.tilo.terminal",
-        DOCUMENT
-    )
+/// What the workspace's records naming items for its machine hold, each as text: what the
+/// machine reads when a program starts.
+async fn named_for_the_machine(host: &host::Host) -> String {
+    host.daemon()
+        .workspaces()
+        .store_found(
+            host.workspace(),
+            collab_types::store::Query::of(MACHINE_SECRET, 16),
+        )
+        .await
+        .expect("the workspace's records read")
+        .into_iter()
+        .map(|(_, held)| format!("{held:?}"))
+        .collect()
 }
 
 /// The person keeps the token in their vault from a device of theirs, as their page does, and
@@ -54,7 +61,7 @@ async fn keep(host: &host::Host) -> String {
 /// document never carries it.
 #[test]
 fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_else() {
-    host::run(|host| async move {
+    host::run_with(&["terminal"], |host| async move {
         let reference = keep(host.as_ref()).await;
         let agent = host.agent();
         // Before anything is named, the machine's programs get nothing.
@@ -72,7 +79,7 @@ fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_else() {
         // The person names the item for the machine, and the next program gets it.
         let (named, failed) = act(
             &agent,
-            "terminal.machine-secrets#add-secret",
+            "terminal#add_secret",
             json!({"variable": VARIABLE, "item": reference}),
         )
         .await;
@@ -92,14 +99,7 @@ fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_else() {
         );
         assert!(!ran.contains(TOKEN), "the answer never carries it: {ran}");
         // What the machine reads when a program starts names the item, never its secret.
-        let saved = host
-            .daemon()
-            .workspaces()
-            .resource_document(host.workspace(), "so.tilo.terminal", DOCUMENT)
-            .await
-            .unwrap()
-            .expect("the machine secrets document");
-        let document = String::from_utf8_lossy(&saved);
+        let document = named_for_the_machine(host.as_ref()).await;
         assert!(
             document.contains(&reference),
             "the document the machine reads names the item: {document}"
@@ -112,11 +112,17 @@ fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_else() {
         // Removed, it no longer arrives with the next command.
         let (removed, failed) = act(
             &agent,
-            "terminal.machine-secrets#remove-secret",
+            "terminal#remove_secret",
             json!({"variable": VARIABLE}),
         )
         .await;
         assert!(!failed, "the person removes the item: {removed}");
+        assert!(
+            !named_for_the_machine(host.as_ref())
+                .await
+                .contains(&reference),
+            "nothing names the item for the machine any more"
+        );
         let (ran, failed) = act(
             &agent,
             "terminal#run",
@@ -127,66 +133,11 @@ fn a_vault_item_named_for_the_machine_reaches_its_programs_and_nothing_else() {
     });
 }
 
-/// A member names a vault item for the machine before any window made the record: the record is
-/// founded, its declared verbs are offered, and the document the machine's secrets read names the
-/// item.
-#[test]
-fn a_member_names_a_vault_item_before_any_window_made_the_record() {
-    host::run(|host| async move {
-        let reference = keep(host.as_ref()).await;
-        let workspace = host.workspace().to_owned();
-        let laptop = host.member("Ada's laptop", &workspace).await;
-        // The record's own listing offers what it declares, its `add-secret` among them.
-        let named = laptop
-            .call(
-                tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
-                tilo_actions::remote::workspace_governance_address(&workspace, "invitation.list"),
-                &json!({}),
-            )
-            .await;
-        assert!(
-            matches!(named, Ok(tilo_actions::InvocationUpdate::Succeeded { .. })),
-            "a member of the workspace is answered: {named:?}"
-        );
-        let provider = secrets_record();
-        // The member invokes the record's declared verb, as `tilo do` does.
-        let (added, failed) = said(
-            &laptop
-                .call(
-                    &provider,
-                    tilo_actions::ActionAddress::new("terminal.machine-secrets", "add-secret"),
-                    &json!({"variable": VARIABLE, "item": &reference}),
-                )
-                .await
-                .map_or_else(
-                    |error| json!({"error": format!("{error:?}")}),
-                    |_| json!({"ok": true}),
-                ),
-        );
-        assert!(
-            !added.contains("error") && !failed,
-            "a member names the item before any window made the record: {added}"
-        );
-        let saved = host
-            .daemon()
-            .workspaces()
-            .resource_document(&workspace, "so.tilo.terminal", DOCUMENT)
-            .await
-            .unwrap()
-            .expect("the machine secrets document");
-        let document = String::from_utf8_lossy(&saved);
-        assert!(
-            document.contains(&reference),
-            "the document the machine reads names the item: {document}"
-        );
-    });
-}
-
 /// A program in the workspace's machine works there as its own agent once the person allows it:
 /// asked about the agent it would be, allowed, its work is kept as that agent's.
 #[test]
 fn a_program_in_the_workspaces_machine_works_there_as_its_own_agent_once_allowed() {
-    host::run(|host| async move {
+    host::run_with(&["terminal"], |host| async move {
         // The workspace's machine is what takes the person's Terminal command and answers the
         // program that connects there; the daemon serves the machine and the questions its
         // programs are put to the person.
@@ -201,15 +152,14 @@ fn a_program_in_the_workspaces_machine_works_there_as_its_own_agent_once_allowed
             !failed && ran.contains("hello from the machine"),
             "a program runs in the workspace's machine: {ran}"
         );
-        let (started, failed) = act(
+        // A terminal a program types into reaches beyond the workspace's records: its person is
+        // asked first, and once they allow it the program connects at the machine's socket.
+        open_terminal_allowed(
+            host.as_ref(),
             &agent,
-            "terminal#open-terminal",
+            "3f6b8c0e-0000-4000-8000-00000000000a",
             json!({"cols": 100, "rows": 30}),
         )
         .await;
-        assert!(
-            !failed && started.contains("stream"),
-            "a program in the machine connects at its machine's agent socket: {started}"
-        );
     });
 }

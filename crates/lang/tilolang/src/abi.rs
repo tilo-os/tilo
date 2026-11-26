@@ -470,6 +470,8 @@ imports! {
     FileOfText = "file_of_text" ([H, H] -> [H]);
     FileOfBytes = "file_of_bytes" ([H, H] -> [H]);
     Base64Decode = "base64_decode" ([H] -> [H]);
+    // A text's own bytes, as UTF-8: what a run printed, kept as the bytes it was.
+    TextBytes = "text_bytes" ([H] -> [H]);
     FileAt = "file_at" ([H, H] -> [H]);
     FileZip = "file_zip" ([H, H] -> [H]);
     // A document file read as the Markdown an editor shows, and Markdown written as a document
@@ -556,6 +558,8 @@ imports! {
     ActSave = "act_save" ([H, H] -> [H]);
     // `blur()`: the field the keyboard is in ends its edit, as closing its editor does.
     ActBlur = "act_blur" ([] -> [H]);
+    // `close()`: the window the view stands in closes, as the person closing it does.
+    ActClose = "act_close" ([] -> [H]);
 
     // A PDF, read by the device's engine: its pages, contents, a page's text and links, its
     // forms, the markup the file carries, one page as a picture, what the file holds as pages,

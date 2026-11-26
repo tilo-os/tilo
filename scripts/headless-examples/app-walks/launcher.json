@@ -3,7 +3,7 @@
   "said": "Find an app and open it",
   "family": "shell",
   "live": "tl",
-  "apps": "terminal",
+  "apps": "",
   "packages": [
     "files",
     "chat",

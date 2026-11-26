@@ -201,6 +201,9 @@ tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock", features =
 # A named zone read from the database built into Tilo, as the runtime resolves the host's zone.
 tilo-recurrence = { version = "0.1.0", path = "../../engines/tilo-recurrence" }
 tilo-test-env = { path = "../../../tools/test-env" }
+# The device's shell runtime, whose supervisor a Terminal window's shell runs in, and the
+# daemon's end of an app's line that carries it.
+ush = { path = "../../vm/ush" }
 collaboration = { package = "tilo-collaboration", version = "0.1.0", path = "../../core/collaboration", features = ["test-support", "broker-transport", "native"] }
 tilolang = { path = "../tilolang" }
 # The session's persistent search index, and the source a search reads it through: a tilolang

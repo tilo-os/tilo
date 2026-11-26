@@ -16,7 +16,9 @@ use tilo_actions::{ActionKind, ActionParam, ParamType, Pick};
 use tilolang_runtime::Words;
 use tilolang_runtime::meta::Ty;
 
-use crate::action::{BLOCK_EDITS, CREATE_ACTION, DIRECT_EDITS, ORIGIN_ACTION, SCENARIO_ACTION};
+use crate::action::{
+    BLOCK_EDITS, CREATE_ACTION, DIRECT_EDITS, OPENED_ACTION, ORIGIN_ACTION, SCENARIO_ACTION,
+};
 use tilolang_runtime::meta::{ActionMeta, Meta, ParamMeta, TypeMeta};
 
 use crate::meta::{MetaExt as _, action_kind};
@@ -628,6 +630,15 @@ fn scenario_verb() -> VerbSurface {
     }
 }
 
+fn opened_verb() -> VerbSurface {
+    VerbSurface {
+        id: OPENED_ACTION.to_owned(),
+        label: "Open".to_owned(),
+        description: Some("What opening it does, as the person who opened it.".to_owned()),
+        ..scenario_verb()
+    }
+}
+
 fn field_surfaces(
     meta: &Meta,
     ty: &TypeMeta,
@@ -727,6 +738,7 @@ fn live_surface(meta: &Meta, ty: &TypeMeta) -> Option<tilo_actions::surface::Liv
 pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
     let mut surfaces = Vec::new();
     let seeded = !meta.scenarios.is_empty();
+    let opens = meta.actions.iter().any(ActionMeta::is_opened);
     for ty in &meta.types {
         // An app's preferences are the settings service's record (`settings/apps/<app>`), not a
         // kind of the app's own document: another package reads them through that service, not
@@ -746,6 +758,11 @@ pub fn package_surfaces(meta: &Meta, words: &dyn Words) -> Vec<Surface> {
         // from, writing any of its types.
         if seeded {
             verbs.push(scenario_verb());
+        }
+        // What opening a resource does runs as the person who opened it and may write any of the
+        // package's types, as an action of theirs would.
+        if opens {
+            verbs.push(opened_verb());
         }
         // An action on a union of the package's types is one on each of them: the change a call
         // makes is claimed on the kind of the resource it was called on.
@@ -966,6 +983,10 @@ pub fn queued_effect_surface() -> Surface {
 /// decided against without this host linking an app's model crate.
 const MODERATION_SURFACE: &str = include_str!("../../../../apps/moderation-model/surface.json");
 
+/// The workspace's environments, which the environment model keeps as Terminal's records
+/// (`environment:<key>`), whichever program makes them: Terminal's package declares their kind
+/// beside its own types, so a workspace's store judges their writes once Terminal is installed.
+
 /// A committed surface file's resources (`{"resources": […]}`).
 #[derive(serde::Deserialize)]
 struct SurfaceFileResources {
@@ -994,7 +1015,19 @@ fn kept_for_workspace(app: &str) -> Vec<Surface> {
     .filter(|surface| {
         collab_types::workspace_document_of_kind(&surface.kind).is_some_and(|kept| kept.app == app)
     })
+    .chain(environments_kept_by(app))
     .collect()
+}
+
+/// The environments' record kind, as their model declares it, when `app` is the one whose records
+/// they are.
+fn environments_kept_by(app: &str) -> Vec<Surface> {
+    use tilo_resource::Resource as _;
+    if app == tilo_app_id::apps::TERMINAL {
+        vec![tilo_environment::Environment::surface()]
+    } else {
+        Vec::new()
+    }
 }
 
 /// The surface of the host's `Notice`: what any package's action writes to tell a person, and

@@ -2,10 +2,10 @@
   "app": "terminal",
   "said": "Terminal",
   "family": "apps",
-  "live": "rust",
-  "rust": {
+  "live": "tl",
+  "tl": {
     "id": "so.tilo.terminal",
-    "native": "terminal"
+    "package": "terminal"
   },
   "steps": [
     {
@@ -25,11 +25,8 @@
           "wait_for": "actions"
         },
         {
-          "focused": "terminal"
-        },
-        {
           "must": [
-            "Command line"
+            "Terminal"
           ]
         },
         {
@@ -58,6 +55,12 @@
       "said": "Type a command at the prompt and press Enter",
       "ops": [
         {
+          "press_any": [
+            "Terminal, Default environment",
+            "Terminal, Your shell on this device"
+          ]
+        },
+        {
           "type": "echo hi"
         },
         {
@@ -82,10 +85,7 @@
           "read": {
             "app": "so.tilo.terminal",
             "operation": "inspect-session",
-            "is": {
-              "known_environments#len": 1,
-              "known_environments.0.record": "default"
-            },
+            "contains": "Default environment",
             "within": 10
           }
         }

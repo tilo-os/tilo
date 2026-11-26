@@ -1821,12 +1821,6 @@ inputs = ["apps/tl/"]
 readers = ["crates/desktop/phone/tests/server/mod.rs"]
 
 [[cargo]]
-package = "terminal"
-# A rerun's failing-test fixture is the terminal engine's, read from its source.
-inputs = ["crates/engines/tilo-terminal/src/parse/fixtures/nextest.txt"]
-readers = ["apps/terminal/src/run_tests.rs"]
-
-[[cargo]]
 package = "staging-handoff-model"
 # The install sizes are the file the installer's scripts source.
 inputs = ["os/usr/share/tilo/install-sizes"]

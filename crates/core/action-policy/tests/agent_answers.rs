@@ -272,7 +272,7 @@ fn an_answer_for_one_action_is_its_persons_answer_given_in_advance() {
     const TERMINAL: &str = "so.tilo.terminal";
     let command = TreePath::workspace(WORKSPACE)
         .app(TERMINAL)
-        .kind("terminal.session")
+        .kind("tl.so.tilo.terminal.Session")
         .resource("session")
         .action("run");
     let verdict = |person: Answer, given: Vec<Grant>| {
@@ -294,7 +294,7 @@ fn an_answer_for_one_action_is_its_persons_answer_given_in_advance() {
             authority.answer(&command, ActionKind::Outside, false, &cx()),
         )
     };
-    let one = AnswerScope::action(TERMINAL, "terminal.session", "run");
+    let one = AnswerScope::action(TERMINAL, "tl.so.tilo.terminal.Session", "run");
     let everything = AnswerScope::app(TERMINAL);
     let allowed = |scope: &AnswerScope| vec![answer(scope, ActionKind::Outside, Answer::Allow)];
     assert_eq!(verdict(Answer::Ask, Vec::new()), (Answer::Ask, Answer::Ask));
@@ -329,11 +329,11 @@ fn an_answer_for_one_action_is_its_persons_answer_given_in_advance() {
 fn allowing_an_outside_effect_takes_one_action_outside_the_persons_account() {
     use agent_answers::{ACCOUNT_APP, may_give};
     let outside = ActionKind::Outside;
-    let terminal = AnswerScope::action("so.tilo.terminal", "terminal.session", "run");
+    let terminal = AnswerScope::action("so.tilo.terminal", "tl.so.tilo.terminal.Session", "run");
     assert!(may_give(Some(&terminal), outside, Answer::Allow));
     for wide in [
         AnswerScope::app("so.tilo.terminal"),
-        AnswerScope::kind("so.tilo.terminal", "terminal.session"),
+        AnswerScope::kind("so.tilo.terminal", "tl.so.tilo.terminal.Session"),
     ] {
         assert!(!may_give(Some(&wide), outside, Answer::Allow), "{wide:?}");
         assert!(may_give(Some(&wide), outside, Answer::Ask), "{wide:?}");

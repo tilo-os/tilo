@@ -122,7 +122,7 @@ def listing_row(row: dict) -> dict:
 def terminal_rows(ctx) -> list[dict]:
     return [r for r in ctx.vm.actions(TERMINAL)
             if r.get("app_id") == TERMINAL
-            and (r["action"].get("semantic_identity") or {}).get("kind") == "terminal.session"]
+            and (r["action"].get("semantic_identity") or {}).get("kind", "").endswith("terminal.Session")]
 
 
 class Terminal:

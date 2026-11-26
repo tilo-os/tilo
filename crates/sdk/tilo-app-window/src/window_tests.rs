@@ -4446,3 +4446,24 @@ fn a_menu_in_a_components_own_view_says_where_it_may_stand() {
         "the window names where a menu may stand: {broken:?}"
     );
 }
+
+/// A view closes its window (`close()`, as a terminal whose shell exited does): the window asks
+/// the shell to close its tab, as the person closing it does.
+#[test]
+fn a_view_closes_its_window_as_the_person_does() {
+    let (mut app, mut harness) = drawn(&bound_page_to(
+        "ui.TextInput",
+        &[],
+        Value::text("typed"),
+        "doc/notes:a",
+    ));
+    let _ = ui::shell_tabs::take_requests();
+    send(&mut app, &[ToUi::CloseWindow]);
+    drawn_window(&mut harness).receive();
+    assert!(
+        ui::shell_tabs::take_requests()
+            .iter()
+            .any(|request| matches!(request, ui::shell_tabs::TabRequest::CloseThis)),
+        "the window goes the way the shell closes any tab"
+    );
+}

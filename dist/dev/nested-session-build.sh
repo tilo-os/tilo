@@ -40,7 +40,7 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
 # `tilolang run` needs none of them, only the runtime and the tilolang binary.
 # A tilolang package (`apps/tl/<name>`) may be named too: it builds no thin
 # app, and the session builds its package from the runtime this build bakes.
-apps=${TILO_NESTED_APPS-"terminal"}
+apps=${TILO_NESTED_APPS-"files"}
 if [[ ${1:-} == --apps ]]; then
     printf '%s\n' "$apps"
     exit 0

@@ -37,6 +37,9 @@ view window(p: Preferences) {
     text("{p.font_size}") as size
     text("bell {p.bell}") as bell_text
     toggle(bind: p.bell) as bell
+    ui.ContextMenu {
+      ui.MenuItem("Ring the bell", bind: p.bell) as bell_row
+    }
   }
 }
 "#;
@@ -357,6 +360,21 @@ tilo_test_env::scenario! {
         assert!(
             texts(&app.window()).contains(&"bell true".to_owned()),
             "the view shows the reading"
+        );
+        // A menu's row bound to the preference is the same setter: choosing it turns it off.
+        assert!(
+            matches!(
+                app.window().edit(&app.anchor("bell_row"), &Value::Bool(false)),
+                Ok(EditOutcome::Applied)
+            ),
+            "the menu row's check is the preference's setter"
+        );
+        assert_eq!(
+            service.sent(&address).last(),
+            Some(&(
+                "set-bell".to_owned(),
+                serde_json::Map::from_iter([("value".to_owned(), json!(false))])
+            )),
         );
     }
 

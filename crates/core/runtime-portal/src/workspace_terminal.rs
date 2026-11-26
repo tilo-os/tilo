@@ -22,8 +22,8 @@ use serde::{Deserialize, Serialize};
 pub const ALPN: &[u8] = b"tilo-environment-terminal/1";
 
 /// The Terminal session record's resource, and its action that opens its shell on a terminal
-/// for the device that asks (`apps/terminal`'s `open-terminal`).
-pub const RESOURCE: &str = "terminal.session";
+/// for the device that asks (the Terminal package's `open-terminal`).
+pub const RESOURCE: &str = "tl.so.tilo.terminal.Session";
 pub const ACTION: &str = "open-terminal";
 
 /// The widest and tallest window a terminal opens at, as the host takes it.

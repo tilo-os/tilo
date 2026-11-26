@@ -121,6 +121,9 @@ pub mod serve;
 pub mod server_settings;
 pub mod services;
 mod shell;
+#[cfg(unix)]
+pub(crate) mod ush_line;
+
 mod vpn;
 /// How the person's workspaces stand, as the daemon publishes them to its person's shells.
 pub use shell::Standing;

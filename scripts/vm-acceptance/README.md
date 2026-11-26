@@ -583,7 +583,7 @@ TILO_VM_CONFIG=/absolute/path/to/vms.toml \
 The receipt must be the successful canonical `swap apps+runtime` receipt for
 this VM and account, with full source commit and inventory digest. The output
 folder must be new. The runner checks that exact layer is installed, discovers
-Open and the live `terminal.session` contracts, binds Inspect/Run/Read to one
+Open and the live Terminal `Session` contracts, binds Inspect/Run/Read to one
 workspace/record/opaque connection, and invokes a unique harmless `printf` exactly
 once. Broker acceptance is insufficient: every job must reach success. Read
 must report the same Default session, the marker as a standalone output line,

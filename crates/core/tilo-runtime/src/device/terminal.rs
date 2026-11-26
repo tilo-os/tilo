@@ -20,7 +20,7 @@ use ush::workspace_shell::{RunWith, WorkspaceShells};
 /// The shells of the workspaces this device holds.
 pub(crate) struct HostShells {
     terminals: EnvironmentTerminals,
-    /// The workspaces' records: the machine secrets document a program starts with.
+    /// The workspaces' records: the machine secrets a program starts with.
     copies: Workspaces,
 }
 
@@ -46,7 +46,7 @@ impl HostShells {
     }
 
     /// The vault items `by`'s program in `workspace`'s machine starts with: what the workspace's
-    /// machine secrets document names, each released for them, and nothing else.
+    /// machine secrets name, each released for them, and nothing else.
     fn secrets(&self, workspace: &str, by: &Caller) -> Result<Vec<VmSecret>, String> {
         let copies = self.copies.clone();
         let (workspace, by) = (workspace.to_owned(), by.clone());

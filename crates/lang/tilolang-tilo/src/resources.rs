@@ -4014,10 +4014,17 @@ impl ResourceStore {
         });
         // A scenario's writes are the package's seed data, under the verb every store admits
         // for it.
-        let verb = if self.inner.kinds.borrow().is_scenario(&note.action) {
-            crate::action::SCENARIO_ACTION.to_owned()
-        } else {
-            published_verb(note)
+        // What opening a resource does is the platform's run, under the verb every store admits
+        // for it.
+        let verb = {
+            let kinds = self.inner.kinds.borrow();
+            if kinds.is_scenario(&note.action) {
+                crate::action::SCENARIO_ACTION.to_owned()
+            } else if kinds.is_opened(&note.action) {
+                crate::action::OPENED_ACTION.to_owned()
+            } else {
+                published_verb(note)
+            }
         };
         Stamp {
             verb,

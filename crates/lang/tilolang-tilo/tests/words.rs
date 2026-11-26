@@ -535,3 +535,66 @@ fn the_consent_sheet_names_file_notes_arguments_in_german() {
         .collect();
     assert_eq!(labels, ["Titel", "Schlagwort"], "{sheet:?}");
 }
+
+/// The terminal app as it ships, loaded into a host that reads in `locale`, and the session a
+/// window opens as it publishes it to the workspace's search.
+fn terminal_session(locale: &str) -> tilo_actions::ResourceSpec {
+    let compiled = app("terminal");
+    tilo_ui_base::i18n::I18nManager::install("en-US", locale, &[("en-US", "")])
+        .expect("the source words");
+    let host = Host::new(
+        Actor::from(tilolang_tilo::runtime::ids::MemberId::person("ada")),
+        || None,
+    )
+    .expect("a host");
+    host.set_words(Toolkit);
+    host.load_compiled(&compiled)
+        .expect("the terminal package loads");
+    let package = host.package("so.tilo.terminal").expect("it is loaded");
+    publish_resource(
+        &types_of(&host, &package),
+        "Session",
+        "so.tilo.terminal/session",
+        "Terminal",
+    )
+}
+
+/// The words the search finds the session's action `name` by, beside its label.
+fn keywords(spec: &tilo_actions::ResourceSpec, name: &str) -> Vec<String> {
+    spec.actions
+        .iter()
+        .find(|action| action.id == name)
+        .unwrap_or_else(|| panic!("{name} is offered on a session"))
+        .keywords
+        .clone()
+}
+
+#[test]
+fn people_find_terminal_actions_by_the_words_they_use() {
+    let english = terminal_session("en-US");
+    let stop = keywords(&english, "stop");
+    for word in ["interrupt", "ctrl+c", "cancel"] {
+        assert!(
+            stop.iter().any(|said| said == word),
+            "{word} finds Stop: {stop:?}"
+        );
+    }
+    assert!(
+        keywords(&english, "clear").iter().any(|said| said == "cls"),
+        "cls finds Clear screen"
+    );
+    let german = terminal_session("de-DE");
+    let stop = keywords(&german, "stop");
+    for word in ["abbrechen", "strg+c"] {
+        assert!(
+            stop.iter().any(|said| said == word),
+            "{word} findet Anhalten: {stop:?}"
+        );
+    }
+    assert!(
+        keywords(&german, "paste")
+            .iter()
+            .any(|said| said == "einfügen"),
+        "einfügen findet Einfügen"
+    );
+}

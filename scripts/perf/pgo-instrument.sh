@@ -37,11 +37,11 @@ export LLVM_PROFILE_FILE="$PROFRAW/tilo-%p-%m.profraw"
 RUSTFLAGS="-C profile-generate=$PROFRAW $(grep -oE '\-C[[:space:]]+[^"]*' .cargo/config.toml | tr '\n' ' ')" \
 CARGO_TARGET_DIR="$BUILD" \
 run_in_env bash -c "cd $ROOT && cargo build --release \
-    -p tilo-session -p terminal -p file-explorer -p install"
+    -p tilo-session -p file-explorer -p install"
 
 echo
 echo "Instrumented binaries at $BUILD/release/:"
-ls -la "$BUILD/release/tilo-session" "$BUILD/release/terminal" \
+ls -la "$BUILD/release/tilo-session" \
        "$BUILD/release/file-explorer" "$BUILD/release/tilo-install" 2>&1 | head
 echo
 # LLVM_PROFILE_FILE was exported for this script only: a binary run from

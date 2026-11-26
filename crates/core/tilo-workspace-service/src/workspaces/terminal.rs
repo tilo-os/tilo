@@ -56,14 +56,17 @@ const RUN: &str = "run";
 const OPEN: &str = "open-terminal";
 /// A session record's action that stops the command line it is running.
 const STOP: &str = "stop";
+/// The resource a session's own actions are on: the Terminal package's session record type.
+const SESSION_RESOURCE: &str = "tl.so.tilo.terminal.Session";
+/// The key a Terminal session's record keeps where its shell runs under: the `target` field's id
+/// in the Terminal package's ids lock, which never changes once given.
+const SESSION_TARGET: &str = "fzio5css";
 /// The resource of the document the workspace's machine reads: the vault items its programs get.
-const SECRETS_RESOURCE: &str = "terminal.machine-secrets";
+const SECRETS_RESOURCE: &str = "tl.so.tilo.terminal.MachineSecrets";
 /// The document's action that names a vault item a program in the machine gets.
 const ADD_SECRET: &str = "add-secret";
 /// The document's action that takes an item back.
 const REMOVE_SECRET: &str = "remove-secret";
-/// The resource a session's own actions are on.
-const SESSION_RESOURCE: &str = "terminal.session";
 /// The session record's action that records a command that ended.
 const RECORD_COMMAND: &str = "record-command";
 /// The verbs of a session record's shell: what this device answers, and how it describes them to
@@ -177,16 +180,19 @@ impl TerminalService {
         let Ok(document) = automerge::Automerge::load(&bytes) else {
             return false;
         };
-        let Ok(Some((value, _))) = document.get(&automerge::ROOT, "target") else {
+        let Ok(Some((value, at))) = document.get(&automerge::ROOT, SESSION_TARGET) else {
             return false;
         };
-        let automerge::Value::Scalar(scalar) = value else {
-            return false;
-        };
-        let automerge::ScalarValue::Str(target) = scalar.as_ref() else {
-            return false;
-        };
-        names_the_host_shell(target)
+        match value {
+            automerge::Value::Scalar(scalar) => match scalar.as_ref() {
+                automerge::ScalarValue::Str(target) => names_the_host_shell(target),
+                _ => false,
+            },
+            automerge::Value::Object(automerge::ObjType::Text) => document
+                .text(&at)
+                .is_ok_and(|target| names_the_host_shell(&target)),
+            automerge::Value::Object(_) => false,
+        }
     }
 
     /// Start a session's shell on a terminal for `caller`'s device, then hand the stream over.
@@ -470,23 +476,12 @@ impl TerminalService {
         }
     }
 
-    /// Whether this computer is `workspace`'s machine: the workspace is the person's own, its
-    /// only people the person this device acts for. A workspace other people are members of
-    /// runs its programs in a VM on a host, never unconfined on someone's computer.
+    /// Whether this computer is `workspace`'s machine ([`Workspaces::runs_programs_here`]).
     async fn machine(&self, workspace: &str) -> Result<(), ActionCallError> {
-        let state = self.copies.workspace(workspace).await.map_err(|error| {
-            ActionCallError::Unavailable {
-                reason: format!("the workspace's people could not be read: {error}"),
-            }
-        })?;
-        // Whoever its governance has, this device's person among them; not the summary a
-        // listing shows, which leaves this host's own person out.
-        if state.lock().await.summary().people() > 1 {
-            return Err(ActionCallError::Refused {
-                reason: "this computer runs only its own person's workspace's programs".into(),
-            });
-        }
-        Ok(())
+        self.copies
+            .runs_programs_here(workspace)
+            .await
+            .map_err(|reason| ActionCallError::Refused { reason })
     }
 
     /// Run the app's `action` on the workspace's machine secrets document through the app's own
@@ -704,6 +699,13 @@ fn session_descriptor(action: &str) -> Option<ActionDescriptor> {
         locus: ExecutionLocus::default(),
         kind: OperationKind::Effect,
         contract: ActionContract {
+            // A terminal a program types into reaches beyond the workspace's records, as the
+            // Terminal package declared its open: the person is asked first.
+            kind: if action == OPEN {
+                tilo_actions::ActionKind::Outside
+            } else {
+                ActionContract::default().kind
+            },
             execution,
             result: ResultSpec::Json {
                 schema: json!({"type": ["object", "array", "null"]}),
@@ -1030,5 +1032,27 @@ impl TerminalService {
         let state = InvocationState::new(invocation, update);
         self.log.lock_recover().complete(&invocation, state.clone());
         state.receipt()
+    }
+}
+
+impl Workspaces {
+    /// Whether this computer runs `workspace`'s programs: the workspace is the person's own, its
+    /// only people the person this device acts for. A workspace other people are members of
+    /// runs its programs in a VM on a host, never unconfined on someone's computer.
+    ///
+    /// # Errors
+    ///
+    /// Why not, in words for the person who asked.
+    pub async fn runs_programs_here(&self, workspace: &str) -> Result<(), String> {
+        let state = self
+            .workspace(workspace)
+            .await
+            .map_err(|error| format!("the workspace's people could not be read: {error}"))?;
+        // Whoever its governance has, this device's person among them; not the summary a
+        // listing shows, which leaves this host's own person out.
+        if state.lock().await.summary().people() > 1 {
+            return Err("this computer runs only its own person's workspace's programs".into());
+        }
+        Ok(())
     }
 }

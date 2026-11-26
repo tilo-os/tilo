@@ -249,7 +249,7 @@ fn running(invocation: &str, command: &str) -> serde_json::Value {
 /// asked.
 #[test]
 fn an_agent_approved_without_the_terminal_runs_no_command() {
-    host::run_with_packages(&["chat"], &[("terminal", "terminal")], |host| async move {
+    host::run_with(&["chat", "terminal"], |host| async move {
         let host = host.as_ref();
         opens(host)
             .await
@@ -293,7 +293,7 @@ fn an_agent_approved_without_the_terminal_runs_no_command() {
 /// asks again.
 #[test]
 fn an_agents_command_asks_in_the_conversation_and_is_done_once_on_its_persons_answer() {
-    host::run_with_packages(&["chat"], &[("terminal", "terminal")], |host| async move {
+    host::run_with(&["chat", "terminal"], |host| async move {
         let host = host.as_ref();
         opens(host)
             .await
@@ -351,15 +351,16 @@ fn an_agents_command_asks_in_the_conversation_and_is_done_once_on_its_persons_an
 /// command is carried out unasked; taken back, the next command asks again.
 #[test]
 fn an_agent_allowed_to_execute_commands_does_unasked_until_its_person_takes_it_back() {
-    host::run_with_packages(&["chat"], &[("terminal", "terminal")], |host| async move {
+    host::run_with(&["chat", "terminal"], |host| async move {
         let host = host.as_ref();
         opens(host)
             .await
             .unwrap_or_else(|status| panic!("the person's desktop opens Chat: {status}"));
         make_scout(host).await;
-        // The person's Agents settings allow the assistant `terminal.session#run` in the
-        // workspace: the answer written to the workspace's governance, before its window.
-        let scope = AnswerScope::action(TERMINAL, "terminal.session", "run");
+        // The person's Agents settings allow the assistant
+        // `tl.so.tilo.terminal.Session#run` in the workspace: the answer written to the
+        // workspace's governance, before its window.
+        let scope = AnswerScope::action(TERMINAL, "tl.so.tilo.terminal.Session", "run");
         let allowed = answer(host, (&scope, ActionKind::Outside), Answer::Allow).await;
         let channel = made_channel(&host.agent(), CHANNEL).await;
         let scripted = scripted(
@@ -409,7 +410,7 @@ fn an_agent_allowed_to_execute_commands_does_unasked_until_its_person_takes_it_b
 /// in its reply; the person's next message is a turn of its own and is answered.
 #[test]
 fn on_the_servers_model_a_turn_that_failed_with_a_command_pending_lets_the_next_message_in() {
-    host::run_with_packages(&["chat"], &[("terminal", "terminal")], |host| async move {
+    host::run_with(&["chat", "terminal"], |host| async move {
         let host = host.as_ref();
         opens(host)
             .await
@@ -456,7 +457,7 @@ fn on_the_servers_model_a_turn_that_failed_with_a_command_pending_lets_the_next_
 /// asked record is refused by the system, and the command runs only on the person's answer.
 #[test]
 fn an_agents_own_answer_does_not_carry_its_command() {
-    host::run_with_packages(&["chat"], &[("terminal", "terminal")], |host| async move {
+    host::run_with(&["chat", "terminal"], |host| async move {
         let host = host.as_ref();
         opens(host)
             .await
@@ -505,7 +506,7 @@ fn an_agents_own_answer_does_not_carry_its_command() {
 /// of the actor who asked.
 #[test]
 fn a_commands_git_identity_is_the_agent_that_asked_as_the_workspace_names_it() {
-    host::run_with_packages(&["chat"], &[("terminal", "terminal")], |host| async move {
+    host::run_with(&["chat", "terminal"], |host| async move {
         let host = host.as_ref();
         opens(host)
             .await

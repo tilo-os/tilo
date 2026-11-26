@@ -34,7 +34,7 @@ fn genesis_of(bytes: &[u8]) -> Vec<automerge::ChangeHash> {
 fn a_members_terminal_on_a_fresh_tab_gets_its_shell() {
     // The device runs Terminal, so its host serves the workspace's shells and founds the tab's
     // session record.
-    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
+    host::run_with(&["terminal"], |host| async move {
         let workspace = host.workspace().to_owned();
         let laptop = host.member("laptop", &workspace).await;
 
@@ -55,7 +55,7 @@ fn a_members_terminal_on_a_fresh_tab_gets_its_shell() {
             .call(
                 &provider,
                 // What Terminal's session offers a device to open its shell on a terminal.
-                ActionAddress::new("terminal.session", "open-terminal"),
+                ActionAddress::new("tl.so.tilo.terminal.Session", "open-terminal"),
                 &json!({"cols": 100, "rows": 30}),
             )
             .await

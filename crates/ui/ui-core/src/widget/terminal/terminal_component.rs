@@ -9,7 +9,7 @@ use std::sync::Arc;
 
 use tilo_ui_base::{component::Component, component::Described, component::Event};
 
-use super::{Missing, Terminal};
+use super::{GridEvents, Missing, Terminal};
 
 /// A terminal's grid: what a running shell printed and the input that reaches it.
 ///
@@ -33,21 +33,34 @@ pub struct TerminalProps {
     pub copy_on_select: bool,
     /// Flash the grid when the program rings the bell.
     pub bell_flash: bool,
+    /// Let the program put text on the clipboard (OSC 52): off unless the person allowed it.
+    pub allow_clipboard: bool,
     /// The program set the window's title.
     #[component(event(value = String))]
     pub title: Event,
     /// A run the shell marked ended; carries it as JSON.
     #[component(event(value = String))]
     pub finished: Event,
-    /// The shell ended: carries "exited", its status, or why the connection was lost.
+    /// The shell exited: carries "exited", or its status.
     #[component(event(value = String))]
     pub exit: Event,
+    /// The connection to the shell was lost: carries why.
+    #[component(event(value = String))]
+    pub lost: Event,
     /// A selection was finished: carries the text it copied.
     #[component(event(value = String))]
     pub selected: Event,
     /// The bell rang.
     #[component(event(value = String))]
     pub rung: Event,
+    /// The shell asked for the lines its Up recalls: carries the ask as JSON, which the app
+    /// answers from the history it keeps.
+    #[component(event(value = String))]
+    pub history: Event,
+    /// The session's host holds the command at the prompt until someone acts: carries why as
+    /// JSON, and empty text once it let it go.
+    #[component(event(value = String))]
+    pub held: Event,
 }
 
 impl Described for Terminal {
@@ -59,22 +72,36 @@ impl Described for Terminal {
             label,
             copy_on_select,
             bell_flash,
+            allow_clipboard,
             title,
             finished,
             exit,
+            lost,
             selected,
             rung,
+            history,
+            held,
         } = props;
         let handle = crate::terminal::window_session(&session)
             .unwrap_or_else(|| Arc::new(Missing) as crate::terminal::SessionHandle);
         let mut view = Self::new(handle)
             .with_copy_on_select(copy_on_select)
-            .with_bell_flash(bell_flash);
+            .with_bell_flash(bell_flash)
+            .with_allow_clipboard(allow_clipboard);
         if let Some(keys) = tilo_ui_base::key_input::window_input(&session) {
             view.set_keys(keys);
         }
         view.session_id = session;
-        view.update_events(title, finished, exit, selected, rung);
+        view.update_events(GridEvents {
+            title,
+            finished,
+            exit,
+            lost,
+            selected,
+            rung,
+            history,
+            held,
+        });
         if let Some(label) = label {
             view = view.with_accessible_name(label);
         }
@@ -93,6 +120,9 @@ impl Described for Terminal {
             self.copy_on_select = props.copy_on_select;
             changed = true;
         }
+        if props.allow_clipboard != self.allow_clipboard {
+            self.set_allow_clipboard(props.allow_clipboard);
+        }
         if props.bell_flash != self.bell_flash {
             self.bell_flash = props.bell_flash;
             changed = true;
@@ -100,13 +130,16 @@ impl Described for Terminal {
         if let Some(label) = props.label {
             self.set_accessible_name(label);
         }
-        self.update_events(
-            props.title,
-            props.finished,
-            props.exit,
-            props.selected,
-            props.rung,
-        );
+        self.update_events(GridEvents {
+            title: props.title,
+            finished: props.finished,
+            exit: props.exit,
+            lost: props.lost,
+            selected: props.selected,
+            rung: props.rung,
+            history: props.history,
+            held: props.held,
+        });
         if changed {
             self.dirty = true;
         }

@@ -301,6 +301,7 @@ pub const BUILTINS: &[&str] = &[
     "open",
     "set",
     "blur",
+    "close",
     "resource",
     "preview_rows",
 ];

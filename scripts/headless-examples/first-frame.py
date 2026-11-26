@@ -52,7 +52,7 @@ import real_apps  # noqa: E402
 
 # The apps a person opens all day, and the budget their content may take from
 # the ask to the frame that shows it.
-APPS = ["chat", "terminal", "settings", "notes"]
+APPS = ["chat", "tasks", "settings", "notes"]
 BUDGET_MS = 1200
 DEADLINE = 60.0
 

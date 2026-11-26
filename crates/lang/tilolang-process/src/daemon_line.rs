@@ -40,9 +40,15 @@ pub fn keep(line: Descriptor) {
         let stream = std::os::unix::net::UnixStream::from(line);
         match LineClient::of_stream(stream) {
             Ok(client) => {
+                // The shells the app opens run at the device, which carries them on this line.
+                #[cfg(feature = "app-launch")]
+                let shells = shells_over(client.clone());
                 if self::line().set(client).is_err() {
                     tracing::warn!("the daemon handed this process a second line: it is dropped");
+                    return;
                 }
+                #[cfg(feature = "app-launch")]
+                tilo_terminal::ops::shells_run_at(shells);
             }
             Err(error) => tracing::error!(%error, "the daemon's line does not read"),
         }
@@ -168,4 +174,133 @@ pub fn presence_heard() -> Vec<collab_types::presence::Heard> {
             }
         })
         .collect()
+}
+
+/// The shells an app's own process opens: the device opens each in its shell runtime, if the
+/// app's signed manifest grants it shells, and carries it on this process's line. The process
+/// never reaches the runtime itself.
+#[cfg(feature = "app-launch")]
+struct Shells(LineClient);
+
+/// The shells an app's process opens at the device at the far end of `line`: what this process
+/// opens once the daemon handed it its line.
+#[cfg(feature = "app-launch")]
+#[must_use]
+pub fn shells_over(line: LineClient) -> std::sync::Arc<dyn tilo_terminal::ops::FarShells> {
+    std::sync::Arc::new(Shells(line))
+}
+
+#[cfg(feature = "app-launch")]
+impl tilo_terminal::ops::FarShells for Shells {
+    fn open(
+        &self,
+        open: &tilo_terminal::ops::FarOpen<'_>,
+    ) -> Result<tilo_terminal::FarSide, String> {
+        use std::sync::{Arc, Mutex};
+        use tilo_actions::remote::shell::ShellOpen;
+        let line = self.0.clone();
+        let (opened, heard) = line
+            .open_shell(ShellOpen {
+                target: open.target.clone(),
+                cols: open.columns,
+                rows: open.rows,
+                agent: open.agent,
+                command: open.program.to_vec(),
+                relay_session: open.relay_session.map(str::to_owned),
+                record: open.record.map(str::to_owned),
+                commands: Some(open.commands.clone()),
+            })
+            .map_err(|error| match error {
+                ActionCallError::Refused { reason } | ActionCallError::Unavailable { reason } => {
+                    reason
+                }
+                other => other.to_string(),
+            })?;
+        let shell = opened.shell;
+        let ended = Arc::new(Mutex::new(None));
+        let (resizing, closing) = (line.clone(), line.clone());
+        Ok(tilo_terminal::FarSide {
+            writer: Box::new(Typed { line, shell }),
+            reader: Box::new(Printed {
+                heard,
+                ended: Arc::clone(&ended),
+                pending: Vec::new(),
+                at: 0,
+            }),
+            resize: Box::new(move |cols, rows| {
+                let _ = resizing.resize_shell(shell, cols, rows);
+            }),
+            close: Box::new(move || {
+                let _ = closing.close_shell(shell);
+            }),
+            shell_name: opened.name,
+            ended,
+            relay_session: opened.relay_session,
+            commands: opened.commands.then(|| open.commands.clone()),
+        })
+    }
+}
+
+/// What the grid types into a shell the device carries.
+#[cfg(feature = "app-launch")]
+struct Typed {
+    line: LineClient,
+    shell: u64,
+}
+
+#[cfg(feature = "app-launch")]
+impl std::io::Write for Typed {
+    fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+        self.line
+            .type_into_shell(self.shell, bytes)
+            .map_err(|error| {
+                std::io::Error::new(std::io::ErrorKind::BrokenPipe, error.to_string())
+            })?;
+        Ok(bytes.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+/// What a shell the device carries printed, until it ended: its end is told before its output
+/// stops, so a lost one is never taken for a shell that exited.
+#[cfg(feature = "app-launch")]
+struct Printed {
+    heard: std::sync::mpsc::Receiver<tilo_action_services::ShellHeard>,
+    ended: std::sync::Arc<std::sync::Mutex<Option<tilo_terminal::SessionEnd>>>,
+    pending: Vec<u8>,
+    at: usize,
+}
+
+#[cfg(feature = "app-launch")]
+impl std::io::Read for Printed {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        use tilo_action_services::ShellHeard;
+        while self.at >= self.pending.len() {
+            match self.heard.recv() {
+                Ok(ShellHeard::Output(bytes)) => {
+                    self.pending = bytes;
+                    self.at = 0;
+                }
+                Ok(ShellHeard::Ended(report)) => {
+                    if !report.is_empty() {
+                        *self
+                            .ended
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner) =
+                            Some(tilo_terminal::SessionEnd::from_report(report.as_bytes()));
+                    }
+                    return Ok(0);
+                }
+                // Let go here: the session closed it.
+                Err(_) => return Ok(0),
+            }
+        }
+        let taken = (self.pending.len() - self.at).min(buffer.len());
+        buffer[..taken].copy_from_slice(&self.pending[self.at..self.at + taken]);
+        self.at += taken;
+        Ok(taken)
+    }
 }

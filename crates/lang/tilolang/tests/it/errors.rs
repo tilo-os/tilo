@@ -442,7 +442,7 @@ tilo_test_env::scenario! {
         let task = "type Task {\n    title: Text\n}\n\
 action add(t: Task, title: Text = \"\") {\n    t.title = title\n}\n\
 action twice(t: Task, one: Text = \"\", two: Text = \"\") {\n    t.title = one + two\n}\n\
-action close(t: Task) {\n    t.title = \"x\"\n}\n\
+action finish(t: Task) {\n    t.title = \"x\"\n}\n\
 view places<T>(t: T, entry: Option<Action> = .none) {\n    if let create = entry {\n        std.add_entry(\"x\", create)\n    }\n}\n\
 view card<T>(t: T, on_confirm: Option<Action> = .none) {\n    if let confirm = on_confirm {\n        ui.Button(\"Go\") {\n            on press: confirm\n        }\n    }\n}\n";
         let entry = |made: &str| {
@@ -456,7 +456,7 @@ view card<T>(t: T, on_confirm: Option<Action> = .none) {\n    if let confirm = o
             "the action's one `Text` parameter is what the words nothing else takes fill"
         );
         assert_eq!(
-            entry("close(t)"),
+            entry("finish(t)"),
             ["E068"],
             "an action with no `Text` parameter has nothing for an entry to fill"
         );
@@ -470,7 +470,7 @@ view card<T>(t: T, on_confirm: Option<Action> = .none) {\n    if let confirm = o
                 "{task}view home(t: Task) {{\n    card(t, on_confirm: .some({made}))\n}}\n"
             ))
         };
-        for made in ["close(t)", "twice(t)", "add(t)"] {
+        for made in ["finish(t)", "twice(t)", "add(t)"] {
             assert_eq!(
                 callback(made),
                 Vec::<String>::new(),

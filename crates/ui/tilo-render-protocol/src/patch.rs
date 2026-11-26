@@ -693,6 +693,9 @@ pub enum ToUi {
     /// test id, `None` ends its place in an editor (the `blur()` a view applies), as closing the
     /// editor does. The window answers through the same focus request a widget builds with.
     Focus { key: Option<String> },
+    /// The app closes its window (the `close()` a view applies, as a terminal whose shell exited
+    /// does): it goes as the person closing it does.
+    CloseWindow,
 }
 
 /// Which of a person's pictures a call tile shows.

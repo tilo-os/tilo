@@ -156,6 +156,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // Answered here, the caller reads the refusal at once instead of after a launch.
         if below_app(&parsed).is_empty()
             && !starts_app(&action)
+            && !self.on_workspace_shell(&parsed, &action)
             && let Ok(AppRef::Installed { app_id, .. }) = self.tree.app_ref(&app_of(&parsed)).await
             && self.declares_action(&app_id, &action).await == Some(false)
         {

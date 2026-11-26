@@ -824,7 +824,7 @@ fn a_read_of_the_record_discloses_it_to_agents_and_a_private_view_does_not() {
         runtime_collab::ActionDirectoryRow {
             parent_resource: String::new(),
             resource: "session".into(),
-            resource_kind: "terminal.session".into(),
+            resource_kind: "tl.so.tilo.terminal.Session".into(),
             resource_label: "Terminal".into(),
             presentation: None,
             action: None,

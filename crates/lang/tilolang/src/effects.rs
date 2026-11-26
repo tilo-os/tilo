@@ -40,6 +40,10 @@ pub enum Effect {
     /// observed is the host's, which no replay can compute again. An action that runs one is the
     /// app's `run-approved-check`, and runs as a job its invoker can follow and stop.
     Check,
+    /// A shell the device's shell runtime runs, which the device opens for the app on its own
+    /// connection: what the app's package declares it may open (`shells`), and what a replay
+    /// cannot open again.
+    Shell,
 }
 
 impl Effect {
@@ -54,6 +58,7 @@ impl Effect {
         Self::Files,
         Self::Secret,
         Self::Check,
+        Self::Shell,
     ];
 
     pub const fn word(self) -> &'static str {
@@ -68,6 +73,7 @@ impl Effect {
             Self::Files => "files",
             Self::Secret => "secret",
             Self::Check => "check",
+            Self::Shell => "shell",
         }
     }
 
@@ -83,6 +89,7 @@ impl Effect {
             Self::Files => "the files on this device",
             Self::Secret => "the code a vault item's seed makes now",
             Self::Check => "a check the project's host approved",
+            Self::Shell => "a shell on the workspace's machine",
         }
     }
 

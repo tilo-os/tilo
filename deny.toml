@@ -28,7 +28,6 @@ exclude = [
     "photos",
     "remote",
     "shortcuts",
-    "terminal",
 ]
 
 [advisories]

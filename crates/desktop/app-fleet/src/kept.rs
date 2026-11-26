@@ -91,10 +91,6 @@ pub const WORKSPACE_DOCUMENTS: &[WorkspaceDocument] = &[
     // The workspace's own emoji, which any view draws for `:name:`
     // (`tilo-workspace-emoji`).
     WorkspaceDocument::kept("so.tilo.chat", "tilo.workspace.emoji"),
-    // Which vault items the workspace's Linux machine hands the programs it
-    // starts, and in which variable: Terminal keeps it, and the server reads it
-    // when a program starts there (`tilo_environment::machine_secrets`).
-    WorkspaceDocument::kept("so.tilo.terminal", "terminal.machine-secrets"),
     WorkspaceDocument::kept("so.tilo.chat", "chat.skills"),
     // The workspace's agents: their names, colours, models and who added them,
     // which the workspace settings sheet, the apps and their devices all

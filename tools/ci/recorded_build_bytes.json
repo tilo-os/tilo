@@ -469,10 +469,6 @@
       "libraries": 2874300,
       "tests": 16849152
     },
-    "terminal": {
-      "libraries": 28861440,
-      "tests": 3234455120
-    },
     "test-app-registry": {
       "libraries": 0,
       "tests": 62325840

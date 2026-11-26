@@ -1,6 +1,6 @@
 //! The secrets a workspace's Linux machine hands the programs it starts: the items of the
-//! workspace's vault its machine secrets document names
-//! ([`tilo_environment::machine_secrets`]), each released for whoever starts the program.
+//! workspace's vault Terminal's machine secrets name (its `MachineSecret` records, which its
+//! `add_secret` and `remove_secret` change), each released for whoever starts the program.
 //!
 //! [`Workspaces::workspace_secret`] is the one place an item becomes its secret for the
 //! machine. Whether the one starting the program may read the workspace's vault is decided by
@@ -9,15 +9,20 @@
 //! hold is refused, and nothing is read from anywhere else.
 
 use accounts::vault_items::{ItemError, ItemId, UsedFor};
+use collab_types::store::Query;
 use tilo_action_services::environment_commands::VmSecret;
 use tilo_actions::remote::Caller;
-use tilo_environment::machine_secrets::{DOCUMENT, MachineSecrets};
-use tilo_resource::Resource as _;
 use tilo_workspace_records::vault::ItemRef;
 use zeroize::Zeroizing;
 
 /// What a use of an item for the machine is written down as.
 const USING: &str = "tilo.terminal/machine-secret";
+
+/// Terminal's record naming a vault item the machine's programs get, by its kind.
+const MACHINE_SECRET: &str = "tl.so.tilo.terminal.MachineSecret";
+
+/// How many records one page of the store's query holds: every page is read.
+const PAGE: usize = 256;
 
 impl crate::PersonServices {
     /// The variables a program `by` starts in `workspace`'s machine gets, each with its secret:
@@ -25,34 +30,32 @@ impl crate::PersonServices {
     ///
     /// # Errors
     ///
-    /// The document cannot be read, `by` may not read the workspace's vault, or the vault does
-    /// not hold an item the document names: the program is not started without it.
+    /// The records cannot be read, `by` may not read the workspace's vault, or the vault does
+    /// not hold an item a record names: the program is not started without it.
     pub async fn machine_secrets(
         &self,
         workspace: &str,
         by: &Caller,
     ) -> Result<Vec<VmSecret>, String> {
-        let Some(saved) = self
-            .resource_document(workspace, tilo_app_id::apps::TERMINAL, DOCUMENT)
-            .await
-            .map_err(|error| error.to_string())?
-        else {
-            return Ok(Vec::new());
-        };
-        let doc = automerge::AutoCommit::load(&saved).map_err(|error| error.to_string())?;
-        let named = MachineSecrets::read(&doc).map_err(|error| error.to_string())?;
-        let mut secrets = Vec::with_capacity(named.secrets.len());
-        for secret in named.secrets {
-            let item =
-                ItemRef::parse(&secret.item).ok_or_else(|| ItemError::NotFound.to_string())?;
+        let named = self
+            .store_found(workspace, Query::of(MACHINE_SECRET, PAGE))
+            .await?;
+        let mut secrets = Vec::with_capacity(named.len());
+        for (_, held) in named {
+            let text = |field: &str| held.scalar(field).as_text().map(str::to_owned);
+            let (Some(variable), Some(item)) = (text("variable"), text("item")) else {
+                continue;
+            };
+            let item = ItemRef::parse(&item).ok_or_else(|| ItemError::NotFound.to_string())?;
             let value = self
-                .workspace_secret(workspace, &item, by, &secret.variable)
+                .workspace_secret(workspace, &item, by, &variable)
                 .await?;
             secrets.push(VmSecret {
-                variable: secret.variable,
+                variable,
                 value: value.to_string(),
             });
         }
+        secrets.sort_by(|a, b| a.variable.cmp(&b.variable));
         Ok(secrets)
     }
 

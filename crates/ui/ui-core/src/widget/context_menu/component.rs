@@ -5,8 +5,9 @@ use tilo_ui_base::icons::Icon;
 use tilo_ui_base::text_render::FontChoice;
 use tilo_ui_base::widget::Press;
 use tilo_ui_base::{
-    component::Component, component::Described, component::Event, component::OfferedAction,
-    component::PartItem, component::Person, component::ResourceId, component::Source,
+    component::Bound, component::Component, component::Described, component::Event,
+    component::OfferedAction, component::PartItem, component::Person, component::ResourceId,
+    component::Source, component::Value,
 };
 
 use super::{MenuButton, MenuItem};
@@ -27,6 +28,10 @@ pub struct MenuItemProps {
     pub destructive: bool,
     /// Whether it is the one chosen now, in a menu of choices (a sort order).
     pub checked: Option<bool>,
+    /// A setting it turns on and off (`bind: prefs.copy_on_select`): the row is checked while it
+    /// is on, and choosing it flips it, as a checkbox bound to it would.
+    #[component(bind)]
+    pub value: Bound<bool>,
     /// It cannot run now (a `require` of its action does not hold). It is listed all
     /// the same, drawn as unavailable, and says `description`.
     pub disabled: bool,
@@ -65,6 +70,18 @@ fn family_face(family: &str) -> FontChoice {
 }
 
 impl MenuItemProps {
+    /// What choosing the row does: its event, else flipping the setting it is bound to, else
+    /// the address it leads to. A row bound to a setting shows it as its check.
+    pub fn press(&mut self) -> Press {
+        let choose = std::mem::take(&mut self.choose);
+        if let (Event::None, Some(edits)) = (&choose, self.value.edits.clone()) {
+            let on = self.value.state.get();
+            self.checked.get_or_insert(on);
+            return Press::editing(edits, Value::Bool(!on));
+        }
+        Press::of(choose).leading_to(self.link.take())
+    }
+
     /// The command as a menu row: choosing it presses the action the view bound to it, or
     /// reports the view's own event.
     #[must_use]
@@ -72,7 +89,7 @@ impl MenuItemProps {
         if self.separator {
             return MenuItem::separator();
         }
-        let press = Press::of(std::mem::take(&mut self.choose)).leading_to(self.link.take());
+        let press = self.press();
         let props = self;
         let item = MenuItem::bound(props.label, press).with_destructive(props.destructive);
         let item = match props.icon {
@@ -113,11 +130,15 @@ impl MenuItemProps {
         if self.separator {
             return MenuEntry::separator();
         }
-        let press = Press::of(std::mem::take(&mut self.choose)).leading_to(self.link.take());
+        let press = self.press();
         let props = self;
         let entry = MenuEntry::bound(props.label, press).with_destructive(props.destructive);
         let entry = match props.icon {
             Some(icon) => entry.with_icon(icon),
+            None => entry,
+        };
+        let entry = match props.checked {
+            Some(checked) => entry.with_checked(checked),
             None => entry,
         };
         let entry = entry.with_enabled(!props.disabled);
@@ -155,6 +176,7 @@ impl From<OfferedAction> for MenuItemProps {
             key: action.key,
             link: None,
             choose: action.run,
+            value: Bound::default(),
             separator: false,
             sample: None,
         }

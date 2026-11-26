@@ -11,7 +11,7 @@ use tilo_app_test_host::TestApp;
 /// The workspace the window is in.
 const WORKSPACE: &str = "2f0b8f0e-6a7c-4a83-9d4f-1f1f2b3c4d5e";
 
-/// The record's document, named as Terminal's machine secrets are.
+/// The record's document, named as a workspace record is.
 const SECRETS: &str = "uuid:587bfde5-3070-4a56-9b1b-bb5abd3a599b";
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
@@ -38,7 +38,7 @@ pub struct Secret {
 }
 
 #[resource(
-    kind = "terminal.machine-secrets",
+    kind = "test.workspace-secrets",
     app = "so.tilo.test-terminal",
     catalogue = "tests/locales"
 )]
@@ -86,7 +86,7 @@ fn record<'a>(
 fn the_workspace_records_verbs_are_published_beside_the_apps_own() {
     let mut app = TestApp::<Terminal>::in_workspace(WORKSPACE).unwrap();
     let resources = app.harness().resources();
-    let secrets = record(&resources, "terminal.machine-secrets")
+    let secrets = record(&resources, "test.workspace-secrets")
         .expect("the machine secrets record is published");
     let ids: Vec<&str> = secrets
         .actions
@@ -101,7 +101,7 @@ fn the_workspace_records_verbs_are_published_beside_the_apps_own() {
 fn a_members_change_through_the_published_action_reaches_the_record() {
     let mut app = TestApp::<Terminal>::in_workspace(WORKSPACE).unwrap();
     app.call_on(
-        "terminal.machine-secrets",
+        "test.workspace-secrets",
         "add-secret",
         serde_json::json!({
             "variable": "GITHUB_TOKEN",
@@ -116,7 +116,7 @@ fn a_members_change_through_the_published_action_reaches_the_record() {
 fn the_record_publishes_its_verbs_once_the_workspace_delivers_it() {
     let mut app = TestApp::<Terminal>::awaiting_the_workspace(WORKSPACE, Terminal::ID).unwrap();
     assert!(
-        record(&app.harness().resources(), "terminal.machine-secrets").is_none(),
+        record(&app.harness().resources(), "test.workspace-secrets").is_none(),
         "the workspace may hold it: the window opens without it"
     );
     app.workspace_delivers_record::<Secrets>(Terminal::ID, SECRETS, |_| Ok(()))
@@ -125,7 +125,7 @@ fn the_record_publishes_its_verbs_once_the_workspace_delivers_it() {
         app.frame();
     }
     let resources = app.harness().resources();
-    let secrets = record(&resources, "terminal.machine-secrets")
+    let secrets = record(&resources, "test.workspace-secrets")
         .expect("the record is published once the workspace delivers it");
     let ids: Vec<&str> = secrets
         .actions
@@ -135,7 +135,7 @@ fn the_record_publishes_its_verbs_once_the_workspace_delivers_it() {
     assert!(ids.contains(&"add-secret"), "{ids:?}");
     assert!(ids.contains(&"remove-secret"), "{ids:?}");
     app.call_on(
-        "terminal.machine-secrets",
+        "test.workspace-secrets",
         "add-secret",
         serde_json::json!({
             "variable": "GITHUB_TOKEN",

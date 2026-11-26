@@ -31,7 +31,7 @@ class MacosAppsTests(unittest.TestCase):
 
     def test_repository_has_macos_apps(self) -> None:
         # The Rust apps a macOS developer builds; the tilolang apps run in the runtime instead.
-        self.assertIn("terminal", macos_apps())
+        self.assertIn("messages", macos_apps())
 
 
 if __name__ == "__main__":

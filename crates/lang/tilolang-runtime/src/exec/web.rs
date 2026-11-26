@@ -60,6 +60,10 @@ impl Core {
                 self.ret_h(Value::Text(text))
             }
             Imp::Base64Decode => self.base64_decode(a),
+            Imp::TextBytes => {
+                let text = self.text(a.h(0)?)?;
+                self.ret_h(Value::Bytes(Rc::new(text.as_bytes().to_vec())))
+            }
             Imp::BytesLength => {
                 let n = match self.val(a.h(0)?)? {
                     Value::Bytes(bytes) => bytes.len(),

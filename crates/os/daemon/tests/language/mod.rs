@@ -68,7 +68,6 @@ mod import_rate;
 mod invocations;
 mod joining;
 mod keeping_pages;
-mod machine_secrets;
 mod migrate_engine;
 mod migrate_walk;
 mod migrate_window;

@@ -669,7 +669,7 @@ pub use {
     video_player::VideoPlayerProps,
 };
 pub mod terminal;
-pub use {terminal::Terminal, terminal::TerminalProps};
+pub use {terminal::GridEvents, terminal::Terminal, terminal::TerminalProps};
 pub mod webview;
 pub use {webview::WebView, webview::WebViewProps};
 pub mod image_viewer;

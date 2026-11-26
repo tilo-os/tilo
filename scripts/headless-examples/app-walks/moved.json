@@ -524,8 +524,8 @@
     "test": "crates/lang/tilolang-process/tests/window/hosted/history_undo.rs:130"
   },
   "so.tilo.terminal tilo.ui.control#activate": {
-    "to": "so.tilo.terminal terminal.session#restart",
-    "test": "apps/terminal/src/chrome_tests.rs:48"
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#restart",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:325"
   },
   "so.tilo.tube tube.library#open-creator": {
     "to": "so.tilo.tube tl.so.tilo.tube.Channel#open",
@@ -693,5 +693,198 @@
     "to": "so.tilo.settings.sections settings/apps/so.tilo.osk#forget-learned",
     "description": "forgetting what typing taught, keeping the personalization choice",
     "test": "crates/desktop/settings-sections/src/osk.rs:360"
+  },
+  "so.tilo.terminal terminal.session#activate-window": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal#activate-window",
+    "test": "crates/lang/tilolang-process/tests/process.rs:775"
+  },
+  "so.tilo.terminal terminal.session#apply": {
+    "to": "tilo.invocations workspace.invocations#resolve",
+    "test": "crates/core/actions/tests/asked_resolve.rs:362"
+  },
+  "so.tilo.terminal terminal.session#checkpoint": {
+    "to": "so.tilo.activity activity.window#checkpoint",
+    "test": "crates/sdk/tilo-app/src/framework/root/tests.rs:55"
+  },
+  "so.tilo.terminal terminal.session#claim-pane": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#attach",
+    "description": "a window attaches to its session, which keeps where its shell runs",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:305"
+  },
+  "so.tilo.terminal terminal.session#clear": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#clear",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:407"
+  },
+  "so.tilo.terminal terminal.session#copy-selection": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#copy_visible",
+    "description": "Ctrl+Shift+C and the grid's context menu copy the selection; the window copies what it shows",
+    "test": "crates/ui/ui-core/src/widget/terminal_tests.rs:282"
+  },
+  "so.tilo.terminal terminal.session#copy-visible": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#copy_visible",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:503"
+  },
+  "so.tilo.terminal terminal.session#create-environment": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#create_environment",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:341"
+  },
+  "so.tilo.terminal terminal.session#diff": {
+    "to": "so.tilo.activity activity.window#diff",
+    "test": "crates/sdk/tilo-app/src/framework/root/tests.rs:57"
+  },
+  "so.tilo.terminal terminal.session#field-edit": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Terminal#set_copy_on_select",
+    "description": "each person's preferences are set by their own actions",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:536"
+  },
+  "so.tilo.terminal terminal.session#grant-folder": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#grant_folder",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:341"
+  },
+  "so.tilo.terminal terminal.session#group": {
+    "to": "tilo.invocations workspace.invocations#resolve",
+    "test": "crates/core/actions/tests/asked_resolve.rs:362"
+  },
+  "so.tilo.terminal terminal.session#history": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal#history",
+    "test": "crates/core/collab-types/src/history/verbs.rs:2077"
+  },
+  "so.tilo.terminal terminal.session#history-live": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#recall",
+    "description": "Up recalls the person's own history, newest first",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:375"
+  },
+  "so.tilo.terminal terminal.session#history-top": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#recall",
+    "description": "Up recalls the person's own history, newest first",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:375"
+  },
+  "so.tilo.terminal terminal.session#inspect-editor": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#inspect_editor",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:459"
+  },
+  "so.tilo.terminal terminal.session#inspect-session": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#inspect_session",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:305"
+  },
+  "so.tilo.terminal terminal.session#interrupt": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#interrupt",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:407"
+  },
+  "so.tilo.terminal terminal.session#open": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#attach",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:305"
+  },
+  "so.tilo.terminal terminal.session#open-in": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#open_in",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:341"
+  },
+  "so.tilo.terminal terminal.session#open-link": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#open_link",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:554"
+  },
+  "so.tilo.terminal terminal.session#open-terminal": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Terminal#open_terminal",
+    "test": "crates/os/daemon/tests/language/hosted_terminal_fresh_tab.rs:53"
+  },
+  "so.tilo.terminal terminal.session#outline": {
+    "to": "so.tilo.session desktop.window#read",
+    "test": "crates/desktop/session/src/window_share/tests.rs:973"
+  },
+  "so.tilo.terminal terminal.session#paste": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#paste",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:407"
+  },
+  "so.tilo.terminal terminal.session#paste-primary": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#paste",
+    "description": "a middle click pastes the primary selection in the grid",
+    "test": "crates/ui/ui-core/src/widget/terminal_tests.rs:282"
+  },
+  "so.tilo.terminal terminal.session#read": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal#read",
+    "test": "crates/lang/tilolang-process/tests/process.rs:774"
+  },
+  "so.tilo.terminal terminal.session#read-screen": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#read_screen",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:305"
+  },
+  "so.tilo.terminal terminal.session#record-command": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Terminal#record_command",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:595"
+  },
+  "so.tilo.terminal terminal.session#record-relay-session": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#open_shell",
+    "description": "a session keeps its relay session when its shell opens",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:325"
+  },
+  "so.tilo.terminal terminal.session#record-target": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#open_in",
+    "description": "moving a session records where it runs",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:341"
+  },
+  "so.tilo.terminal terminal.session#redo": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal#redo",
+    "test": "crates/lang/tilolang-process/tests/process.rs:732"
+  },
+  "so.tilo.terminal terminal.session#rename-environment": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#rename_environment",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:341"
+  },
+  "so.tilo.terminal terminal.session#render": {
+    "to": "so.tilo.session desktop.window#look",
+    "test": "crates/desktop/session/src/window_share/tests.rs:987"
+  },
+  "so.tilo.terminal terminal.session#replace-editor-selection": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#replace_editor_selection",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:459"
+  },
+  "so.tilo.terminal terminal.session#rerun": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#rerun",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:407"
+  },
+  "so.tilo.terminal terminal.session#rerun-test": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#rerun_test",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:407"
+  },
+  "so.tilo.terminal terminal.session#restart": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#restart",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:325"
+  },
+  "so.tilo.terminal terminal.session#restore": {
+    "to": "so.tilo.history workspace.activity#restore",
+    "test": "crates/desktop/session/src/activity.rs:1876"
+  },
+  "so.tilo.terminal terminal.session#restore-reviewed": {
+    "to": "so.tilo.activity activity.window#restore-reviewed",
+    "test": "crates/sdk/tilo-app/src/framework/root/tests.rs:53"
+  },
+  "so.tilo.terminal terminal.session#review-restore": {
+    "to": "so.tilo.activity activity.window#review-restore",
+    "test": "crates/sdk/tilo-app/src/framework/root/tests.rs:54"
+  },
+  "so.tilo.terminal terminal.session#run": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Terminal#run",
+    "test": "crates/os/daemon/tests/language/agent_terminal.rs:17"
+  },
+  "so.tilo.terminal terminal.session#select-all": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#copy_visible",
+    "description": "the grid selects by drag and Ctrl+Shift+A; the window copies what it shows",
+    "test": "crates/ui/ui-core/src/widget/terminal_tests.rs:282"
+  },
+  "so.tilo.terminal terminal.session#send": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Session#send",
+    "test": "crates/lang/tilolang-runtime/tests/e2e_terminal.rs:407"
+  },
+  "so.tilo.terminal terminal.session#share-link": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal#share-link",
+    "test": "crates/lang/tilolang-service/tests/share.rs:235"
+  },
+  "so.tilo.terminal terminal.session#stop": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal.Terminal#stop",
+    "test": "crates/os/daemon/tests/language/agent_terminal.rs:88"
+  },
+  "so.tilo.terminal terminal.session#undo": {
+    "to": "so.tilo.terminal tl.so.tilo.terminal#undo",
+    "test": "crates/lang/tilolang-process/tests/window/hosted/history_undo.rs:130"
   }
 }

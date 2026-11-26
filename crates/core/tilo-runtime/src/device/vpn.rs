@@ -372,7 +372,8 @@ impl Allowed {
         };
         let person = self.0.person;
         let record = super::workspaces::block_on_owned(async move {
-            tilo_workspace_service::workspaces::person_workspace::devices::of(&copies, &person).await
+            tilo_workspace_service::workspaces::person_workspace::devices::of(&copies, &person)
+                .await
         });
         let now = tilo_clock::unix_now_ns();
         record

@@ -490,12 +490,13 @@ that workspace environment's own, never in a guest sharing the host's kernel
   This holds where the server runs its workspaces' shells itself; where their
   machines are on VM hosts, the hosts do not carry these connections back yet.
 - **Secrets:** a workspace hands items of its vault to the programs its VM
-  starts through one Terminal document, its machine secrets
-  (`tilo_environment::machine_secrets`): each names a vault item by its
-  reference and the variable it arrives in (`GITHUB_TOKEN`), and
-  members change it with `add-secret` and `remove-secret` as the workspace's
+  starts through Terminal's machine secrets (`MachineSecret` records under its
+  `MachineSecrets` root, read by
+  `tilo_workspace_service::workspaces::machine_secrets`): each names a vault
+  item by its reference and the variable it arrives in (`GITHUB_TOKEN`), and
+  members change them with `add_secret` and `remove_secret` as the workspace's
   policy lets them. When a command, a terminal session or another program
-  starts in the VM, the server reads the document once and releases each item
+  starts in the VM, the server reads the records once and releases each item
   for whoever started it, as the workspace's policy lets them read its vault;
   an item the vault does not hold stops the start with "That item is not kept
   here". The values go only into the environment of the programs started in
@@ -565,9 +566,9 @@ workspaces makes the member ask again and again.
 
 ## Terminal
 
-`terminal.session` gains `target: Target` (`Host | Environment { record } |
-LinuxVm { vm }`). A new tab picks its target (default: the most recently used
-environment); the tab shows a target chip; a session's target is part of its
+A Terminal session has a `target` (`host`, `environment:<record>` or
+`linux-vm:<vm>`). A new window picks its target (default: the most recently used
+environment); the window shows a target chip; a session's target is part of its
 synced state, so reopening it on another device re-attaches to the same place
 where possible.
 

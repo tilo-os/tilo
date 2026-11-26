@@ -27,6 +27,10 @@ action hold(r: Run, text: Text) {
     r.output = Bytes.from_base64(text)
 }
 
+action printed_text(r: Run, text: Text) {
+    r.output = Bytes.from_text(text)
+}
+
 action clear(r: Run) {
     r.output = Bytes.from_base64("")
 }
@@ -242,6 +246,20 @@ view printed(r: Run) {
             assert!(
                 drawn.contains("It printed 5 bytes"),
                 "the view reads the bytes' length: {drawn}"
+            );
+
+            // What a run printed, kept as the bytes the text is.
+            rt.invoke_action(
+                &me(),
+                (
+                    app.action("printed_text").as_str(),
+                    vec![Value::resource(&run), Value::text("café\n")],
+                ),
+            )
+            .unwrap();
+            assert_eq!(
+                rt.read(&run, "output").unwrap(),
+                Value::Bytes(Rc::new("café\n".as_bytes().to_vec()))
             );
 
             rt.invoke_action(&me(), (app.action("clear").as_str(), vec![Value::resource(&run)]))

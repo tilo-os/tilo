@@ -631,3 +631,35 @@ tilo_test_env::scenario! {
         assert_eq!(codes(named), ["E022"]);
     }
 }
+
+tilo_test_env::scenario! {
+    /// `uses shell`: a command a shell runs changes the machine, where no Undo reaches, so a
+    /// destructive action that opens one reaches outside and its person is asked before an
+    /// agent's runs; opening a shell to show it changes only the session.
+    fn a_destructive_action_that_opens_a_shell_reaches_outside;
+
+    phase each_shell_action_is_classed_by_what_it_does;
+    {
+        let src = "type S {\n    shell: Text\n}\n\
+            action show(s: S) uses shell {\n    s.shell = \"open\"\n}\n\
+            destructive action run(s: S, command: Text) uses shell {\n    s.shell = command\n}\n\
+            destructive action again(s: S) {\n    run(s, \"again\")\n}\n\
+            destructive action clear(s: S) {\n    s.shell = \"\"\n}\n";
+        assert_eq!(codes(src), Vec::<String>::new());
+        let compiled = crate::common::compile_body(src);
+        let class = |name: &str| {
+            compiled
+                .meta
+                .actions
+                .iter()
+                .find(|action| action.name == name)
+                .unwrap_or_else(|| panic!("the action {name}"))
+                .class
+        };
+        use tilolang::types::EffectClass;
+        assert_eq!(class("run"), EffectClass::Outside, "a command runs on the machine");
+        assert_eq!(class("again"), EffectClass::Outside, "it runs one through `run`");
+        assert_eq!(class("show"), EffectClass::Undoable, "opening a shell changes the session");
+        assert_eq!(class("clear"), EffectClass::Undoable, "no shell, nothing outside");
+    }
+}

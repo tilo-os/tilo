@@ -13,7 +13,7 @@ commands that need one.
 
 ## The problem it solves
 
-`apps/terminal` cannot `exec` `$SHELL`. Inside a Tilo app sandbox that fails
+Terminal cannot `exec` `$SHELL`. Inside a Tilo app sandbox that fails
 with `ENOENT`: [`launcher::profile`](../../crates/core/launcher/src/profile.rs)
 binds the loader, fonts, `/sys` and the CA bundle, and deliberately binds no
 executable directory. Adding `/usr/bin` to the system read profile would hand
@@ -173,7 +173,8 @@ execs the guest. Proven in `seccomp.rs::the_kernel_enforces_the_filter`, which
 installs the filter in a forked child and calls `unshare(CLONE_NEWUSER)`.
 
 **An app** cannot reach the runtime by executing it: it has neither the syscalls
-nor a path to the binary. `apps/terminal` asks the supervisor over the `ush`
+nor a path to the binary. Terminal's engine (`crates/engines/tilo-terminal`) asks
+the supervisor over the `ush`
 service socket for a target and receives a pty master over `SCM_RIGHTS`. What
 crosses the boundary is a terminal, not a namespace.
 
@@ -516,7 +517,7 @@ same environment in ush's shell.
 ## Command runs
 
 Terminal records what a session **ran**, not what its screen showed. A
-session is a record of its own (`terminal.session`); opening Terminal starts a
+session is a record of its own (a `Session`); opening Terminal starts a
 new one (each window the launcher opens has a record of its own, and a new
 terminal opened in a window is a new record), and reopening a window returns
 to its session. The screen, the scrollback and

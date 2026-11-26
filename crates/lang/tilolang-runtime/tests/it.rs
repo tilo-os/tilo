@@ -122,6 +122,8 @@ mod e2e_speed_test;
 mod e2e_std;
 #[path = "e2e_stream.rs"]
 mod e2e_stream;
+#[path = "e2e_terminal.rs"]
+mod e2e_terminal;
 #[path = "e2e_todo.rs"]
 mod e2e_todo;
 #[path = "e2e_tool_context.rs"]

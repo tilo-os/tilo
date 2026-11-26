@@ -183,6 +183,13 @@ pub struct FarSide {
     pub close: Box<dyn Fn() + Send + Sync>,
     /// The program at the far prompt, when its name is known.
     pub shell_name: String,
+    /// How the far end said the session ended, written before its output ends: a connection
+    /// lost is then never taken for a shell that exited.
+    pub ended: std::sync::Arc<Mutex<Option<SessionEnd>>>,
+    /// The hosted session the far end is, to come back to.
+    pub relay_session: Option<String>,
+    /// The key the far shell marks its command lines with, when it marks them.
+    pub commands: Option<String>,
 }
 
 /// One open terminal session.
@@ -194,7 +201,7 @@ pub struct Session {
     pub(crate) shell_name: String,
     /// How the far side said the session ended, before its stream closed: a connection lost,
     /// never a shell that exited.
-    reported_end: Mutex<Option<SessionEnd>>,
+    reported_end: std::sync::Arc<Mutex<Option<SessionEnd>>>,
     /// What closing the session tells the far side.
     on_close: Option<Box<dyn Fn() + Send + Sync>>,
     /// The session on another device this one relays, when it was carried.
@@ -285,6 +292,9 @@ impl Session {
             resize,
             close,
             shell_name,
+            ended,
+            relay_session,
+            commands,
         } = far;
         let mut session = Self::from_parts(
             writer,
@@ -293,6 +303,9 @@ impl Session {
             shell_name,
         );
         session.on_close = Some(close);
+        session.reported_end = ended;
+        session.relayed = relay_session;
+        session.commands = commands;
         session
     }
 
@@ -329,7 +342,7 @@ impl Session {
             commands,
             editor: Mutex::new(editor),
             lease: Mutex::new(lease),
-            reported_end: Mutex::new(None),
+            reported_end: std::sync::Arc::default(),
             on_close: None,
             closed: AtomicBool::new(false),
         }
@@ -352,7 +365,7 @@ impl Session {
             commands: None,
             editor: Mutex::new(None),
             lease: Mutex::new(None),
-            reported_end: Mutex::new(None),
+            reported_end: std::sync::Arc::default(),
             on_close: None,
             closed: AtomicBool::new(false),
         }

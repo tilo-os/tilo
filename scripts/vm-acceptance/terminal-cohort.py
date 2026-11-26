@@ -26,7 +26,7 @@ def terminal_actions(vm):
 
 def terminal_rows(rows):
     return [r for r in rows if r.get("app_id") == APP
-            and r["action"].get("semantic_identity") == {"kind": "terminal.session", "key": "terminal.session"}]
+            and (r["action"].get("semantic_identity") or {}).get("kind", "").endswith("terminal.Session")]
 
 
 def select(rows, operation, bound=None):

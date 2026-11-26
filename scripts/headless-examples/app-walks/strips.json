@@ -3,7 +3,7 @@
   "said": "Strips: more room for more work",
   "family": "shell",
   "live": "tl",
-  "apps": "terminal",
+  "apps": "",
   "packages": [
     "files",
     "chat",

@@ -4,8 +4,8 @@ PartOf=tilo-graphical-session.target
 # Every packaged app that declares `ush = "required@<v>"` in its manifest is
 # refused at launch when this socket is absent — tilo-launcher's
 # resolve_service_binds returns RequiredMissing rather than starting an app
-# whose shell would be unconfined. apps/terminal declares exactly that, so
-# without this unit the Terminal cannot start at all.
+# whose shell would be unconfined. Terminal's engine asks it for every shell,
+# so without this unit Terminal opens none.
 #
 # Socket-activated: the endpoint exists before an app can launch while the
 # supervisor process, store discovery, and guest machinery stay off the login

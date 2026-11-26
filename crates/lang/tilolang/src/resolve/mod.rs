@@ -647,6 +647,7 @@ impl Env {
                 export: a.export.clone(),
                 did: a.did.clone(),
                 did_many: a.did_many.clone(),
+                keywords: a.keywords.clone(),
                 search: a.search.clone(),
                 opens: a.opens.clone(),
                 shows: a.shows.clone(),
@@ -2479,6 +2480,7 @@ impl Resolver<'_> {
             export: None,
             did: None,
             did_many: None,
+            keywords: Vec::new(),
             search: None,
             opens: Vec::new(),
             shows: Vec::new(),
@@ -2619,6 +2621,27 @@ impl Resolver<'_> {
                         "`did_many:` takes words in quotes, with `{count}` where the number goes: `did_many: \"moved {count} tasks\"`",
                     ),
                 },
+                // `keywords: ["interrupt", "ctrl+c"]`: other words the system's search finds the
+                // action by, each in quotes.
+                ("keywords", ExprKind::List(items)) => {
+                    let words: Vec<String> = items.iter().filter_map(plain_text).collect();
+                    if words.len() == items.len()
+                        && words.iter().all(|word| !word.trim().is_empty() && !word.contains(','))
+                    {
+                        out.keywords = words;
+                    } else {
+                        self.err(
+                            "E090",
+                            opt.value.span,
+                            "`keywords:` takes words in quotes, without commas: `keywords: [\"interrupt\", \"ctrl+c\"]`",
+                        );
+                    }
+                }
+                ("keywords", _) => self.err(
+                    "E090",
+                    opt.value.span,
+                    "`keywords:` takes a list of words in quotes: `keywords: [\"interrupt\", \"ctrl+c\"]`",
+                ),
                 // `search: Found`: the action answers the system's search over its remote
                 // service, and the records of the type `Found` it writes are what the search
                 // places.
@@ -2702,7 +2725,7 @@ impl Resolver<'_> {
                 (other, _) => self.err(
                     "E090",
                     opt.name.span,
-                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `export:`, `did:`, `search:`, `opens:`, `shows:`, `takes:`, `settles:` and `field:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
+                    format!("an action takes the options `icon:`, `label:`, `on:`, `key:`, `group:`, `export:`, `did:`, `keywords:`, `search:`, `opens:`, `shows:`, `takes:`, `settles:` and `field:`; `{other}:` is not one. Mark the main action with `primary action` and a destructive one with `destructive action`"),
                 ),
             }
         }

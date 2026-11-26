@@ -56,8 +56,43 @@ pub fn call(op: &str, input: &str, opener: &dyn Opener) -> Result<String, String
                 .map(|()| "{}".to_owned())
                 .map_err(|error| error.to_string())
         }),
+        "paste" => with_live(&ask, |live| {
+            let bytes = crate::input::encode_paste(text(&ask)?, live.modes());
+            live.write(&bytes)
+                .map(|()| "{}".to_owned())
+                .map_err(|error| error.to_string())
+        }),
         "run" => with_live(&ask, |live| {
-            live.run(text(&ask)?)
+            live.run_as(text(&ask)?, agent(&ask))
+                .map(|()| "{}".to_owned())
+                .map_err(|error| error.to_string())
+        }),
+        "answer_history" => with_live(&ask, |live| {
+            let key = ask.get("key").and_then(Value::as_str).unwrap_or_default();
+            let count = |name: &str| {
+                ask.get(name)
+                    .and_then(Value::as_u64)
+                    .and_then(|count| usize::try_from(count).ok())
+                    .unwrap_or_default()
+            };
+            let asked = crate::commands::HistoryAsk {
+                skip: count("skip"),
+                limit: count("limit"),
+                matching: ask
+                    .get("matching")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_owned(),
+            };
+            let lines: Vec<String> = ask
+                .get("lines")
+                .and_then(Value::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(Value::as_str)
+                .map(str::to_owned)
+                .collect();
+            live.answer_history(key, &asked, &lines)
                 .map(|()| "{}".to_owned())
                 .map_err(|error| error.to_string())
         }),
@@ -92,11 +127,34 @@ pub fn call(op: &str, input: &str, opener: &dyn Opener) -> Result<String, String
             Ok(json!({
                 "shell": live.id(),
                 "shell_name": live.session().shell_name(),
-                "relay_session": live.session().relay_session(),
+                "relay_session": live.session().relay_session().unwrap_or_default(),
                 "ended": live.ended(),
                 "end": live.end().map(|end| format!("{end:?}")),
+                "allows_clipboard": live.allows_clipboard(),
             })
             .to_string())
+        }),
+        "inspect_editor" => with_live(&ask, |live| {
+            Ok(live
+                .editor()
+                .map_or_else(
+                    || json!({"available": false}),
+                    |snapshot| {
+                        json!({
+                            "available": true,
+                            "protocol": tilo_process::editor::VERSION,
+                            "lease": serde_json::to_string(&snapshot.lease).unwrap_or_default(),
+                            "can_undo": snapshot.can_undo,
+                            "can_redo": snapshot.can_redo,
+                        })
+                    },
+                )
+                .to_string())
+        }),
+        "replace_editor_selection" => with_live(&ask, |live| {
+            let lease = ask.get("lease").and_then(Value::as_str).unwrap_or_default();
+            live.replace_editor_selection(lease, text(&ask)?.to_owned())
+                .map(|()| "{}".to_owned())
         }),
         "read_screen" => with_live(&ask, |live| {
             let (text, truncated) = live.readable();
@@ -131,7 +189,7 @@ pub fn call(op: &str, input: &str, opener: &dyn Opener) -> Result<String, String
             Ok(json!({"command": again}).to_string())
         }
         "environments" => Ok(json!({
-            "available": environments_available(false),
+            "available": far_shells().is_some() || environments_available(false),
             "self_hosted": ush_binary().is_some(),
         })
         .to_string()),
@@ -152,7 +210,7 @@ pub fn start(op: &str, input: &str, _opener: &dyn Opener) -> Result<String, Stri
             let live = live_of(&ask)?;
             let command = text(&ask)?.to_owned();
             let job = crate::commands::new_key();
-            begin_run(&job, live, command);
+            begin_run(&job, live, command, agent(&ask));
             Ok(json!({ "job": job }).to_string())
         }
         other => Err(format!("`{other}` is no job this device starts")),
@@ -206,7 +264,7 @@ fn set_job(job: &str, value: Value) {
 }
 
 /// Wait for the run the shell marks next and answer with it, as the run's own record.
-fn begin_run(job: &str, live: std::sync::Arc<Live>, command: String) {
+fn begin_run(job: &str, live: std::sync::Arc<Live>, command: String, agent: bool) {
     set_job(job, json!({"state": "running"}));
     let job = job.to_owned();
     let handle_job = job.clone();
@@ -215,7 +273,7 @@ fn begin_run(job: &str, live: std::sync::Arc<Live>, command: String) {
         .spawn(move || {
             let job = handle_job;
             let (_, cursor) = live.events(0);
-            if let Err(error) = live.run(&command) {
+            if let Err(error) = live.run_as(&command, agent) {
                 set_job(
                     &job,
                     json!({"state": "failed", "error": error.to_string()}),
@@ -298,7 +356,23 @@ fn event_value(event: Event) -> Value {
         Event::Clipboard(text, primary) => {
             json!({"kind": "clipboard", "text": text, "primary": primary})
         }
+        Event::History { key, ask } => json!({
+            "kind": "history",
+            "key": key,
+            "skip": ask.skip,
+            "limit": ask.limit,
+            "matching": ask.matching,
+        }),
+        Event::Held(held) => json!({
+            "kind": "held",
+            "held": crate::toolkit::held_json(held.as_ref()),
+        }),
     }
+}
+
+/// Whether an agent asked.
+fn agent(ask: &Value) -> bool {
+    ask.get("agent").and_then(Value::as_bool).unwrap_or(false)
 }
 
 fn parse(input: &str) -> Value {
@@ -362,16 +436,79 @@ fn open(ask: &Value) -> Result<String, String> {
         ..OpenOptions::default()
     };
     let (store, wake) = device();
-    let live = Live::open(&target, requested_by, &options, store, columns, rows, wake)
-        .map_err(|error| open_error(&error))?;
+    let live = match far_shells() {
+        // The device runs this process's shells: it opens one and carries it here.
+        Some(far) => {
+            let wire = target
+                .to_supervisor()
+                .ok_or_else(|| "This device's shell service does not serve that target".to_owned())
+                .and_then(|wire| serde_json::to_value(wire).map_err(|error| error.to_string()))?;
+            let side = far.open(&FarOpen {
+                target: wire,
+                columns,
+                rows,
+                agent: requested_by == Requester::Agent,
+                program: &program,
+                relay_session: relay,
+                record,
+                commands: crate::commands::new_key(),
+            })?;
+            Live::carrying(side, store, columns, rows, wake)
+        }
+        None => Live::open(&target, requested_by, &options, store, columns, rows, wake),
+    }
+    .map_err(|error| open_error(&error))?;
     Ok(json!({
         "shell": live.id(),
         "shell_name": live.session().shell_name(),
         "target": target.encode(),
-        "relay_session": live.session().relay_session(),
+        "relay_session": live.session().relay_session().unwrap_or_default(),
         "waiting": false,
     })
     .to_string())
+}
+
+/// A shell this process asks its device for: where it runs and how it starts.
+pub struct FarOpen<'a> {
+    /// Where it runs, as the shell runtime names a session's target.
+    pub target: Value,
+    pub columns: u16,
+    pub rows: u16,
+    /// An agent asks for it, rather than the person.
+    pub agent: bool,
+    /// The program to run instead of the shell, when one is named.
+    pub program: &'a [String],
+    /// The hosted session to come back to.
+    pub relay_session: Option<&'a str>,
+    /// The Terminal session record the shell belongs to, in a workspace a server hosts.
+    pub record: Option<&'a str>,
+    /// The key the shell marks its command lines with.
+    pub commands: String,
+}
+
+/// Where a process that runs no shell itself has its shells run: its device, which opens each
+/// in its shell runtime and carries it here ([`crate::FarSide`]). A sandboxed app's process holds
+/// no route of its own to the runtime; the device decides, by the app's grant, whether it opens
+/// one at all.
+pub trait FarShells: Send + Sync {
+    /// Open the shell `open` asks for.
+    ///
+    /// # Errors
+    ///
+    /// Why the device opened none, in words the app shows: its refusal, or the runtime's.
+    fn open(&self, open: &FarOpen<'_>) -> Result<crate::FarSide, String>;
+}
+
+static FAR_SHELLS: std::sync::OnceLock<Arc<dyn FarShells>> = std::sync::OnceLock::new();
+
+/// Have every shell this process opens from now on run where `far` opens it: what a process
+/// whose device runs its shells says once, as soon as it has its connection to that device.
+pub fn shells_run_at(far: Arc<dyn FarShells>) {
+    let _ = FAR_SHELLS.set(far);
+}
+
+fn far_shells() -> Option<&'static Arc<dyn FarShells>> {
+    FAR_SHELLS.get()
 }
 
 /// Why a session did not open, in words the app shows: the supervisor's own reason where it
@@ -427,7 +564,7 @@ impl Provider for Answers {
         let ask = parse(input);
         let live = live_of(&ask)?;
         let command = text(&ask)?.to_owned();
-        begin_run_told(job, live, command, &moved);
+        begin_run_told(job, live, command, agent(&ask), &moved);
         Ok(())
     }
 
@@ -462,7 +599,7 @@ fn running() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, Arc
 
 /// Run `command` in `live` as the job `job`, telling `moved` each move it makes: running once
 /// the line is sent, done with the run the shell marked, or failed why nothing ran.
-fn begin_run_told(job: &str, live: Arc<Live>, command: String, moved: &JobSink) {
+fn begin_run_told(job: &str, live: Arc<Live>, command: String, agent: bool, moved: &JobSink) {
     let job = job.to_owned();
     if let Ok(mut jobs) = running().lock() {
         jobs.insert(job.clone(), Arc::clone(&live));
@@ -477,7 +614,7 @@ fn begin_run_told(job: &str, live: Arc<Live>, command: String, moved: &JobSink) 
             let moved = told;
             moved.moved(State::Running, json!({}));
             let (_, cursor) = live.events(0);
-            if let Err(error) = live.run(&command) {
+            if let Err(error) = live.run_as(&command, agent) {
                 moved.failed(&error.to_string());
                 if let Ok(mut jobs) = running().lock() {
                     jobs.remove(&job);

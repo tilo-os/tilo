@@ -1,9 +1,8 @@
 # Binary artifacts some build paths stage here. Produced by
-# `cargo build --release -p tilo-session -p fs -p terminal -p browser -p file-explorer`
+# `cargo build --release -p tilo-session -p fs -p browser -p file-explorer`
 # and copied in; never commit them.
 /shell
 /fs
-/terminal
 /browser
 /file-explorer
 /tilo-greeter

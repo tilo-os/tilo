@@ -20,6 +20,7 @@ use tilo_actions::remote::call::{BridgedCall, CallAudio, CallReport, CallStatus}
 use tilo_actions::remote::native_media::{
     self, Request as CallMediaRequest, Snapshot as CallSnapshot,
 };
+use tilo_actions::remote::shell::{ShellBytes, ShellOpen, ShellOpened, lost_report};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ChangeFeed, ChangePage,
     Completer, ContentGetAnswer, ContentGets, ContentPiece, ContentPut, ContentPutAnswer,
@@ -86,6 +87,19 @@ struct Waiting {
     /// What the workspace's live session heard from the other devices, the newest
     /// [`MAX_HEARD`] of them, until the app's views take them.
     presence: VecDeque<String>,
+    /// Where each open shell's output goes, by its id.
+    shells: HashMap<u64, std::sync::mpsc::Sender<ShellHeard>>,
+    /// The output of a shell the device just opened, until its opener takes it: kept from the
+    /// answer on, so nothing the shell printed before is lost.
+    opened: HashMap<u64, std::sync::mpsc::Receiver<ShellHeard>>,
+}
+
+/// What one of the app's shells said: output, and last how it ended.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShellHeard {
+    Output(Vec<u8>),
+    /// The device's report of how it ended, empty when the shell exited.
+    Ended(String),
 }
 
 /// How many of the workspace's frames wait for an app that has not taken them: a second of a
@@ -390,6 +404,16 @@ fn end(shared: &Shared, why: &ActionCallError) {
         .collect();
     all.extend(waiting.receipts.drain().flat_map(|(_, asked)| asked));
     all.extend(waiting.cancels.drain().flat_map(|(_, asked)| asked));
+    // A shell carried on a connection that ended was lost, not exited.
+    let lost = match why {
+        ActionCallError::Unavailable { reason } | ActionCallError::Refused { reason } => {
+            lost_report(reason)
+        }
+        other => lost_report(&other.to_string()),
+    };
+    for (_, shell) in waiting.shells.drain() {
+        let _ = shell.send(ShellHeard::Ended(lost.clone()));
+    }
     drop(waiting);
     for asked in all {
         asked.complete(Err(why.clone()));
@@ -480,6 +504,29 @@ fn answered(shared: &Shared, message: RemoteActionMessage) {
             }
             waiting.presence.push_back(heard.clone());
             None
+        }
+        RemoteActionMessage::ShellOutput(ShellBytes { shell, bytes }) => {
+            if let Some(heard) = waiting.shells.get(shell) {
+                let _ = heard.send(ShellHeard::Output(bytes.clone()));
+            }
+            None
+        }
+        RemoteActionMessage::ShellEnded(ended) => {
+            if let Some(heard) = waiting.shells.remove(&ended.shell) {
+                let _ = heard.send(ShellHeard::Ended(ended.report.clone()));
+            }
+            None
+        }
+        RemoteActionMessage::ShellOpenResponse {
+            correlation,
+            result,
+        } => {
+            if let Ok(opened) = result {
+                let (heard, hearing) = std::sync::mpsc::channel();
+                waiting.shells.insert(opened.shell, heard);
+                waiting.opened.insert(opened.shell, hearing);
+            }
+            waiting.by_correlation.remove(correlation)
         }
         RemoteActionMessage::CatalogueResponse { correlation, .. }
         | RemoteActionMessage::CallCarryResponse { correlation, .. }
@@ -1048,6 +1095,82 @@ fn valid_output(snapshot: AudioSnapshot) -> Answered<AudioSnapshot> {
         Err(ActionCallError::Refused {
             reason: "invalid audio output state".into(),
         })
+    }
+}
+
+/// The shell lane an app's own connection carries ([`tilo_actions::remote::shell`]): the device opens a
+/// shell its shell runtime runs, keeps its terminal, and carries its bytes here both ways.
+impl LineClient {
+    /// Open a shell as `open` asks: its id and what the runtime said of it, and where its
+    /// output arrives, last with how it ended.
+    ///
+    /// # Errors
+    /// The device refused it (the app may not open shells, the runtime said no), or stopped
+    /// answering.
+    pub fn open_shell(
+        &self,
+        open: ShellOpen,
+    ) -> Answered<(ShellOpened, std::sync::mpsc::Receiver<ShellHeard>)> {
+        let correlation = self.correlation();
+        match self.asked(
+            Key::Correlation(correlation),
+            RemoteActionMessage::ShellOpenRequest { correlation, open },
+        )? {
+            RemoteActionMessage::ShellOpenResponse { result, .. } => {
+                let opened = result?;
+                let hearing = self
+                    .0
+                    .waiting
+                    .lock_recover()
+                    .opened
+                    .remove(&opened.shell)
+                    .ok_or(ActionCallError::Unanswered)?;
+                Ok((opened, hearing))
+            }
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Type `bytes` into the shell `shell`.
+    ///
+    /// # Errors
+    /// The connection closed.
+    pub fn type_into_shell(&self, shell: u64, bytes: &[u8]) -> Answered<()> {
+        for piece in bytes.chunks(tilo_actions::remote::shell::MAX_SHELL_BYTES) {
+            self.say(RemoteActionMessage::ShellInput(ShellBytes {
+                shell,
+                bytes: piece.to_vec(),
+            }))?;
+        }
+        Ok(())
+    }
+
+    /// The shell `shell`'s window is now `cols` by `rows` cells.
+    ///
+    /// # Errors
+    /// The connection closed.
+    pub fn resize_shell(&self, shell: u64, cols: u16, rows: u16) -> Answered<()> {
+        self.say(RemoteActionMessage::ShellResize { shell, cols, rows })
+    }
+
+    /// Let the shell `shell` go: the device ends its session.
+    ///
+    /// # Errors
+    /// The connection closed.
+    pub fn close_shell(&self, shell: u64) -> Answered<()> {
+        self.0.waiting.lock_recover().shells.remove(&shell);
+        self.say(RemoteActionMessage::ShellClose { shell })
+    }
+
+    /// Send `message`, which nothing answers.
+    fn say(&self, message: RemoteActionMessage) -> Answered<()> {
+        let line = frame_line_in(message, None);
+        let mut writer = self.0.writer.lock_recover();
+        writeln!(writer, "{line}")
+            .and_then(|()| writer.flush())
+            .map_err(|error| ActionCallError::Unavailable {
+                reason: format!("the connection closed: {error}"),
+            })
     }
 }
 

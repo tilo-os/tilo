@@ -23,6 +23,3 @@ environment-write = Datei schreiben
 environment-restore = Datei wiederherstellen
 environment-revert = Zurücknehmen
 
-terminal-machine-secrets = Geheimnisse der Maschine
-terminal-machine-secrets-add-secret = Geheimnis hinzufügen
-terminal-machine-secrets-remove-secret = Geheimnis entfernen

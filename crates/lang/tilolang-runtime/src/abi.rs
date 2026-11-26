@@ -382,6 +382,7 @@ imports! {
     (FileOfText, "file_of_text", "ii", "i"),
     (FileOfBytes, "file_of_bytes", "ii", "i"),
     (Base64Decode, "base64_decode", "i", "i"),
+    (TextBytes, "text_bytes", "i", "i"),
     (FileAt, "file_at", "ii", "i"),
     (FileZip, "file_zip", "ii", "i"),
     (FileMarkdown, "file_markdown", "i", "i"),
@@ -432,6 +433,7 @@ imports! {
     (ActChooseFolder, "act_choose_folder", "ii", "i"),
     (ActSave, "act_save", "ii", "i"),
     (ActBlur, "act_blur", "", "i"),
+    (ActClose, "act_close", "", "i"),
     // A PDF, read by the device's engine.
     (PdfPages, "pdf_pages", "i", "i"),
     (PdfOutline, "pdf_outline", "i", "i"),

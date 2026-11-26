@@ -1,6 +1,6 @@
 //! What opening a resource does (`opened action`): a window runs it as the person who opened the
 //! resource, wherever they opened it from, here a search hit; one who may not change the resource
-//! opens it all the same, unchanged.
+//! opens it all the same, unchanged. A window that opens on its root opens that root too.
 
 use std::rc::Rc;
 use std::sync::{Arc, OnceLock};
@@ -30,6 +30,7 @@ type Thread {
 
 type Inbox {
     threads: Collection<Thread>
+    visits: Int merge counter = 0
 }
 
 /// A conversation arrives.
@@ -37,6 +38,9 @@ action receive(i: Inbox, subject: Text) { i.threads.insert(Thread(subject: subje
 
 /// Opening a conversation reads it.
 opened action read_on_open(t: Thread) { t.unread = false }
+
+/// Opening the inbox counts the visit.
+opened action visit(i: Inbox) { i.visits += 1 }
 
 root Inbox
 
@@ -201,6 +205,18 @@ fn opening_from_search_runs_what_opening_does_as_the_opener() {
         unread(&window, &rota),
         Value::Bool(true),
         "a viewer's open changes nothing"
+    );
+}
+
+#[test]
+fn a_window_opening_on_its_root_runs_what_opening_the_root_does() {
+    let window = window();
+    let host = window.host().expect("the window opened");
+    let inbox = host.root_of(APP).unwrap();
+    assert_eq!(
+        host.runtime().read(&inbox, "visits").unwrap(),
+        Value::Int(1),
+        "the window opening on the inbox opened it, once"
     );
 }
 

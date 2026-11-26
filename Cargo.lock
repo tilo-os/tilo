@@ -14547,46 +14547,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "terminal"
-version = "0.2.1"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "libc",
- "portable-pty",
- "regex",
- "runtime-dylib",
- "serde",
- "serde_json",
- "serial_test",
- "tempfile",
- "terminal",
- "tilo-action-services",
- "tilo-app",
- "tilo-app-test-host",
- "tilo-automerge",
- "tilo-automerge-fork",
- "tilo-content",
- "tilo-environment",
- "tilo-paths",
- "tilo-process",
- "tilo-runtime-portal",
- "tilo-settings-model",
- "tilo-taffy",
- "tilo-terminal",
- "tilo-test-env",
- "tilo-vello",
- "tilo-winit",
- "tracing",
- "unicode-segmentation",
- "unicode-width",
- "ush-shell",
- "ush-tilo",
- "uuid",
- "workspace-hack",
-]
-
-[[package]]
 name = "test-app-registry"
 version = "0.1.0"
 dependencies = [
@@ -22799,6 +22759,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "ush",
  "uuid",
  "windows-sys 0.61.2",
  "zeroize",
@@ -22904,6 +22865,7 @@ dependencies = [
  "tilo-desktop-model",
  "tilo-desktop-search",
  "tilo-doc",
+ "tilo-environment",
  "tilo-failure",
  "tilo-formats",
  "tilo-locale",
@@ -27851,7 +27813,6 @@ dependencies = [
  "target-lexicon",
  "tempfile",
  "termcolor",
- "terminal",
  "test-document-app",
  "test-server",
  "thin-vec",

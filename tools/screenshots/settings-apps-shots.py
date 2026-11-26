@@ -45,7 +45,7 @@ dest.parent.mkdir(parents=True, exist_ok=True)
 if tool.is_file() and not dest.exists():
     dest.symlink_to(tool)
 
-prepare(STATE, apps="terminal", built="--build" in sys.argv[1:])
+prepare(STATE, apps="", built="--build" in sys.argv[1:])
 tapps = tl_packages(STATE, OUT, ["settings", "mail"])
 
 # A cold profile founds the person through the device daemon before the session answers ready,
@@ -62,7 +62,7 @@ def patient_until(what: str, check, deadline: float = 60.0, step: float = 0.25):
 real_apps.until = patient_until
 until = patient_until
 
-session = Session(STATE).start(apps="terminal", fresh=True, tapps=tapps)
+session = Session(STATE).start(apps="", fresh=True, tapps=tapps)
 try:
     # A headless session rasterizes frames as it draws, so its control answers can wait behind a
     # frame on a first start: give every request the room a cold desktop needs.

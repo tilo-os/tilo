@@ -903,7 +903,14 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::CallMediaResult { .. }
         | RemoteActionMessage::PresenceSaid { .. }
         | RemoteActionMessage::PresenceSaidResult { .. }
-        | RemoteActionMessage::PresenceHeard { .. } => None,
+        | RemoteActionMessage::PresenceHeard { .. }
+        | RemoteActionMessage::ShellOpenRequest { .. }
+        | RemoteActionMessage::ShellOpenResponse { .. }
+        | RemoteActionMessage::ShellInput(_)
+        | RemoteActionMessage::ShellResize { .. }
+        | RemoteActionMessage::ShellClose { .. }
+        | RemoteActionMessage::ShellOutput(_)
+        | RemoteActionMessage::ShellEnded(_) => None,
     }
 }
 

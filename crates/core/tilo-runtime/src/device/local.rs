@@ -35,6 +35,10 @@ type Tree = Arc<dyn ActionProvider + Send + Sync>;
 /// they are there.
 type Trees = dyn Fn(Option<&str>) -> io::Result<(Tree, Caller)> + Send + Sync;
 
+/// Whether this computer runs a workspace's programs, or why not: asked on each shell an app
+/// opens there.
+type RunsHere = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
+
 /// What a connection's frames are answered by: the tree they reach in each workspace and the
 /// caller they are there, and the uploads begun on any connection, so one a lost connection cut
 /// is taken up on the next.
@@ -57,6 +61,9 @@ pub(crate) struct Frames {
     /// The presence lane an app's connection carries: the device's live presence as that app's
     /// views say where their person is, and hear where everyone else is.
     app_presence: Option<super::app_presence::Setup>,
+    /// Whether an app's connection carries shells, when the connection is an app's: the
+    /// workspace it was started in, and its grant, or why its package has none.
+    shells: Option<(String, Result<(), String>, RunsHere)>,
     /// Whether a connection may be carried to another of the person's devices
     /// ([`super::carry`]): the person's own alone.
     carrying: super::carry::Carrying,
@@ -75,6 +82,7 @@ impl Frames {
             audio: None,
             media: None,
             app_presence: None,
+            shells: None,
             carrying: super::carry::Carrying::Refused(super::carry::NOT_THE_PERSON),
         }
     }
@@ -146,6 +154,31 @@ impl Frames {
         let audio = super::audio_output::lane_for(daemon, at).map(Arc::new);
         let media = super::call_media::connection_for(daemon, at);
         let app_presence = super::app_presence::Setup::of(daemon, at);
+        // The shells the device's runtime runs, for an app whose signed manifest declares it opens
+        // them: the manifest is the ceiling, never the app's request.
+        let shells = if daemon.app_declares(&at.app, tilo_app_package::manifest::SHELLS) {
+            Ok(())
+        } else {
+            Err(format!(
+                "{} may not open shells: its package does not declare that it does (`uses shell`)",
+                at.app
+            ))
+        };
+        // A workspace other people are members of runs its programs in a VM on a host, never
+        // on this computer: asked on each open, as its people change.
+        let held = Arc::downgrade(daemon);
+        let runs_here = {
+            let workspace = at.workspace.clone();
+            Arc::new(move || {
+                let daemon = held
+                    .upgrade()
+                    .ok_or_else(|| "this computer's daemon is stopping".to_owned())?;
+                let workspace = workspace.clone();
+                super::workspaces::block_on_owned(async move {
+                    daemon.workspaces().runs_programs_here(&workspace).await
+                })
+            }) as RunsHere
+        };
         let (daemon, app, workspace) =
             (Arc::downgrade(daemon), at.app.clone(), at.workspace.clone());
         let mut frames = Self::new(move |named| {
@@ -164,6 +197,7 @@ impl Frames {
         frames.audio = audio;
         frames.media = media;
         frames.app_presence = app_presence;
+        frames.shells = Some((at.workspace.clone(), shells, runs_here));
         frames
     }
 
@@ -275,47 +309,71 @@ impl Frames {
                 }),
             }
         };
-        // An app's connection carries the call lane of the workspace's live session; any other
-        // connection carries none.
-        let out = (self.lane.is_some() || self.media.is_some() || self.app_presence.is_some())
-            .then(|| {
-                stream.try_clone().ok().map(|writer| {
-                    let writer = Arc::new(std::sync::Mutex::new(writer));
-                    Arc::new(move |line: String| {
-                        if let Ok(mut writer) = writer.lock() {
-                            let _ = writeln!(writer, "{line}");
-                        }
-                    }) as tilo_live::app_call::Out
-                })
-            });
+        // An app's connection carries the call lane of the workspace's live session, its
+        // presence and its shells; any other connection carries none of them.
+        let out = (self.lane.is_some()
+            || self.media.is_some()
+            || self.app_presence.is_some()
+            || self.shells.is_some())
+        .then(|| {
+            stream.try_clone().ok().map(|writer| {
+                let writer = Arc::new(std::sync::Mutex::new(writer));
+                Arc::new(move |line: String| {
+                    if let Ok(mut writer) = writer.lock() {
+                        let _ = writeln!(writer, "{line}");
+                    }
+                }) as tilo_live::app_call::Out
+            })
+        });
+        let out = out.flatten();
         let call_media = match (&self.media, &out) {
-            (Some(media), Some(Some(out))) => Some(super::call_media::CallMediaLane::new(
+            (Some(media), Some(out)) => Some(super::call_media::CallMediaLane::new(
                 media.clone(),
                 Arc::clone(out),
             )),
             _ => None,
         };
         let presence = match (&self.app_presence, &out) {
-            (Some(setup), Some(Some(out))) => Some(super::app_presence::PresenceLane::new(
+            (Some(setup), Some(out)) => Some(super::app_presence::PresenceLane::new(
                 setup.clone(),
                 Arc::clone(out),
             )),
             _ => None,
         };
+        #[cfg(unix)]
+        let shells = match (&self.shells, &out) {
+            (Some((workspace, granted, runs_here)), Some(out)) => {
+                Some(ush::app_shells::AppShells::new(
+                    workspace,
+                    granted.clone(),
+                    Arc::clone(runs_here),
+                    super::ush_line::here(),
+                    Arc::clone(out),
+                ))
+            }
+            _ => None,
+        };
+        #[cfg(not(unix))]
+        let shells: Option<()> = None;
         let call = match (&self.lane, out) {
-            (Some(granted), Some(Some(out))) => {
+            (Some(granted), Some(out)) => {
                 Some(tilo_live::app_call::AppLane::new(granted.clone(), out))
             }
             _ => None,
         };
-        let lanes =
-            (call.is_some() || self.audio.is_some() || call_media.is_some() || presence.is_some())
-                .then(|| Lanes {
-                    call,
-                    audio: self.audio.as_deref(),
-                    media: call_media.as_ref(),
-                    presence: presence.as_ref(),
-                });
+        let lanes = (call.is_some()
+            || self.audio.is_some()
+            || call_media.is_some()
+            || presence.is_some()
+            || shells.is_some())
+        .then(|| Lanes {
+            call,
+            audio: self.audio.as_deref(),
+            media: call_media.as_ref(),
+            presence: presence.as_ref(),
+            #[cfg(unix)]
+            shells,
+        });
         tilo_action_services::serve_lines_handing(
             in_workspace,
             &self.uploads,
@@ -326,19 +384,23 @@ impl Frames {
                 answering,
             },
             SLACK,
-            lanes.as_ref().map(|lanes| lanes as &dyn tilo_action_services::CallLanes),
+            lanes
+                .as_ref()
+                .map(|lanes| lanes as &dyn tilo_action_services::CallLanes),
             handover,
         )
     }
 }
 
-/// The lanes an app's connection owns beside the action wire: its outside calls, its sound
-/// output, and the call its views take part in.
+/// The lanes an app's connection carries beside the action wire: its outside calls, its sound
+/// output, the call its views take part in, and its shells.
 struct Lanes<'a> {
     call: Option<Arc<tilo_live::app_call::AppLane>>,
     audio: Option<&'a super::audio_output::AudioLane>,
     media: Option<&'a super::call_media::CallMediaLane>,
     presence: Option<&'a super::app_presence::PresenceLane>,
+    #[cfg(unix)]
+    shells: Option<ush::app_shells::AppShells>,
 }
 
 impl tilo_action_services::CallLanes for Lanes<'_> {
@@ -355,15 +417,24 @@ impl tilo_action_services::CallLanes for Lanes<'_> {
                 taken => return taken,
             }
         }
+        #[cfg(unix)]
+        if let Some(shells) = &self.shells {
+            match tilo_action_services::CallLanes::take(shells, message) {
+                tilo_action_services::Take::NotCall => {}
+                taken => return taken,
+            }
+        }
         if let Some(audio) = self.audio {
             match tilo_action_services::CallLanes::take(audio, message) {
                 tilo_action_services::Take::NotCall => {}
                 taken => return taken,
             }
         }
-        self.call.as_ref().map_or(tilo_action_services::Take::NotCall, |call| {
-            tilo_action_services::CallLanes::take(call.as_ref(), message)
-        })
+        self.call
+            .as_ref()
+            .map_or(tilo_action_services::Take::NotCall, |call| {
+                tilo_action_services::CallLanes::take(call.as_ref(), message)
+            })
     }
 
     fn body_len(&self, message: &RemoteActionMessage) -> Option<usize> {
@@ -372,9 +443,10 @@ impl tilo_action_services::CallLanes for Lanes<'_> {
     }
 
     fn take_body(&self, message: &RemoteActionMessage, body: &[u8]) -> tilo_action_services::Take {
-        self.audio.map_or(tilo_action_services::Take::NotCall, |audio| {
-            tilo_action_services::CallLanes::take_body(audio, message, body)
-        })
+        self.audio
+            .map_or(tilo_action_services::Take::NotCall, |audio| {
+                tilo_action_services::CallLanes::take_body(audio, message, body)
+            })
     }
 }
 
@@ -503,7 +575,11 @@ pub(crate) fn is_frame(line: &[u8]) -> bool {
 /// Tell `stream`'s peer why it is not served, and close.
 pub(crate) fn refuse(mut stream: Stream, why: &str) {
     let _ = stream.set_write_timeout(Some(Duration::from_secs(1)));
-    let _ = writeln!(stream, "{}", tilo_action_services::line_refusal("not_permitted", why));
+    let _ = writeln!(
+        stream,
+        "{}",
+        tilo_action_services::line_refusal("not_permitted", why)
+    );
     let _ = stream.shutdown(std::net::Shutdown::Both);
 }
 

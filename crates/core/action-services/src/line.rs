@@ -85,7 +85,7 @@ mod lines;
 #[cfg(not(target_arch = "wasm32"))]
 pub use carry::{Carry, CarryAnswer, answer_line as carry_answer_line, carry_line, carry_request};
 #[cfg(not(target_arch = "wasm32"))]
-pub use client::{LineClient, LinePut};
+pub use client::{LineClient, LinePut, ShellHeard};
 #[cfg(not(target_arch = "wasm32"))]
 pub use lines::{
     CallLanes, Handover, Served, Take, serve_lines, serve_lines_handing, serve_lines_with,

@@ -1156,6 +1156,14 @@ impl Checker<'_> {
         self.begin(ctx, &c.params, c.result.clone(), &c.id);
         self.st.decl.clone_from(&c.name);
         self.st.uses.clone_from(&c.uses);
+        // What a command does on the machine is where no Undo reaches: a destructive action that
+        // opens a shell reaches outside the workspace's records, so its person is asked before
+        // an agent's runs.
+        if c.uses.contains(&crate::effects::Effect::Shell)
+            && c.present.role.as_deref() == Some("destructive")
+        {
+            self.st.facts.outside = true;
+        }
         for r in guards {
             let cond = self.expr_as(&r.cond, &Ty::Bool);
             self.mark_shown(&r.reason);

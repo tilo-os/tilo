@@ -49,6 +49,8 @@ pub mod call;
 mod caller;
 /// An app's own place in a workspace's call, on the connection its launcher handed it.
 pub mod native_media;
+/// A shell the device's shell runtime runs, carried on an app's connection.
+pub mod shell;
 pub use caller::{Caller, Invited, KeptCaller, KeyCall, PlacedCaller, device_agent_id};
 pub mod signed_invocation;
 pub use signed_invocation::{CallAllowed, SignedCall, SignedInvocation};
@@ -1941,6 +1943,29 @@ pub enum RemoteActionMessage {
     /// What another member said in the app's workspace, as the workspace's live session heard
     /// it from another device: one `collab_types::presence::Heard` as JSON, pushed, never asked.
     PresenceHeard { heard: String },
+    /// Ask the device to open a shell its shell runtime runs, carried on this connection from
+    /// now on ([`shell`]). Decided by the app's signed manifest; a connection that is no app's
+    /// own carries no shell.
+    ShellOpenRequest {
+        correlation: u64,
+        open: shell::ShellOpen,
+    },
+    /// Answer to [`Self::ShellOpenRequest`], same correlation.
+    ShellOpenResponse {
+        correlation: u64,
+        result: Result<shell::ShellOpened, ActionCallError>,
+    },
+    /// What the app typed into one of its shells.
+    ShellInput(shell::ShellBytes),
+    /// One of the app's shells' windows is now this size, in cells.
+    ShellResize { shell: u64, cols: u16, rows: u16 },
+    /// The app lets one of its shells go.
+    ShellClose { shell: u64 },
+    /// What one of the app's shells printed. Sent by the device, never asked for.
+    ShellOutput(shell::ShellBytes),
+    /// How one of the app's shells ended: the last the device says of it. Sent by the device,
+    /// never asked for.
+    ShellEnded(shell::ShellEnded),
 }
 
 /// One record a reader asks for over the action API: alone, or `joined`
@@ -2415,6 +2440,16 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
                 result: Err(no_presence_lane()),
             })
         }
+        // A shell lane is the device's own, on an app's connection: one asked here says it
+        // carries none.
+        RemoteActionMessage::ShellOpenRequest { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::ShellOpenResponse {
+                correlation,
+                result: Err(ActionCallError::Unavailable {
+                    reason: "this connection carries no shell".into(),
+                }),
+            })
+        }
         // An answer is never a request: `refuse` classified every message before this match and
         // answered `None` for an answer, so none reaches here.
         _ => return None,
@@ -2532,6 +2567,12 @@ pub fn refuse(
         }
         RemoteActionMessage::PresenceSaid { correlation, .. } => {
             RemoteActionMessage::PresenceSaidResult {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
+        RemoteActionMessage::ShellOpenRequest { correlation, .. } => {
+            RemoteActionMessage::ShellOpenResponse {
                 correlation: *correlation,
                 result: Err(error),
             }

@@ -16,7 +16,7 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tilo_content::ContentStore;
 
 use crate::TermModes;
-use crate::commands::{Commands, FinishedCommand, Marks};
+use crate::commands::{Commands, FinishedCommand, HistoryAsk, Mark, Marks, Piece};
 use crate::emulator::{DEFAULT_HISTORY, Emulator};
 use crate::graphics::TerminalImagePlacement;
 use crate::provider::{OpenError, OpenOptions, Requester};
@@ -42,6 +42,68 @@ pub enum Event {
     /// The program put text on the clipboard (OSC 52); the bool says it asked for the primary
     /// selection.
     Clipboard(String, bool),
+    /// The shell asked for the lines its Up recalls, as `key` names its marks.
+    History { key: String, ask: HistoryAsk },
+    /// The session's host holds the command at the prompt until someone acts: why, as the
+    /// host's refusal says it, and whether an agent asked for it. `None` once it let it go.
+    Held(Option<HeldRun>),
+}
+
+/// A command the session's host holds, as its refusal says why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeldRun {
+    /// What happened and what to do, in plain words.
+    pub message: String,
+    /// The page where a payment method is added, when that would let it through.
+    pub add_card: Option<String>,
+    /// An agent asked for it: the shell does not wait, and the prompt is the person's.
+    pub agent: bool,
+}
+
+impl HeldRun {
+    fn of(refusal: &serde_json::Value, agent: bool) -> Self {
+        let add_card = refusal
+            .get("next")
+            .and_then(serde_json::Value::as_array)
+            .into_iter()
+            .flatten()
+            .find(|step| {
+                step.get("kind").and_then(serde_json::Value::as_str) == Some("add_payment_method")
+            })
+            .and_then(|step| step.get("url").and_then(serde_json::Value::as_str))
+            .filter(|url| url.starts_with("https://") && !url.chars().any(char::is_whitespace))
+            .map(str::to_owned);
+        Self {
+            message: refusal
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .to_owned(),
+            add_card,
+            agent,
+        }
+    }
+}
+
+/// A command line asked of the session, typed at its prompt once the shell shows one.
+struct Asked {
+    command: String,
+    agent: bool,
+}
+
+/// What the session knows of its shell's marks, as the threads that type into it read it.
+#[derive(Default)]
+struct Prompt {
+    /// The key the shell's marks carry, once the reader made it.
+    key: String,
+    /// The shell marked anything at all: it is one that reads Terminal's marks.
+    marked: bool,
+    /// The shell takes a whole command line in a mark of its own.
+    reads_input: bool,
+    /// The shell is at its prompt: nothing runs in front of it.
+    at_prompt: bool,
+    /// The command lines waiting for the prompt, oldest first.
+    waiting: std::collections::VecDeque<Asked>,
 }
 
 /// How many events a session keeps for its readers before the oldest go.
@@ -78,6 +140,8 @@ struct Shared {
     resized: Mutex<Option<(usize, usize)>>,
     /// The grid thread should drop what it shows and its scrollback before its next read.
     clear: AtomicBool,
+    /// The shell's prompt and the command lines waiting for it.
+    prompt: Mutex<Prompt>,
     closed: AtomicBool,
 }
 
@@ -131,6 +195,10 @@ pub struct Live {
     /// What wakes the window drawing this session, when one is: installed by the toolkit's
     /// handle once a view shows the grid.
     wake: Mutex<Option<Wake>>,
+    /// The editor running in the session that offers its text to the platform, when the
+    /// supervisor negotiated one: an agent reads and replaces its selection through it rather
+    /// than typing at the shell.
+    editor: Option<tilo_process::editor::Client>,
 }
 
 impl std::fmt::Debug for Live {
@@ -175,6 +243,9 @@ impl Live {
     ) -> Result<Arc<Self>, OpenError> {
         let columns = usize::from(columns.max(1));
         let rows = usize::from(rows.max(1));
+        let editor = session
+            .take_editor()
+            .and_then(|socket| tilo_process::editor::Client::new(socket, Arc::new(|| {})).ok());
         let live = Arc::new(Self {
             session: Arc::new(session),
             shared: Arc::new(Shared {
@@ -189,10 +260,12 @@ impl Live {
                 resized: Mutex::new(None),
                 clear: AtomicBool::new(false),
                 closed: AtomicBool::new(false),
+                prompt: Mutex::new(Prompt::default()),
             }),
             content,
             allow_clipboard: AtomicBool::new(false),
             wake: Mutex::new(wake),
+            editor,
         });
         register(&live);
         live.start_reader(columns, rows);
@@ -219,10 +292,12 @@ impl Live {
                 resized: Mutex::new(None),
                 clear: AtomicBool::new(false),
                 closed: AtomicBool::new(false),
+                prompt: Mutex::new(Prompt::default()),
             }),
             content: ContentStore::memory(),
             allow_clipboard: AtomicBool::new(false),
             wake: Mutex::new(None),
+            editor: None,
         });
         register(&live);
         live
@@ -257,10 +332,62 @@ impl Live {
         &self.session
     }
 
+    /// The editor running in this session that offers its text, when one does and its lease
+    /// is current: the lease to replace its selection with, and whether it can undo or redo.
+    #[must_use]
+    pub fn editor(&self) -> Option<tilo_process::editor::Snapshot> {
+        self.editor.as_ref()?.snapshot()
+    }
+
+    /// Replace the selection of the editor running in this session with `text`, under the
+    /// `lease` its snapshot gave, and wait for the editor to say it applied it.
+    ///
+    /// # Errors
+    ///
+    /// No editor offers its text here, its lease is no longer current, or it did not
+    /// acknowledge the edit: the text is never typed at the shell instead.
+    pub fn replace_editor_selection(&self, lease: &str, text: String) -> Result<(), String> {
+        use tilo_process::editor::{Failure, Request, Status, TEXT_BYTES};
+        if text.len() > TEXT_BYTES || lease.len() > 512 {
+            return Err("The text is longer than the editor takes at once".into());
+        }
+        let editor = self
+            .editor
+            .as_ref()
+            .filter(|editor| editor.snapshot().is_some())
+            .ok_or("No editor in this session offers its text")?;
+        let lease =
+            serde_json::from_str(lease).map_err(|_| "The editor's lease is not one it gave")?;
+        let (answered, answer) = std::sync::mpsc::sync_channel(1);
+        editor.submit(
+            editor.epoch(),
+            Request::Replace {
+                lease,
+                transaction: 1,
+                text,
+            },
+            Status::Applied,
+            Box::new(EditorAnswer(answered)),
+        );
+        match answer.recv_timeout(std::time::Duration::from_secs(10)) {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(Failure::Unknown)) | Err(_) => {
+                Err("The editor did not acknowledge this edit".into())
+            }
+            Ok(Err(_)) => Err("The editor's lease is no longer current".into()),
+        }
+    }
+
     /// Whether the program may put text on the clipboard (OSC 52). Off unless the person allowed
     /// it.
     pub fn set_allow_clipboard(&self, allow: bool) {
         self.allow_clipboard.store(allow, Ordering::Relaxed);
+    }
+
+    /// Whether the program may put text on the clipboard now.
+    #[must_use]
+    pub fn allows_clipboard(&self) -> bool {
+        self.allow_clipboard.load(Ordering::Relaxed)
     }
 
     #[must_use]
@@ -427,7 +554,102 @@ impl Live {
     ///
     /// Why the write failed.
     pub fn run(&self, command: &str) -> std::io::Result<()> {
-        self.session.run(command)
+        self.run_as(command, false)
+    }
+
+    /// Run one command line at the shell's prompt, `agent` saying an agent asked: a shell that
+    /// marks its commands takes it once it shows its prompt, in place of what was half typed
+    /// there, and one that reads Terminal's marks knows who asked. A shell that marks nothing
+    /// is typed into now.
+    ///
+    /// # Errors
+    ///
+    /// Why the write failed.
+    pub fn run_as(&self, command: &str, agent: bool) -> std::io::Result<()> {
+        let mut prompt = self
+            .shared
+            .prompt
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !prompt.marked {
+            drop(prompt);
+            return self.write(&typed_line(command));
+        }
+        prompt.waiting.push_back(Asked {
+            command: command.to_owned(),
+            agent,
+        });
+        self.type_waiting(&mut prompt)
+    }
+
+    /// Type the oldest waiting command line when the shell is at its prompt.
+    fn type_waiting(&self, prompt: &mut Prompt) -> std::io::Result<()> {
+        if !prompt.at_prompt {
+            return Ok(());
+        }
+        let Some(asked) = prompt.waiting.pop_front() else {
+            return Ok(());
+        };
+        let line = if prompt.reads_input {
+            use base64::Engine as _;
+            format!(
+                "\x1b]133;R;k={};cmd={}{}\x07",
+                prompt.key,
+                base64::engine::general_purpose::STANDARD.encode(&asked.command),
+                if asked.agent { ";agent=1" } else { "" }
+            )
+            .into_bytes()
+        } else {
+            typed_line(&asked.command)
+        };
+        prompt.at_prompt = false;
+        self.write(&line)
+    }
+
+    /// Answer the shell's ask for the lines its Up recalls: `lines` are the history's that
+    /// match, newest first; each is answered once, past the `skip` it already showed, at most
+    /// `limit` of them and as many as fit one answer.
+    ///
+    /// # Errors
+    ///
+    /// Why the write failed.
+    pub fn answer_history(
+        &self,
+        key: &str,
+        ask: &HistoryAsk,
+        lines: &[String],
+    ) -> std::io::Result<()> {
+        use base64::Engine as _;
+        const ANSWER_BYTES: usize = 3072;
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let limit = ask.limit.clamp(1, 256);
+        let mut seen = std::collections::HashSet::new();
+        let mut distinct = lines
+            .iter()
+            .filter(|line| seen.insert(line.as_str()))
+            .skip(ask.skip);
+        let mut entries = Vec::new();
+        let mut bytes = 0;
+        let mut end = true;
+        for line in distinct.by_ref() {
+            let encoded = b64.encode(line);
+            if !entries.is_empty()
+                && (entries.len() >= limit || bytes + encoded.len() + 1 > ANSWER_BYTES)
+            {
+                end = false;
+                break;
+            }
+            bytes += encoded.len() + 1;
+            entries.push(encoded);
+        }
+        let answer = format!(
+            "\x1b]133;H;k={key};s={};q={};e={}{}\x07",
+            ask.skip,
+            b64.encode(&ask.matching),
+            entries.join(","),
+            if end { ";end=1" } else { "" }
+        );
+        self.write(answer.as_bytes())
     }
 
     /// Interrupt the foreground program.
@@ -604,9 +826,38 @@ impl Live {
         revision: u64,
     ) -> u64 {
         let mut finished = Vec::new();
-        for piece in marks.push(bytes) {
-            if let Some(run) = commands.follow(&piece, now_ms()) {
-                finished.push(run);
+        let mut told = Vec::new();
+        {
+            let mut prompt = self
+                .shared
+                .prompt
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            for piece in marks.push(bytes) {
+                if let Piece::Mark(mark) = &piece {
+                    prompt.marked = true;
+                    match mark {
+                        Mark::Prompt => prompt.at_prompt = true,
+                        Mark::Started { .. } => prompt.at_prompt = false,
+                        Mark::History(ask) => told.push(Event::History {
+                            key: marks.key().to_owned(),
+                            ask: ask.clone(),
+                        }),
+                        Mark::Held { agent, refusal } => {
+                            told.push(Event::Held(Some(HeldRun::of(refusal, *agent))));
+                        }
+                        Mark::Released => told.push(Event::Held(None)),
+                        _ => {}
+                    }
+                }
+                if let Some(run) = commands.follow(&piece, now_ms()) {
+                    finished.push(run);
+                }
+            }
+            marks.key().clone_into(&mut prompt.key);
+            prompt.reads_input = marks.reads_input();
+            if let Err(error) = self.type_waiting(&mut prompt) {
+                tracing::warn!(%error, "a command line asked of the terminal was not typed");
             }
         }
         let output = emulator.feed(
@@ -630,6 +881,9 @@ impl Live {
         }
         for run in finished {
             self.shared.push(Event::Finished(run));
+        }
+        for event in told {
+            self.shared.push(event);
         }
         self.wake();
         revision
@@ -664,6 +918,15 @@ impl Live {
 }
 
 /// The wall clock in milliseconds, as a run's times are kept.
+/// A command line typed at a prompt that reads no marks: Ctrl-U first, so what was half typed
+/// does not become part of it, then the line and Enter.
+fn typed_line(command: &str) -> Vec<u8> {
+    let mut line = vec![0x15];
+    line.extend_from_slice(command.as_bytes());
+    line.push(b'\r');
+    line
+}
+
 fn now_ms() -> i64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -824,6 +1087,9 @@ mod tests {
                 }),
                 close: Box::new(move || closed.store(true, Ordering::Release)),
                 shell_name: "ssh".to_owned(),
+                ended: Arc::default(),
+                relay_session: None,
+                commands: None,
             },
             far,
         )
@@ -912,5 +1178,21 @@ mod tests {
                 "{events:?}"
             );
         }
+    }
+}
+
+/// What the editor answered an edit with, for the caller waiting on it.
+struct EditorAnswer(std::sync::mpsc::SyncSender<Result<(), tilo_process::editor::Failure>>);
+
+impl tilo_process::editor::Completion for EditorAnswer {
+    fn send(
+        &self,
+        send: &mut dyn FnMut() -> std::io::Result<()>,
+    ) -> Result<(), tilo_process::editor::Failure> {
+        send().map_err(|_| tilo_process::editor::Failure::Unknown)
+    }
+
+    fn finish(self: Box<Self>, result: Result<(), tilo_process::editor::Failure>) {
+        let _ = self.0.send(result);
     }
 }

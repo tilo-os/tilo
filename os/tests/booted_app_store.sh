@@ -181,13 +181,13 @@ else
 $(printf '%s\n' "$refusal" | tail -5 | sed 's/^/      /')"
 fi
 
-# --- 5. the confined shell runtime the Terminal requires is serving ----------
-# apps/terminal declares ush = "required@1"; without this socket the launcher
-# refuses to start it at all.
+# --- 5. the confined shell runtime the Terminal's sessions run in -----------
+# Terminal's engine asks this socket for every shell; without it Terminal
+# opens no shell.
 if on 'test -x /usr/libexec/tilo-ush'; then
   ok "/usr/libexec/tilo-ush is installed"
 else
-  bad "/usr/libexec/tilo-ush is missing — the packaged Terminal cannot launch"
+  bad "/usr/libexec/tilo-ush is missing — Terminal opens no shell"
 fi
 if on 'test -S "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/tilo/services/ush.sock"'; then
   ok "the ush service socket is bound for this session"

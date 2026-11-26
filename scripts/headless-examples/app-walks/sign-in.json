@@ -4,7 +4,7 @@
   "family": "shell",
   "order": 99,
   "live": "tl",
-  "apps": "terminal",
+  "apps": "",
   "packages": [
     "files",
     "chat",

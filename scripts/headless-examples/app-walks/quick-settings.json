@@ -3,7 +3,7 @@
   "said": "Quick settings",
   "family": "shell",
   "live": "tl",
-  "apps": "terminal",
+  "apps": "",
   "packages": [
     "files",
     "chat",

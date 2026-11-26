@@ -259,13 +259,13 @@ mod tests {
         }
     }
 
-    /// Terminal's machine-secrets record as the workspace's catalogue offers it: `add-secret`
+    /// Terminal's machine-secrets root as the workspace's catalogue offers its `add_secret`,
     /// with its two parameters, labelled as the app's own code labels them.
     fn machine_secrets() -> CatalogueRow {
         let offer = tilo_actions::published::Offer {
-            resource: "terminal.machine-secrets",
-            resource_kind: "terminal.machine-secrets",
-            action: "add-secret",
+            resource: "tl:so.tilo.terminal:root-tl.so.tilo.terminal.MachineSecrets",
+            resource_kind: "tl.so.tilo.terminal.MachineSecrets",
+            action: "add_secret",
             label: "Add secret",
             description: None,
             kind: ActionKind::Undoable,
@@ -285,8 +285,8 @@ mod tests {
             app_id: "so.tilo.terminal".to_owned(),
             parent_resource: String::new(),
             resource: CatalogueResource {
-                id: "terminal.machine-secrets".to_owned(),
-                kind: "terminal.machine-secrets".to_owned(),
+                id: "tl:so.tilo.terminal:root-tl.so.tilo.terminal.MachineSecrets".to_owned(),
+                kind: "tl.so.tilo.terminal.MachineSecrets".to_owned(),
                 label: "Machine secrets".to_owned(),
                 presentation: None,
             },
@@ -325,8 +325,11 @@ mod tests {
         };
         assert_eq!(target.app, "so.tilo.terminal");
         assert_eq!(target.workspace, "ws-1");
-        assert_eq!(target.address.resource.as_str(), "terminal.machine-secrets");
-        assert_eq!(target.address.action.as_str(), "add-secret");
+        assert_eq!(
+            target.address.resource.as_str(),
+            "tl:so.tilo.terminal:root-tl.so.tilo.terminal.MachineSecrets"
+        );
+        assert_eq!(target.address.action.as_str(), "add_secret");
         let descriptor = target
             .descriptor
             .as_ref()

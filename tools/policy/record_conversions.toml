@@ -100,12 +100,6 @@ change = "removed"
 lost = "The applied firewall configuration each device kept, in the person's own state. It is now the device's settings, and the per-person state the old conversion read is gone, so an earlier applied configuration is not carried."
 
 [[change]]
-kind = "terminal.recent-environments"
-app = "terminal"
-change = "removed"
-conversion = "apps/terminal/src/target.rs:open"
-
-[[change]]
 kind = "tube.library"
 app = "tube"
 change = "removed"

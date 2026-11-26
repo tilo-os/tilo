@@ -168,6 +168,12 @@ pub enum SessionEvent {
     /// The program asked for text to be put on the clipboard (OSC 52); the bool says whether it
     /// asked for the primary selection.
     Clipboard(String, bool),
+    /// The shell asked for the lines its Up recalls; the JSON is the ask: the key its marks
+    /// carry, how many it already showed, how many it wants, and what was typed.
+    History(String),
+    /// The session's host holds the command at the prompt until someone acts; the JSON says
+    /// why, and empty text says it let it go.
+    Held(String),
 }
 
 /// The session behind a terminal: the grid it shows and the bytes it takes.
@@ -205,6 +211,9 @@ pub trait Session: Keys {
     fn public_link(&self, url: &str) -> bool;
     /// The session's shell ended (or never started): nothing it is sent arrives anywhere.
     fn ended(&self) -> bool;
+    /// Whether the program may put text on the clipboard (OSC 52), as the person's preference
+    /// says: until it is allowed, such a write is dropped.
+    fn allow_clipboard(&self, allow: bool);
 }
 
 /// A handle on one session.

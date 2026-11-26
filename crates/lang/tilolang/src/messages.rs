@@ -397,6 +397,10 @@ pub fn source_catalogue(meta: &PackageMeta) -> String {
             };
             attribute(&mut out, "did", &words);
         }
+        // Other words the system's search finds it by, separated by commas.
+        if !action.keywords.is_empty() {
+            attribute(&mut out, "keywords", &pattern(&action.keywords.join(", ")));
+        }
         // The format an export action writes, which the system's one Export… lists.
         if let Some(export) = &action.export {
             attribute(&mut out, "export", &pattern(export));

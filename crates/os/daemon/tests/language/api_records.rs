@@ -611,7 +611,7 @@ fn keys_reading_a_workspace_list_its_runs_newest_first() {
 /// device does not leave the workspace unable to run them.
 #[test]
 fn a_handed_workspace_runs_its_keys_commands_after_a_restart() {
-    host::run_with_packages(&[], &[("terminal", "terminal")], |host| async move {
+    host::run_with(&["terminal"], |host| async move {
         let workspace = host.workspace().to_owned();
         let agent = host.key("Ada's agent");
         terminal_runs(&agent, &workspace, "before-restart").await;

@@ -294,7 +294,7 @@ mod cases {
                             "app_id": "so.tilo.terminal",
                             "app_label": "Terminal",
                             "id": "shell-1",
-                            "kind": "terminal.session",
+                            "kind": "tl.so.tilo.terminal.Session",
                             "label": "Shell",
                         },
                         "command": "cargo test",

@@ -74,6 +74,10 @@ pub const SAVE_ACTION: &str = "$save";
 /// does. The host tells the window through [`crate::ViewEvent::EndEdit`].
 pub const BLUR_ACTION: &str = "$blur";
 
+/// The action of `close()`: the window the view stands in closes, as the person closing it does.
+/// The host tells the window through [`crate::ViewEvent::CloseWindow`].
+pub const CLOSE_ACTION: &str = "$close";
+
 /// The action of `join_call(r)` and its kin: a step of the person's own in the system's call held
 /// on `r`. Its arguments are `r`, the step's name (`join`, `leave`, `mute`, `deafen`, `camera`,
 /// `screen`) and whether it turns its switch on.
@@ -473,6 +477,17 @@ impl Core {
 
     /// `blur()`: an action that, run, tells the window the field the keyboard is in ends its
     /// edit. Views only.
+    fn act_close(&self) -> HResult<Option<Wasm>> {
+        self.with_view(|_| Ok(()))?;
+        let author = Some(self.module_of_frame()?);
+        self.ret_h(Value::Action(ActionRef {
+            action: CLOSE_ACTION.to_owned(),
+            args: Vec::new(),
+            author,
+            from: None,
+        }))
+    }
+
     fn act_blur(&self) -> HResult<Option<Wasm>> {
         self.with_view(|_| Ok(()))?;
         let author = Some(self.module_of_frame()?);
@@ -814,6 +829,7 @@ impl Core {
             Imp::ActChooseFolder => self.act_choose(a, CHOOSE_FOLDER_ACTION),
             Imp::ActSave => self.act_save(a),
             Imp::ActBlur => self.act_blur(),
+            Imp::ActClose => self.act_close(),
             Imp::ActMadeFrom => self.act_made_from(a),
             Imp::ActMany => self.act_many(a),
             Imp::ActOpen => self.act_open(a),

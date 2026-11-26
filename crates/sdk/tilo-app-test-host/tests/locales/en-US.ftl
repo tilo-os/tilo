@@ -345,9 +345,9 @@ test-cards-effect-show-card = The card's name
 
 ## crates/sdk/tilo-app-test-host/tests/workspace_record_actions.rs
 test-terminal-session = Terminal
-terminal-machine-secrets = Machine secrets
-terminal-machine-secrets-add-secret = Add secret
-terminal-machine-secrets-remove-secret = Remove secret
+test-workspace-secrets = Machine secrets
+test-workspace-secrets-add-secret = Add secret
+test-workspace-secrets-remove-secret = Remove secret
 
 messages-drafts = Drafts
 

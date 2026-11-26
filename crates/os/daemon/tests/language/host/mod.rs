@@ -112,22 +112,22 @@ where
 ///
 /// When the person cannot be founded, or `body` fails.
 pub fn in_own_process(body: impl FnOnce(&Path)) {
-    in_own_process_with_packages(&[], body);
+    in_own_process_with(&[], body);
 }
 
-/// [`in_own_process`], on a device that has the Rust apps `rust` installed
-/// ([`run_with_packages`]).
+/// [`in_own_process`], on a device that has the tilolang apps `apps` (directories under
+/// `apps/tl`) installed ([`run_with`]).
 ///
 /// # Panics
 ///
-/// As [`in_own_process`], and when a package does not install.
-pub fn in_own_process_with_packages(rust: &[(&str, &str)], body: impl FnOnce(&Path)) {
+/// As [`in_own_process`], and when an app does not build or install.
+pub fn in_own_process_with(apps: &[&str], body: impl FnOnce(&Path)) {
     let test = std::thread::current()
         .name()
         .expect("libtest names a test's thread after the test")
         .to_owned();
     if std::env::var(OWN).ok().as_deref() != Some(test.as_str()) {
-        own_process(&test, &[], rust);
+        own_process(&test, apps, &[]);
         return;
     }
     say_what_went_wrong();
@@ -183,7 +183,7 @@ where
 
 /// [`run_with`], on a device that also has the Rust apps `rust` installed, each named by its
 /// package of this tree's `apps/` and the entrypoint binary this run built for it
-/// (`("terminal", "terminal")`): the daemon starts them the way a person's computer does.
+/// (`("messages", "messages")`): the daemon starts them the way a person's computer does.
 ///
 /// # Panics
 ///

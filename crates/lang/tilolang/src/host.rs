@@ -989,6 +989,7 @@ fn record_action(id: &str, label: &str, doc: &str, rest: Vec<ParamMeta>) -> Acti
         scenario: false,
         did: None,
         did_many: None,
+        keywords: Vec::new(),
         present: None,
         toggles: None,
         settles: None,

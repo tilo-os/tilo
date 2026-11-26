@@ -484,47 +484,34 @@ pub(crate) use client::{ShellRuntime, shell_runtime};
 /// The supervisor owns the workspace's environment records and answers their verbs; a provider
 /// that publishes them to apps (the workspace's environments) asks here, and so does anything
 /// else on the device that reaches the same runtime, so no provider makes a connection of its
-/// own. A request is one line and its answer the line after, on a connection opened and welcomed
-/// for it: the supervisor serves each connection as one app's, and a session's lease on one is
-/// not shared through this.
+/// own. A request is one line and its answer the line after, on the daemon's one connection to the
+/// runtime ([`super::ush_line`]), which the shells apps open are carried on too.
 #[cfg(target_os = "linux")]
 mod client {
-    use std::io::{BufRead as _, Read as _, Write as _};
-    use std::os::unix::net::UnixStream;
-    use std::path::PathBuf;
     use std::sync::{Arc, OnceLock};
-    use std::time::Duration;
 
     use serde_json::Value;
     use tilo_actions::remote::ActionCallError;
+    use ush::control_line::ControlLine;
 
-    /// How long the supervisor has to answer one request.
-    const ANSWER_WITHIN: Duration = Duration::from_secs(10);
-
-    /// The most one line of the supervisor's answer may carry.
-    const MAX_ANSWER: u64 = 4 * 1024 * 1024;
-
-    /// The control protocol a connection opens with, as `ush`'s supervisor negotiates it.
-    const PROTOCOL: u16 = 2;
-
-    /// This device's shell runtime, at the socket it listens on.
+    /// This device's shell runtime, on the daemon's one connection to it.
     pub(crate) struct ShellRuntime {
-        socket: PathBuf,
+        line: &'static ControlLine,
     }
 
     impl ShellRuntime {
-        /// The runtime of this login: where its services live.
+        /// The runtime of this login, on the connection the daemon's app shells use too.
         fn here() -> Self {
             Self {
-                socket: launcher::services::socket_for(launcher::services::USH_SERVICE),
+                line: crate::device::ush_line::here(),
             }
         }
 
         /// The runtime listening at `socket`.
         #[cfg(test)]
-        pub(crate) fn at(socket: impl Into<PathBuf>) -> Self {
+        pub(crate) fn at(socket: impl Into<std::path::PathBuf>) -> Self {
             Self {
-                socket: socket.into(),
+                line: Box::leak(Box::new(ControlLine::at(socket))),
             }
         }
 
@@ -536,52 +523,12 @@ mod client {
             workspace: &str,
             request: &Value,
         ) -> Result<Value, ActionCallError> {
-            let unavailable = |error: std::io::Error| ActionCallError::Unavailable {
-                reason: format!(
-                    "the environments are managed through Tilo's shell runtime: {error}"
-                ),
-            };
-            let mut stream = UnixStream::connect(&self.socket).map_err(unavailable)?;
-            stream
-                .set_read_timeout(Some(ANSWER_WITHIN))
-                .map_err(unavailable)?;
-            stream
-                .set_write_timeout(Some(ANSWER_WITHIN))
-                .map_err(unavailable)?;
-            stream
-                .write_all(format!("{{\"op\":\"hello\",\"protocol\":{PROTOCOL}}}\n").as_bytes())
-                .map_err(unavailable)?;
-            let mut reader = std::io::BufReader::new(stream.try_clone().map_err(unavailable)?);
-            let answered: Value = serde_json::from_str(
-                &answer_line(&mut reader).map_err(unavailable)?,
-            )
-            .map_err(|error| ActionCallError::Refused {
-                reason: format!("the shell runtime answered no hello: {error}"),
-            })?;
-            if answered.get("result").and_then(Value::as_str) != Some("ready") {
-                return Err(ActionCallError::Refused {
-                    reason: answered
-                        .get("reason")
-                        .and_then(Value::as_str)
-                        .unwrap_or("the shell runtime did not take the connection")
-                        .to_owned(),
-                });
-            }
-            let mut fields = request.clone();
-            if let Some(fields) = fields.as_object_mut() {
-                fields.insert("workspace".into(), Value::String(workspace.to_owned()));
-            }
-            let mut bytes =
-                serde_json::to_vec(&fields).map_err(|error| ActionCallError::InvalidRequest {
-                    reason: error.to_string(),
-                })?;
-            bytes.push(b'\n');
-            stream.write_all(&bytes).map_err(unavailable)?;
-            let answered: Value = serde_json::from_str(
-                &answer_line(&mut reader).map_err(unavailable)?,
-            )
-            .map_err(|error| ActionCallError::Refused {
-                reason: format!("the shell runtime answered no environments: {error}"),
+            let answered = self.line.ask_value(workspace, request).map_err(|error| {
+                ActionCallError::Unavailable {
+                    reason: format!(
+                        "the environments are managed through Tilo's shell runtime: {error}"
+                    ),
+                }
             })?;
             match answered.get("result").and_then(Value::as_str) {
                 Some("environments") => Ok(serde_json::json!({
@@ -619,18 +566,5 @@ mod client {
         if installed.is_err() {
             tracing::debug!("a shell runtime was installed already; the first one stands");
         }
-    }
-
-    /// One line of the supervisor's answer.
-    fn answer_line(reader: &mut std::io::BufReader<UnixStream>) -> std::io::Result<String> {
-        let mut line = String::new();
-        reader.by_ref().take(MAX_ANSWER).read_line(&mut line)?;
-        if line.is_empty() {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::UnexpectedEof,
-                "the shell runtime answered nothing",
-            ));
-        }
-        Ok(line)
     }
 }

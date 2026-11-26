@@ -177,7 +177,7 @@ fn a_members_terminal_stream_is_its_own_and_every_line_typed_is_recorded_once() 
             ui::apps::TERMINAL,
             record.route()
         );
-        let open = ActionAddress::new("terminal.session", "open-terminal");
+        let open = ActionAddress::new("tl.so.tilo.terminal.Session", "open-terminal");
         let (stream, session) = opened(
             laptop
                 .call(&provider, open.clone(), &json!({"cols": 100, "rows": 30}))

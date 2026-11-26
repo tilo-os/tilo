@@ -130,6 +130,10 @@ pub const ORIGIN_ACTION: &str = tilolang_runtime::store::ORIGIN_ACTION;
 /// The verb of what a package's scenario writes: its seed data, which no action of it makes.
 pub const SCENARIO_ACTION: &str = tilolang_runtime::store::SCENARIO_ACTION;
 
+/// The verb of what an `opened action` writes: what opening a resource does, which only the
+/// platform runs.
+pub const OPENED_ACTION: &str = tilolang_runtime::store::OPENED_ACTION;
+
 /// Who is behind the code that planned an action.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Authorship {

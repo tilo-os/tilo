@@ -1,5 +1,5 @@
-//! The path `apps/terminal` takes: ask the supervisor for a session on a target over the
-//! service socket, receive a pty master, and drive a shell through it.
+//! The path Terminal's engine takes: ask the supervisor for a session on a target over
+//! the service socket, receive a pty master, and drive a shell through it.
 //!
 //! The guest is built from an environment record whose images are fixture trees: a
 //! materialized native shell and runtime closure, and a tool that adds one command. The

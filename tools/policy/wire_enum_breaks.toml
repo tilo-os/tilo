@@ -124,11 +124,6 @@ enum = "ScopeJson"
 reason = "read and written as JSON by name; the variant that named the workspace scope keeps its name, and the key inside it that named the workspace says `workspace`, as `tests/links.json` does"
 
 [[break]]
-file = "apps/terminal/src/sessions.rs"
-enum = "Reply"
-reason = "one JSON line per reply from the ush supervisor, tagged by its `result` name; the `list-relays` ask that answered as `relays` went with the server environments, and both ends of the socket ship in one image"
-
-[[break]]
 file = "crates/vm/ush/src/supervisor.rs"
 enum = "ServeRequest"
 reason = "one JSON line per request over the supervisor's socket, tagged by its `op` name; only the server environment's client asked `list-relays`, and it went with that client"
@@ -470,11 +465,6 @@ reason = "the ten private action-connection frames went with the broker that ope
 file = "crates/core/actions/src/remote.rs"
 enum = "RemoteActionMessage"
 reason = "the record-request and record-watch frames went with the record API they served, and the variants after them move up; the remote-action envelope version is bumped from 1 to 2 with the removal, so the server refuses an older endpoint's frame as undeliverable instead of forwarding it to be read at the wrong positions"
-
-[[break]]
-file = "apps/terminal/src/target.rs"
-enum = "SessionTarget"
-reason = "the variant is renamed from `Legacy` to `LinuxVm` because that is the VM's name. A target is JSON in the terminal's own session record, where an unknown kind decodes as no target and the tab opens its default, so a record written by another build cannot be misread; nothing else sends it (the supervisor's target type does not carry a VM target)"
 
 [[break]]
 file = "crates/vm/ush/src/broker.rs"

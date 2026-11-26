@@ -994,6 +994,8 @@ impl AppWindow {
                     self.focus_request = Some(key.unwrap_or_default());
                     self.structure_dirty = true;
                 }
+                // The app closed its window: it goes as the person closing it does.
+                ToUi::CloseWindow => ui::shell_tabs::close_this(),
             }
         }
         self.check_budget()?;

@@ -386,9 +386,14 @@ fn served(root: &Path) -> (Arc<Daemon>, tilo_api::session::Provider, Caller) {
 /// its calls wrote.
 fn keep_records(daemon: &Daemon, socket: &Path) {
     let workspaces = daemon.workspaces().clone();
+    // The environments' kind, as the Terminal package that keeps them declares it.
+    let surface = serde_json::json!({
+        "format": 2,
+        "resources": [<tilo_environment::Environment as tilo_resource::Resource>::surface()],
+    });
     workspaces.declare_package_surface(
         tilo_app_id::apps::TERMINAL,
-        include_bytes!("../../../../../apps/terminal/surface.json"),
+        collab_types::surface::canonical(&surface).as_bytes(),
     );
     if let Some(parent) = socket.parent() {
         std::fs::create_dir_all(parent).expect("the records socket's directory");

@@ -446,6 +446,23 @@ fn described(
     if let Some(did) = &action.did {
         spec = spec.with_did(said_of(words, &action.id, "did", None, did));
     }
+    // Other words the system's search finds it by, in the reader's language.
+    if !action.keywords.is_empty() {
+        let said = said_of(
+            words,
+            &action.id,
+            "keywords",
+            None,
+            &action.keywords.join(", "),
+        );
+        spec = spec.with_keywords(
+            said.split(',')
+                .map(str::trim)
+                .filter(|word| !word.is_empty())
+                .map(str::to_owned)
+                .collect::<Vec<_>>(),
+        );
+    }
     if is_destructive(action) {
         spec = spec.destructive();
     }

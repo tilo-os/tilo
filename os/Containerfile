@@ -2261,9 +2261,9 @@ COPY os/etc/polkit-1/rules.d/49-tilo-device-steps.rules /etc/polkit-1/rules.d/49
 # it, and matches the compositor's DEFAULT_UNLOCK_HELPER path.
 # The confined shell runtime. Apps declare `ush = "required@<v>"` under
 # [sandbox.services] and the launcher refuses to start them when its socket is
-# absent — apps/terminal does, so without this binary and the user unit below
-# the packaged Terminal cannot launch. /usr/libexec because the terminal's own
-# lookup order is $TILO_USH_BIN, then /usr/libexec/tilo-ush, then $PATH.
+# absent. Terminal's engine asks it for every shell, so without this binary and
+# the user unit below Terminal opens none. /usr/libexec because the terminal's
+# own lookup order is $TILO_USH_BIN, then /usr/libexec/tilo-ush, then $PATH.
 # AirPlay 2 mirroring (FairPlay SAP, HAP pairing, encrypted video and
 # system audio) is delegated to the source-pinned, tested build above.
 RUN --mount=type=bind,from=external-assets,source=/,target=/tilo-assets,ro \

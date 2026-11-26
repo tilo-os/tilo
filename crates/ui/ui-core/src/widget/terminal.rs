@@ -26,12 +26,37 @@ use tilo_ui_base::{key_input, key_input::Button, key_input::Held, key_input::Key
 use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
+/// The height a grid takes where nothing bounds it, as on a page that scrolls: a screenful of
+/// rows at the body text's size.
+const UNBOUNDED_HEIGHT: f32 = 24.0 * 20.0;
+
 #[path = "terminal/terminal_component.rs"]
 mod component;
 pub use component::TerminalProps;
 
 /// How long the bell's flash stays on screen.
 const BELL_FLASH: crate::time::Duration = crate::time::Duration::from_millis(140);
+
+/// What a grid reports to the app that shows it, each as an event of the component.
+#[derive(Default)]
+pub struct GridEvents {
+    /// The program set the window's title.
+    pub title: tilo_ui_base::component::Event,
+    /// A run the shell marked ended, as JSON.
+    pub finished: tilo_ui_base::component::Event,
+    /// The shell exited: "exited", or its status.
+    pub exit: tilo_ui_base::component::Event,
+    /// The connection to the shell was lost: why.
+    pub lost: tilo_ui_base::component::Event,
+    /// A selection was finished: the text it copied.
+    pub selected: tilo_ui_base::component::Event,
+    /// The bell rang.
+    pub rung: tilo_ui_base::component::Event,
+    /// The shell asked for the lines its Up recalls, as JSON.
+    pub history: tilo_ui_base::component::Event,
+    /// The session's host holds a command until someone acts, as JSON; empty once it let it go.
+    pub held: tilo_ui_base::component::Event,
+}
 
 /// A terminal's grid: what a session shows and the input that reaches it.
 pub struct Terminal {
@@ -75,14 +100,11 @@ pub struct Terminal {
     accessible_name: String,
     copy_on_select: bool,
     bell_flash: bool,
+    allow_clipboard: bool,
     bell_at: Option<crate::time::Instant>,
     reduce_motion: bool,
     event_cursor: u64,
-    title: tilo_ui_base::component::Event,
-    exit: tilo_ui_base::component::Event,
-    finished: tilo_ui_base::component::Event,
-    selected: tilo_ui_base::component::Event,
-    rung: tilo_ui_base::component::Event,
+    events: GridEvents,
     /// What a find in the scrollback found, by the rows the matches stand on, and which one is
     /// current.
     found: Vec<crate::widget::FindMatch>,
@@ -129,14 +151,11 @@ impl Terminal {
             accessible_name: "Terminal".to_owned(),
             copy_on_select: false,
             bell_flash: false,
+            allow_clipboard: false,
             bell_at: None,
             reduce_motion: false,
             event_cursor: 0,
-            title: tilo_ui_base::component::Event::None,
-            exit: tilo_ui_base::component::Event::None,
-            finished: tilo_ui_base::component::Event::None,
-            selected: tilo_ui_base::component::Event::None,
-            rung: tilo_ui_base::component::Event::None,
+            events: GridEvents::default(),
             found: Vec::new(),
             found_spans: Vec::new(),
             found_at: 0,
@@ -155,6 +174,19 @@ impl Terminal {
     pub fn with_bell_flash(mut self, flash: bool) -> Self {
         self.bell_flash = flash;
         self
+    }
+
+    /// Let the program put text on the clipboard (OSC 52), as the person's preference allows.
+    #[must_use]
+    pub fn with_allow_clipboard(mut self, allow: bool) -> Self {
+        self.set_allow_clipboard(allow);
+        self
+    }
+
+    /// Whether the program may put text on the clipboard now: the session follows at once.
+    pub fn set_allow_clipboard(&mut self, allow: bool) {
+        self.allow_clipboard = allow;
+        self.session.allow_clipboard(allow);
     }
 
     #[must_use]
@@ -192,6 +224,7 @@ impl Terminal {
         id.clone_into(&mut self.session_id);
         self.session = crate::terminal::window_session(id)
             .unwrap_or_else(|| Arc::new(Missing) as SessionHandle);
+        self.session.allow_clipboard(self.allow_clipboard);
         self.keys =
             key_input::window_input(id).unwrap_or_else(|| self.session.clone() as Arc<dyn Keys>);
         self.revision = 0;
@@ -211,19 +244,8 @@ impl Terminal {
     }
 
     /// Take the events a host attached to this grid, and report through them from now on.
-    pub fn update_events(
-        &mut self,
-        title: tilo_ui_base::component::Event,
-        finished: tilo_ui_base::component::Event,
-        exit: tilo_ui_base::component::Event,
-        selected: tilo_ui_base::component::Event,
-        rung: tilo_ui_base::component::Event,
-    ) {
-        self.title = title;
-        self.finished = finished;
-        self.exit = exit;
-        self.selected = selected;
-        self.rung = rung;
+    pub fn update_events(&mut self, events: GridEvents) {
+        self.events = events;
     }
 
     /// Send the grid's size again, as a fresh session needs to hear it.
@@ -288,11 +310,11 @@ impl Terminal {
         self.event_cursor = cursor;
         for event in events {
             match event {
-                SessionEvent::Title(title) => self.fired(&self.title, title),
-                SessionEvent::Finished(json) => self.fired(&self.finished, json),
+                SessionEvent::Title(title) => self.fired(&self.events.title, title),
+                SessionEvent::Finished(json) => self.fired(&self.events.finished, json),
                 SessionEvent::Exit(code) => {
                     self.fired(
-                        &self.exit,
+                        &self.events.exit,
                         if code == 0 {
                             "exited".to_owned()
                         } else {
@@ -302,14 +324,14 @@ impl Terminal {
                     self.dirty = true;
                 }
                 SessionEvent::Lost(why) => {
-                    self.fired(&self.exit, why);
+                    self.fired(&self.events.lost, why);
                     self.dirty = true;
                 }
                 SessionEvent::Bell => {
                     if self.bell_flash {
                         self.bell_at = Some(crate::time::now());
                     }
-                    self.fired(&self.rung, String::new());
+                    self.fired(&self.events.rung, String::new());
                 }
                 SessionEvent::Clipboard(text, primary) => {
                     if primary {
@@ -317,6 +339,11 @@ impl Terminal {
                     } else {
                         tilo_ui_base::text_selection::clipboard_copy(&text);
                     }
+                }
+                SessionEvent::History(ask) => self.fired(&self.events.history, ask),
+                SessionEvent::Held(held) => {
+                    self.fired(&self.events.held, held);
+                    self.dirty = true;
                 }
             }
         }
@@ -474,7 +501,7 @@ impl Terminal {
             if self.copy_on_select {
                 tilo_ui_base::text_selection::clipboard_copy(&text);
             }
-            self.fired(&self.selected, text);
+            self.fired(&self.events.selected, text);
         }
         self.dirty = true;
     }
@@ -884,14 +911,41 @@ impl Widget for Terminal {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
+        // It takes the room its pane gives it, beside a banner or a bar in the same column, and a
+        // screenful of rows where nothing bounds it (a scrolling page).
         let style = taffy::Style {
             size: taffy::Size {
                 width: taffy::Dimension::percent(1.0),
-                height: taffy::Dimension::percent(1.0),
+                height: taffy::Dimension::auto(),
             },
+            min_size: taffy::Size {
+                width: taffy::Dimension::auto(),
+                height: taffy::Dimension::length(0.0),
+            },
+            flex_grow: 1.0,
+            flex_shrink: 1.0,
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
+    }
+
+    fn measure(
+        &mut self,
+        known: taffy::Size<Option<f32>>,
+        available: taffy::Size<taffy::AvailableSpace>,
+        _text_renderer: &mut TextRenderer,
+    ) -> taffy::Size<f32> {
+        let definite = |space: taffy::AvailableSpace| match space {
+            taffy::AvailableSpace::Definite(length) => Some(length),
+            taffy::AvailableSpace::MinContent | taffy::AvailableSpace::MaxContent => None,
+        };
+        taffy::Size {
+            width: known.width.or(definite(available.width)).unwrap_or(0.0),
+            height: known
+                .height
+                .or(definite(available.height))
+                .unwrap_or(UNBOUNDED_HEIGHT),
+        }
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
@@ -1078,6 +1132,28 @@ impl Widget for Terminal {
                 }
                 // With the command modifier alone, the window's shortcuts are the window's.
                 if modifiers.super_key() && !modifiers.control_key() && !modifiers.alt_key() {
+                    return;
+                }
+                // Ctrl+Plus, Minus and 0 zoom the window, never bytes for the shell; Ctrl+Tab and
+                // Ctrl+Shift+T are the desktop's tab chords, with no bytes of their own. Ctrl+T
+                // and Ctrl+W stay the shell's.
+                let conventions = tilo_ui_base::platform::PlatformConventions::default();
+                if crate::content_zoom::ZoomStep::from_key(conventions, modifiers, &key.logical_key)
+                    .is_some()
+                    || matches!(
+                        crate::shell_tabs::chord_request(
+                            &key.logical_key,
+                            conventions.command_modifier_down(modifiers),
+                            modifiers.shift_key(),
+                            modifiers.alt_key()
+                                || (modifiers.control_key() && modifiers.super_key()),
+                        ),
+                        Some(
+                            crate::shell_tabs::TabRequest::CycleTab { .. }
+                                | crate::shell_tabs::TabRequest::ReopenClosed
+                        )
+                    )
+                {
                     return;
                 }
                 if let Some(mapped) = key_input::map_key(&key.logical_key) {
@@ -1384,6 +1460,8 @@ impl Session for Missing {
     fn ended(&self) -> bool {
         true
     }
+
+    fn allow_clipboard(&self, _allow: bool) {}
 }
 
 impl Terminal {

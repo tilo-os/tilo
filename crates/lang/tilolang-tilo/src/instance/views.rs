@@ -87,13 +87,16 @@ impl Instance {
     pub(super) fn open_root(&mut self, host: &Host) {
         match host.open_layer_at(&self.app, &self.root_view) {
             Ok((target, view)) => {
-                self.root = Some(Shown::new(target, self.spaced(Level::Root, view)));
+                self.root = Some(Shown::new(target.clone(), self.spaced(Level::Root, view)));
                 self.leave_history();
                 let closed = self.detail.take().is_some() | self.facts.take().is_some();
                 if closed {
                     self.out.push(ToUi::Close);
                 }
                 self.send_open(Level::Root, None);
+                // The window opening on its root is an opening too: a Terminal window's session
+                // opens its shell, as a session opened from a list does.
+                self.run_opened(&target, 0);
                 self.commit_planned();
             }
             Err(error) => {
@@ -911,6 +914,8 @@ impl Instance {
                 // A view ended the keyboard's place in an editor: the window lets the field go,
                 // as closing the editor does.
                 ViewEvent::EndEdit => self.out.push(ToUi::Focus { key: None }),
+                // A view closed its window: the window goes as the person closing it does.
+                ViewEvent::CloseWindow => self.out.push(ToUi::CloseWindow),
                 ViewEvent::Seen { count } => {
                     self.seen_offer = true;
                     self.out.push(ToUi::Notice {

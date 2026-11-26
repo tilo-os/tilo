@@ -190,7 +190,6 @@ touch. Expanded neighbouring targets must not overlap.
 
 | Crate         | What it is                                                                                                                           |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
-| `terminal`    | GPU-accelerated terminal: portable-pty + vte; embeddable as a tile widget in the shell.                                              |
 | `code-editor` | Code editor / light IDE ("Code"): file-tree, editor tabs, syntect highlighting, command palette, problems panel.                     |
 
 ## Files & web
@@ -205,7 +204,7 @@ All apps are workspace members; build from the repo root. See
 [CONTRIBUTING.md](../CONTRIBUTING.md) for the toolchain and native dependencies:
 
 ```bash
-cargo build -p terminal -p file-explorer -p calculator
+cargo build -p poker -p remote
 ```
 
 Each app depends on the public SDK under the concise source name

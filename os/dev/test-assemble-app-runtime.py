@@ -262,11 +262,11 @@ class AssemblyNamespaces(unittest.TestCase):
     def test_selected_app_uses_the_same_catalogue_and_rejects_escape(self):
         repo = SOURCE.parents[2]
         rows = ASSEMBLER.applications(repo)
-        selected = ASSEMBLER.named_applications(repo, None, 'terminal')
+        selected = ASSEMBLER.named_applications(repo, None, 'poker')
         self.assertEqual(len(selected), 1)
         self.assertIn((selected[0]['package'], selected[0]['binary'], selected[0]['release']), rows)
-        self.assertEqual(selected[0]['package'], 'terminal')
-        for invalid in ('../terminal', 'terminal/..', 'not-a-real-app'):
+        self.assertEqual(selected[0]['package'], 'poker')
+        for invalid in ('../poker', 'poker/..', 'not-a-real-app'):
             with self.assertRaises(ValueError):
                 ASSEMBLER.named_applications(repo, None, invalid)
 
@@ -291,12 +291,12 @@ class AssemblyNamespaces(unittest.TestCase):
             # The cohort names what ships, so a leftover binary cannot join it.
             self.assertEqual(environment['COHORT_APPS'], cohort.replace(',', ' '))
             self.assertEqual(int(environment['REQUIRE_MIN']), cohort.count(',') + 1)
-            args.app = 'terminal'
-            args.cohort = 'terminal'
+            args.app = 'poker'
+            args.cohort = 'poker'
             with patch.object(ASSEMBLER, 'run') as run:
                 ASSEMBLER.package_inside(args)
             self.assertNotIn('COHORT_TAPP_DIR', run.call_args.kwargs['env'])
-            self.assertEqual(run.call_args.kwargs['env']['COHORT_APPS'], 'terminal')
+            self.assertEqual(run.call_args.kwargs['env']['COHORT_APPS'], 'poker')
 
     def test_developer_capture_is_readable_in_owned_namespace_but_outside_component_tree(self):
         with tempfile.TemporaryDirectory(prefix='assembly-compiler-') as directory:
@@ -601,7 +601,7 @@ class TilolangPackages(unittest.TestCase):
             plan_path.write_text(json.dumps(self.PLAN))
             args = SimpleNamespace(
                 repo=SOURCE.parents[2], target_dir=stage, stage=stage,
-                profile='thin-app', features='', app=None, cohort='terminal',
+                profile='thin-app', features='', app=None, cohort='poker',
                 compiler_interface_out=None, compiler_capture=None,
                 plan=self.PLAN, app_plan=plan_path)
             with patch.object(ASSEMBLER, 'run') as run:
@@ -609,7 +609,7 @@ class TilolangPackages(unittest.TestCase):
             environment = run.call_args.kwargs['env']
             self.assertEqual(environment['APP_PLAN'], str(plan_path))
             self.assertEqual(environment['TILOLANG_BIN'], str(stage / 'release/tilolang'))
-            self.assertEqual(environment['COHORT_APPS'], 'terminal tl-discussion tl-notes')
+            self.assertEqual(environment['COHORT_APPS'], 'poker tl-discussion tl-notes')
             self.assertEqual(environment['REQUIRE_MIN'], '3')
 
     def test_the_tilolang_tool_is_built_only_for_tilolang_packages(self):

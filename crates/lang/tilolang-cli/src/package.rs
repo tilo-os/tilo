@@ -609,6 +609,14 @@ fn uses_files(meta: &PackageMeta) -> bool {
         .any(|action| action.uses.iter().any(|effect| effect == "files"))
 }
 
+/// Whether any action of the package opens a shell the device runs (`uses shell`): what declares
+/// the `shells` capability.
+fn uses_shell(meta: &PackageMeta) -> bool {
+    meta.actions
+        .iter()
+        .any(|action| action.uses.iter().any(|effect| effect == "shell"))
+}
+
 /// The kinds of file the package's actions open (`opens:`), each once: the media types first, as
 /// the manifest's `[providers] mime`, then the extensions, as its `ext`. An app that opens no files
 /// offers none, and Files opens none of them with it.
@@ -652,6 +660,11 @@ fn sandbox_plan(meta: &PackageMeta, program: Option<&SourceProgram>) -> SandboxP
         &meta.web,
         releases_secrets(meta),
     );
+    // An action that opens a shell (`uses shell`) asks the device for one, which it opens only
+    // for a package that declares it.
+    if uses_shell(meta) {
+        plan.declare_capabilities(&[tilo_app_package::manifest::SHELLS.to_owned()], &[]);
+    }
     if let Some(program) = program {
         plan.declare_capabilities(&program.required, &program.optional);
         if let Some(net) = &program.net {

@@ -119,6 +119,18 @@ tilo_test_env::scenario! {
         );
     }
 
+    phase close_is_a_view_action_and_only_a_views;
+    {
+        // A view closes the window it stands in, as a press or an event of it asks: a terminal
+        // whose shell exited. An action or a function has no window to close.
+        validate(&compile_body("view v() {\n    button(label: \"Done\", on: close())\n}").wasm);
+        assert_eq!(codes("fn f() -> Action {\n    close()\n}"), vec!["E067"]);
+        assert_eq!(
+            codes("view v() {\n    button(label: \"Done\", on: close(1))\n}"),
+            vec!["E022"]
+        );
+    }
+
     phase options_are_dot_literals_of_the_primitives_enums;
     // USER REQUIREMENT (2026-10-20): "layout/UI arguments become typed enums declared by the
     // primitives (`gap: .section`, `align: .center`, ...); bare words are no longer accepted there

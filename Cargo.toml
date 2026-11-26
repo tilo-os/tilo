@@ -100,7 +100,6 @@ members = [
     "apps/messages",
     "apps/imager",
     "apps/staging-handoff-model",
-    "apps/terminal",
 
     # Agent
     "crates/core/agent-session",

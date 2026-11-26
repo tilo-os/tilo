@@ -213,7 +213,8 @@ impl<'a> Validator<'a> {
             | ToUi::Activate
             | ToUi::Kept(_)
             | ToUi::History(_)
-            | ToUi::Took { .. } => Ok(()),
+            | ToUi::Took { .. }
+            | ToUi::CloseWindow => Ok(()),
             ToUi::Focus { key } => match key {
                 Some(key) => self.key(key),
                 None => Ok(()),

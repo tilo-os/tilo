@@ -49,9 +49,9 @@ BUDGETS = json.loads((HERE.parent / "budgets.json").read_text())
 # its own, so the pace is what a person watching needs, not a screen's frame rate.
 FRAME_SECONDS = 0.4
 # What a person's computer has before they open Tilo: the shell, which every session runs, and
-# Terminal, the app the nested session's build always installs. Every other package a story's
-# steps open is named by the story (its tilolang apps).
-APPS = "terminal"
+# the apps the stories' steps open (their tilolang packages). Any other package a story's steps
+# open is named by the story.
+APPS = "files settings"
 # How the shell names a person's own face on the bar: their name, then what pressing it opens —
 # their own card, or on the canvas the menu that holds the card and the styles.
 FACE_CARD = ": open your card"

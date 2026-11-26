@@ -8127,6 +8127,11 @@
           "name": "bell_flash",
           "doc": "Flash the grid when the program rings the bell.",
           "type": "bool"
+        },
+        {
+          "name": "allow_clipboard",
+          "doc": "Let the program put text on the clipboard (OSC 52): off unless the person allowed it.",
+          "type": "bool"
         }
       ],
       "events": [
@@ -8142,7 +8147,12 @@
         },
         {
           "name": "exit",
-          "doc": "The shell ended: carries \"exited\", its status, or why the connection was lost.",
+          "doc": "The shell exited: carries \"exited\", or its status.",
+          "value": "text"
+        },
+        {
+          "name": "lost",
+          "doc": "The connection to the shell was lost: carries why.",
           "value": "text"
         },
         {
@@ -8153,6 +8163,16 @@
         {
           "name": "rung",
           "doc": "The bell rang.",
+          "value": "text"
+        },
+        {
+          "name": "history",
+          "doc": "The shell asked for the lines its Up recalls: carries the ask as JSON, which the app answers from the history it keeps.",
+          "value": "text"
+        },
+        {
+          "name": "held",
+          "doc": "The session's host holds the command at the prompt until someone acts: carries why as JSON, and empty text once it let it go.",
           "value": "text"
         }
       ],
@@ -10778,6 +10798,14 @@
           "name": "choose",
           "doc": "It was chosen.",
           "press": true
+        }
+      ],
+      "bindings": [
+        {
+          "name": "value",
+          "doc": "A setting it turns on and off (`bind: prefs.copy_on_select`): the row is checked while it is on, and choosing it flips it, as a checkbox bound to it would.",
+          "type": "bool",
+          "merge": "register"
         }
       ],
       "semantics": {
