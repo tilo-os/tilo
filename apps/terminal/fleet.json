@@ -293,7 +293,6 @@
   "sealed": [
     "terminal.history"
   ],
-  "previously": [],
   "listed": true,
   "surface_file": "surface.json"
 }

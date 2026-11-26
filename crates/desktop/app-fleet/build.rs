@@ -66,7 +66,6 @@ struct Entry {
     private: Vec<String>,
     #[serde(default)]
     sealed: Vec<String>,
-    previously: Vec<String>,
     /// Whether search and the Store offer it.
     listed: bool,
     /// Its compiled surface, when the app generates it from its own source.
@@ -186,16 +185,13 @@ fn dirs(dir: &Path) -> Vec<PathBuf> {
 
 /// Refuse two apps claimed by one id: a device could not tell them apart.
 fn claim_each_id(apps: &[App]) -> Result<(), Box<dyn Error>> {
-    let mut claimed: Vec<(&str, &str)> = Vec::new();
+    let mut claimed: Vec<&str> = Vec::new();
     for app in apps {
-        for id in std::iter::once(app.entry.id.as_str())
-            .chain(app.entry.previously.iter().map(String::as_str))
-        {
-            if let Some((_, holder)) = claimed.iter().find(|(known, _)| *known == id) {
-                return Err(format!("{id} is claimed by {holder} and {}", app.entry.id).into());
-            }
-            claimed.push((id, app.entry.id.as_str()));
+        let id = app.entry.id.as_str();
+        if claimed.contains(&id) {
+            return Err(format!("{id} is claimed by two apps").into());
         }
+        claimed.push(id);
     }
     Ok(())
 }
@@ -208,7 +204,6 @@ fn render(apps: &[App], sections: Option<&str>) -> String {
          use super::FleetApp;\n\n",
     );
     let listed: Vec<&App> = apps.iter().filter(|app| app.entry.listed).collect();
-    out.push_str(&previous(&listed));
     out.push_str(&own_windows(&listed));
     out.push_str(&document_windows(&listed));
     out.push_str(&kinds_by_app(
@@ -232,24 +227,6 @@ fn render(apps: &[App], sections: Option<&str>) -> String {
         out.push_str(&app_module(app));
     }
     out.push_str("];\n");
-    out
-}
-
-/// `(an id an app answers by besides its own, the app it names)`.
-fn previous(apps: &[&App]) -> String {
-    let mut out = String::from(
-        "/// `(an id an app answers by besides its own, the app it names)`.\n\
-         pub(super) const PREVIOUS: &[(&str, &str)] = &[\n",
-    );
-    for app in apps {
-        for old in &app.entry.previously {
-            line(
-                &mut out,
-                &format!("    ({}, {}),", quoted(old), quoted(&app.entry.id)),
-            );
-        }
-    }
-    out.push_str("];\n\n");
     out
 }
 

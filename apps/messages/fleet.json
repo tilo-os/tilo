@@ -29,7 +29,6 @@
   "private": [
     "messages.drafts"
   ],
-  "previously": [],
   "listed": true,
   "surface_file": "surface.json"
 }

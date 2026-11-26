@@ -77,8 +77,6 @@ pub struct FleetEntry {
     pub sealed: Vec<String>,
     /// The compiled surface its package ships, as generated from the same metadata.
     pub surface: String,
-    /// The ids it was published under before.
-    pub previously: Vec<String>,
 }
 
 /// One action an app offers while closed, as its manifest's `[[offers]]` declare it.
@@ -193,7 +191,6 @@ pub fn fleet(dir: &Path, search: &[PathBuf]) -> Result<Option<FleetEntry>, Strin
             Vec::new()
         },
         surface: String::from_utf8_lossy(&surface).into_owned(),
-        previously: meta.previously.clone(),
     }))
 }
 
@@ -407,7 +404,6 @@ pub struct FleetFile {
     pub private: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub sealed: Vec<String>,
-    pub previously: Vec<String>,
     /// Whether search and the Store offer the app; a service publishes a surface without it.
     pub listed: bool,
     /// Its compiled surface, when it is generated from the app's own source.
@@ -437,7 +433,6 @@ impl FleetFile {
             window_documents: entry.window_documents,
             private: Vec::new(),
             sealed: entry.sealed,
-            previously: entry.previously,
             listed: true,
             surface: Some(entry.surface),
             surface_file: None,
@@ -629,10 +624,6 @@ fn native_fleet(dir: &Path) -> Result<Option<NativeEntry>, String> {
         .map(strings)
         .filter(|declared| !declared.is_empty())
         .unwrap_or_else(|| NATIVE_PLATFORMS.map(ToOwned::to_owned).to_vec());
-    let previously = package
-        .and_then(|package| package.get("previously"))
-        .map(strings)
-        .unwrap_or_default();
     let names = package
         .map(|package| other_names(package, &name))
         .unwrap_or_default();
@@ -676,7 +667,6 @@ fn native_fleet(dir: &Path) -> Result<Option<NativeEntry>, String> {
             window_documents: declares(dir, DOCUMENT_WINDOWS),
             sealed: declared("sealed"),
             surface,
-            previously,
         },
         private,
         listed: kind == "app" && entry_type == "gui",

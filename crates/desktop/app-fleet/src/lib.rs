@@ -248,18 +248,15 @@ pub fn package_kind(package_id: &str) -> String {
     format!("tl.{}", canonical(package_id))
 }
 
-/// `package_id` as the fleet names it: a development build's `dev.tilo.` app is its `so.tilo.` one,
-/// and an id an app was published under before names that app.
+/// `package_id` as the fleet names it: a development build's `dev.tilo.` app is its `so.tilo.` one.
+/// An id an app was published under before is the policy's to resolve, from what the app's signed
+/// package declares when it loads (`tilo_action_policy::earlier`).
 fn canonical(package_id: &str) -> std::borrow::Cow<'_, str> {
-    let canonical = package_id
+    package_id
         .strip_prefix("dev.tilo.")
-        .map_or_else(|| package_id.to_owned(), |name| format!("so.tilo.{name}"));
-    let previous = generated::PREVIOUS
-        .iter()
-        .find(|(old, _)| old.eq_ignore_ascii_case(&canonical));
-    previous.map_or(std::borrow::Cow::Owned(canonical), |(_, app)| {
-        std::borrow::Cow::Borrowed(*app)
-    })
+        .map_or(std::borrow::Cow::Borrowed(package_id), |name| {
+            std::borrow::Cow::Owned(format!("so.tilo.{name}"))
+        })
 }
 
 #[cfg(test)]
@@ -267,14 +264,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_dev_build_and_a_previous_id_name_the_app_the_fleet_knows() {
+    fn a_dev_build_names_the_app_the_fleet_knows() {
         assert_eq!(
             metadata("dev.tilo.sheets").map(|app| app.id),
             Some("so.tilo.sheets")
-        );
-        assert_eq!(
-            metadata("so.tilo.lang.chat").map(|app| app.id),
-            Some("so.tilo.chat")
         );
         for app in apps() {
             assert_eq!(metadata(app.id).map(|known| known.id), Some(app.id));
