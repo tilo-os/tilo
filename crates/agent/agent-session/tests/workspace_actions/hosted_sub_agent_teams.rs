@@ -159,6 +159,40 @@ fn names_any(shown: &str, others: &[&str]) -> bool {
     others.iter().any(|other| shown.contains(other))
 }
 
+/// Request the selected apps from the keeper's certified page and approve the exact proposal.
+async fn approve_team_apps(
+    served: &Hosted,
+    root: &SigningKey,
+    workspace: &str,
+    page: &mut Browser,
+    apps: &[&str],
+) -> ServerAgents {
+    use tilo_server_protocol::agents::AgentGrantAction;
+    if apps == [CHAT] {
+        member_grant_action(page, AgentGrantAction::RequestChat).await;
+    } else {
+        let target = AgentGrantAction::RequestApps.target(SCOUT);
+        let receipt = page
+            .invoke(request(
+                &target.provider,
+                target.address,
+                InvokeArgument::Json(serde_json::Map::from_iter([("apps".into(), json!(apps))])),
+            ))
+            .await;
+        assert!(
+            matches!(receipt.status, ReceiptStatus::Completed { .. }),
+            "{receipt:?}"
+        );
+    }
+    approve_member_grant(served, root, WorkspaceId::parse(workspace).unwrap(), apps).await;
+    ServerAgents::with_sessions(
+        served.workspaces().unwrap().clone(),
+        served.roster.actions.clone(),
+        Arc::new(served.server.agent_link()),
+        served.roster.sessions.clone(),
+    )
+}
+
 /// A Chat turn can discover and start a team only after its keeper grants Assistant.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_chat_turn_needs_the_assistant_grant_to_discover_and_start_a_team() {
@@ -176,30 +210,8 @@ async fn a_chat_turn_needs_the_assistant_grant_to_discover_and_start_a_team() {
         let permitted = apps.contains(&OWNER);
         if permitted {
             member_grant_action(&mut page, AgentGrantAction::Revoke).await;
-            let target = AgentGrantAction::RequestApps.target(SCOUT);
-            let request = request(
-                &target.provider,
-                target.address,
-                InvokeArgument::Json(serde_json::Map::from_iter([(
-                    "apps".to_owned(),
-                    json!(apps),
-                )])),
-            );
-            let receipt = page.invoke(request).await;
-            assert!(
-                matches!(receipt.status, ReceiptStatus::Completed { .. }),
-                "{receipt:?}"
-            );
-        } else {
-            member_grant_action(&mut page, AgentGrantAction::RequestChat).await;
         }
-        approve_member_grant(
-            &served,
-            &root,
-            WorkspaceId::parse(&workspace).unwrap(),
-            apps,
-        )
-        .await;
+        let agents = approve_team_apps(&served, &root, &workspace, &mut page, apps).await;
         let asked = Arc::new(Mutex::new(Vec::new()));
         let model = plays(&asked, |request| match tool_answers(request).len() {
             0 => looks(),
@@ -210,13 +222,7 @@ async fn a_chat_turn_needs_the_assistant_grant_to_discover_and_start_a_team() {
             ),
             _ => says("Finished."),
         });
-        let agents = ServerAgents::with_sessions(
-            workspaces.clone(),
-            actions.clone(),
-            Arc::new(served.server.agent_link()),
-            served.roster.sessions.clone(),
-        )
-        .scripted(model);
+        let agents = agents.scripted(model);
         let post = writes_in(
             &actions,
             &workspaces,
@@ -1233,7 +1239,7 @@ async fn the_servers_own_persons_turn_starts_a_sub_agent_where_peoples_own_works
 }
 
 /// A sub-agent of a sub-agent may do nothing its starter may not. The person approves their
-/// own agent for Chat alone and allows two levels. Its turn starts a lead, whose turn starts
+/// own agent for Chat and Assistant and allows two levels. Its turn starts a lead, whose turn starts
 /// a worker: each answers in its own conversation, which Chat lets the approved key write,
 /// and each is refused filing an issue in Tasks, which the approval leaves out, as the agent
 /// above it is.
@@ -1249,8 +1255,8 @@ async fn a_sub_agent_of_a_sub_agent_does_nothing_its_starter_may_not() {
     let thread = direct(&person, SCOUT);
     let plans = Plans::default();
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = served
-        .approving_for(&workspace, &[SCOUT], &["so.tilo.chat"])
+    let mut page = page;
+    let agents = approve_team_apps(&served, &root, &workspace, &mut page, &[CHAT, OWNER])
         .await
         .scripted(plans.model(&asked));
     on_roster(
@@ -1262,6 +1268,12 @@ async fn a_sub_agent_of_a_sub_agent_does_nothing_its_starter_may_not() {
     .await
     .expect("its keeper says in person how deep sub-agents go");
     let issue = || json!({"issues": [{"title": "Ship it", "status": "todo"}]});
+    let denied_tasks = |answer: &(String, bool)| {
+        answer.1
+            && answer
+                .0
+                .ends_with("this agent was not approved to change so.tilo.tasks")
+    };
     plans.set(
         MAIN,
         "Plan the launch.",
@@ -1296,7 +1308,7 @@ async fn a_sub_agent_of_a_sub_agent_does_nothing_its_starter_may_not() {
     assert_eq!(main.len(), 2, "{main:?}");
     assert!(!main[0].1, "its own agent starts the lead: {}", main[0].0);
     assert!(
-        main[1].1 && refused_in_words(&main[1].0),
+        denied_tasks(&main[1]),
         "its approval leaves Tasks out: {}",
         main[1].0
     );
@@ -1314,7 +1326,7 @@ async fn a_sub_agent_of_a_sub_agent_does_nothing_its_starter_may_not() {
     assert_eq!(lead.len(), 2, "{lead:?}");
     assert!(!lead[0].1, "the lead starts its worker: {}", lead[0].0);
     assert!(
-        lead[1].1 && refused_in_words(&lead[1].0),
+        denied_tasks(&lead[1]),
         "the lead may not file what its starter may not: {}",
         lead[1].0
     );
@@ -1331,7 +1343,7 @@ async fn a_sub_agent_of_a_sub_agent_does_nothing_its_starter_may_not() {
     let worker = plans.answers(WORKER);
     assert_eq!(worker.len(), 1, "{worker:?}");
     assert!(
-        worker[0].1 && refused_in_words(&worker[0].0),
+        denied_tasks(&worker[0]),
         "nor may the worker the lead started: {}",
         worker[0].0
     );
