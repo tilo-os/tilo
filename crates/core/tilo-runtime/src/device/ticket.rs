@@ -1160,15 +1160,7 @@ impl Tickets {
         // The id a development build runs under is the acting person's own to ask, as installing
         // the build is: it is derived from this device's key, and the build is compiled for it.
         if action == DEV_ID {
-            let personal = !tilo_api::daemon::system_daemon();
-            let answer = match dev_id_answer(caller, personal, &args, &self.0.key) {
-                Ok(answer) => answer,
-                Err(error) => return Pending::ready(Err(error)),
-            };
-            let state = InvocationState::new(invocation, succeeded(invocation, answer));
-            let receipt = state.receipt();
-            self.0.calls.lock_recover().insert(invocation, state);
-            return Pending::ready(Ok(receipt));
+            return self.dev_id_answered(&args, invocation, caller);
         }
         // A device confined to one workspace, by a certificate for it or one placed for records of
         // it, issues no ticket: adding a computer is the person's own act on a device that keeps
@@ -1219,6 +1211,9 @@ impl Tickets {
             }
             return Pending::ready(self.answer_at_once(&action, &args, rooted, invocation));
         }
+        if action == REVOKE {
+            return self.revoke_answered(&args, invocation, caller);
+        }
         let accepted = InvocationState::new(invocation, InvocationUpdate::Accepted { invocation });
         let receipt = accepted.receipt();
         self.0.calls.lock_recover().insert(invocation, accepted);
@@ -1259,6 +1254,53 @@ impl Tickets {
                 served.0.ended.notify_waiters();
             }));
         Pending::ready(Ok(receipt))
+    }
+
+    /// Answer [`DEV_ID`] here and now: the id a development build runs under is the acting
+    /// person's own to ask, as installing the build is.
+    fn dev_id_answered(
+        &self,
+        args: &Value,
+        invocation: InvocationId,
+        caller: &tilo_actions::remote::Caller,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let personal = !tilo_api::daemon::system_daemon();
+        let answer = match dev_id_answer(caller, personal, args, &self.0.key) {
+            Ok(answer) => answer,
+            Err(error) => return Pending::ready(Err(error)),
+        };
+        let state = InvocationState::new(invocation, succeeded(invocation, answer));
+        let receipt = state.receipt();
+        self.0.calls.lock_recover().insert(invocation, state);
+        Pending::ready(Ok(receipt))
+    }
+
+    /// Answer [`REVOKE`] once this device refuses the key, not when it is queued: the very next
+    /// call the key makes, from the answer on, reaches nothing.
+    fn revoke_answered(
+        &self,
+        args: &Value,
+        invocation: InvocationId,
+        caller: &tilo_actions::remote::Caller,
+    ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
+        let (answered, answer) = tilo_actions::remote::pending();
+        let served = self.clone();
+        let (args, action, person) = (args.clone(), REVOKE.to_owned(), caller_person(caller));
+        self.0
+            .runtime
+            .spawn(super::services::with_root_caller(person, async move {
+                let answer = served.manage(&action, &args).await;
+                let update = match answer {
+                    Ok(value) => succeeded(invocation, value),
+                    Err(error) => failed(invocation, &format!("{error:#}")),
+                };
+                let state = InvocationState::new(invocation, update);
+                let receipt = state.receipt();
+                served.0.calls.lock_recover().insert(invocation, state);
+                served.0.ended.notify_waiters();
+                answered.complete(Ok(receipt));
+            }));
+        answer
     }
 
     /// Answer `action` here and now, with the root the calling account keeps where only it signs
