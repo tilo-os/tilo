@@ -39,11 +39,6 @@ text = "See the app's window as a picture: answers with the image and the revisi
 reason = "What the screenshot tool answers an agent."
 
 [[allow]]
-file = "crates/sdk/tilo-app/src/runner/outline.rs"
-text = "Read what the app's window shows as lines: every label, value and control in reading \\\n         order, each control's action and where it stands. With picture, also the view as a \\\n         picture. With an anchor, shows that item first."
-reason = "What the outline tool answers an agent, never shown in a window."
-
-[[allow]]
 file = "crates/sdk/tilo-app/src/framework/chain/reading.rs"
 text = "What this holds as typed data: the items of its parts, the newest part first, a page at \\\n         a time with `cursor` passing on where a page ended, each as its collection holds it \\\n         (`{id, value}`, the value kept to the fields asked for in `fields`), only the items \\\n         `where` holds of; an item's own content when the read is of that item, by its id."
 reason = "What a chain's read answers an agent: what the item of a part holds, and how the parts page."
@@ -61,7 +56,7 @@ reason = "A sample label in the widget that trips on a replaced widget."
 
 [[allow]]
 file = "crates/core/tilo-resource/src/read.rs"
-text = "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content. With version, read frozen historical content and its exact heads without changing the live resource."
+text = "What this holds as typed data: with no item, the resource and the ids of what it contains; with an item id, that item's content, each resource with who made it, when and what from (`created`). With field, where, after and limit, a page of one collection's items: those whose fields hold the values `where` names, or that were made from its `from`. With version, read frozen historical content and its exact heads without changing the live resource."
 reason = "What the read tool answers an agent, never shown in a window."
 
 [[allow]]
