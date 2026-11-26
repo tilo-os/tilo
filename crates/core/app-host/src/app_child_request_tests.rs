@@ -210,7 +210,7 @@ async fn an_effects_call_of_another_apps_action_is_its_callers_by_their_grants()
     tokio::task::LocalSet::new()
         .run_until(async {
             use crate::test_support::KindSet;
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             env.agent_may("scribe", KindSet::READ, &[&env.route.app_id, NOTES]);
             let mut notes = publish_notes(&rig, &env);
@@ -276,7 +276,7 @@ async fn an_effects_call_of_another_apps_action_is_its_callers_by_their_grants()
 async fn a_call_continuing_what_an_app_asked_of_itself_is_the_apps_own() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let mut notes = publish_notes(&rig, &env);
             let app = rig.worker.handle.clone();
@@ -300,7 +300,7 @@ async fn a_call_continuing_what_an_app_asked_of_itself_is_the_apps_own() {
 async fn a_call_continuing_the_persons_press_is_theirs_and_an_app_cannot_make_one() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let (rig, _launcher) = pressed_opens_rig(&env).await;
             let mut notes = publish_notes(&rig, &env);
             let app = rig.worker.handle.clone();
@@ -365,7 +365,7 @@ async fn a_child_reaches_no_further_than_what_it_continues() {
     tokio::task::LocalSet::new()
         .run_until(async {
             use crate::test_support::KindSet;
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             env.agent_may("scribe", KindSet::READ, &[&env.route.app_id, NOTES]);
             let mut notes = publish_notes(&rig, &env);
@@ -433,7 +433,7 @@ async fn a_child_reaches_no_further_than_what_it_continues() {
 async fn a_persons_invocation_lets_its_effect_call_another_app_as_them() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = native_person_rig(&env).await;
             let mut notes = publish_notes(&rig, &env);
             let app = rig.worker.handle.clone();
@@ -457,7 +457,7 @@ async fn a_persons_invocation_lets_its_effect_call_another_app_as_them() {
 async fn a_persons_child_call_asks_them_only_where_its_own_rule_does() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = native_person_rig(&env).await;
             let mut notes = publish_notes(&rig, &env);
             let app = rig.worker.handle.clone();
@@ -508,7 +508,7 @@ async fn a_persons_child_call_asks_them_only_where_its_own_rule_does() {
 async fn a_persons_read_does_not_make_their_edit_unasked() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = native_person_rig(&env).await;
             let mut notes = publish_notes(&rig, &env);
             let app = rig.worker.handle.clone();
@@ -591,7 +591,7 @@ impl crate::services::LocalPersonServices for Arriving {
 async fn a_persons_first_action_is_answered_once_the_identity_names_them() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::with_services(
                 &env,
                 ProcessServices {
@@ -656,7 +656,7 @@ impl crate::services::WorkspaceGrants for TreeGrants {
 async fn an_apps_own_change_of_another_app_waits_for_the_person_until_a_grant_names_it() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let mut services = env.membership.services();
             // Where a grant given once is taken back: the workspace's grants.
             services.workspace_grants = Some(Arc::new(TreeGrants(env.membership.clone())));

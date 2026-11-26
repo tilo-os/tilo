@@ -1006,16 +1006,9 @@ pub(crate) mod signed_test_support {
             self.policy_origin.invalidate();
         }
 
-        pub fn new(services: ProcessServices) -> Self {
-            Self::building(services, false)
-        }
-
-        /// [`Self::new`] in a workspace of its own that no other fixture in the process opened.
-        pub fn in_workspace(services: ProcessServices) -> Self {
-            Self::building(services, true)
-        }
-
-        fn building(services: ProcessServices, fresh: bool) -> Self {
+        /// The fixture in the process's shared test workspace, or, when `fresh`, in a
+        /// workspace of its own that no other fixture in the process opened.
+        pub fn new(services: ProcessServices, fresh: bool) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let mut environment = tilo_test_env::ScopedEnv::new();
             environment
@@ -1619,7 +1612,7 @@ mod identity_admin_tests {
                     let mut f = if certified {
                         super::signed_test_support::Fixture::new_certified(services)
                     } else {
-                        super::signed_test_support::Fixture::new(services)
+                        super::signed_test_support::Fixture::new(services, false)
                     };
                     f.caller = f.caller.clone().in_new_execution();
                     let asked = request(device_tickets::REMOVE_IDENTITY, Some(crate::collab_app_broker::person_approved("workspace", tilo_actions::InvocationId::new())));
@@ -1742,7 +1735,7 @@ mod identity_admin_tests {
             let f = super::signed_test_support::Fixture::new(crate::services::ProcessServices {
                 providers: Some(providers(host.clone())),
                 ..Default::default()
-            });
+            }, false);
             let asked = request(device_tickets::REMOVE_IDENTITY, Some(crate::collab_app_broker::person_approved("workspace", tilo_actions::InvocationId::new())));
             *host.admission_check.lock().unwrap() = Some(f.admission_check(&asked));
             let receipt = f.invoke(&asked).unwrap();
@@ -1782,7 +1775,7 @@ mod identity_admin_tests {
                 let f = super::signed_test_support::Fixture::new(crate::services::ProcessServices {
                     providers: Some(providers(host.clone())),
                     ..Default::default()
-                });
+                }, false);
                 let asked = request(device_tickets::REMOVE_IDENTITY, Some(crate::collab_app_broker::person_approved("workspace", tilo_actions::InvocationId::new())));
                 f.invoke(&asked).unwrap();
                 // The service has accepted the effect; losing its answer does not
@@ -1826,7 +1819,7 @@ mod identity_admin_tests {
                 let f = super::signed_test_support::Fixture::new(crate::services::ProcessServices {
                     providers: Some(providers(host.clone())),
                     ..Default::default()
-                });
+                }, false);
                 let asked = request(device_tickets::REMOVE_IDENTITY, Some(crate::collab_app_broker::person_approved("workspace", tilo_actions::InvocationId::new())));
                 if admission_failure {
                     f.fail_next_barrier();
@@ -1858,12 +1851,12 @@ mod identity_admin_tests {
             for revoked in [false, true] {
                 let host = Arc::new(Host::default());
                 // A workspace of this fixture's own: no host opened it, so it signs nothing.
-                let f = super::signed_test_support::Fixture::in_workspace(
+                let f = super::signed_test_support::Fixture::new(
                     crate::services::ProcessServices {
                         providers: Some(providers(host.clone())),
                         ..Default::default()
                     },
-                );
+                , true);
                 if revoked {
                     f.authority
                         .revoked

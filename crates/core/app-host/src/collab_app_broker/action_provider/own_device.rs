@@ -348,7 +348,7 @@ mod tests {
                             services,
                         )
                     } else {
-                        super::super::super::provided::signed_test_support::Fixture::new(services)
+                        super::super::super::provided::signed_test_support::Fixture::new(services, false)
                     };
                     f.caller = f.caller.clone().in_new_execution();
                     let asked = request(&invocation(SETTINGS));
@@ -573,12 +573,12 @@ mod tests {
             for revoked in [false, true] {
                 let network = Arc::new(Network::default());
                 // A workspace of this fixture's own: no host opened it, so it signs nothing.
-                let f = super::super::super::provided::signed_test_support::Fixture::in_workspace(
+                let f = super::super::super::provided::signed_test_support::Fixture::new(
                     crate::services::ProcessServices {
                         own_device: Some(network.clone()),
                         ..Default::default()
                     },
-                );
+                , true);
                 if revoked {
                     f.authority
                         .revoked

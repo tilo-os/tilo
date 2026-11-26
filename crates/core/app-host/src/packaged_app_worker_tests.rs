@@ -142,7 +142,7 @@ async fn an_app_the_shell_launched_is_the_worker_of_its_own_routes() {
     tokio::task::LocalSet::new()
         .run_until(async {
             const APP_PEER: u64 = 905;
-            let env = Environment::new();
+            let env = Environment::new(true);
             let mut services = env.membership.services();
             services.workspace_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
             services.launcher = Some(Arc::new(LaunchedHere {
@@ -265,7 +265,7 @@ async fn a_session_with_many_windows_and_records_keeps_every_worker() {
         .run_until(async {
             const WINDOWS: usize = 48;
             const RECORDS: usize = 6;
-            let env = Environment::new();
+            let env = Environment::new(true);
             let mut services = env.membership.services();
             services.workspace_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
             services.launcher = Some(Arc::new(LaunchedHere {
@@ -389,7 +389,7 @@ async fn a_window_publishes_every_record_it_holds_and_withdraws_one_it_drops() {
     tokio::task::LocalSet::new()
         .run_until(async {
             const WINDOW: u64 = 907;
-            let env = Environment::new();
+            let env = Environment::new(true);
             let mut services = env.membership.services();
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: env.route.app_id.clone(),
@@ -530,7 +530,7 @@ async fn a_journaled_session_admits_the_app_its_launcher_started() {
     tokio::task::LocalSet::new()
         .run_until(async {
             const APP_PEER: u64 = 907;
-            let env = Environment::new();
+            let env = Environment::new(true);
             let mut services = env.membership.services();
             services.launcher = Some(Arc::new(LaunchedHere {
                 app: env.route.app_id.clone(),
@@ -611,7 +611,7 @@ async fn a_journaled_session_admits_an_apps_declared_read_of_another_app() {
     tokio::task::LocalSet::new()
         .run_until(async {
             const READER_PEER: u64 = 941;
-            let mut env = Environment::new();
+            let mut env = Environment::new(true);
             // The records are a workspace's that the environment's own device keeps, and the
             // device's one reader decides a read of them, as a device serves its apps.
             let kept_here = tempfile::tempdir().unwrap();
@@ -696,7 +696,7 @@ async fn a_press_in_a_view_opened_for_a_caller_acts_as_that_caller() {
         .run_until(async {
             use crate::test_support::{Grants as _, KindSet};
             use tilo_actions::remote::Caller;
-            let env = Environment::new();
+            let env = Environment::new(true);
             let workspace = env.route.cluster_id.clone();
             let editor = person_id_for_root([7; 32]);
             let stranger = person_id_for_root([5; 32]);

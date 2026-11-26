@@ -67,7 +67,7 @@ async fn a_callers_invocation_id_admits_once_and_keeps_its_retained_outcome() {
     tokio::task::LocalSet::new()
         .run_until(async {
             use tilo_actions::remote::{InvokeArgument, ReceiptStatus};
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let handle = &rig.worker.handle;
             let invocation = id(0xabcd_ef00_0000_0000_0000_0000_0000_0001);
@@ -162,7 +162,7 @@ async fn durable_admission_survives_restart_and_journal_barrier_failures() {
                 Some(BarrierFailure::AfterAdmission),
                 Some(BarrierFailure::Terminal),
             ] {
-                let env = Environment::new();
+                let env = Environment::new(true);
                 let rig = Rig::new(&env).await;
                 let invocation = id(0xa000 + barrier.map_or(0, |b| b as u128 + 1));
                 let label = barrier.map(|failure| failure as u8);
@@ -282,7 +282,7 @@ async fn an_agents_durable_invocation_is_its_own_and_follows_current_policy() {
     tokio::task::LocalSet::new()
         .run_until(async {
             use crate::test_support::KindSet;
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             env.agent_may("scribe", KindSet::READ, &[&env.route.app_id]);
             // The person's own member access in the workspace, which the agent
@@ -351,7 +351,7 @@ async fn an_application_reaches_another_applications_action_only_as_a_granted_ac
     tokio::task::LocalSet::new()
         .run_until(async {
             use crate::test_support::KindSet;
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let agent_grant = env.agent_may("scribe", KindSet::ALL, &[&env.route.app_id]);
             let application = rig.app_caller(&env, 904, "so.tilo.files", None).await;
@@ -389,7 +389,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
     tokio::task::LocalSet::new()
         .run_until(async {
             use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let workspace = env.route.cluster_id.clone();
             {
@@ -526,7 +526,7 @@ async fn a_certified_invocations_edits_are_admitted_for_its_caller() {
 async fn a_lost_answer_is_recovered_by_invocation_id_on_a_new_connection() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             admit_scribe(&env);
             let caller = rig
@@ -625,7 +625,7 @@ async fn durable_admission_rechecks_original_ownership_after_the_directory_answe
     tokio::task::LocalSet::new()
         .run_until(async {
             for mode in ["worker", "stream", "clock", "revocation", "retired"] {
-                let env = Environment::new();
+                let env = Environment::new(true);
                 let mut rig = Rig::new(&env).await;
                 let block = Rc::new(std::cell::Cell::new(true));
                 let release = Rc::new(tokio::sync::Notify::new());
@@ -712,7 +712,7 @@ async fn an_agent_on_another_device_neither_sees_the_persons_invocation_nor_outl
  {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let original = id(0xf001);
             invoke(&rig.worker.handle, original).await.unwrap();
@@ -775,7 +775,7 @@ async fn an_agent_on_another_device_neither_sees_the_persons_invocation_nor_outl
 async fn host_execution_retirement_refuses_actual_retained_worker_ownership() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let descriptor = directory_state("original-r1")
                 .borrow()
@@ -876,7 +876,7 @@ async fn one_journal_answers_a_local_caller_and_the_persons_other_device() {
     use tilo_actions::remote::{Caller, ReceiptStatus};
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let handle = &rig.worker.handle;
             let api = crate::collab_app_broker::device_host(Arc::clone(&rig.state));

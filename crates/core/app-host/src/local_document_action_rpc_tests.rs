@@ -96,7 +96,7 @@ async fn local_report_admission(
 ) {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let mut services = env.membership.services();
             services.workspace_grants = Some(Arc::new(LocalReportGrants(env.membership.clone())));
             let rig = Rig::with_services(&env, services).await;

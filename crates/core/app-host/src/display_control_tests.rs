@@ -21,7 +21,7 @@ impl crate::services::DisplayControlServices for DisplayDelegate {
 async fn private_settings_display_rpc_requires_exact_registration_and_live_certificate() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let mut env = Environment::new();
+            let mut env = Environment::new(true);
             env.route.app_id = "so.tilo.settings".into();
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
@@ -179,7 +179,7 @@ async fn native_person_display_rpc_keeps_original_owner_and_rejects_agent_contin
  {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let mut env = Environment::new();
+            let mut env = Environment::new(true);
             env.route.app_id = "so.tilo.settings".into();
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
@@ -346,7 +346,7 @@ async fn display_control_keeps_the_original_published_caller_and_refuses_unknown
 {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let mut env = Environment::new();
+            let mut env = Environment::new(true);
             env.route.app_id = "so.tilo.settings".into();
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
@@ -562,7 +562,7 @@ async fn identify_displays(
 async fn another_devices_settings_worker_reads_the_displays_and_changes_nothing() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let mut env = Environment::new();
+            let mut env = Environment::new(true);
             env.route.app_id = "so.tilo.settings".into();
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));

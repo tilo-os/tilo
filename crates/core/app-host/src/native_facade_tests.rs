@@ -102,7 +102,7 @@ async fn signed_native_facade_runs_host_steps_with_original_certified_ownership(
     tokio::task::LocalSet::new()
         .run_until(async {
             use tilo_actions::remote::device_tickets;
-            let env = Environment::new();
+            let env = Environment::new(true);
             let started = Arc::new(Mutex::new(Vec::new()));
             let providers = tilo_workspace_service::workspaces::providers::Providers::default();
             providers.provide(
@@ -204,7 +204,7 @@ async fn keyless_certified_host_steps_require_a_verified_native_projection() {
                 provided::is_local_host_caller, published_invocation::InvocationCaller,
             };
             use tilo_actions::remote::Caller;
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let (signed, evidence) = local_host_evidence(&env);
             let original = rig
@@ -321,7 +321,7 @@ impl crate::services::WorkspaceGovernanceServices for NativeFacadeGovernance {
 async fn signed_native_facade_preserves_physical_intent_without_lending_it_to_other_apis() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let governance = Arc::new(NativeFacadeGovernance::default());
             let rig = Rig::with_services(
                 &env,
@@ -400,7 +400,7 @@ async fn signed_native_facade_preserves_physical_intent_without_lending_it_to_ot
 async fn signed_caller_without_protected_local_person_cannot_acquire_physical_intent() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let (caller, evidence) = local_host_evidence(&env);
             assert!(

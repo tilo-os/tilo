@@ -12,7 +12,7 @@ async fn a_kept_agent_joins_its_own_route_in_a_journaled_session() {
         .run_until(async {
             const AGENT_PEER: u64 = 908;
             const AGENT: &str = "assistant";
-            let env = Environment::new();
+            let env = Environment::new(true);
             let mut services = env.membership.services();
             // The workspace keeps `AGENT` for its owner: the roster the broker
             // asks before it admits an agent's join (`admit_listed_agent`).

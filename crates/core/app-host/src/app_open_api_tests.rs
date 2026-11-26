@@ -136,7 +136,7 @@ fn refused(answer: &tilo_actions::remote::RemoteActionMessage) -> bool {
 async fn an_app_opens_an_app_only_for_the_persons_press_in_it() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let (rig, launcher) = pressed_opens_rig(&env).await;
             let workspace = env.route.cluster_id.clone();
             let app = rig.worker.handle.clone();
@@ -213,7 +213,7 @@ async fn an_app_opens_an_app_only_for_the_persons_press_in_it() {
 async fn an_invocation_an_app_made_of_itself_opens_nothing_without_a_press() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let (rig, launcher) = pressed_opens_rig(&env).await;
             let workspace = env.route.cluster_id.clone();
             let app = rig.worker.handle.clone();
@@ -250,7 +250,7 @@ async fn an_agents_invocation_opens_what_the_agent_may_open() {
     tokio::task::LocalSet::new()
         .run_until(async {
             use crate::test_support::KindSet;
-            let env = Environment::new();
+            let env = Environment::new(true);
             let (rig, launcher) = pressed_opens_rig(&env).await;
             env.agent_may(
                 "scribe",
@@ -302,7 +302,7 @@ async fn an_agents_invocation_opens_what_the_agent_may_open() {
 async fn an_approve_an_app_sends_on_its_own_connection_is_refused() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let (rig, launcher) = pressed_opens_rig(&env).await;
             let workspace = env.route.cluster_id.clone();
             let app = rig.worker.handle.clone();

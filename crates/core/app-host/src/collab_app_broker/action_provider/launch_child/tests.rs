@@ -98,7 +98,7 @@ tilo_test_env::scenario! {
         let fixture = Fixture::new(ProcessServices {
             launcher: Some(launcher.clone()),
             ..Default::default()
-        });
+        }, false);
         fixture.fail_next_barrier();
         assert!(
             fixture
@@ -125,7 +125,7 @@ tilo_test_env::scenario! {
             let fixture = Fixture::new(ProcessServices {
                 launcher: Some(launcher.clone()),
                 ..Default::default()
-            });
+            }, false);
             let parent = parent();
             let child = child_request(
                 parent.invocation,
@@ -172,7 +172,7 @@ tilo_test_env::scenario! {
             launcher: Some(launcher.clone()),
             local_person: Some(Arc::new(NativePerson)),
             ..Default::default()
-        });
+        }, false);
         let InvocationCaller::Local { admitted, .. } = &fixture.origin else {
             panic!("local fixture")
         };
@@ -229,7 +229,7 @@ tilo_test_env::scenario! {
         let fixture = Fixture::new(ProcessServices {
             launcher: Some(launcher),
             ..Default::default()
-        });
+        }, false);
         let parent = parent();
         let child = child_request(
             parent.invocation,
@@ -488,7 +488,7 @@ tilo_test_env::scenario! {
                 let fixture = if certified {
                     Fixture::new_certified(services)
                 } else {
-                    Fixture::new(services)
+                    Fixture::new(services, false)
                 };
                 let descriptor = if close {
                     app_close_descriptor(&app().package_id, "Notes")
@@ -565,7 +565,7 @@ tilo_test_env::scenario! {
     // Re-enrolling a request under a new origin during admission must not turn
     // its original local ownership into fresh authority.
     {
-        let fixture = Fixture::new(ProcessServices::default());
+        let fixture = Fixture::new(ProcessServices::default(), false);
         let replacement = fixture.new_policy_origin();
         fixture
             .authority
@@ -615,7 +615,7 @@ tilo_test_env::scenario! {
                 let mut fixture = Fixture::new(ProcessServices {
                     launcher: Some(launcher.clone()),
                     ..Default::default()
-                });
+                }, false);
                 let InvocationCaller::Local {
                     route, admitted, ..
                 } = &mut fixture.origin
@@ -720,7 +720,7 @@ tilo_test_env::scenario! {
                 let fixture = if certified {
                     Fixture::new_certified(services)
                 } else {
-                    Fixture::new(services)
+                    Fixture::new(services, false)
                 };
                 let descriptor = if close {
                     app_close_descriptor(&app().package_id, "Notes")

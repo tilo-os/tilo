@@ -3,7 +3,7 @@
 async fn certified_jobs_lifecycle_uses_exact_certificate_owner_and_live_session() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let mut action = directory_state("original-r1")
                 .borrow()

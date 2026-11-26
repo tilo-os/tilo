@@ -65,18 +65,13 @@ mod durable_local_matrix {
             }
             across
         }
+        /// The fixture's environment, whose host signs and opened its workspaces when `served`
+        /// and signs nothing when not.
         #[expect(
             clippy::new_ret_no_self,
             reason = "the thread-bound identity guard stays separate from the Send broker fixture"
         )]
-        fn new() -> ProvisionedEnvironment {
-            Self::provisioned(true)
-        }
-        /// An environment whose host opened none of its workspaces: its calls sign nothing.
-        fn new_unserved() -> ProvisionedEnvironment {
-            Self::provisioned(false)
-        }
-        fn provisioned(served: bool) -> ProvisionedEnvironment {
+        fn new(served: bool) -> ProvisionedEnvironment {
             let root = tempfile::tempdir().unwrap();
             let mut identity_env = tilo_test_env::ScopedEnv::new();
             identity_env

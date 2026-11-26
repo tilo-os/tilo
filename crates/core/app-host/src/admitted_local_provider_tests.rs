@@ -105,7 +105,7 @@ async fn certified_local_host_preserves_eager_and_directory_original_ownership()
     tokio::task::LocalSet::new()
         .run_until(async {
             for (directory, member_worker) in [(false, false), (true, false), (true, true)] {
-                let mut env = Environment::new();
+                let mut env = Environment::new(true);
                 if member_worker {
                     // Existing ordinary-member private registration: no host promotion.
                     env.cert.capabilities = tilo_user_identity::DeviceCapabilities::member();
@@ -177,7 +177,7 @@ async fn certified_local_host_preserves_eager_and_directory_original_ownership()
 async fn certified_local_host_admits_again_after_a_failed_clock_reading() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let row = directory_state("original-r1").borrow().row();
             rig.worker
@@ -239,7 +239,7 @@ async fn certified_local_host_admits_again_after_a_failed_clock_reading() {
 async fn certified_local_host_refuses_forged_or_rebound_admission() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let (caller, evidence) = local_host_evidence(&env);
             let facade =
@@ -323,7 +323,7 @@ async fn certified_local_host_directory_wait_cannot_refresh_original_authority()
     tokio::task::LocalSet::new()
         .run_until(async {
             for lapse in ["execution", "certificate", "clock"] {
-                let env = Environment::new();
+                let env = Environment::new(true);
                 let rig = Rig::new(&env).await;
                 let (caller, evidence) = local_host_evidence(&env);
                 let facade =
@@ -363,7 +363,7 @@ async fn certified_local_host_directory_wait_cannot_refresh_original_authority()
 async fn execution_uuid_requires_stable_delivery_and_preserves_unscoped_requests() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let row = directory_state("original-r1").borrow().row();
             rig.worker
@@ -443,7 +443,7 @@ async fn execution_uuid_requires_stable_delivery_and_preserves_unscoped_requests
 async fn certified_local_host_requires_a_registered_policy_origin() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let mut env = Environment::new();
+            let mut env = Environment::new(true);
             env.authority = CurrentHost::new(&env.route, &env.cert, None);
             let (caller, evidence) = local_host_evidence(&env);
             let fanout = Arc::new(FanoutState::new());
@@ -474,7 +474,7 @@ async fn certified_local_host_requires_a_registered_policy_origin() {
 async fn retired_execution_cannot_receive_a_queued_directory_query() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let (caller, _) = local_host_evidence(&env);
             let query = tilo_actions::remote::CatalogueQuery {
@@ -503,7 +503,7 @@ async fn a_continuing_certified_caller_keeps_its_foreign_device_cap() {
             use crate::collab_app_broker::{
                 ContinuingCaller, published_invocation::InvocationCaller,
             };
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let workspace = env.route.cluster_id.clone();
             for (seed, foreign, restricted) in [(94, true, false), (95, false, true)] {
@@ -549,7 +549,7 @@ async fn a_continuing_certified_caller_keeps_its_foreign_device_cap() {
 async fn a_certified_local_continuation_ends_with_its_certificate() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let row = directory_state("original-r1").borrow().row();
             rig.worker
@@ -593,7 +593,7 @@ async fn a_certified_local_continuation_ends_with_its_certificate() {
 async fn certified_person_context_uses_signed_owner_device_and_current_execution() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let mut env = Environment::new();
+            let mut env = Environment::new(true);
             env.rehome_personal();
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
@@ -647,7 +647,7 @@ async fn certified_person_context_uses_signed_owner_device_and_current_execution
 async fn certified_person_context_refuses_other_workspaces_and_expired_original_policy() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let mut env = Environment::new();
+            let mut env = Environment::new(true);
             env.rehome(&uuid::Uuid::new_v4().to_string());
             env.authority =
                 CurrentHost::new(&env.route, &env.cert, Some(env.origin.capture().unwrap()));
@@ -710,7 +710,7 @@ async fn certified_local_host_verifies_once_per_open_listing_and_invocation() {
     use crate::collab_app_broker::admission_memo::verifications;
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let row = directory_state("original-r1").borrow().row();
             rig.worker
@@ -841,7 +841,7 @@ impl collab_types::signer::DeviceSigner for HeldSigner {
 async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let row = directory_state("original-r1").borrow().row();
             rig.worker
@@ -947,7 +947,7 @@ async fn stalled_eager_signing_keeps_ui_enqueue_responsive_and_uuid_reserved() {
 async fn certified_local_host_remembers_only_the_exact_verified_proof() {
     tokio::task::LocalSet::new()
         .run_until(async {
-            let env = Environment::new();
+            let env = Environment::new(true);
             let rig = Rig::new(&env).await;
             let (caller, evidence) = local_host_evidence(&env);
             let facade =

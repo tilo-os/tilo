@@ -36,7 +36,7 @@ tilo_test_env::scenario! {
                 ..Default::default()
             };
             let f = if kind == 1 {
-                Fixture::new(services)
+                Fixture::new(services, false)
             } else {
                 Fixture::new_certified(services)
             };
