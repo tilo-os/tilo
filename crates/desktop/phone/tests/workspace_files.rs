@@ -88,11 +88,25 @@ fn a_phone_offers_its_workspace_files_and_another_device_reads_what_it_writes() 
         "a workspace nobody wrote to lists nothing: {listed:?}"
     );
 
+    photos_written_and_read_back(&phone, &kept, &workspace);
+    refusals_keep_the_phone_to_its_workspaces(&phone, &workspace);
+    phone.stop().expect("the phone's daemon stops");
+    drop(laptop);
+    drop(kept);
+}
+
+/// A picture the phone writes into the workspace is listed by the phone, read by another device of
+/// the person's, watched as that device changes it, and renamed and deleted from the phone.
+fn photos_written_and_read_back(
+    phone: &tilo_runtime::in_process::Device,
+    kept: &WorkspaceKept<'_>,
+    workspace: &str,
+) {
     // A picture saved on the phone is written into the workspace, under a folder it makes.
-    workspace_files::write(&phone, &workspace, "Photos/beach.jpg", PHOTO)
+    workspace_files::write(phone, workspace, "Photos/beach.jpg", PHOTO)
         .expect("the phone writes the picture into the workspace");
     let photos = support::until("the phone lists the folder it wrote", || {
-        let photos = workspace_files::list(&phone, &workspace, "Photos")?;
+        let photos = workspace_files::list(phone, workspace, "Photos")?;
         if photos.iter().any(|entry| entry.name == "beach.jpg") {
             Ok(photos)
         } else {
@@ -112,27 +126,29 @@ fn a_phone_offers_its_workspace_files_and_another_device_reads_what_it_writes() 
 
     // Another device of the person's reads the picture from the workspace.
     let read = support::until("the workspace hands the picture over", || {
-        kept.files.read(&workspace, "Photos/beach.jpg")
+        kept.files.read(workspace, "Photos/beach.jpg")
     });
     assert_eq!(read, PHOTO, "the bytes are the picture the phone saved");
 
     // The provider shows the folder it listed, so the phone watches its workspace: a change
     // another device makes reaches it as it lands, with nothing asking for a revision.
-    let (moved, moves) = std::sync::mpsc::channel();
-    let _watching = workspace_files::watch(&phone, &workspace, move |folders| {
-        let _ = moved.send(folders);
+    let (told, changes) = std::sync::mpsc::channel();
+    let _watching = workspace_files::watch(phone, workspace, move |folders| {
+        let _ = told.send(folders);
     })
     .expect("the phone watches the workspace its provider shows");
 
     // That device changes the picture, and the phone reads the change.
     let written = std::time::Instant::now();
     kept.files
-        .write(&workspace, "Photos/beach.jpg", EDITED, true)
+        .write(workspace, "Photos/beach.jpg", EDITED, true)
         .expect("the other device changes the picture");
-    let deadline = written + Duration::from_secs(30);
+    let deadline = written
+        .checked_add(Duration::from_secs(30))
+        .unwrap_or(written);
     let reached = loop {
         let left = deadline.saturating_duration_since(std::time::Instant::now());
-        let folders = moves
+        let folders = changes
             .recv_timeout(left)
             .expect("the change reaches the phone's watch");
         if folders.iter().any(|folder| folder == "Photos") {
@@ -144,44 +160,51 @@ fn a_phone_offers_its_workspace_files_and_another_device_reads_what_it_writes() 
         took < Duration::from_secs(5),
         "the change reached the watch of {reached:?} only after {took:?}"
     );
-    let changed = support::until("the phone reads the change", || {
-        let bytes = workspace_files::read(&phone, &workspace, "Photos/beach.jpg")?;
+    let read_back = support::until("the phone reads the change", || {
+        let bytes = workspace_files::read(phone, workspace, "Photos/beach.jpg")?;
         if bytes == EDITED {
             Ok(bytes)
         } else {
             Err(format!("{} bytes, not the change", bytes.len()))
         }
     });
-    assert_eq!(changed, EDITED);
+    assert_eq!(read_back, EDITED);
 
     // The phone renames the picture and deletes it, and the workspace follows.
-    let renamed = workspace_files::rename(&phone, &workspace, "Photos/beach.jpg", "beach-2.jpg")
+    let renamed = workspace_files::rename(phone, workspace, "Photos/beach.jpg", "beach-2.jpg")
         .expect("the phone renames the picture");
     assert_eq!(
         renamed,
-        workspace_files::document_id(&workspace, "Photos/beach-2.jpg")
+        workspace_files::document_id(workspace, "Photos/beach-2.jpg")
     );
     support::until("the workspace shows the renamed picture", || {
-        let renamed = kept.files.stat(&workspace, "Photos/beach-2.jpg")?;
+        let renamed = kept.files.stat(workspace, "Photos/beach-2.jpg")?;
         match renamed {
             Some(entry) => Ok(entry),
             None => Err("the workspace has not taken the new name yet".to_owned()),
         }
     });
-    workspace_files::delete(&phone, &workspace, "Photos/beach-2.jpg")
+    workspace_files::delete(phone, workspace, "Photos/beach-2.jpg")
         .expect("the phone deletes the picture");
     support::until("the workspace shows the picture gone", || {
-        let gone = kept.files.stat(&workspace, "Photos/beach-2.jpg")?;
+        let gone = kept.files.stat(workspace, "Photos/beach-2.jpg")?;
         if gone.is_none() {
             Ok(())
         } else {
             Err(format!("{gone:?}"))
         }
     });
+}
 
+/// Nothing outside the workspace is reachable, and a workspace the person is not in is not this
+/// phone's to read.
+fn refusals_keep_the_phone_to_its_workspaces(
+    phone: &tilo_runtime::in_process::Device,
+    workspace: &str,
+) {
     // Nothing outside the workspace is reachable, whatever path a caller names.
     for path in ["../secret.txt", "/etc/passwd", "Photos/../../../secret.txt"] {
-        let refused = workspace_files::read(&phone, &workspace, path)
+        let refused = workspace_files::read(phone, workspace, path)
             .expect_err("a path outside the workspace is refused");
         assert!(
             refused.contains("workspace"),
@@ -191,13 +214,9 @@ fn a_phone_offers_its_workspace_files_and_another_device_reads_what_it_writes() 
 
     // A workspace the person is not in is not this phone's to read.
     let other = uuid::Uuid::new_v4().to_string();
-    let refused = workspace_files::list(&phone, &other, "")
+    let refused = workspace_files::list(phone, &other, "")
         .expect_err("a workspace this device does not hold is refused");
     assert!(refused.contains("does not hold"), "{refused}");
-
-    phone.stop().expect("the phone's daemon stops");
-    drop(laptop);
-    drop(kept);
 }
 
 /// The workspace as the person's server keeps it, which is also what the laptop whose ticket

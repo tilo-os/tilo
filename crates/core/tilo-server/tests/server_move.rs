@@ -66,8 +66,11 @@ impl RunningClock {
                 while !stop.load(Ordering::Relaxed) {
                     std::thread::sleep(Duration::from_millis(5));
                     let at = started_at
-                        + started.elapsed()
-                        + Duration::from_millis(ahead.load(Ordering::Relaxed));
+                        .checked_add(started.elapsed())
+                        .and_then(|at| {
+                            at.checked_add(Duration::from_millis(ahead.load(Ordering::Relaxed)))
+                        })
+                        .unwrap_or(started_at);
                     // The new hold takes over before the one it replaces lets go, so no read
                     // between them answers the real clock.
                     let next = tilo_clock::testing::hold_wall_everywhere(process, at);
@@ -89,7 +92,7 @@ impl RunningClock {
             .fetch_add(u64::try_from(by.as_millis()).unwrap(), Ordering::Relaxed);
         let by_ns = u64::try_from(by.as_nanos()).unwrap();
         tilo_test_env::wait_for("the clock to move ahead", || {
-            (tilo_clock::unix_now_ns() >= before + by_ns).then_some(())
+            (tilo_clock::unix_now_ns() >= before.saturating_add(by_ns)).then_some(())
         });
     }
 }
@@ -277,12 +280,12 @@ async fn moved(process: tilo_clock::testing::OwnProcess) {
     clock.advance(PAST_THE_INVITATION);
 
     // The computer writes records and a file's content.
-    let mut on_a = Linked::open(&a.server, &laptop, company.workspace_id)
+    let on_a = Linked::open(&a.server, &laptop, company.workspace_id)
         .await
         .expect("server A admits the computer");
     // The link brings the copy the workspace's governance, which the computer writes under: the
     // row its login signed among it, so what the copy writes as the computer follows that row.
-    crate::common::receives(&mut on_a, |peer| {
+    crate::common::receives(&on_a, |peer| {
         peer.permissions(laptop.device_pubkey(), tilo_clock::wall())
             .is_ok()
             && peer
@@ -333,7 +336,7 @@ async fn moved(process: tilo_clock::testing::OwnProcess) {
             app_id: PHOTOS.into(),
             hash: hash.clone(),
             total,
-            offset: u64::try_from(at * neighbour_wire::content::PIECE_BYTES).unwrap(),
+            offset: u64::try_from(at.saturating_mul(neighbour_wire::content::PIECE_BYTES)).unwrap(),
             bytes: piece.to_vec(),
         });
     }

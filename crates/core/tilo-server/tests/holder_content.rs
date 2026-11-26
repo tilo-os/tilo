@@ -204,7 +204,7 @@ fn pushed(holder: &Server, member: &TestDevice, workspace: &str, bytes: &[u8]) {
             app_id: PHOTOS.into(),
             hash: blake3::hash(bytes).to_hex().to_string(),
             total,
-            offset: u64::try_from(at * neighbour_wire::content::PIECE_BYTES).unwrap(),
+            offset: u64::try_from(at.saturating_mul(neighbour_wire::content::PIECE_BYTES)).unwrap(),
             bytes: piece.to_vec(),
         });
     }

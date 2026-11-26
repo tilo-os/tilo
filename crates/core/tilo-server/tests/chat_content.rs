@@ -194,33 +194,30 @@ async fn a_file_posted_in_chat_and_a_reports_picture_stay_when_their_poster_leav
 
     // The poster's device leaves: nothing but the host keeps either file. Another
     // member opens the file and the report's picture, and the host answers with both.
-    assert_eq!(
-        opened(
-            &workspaces.content_answer(
-                &workspace,
-                &reader,
-                &want(&reader, &workspace, &notes_hash),
-            ),
-            &reader,
-        ),
-        Some(notes),
-        "the file posted in Chat is served by the host once its poster is gone"
-    );
-    assert_eq!(
-        opened(
-            &workspaces.content_answer(
-                &workspace,
-                &reader,
-                &want(&reader, &workspace, &picture_hash),
-            ),
-            &reader,
-        ),
-        Some(picture),
-        "the report's picture is served by the host once its poster is gone"
-    );
+    served_once_the_poster_left(&workspaces, &workspace, &reader, &notes, &notes_hash);
+    served_once_the_poster_left(&workspaces, &workspace, &reader, &picture, &picture_hash);
 
     keeping.abort();
     host.shutdown().await;
+}
+
+/// The host serves `what` to `reader`, a member, once the device that posted it is gone: the
+/// answer is the file's bytes.
+fn served_once_the_poster_left(
+    workspaces: &tilo_server::workspaces::Workspaces,
+    workspace: &str,
+    reader: &[u8; 32],
+    what: &[u8],
+    hash: &str,
+) {
+    assert_eq!(
+        opened(
+            &workspaces.content_answer(workspace, reader, &want(reader, workspace, hash)),
+            reader,
+        ),
+        Some(what.to_vec()),
+        "the file posted in Chat is served by the host once its poster is gone"
+    );
 }
 
 /// Add to `doc`, Chat's record, a message's attachment `name` naming the file `hash`.

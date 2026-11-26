@@ -95,6 +95,15 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
         "Notes is listed by its name: {apps:?}"
     );
 
+    opens_what_the_workspace_runs(&server, &phone);
+    phone.stop().expect("the phone's daemon stops");
+    drop(laptop);
+}
+
+/// The app the workspace runs opens from the package the phone's device installed, shows its own
+/// window, and what the person makes in it through the phone is the workspace's, which the
+/// person's server keeps for their other devices.
+fn opens_what_the_workspace_runs(server: &Server, phone: &tilo_runtime::in_process::Device) {
     // And it opens: the app the workspace runs, from the package the phone's device installed,
     // in the window the phone's view shows it in, joined to the workspace over the connection the
     // phone's daemon made for it. The phone lists Notes and opens it; the window that comes up is
@@ -180,9 +189,6 @@ fn a_fresh_phone_lists_its_workspaces_apps() {
             }
         },
     );
-
-    phone.stop().expect("the phone's daemon stops");
-    drop(laptop);
 }
 
 /// Declare the runtime builds this test's phone carries in itself, as the phone declares the ones

@@ -548,6 +548,37 @@ mod tests {
         assert_eq!(envelopes.answer(b"not hex"), None);
     }
 
+    /// A name that is no name is refused, and so is a signature over an envelope's label: only a
+    /// member's own profile is kept.
+    async fn refuses_what_is_no_profile(
+        profiles: &Envelopes,
+        profile: &(impl Fn(&str) -> String + Send + Sync),
+        profile_body: &(impl Fn(Kind, &str, u64) -> Vec<u8> + Send + Sync),
+    ) {
+        for bad in [profile(""), profile(" Ada"), profile("A\u{7}da")] {
+            assert!(matches!(
+                profiles
+                    .publish(
+                        &profile_body(Kind::Profile, &bad, 2_000),
+                        2_000,
+                        |_| async { true }
+                    )
+                    .await,
+                Err(Refusal::Malformed(_))
+            ));
+        }
+        assert_eq!(
+            profiles
+                .publish(
+                    &profile_body(Kind::Envelope, &profile("Grace"), 3_000),
+                    3_000,
+                    |_| async { true }
+                )
+                .await,
+            Err(Refusal::BadSignature)
+        );
+    }
+
     #[tokio::test]
     async fn a_member_keeps_a_profile_with_a_name_a_picture_and_nothing_else() {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -587,29 +618,7 @@ mod tests {
             profiles.answer(stranger.as_bytes()),
             Some(br#"{"profile":null}"#.to_vec())
         );
-        for bad in [profile(""), profile(" Ada"), profile("A\u{7}da")] {
-            assert!(matches!(
-                profiles
-                    .publish(
-                        &profile_body(Kind::Profile, &bad, 2_000),
-                        2_000,
-                        |_| async { true }
-                    )
-                    .await,
-                Err(Refusal::Malformed(_))
-            ));
-        }
-        // A signature over an envelope's label does not keep a profile.
-        assert_eq!(
-            profiles
-                .publish(
-                    &profile_body(Kind::Envelope, &profile("Grace"), 3_000),
-                    3_000,
-                    |_| async { true }
-                )
-                .await,
-            Err(Refusal::BadSignature)
-        );
+        refuses_what_is_no_profile(&profiles, &profile, &profile_body).await;
         // A picture rides along, and when it was kept is known.
         let pictured = serde_json::json!({"version": 1, "user_public_key": hex_root,
             "display_name": "Ada Lovelace", "photo": "data:image/webp;base64,UklGRg=="})

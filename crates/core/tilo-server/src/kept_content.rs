@@ -1593,7 +1593,7 @@ mod tests {
         };
         for manifest in [
             Manifest::new(ChunkTier::Small, chunks.clone()),
-            Manifest::new_sealed(ChunkTier::Small, chunks.clone(), sealed),
+            Manifest::new_sealed(ChunkTier::Small, chunks, sealed),
         ] {
             assert_eq!(
                 chunks_of(&manifest.encode()),

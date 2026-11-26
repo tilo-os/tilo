@@ -39,7 +39,7 @@ fn push(
             app_id: PHOTOS.into(),
             hash: address.to_owned(),
             total,
-            offset: u64::try_from(at * neighbour_wire::content::PIECE_BYTES).unwrap(),
+            offset: u64::try_from(at.saturating_mul(neighbour_wire::content::PIECE_BYTES)).unwrap(),
             bytes: piece.to_vec(),
         });
     }

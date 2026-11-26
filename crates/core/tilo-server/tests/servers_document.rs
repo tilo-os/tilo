@@ -143,11 +143,9 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
         .keeping_devices(&workspace.workspace)
         .await
         .unwrap();
-    let named = held
-        .iter()
-        .any(|kept| kept.device == hex::encode(nas.device_pubkey()));
     assert!(
-        named,
+        held.iter()
+            .any(|kept| kept.device == hex::encode(nas.device_pubkey())),
         "the workspace's owner hands it the planned workspace"
     );
     tilo_test_env::within("the server to hold the workspace", async {
@@ -161,13 +159,8 @@ async fn a_planned_machine_holds_what_its_plan_names_until_its_workspace_lets_it
         2,
         "the workspace names both its hosts"
     );
-    let entry_now = servers::read(workspaces)
-        .await
-        .unwrap()
-        .servers
-        .get(&entry(&nas))
-        .cloned()
-        .unwrap();
+    let read = servers::read(workspaces).await.unwrap();
+    let entry_now = read.servers.get(&entry(&nas)).cloned().unwrap();
     assert!(
         entry_now
             .plan
