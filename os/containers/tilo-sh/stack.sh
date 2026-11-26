@@ -246,6 +246,9 @@ and lays out nothing (see docs/testing-tilo-sh.md):
                     fake-model-providers for TILO_SH_FAKE_MODELS=1)
   TILO_SH_LOUNGE    the server's laid-out context, as lounge-context.sh makes it
                     (bin/, fonts/, surfaces/, entrypoint.sh)
+  TILO_SH_APPS      the apps the workspace runs, as lounge-apps.sh makes them
+                    (bin/, runtimes/, packages/, runtime-publishers.txt); t's
+                    lounge-check-apps when none is named
   TILO_SH_SITE      the web entry's laid-out site, as web-entry-context.sh makes
                     it (site/, install.sh): the web builds no bundle then
   TILO_SH_CLI_DIR   a built release of the tilo command (cli-x86_64), which
