@@ -1618,10 +1618,7 @@ impl Workspaces {
             write,
             &envelope,
         )?;
-        self.inner
-            .records
-            .carry_all(hosted.workspace_id(), device.device(), &messages)?;
-        self.keep_resource_write(hosted, device, app, (write, true), messages, true)
+        self.keep_resource_write(hosted, device, app, (write, true), &messages, true)
             .await
     }
 
@@ -1726,8 +1723,8 @@ impl Workspaces {
     }
 
     /// The frames `write`'s `envelopes` go out as, `author`'s for `app`: what
-    /// [`crate::workspace_documents::WorkspaceDocuments::carry_all`] keeps before the store
-    /// takes them.
+    /// [`crate::workspace_documents::WorkspaceDocuments::carry_all`] keeps once the store holds
+    /// the write.
     fn resource_write_messages(
         workspace_id: tilo_server_protocol::WorkspaceId,
         author: [u8; 32],
@@ -1747,15 +1744,17 @@ impl Workspaces {
             .collect()
     }
 
-    /// Have the store take `write`, whose frames `messages` are kept already, and send them to
-    /// every device that follows the workspace.
+    /// Have the store take `write`, and carry its frames `messages` to every device that follows
+    /// the workspace once it holds it: a frame is carried only after the write is kept, so a
+    /// write the store or the workspace refuses leaves nothing of it on the wire, under the
+    /// numbers its store's next draft takes again.
     async fn keep_resource_write(
         &self,
         hosted: &mut HostedWorkspace,
         device: &super::MemberDevice,
         app: &str,
         (write, whole): (&tilo_resource_store::Written, bool),
-        messages: Vec<neighbour_wire::NeighbourMsg>,
+        messages: &[neighbour_wire::NeighbourMsg],
         compact: bool,
     ) -> Result<(), String> {
         let author = device.device();
@@ -1767,12 +1766,12 @@ impl Workspaces {
                 .map_err(|refusal| format!("the resource change was refused: {refusal:?}"))?;
         }
         let count = messages.len();
-        for (index, message) in messages.into_iter().enumerate() {
+        for (index, message) in messages.iter().enumerate() {
             // The store takes the change with its last segment.
             let last = index.saturating_add(1) == count;
             let neighbour_wire::NeighbourMsg::AppDocument {
                 envelope, readers, ..
-            } = &message
+            } = message
             else {
                 return Err("a resource write must name its document".into());
             };
@@ -1784,13 +1783,13 @@ impl Workspaces {
                 return Err("the retained resource change did not reach the store".into());
             }
             if hosted.member.is_some() {
-                self.follow_member_document(hosted, author, &message);
-                self.forward_member_document(hosted.workspace_id(), message);
+                self.follow_member_document(hosted, author, message);
+                self.forward_member_document(hosted.workspace_id(), message.clone());
             } else {
                 self.follow_write(
                     hosted,
                     author,
-                    message,
+                    message.clone(),
                     (app.to_owned(), document.clone()),
                     compact && last,
                 )
@@ -1800,6 +1799,11 @@ impl Workspaces {
         if hosted.member.is_some() {
             self.wrote(hosted.workspace(), app, document);
         }
+        // Kept by the store and the workspace's copy, the write goes out: what a device is
+        // served is never a write its own store refused.
+        self.inner
+            .records
+            .carry_all(hosted.workspace_id(), author, messages)?;
         Ok(())
     }
 
@@ -2592,8 +2596,6 @@ impl Workspaces {
         // one action.
         tokio::spawn(async move {
             let result = async {
-                // Every frame of the batch is kept, with one wait for the disk, before the store
-                // takes the first: the batch was checked whole above.
                 let author = device.device();
                 let mut messages = Vec::with_capacity(requests.len());
                 for (write, envelopes) in writes.iter().zip(&requests) {
@@ -2605,13 +2607,11 @@ impl Workspaces {
                         envelopes,
                     )?);
                 }
-                workspaces.inner.records.carry_all(
-                    hosted.workspace_id(),
-                    author,
-                    &messages.iter().flatten().cloned().collect::<Vec<_>>(),
-                )?;
                 hosted.resources.batch();
-                for (index, (write, messages)) in writes.iter().zip(messages).enumerate() {
+                // Each write is kept before a frame of it is carried: one the store or the
+                // workspace refuses leaves no bytes on the wire, under the numbers its store's
+                // next draft takes again. The batch was checked whole above.
+                for (index, (write, messages)) in writes.iter().zip(&messages).enumerate() {
                     workspaces
                         .keep_resource_write(
                             &mut hosted,
