@@ -27,6 +27,11 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tilo_user_identity::DeviceCert;
 
+/// How long an in-process API call waits for the server's answer: long enough
+/// for a call held until its action ends, short enough that a server that
+/// never answers is told of as what was asked and how long it waited.
+const ANSWER_WAIT: std::time::Duration = std::time::Duration::from_secs(120);
+
 /// Whether `key_file`, or the login `token` carries, names this computer's
 /// own device key: only then do a program's calls go to the session the
 /// computer holds. `None` for both is the login itself, and so this
@@ -308,16 +313,32 @@ impl Direct {
     /// person's account does (`account/…`) is answered here as for any key of theirs.
     ///
     /// # Errors
-    /// The key cannot act now, or the call was not answered.
+    /// The key cannot act now, or the call was not answered: a call nothing
+    /// answers is named and given up after [`ANSWER_WAIT`], never waited on
+    /// forever.
     pub async fn mcp(&self, request: serde_json::Value) -> Result<serde_json::Value, String> {
-        self.session()
-            .await?
-            .handle(request)
-            .await
-            .messages
-            .into_iter()
-            .last()
-            .ok_or_else(|| "your workspace didn't answer; try again in a minute".to_owned())
+        let asked = request
+            .pointer("/params/name")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("a tool")
+            .to_owned();
+        let answered = tokio::time::timeout(ANSWER_WAIT, async {
+            self.session()
+                .await?
+                .handle(request)
+                .await
+                .messages
+                .into_iter()
+                .last()
+                .ok_or_else(|| "your workspace didn't answer; try again in a minute".to_owned())
+        })
+        .await;
+        answered.unwrap_or_else(|_| {
+            Err(format!(
+                "the daemon did not answer {asked} within {} s: it is busy or stalled",
+                ANSWER_WAIT.as_secs()
+            ))
+        })
     }
 
     /// This key's one session, opened the first time.
@@ -436,7 +457,24 @@ impl Direct {
             map.insert(hyper::header::AUTHORIZATION, value);
         }
         let (path, query) = target.split_once('?').unwrap_or((target, ""));
-        self.server.dispatch(&method, path, query, &map, body).await
+        match tokio::time::timeout(
+            ANSWER_WAIT,
+            self.server.dispatch(&method, path, query, &map, body),
+        )
+        .await
+        {
+            Ok(answer) => answer,
+            Err(_) => crate::json_reply(
+                hyper::StatusCode::GATEWAY_TIMEOUT,
+                &serde_json::json!({"error": {
+                    "code": "unanswered",
+                    "message": format!(
+                        "the daemon did not answer {method} {target} within {} s: it is busy or stalled",
+                        ANSWER_WAIT.as_secs()
+                    ),
+                }}),
+            ),
+        }
     }
 }
 
@@ -564,8 +602,14 @@ mod tests {
             Some(serde_json::json!({})),
         )
         .await;
-        assert_eq!(listed["result"]["workspaces"][0]["id"], WORKSPACE, "{listed}");
-        assert_eq!(listed["result"]["workspaces"][0]["name"], "Release", "{listed}");
+        assert_eq!(
+            listed["result"]["workspaces"][0]["id"], WORKSPACE,
+            "{listed}"
+        );
+        assert_eq!(
+            listed["result"]["workspaces"][0]["name"], "Release",
+            "{listed}"
+        );
         let (status, apps) = ask(
             &socket,
             "GET",
@@ -588,7 +632,9 @@ mod tests {
         )
         .await;
         assert!(
-            refused.to_string().contains("answers its own workspaces only"),
+            refused
+                .to_string()
+                .contains("answers its own workspaces only"),
             "{refused}"
         );
         std::fs::remove_dir_all(&dir).unwrap();

@@ -1001,8 +1001,9 @@ impl<H: ActionProvider + Send + Sync + 'static> Agent<H> {
             self.opened
                 .store(true, std::sync::atomic::Ordering::Relaxed);
         } else if !self.opened.swap(true, std::sync::atomic::Ordering::Relaxed) {
-            self.session
-                .handle(json!({
+            tilo_test_env::within(
+                "the agent's initialize",
+                self.session.handle(json!({
                     "jsonrpc": "2.0",
                     "id": 0,
                     "method": "initialize",
@@ -1011,17 +1012,21 @@ impl<H: ActionProvider + Send + Sync + 'static> Agent<H> {
                         "capabilities": {},
                         "clientInfo": {"name": "Claude Code", "version": "2"},
                     },
-                }))
-                .await
-                .unwrap();
+                })),
+            )
+            .await
+            .unwrap();
         }
         let id = self
             .calls
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.session
-            .handle(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}))
-            .await
-            .unwrap()
+        tilo_test_env::within(
+            format!("the agent's {method}"),
+            self.session
+                .handle(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})),
+        )
+        .await
+        .unwrap()
     }
 }
 
@@ -1181,10 +1186,12 @@ pub async fn output(
         signed: None,
     };
     let invocation = request.invocation;
-    let receipt = provider
-        .invoke(&caller, request)
-        .await
-        .expect("the dispatch answers")?;
+    let receipt = tilo_test_env::within(
+        "the daemon admits the call",
+        provider.invoke(&caller, request),
+    )
+    .await
+    .expect("the dispatch answers")?;
     let status = receipt.status;
     let deadline = tilo_test_env::hang_deadline();
     while matches!(status, ReceiptStatus::Accepted) {
@@ -1265,10 +1272,12 @@ pub async fn listed(host: &Host, app: &str) -> Result<CataloguePage, ActionCallE
         max_results: MAX_CATALOGUE_PAGE,
         ..CatalogueQuery::default()
     };
-    host.dispatch()
-        .query(&host.caller(), query)
-        .await
-        .expect("the dispatch answers")
+    tilo_test_env::within(
+        "the daemon lists the app's catalogue",
+        host.dispatch().query(&host.caller(), query),
+    )
+    .await
+    .expect("the dispatch answers")
 }
 
 /// The record `app`'s running process opened in the daemon's workspace, as its live connection
