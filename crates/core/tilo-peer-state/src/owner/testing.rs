@@ -267,18 +267,7 @@ pub fn certificate_with(
     label: &str,
     capabilities: DeviceCapabilities,
 ) -> DeviceCert {
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities,
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
-    cert
+    crate::fixture::labelled(root, key, label, capabilities)
 }
 
 pub fn raw_fixture() -> RawFixture {

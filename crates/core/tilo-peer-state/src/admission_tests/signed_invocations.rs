@@ -1324,20 +1324,18 @@ fn seeded_with_files_holding(more: &[DeviceCert]) -> Seeded {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "value", "seed").unwrap();
     doc.commit_edit("fixture", "value", &ac.user_public_key);
-    peer.install_seed(
-        SeedState {
-            workspace_changes: seed_workspace(WORKSPACE, &ac, &roster).unwrap(),
-            documents: vec![SeedDocument {
-                app_id: FILES.into(),
-                document_id: FILES_RECORD.into(),
-                kind: collab_types::FILES_TREE_KIND.into(),
-                bytes: doc.save(),
-            }],
-        },
-        &a,
+    crate::fixture::found(
+        &mut peer,
+        (&a, &ac),
+        &roster,
+        vec![crate::fixture::document(
+            FILES,
+            FILES_RECORD,
+            collab_types::FILES_TREE_KIND,
+            doc.save(),
+        )],
         now,
-    )
-    .unwrap();
+    );
     (peer, a, ac, b, bc, now)
 }
 

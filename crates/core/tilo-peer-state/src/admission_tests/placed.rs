@@ -53,7 +53,7 @@ fn placed_by(
     lifetime: Duration,
 ) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&[41; 32]);
-    let issued = ns_since_epoch(now).saturating_sub(1_000_000_000);
+    let issued = crate::fixture::ns(now).saturating_sub(1_000_000_000);
     let mut cert = prepare_placed_device_cert(
         host,
         key.verifying_key().to_bytes(),
@@ -166,7 +166,7 @@ fn revoke(peer: &mut StatePeer, laptop: &DeviceCert, key: [u8; 32], now: SystemT
     let mut revoked = tilo_user_identity::RevocationEntry {
         user_public_key: root.verifying_key().to_bytes(),
         revoked_device_public_key: key,
-        revoked_at_ns: ns_since_epoch(now).saturating_sub(500_000_000),
+        revoked_at_ns: crate::fixture::ns(now).saturating_sub(500_000_000),
         reason: tilo_user_identity::RevocationReason::Compromised,
         signature: [0; 64],
     };
@@ -326,15 +326,7 @@ tilo_test_env::scenario! {
         let mut peer =
             StatePeer::new(WORKSPACE, ac.clone(), listed.clone(), RevocationList::new(), now)
                 .unwrap();
-        peer.install_seed(
-            SeedState {
-                workspace_changes: seed_workspace(WORKSPACE, &ac, &listed).unwrap(),
-                documents: Vec::new(),
-            },
-            &a,
-            now,
-        )
-        .unwrap();
+        crate::fixture::found(&mut peer, (&a, &ac), &listed, Vec::new(), now);
         // The workspace's rules are here, and its person's own device is a member by them.
         assert!(peer.permissions(ac.device_public_key, now).is_ok());
         // Listed, it is still no member's device: it has no permissions of its own, and reads

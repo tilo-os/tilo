@@ -11,8 +11,8 @@ use collab_types::CommitNamed as _;
 use ed25519_dalek::SigningKey;
 use key_group::ContentKeys;
 use std::time::Duration;
+use tilo_peer_state::StatePeer;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Kept};
-use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::RevocationList;
 use web_time::SystemTime;
 
@@ -90,15 +90,7 @@ async fn two_devices_of_one_person_converge_directly() {
     )
     .unwrap();
     a.select_exact_admissions().unwrap();
-    a.install_seed(
-        SeedState {
-            workspace_changes: seed_workspace(WORKSPACE, &a_cert, &roster).unwrap(),
-            documents: Vec::new(),
-        },
-        &a_key,
-        now,
-    )
-    .unwrap();
+    tilo_peer_state::fixture::found(&mut a, (&a_key, &a_cert), &roster, Vec::new(), now);
     // Device B knows the workspace's roster and nothing else.
     let b = StatePeer::from_join(WORKSPACE, a_cert.clone(), roster, &[], now).unwrap();
     assert!(b.rows().is_empty());
@@ -185,16 +177,13 @@ async fn a_second_device_is_entered_by_the_first_and_content_crosses_both_ways()
     )
     .unwrap();
     a.select_exact_admissions().unwrap();
-    a.install_seed(
-        SeedState {
-            workspace_changes: seed_workspace(WORKSPACE, &a_cert, std::slice::from_ref(&a_cert))
-                .unwrap(),
-            documents: Vec::new(),
-        },
-        &a_key,
+    tilo_peer_state::fixture::found(
+        &mut a,
+        (&a_key, &a_cert),
+        std::slice::from_ref(&a_cert),
+        Vec::new(),
         now,
-    )
-    .unwrap();
+    );
 
     // B is the same person's second device. Its root certifies it, so B lists
     // itself as that member's device on A's copy: no invitation, and A is the
@@ -285,15 +274,7 @@ async fn a_device_that_hosts_its_own_workspace_syncs_with_it_in_process() {
     )
     .unwrap();
     made.select_exact_admissions().unwrap();
-    made.install_seed(
-        SeedState {
-            workspace_changes: seed_workspace(WORKSPACE, &cert, &roster).unwrap(),
-            documents: Vec::new(),
-        },
-        &key,
-        now,
-    )
-    .unwrap();
+    tilo_peer_state::fixture::found(&mut made, (&key, &cert), &roster, Vec::new(), now);
     let joined = StatePeer::from_join(WORKSPACE, cert.clone(), roster, &[], now).unwrap();
 
     let directory = tempfile::tempdir().unwrap();
@@ -344,15 +325,7 @@ async fn the_device_dialled_answers_each_write_it_takes_in() {
     )
     .unwrap();
     a.select_exact_admissions().unwrap();
-    a.install_seed(
-        SeedState {
-            workspace_changes: seed_workspace(WORKSPACE, &a_cert, &roster).unwrap(),
-            documents: Vec::new(),
-        },
-        &a_key,
-        now,
-    )
-    .unwrap();
+    tilo_peer_state::fixture::found(&mut a, (&a_key, &a_cert), &roster, Vec::new(), now);
     let b = StatePeer::from_join(WORKSPACE, a_cert.clone(), roster, &[], now).unwrap();
     let directory = tempfile::tempdir().unwrap();
     let a = stored(&DirectSync::new(a, a_key.clone()), &directory);

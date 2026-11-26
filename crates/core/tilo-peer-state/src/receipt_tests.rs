@@ -14,11 +14,10 @@ use tilo_actions::{
 };
 use tilo_user_identity::{DeviceCert, RevocationList};
 
-use crate::join::WorkspaceId;
-use crate::join::{InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof};
+use crate::join::Role;
 use crate::owner::testing::member_certificate as certificate;
 use crate::owner::testing::{now, receive};
-use crate::{NeighbourMsg, SeedDocument, SeedState, StatePeer, TransportOrigin, seed_workspace};
+use crate::{NeighbourMsg, StatePeer, TransportOrigin};
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "test.app";
@@ -163,60 +162,22 @@ fn workspace_keeping(role: Role, units: &[&str]) -> (StatePeer, SigningKey, Devi
         CommitOptions::default()
             .with_message(tilo_actions::FrameworkChange::Genesis.change_message()),
     );
-    peer.install_seed(
-        SeedState {
-            workspace_changes: seed_workspace(WORKSPACE, &owner, std::slice::from_ref(&owner))
-                .unwrap(),
-            documents: vec![SeedDocument {
-                app_id: APP.into(),
-                document_id: RECORD.into(),
-                kind: KIND.into(),
-                bytes: body.save(),
-            }],
-        },
-        &owner_key,
+    crate::fixture::found(
+        &mut peer,
+        (&owner_key, &owner),
+        std::slice::from_ref(&owner),
+        vec![crate::fixture::document(APP, RECORD, KIND, body.save())],
         now(),
-    )
-    .unwrap();
+    );
 
-    let now_ns: u64 = 2000 * 1_000_000_000;
-    let guest_root = SigningKey::from_bytes(&[41; 32]);
     let guest_key = SigningKey::from_bytes(&[42; 32]);
-    let guest = certificate(&guest_root, &guest_key, "guest");
-    let signed = issue_invitation(
-        InviteGrant {
-            workspace_id: WorkspaceId::parse(WORKSPACE).unwrap(),
-            issuer: owner,
-            role,
-            nonce: [43; 16],
-            recipient_user_public_key: Some(guest.user_public_key),
-            invitee_name: Some("Guest".into()),
-            expires_at_ns: now_ns + 10_000_000_000,
-            transport: vec![],
-        },
-        &owner_key,
-    )
-    .unwrap();
-    let join = crate::join::decode_and_verify_invitation(
-        &signed,
-        Some(guest.user_public_key),
-        &RevocationList::new(),
-        now_ns,
-    )
-    .unwrap();
-    let challenge = JoinChallenge::new(
-        &join,
-        &guest,
-        [44; 32],
-        [45; 32],
-        now_ns + 1_000_000_000,
-        now_ns,
-    )
-    .unwrap();
-    let proof = sign_join_proof(challenge.clone(), &guest_key).unwrap();
-    let redemption =
-        crate::join::verify_join_proof(&proof, &challenge, &guest, &RevocationList::new(), now_ns)
-            .unwrap();
+    let guest = certificate(&SigningKey::from_bytes(&[41; 32]), &guest_key, "guest");
+    let signed = crate::fixture::invitation(&peer, &owner_key, now(), |grant| {
+        grant.role = role;
+        grant.nonce = [43; 16];
+        grant.recipient_user_public_key = Some(guest.user_public_key);
+    });
+    let redemption = crate::fixture::redeem(&signed, (&guest_key, &guest), 44, now());
     assert!(
         peer.governance_mut()
             .admit_invited_member(&redemption, &guest_key, now())
@@ -1358,13 +1319,7 @@ fn a_device_running_on_two_machines_is_refused_by_name_until_one_is_readded() {
     let later = now() + std::time::Duration::from_secs(1);
     let readded_key = SigningKey::from_bytes(&[46; 32]);
     let mut readded = certificate(&SigningKey::from_bytes(&[41; 32]), &readded_key, "guest");
-    readded.issued_at_ns = u64::try_from(
-        later
-            .duration_since(std::time::SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    )
-    .unwrap();
+    readded.issued_at_ns = crate::fixture::ns(later);
     tilo_user_identity::sign_device_cert(&mut readded, &SigningKey::from_bytes(&[41; 32])).unwrap();
     assert!(
         peer.governance_mut()

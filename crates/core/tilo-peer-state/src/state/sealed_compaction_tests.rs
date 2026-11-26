@@ -1129,7 +1129,7 @@ tilo_test_env::scenario! {
             sealed_compaction::merge_sealed(&document, &mut read_write, &mut |_, _| Ok(()))
                 .unwrap();
         let (mut opened, mut merged) = (
-            read,
+            AutoCommit::load(&opened.document).unwrap(),
             AutoCommit::load(&merged).unwrap(),
         );
         let heads = |doc: &mut AutoCommit| {

@@ -66,10 +66,26 @@ pub fn certify(
 /// time and without expiry.
 #[must_use]
 pub fn cert(root: &SigningKey, key: &SigningKey, capabilities: DeviceCapabilities) -> DeviceCert {
+    labelled(
+        root,
+        key,
+        &format!("device-{}", key.to_bytes()[0]),
+        capabilities,
+    )
+}
+
+/// [`cert`], labelled `label`.
+#[must_use]
+pub fn labelled(
+    root: &SigningKey,
+    key: &SigningKey,
+    label: &str,
+    capabilities: DeviceCapabilities,
+) -> DeviceCert {
     let mut cert = DeviceCert {
         user_public_key: root.verifying_key().to_bytes(),
         device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("device-{}", key.to_bytes()[0]),
+        device_label: label.into(),
         capabilities,
         issued_at_ns: 1,
         expires_at_ns: None,
@@ -221,4 +237,156 @@ pub fn caught_up(native: &mut StatePeer, founding: &Founding) -> StatePeer {
         .unwrap();
     relay(&mut peer, &founding.authority.0, &frames, founding.now);
     peer
+}
+
+/// The device certificate `key` holds in `peer`'s workspace.
+#[must_use]
+pub fn certificate_of(peer: &StatePeer, key: &SigningKey) -> DeviceCert {
+    let device = key.verifying_key().to_bytes();
+    peer.certificates()
+        .into_iter()
+        .find(|cert| cert.device_public_key == device)
+        .expect("the workspace holds the device's certificate")
+}
+
+/// The person whose device `key` is in `peer`'s workspace.
+#[must_use]
+pub fn person(peer: &StatePeer, key: &SigningKey) -> [u8; 32] {
+    certificate_of(peer, key).user_public_key
+}
+
+/// `peer` as it comes back from its durable bytes after a restart, its owner
+/// device the first it holds.
+pub fn restored(peer: &StatePeer, now: SystemTime) -> Result<StatePeer, String> {
+    StatePeer::restore(
+        &peer.durable().map_err(|error| error.to_string())?,
+        peer.workspace_id(),
+        peer.owner_certificates()[0].clone(),
+        vec![],
+        RevocationList::new(),
+        now,
+    )
+}
+
+/// An invitation into `peer`'s workspace that `issuer` signs at `now`: an
+/// editor's, issued by the certificate `peer` holds for `issuer`, open to
+/// anyone, valid for ten seconds, unless `grant` says otherwise.
+pub fn invitation(
+    peer: &StatePeer,
+    issuer: &SigningKey,
+    now: SystemTime,
+    grant: impl FnOnce(&mut crate::join::InviteGrant),
+) -> Vec<u8> {
+    let mut invite = crate::join::InviteGrant {
+        workspace_id: crate::join::WorkspaceId::parse(peer.workspace_id()).unwrap(),
+        issuer: peer
+            .certificates()
+            .into_iter()
+            .find(|cert| cert.device_public_key == issuer.verifying_key().to_bytes())
+            .unwrap_or_else(|| peer.owner_certificates()[0].clone()),
+        role: crate::join::Role::Editor,
+        nonce: [1; 16],
+        recipient_user_public_key: None,
+        invitee_name: None,
+        expires_at_ns: ns(now) + 10_000_000_000,
+        transport: vec![],
+    };
+    grant(&mut invite);
+    crate::join::issue_invitation(invite, issuer).unwrap()
+}
+
+/// `device` redeems `signed` at `now`: it answers the challenge numbered by
+/// `seed` with a proof the workspace verifies.
+pub fn try_redeem(
+    signed: &[u8],
+    (key, cert): (&SigningKey, &DeviceCert),
+    seed: u8,
+    now: SystemTime,
+) -> Result<crate::join::VerifiedRedemption, String> {
+    let now = ns(now);
+    let revocations = RevocationList::new();
+    let join = crate::join::decode_and_verify_invitation(
+        signed,
+        Some(cert.user_public_key),
+        &revocations,
+        now,
+    )
+    .map_err(|error| error.to_string())?;
+    let challenge = crate::join::JoinChallenge::new(
+        &join,
+        cert,
+        [seed; 32],
+        [seed.wrapping_add(1); 32],
+        now + 1_000_000_000,
+        now,
+    )
+    .map_err(|error| error.to_string())?;
+    let proof =
+        crate::join::sign_join_proof(challenge.clone(), key).map_err(|error| error.to_string())?;
+    crate::join::verify_join_proof(&proof, &challenge, cert, &revocations, now)
+        .map_err(|error| error.to_string())
+}
+
+/// [`try_redeem`] that succeeds.
+#[must_use]
+pub fn redeem(
+    signed: &[u8],
+    device: (&SigningKey, &DeviceCert),
+    seed: u8,
+    now: SystemTime,
+) -> crate::join::VerifiedRedemption {
+    try_redeem(signed, device, seed, now).unwrap()
+}
+
+/// `issuer` invites `device`'s person as an editor, and the device redeems the
+/// invitation into `peer`: whether the workspace took it in.
+pub fn join(
+    peer: &mut StatePeer,
+    issuer: &SigningKey,
+    (key, cert): (&SigningKey, &DeviceCert),
+    seed: u8,
+    now: SystemTime,
+) -> bool {
+    let signed = invitation(peer, issuer, now, |grant| {
+        grant.nonce = [seed; 16];
+        grant.recipient_user_public_key = Some(cert.user_public_key);
+    });
+    let Ok(redemption) = try_redeem(&signed, (key, cert), seed, now) else {
+        return false;
+    };
+    peer.governance_mut()
+        .admit_invited_member(&redemption, key, now)
+        .unwrap_or(false)
+}
+
+/// `app`'s record `id` of `kind`, saved as `bytes`, as a workspace is seeded with it.
+#[must_use]
+pub fn document(app: &str, id: &str, kind: &str, bytes: Vec<u8>) -> SeedDocument {
+    SeedDocument {
+        app_id: app.into(),
+        document_id: id.into(),
+        kind: kind.into(),
+        bytes,
+    }
+}
+
+/// `peer`'s workspace, founded by `authority`'s device `key` with `roster`
+/// on it and seeded with `documents`.
+pub fn found(
+    peer: &mut StatePeer,
+    (key, authority): (&SigningKey, &DeviceCert),
+    roster: &[DeviceCert],
+    documents: Vec<SeedDocument>,
+    now: SystemTime,
+) {
+    let workspace = peer.workspace_id().to_owned();
+    peer.install_seed(
+        SeedState {
+            workspace_changes: seed_workspace(&workspace, authority, roster).unwrap(),
+            documents,
+        },
+        key,
+        now,
+    )
+    .unwrap();
 }

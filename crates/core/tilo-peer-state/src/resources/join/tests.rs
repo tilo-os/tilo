@@ -8,12 +8,7 @@ use tilo_user_identity::RevocationList;
 )]
 fn responses() -> Vec<JoinTransportResponse> {
     let (mut peer, owner_copy, member_key, member, now) = crate::admission_tests::seeded();
-    let now_ns: u64 = now
-        .duration_since(web_time::SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap();
+    let now_ns = crate::fixture::ns(now);
     let mut revocation = tilo_user_identity::RevocationEntry {
         user_public_key: member.user_public_key,
         revoked_device_public_key: [99; 32],

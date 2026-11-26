@@ -33,7 +33,12 @@ const fn no_capabilities() -> DeviceCapabilities {
 /// issues them (no capabilities).
 fn agent(person: &SigningKey, seed: u8) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&[seed; 32]);
-    let cert = crate::fixture::cert(&person, &key, no_capabilities());
+    let cert = crate::fixture::labelled(
+        person,
+        &key,
+        &format!("Agent: Scribe {seed}"),
+        no_capabilities(),
+    );
     (key, cert)
 }
 

@@ -6,11 +6,11 @@
 
 use ed25519_dalek::SigningKey;
 
+use tilo_peer_state::StatePeer;
 use tilo_peer_state::direct::DirectSync;
 pub use tilo_peer_state::sealed_records::{
     members_keys, opened, opened_heads, sealed_write, write_sealed,
 };
-use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 /// A member device key `n` certified by `root`.
@@ -58,15 +58,7 @@ pub fn workspace(
     )
     .unwrap();
     peer.select_exact_admissions().unwrap();
-    peer.install_seed(
-        SeedState {
-            workspace_changes: seed_workspace(workspace, &a.1, roster).unwrap(),
-            documents: Vec::new(),
-        },
-        &a.0,
-        now,
-    )
-    .unwrap();
+    tilo_peer_state::fixture::found(&mut peer, (&a.0, &a.1), roster, Vec::new(), now);
     peer
 }
 

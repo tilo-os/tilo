@@ -2,22 +2,12 @@
 //! role stays, and only its person's root renews it.
 use crate::StatePeer;
 use crate::admission_tests::seeded;
-use crate::join::WorkspaceId;
-use crate::join::{InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof};
+use crate::join::Role;
 use ed25519_dalek::SigningKey;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
+use tilo_user_identity::{DeviceCapabilities, DeviceCert, sign_device_cert};
 use web_time::{Duration, SystemTime};
 
 const SECOND: u64 = 1_000_000_000;
-
-fn ns(time: SystemTime) -> u64 {
-    u64::try_from(
-        time.duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    )
-    .unwrap()
-}
 
 fn cert(root: &SigningKey, device: &SigningKey, issued: u64, expires: Option<u64>) -> DeviceCert {
     let mut cert = DeviceCert {
@@ -43,47 +33,13 @@ fn admit(
     device: &SigningKey,
     at: SystemTime,
 ) {
-    let at_ns = ns(at);
-    let owner = peer.owner_certificates()[0].clone();
-    let signed = issue_invitation(
-        InviteGrant {
-            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
-            issuer: owner,
-            role: Role::Editor,
-            nonce: [53; 16],
-            recipient_user_public_key: Some(member.user_public_key),
-            invitee_name: Some("Editor".into()),
-            expires_at_ns: at_ns.saturating_add(10 * SECOND),
-            transport: vec![],
-        },
+    assert!(crate::fixture::join(
+        peer,
         authority,
-    )
-    .unwrap();
-    let join = crate::join::decode_and_verify_invitation(
-        &signed,
-        Some(member.user_public_key),
-        &RevocationList::new(),
-        at_ns,
-    )
-    .unwrap();
-    let challenge = JoinChallenge::new(
-        &join,
-        member,
-        [54; 32],
-        [55; 32],
-        at_ns.saturating_add(SECOND),
-        at_ns,
-    )
-    .unwrap();
-    let proof = sign_join_proof(challenge.clone(), device).unwrap();
-    let redemption =
-        crate::join::verify_join_proof(&proof, &challenge, member, &RevocationList::new(), at_ns)
-            .unwrap();
-    assert!(
-        peer.governance_mut()
-            .admit_invited_member(&redemption, device, at)
-            .unwrap()
-    );
+        (device, member),
+        53,
+        at
+    ));
 }
 
 /// A workspace with an Editor whose certificate lasted from 1000s to 1500s, now

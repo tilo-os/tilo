@@ -3,12 +3,8 @@
 //! itself, and a device certified by a member's root writes its own row. No
 //! other device writes either in its place.
 use super::*;
-use crate::join::WorkspaceId;
-use crate::join::{
-    InviteGrant, JoinChallenge, Role, VerifiedRedemption, issue_invitation, sign_join_proof,
-    verify_join_proof,
-};
-use tilo_user_identity::{RevocationList, sign_device_cert};
+use crate::join::{Role, VerifiedRedemption};
+use tilo_user_identity::sign_device_cert;
 
 /// A device of the root seeded `root`, its key seeded `device`.
 fn device(root: u8, device: u8) -> (SigningKey, DeviceCert) {
@@ -32,35 +28,12 @@ fn redemption(
     nonce: u8,
     now: SystemTime,
 ) -> VerifiedRedemption {
-    let now_ns = now_ns(now);
-    let signed = issue_invitation(
-        InviteGrant {
-            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
-            issuer: issuer.clone(),
-            role,
-            nonce: [nonce; 16],
-            recipient_user_public_key: None,
-            invitee_name: None,
-            expires_at_ns: now_ns.checked_add(10_000_000_000).unwrap(),
-            transport: vec![],
-        },
-        issuer_key,
-    )
-    .unwrap();
-    let join =
-        crate::join::decode_and_verify_invitation(&signed, None, &RevocationList::new(), now_ns)
-            .unwrap();
-    let challenge = JoinChallenge::new(
-        &join,
-        joiner,
-        [nonce; 32],
-        [nonce ^ 1; 32],
-        now_ns.checked_add(1_000_000_000).unwrap(),
-        now_ns,
-    )
-    .unwrap();
-    let proof = sign_join_proof(challenge.clone(), key).unwrap();
-    verify_join_proof(&proof, &challenge, joiner, &RevocationList::new(), now_ns).unwrap()
+    let signed = crate::fixture::invitation(peer, issuer_key, now, |grant| {
+        grant.issuer = issuer.clone();
+        grant.role = role;
+        grant.nonce = [nonce; 16];
+    });
+    crate::fixture::redeem(&signed, (key, joiner), nonce, now)
 }
 
 /// The workspace's governance, as a fresh replica of the owner's receives it

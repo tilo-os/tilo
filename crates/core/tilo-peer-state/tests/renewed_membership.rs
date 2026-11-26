@@ -14,6 +14,7 @@ use std::sync::Mutex;
 use std::time::{Duration, SystemTime};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_desktop_model::WorkspaceId;
+use tilo_peer_state::StatePeer;
 use tilo_peer_state::join::invitations::{IssueInvitationRequest, IssuedInvitation};
 use tilo_peer_state::join::{
     self, JoinTransportRequest, JoinTransportResponse, Role, TransportHint,
@@ -22,7 +23,6 @@ use tilo_peer_state::join_answer::{JoinAnswer, JoinWorkspaces, WorkspaceTxn};
 use tilo_peer_state::join_log::{GovernanceMessages, JoinError, JoinLog, Listed, Signer};
 use tilo_peer_state::owner::testing::{self, WORKSPACE};
 use tilo_peer_state::owner::{VerifiedNativeEnrollmentIntent, open_file};
-use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 
 /// The workspace's admitted state, which also gives the governance a joining
@@ -138,16 +138,13 @@ impl MemoryWorkspaces {
         )
         .unwrap();
         peer.select_exact_admissions().unwrap();
-        peer.install_seed(
-            SeedState {
-                workspace_changes: seed_workspace(WORKSPACE, device, std::slice::from_ref(device))
-                    .unwrap(),
-                documents: Vec::new(),
-            },
-            key,
+        tilo_peer_state::fixture::found(
+            &mut peer,
+            (&key, &device),
+            std::slice::from_ref(device),
+            Vec::new(),
             now,
-        )
-        .unwrap();
+        );
         Self {
             key: key.clone(),
             nonce: Mutex::new(0),

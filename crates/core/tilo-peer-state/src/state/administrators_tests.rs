@@ -376,10 +376,8 @@ mod made_and_invited {
     //! of may.
     use super::*;
     use crate::join::{
-        InviteGrant, Inviter, JoinChallenge, Role as JoinRole, VerifiedRedemption,
-        issue_administrator_invitation, sign_join_proof, verify_join_proof,
+        InviteGrant, Inviter, Role as JoinRole, VerifiedRedemption, issue_administrator_invitation,
     };
-    use tilo_user_identity::RevocationList;
 
     /// A device of the root seeded `root`, its key seeded `device`.
     fn device(root: u8, device: u8) -> (SigningKey, DeviceCert) {
@@ -422,24 +420,7 @@ mod made_and_invited {
             issuer_key,
         )
         .unwrap();
-        let join = crate::join::decode_and_verify_invitation(
-            &signed,
-            None,
-            &RevocationList::new(),
-            now_ns,
-        )
-        .unwrap();
-        let challenge = JoinChallenge::new(
-            &join,
-            joiner,
-            [nonce; 32],
-            [nonce ^ 1; 32],
-            now_ns.checked_add(1_000_000_000).unwrap(),
-            now_ns,
-        )
-        .unwrap();
-        let proof = sign_join_proof(challenge.clone(), key).unwrap();
-        verify_join_proof(&proof, &challenge, joiner, &RevocationList::new(), now_ns).unwrap()
+        crate::fixture::redeem(&signed, (key, joiner), nonce, now)
     }
 
     /// A workspace its host founded and handed to the Editor it seeded,

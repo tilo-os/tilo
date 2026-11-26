@@ -14,9 +14,9 @@ use ed25519_dalek::SigningKey;
 use neighbour_wire::NeighbourMsg;
 use std::sync::Arc;
 use std::time::Duration;
+use tilo_peer_state::StatePeer;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync};
 use tilo_peer_state::store::{Appetite, Frame, Store};
-use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::RevocationList;
 use web_time::SystemTime;
 
@@ -72,15 +72,7 @@ impl Linked {
         )
         .unwrap();
         a.select_exact_admissions().unwrap();
-        a.install_seed(
-            SeedState {
-                workspace_changes: seed_workspace(WORKSPACE, &a_cert, &devices).unwrap(),
-                documents: Vec::new(),
-            },
-            &a_key,
-            now,
-        )
-        .unwrap();
+        tilo_peer_state::fixture::found(&mut a, (&a_key, &a_cert), &devices, Vec::new(), now);
         let b = StatePeer::from_join(WORKSPACE, a_cert.clone(), devices, &[], now).unwrap();
         let store_dir = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::open(store_dir.path(), Appetite::StoreAll).unwrap());

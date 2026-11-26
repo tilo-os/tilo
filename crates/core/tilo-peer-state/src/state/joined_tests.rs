@@ -132,16 +132,7 @@ tilo_test_env::scenario! {
             now,
         )
         .unwrap();
-        owner_copy
-            .install_seed(
-                SeedState {
-                    workspace_changes: crate::seed_workspace(WORKSPACE, &owner, &roster).unwrap(),
-                    documents: Vec::new(),
-                },
-                &owner_key,
-                now,
-            )
-            .unwrap();
+        crate::fixture::found(&mut owner_copy, (&owner_key, &owner), &roster, Vec::new(), now);
         owner_copy
             .governance_mut()
             .declare_member(

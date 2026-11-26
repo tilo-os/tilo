@@ -13,9 +13,9 @@ use ed25519_dalek::SigningKey;
 use std::sync::Arc;
 use std::time::Duration;
 use tilo_actions::{ActionContext, ActionInvoker, Did, EditOp, FieldEdit, PathStep};
+use tilo_peer_state::StatePeer;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Replica, Serving};
 use tilo_peer_state::store::{Appetite, Store};
-use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_server_protocol::refusal::Refusal;
 use tilo_user_identity::{DeviceCert, RevocationList};
 use web_time::SystemTime;
@@ -141,15 +141,13 @@ impl LinkedPair {
         )
         .unwrap();
         peer.select_exact_admissions().unwrap();
-        peer.install_seed(
-            SeedState {
-                workspace_changes: seed_workspace(WORKSPACE, &host_cert, &members).unwrap(),
-                documents: Vec::new(),
-            },
-            &host_key,
+        tilo_peer_state::fixture::found(
+            &mut peer,
+            (&host_key, &host_cert),
+            &members,
+            Vec::new(),
             now,
-        )
-        .unwrap();
+        );
         let directory = tempfile::tempdir().unwrap();
         let store = Arc::new(Store::open(directory.path(), Appetite::StoreAll).unwrap());
         let host = DirectSync::over(Replica::new(peer), host_key.clone()).with_store(store);

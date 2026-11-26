@@ -21,9 +21,9 @@ use iroh::protocol::Router;
 use neighbour_wire::{NeighbourMsg, peer_handle};
 use std::sync::Arc;
 use std::time::Duration;
+use tilo_peer_state::StatePeer;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Heard, Kept, Serving};
 use tilo_peer_state::store::{Appetite, Frame, Store};
-use tilo_peer_state::{SeedDocument, SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::{DeviceCapabilities, RevocationList};
 use web_time::SystemTime;
 
@@ -152,16 +152,13 @@ async fn a_write_before_the_change_it_builds_on_merges_once_that_change_comes() 
     )
     .unwrap();
     govern.select_exact_admissions().unwrap();
-    govern
-        .install_seed(
-            SeedState {
-                workspace_changes: seed_workspace(WORKSPACE, &server_cert, &devices).unwrap(),
-                documents: Vec::new(),
-            },
-            &host_key,
-            now,
-        )
-        .unwrap();
+    tilo_peer_state::fixture::found(
+        &mut govern,
+        (&host_key, &server_cert),
+        &devices,
+        Vec::new(),
+        now,
+    );
     let scratch = tempfile::tempdir().unwrap();
     let store = Arc::new(Store::open(scratch.path(), Appetite::StoreAll).unwrap());
     let host = DirectSync::over(
@@ -302,21 +299,18 @@ async fn a_frame_not_signed_by_its_author_is_refused_at_admission() {
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "from the host").unwrap();
     document.commit_edit("fixture", "value", &server_cert.user_public_key);
-    govern
-        .install_seed(
-            SeedState {
-                workspace_changes: seed_workspace(WORKSPACE, &server_cert, &devices).unwrap(),
-                documents: vec![SeedDocument {
-                    app_id: APP.into(),
-                    document_id: RECORD.into(),
-                    kind: "test".into(),
-                    bytes: document.save(),
-                }],
-            },
-            &host_key,
-            now,
-        )
-        .unwrap();
+    tilo_peer_state::fixture::found(
+        &mut govern,
+        (&host_key, &server_cert),
+        &devices,
+        vec![tilo_peer_state::fixture::document(
+            APP,
+            RECORD,
+            "test",
+            document.save(),
+        )],
+        now,
+    );
     let host = DirectSync::over(
         tilo_peer_state::direct::Replica::new(govern),
         host_key.clone(),

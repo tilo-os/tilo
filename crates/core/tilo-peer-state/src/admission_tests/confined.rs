@@ -42,15 +42,7 @@ fn workspace_listing_the_vm(workspace: &str) -> (StatePeer, DeviceCert, DeviceCe
         now,
     )
     .unwrap();
-    peer.install_seed(
-        SeedState {
-            workspace_changes: seed_workspace(workspace, &ac, &roster).unwrap(),
-            documents: Vec::new(),
-        },
-        &a,
-        now,
-    )
-    .unwrap();
+    crate::fixture::found(&mut peer, (&a, &ac), &roster, Vec::new(), now);
     (peer, ac, vm, now)
 }
 

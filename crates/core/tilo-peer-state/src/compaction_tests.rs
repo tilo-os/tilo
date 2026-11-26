@@ -130,21 +130,7 @@ tilo_test_env::scenario! {
             now(),
         )
         .unwrap();
-        founded_elsewhere
-            .install_seed(
-                SeedState {
-                    workspace_changes: seed_workspace(
-                        WORKSPACE,
-                        &stranger,
-                        std::slice::from_ref(&stranger),
-                    )
-                    .unwrap(),
-                    documents: Vec::new(),
-                },
-                &stranger_key,
-                now(),
-            )
-            .unwrap();
+        crate::fixture::found(&mut founded_elsewhere, (&stranger_key, &stranger), std::slice::from_ref(&stranger), Vec::new(), now());
         assert!(
             handed(
                 &mut newcomer(),

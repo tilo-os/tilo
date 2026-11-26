@@ -1,24 +1,9 @@
 //! A holder of a workspace that is no member: it carries what members and
 //! joining devices signed, byte for byte, and writes nothing of its own.
 use super::*;
-use crate::join::{
-    InviteGrant, Role, decode_and_verify_invitation, issue_invitation, verify_connection_redemption,
-};
+use crate::join::{Role, verify_connection_redemption};
 use crate::state::DeviceRow;
 use std::collections::BTreeSet;
-
-/// A device of `root_seed`'s person, `device_seed`'s key, certified by that
-/// person's root.
-fn device_of(root_seed: u8, device_seed: u8, _: &str) -> (SigningKey, DeviceCert) {
-    let root = SigningKey::from_bytes(&[root_seed; 32]);
-    let key = SigningKey::from_bytes(&[device_seed; 32]);
-    let cert = crate::fixture::cert(
-        &root,
-        &key,
-        tilo_user_identity::DeviceCapabilities::member(),
-    );
-    (key, cert)
-}
 
 /// `peer`, the owner's copy, with `holder` named among the workspace's
 /// holders by its own signed address: another person's server keeping it.
@@ -51,29 +36,12 @@ fn invited(
     guest: &DeviceCert,
     now: SystemTime,
 ) -> crate::join::VerifiedRedemption {
-    let now_ns = ns_since_epoch(now);
-    let signed = issue_invitation(
-        InviteGrant {
-            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
-            issuer: peer.owner_certificates()[0].clone(),
-            role: Role::Editor,
-            nonce: [95; 16],
-            recipient_user_public_key: Some(guest.user_public_key),
-            invitee_name: Some("Guest".into()),
-            expires_at_ns: now_ns.saturating_add(10_000_000_000),
-            transport: vec![],
-        },
-        authority,
-    )
-    .unwrap();
-    decode_and_verify_invitation(
-        &signed,
-        Some(guest.user_public_key),
-        &RevocationList::new(),
-        now_ns,
-    )
-    .unwrap();
-    verify_connection_redemption(&signed, guest, [96; 32], &RevocationList::new(), now_ns).unwrap()
+    let signed = crate::fixture::invitation(peer, authority, now, |grant| {
+        grant.nonce = [95; 16];
+        grant.recipient_user_public_key = Some(guest.user_public_key);
+    });
+    let now = crate::fixture::ns(now);
+    verify_connection_redemption(&signed, guest, [96; 32], &RevocationList::new(), now).unwrap()
 }
 
 /// What `held`'s copy took in since `heads`, as the changes it would carry on.
@@ -118,8 +86,8 @@ fn new_authors(before: &StatePeer, peer: &StatePeer) -> Vec<[u8; 32]> {
 #[test]
 fn a_joining_device_signs_its_own_admission_and_a_holder_carries_it() {
     let (mut peer, authority_key, _, _, now) = seeded();
-    let (holder_key, holder) = device_of(91, 92, "Holder");
-    let (guest_key, guest) = device_of(93, 94, "Guest");
+    let (holder_key, holder) = crate::fixture::device(91, 92);
+    let (guest_key, guest) = crate::fixture::device(93, 94);
     holding(&mut peer, &authority_key, (&holder_key, &holder));
     let redemption = invited(&peer, &authority_key, &guest, now);
     let admission = crate::own_admission::own_admission(
@@ -187,11 +155,11 @@ fn a_joining_device_signs_its_own_admission_and_a_holder_carries_it() {
 #[test]
 fn a_further_device_signs_its_own_row_through_a_holder() {
     let (mut peer, authority_key, _, _, now) = seeded();
-    let now_ns = ns_since_epoch(now);
-    let (holder_key, holder) = device_of(91, 92, "Holder");
+    let now_ns = crate::fixture::ns(now);
+    let (holder_key, holder) = crate::fixture::device(91, 92);
     holding(&mut peer, &authority_key, (&holder_key, &holder));
     let (_, member, _) = add_member_with(&mut peer, &authority_key, now, 5, 6);
-    let (further_key, further) = device_of(5, 7, "Second desktop");
+    let (further_key, further) = crate::fixture::device(5, 7);
     assert_ne!(member.device_public_key, further.device_public_key);
     let member_root = SigningKey::from_bytes(&[5; 32]);
     let backend_key = SigningKey::from_bytes(&[8; 32]);
@@ -255,7 +223,7 @@ fn a_further_device_signs_its_own_row_through_a_holder() {
         .is_empty()
     );
 
-    let (stranger_key, stranger) = device_of(93, 94, "Stranger");
+    let (stranger_key, stranger) = crate::fixture::device(93, 94);
     let refused = crate::own_admission::further_device_row(
         peer.workspace_id(),
         &governance_of(&peer),
@@ -275,8 +243,8 @@ fn a_further_device_signs_its_own_row_through_a_holder() {
 fn a_holder_that_is_no_member_writes_nothing_of_its_own() {
     let (mut peer, authority_key, _, bc, now) = seeded();
     let workspace = peer.workspace_id().to_owned();
-    let (holder_key, holder) = device_of(91, 92, "Holder");
-    let (guest_key, guest) = device_of(93, 94, "Guest");
+    let (holder_key, holder) = crate::fixture::device(91, 92);
+    let (guest_key, guest) = crate::fixture::device(93, 94);
     holding(&mut peer, &authority_key, (&holder_key, &holder));
     let heads = peer.workspace_heads().unwrap();
 
@@ -395,14 +363,9 @@ fn an_admission_naming_an_entry_the_workspace_never_had_admits_nobody() {
     let (mut peer, authority_key, _, _, now) = seeded();
     let entry = opened(&mut peer, &authority_key, now);
     let forged = [0x77; 32];
-    let (guest_key, guest) = device_of(70, 71, "Guest");
+    let (guest_key, guest) = crate::fixture::device(70, 71);
     let workspace = peer.workspace_id().to_owned();
-    let now_ns: u64 = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap();
+    let now_ns = crate::fixture::ns(now);
     let op = crate::members::SignedMembershipOp::signed(
         &guest,
         &guest_key,
@@ -477,12 +440,7 @@ fn many_entry_admissions_replay_by_the_entry_their_place_held() {
         .max_by_key(|(_, op)| op.at_ns)
         .map(|(id, _)| id)
         .expect("the entry is an operation the workspace holds");
-    let now_ns: u64 = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap();
+    let now_ns = crate::fixture::ns(now);
     for index in 0..GUESTS {
         let mut seed = [0u8; 32];
         seed[..8].copy_from_slice(&(index as u64 + 1).to_le_bytes());
@@ -590,15 +548,10 @@ fn a_server_signing_a_guests_admission_admits_nobody() {
 
     let (mut peer, authority_key, _, _, now) = seeded();
     let entry = opened(&mut peer, &authority_key, now);
-    let (holder_key, holder) = device_of(91, 92, "Server");
-    let (guest_key, guest) = device_of(93, 94, "Guest");
+    let (holder_key, holder) = crate::fixture::device(91, 92);
+    let (guest_key, guest) = crate::fixture::device(93, 94);
     let workspace = peer.workspace_id().to_owned();
-    let now_ns: u64 = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap();
+    let now_ns = crate::fixture::ns(now);
     let op = SignedMembershipOp::signed(
         &holder,
         &holder_key,
@@ -639,14 +592,9 @@ fn a_receipt_naming_a_role_above_the_entry_admits_nobody() {
 
     let (mut peer, authority_key, _, _, now) = seeded();
     let entry = opened(&mut peer, &authority_key, now);
-    let (guest_key, guest) = device_of(98, 99, "Guest");
+    let (guest_key, guest) = crate::fixture::device(98, 99);
     let workspace = peer.workspace_id().to_owned();
-    let now_ns: u64 = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap();
+    let now_ns = crate::fixture::ns(now);
     let op = crate::members::SignedMembershipOp::signed(
         &guest,
         &guest_key,
@@ -694,7 +642,7 @@ fn a_receipt_naming_a_role_above_the_entry_admits_nobody() {
 fn a_visitor_with_no_name_yet_comes_in_through_the_open_entry() {
     let (mut peer, authority_key, _, _, now) = seeded();
     opened(&mut peer, &authority_key, now);
-    let (guest_key, guest) = device_of(95, 96, "Guest");
+    let (guest_key, guest) = crate::fixture::device(95, 96);
     for blank in [Some(""), Some("  "), None] {
         crate::own_admission::entry_admission(
             peer.workspace_id(),

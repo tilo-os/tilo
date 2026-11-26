@@ -19,11 +19,11 @@ use neighbour_wire::{NeighbourMsg, peer_handle};
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
+use tilo_peer_state::StatePeer;
 use tilo_peer_state::direct::{DIRECT_ALPN, DirectSync, Kept};
 use tilo_peer_state::join::WorkspaceId;
 use tilo_peer_state::reach::{Reach, RecordReach};
 use tilo_peer_state::store::{Appetite, Store};
-use tilo_peer_state::{SeedState, StatePeer, seed_workspace};
 use tilo_user_identity::RevocationList;
 use web_time::SystemTime;
 
@@ -57,15 +57,7 @@ fn two() -> Two {
     )
     .unwrap();
     a.select_exact_admissions().unwrap();
-    a.install_seed(
-        SeedState {
-            workspace_changes: seed_workspace(WORKSPACE, &a_cert, &roster).unwrap(),
-            documents: Vec::new(),
-        },
-        &a_key,
-        now,
-    )
-    .unwrap();
+    tilo_peer_state::fixture::found(&mut a, (&a_key, &a_cert), &roster, Vec::new(), now);
     let b = StatePeer::from_join(WORKSPACE, a_cert, roster, &[], now).unwrap();
     Two {
         a,

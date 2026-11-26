@@ -14,19 +14,10 @@ use editor::owner_signs;
 pub(crate) use editor::{other_owner, seeded_editor_with_second_device};
 use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationList, sign_device_cert};
 use web_time::{Duration, SystemTime};
+/// The owner's two devices and the moment the story starts.
 fn fixtures() -> (SigningKey, DeviceCert, SigningKey, DeviceCert, SystemTime) {
-    let root = SigningKey::from_bytes(&[1; 32]);
-    let now = SystemTime::UNIX_EPOCH
-        .checked_add(Duration::from_secs(2000))
-        .unwrap();
-    let make = |n: u8| {
-        let key = SigningKey::from_bytes(&[n; 32]);
-        let cert = crate::fixture::cert(&root, &key, DeviceCapabilities::member());
-        (key, cert)
-    };
-    let (a, ac) = make(2);
-    let (b, bc) = make(3);
-    (a, ac, b, bc, now)
+    let ((a, ac), (b, bc)) = (crate::fixture::device(1, 2), crate::fixture::device(1, 3));
+    (a, ac, b, bc, crate::fixture::at())
 }
 tilo_test_env::scenario! {
     fn an_exported_certificate_changes_nothing_the_peer_verified;
@@ -389,7 +380,7 @@ tilo_test_env::scenario! {
             &guest,
             &guest_key,
             crate::members::heads(&crate::members::ops(&workspace_doc)),
-            ns_since_epoch(later),
+            crate::fixture::ns(later),
             crate::members::MembershipOpCommand::Project {
                 changes: vec![tilo_action_policy::Change::AddMember {
                     person: hex::encode(newcomer_cert.user_public_key),
@@ -454,22 +445,7 @@ tilo_test_env::scenario! {
         let mut document = AutoCommit::new();
         document.put(ROOT, "value", 1).unwrap();
         document.commit_edit("fixture", "value", &ac.user_public_key);
-        native
-            .install_seed(
-                SeedState {
-                    workspace_changes: seed_workspace(workspace, &ac, &[ac.clone(), bc.clone()])
-                        .unwrap(),
-                    documents: vec![SeedDocument {
-                        app_id: "test.app".into(),
-                        document_id: "tab:1".into(),
-                        kind: "test".into(),
-                        bytes: document.save(),
-                    }],
-                },
-                &a,
-                now,
-            )
-            .unwrap();
+        crate::fixture::found(&mut native, (&a, &ac), &[ac.clone(), bc.clone()], vec![crate::fixture::document("test.app", "tab:1", "test", document.save())], now);
         let mut receiver = StatePeer::new(
             workspace,
             ac.clone(),
@@ -1027,61 +1003,16 @@ pub(crate) fn add_member_with(
     root_seed: u8,
     device_seed: u8,
 ) -> (SigningKey, DeviceCert, [u8; 32]) {
-    use crate::join::{InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof};
-    let root = SigningKey::from_bytes(&[root_seed; 32]);
-    let device = SigningKey::from_bytes(&[device_seed; 32]);
-    let cert = crate::fixture::cert(&root, &device, DeviceCapabilities::member());
-    let now_ns = u64::try_from(
-        now.duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    )
-    .unwrap();
-    let owner = peer
-        .certificates()
-        .into_iter()
-        .find(|cert| cert.device_public_key == authority.verifying_key().to_bytes())
-        .unwrap();
-    let signed = issue_invitation(
-        InviteGrant {
-            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
-            issuer: owner,
-            role: Role::Editor,
-            nonce: [device_seed.wrapping_add(1); 16],
-            recipient_user_public_key: Some(cert.user_public_key),
-            invitee_name: Some(format!("Editor {root_seed}")),
-            expires_at_ns: now_ns.checked_add(10_000_000_000).unwrap(),
-            transport: vec![],
-        },
+    let (key, cert) = crate::fixture::device(root_seed, device_seed);
+    assert!(crate::fixture::join(
+        peer,
         authority,
-    )
-    .unwrap();
-    let join = crate::join::decode_and_verify_invitation(
-        &signed,
-        Some(cert.user_public_key),
-        &RevocationList::new(),
-        now_ns,
-    )
-    .unwrap();
-    let challenge = JoinChallenge::new(
-        &join,
-        &cert,
-        [device_seed.wrapping_add(2); 32],
-        [device_seed.wrapping_add(3); 32],
-        now_ns.checked_add(1_000_000_000).unwrap(),
-        now_ns,
-    )
-    .unwrap();
-    let proof = sign_join_proof(challenge.clone(), &device).unwrap();
-    let redemption =
-        crate::join::verify_join_proof(&proof, &challenge, &cert, &RevocationList::new(), now_ns)
-            .unwrap();
-    assert!(
-        peer.governance_mut()
-            .admit_invited_member(&redemption, &device, now)
-            .unwrap()
-    );
-    (device, cert, root.verifying_key().to_bytes())
+        (&key, &cert),
+        device_seed,
+        now
+    ));
+    let person = cert.user_public_key;
+    (key, cert, person)
 }
 
 /// Redeem, with the key `key` that `cert` certifies, an invitation for its person that the
@@ -1090,223 +1021,60 @@ pub(crate) fn add_member_with(
 pub(crate) fn redeem_key(
     peer: &mut StatePeer,
     authority: &SigningKey,
-    (key, cert): (&SigningKey, &DeviceCert),
+    device: (&SigningKey, &DeviceCert),
     now: SystemTime,
     seed: u8,
 ) -> bool {
-    use crate::join::{InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof};
-    let now_ns = u64::try_from(
-        now.duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    )
-    .unwrap();
-    let owner = peer
-        .certificates()
-        .into_iter()
-        .find(|owner| owner.device_public_key == authority.verifying_key().to_bytes())
-        .unwrap();
-    let signed = issue_invitation(
-        InviteGrant {
-            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
-            issuer: owner,
-            role: Role::Editor,
-            nonce: [seed; 16],
-            recipient_user_public_key: Some(cert.user_public_key),
-            invitee_name: Some(cert.device_label.clone()),
-            expires_at_ns: now_ns.checked_add(10_000_000_000).unwrap(),
-            transport: vec![],
-        },
-        authority,
-    )
-    .unwrap();
-    let Ok(join) = crate::join::decode_and_verify_invitation(
-        &signed,
-        Some(cert.user_public_key),
-        &RevocationList::new(),
-        now_ns,
-    ) else {
-        return false;
-    };
-    let Ok(challenge) = JoinChallenge::new(
-        &join,
-        cert,
-        [seed.wrapping_add(1); 32],
-        [seed.wrapping_add(2); 32],
-        now_ns.checked_add(1_000_000_000).unwrap(),
-        now_ns,
-    ) else {
-        return false;
-    };
-    let Ok(proof) = sign_join_proof(challenge.clone(), key) else {
-        return false;
-    };
-    let Ok(redemption) =
-        crate::join::verify_join_proof(&proof, &challenge, cert, &RevocationList::new(), now_ns)
-    else {
-        return false;
-    };
-    peer.governance_mut()
-        .admit_invited_member(&redemption, key, now)
-        .unwrap_or(false)
+    crate::fixture::join(peer, authority, device, seed, now)
 }
 
 /// An invitation to `base`'s workspace as an editor, which its owner's device
 /// `key` signs at `now`.
 fn editor_invitation(base: &StatePeer, key: &SigningKey, now: SystemTime) -> Vec<u8> {
-    use crate::join::{InviteGrant, Role, issue_invitation};
-    issue_invitation(
-        InviteGrant {
-            workspace_id: WorkspaceId::parse(base.workspace_id()).unwrap(),
-            issuer: base.owner_certificates()[0].clone(),
-            role: Role::Editor,
-            nonce: [70; 16],
-            recipient_user_public_key: None,
-            invitee_name: None,
-            expires_at_ns: unix_ns(now).saturating_add(10_000_000_000),
-            transport: vec![],
-        },
-        key,
-    )
-    .unwrap()
+    crate::fixture::invitation(base, key, now, |grant| grant.nonce = [70; 16])
 }
 
 /// The redemption of `signed` by the device seeded `device_seed` of the person
-/// whose root is seeded `root_seed`, proving the challenge of `request` and
-/// `nonce`.
+/// whose root is seeded `root_seed`, proving the challenge numbered `request`.
 fn redemption(
     signed: &[u8],
     (root_seed, device_seed): (u8, u8),
-    (request, nonce): (u8, u8),
+    (request, _): (u8, u8),
     now: SystemTime,
 ) -> crate::join::VerifiedRedemption {
-    use crate::join::{
-        JoinChallenge, decode_and_verify_invitation, sign_join_proof, verify_join_proof,
-    };
-    let now_ns = unix_ns(now);
-    let root = SigningKey::from_bytes(&[root_seed; 32]);
-    let device = SigningKey::from_bytes(&[device_seed; 32]);
-    let cert = crate::fixture::cert(&root, &device, DeviceCapabilities::member());
-    let join = decode_and_verify_invitation(
-        signed,
-        Some(cert.user_public_key),
-        &RevocationList::new(),
-        now_ns,
-    )
-    .unwrap();
-    let challenge = JoinChallenge::new(
-        &join,
-        &cert,
-        [request; 32],
-        [nonce; 32],
-        now_ns.saturating_add(1_000_000_000),
-        now_ns,
-    )
-    .unwrap();
-    let proof = sign_join_proof(challenge.clone(), &device).unwrap();
-    verify_join_proof(&proof, &challenge, &cert, &RevocationList::new(), now_ns).unwrap()
+    let (key, cert) = crate::fixture::device(root_seed, device_seed);
+    crate::fixture::redeem(signed, (&key, &cert), request, now)
 }
 
-fn unix_ns(at: SystemTime) -> u64 {
-    at.duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap()
-}
-
+/// The owner's two devices, `a` hosting the workspace with one record seeded, `b` beside it.
 pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, SystemTime) {
-    let (a, ac, b, bc, now) = fixtures();
-    let workspace = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
-    let mut native = StatePeer::new(
-        workspace,
-        ac.clone(),
-        vec![ac.clone(), bc.clone()],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
+    let (a, b) = (crate::fixture::device(1, 2), crate::fixture::device(1, 3));
     let mut document = AutoCommit::new();
     document.put(ROOT, "value", "native").unwrap();
-    document.commit_edit("fixture", "value", &ac.user_public_key);
-    native
-        .install_seed(
-            SeedState {
-                workspace_changes: seed_workspace(workspace, &ac, &[ac.clone(), bc.clone()])
-                    .unwrap(),
-                documents: vec![SeedDocument {
-                    app_id: "test.app".into(),
-                    document_id: "tab:1".into(),
-                    kind: "test".into(),
-                    bytes: document.save(),
-                }],
-            },
-            &a,
-            now,
-        )
-        .unwrap();
-    (native, a, b, bc, now)
+    document.commit_edit("fixture", "value", &a.1.user_public_key);
+    let peer = crate::fixture::Founding::by(&a)
+        .with([&b.1])
+        .seeding(crate::fixture::RECORD, document.save())
+        .peer();
+    (peer, a.0, b.0, b.1, crate::fixture::at())
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one end-to-end scenario: its setup and assertions stay together"
-)]
 fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access() {
-    use crate::join::{
-        InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof, verify_join_proof,
+    use crate::fixture::{device, invitation, redeem, restored};
+    use crate::join::Role;
+    let (mut peer, owner, other_owner_device, _, now) = seeded();
+    let (guest_key, guest_cert) = device(41, 42);
+    let guest = (&guest_key, &guest_cert);
+    let signed = invitation(&peer, &owner, now, |grant| {
+        grant.nonce = [43; 16];
+        grant.recipient_user_public_key = Some(guest_cert.user_public_key);
+    });
+    let redemption = redeem(&signed, guest, 44, now);
+    let admit = |peer: &mut StatePeer, redemption: &crate::join::VerifiedRedemption| {
+        peer.governance_mut()
+            .admit_invited_member(redemption, &guest_key, now)
     };
-
-    let (mut peer, authority_key, other_owner_device, _, now) = seeded();
-    let now_ns: u64 = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap();
-    let guest_root = SigningKey::from_bytes(&[41; 32]);
-    let guest_key = SigningKey::from_bytes(&[42; 32]);
-    let guest_cert = crate::fixture::cert(&guest_root, &guest_key, DeviceCapabilities::member());
-    let signed = issue_invitation(
-        InviteGrant {
-            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
-            issuer: peer.owner_certificates()[0].clone(),
-            role: Role::Editor,
-            nonce: [43; 16],
-            recipient_user_public_key: Some(guest_cert.user_public_key),
-            invitee_name: Some("Independent guest".into()),
-            expires_at_ns: now_ns.saturating_add(10_000_000_000),
-            transport: vec![],
-        },
-        &authority_key,
-    )
-    .unwrap();
-    let join = crate::join::decode_and_verify_invitation(
-        &signed,
-        Some(guest_cert.user_public_key),
-        &RevocationList::new(),
-        now_ns,
-    )
-    .unwrap();
-    let challenge = JoinChallenge::new(
-        &join,
-        &guest_cert,
-        [44; 32],
-        [45; 32],
-        now_ns.saturating_add(1_000_000_000),
-        now_ns,
-    )
-    .unwrap();
-    let proof = sign_join_proof(challenge.clone(), &guest_key).unwrap();
-    let redemption = verify_join_proof(
-        &proof,
-        &challenge,
-        &guest_cert,
-        &RevocationList::new(),
-        now_ns,
-    )
-    .unwrap();
 
     assert!(
         peer.clone()
@@ -1317,17 +1085,10 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         "no other device writes the guest's redemption, the owner's neither"
     );
     assert!(
-        peer.governance_mut()
-            .admit_invited_member(&redemption, &guest_key, now)
-            .unwrap(),
+        admit(&mut peer, &redemption).unwrap(),
         "the guest's device redeems its own invitation"
     );
-    assert!(
-        !peer
-            .governance_mut()
-            .admit_invited_member(&redemption, &guest_key, now)
-            .unwrap()
-    );
+    assert!(!admit(&mut peer, &redemption).unwrap(), "once");
     assert_eq!(
         peer.role(&guest_cert.device_public_key, now).unwrap(),
         collab_types::Role::Editor
@@ -1349,155 +1110,66 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .contains(&guest_cert.user_public_key)
     );
     assert!(access.member_user_roots.contains(&peer.owner()));
-    assert!(
-        !peer
-            .governance_mut()
-            .admit_invited_member(&redemption, &guest_key, now)
-            .unwrap()
-    );
+
     let mut second_grant = redemption.join().grant().clone();
     second_grant.nonce = [46; 16];
-    let second_signed = issue_invitation(second_grant, &authority_key).unwrap();
-    let second_join = crate::join::decode_and_verify_invitation(
-        &second_signed,
-        Some(guest_cert.user_public_key),
-        &RevocationList::new(),
-        now_ns,
-    )
-    .unwrap();
-    let second_challenge = JoinChallenge::new(
-        &second_join,
-        &guest_cert,
-        [47; 32],
-        [48; 32],
-        now_ns.saturating_add(1_000_000_000),
-        now_ns,
-    )
-    .unwrap();
-    let second_proof = sign_join_proof(second_challenge.clone(), &guest_key).unwrap();
-    let second_redemption = verify_join_proof(
-        &second_proof,
-        &second_challenge,
-        &guest_cert,
-        &RevocationList::new(),
-        now_ns,
-    )
-    .unwrap();
+    let second_signed = crate::join::issue_invitation(second_grant, &owner).unwrap();
+    let second = redeem(&second_signed, guest, 47, now);
+    assert!(admit(&mut peer, &second).unwrap());
     assert!(
-        peer.governance_mut()
-            .admit_invited_member(&second_redemption, &guest_key, now)
-            .unwrap()
-    );
-    assert!(
-        !peer
-            .governance_mut()
-            .admit_invited_member(&redemption, &guest_key, now)
-            .unwrap(),
+        !admit(&mut peer, &redemption).unwrap(),
         "a later invite for the same device must not overwrite the first receipt"
     );
 
-    let mut restored = StatePeer::restore(
-        &peer.durable().unwrap(),
-        peer.workspace_id(),
-        peer.owner_certificates()[0].clone(),
-        vec![],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
-    assert!(
-        !restored
-            .governance_mut()
-            .admit_invited_member(&redemption, &guest_key, now)
-            .unwrap()
-    );
-    assert!(
-        !restored
-            .governance_mut()
-            .admit_invited_member(&second_redemption, &guest_key, now)
-            .unwrap()
-    );
+    let mut restored = restored(&peer, now).unwrap();
+    assert!(!admit(&mut restored, &redemption).unwrap());
+    assert!(!admit(&mut restored, &second).unwrap());
     let replay_key = SigningKey::from_bytes(&[54; 32]);
-    let replay_cert = crate::fixture::cert(&guest_root, &replay_key, DeviceCapabilities::member());
-    let replay_join = crate::join::decode_and_verify_invitation(
-        &signed,
-        Some(replay_cert.user_public_key),
-        &RevocationList::new(),
-        now_ns,
-    )
-    .unwrap();
-    let replay_challenge = JoinChallenge::new(
-        &replay_join,
-        &replay_cert,
-        [55; 32],
-        [56; 32],
-        now_ns.saturating_add(1_000_000_000),
-        now_ns,
-    )
-    .unwrap();
-    let replay_proof = sign_join_proof(replay_challenge.clone(), &replay_key).unwrap();
-    let replay_redemption = verify_join_proof(
-        &replay_proof,
-        &replay_challenge,
-        &replay_cert,
-        &RevocationList::new(),
-        now_ns,
-    )
-    .unwrap();
+    let replay_cert = crate::fixture::cert(
+        &crate::fixture::key(41),
+        &replay_key,
+        DeviceCapabilities::member(),
+    );
+    let replay = redeem(&signed, (&replay_key, &replay_cert), 55, now);
     assert!(
         restored
             .governance_mut()
-            .admit_invited_member(&replay_redemption, &replay_key, now)
+            .admit_invited_member(&replay, &replay_key, now)
             .unwrap_err()
             .contains("already redeemed"),
         "invite A remains spent after invite B updates the same original device"
     );
-    assert!(
-        restored
-            .governance_mut()
-            .set_member_role(
-                guest_cert.user_public_key,
-                Role::Commenter,
-                &authority_key,
-                now
-            )
-            .unwrap()
-    );
-    assert_eq!(
-        restored.role(&guest_cert.device_public_key, now).unwrap(),
-        collab_types::Role::Commenter
-    );
-    assert!(
-        restored
-            .governance_mut()
-            .set_member_role(
-                guest_cert.user_public_key,
-                Role::Viewer,
-                &authority_key,
-                now
-            )
-            .unwrap()
-    );
-    assert_eq!(
-        restored.role(&guest_cert.device_public_key, now).unwrap(),
-        collab_types::Role::Viewer
-    );
-    restored
-        .governance()
-        .membership_challenge(
-            WorkspaceId::parse(restored.workspace_id()).unwrap(),
-            &restored.owner_certificates()[0],
+    for (role, seen) in [
+        (Role::Commenter, collab_types::Role::Commenter),
+        (Role::Viewer, collab_types::Role::Viewer),
+    ] {
+        assert!(
+            restored
+                .governance_mut()
+                .set_member_role(guest_cert.user_public_key, role, &owner, now)
+                .unwrap()
+        );
+        assert_eq!(
+            restored.role(&guest_cert.device_public_key, now).unwrap(),
+            seen
+        );
+    }
+    let challenge = |peer: &StatePeer, seed: u8| {
+        peer.governance().membership_challenge(
+            WorkspaceId::parse(peer.workspace_id()).unwrap(),
+            &peer.owner_certificates()[0],
             &guest_cert,
-            [49; 32],
-            [50; 32],
-            now_ns + 1_000_000_000,
+            [seed; 32],
+            [seed + 1; 32],
+            crate::fixture::ns(now) + 1_000_000_000,
             now,
         )
-        .unwrap();
+    };
+    challenge(&restored, 49).unwrap();
     assert!(
         restored
             .governance_mut()
-            .remove_member(guest_cert.user_public_key, &authority_key, now)
+            .remove_member(guest_cert.user_public_key, &owner, now)
             .unwrap()
     );
     assert!(
@@ -1506,26 +1178,10 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .is_err()
     );
     assert_eq!(
-        restored
-            .governance()
-            .membership_challenge(
-                WorkspaceId::parse(restored.workspace_id()).unwrap(),
-                &restored.owner_certificates()[0],
-                &guest_cert,
-                [51; 32],
-                [52; 32],
-                now_ns + 1_000_000_000,
-                now,
-            )
-            .unwrap_err(),
+        challenge(&restored, 51).unwrap_err(),
         "member has been removed"
     );
-    assert!(
-        !restored
-            .governance_mut()
-            .admit_invited_member(&redemption, &guest_key, now)
-            .unwrap()
-    );
+    assert!(!admit(&mut restored, &redemption).unwrap());
     let access = restored.governance().member_list_access(now).unwrap();
     assert!(
         !access
@@ -1540,7 +1196,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
     assert!(
         restored
             .governance_mut()
-            .remove_member(peer.owner(), &authority_key, now)
+            .remove_member(peer.owner(), &owner, now)
             .is_err(),
         "the owner cannot be removed through member governance"
     );
@@ -1549,112 +1205,49 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
 tilo_test_env::scenario! {
     fn an_invitation_admits_one_person_once;
 
-    phase concurrent_redeemers_cannot_merge_two_receipts_for_one_invitation;
+    phase a_second_redemption_of_one_invitation_is_refused_whichever_reaches_a_receiver_first;
+    // An invitation admits one person once. Two people, or two devices of one
+    // person, may each redeem it at once, each admitted by a key holder before
+    // it holds the other's receipt: every receiver keeps the redemption that
+    // reached it first and refuses the other, which changes nothing.
     {
-        let (base, authority_key, _, _, now) = seeded();
-        let signed = editor_invitation(&base, &authority_key, now);
-        let first = redemption(&signed, (71, 72), (73, 74), now);
-        let second = redemption(&signed, (75, 76), (77, 78), now);
-        let mut left = base.clone();
-        let mut right = base.clone();
-        assert!(
-            left.governance_mut()
-                .admit_invited_member(&first, &SigningKey::from_bytes(&[72; 32]), now)
-                .unwrap()
-        );
-        assert!(
-            right
-                .governance_mut()
-                .admit_invited_member(&second, &SigningKey::from_bytes(&[76; 32]), now)
-                .unwrap()
-        );
-
-        let authority = base.owner_certificates()[0].device_public_key;
-        let mut receiver = base;
-        receiver
-            .receive_from(
-                TransportOrigin::ServerDelta(authority),
-                left.workspace_message(),
-                now,
-            )
-            .unwrap();
-        let accepted = receiver.durable().unwrap();
-        let error = receiver
-            .receive_from(
-                TransportOrigin::ServerDelta(authority),
-                right.workspace_message(),
-                now,
-            )
-            .unwrap_err()
-            .to_string();
-        assert!(
-            error.contains("conflicting redemption") || error.contains("duplicate seq"),
-            "concurrent redemption must fail before two receipts merge: {error}"
-        );
-        assert_eq!(receiver.durable().unwrap(), accepted);
-    }
-
-    phase concurrent_receipts_for_one_invite_keep_the_redemption_that_reached_it_first;
-    // Two devices of one person may each redeem one invitation at once, each
-    // admitted by a key holder before it holds the other's receipt. An
-    // invitation admits one person once: every receiver keeps the redemption
-    // that reached it first and refuses the other, whichever of the two
-    // arrives first.
-    {
-        let (base, authority_key, _, _, now) = seeded();
-        let signed = editor_invitation(&base, &authority_key, now);
-        let mut left = base.clone();
-        let mut right = base.clone();
-        assert!(
-            left.governance_mut()
-                .admit_invited_member(
-                    &redemption(&signed, (98, 99), (100, 101), now),
-                    &SigningKey::from_bytes(&[99; 32]),
-                    now,
-                )
-                .unwrap()
-        );
-        assert!(
-            right
-                .governance_mut()
-                .admit_invited_member(
-                    &redemption(&signed, (98, 102), (103, 104), now),
-                    &SigningKey::from_bytes(&[102; 32]),
-                    now,
-                )
-                .unwrap()
-        );
+        let (base, owner, _, _, now) = seeded();
+        let signed = editor_invitation(&base, &owner, now);
         let invite_id = hex::encode(blake3::hash(&signed).as_bytes());
-        let authority = base.owner_certificates()[0].device_public_key;
-        let receive = |first: &StatePeer, second: &StatePeer| {
-            let mut receiver = base.clone();
-            receiver
-                .receive_from(
-                    TransportOrigin::ServerDelta(authority),
-                    first.workspace_message(),
-                    now,
-                )
-                .unwrap();
-            let refused = receiver
-                .receive_from(
-                    TransportOrigin::ServerDelta(authority),
-                    second.workspace_message(),
-                    now,
-                )
-                .unwrap_err()
-                .to_string();
+        let admitted = |(root, device): (u8, u8)| {
+            let mut peer = base.clone();
+            let redemption = redemption(&signed, (root, device), (device + 1, 0), now);
             assert!(
-                refused.contains("conflicting redemption") || refused.contains("duplicate seq"),
-                "the second redemption of one invitation must be refused: {refused}"
+                peer.governance_mut()
+                    .admit_invited_member(&redemption, &crate::fixture::key(device), now)
+                    .unwrap()
             );
-            let NeighbourMsg::SyncResp { changes, .. } = receiver.workspace_message() else {
-                panic!("workspace message is a SyncResp")
-            };
-            crate::workspace::candidate(None, &changes).unwrap()
+            peer
         };
-        for redemption in [receive(&left, &right), receive(&right, &left)] {
-            let held = crate::workspace::invitation_receipts(&redemption).unwrap();
-            assert_eq!(held[&invite_id].len(), 1);
+        for (one, two) in [((71, 72), (75, 76)), ((98, 99), (98, 102))] {
+            let (left, right) = (admitted(one), admitted(two));
+            for (first, second) in [(&left, &right), (&right, &left)] {
+                let mut receiver = base.clone();
+                let origin = crate::fixture::origin(&owner);
+                receiver
+                    .receive_from(origin, first.workspace_message(), now)
+                    .unwrap();
+                let accepted = receiver.durable().unwrap();
+                let refused = receiver
+                    .receive_from(origin, second.workspace_message(), now)
+                    .unwrap_err()
+                    .to_string();
+                assert!(
+                    refused.contains("conflicting redemption") || refused.contains("duplicate seq"),
+                    "the second redemption of one invitation must be refused: {refused}"
+                );
+                assert_eq!(receiver.durable().unwrap(), accepted);
+                let NeighbourMsg::SyncResp { changes, .. } = receiver.workspace_message() else {
+                    panic!("workspace message is a SyncResp")
+                };
+                let doc = crate::workspace::candidate(None, &changes).unwrap();
+                assert_eq!(crate::workspace::invitation_receipts(&doc).unwrap()[&invite_id].len(), 1);
+            }
         }
     }
 
@@ -1677,12 +1270,7 @@ tilo_test_env::scenario! {
                 .get(&person)
                 .copied()
         };
-        let at_ms = u64::try_from(
-            now.duration_since(SystemTime::UNIX_EPOCH)
-                .unwrap()
-                .as_millis(),
-        )
-        .unwrap();
+        let at_ms = crate::fixture::ns(now) / 1_000_000;
         assert_eq!(joined(&peer), Some(at_ms));
 
         let later = now + Duration::from_secs(60);
@@ -1706,117 +1294,46 @@ tilo_test_env::scenario! {
 /// other on its own replica: it writes only its own row, so the two spends
 /// come from it in turn, and the workspace that takes them keeps both.
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one end-to-end scenario: its setup and assertions stay together"
-)]
 fn distinct_invitations_one_device_redeems_keep_both_spends_after_restore() {
-    use crate::join::{
-        InviteGrant, JoinChallenge, Role, decode_and_verify_invitation, issue_invitation,
-        sign_join_proof, verify_join_proof,
+    use crate::fixture::{cert, device, invitation, key, origin, redeem, restored};
+    let (base, owner, delegate, _, now) = seeded();
+    let (guest_key, guest) = device(81, 82);
+    let invite = |issuer: &SigningKey, nonce: u8| {
+        invitation(&base, issuer, now, |grant| {
+            grant.nonce = [nonce; 16];
+            grant.recipient_user_public_key = Some(guest.user_public_key);
+        })
     };
-    let (base, authority_key, delegate_key, _, now) = seeded();
-    let now_ns: u64 = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap();
-    let delegate = base
-        .certificates()
-        .into_iter()
-        .find(|cert| cert.device_public_key == delegate_key.verifying_key().to_bytes())
-        .unwrap();
-
-    let guest_root = SigningKey::from_bytes(&[81; 32]);
-    let guest_key = SigningKey::from_bytes(&[82; 32]);
-    let guest = crate::fixture::cert(&guest_root, &guest_key, DeviceCapabilities::member());
-    let grant = |nonce, issuer| InviteGrant {
-        workspace_id: WorkspaceId::parse(base.workspace_id()).unwrap(),
-        issuer,
-        role: Role::Editor,
-        nonce: [nonce; 16],
-        recipient_user_public_key: Some(guest.user_public_key),
-        invitee_name: None,
-        expires_at_ns: now_ns.saturating_add(10_000_000_000),
-        transport: vec![],
-    };
-    let signed_a = issue_invitation(
-        grant(83, base.owner_certificates()[0].clone()),
-        &authority_key,
-    )
-    .unwrap();
-    let signed_b = issue_invitation(grant(84, delegate), &delegate_key).unwrap();
-    let redeem = |signed: &[u8], request: u8, nonce: u8, cert: &DeviceCert, key: &SigningKey| {
-        let join = decode_and_verify_invitation(
-            signed,
-            Some(cert.user_public_key),
-            &RevocationList::new(),
-            now_ns,
-        )
-        .unwrap();
-        let challenge = JoinChallenge::new(
-            &join,
-            cert,
-            [request; 32],
-            [nonce; 32],
-            now_ns + 1_000_000_000,
-            now_ns,
-        )
-        .unwrap();
-        let proof = sign_join_proof(challenge.clone(), key).unwrap();
-        verify_join_proof(&proof, &challenge, cert, &RevocationList::new(), now_ns).unwrap()
-    };
-    let redemption_a = redeem(&signed_a, 85, 86, &guest, &guest_key);
-    let redemption_b = redeem(&signed_b, 87, 88, &guest, &guest_key);
+    // One invitation from each of the owner's devices, both redeemed by the
+    // guest's one device, the second on a copy that already took the first.
+    let (signed_a, signed_b) = (invite(&owner, 83), invite(&delegate, 84));
     let mut left = base.clone();
+    let first = redeem(&signed_a, (&guest_key, &guest), 85, now);
     left.governance_mut()
-        .admit_invited_member(&redemption_a, &guest_key, now)
+        .admit_invited_member(&first, &guest_key, now)
         .unwrap();
     let mut right = left.clone();
+    let second = redeem(&signed_b, (&guest_key, &guest), 87, now);
     right
         .governance_mut()
-        .admit_invited_member(&redemption_b, &guest_key, now)
+        .admit_invited_member(&second, &guest_key, now)
         .unwrap();
-
-    let authority = base.owner_certificates()[0].device_public_key;
     let mut merged = base;
-    merged
-        .receive_from(
-            TransportOrigin::ServerDelta(authority),
-            left.workspace_message(),
-            now,
-        )
-        .unwrap();
-    merged
-        .receive_from(
-            TransportOrigin::ServerDelta(authority),
-            right.workspace_message(),
-            now,
-        )
-        .unwrap();
-    let mut restored = StatePeer::restore(
-        &merged.durable().unwrap(),
-        merged.workspace_id(),
-        merged.owner_certificates()[0].clone(),
-        vec![],
-        RevocationList::new(),
-        now,
-    )
-    .unwrap();
+    for copy in [&left, &right] {
+        merged
+            .receive_from(origin(&owner), copy.workspace_message(), now)
+            .unwrap();
+    }
+    let mut restored = restored(&merged, now).unwrap();
 
-    let replay_key = SigningKey::from_bytes(&[89; 32]);
-    let mut replay = guest.clone();
-    replay.device_public_key = replay_key.verifying_key().to_bytes();
-    replay.device_label = "different replay device".into();
-    sign_device_cert(&mut replay, &guest_root).unwrap();
-    let replay_a = redeem(&signed_a, 90, 91, &replay, &replay_key);
-    let replay_b = redeem(&signed_b, 92, 93, &replay, &replay_key);
-    for redemption in [&replay_a, &replay_b] {
+    let replay_key = key(89);
+    let replay = cert(&key(81), &replay_key, DeviceCapabilities::member());
+    for (signed, seed) in [(&signed_a, 90), (&signed_b, 92)] {
+        let redemption = redeem(signed, (&replay_key, &replay), seed, now);
         assert!(
             restored
                 .governance_mut()
-                .admit_invited_member(redemption, &replay_key, now)
+                .admit_invited_member(&redemption, &replay_key, now)
                 .unwrap_err()
                 .contains("already redeemed")
         );
@@ -2143,12 +1660,7 @@ tilo_test_env::scenario! {
     phase restore_validates_fresh_roster_not_before_and_interval_while_retaining_history;
     {
         let (peer, _, _, _, now) = seeded();
-        let now_ns: u64 = now
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos()
-            .try_into()
-            .unwrap();
+        let now_ns = crate::fixture::ns(now);
         let root = SigningKey::from_bytes(&[94; 32]);
         let make = |device_seed: u8, issued_at_ns: u64, expires_at_ns: Option<u64>| {
             let device = SigningKey::from_bytes(&[device_seed; 32]);
@@ -2230,15 +1742,7 @@ tilo_test_env::scenario! {
             now,
         )
         .unwrap();
-        peer.install_seed(
-            SeedState {
-                workspace_changes: seed_workspace(workspace, &authority, &[authority.clone()]).unwrap(),
-                documents: vec![],
-            },
-            &authority_key,
-            now,
-        )
-        .unwrap();
+        crate::fixture::found(&mut peer, (&authority_key, &authority), &[authority.clone()], vec![], now);
 
         let restored = StatePeer::restore(
             &peer.durable().unwrap(),
@@ -2587,22 +2091,18 @@ fn durability_receipt_is_distinct_from_acceptance_and_survives_restore() {
     let mut doc = AutoCommit::new();
     doc.put(ROOT, "value", 1).unwrap();
     doc.commit_edit("fixture", "value", &ac.user_public_key);
-    native
-        .install_seed(
-            SeedState {
-                workspace_changes: seed_workspace(workspace, &ac, &[ac.clone(), bc.clone()])
-                    .unwrap(),
-                documents: vec![SeedDocument {
-                    app_id: "test.app".into(),
-                    document_id: "tab:1".into(),
-                    kind: "test".into(),
-                    bytes: doc.save(),
-                }],
-            },
-            &a,
-            now,
-        )
-        .unwrap();
+    crate::fixture::found(
+        &mut native,
+        (&a, &ac),
+        &[ac.clone(), bc.clone()],
+        vec![crate::fixture::document(
+            "test.app",
+            "tab:1",
+            "test",
+            doc.save(),
+        )],
+        now,
+    );
     let mut browser = StatePeer::new(
         workspace,
         ac.clone(),
@@ -2746,110 +2246,49 @@ mod delivery_admission;
 mod refusal;
 
 /// An invitation for `guest_cert` with `nonce`, redeemed by its device.
-fn guest_redemption(
-    peer: &StatePeer,
-    authority_key: &SigningKey,
-    guest_key: &SigningKey,
-    guest_cert: &DeviceCert,
-    nonce: u8,
-    now: SystemTime,
-) -> crate::join::VerifiedRedemption {
-    use crate::join::{
-        InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof, verify_join_proof,
-    };
-    let now_ns: u64 = now
-        .duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap();
-    let signed = issue_invitation(
-        InviteGrant {
-            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
-            issuer: peer.owner_certificates()[0].clone(),
-            role: Role::Editor,
-            nonce: [nonce; 16],
-            recipient_user_public_key: Some(guest_cert.user_public_key),
-            invitee_name: Some("Guest".into()),
-            expires_at_ns: now_ns.saturating_add(10_000_000_000),
-            transport: vec![],
-        },
-        authority_key,
-    )
-    .unwrap();
-    let join = crate::join::decode_and_verify_invitation(
-        &signed,
-        Some(guest_cert.user_public_key),
-        &RevocationList::new(),
-        now_ns,
-    )
-    .unwrap();
-    let challenge = JoinChallenge::new(
-        &join,
-        guest_cert,
-        [nonce.wrapping_add(1); 32],
-        [nonce.wrapping_add(2); 32],
-        now_ns.saturating_add(1_000_000_000),
-        now_ns,
-    )
-    .unwrap();
-    let proof = sign_join_proof(challenge.clone(), guest_key).unwrap();
-    verify_join_proof(
-        &proof,
-        &challenge,
-        guest_cert,
-        &RevocationList::new(),
-        now_ns,
-    )
-    .unwrap()
-}
-
 #[test]
 fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
-    let (mut peer, authority_key, _, _, now) = seeded();
-    let guest_root = SigningKey::from_bytes(&[61; 32]);
-    let guest_key = SigningKey::from_bytes(&[62; 32]);
-    let guest_cert = crate::fixture::cert(&guest_root, &guest_key, DeviceCapabilities::member());
-    let first = guest_redemption(&peer, &authority_key, &guest_key, &guest_cert, 70, now);
-    let unused = guest_redemption(&peer, &authority_key, &guest_key, &guest_cert, 80, now);
+    let (mut peer, owner, _, _, now) = seeded();
+    let (guest_key, guest) = crate::fixture::device(61, 62);
+    let redemption = |nonce: u8| {
+        let signed = crate::fixture::invitation(&peer, &owner, now, |grant| {
+            grant.nonce = [nonce; 16];
+            grant.recipient_user_public_key = Some(guest.user_public_key);
+        });
+        crate::fixture::redeem(&signed, (&guest_key, &guest), nonce + 1, now)
+    };
+    let (first, unused) = (redemption(70), redemption(80));
+    let admit = |peer: &mut StatePeer, redemption| {
+        peer.governance_mut()
+            .admit_invited_member(redemption, &guest_key, now)
+    };
+    assert!(admit(&mut peer, &first).unwrap());
+    let by = hex::encode(peer.owner());
     assert!(
         peer.governance_mut()
-            .admit_invited_member(&first, &guest_key, now)
+            .ban_member(guest.user_public_key, &by, &owner, now)
             .unwrap()
     );
-    let owner = hex::encode(peer.owner());
-    assert!(
-        peer.governance_mut()
-            .ban_member(guest_cert.user_public_key, &owner, &authority_key, now)
-            .unwrap()
-    );
-    assert!(peer.permissions(guest_cert.device_public_key, now).is_err());
-    assert!(
-        !peer
-            .governance()
+    assert!(peer.permissions(guest.device_public_key, now).is_err());
+    let roots = |peer: &StatePeer| {
+        peer.governance()
             .member_list_access(now)
             .unwrap()
             .member_user_roots
-            .contains(&guest_cert.user_public_key)
-    );
+    };
+    assert!(!roots(&peer).contains(&guest.user_public_key));
     assert!(
-        peer.governance_mut()
-            .admit_invited_member(&unused, &guest_key, now)
-            .is_err(),
+        admit(&mut peer, &unused).is_err(),
         "an invitation issued before the ban does not let them back"
     );
     assert!(
         peer.governance_mut()
-            .unban_member(guest_cert.user_public_key, &authority_key, now)
+            .unban_member(guest.user_public_key, &owner, now)
             .unwrap()
     );
-    assert!(
-        peer.governance_mut()
-            .admit_invited_member(&unused, &guest_key, now)
-            .unwrap()
-    );
+    assert!(admit(&mut peer, &unused).unwrap());
     assert_eq!(
-        peer.role(&guest_cert.device_public_key, now).unwrap(),
+        peer.role(&guest.device_public_key, now).unwrap(),
         collab_types::Role::Editor
     );
 }
@@ -2877,64 +2316,19 @@ fn frame(
 }
 
 /// A guest of the workspace, admitted through an invitation the owner's device
-/// issued: their root and the device key it signs.
+/// issued: the device key they sign with and its certificate.
 fn admitted_guest(
     peer: &mut StatePeer,
     authority_key: &SigningKey,
     now: SystemTime,
 ) -> (SigningKey, DeviceCert) {
-    use crate::join::{
-        InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof, verify_join_proof,
-    };
-    let now_ns = ns_since_epoch(now);
-    let root = SigningKey::from_bytes(&[61; 32]);
-    let key = SigningKey::from_bytes(&[62; 32]);
-    let cert = crate::fixture::cert(&root, &key, DeviceCapabilities::member());
-    let signed = issue_invitation(
-        InviteGrant {
-            workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
-            issuer: peer.owner_certificates()[0].clone(),
-            role: Role::Editor,
-            nonce: [63; 16],
-            recipient_user_public_key: Some(cert.user_public_key),
-            invitee_name: Some("Guest".into()),
-            expires_at_ns: now_ns.saturating_add(10_000_000_000),
-            transport: vec![],
-        },
+    let (key, cert) = crate::fixture::device(61, 62);
+    assert!(crate::fixture::join(
+        peer,
         authority_key,
-    )
-    .unwrap();
-    let join = crate::join::decode_and_verify_invitation(
-        &signed,
-        Some(cert.user_public_key),
-        &RevocationList::new(),
-        now_ns,
-    )
-    .unwrap();
-    let challenge = JoinChallenge::new(
-        &join,
-        &cert,
-        [64; 32],
-        [65; 32],
-        now_ns.saturating_add(1_000_000_000),
-        now_ns,
-    )
-    .unwrap();
-    let proof = sign_join_proof(challenge.clone(), &key).unwrap();
-    let redemption =
-        verify_join_proof(&proof, &challenge, &cert, &RevocationList::new(), now_ns).unwrap();
-    assert!(
-        peer.governance_mut()
-            .admit_invited_member(&redemption, &key, now)
-            .unwrap()
-    );
+        (&key, &cert),
+        63,
+        now
+    ));
     (key, cert)
-}
-
-fn ns_since_epoch(now: SystemTime) -> u64 {
-    now.duration_since(SystemTime::UNIX_EPOCH)
-        .unwrap()
-        .as_nanos()
-        .try_into()
-        .unwrap()
 }

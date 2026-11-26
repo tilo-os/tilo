@@ -1,9 +1,9 @@
+use crate::StatePeer;
 use crate::certified::{IntentRecord, now_ns};
 use crate::join::{self, InviteGrant, JoinChallenge, JoinCompleteRequest, Role};
 use crate::join::{JoinBootstrap, JoinTransportRequest, TransportHint, VerifiedJoin};
 use crate::owner::VerifiedNativeEnrollmentIntent;
 use crate::owner::testing::member_certificate as certificate;
-use crate::{SeedState, StatePeer, seed_workspace};
 use ed25519_dalek::SigningKey;
 use std::time::{Duration, SystemTime};
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
@@ -37,12 +37,7 @@ fn actual_redemption_at(
     TransportHint,
     SystemTime,
 ) {
-    let ns = u64::try_from(
-        now.duration_since(SystemTime::UNIX_EPOCH)
-            .unwrap()
-            .as_nanos(),
-    )
-    .unwrap();
+    let ns = crate::fixture::ns(now);
     let owner_copy_key = SigningKey::from_bytes(&[71; 32]);
     let owner_copy = certificate(&SigningKey::from_bytes(&[72; 32]), &owner_copy_key, "Host");
     let device_key = SigningKey::from_bytes(&[73; 32]);
@@ -111,20 +106,13 @@ fn actual_redemption_at(
         now,
     )
     .unwrap();
-    peer.install_seed(
-        SeedState {
-            workspace_changes: seed_workspace(
-                workspace,
-                &owner_copy,
-                std::slice::from_ref(&owner_copy),
-            )
-            .unwrap(),
-            documents: vec![],
-        },
-        &owner_copy_key,
+    crate::fixture::found(
+        &mut peer,
+        (&owner_copy_key, &owner_copy),
+        std::slice::from_ref(&owner_copy),
+        vec![],
         now,
-    )
-    .unwrap();
+    );
     assert!(
         peer.governance_mut()
             .admit_invited_member(&redemption, &device_key, now)

@@ -243,45 +243,12 @@ tilo_test_env::scenario! {
         cert.user_public_key = root.verifying_key().to_bytes();
         cert.device_public_key = key.verifying_key().to_bytes();
         tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
-        let ticket = issue_invitation(
-            InviteGrant {
-                workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
-                issuer: peer.owner_certificates()[0].clone(),
-                role: Role::Editor,
-                nonce: [43; 16],
-                recipient_user_public_key: Some(cert.user_public_key),
-                invitee_name: None,
-                expires_at_ns: now_ns(now) + 1_000_000,
-                transport: vec![],
-            },
-            &host_key,
-        )
-        .unwrap();
-        let join = decode_and_verify_invitation(
-            &ticket,
-            Some(cert.user_public_key),
-            &RevocationList::new(),
-            now_ns(now),
-        )
-        .unwrap();
-        let challenge = JoinChallenge::new(
-            &join,
-            &cert,
-            [44; 32],
-            [45; 32],
-            now_ns(now) + 1_000_000,
-            now_ns(now),
-        )
-        .unwrap();
-        let signed = sign_join_proof(challenge.clone(), &key).unwrap();
-        let redemption = verify_join_proof(
-            &signed,
-            &challenge,
-            &cert,
-            &RevocationList::new(),
-            now_ns(now),
-        )
-        .unwrap();
+        let ticket = crate::fixture::invitation(&peer, &host_key, now, |grant| {
+            grant.nonce = [43; 16];
+            grant.recipient_user_public_key = Some(cert.user_public_key);
+            grant.expires_at_ns = now_ns(now) + 1_000_000;
+        });
+        let redemption = crate::fixture::redeem(&ticket, (&key, &cert), 44, now);
         peer.governance_mut()
             .admit_invited_member(&redemption, &key, now)
             .unwrap();
