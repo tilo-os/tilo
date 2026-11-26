@@ -763,27 +763,8 @@ fn an_account_syncs_into_mailboxes_and_conversations() {
 #[test]
 fn a_mailbox_longer_than_a_page_reads_the_page_before_it_when_asked() {
     let servers = empty_servers();
-    for i in 0..60 {
-        servers.imap.append(
-            "INBOX",
-            &mail(
-                &format!("note-{i}@hopper.example"),
-                "Grace Hopper <grace@hopper.example>",
-                &format!("Note {i}"),
-                "A line.",
-                None,
-            ),
-            &[],
-        );
-    }
-    let (_connector, mut session) = window_of(account(&servers));
-    session.until("the newest page", |session| session.threads().len() == 50);
-    let account = session.accounts().remove(0);
-    let inbox = session.refs(&account, "mailboxes")[0].clone();
-    assert!(
-        session.flag(&inbox, "more"),
-        "the mailbox says its server holds older mail"
-    );
+    sixty_messages(&servers);
+    let (_connector, mut session, inbox) = window_on_a_long_inbox(&servers);
     session.call("older_messages", &inbox, &json!({}));
     session.until("the page before it", |session| {
         session.threads().len() == 60
@@ -1265,186 +1246,123 @@ fn a_message_delivered_from_outside_is_kept_once_in_its_conversation() {
     );
 }
 
+/// A reply goes out once the server takes the effect, as far as the workspace lets Mail reach
+/// outside: a denial of all its outside reach, or of `smtp.send`, settles the entry refused with
+/// what a person reads and nothing reaches the server; a denial of another capability alone
+/// leaves the rest of the app's reach its own, and the reply goes.
 #[test]
-fn a_reply_goes_out_once_the_server_takes_the_effect() {
-    let servers = servers();
-    let (_connector, mut session) = window_of(account(&servers));
-    synced(&mut session);
-    session.hold_for(0);
-    let plan = session.thread("Launch plan");
-    let draft = session.made("reply", &plan, &json!({}));
-    assert_eq!(session.text(&draft, "to"), "ada@analytical.example");
-    assert_eq!(session.text(&draft, "subject"), "Re: Launch plan");
-    assert_eq!(
-        session.text(&draft, "in_reply_to"),
-        "plan-2@analytical.example"
-    );
-
-    session.call("send", &draft, &json!({}));
-    session.until("the server to take the reply", |_| {
-        servers.smtp.sent().len() == 1
-    });
-    session.until("the effects to settle", |session| {
-        session.instance_host().store().pending_effects().is_empty()
-    });
-    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
-    assert!(sent.contains("Subject: Re: Launch plan"), "{sent}");
-    assert!(
-        sent.contains("In-Reply-To: <plan-2@analytical.example>"),
-        "{sent}"
-    );
-    assert!(session.flag(&draft, "sent"));
-}
-
-/// A workspace that denies Mail its outside reach carries none of what the app queued out: the
-/// entry settles refused with what a person reads, and nothing reaches the server.
-#[test]
-fn a_send_the_workspace_denies_settles_refused_and_nothing_is_sent() {
+fn a_reply_goes_out_as_far_as_the_workspace_lets_mail_send() {
     use collaboration::RouteSpec;
+    use tilo_action_policy::roles::outside_capability_denial;
     use tilolang_process::hosted::Spec;
     use ui::permissions::policy::{
         Answer, Grant, Grantee, KindSet, MemberAccess, TreePath, WorkspacePolicy,
     };
 
-    let servers = servers();
-    let connector = MailConnector::of(account(&servers));
-    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
-    let workspace = route.cluster_id.to_string();
-    let mut policy = WorkspacePolicy::new(workspace.clone(), "ada");
-    // The member took the app's outside reach back: what it queued is not carried out.
-    policy.grants.push(Grant::new(
-        "mail-denied",
-        Grantee::app(APP),
-        TreePath::workspace(&workspace).app(APP),
-        KindSet::OUTSIDE,
-        Answer::Deny,
-        Grantee::person("ada"),
-    ));
-    let spec = Spec::new(APP, workspace, 1, "ada")
-        .in_language("en-US")
-        .access(MemberAccess::person(policy, "ada"));
-    let session = Session::brokered_as(&route, spec, Window::in_harness);
-    let mut session = connector.attach(session);
-    synced(&mut session);
-    session.hold_for(0);
-    let plan = session.thread("Launch plan");
-    let draft = session.made("reply", &plan, &json!({}));
-    session.call("send", &draft, &json!({}));
-    session.until("the effects to settle", |session| {
-        session.instance_host().store().pending_effects().is_empty()
-    });
-    assert!(
-        servers.smtp.sent().is_empty(),
-        "nothing the workspace denied reached the server"
-    );
-    let (state, reason) = session
-        .delivery_of(&draft)
-        .expect("the draft says how it stands");
-    assert_eq!(state, "rejected", "{reason}");
-    assert!(
-        reason.contains("does not let so.tilo.mail use smtp.send"),
-        "{reason}"
-    );
-}
-
-/// A workspace that denies Mail one of its outside capabilities stops that one alone: the send
-/// for another capability it also denies still refuses to leave, and the server receives nothing.
-#[test]
-fn a_send_the_workspace_denies_for_its_capability_settles_refused() {
-    use collaboration::RouteSpec;
-    use tilolang_process::hosted::Spec;
-    use ui::permissions::policy::{Grantee, MemberAccess, WorkspacePolicy};
-
-    let servers = servers();
-    let connector = MailConnector::of(account(&servers));
-    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
-    let workspace = route.cluster_id.to_string();
-    let mut policy = WorkspacePolicy::new(workspace.clone(), "ada");
-    // The person turned `smtp.send` off on Mail's page, and another capability with it: only
-    // `smtp.send` decides what the reply queued.
-    policy
-        .grants
-        .push(tilo_action_policy::roles::outside_capability_denial(
-            &workspace,
-            APP,
-            "smtp.send",
-            Grantee::person("ada"),
-        ));
-    policy
-        .grants
-        .push(tilo_action_policy::roles::outside_capability_denial(
-            &workspace,
-            APP,
-            "imap.search",
-            Grantee::person("ada"),
-        ));
-    let spec = Spec::new(APP, workspace, 1, "ada")
-        .in_language("en-US")
-        .access(MemberAccess::person(policy, "ada"));
-    let session = Session::brokered_as(&route, spec, Window::in_harness);
-    let mut session = connector.attach(session);
-    synced(&mut session);
-    session.hold_for(0);
-    let plan = session.thread("Launch plan");
-    let draft = session.made("reply", &plan, &json!({}));
-    session.call("send", &draft, &json!({}));
-    session.until("the queued effect to settle", |session| {
-        session.instance_host().store().pending_effects().is_empty()
-    });
-    assert!(
-        servers.smtp.sent().is_empty(),
-        "nothing the workspace denied reached the server"
-    );
-    let (state, reason) = session
-        .delivery_of(&draft)
-        .expect("the draft says how it stands");
-    assert_eq!(state, "rejected", "{reason}");
-    assert!(
-        reason.contains("does not let so.tilo.mail use smtp.send"),
-        "{reason}"
-    );
-}
-
-/// With only another of Mail's capabilities turned off, the send goes: the denial names one
-/// capability, and the rest of the app's reach is its own.
-#[test]
-fn a_send_goes_while_another_capability_is_the_one_denied() {
-    use collaboration::RouteSpec;
-    use tilolang_process::hosted::Spec;
-    use ui::permissions::policy::{Grantee, MemberAccess, WorkspacePolicy};
-
-    let servers = servers();
-    let connector = MailConnector::of(account(&servers));
-    let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
-    let workspace = route.cluster_id.to_string();
-    let mut policy = WorkspacePolicy::new(workspace.clone(), "ada");
-    policy
-        .grants
-        .push(tilo_action_policy::roles::outside_capability_denial(
-            &workspace,
-            APP,
-            "imap.search",
-            Grantee::person("ada"),
-        ));
-    let spec = Spec::new(APP, workspace, 1, "ada")
-        .in_language("en-US")
-        .access(MemberAccess::person(policy, "ada"));
-    let session = Session::brokered_as(&route, spec, Window::in_harness);
-    let mut session = connector.attach(session);
-    synced(&mut session);
-    session.hold_for(0);
-    let plan = session.thread("Launch plan");
-    let draft = session.made("reply", &plan, &json!({}));
-    session.call("send", &draft, &json!({}));
-    session.until("the server to take the reply", |_| {
-        servers.smtp.sent().len() == 1
-    });
-    session.until("the queued effect to settle", |session| {
-        session.instance_host().store().pending_effects().is_empty()
-    });
-    let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
-    assert!(sent.contains("Subject: Re: Launch plan"), "{sent}");
-    assert!(session.flag(&draft, "sent"));
+    type Denials = fn(&str) -> Vec<Grant>;
+    let cases: [(&str, Denials, bool); 4] = [
+        ("nothing denied", |_| Vec::new(), true),
+        (
+            "the app's outside reach taken back",
+            |workspace| {
+                vec![Grant::new(
+                    "mail-denied",
+                    Grantee::app(APP),
+                    TreePath::workspace(workspace).app(APP),
+                    KindSet::OUTSIDE,
+                    Answer::Deny,
+                    Grantee::person("ada"),
+                )]
+            },
+            false,
+        ),
+        (
+            "smtp.send turned off with another capability",
+            |workspace| {
+                ["smtp.send", "imap.search"]
+                    .map(|capability| {
+                        outside_capability_denial(
+                            workspace,
+                            APP,
+                            capability,
+                            Grantee::person("ada"),
+                        )
+                    })
+                    .to_vec()
+            },
+            false,
+        ),
+        (
+            "only another capability turned off",
+            |workspace| {
+                vec![outside_capability_denial(
+                    workspace,
+                    APP,
+                    "imap.search",
+                    Grantee::person("ada"),
+                )]
+            },
+            true,
+        ),
+    ];
+    for (case, denials, goes) in cases {
+        let servers = servers();
+        let connector = MailConnector::of(account(&servers));
+        let route = RouteSpec::app(APP, uuid::Uuid::new_v4());
+        let workspace = route.cluster_id.to_string();
+        let mut policy = WorkspacePolicy::new(workspace.clone(), "ada");
+        policy.grants.extend(denials(&workspace));
+        let spec = Spec::new(APP, workspace, 1, "ada")
+            .in_language("en-US")
+            .access(MemberAccess::person(policy, "ada"));
+        let mut session = connector.attach(Session::brokered_as(&route, spec, Window::in_harness));
+        synced(&mut session);
+        session.hold_for(0);
+        let plan = session.thread("Launch plan");
+        let draft = session.made("reply", &plan, &json!({}));
+        assert_eq!(
+            session.text(&draft, "to"),
+            "ada@analytical.example",
+            "{case}"
+        );
+        assert_eq!(session.text(&draft, "subject"), "Re: Launch plan", "{case}");
+        assert_eq!(
+            session.text(&draft, "in_reply_to"),
+            "plan-2@analytical.example",
+            "{case}"
+        );
+        session.call("send", &draft, &json!({}));
+        if goes {
+            session.until("the server to take the reply", |_| {
+                servers.smtp.sent().len() == 1
+            });
+        }
+        session.until("the queued effect to settle", |session| {
+            session.instance_host().store().pending_effects().is_empty()
+        });
+        if goes {
+            let sent = String::from_utf8_lossy(&servers.smtp.sent()[0]).into_owned();
+            assert!(sent.contains("Subject: Re: Launch plan"), "{case}: {sent}");
+            assert!(
+                sent.contains("In-Reply-To: <plan-2@analytical.example>"),
+                "{case}: {sent}"
+            );
+            assert!(session.flag(&draft, "sent"), "{case}");
+        } else {
+            assert!(
+                servers.smtp.sent().is_empty(),
+                "{case}: nothing denied reached the server"
+            );
+            let (state, reason) = session
+                .delivery_of(&draft)
+                .expect("the draft says how it stands");
+            assert_eq!(state, "rejected", "{case}: {reason}");
+            assert!(
+                reason.contains("does not let so.tilo.mail use smtp.send"),
+                "{case}: {reason}"
+            );
+        }
+    }
 }
 
 /// The conversation's reply bar answers and sends in one press: the person is asked once, and
@@ -1664,15 +1582,17 @@ fn a_troubled_account_says_so_in_its_window_and_clears_when_the_server_answers()
     );
 }
 
+/// A sent message waits out the person's hold: it has not left, waits for its moment, says so
+/// in its view, and the window wakes when it is due. Taken back, it never goes and is a draft
+/// again; sent once more with no hold it goes at once, and then it can no longer be taken back.
 #[test]
-fn a_sent_message_waits_for_the_persons_hold_before_it_goes() {
+fn a_held_message_waits_is_taken_back_and_once_gone_stays_gone() {
     let servers = servers();
     let (_connector, mut session) = window_of(account(&servers));
     synced(&mut session);
     session.hold_for(600);
     let draft = session.sent_reply("Launch plan");
     session.settle();
-    // It is held: nothing went, it waits as a declared effect, and it says how it stands.
     assert!(
         !session.flag(&draft, "sent"),
         "a held message has not left, so it is its author's alone"
@@ -1691,62 +1611,6 @@ fn a_sent_message_waits_for_the_persons_hold_before_it_goes() {
         shown.iter().any(|text| text == "Sending in a moment"),
         "{shown:#?}"
     );
-}
-
-#[test]
-fn a_held_message_is_taken_back_and_never_goes() {
-    let servers = servers();
-    let (_connector, mut session) = window_of(account(&servers));
-    synced(&mut session);
-    session.hold_for(600);
-    let draft = session.sent_reply("Launch plan");
-    assert_eq!(session.delivery_of(&draft).unwrap().0, "held");
-
-    // Its author takes it back: it never leaves, and it is a draft again.
-    session.call("undo_send", &draft, &json!({}));
-    assert!(!session.flag(&draft, "sent"), "it is a draft again");
-    assert!(
-        session.flag(&draft, "recalled"),
-        "and it says it was taken back"
-    );
-    assert_eq!(session.delivery_of(&draft).unwrap().0, "withdrawn");
-    for _ in 0..20 {
-        session.settle();
-        std::thread::sleep(std::time::Duration::from_millis(5));
-    }
-    assert!(servers.smtp.sent().is_empty(), "it never went");
-}
-
-#[test]
-fn a_message_that_went_cannot_be_taken_back() {
-    let servers = servers();
-    let (_connector, mut session) = window_of(account(&servers));
-    synced(&mut session);
-    // No hold: it goes at once.
-    session.hold_for(0);
-    let draft = session.sent_reply("Launch plan");
-    session.until("the server to take the message", |_| {
-        servers.smtp.sent().len() == 1
-    });
-    session.until("the effects to settle", |session| {
-        session.instance_host().store().pending_effects().is_empty()
-    });
-    let refused = session.try_call("undo_send", &draft, &json!({}));
-    assert!(
-        refused.is_err(),
-        "a message that went is not taken back: {refused:?}"
-    );
-    assert_eq!(servers.smtp.sent().len(), 1);
-}
-
-#[test]
-fn the_window_wakes_when_a_held_message_is_due() {
-    let servers = servers();
-    let (_connector, mut session) = window_of(account(&servers));
-    synced(&mut session);
-    session.hold_for(600);
-    let draft = session.sent_reply("Launch plan");
-    session.settle();
     // The window waits for something that is not nothing: the moment the message is due, or
     // the minute the inbox's snooze filter next reads differently.
     let wait = session
@@ -1765,9 +1629,38 @@ fn the_window_wakes_when_a_held_message_is_due() {
         .expect("the message is held");
     assert!(
         held > std::time::Duration::from_secs(500),
-        "the message is held for the person's hold: {held:?}"
+        "held for the person's hold: {held:?}"
     );
-    assert_eq!(session.delivery_of(&draft).unwrap().0, "held");
+
+    // Its author takes it back: it never leaves, and it is a draft again.
+    session.call("undo_send", &draft, &json!({}));
+    assert!(!session.flag(&draft, "sent"), "it is a draft again");
+    assert!(
+        session.flag(&draft, "recalled"),
+        "and it says it was taken back"
+    );
+    assert_eq!(session.delivery_of(&draft).unwrap().0, "withdrawn");
+    for _ in 0..20 {
+        session.settle();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    assert!(servers.smtp.sent().is_empty(), "it never went");
+
+    // Sent again with no hold, it goes at once, and what went is not taken back.
+    session.hold_for(0);
+    session.call("send", &draft, &json!({}));
+    session.until("the server to take the message", |_| {
+        servers.smtp.sent().len() == 1
+    });
+    session.until("the effects to settle", |session| {
+        session.instance_host().store().pending_effects().is_empty()
+    });
+    let refused = session.try_call("undo_send", &draft, &json!({}));
+    assert!(
+        refused.is_err(),
+        "a message that went is not taken back: {refused:?}"
+    );
+    assert_eq!(servers.smtp.sent().len(), 1);
 }
 
 // USER REQUIREMENT: a reply's quotation of the message it answers folds in the conversation, as

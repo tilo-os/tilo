@@ -2,7 +2,7 @@
 //! each card's included, is bound to an action the window publishes, so the window's actions
 //! reach agents and `tilo-control actions`; and a card's context menu offers its actions.
 
-use crate::change_marks::{flattened, menu_items, right_click};
+use crate::change_marks::{at_rest as settle, flattened, menu_items, right_click};
 use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
 
@@ -10,15 +10,7 @@ const DESKTOP: (u32, u32) = (1280, 800);
 
 /// The board with its release scenario staged: three columns with cards in each.
 fn staged() -> TestApp<TlApp> {
-    crate::support::installed("board");
-    let mut app = TestApp::<TlApp>::capture_at(Some("a release board"), DESKTOP)
-        .expect("the scenario stages");
-    settle(&mut app);
-    app
-}
-
-fn settle(app: &mut TestApp<TlApp>) {
-    crate::change_marks::captured(app, 8);
+    crate::change_marks::staged("board", "a release board", DESKTOP)
 }
 
 /// The controls bound to an action the window does not publish: the live host refuses to

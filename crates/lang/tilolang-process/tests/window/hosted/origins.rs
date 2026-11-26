@@ -61,12 +61,11 @@ fn connector_process() {
     });
     match origin.as_str() {
         "youtube" => {
-            let service: std::sync::Arc<dyn tilolang_youtube::Service> = std::sync::Arc::new(
-                Asked {
+            let service: std::sync::Arc<dyn tilolang_youtube::Service> =
+                std::sync::Arc::new(Asked {
                     service: scripted(),
                     log: connector_log(),
-                },
-            );
+                });
             tilolang_youtube::connector::serve(&service, attachments);
         }
         other => panic!("the window started no connector this test stands in for: {other}"),
@@ -85,9 +84,7 @@ fn connector_log() -> std::path::PathBuf {
     let parent = std::os::unix::process::parent_id();
     #[cfg(not(unix))]
     let parent = 0;
-    asked_log(&std::env::temp_dir().join(format!(
-        "tilo-tube-origins-{parent}"
-    )))
+    asked_log(&std::env::temp_dir().join(format!("tilo-tube-origins-{parent}")))
 }
 
 /// The asks the connector answered, oldest first: `search <query>`, `stream <key>`.
@@ -147,11 +144,7 @@ impl tilolang_youtube::Service for Asked {
         self.service.trending()
     }
 
-    fn stream(
-        &self,
-        key: &str,
-        quality: &str,
-    ) -> Result<String, tilolang_youtube::ServiceError> {
+    fn stream(&self, key: &str, quality: &str) -> Result<String, tilolang_youtube::ServiceError> {
         let answered = self.service.stream(key, quality);
         match &answered {
             Ok(address) => self.noted(&format!("stream {key} {address}")),
@@ -181,10 +174,7 @@ impl tilolang_youtube::Service for Asked {
         self.service.branding(key)
     }
 
-    fn votes(
-        &self,
-        key: &str,
-    ) -> Result<tilolang_youtube::Votes, tilolang_youtube::ServiceError> {
+    fn votes(&self, key: &str) -> Result<tilolang_youtube::Votes, tilolang_youtube::ServiceError> {
         self.service.votes(key)
     }
 }
@@ -309,7 +299,10 @@ fn a_window_without_a_session_browses_and_plays_through_the_connector() {
     frames(&mut app, 20);
     let searched = "search compositor";
     assert_eq!(
-        asks(&profile).iter().filter(|line| *line == searched).count(),
+        asks(&profile)
+            .iter()
+            .filter(|line| *line == searched)
+            .count(),
         1,
         "the connector is asked a search once: {:?}",
         asks(&profile)
@@ -320,9 +313,11 @@ fn a_window_without_a_session_browses_and_plays_through_the_connector() {
     app.call_on(&video, "progress", json!({ "at": 0.0 }))
         .expect("the client plays the video");
     let streamed = format!("stream {VIDEO} {STREAM}");
-    until(&mut app, "asks the connector where the video plays from", |_| {
-        asks(&profile).contains(&streamed)
-    });
+    until(
+        &mut app,
+        "asks the connector where the video plays from",
+        |_| asks(&profile).contains(&streamed),
+    );
     frames(&mut app, 20);
     assert_eq!(
         asks(&profile)

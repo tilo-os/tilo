@@ -8,6 +8,7 @@
 //! light and dark, before and after a drag.
 
 use crate::change_marks::Driven as _;
+use crate::change_marks::at_rest as settle;
 use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
 use ui::a11y::Role;
@@ -18,10 +19,7 @@ const PHONE: (u32, u32) = (420, 860);
 /// The project board scenario staged, and the project's bar switched to its board: a list of no
 /// section and two sections with tasks.
 fn staged(viewport: (u32, u32)) -> TestApp<TlApp> {
-    crate::support::installed("tasks");
-    let mut app = TestApp::<TlApp>::capture_at(Some("a project board"), viewport)
-        .expect("the scenario stages");
-    settle(&mut app);
+    let mut app = crate::change_marks::staged("tasks", "a project board", viewport);
     show_board(&mut app);
     app
 }
@@ -53,10 +51,6 @@ fn show_board(app: &mut TestApp<TlApp>) {
         f64::midpoint(board.y0, board.y1),
     );
     settle(app);
-}
-
-fn settle(app: &mut TestApp<TlApp>) {
-    crate::change_marks::captured(app, 8);
 }
 
 /// The cards on the board, `(title, [x, y, width, height])`, in the order they are drawn: a

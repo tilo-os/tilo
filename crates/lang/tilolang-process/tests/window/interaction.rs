@@ -6,7 +6,7 @@
 //! With `TILO_INTERACTION_SHOTS=<dir>` the test `shots` writes each state at desktop and phone
 //! sizes, light and dark.
 
-use crate::change_marks::{menu_items, right_click};
+use crate::change_marks::{at_rest as settle, menu_items, right_click};
 use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
 
@@ -14,15 +14,7 @@ const DESKTOP: (u32, u32) = (1280, 800);
 const PHONE: (u32, u32) = (420, 860);
 
 fn staged(viewport: (u32, u32)) -> TestApp<TlApp> {
-    crate::support::installed("interaction");
-    let mut app = TestApp::<TlApp>::capture_at(Some("a conversation"), viewport)
-        .expect("the scenario stages");
-    settle(&mut app);
-    app
-}
-
-fn settle(app: &mut TestApp<TlApp>) {
-    crate::change_marks::captured(app, 8);
+    crate::change_marks::staged("interaction", "a conversation", viewport)
 }
 
 /// The rects of the widgets named `widget`, in tree order.

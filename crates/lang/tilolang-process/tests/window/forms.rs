@@ -6,7 +6,7 @@
 //! With `TILO_FORMS_SHOTS=<dir>` the test `shots` writes the open form at desktop and phone
 //! sizes, light and dark.
 
-use crate::change_marks::right_click;
+use crate::change_marks::{at_rest as settle, right_click};
 use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
 
@@ -14,18 +14,11 @@ const DESKTOP: (u32, u32) = (1280, 800);
 const PHONE: (u32, u32) = (420, 860);
 
 fn staged(viewport: (u32, u32)) -> TestApp<TlApp> {
-    crate::support::installed("tasks");
-    let mut app =
-        TestApp::<TlApp>::capture_at(Some("a busy week"), viewport).expect("the scenario stages");
-    settle(&mut app);
+    let mut app = crate::change_marks::staged("tasks", "a busy week", viewport);
     // The scenario answers with a task, shown open where it stands. Choosing a place leaves it,
     // as a person does, so what the test reads next is the list.
     open_place(&mut app, "Inbox");
     app
-}
-
-fn settle(app: &mut TestApp<TlApp>) {
-    crate::change_marks::captured(app, 8);
 }
 
 /// Chooses the sidebar's place `label`, as a person does: what is due before today waits in

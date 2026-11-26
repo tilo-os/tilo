@@ -35,6 +35,24 @@ pub(crate) fn captured(app: &mut impl Driven, rounds: usize) {
     }
 }
 
+/// The window at rest, as a capture photographs it.
+pub(crate) fn at_rest(app: &mut impl Driven) {
+    captured(app, 8);
+}
+
+/// The package `name` installed and its scenario `scenario` staged at `viewport`, at rest.
+pub(crate) fn staged(
+    name: &str,
+    scenario: &str,
+    viewport: (u32, u32),
+) -> tilo_app_test_host::TestApp<tilolang_process::window::app::TlApp> {
+    crate::support::installed(name);
+    let mut app = tilo_app_test_host::TestApp::capture_at(Some(scenario), viewport)
+        .expect("the scenario stages");
+    at_rest(&mut app);
+    app
+}
+
 /// Every resource `resources` publishes, with the ones under them.
 pub(crate) fn flattened(
     resources: &[ui::tilo_actions::ResourceSpec],

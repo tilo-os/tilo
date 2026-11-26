@@ -2359,13 +2359,15 @@ fn shown_at(session: &mut Session, label: &str) -> (f64, f64) {
     (rect.center().x, rect.center().y)
 }
 
-/// The window's primary action takes the person to the list's entry, and nothing is made by it
-/// or by what is typed there: a task exists once Enter commits its title, and the entry clears
-/// for the next one.
+/// The list's entry, from a draft to a task and back: the window's primary action takes the
+/// person to the entry and makes nothing; a draft nobody commits leaves no row and writes nothing;
+/// Enter on Today's list makes one task due today, which stands in that list, and clears the entry;
+/// and Undo takes the create back whole.
 #[test]
-fn the_primary_action_focuses_the_lists_entry_and_makes_no_task_until_enter() {
+fn the_lists_entry_makes_a_task_only_on_enter_where_it_stands_and_undo_takes_it_back() {
     use ui::winit::keyboard::NamedKey;
     let mut session = Session::tasks();
+    let before = written(&session);
     session.window.chord(&["ctrl"], "n");
     session.settle();
     assert!(
@@ -2373,8 +2375,6 @@ fn the_primary_action_focuses_the_lists_entry_and_makes_no_task_until_enter() {
         "the key makes no task on its own"
     );
     assert_eq!(entry(&mut session), "", "the entry starts empty");
-
-    // What is typed lands in the entry, so the keyboard is there, and it is still a draft.
     session.window.type_text("Water the plants");
     session.settle();
     assert_eq!(entry(&mut session), "Water the plants");
@@ -2382,28 +2382,6 @@ fn the_primary_action_focuses_the_lists_entry_and_makes_no_task_until_enter() {
         session.titles().is_empty(),
         "what is typed is a draft, not a row"
     );
-    session.window.press_key(NamedKey::Enter);
-    session.settle();
-    assert_eq!(
-        session.titles(),
-        ["Water the plants"],
-        "Enter makes the one task"
-    );
-    assert_eq!(entry(&mut session), "", "the entry clears for the next one");
-}
-
-/// A draft nobody commits leaves nothing: Escape empties it, and leaving it empty makes no task
-/// and writes nothing at all — no row, no change in the document's history.
-#[test]
-fn an_entry_left_empty_makes_no_task_and_no_history() {
-    use ui::winit::keyboard::NamedKey;
-    let mut session = Session::tasks();
-    let before = written(&session);
-
-    session.window.chord(&["ctrl"], "n");
-    session.settle();
-    session.window.type_text("Water the plants");
-    session.settle();
     session.window.press_key(NamedKey::Escape);
     session.settle();
     assert_eq!(entry(&mut session), "", "Escape empties the entry");
@@ -2414,14 +2392,7 @@ fn an_entry_left_empty_makes_no_task_and_no_history() {
     session.settle();
     assert!(session.titles().is_empty(), "no task was made");
     assert_eq!(written(&session), before, "and nothing was written");
-}
 
-/// The place a task is added in is its default: the entry at the end of Today's list adds one
-/// due today, which is what puts it in that list.
-#[test]
-fn the_entry_adds_a_task_due_today_in_the_today_list() {
-    use ui::winit::keyboard::NamedKey;
-    let mut session = Session::tasks();
     let (x, y) = place_at(&mut session, "Today");
     session.window.click_at(x, y);
     session.settle();
@@ -2436,20 +2407,7 @@ fn the_entry_adds_a_task_due_today_in_the_today_list() {
         ["Call the bank"],
         "a task added on Today is due today, so it stands in that list"
     );
-}
-
-/// Undo takes back a task the entry made, as it takes back any other change: the row goes, and
-/// the create is one step the document takes back whole.
-#[test]
-fn undo_removes_a_task_the_entry_made() {
-    use ui::winit::keyboard::NamedKey;
-    let mut session = Session::tasks();
-    session.window.chord(&["ctrl"], "n");
-    session.settle();
-    session.window.type_text("Water the plants");
-    session.window.press_key(NamedKey::Enter);
-    session.settle();
-    assert_eq!(session.titles(), ["Water the plants"]);
+    assert_eq!(entry(&mut session), "", "the entry clears for the next one");
 
     // The person's Undo: the window's key, which the document answers.
     session.window.chord(&["ctrl"], "z");

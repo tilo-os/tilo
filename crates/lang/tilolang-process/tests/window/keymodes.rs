@@ -2,21 +2,14 @@
 //! keyboard, exactly as a click does, so a mode switch is as reachable as pressing its button.
 //! Only the controls the view draws now answer.
 
+use crate::change_marks::at_rest as settle;
 use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
 
 const DESKTOP: (u32, u32) = (1280, 800);
 
 fn staged() -> TestApp<TlApp> {
-    crate::support::installed("keymodes");
-    let mut app =
-        TestApp::<TlApp>::capture_at(Some("two modes"), DESKTOP).expect("the scenario stages");
-    settle(&mut app);
-    app
-}
-
-fn settle(app: &mut TestApp<TlApp>) {
-    crate::change_marks::captured(app, 8);
+    crate::change_marks::staged("keymodes", "two modes", DESKTOP)
 }
 
 fn said(app: &mut TestApp<TlApp>) -> Vec<String> {

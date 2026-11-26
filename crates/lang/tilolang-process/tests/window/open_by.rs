@@ -3,21 +3,14 @@
 //! Both are the window's detail level, in the app's plain window with no session
 //! (`tilolang dev`'s) — the same one path a session's window takes.
 
+use crate::change_marks::at_rest as settle;
 use tilo_app_test_host::TestApp;
 use tilolang_process::window::app::TlApp;
 
 const DESKTOP: (u32, u32) = (1280, 800);
 
 fn staged() -> TestApp<TlApp> {
-    crate::support::installed("openby");
-    let mut app =
-        TestApp::<TlApp>::capture_at(Some("two books"), DESKTOP).expect("the scenario stages");
-    settle(&mut app);
-    app
-}
-
-fn settle(app: &mut TestApp<TlApp>) {
-    crate::change_marks::captured(app, 8);
+    crate::change_marks::staged("openby", "two books", DESKTOP)
 }
 
 /// Every text the window says, as a screen reader hears it.
