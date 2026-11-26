@@ -5145,7 +5145,7 @@ async fn dispatch_sdk_request(
         }
         // Nothing to act on: a hello carries none, and Nearby Send is the device daemon's own
         // resource, so a request from an earlier build names nothing here and is left unanswered.
-        CollabRequest::Hello { .. } | CollabRequest::RetiredNearbyTransferCommand { .. } => {}
+        CollabRequest::Hello { .. } => {}
         request @ CollabRequest::Document { .. } => {
             queue.publish(route, request, role, reservation);
         }
