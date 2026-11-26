@@ -22,7 +22,7 @@ import type * as tilo from "tilo-sdk";
 /** The version of the surface these types were made from: a workspace whose app
  * publishes another refuses their actions rather than run what they no longer
  * describe. */
-export const SURFACE = "so.tilo.chat@4c16479f75faf9f5";
+export const SURFACE = "so.tilo.chat@cade1d94f7591781";
 
 export interface Category {
   name: string;
@@ -226,6 +226,7 @@ export interface Cause {
   label: string;
   key: string;
   person: string;
+  look_grant: string | null;
 }
 
 export interface Choice {
@@ -381,6 +382,7 @@ export interface Starting {
   kind: string;
   label: string;
   key: string;
+  lookGrant: string | null;
 }
 
 export interface Step {

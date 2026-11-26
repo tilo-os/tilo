@@ -331,6 +331,7 @@ class Cause(TypedDict):
     label: str
     key: str
     person: str
+    look_grant: str | None
 
 class Choice(TypedDict):
     id: str
@@ -468,6 +469,7 @@ class Starting(TypedDict):
     kind: str
     label: str
     key: str
+    lookGrant: str | None
 
 class Step(TypedDict):
     id: str
@@ -987,7 +989,7 @@ ForgetSkillArgs = TypedDict("ForgetSkillArgs", {
 
 class Workspace(Resource):
     """Chat — `chat.workspace`."""
-    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
+    __surface__ = "so.tilo.chat@cade1d94f7591781"
     @property
     def categories(self) -> list[Entry[Category]]:
         """Read only."""
@@ -1270,7 +1272,7 @@ class Workspace(Resource):
 
 class Messages(Resource):
     """Messages — `chat.messages`."""
-    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
+    __surface__ = "so.tilo.chat@cade1d94f7591781"
     @property
     def messages(self) -> list[Entry[Message]]:
         """Read only."""
@@ -1744,7 +1746,7 @@ class Messages(Resource):
 
 class Drafts(Resource):
     """Chat drafts — `chat.drafts`."""
-    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
+    __surface__ = "so.tilo.chat@cade1d94f7591781"
     drafts: dict[str, str]
     @property
     def imported(self) -> list[str]:
@@ -1779,7 +1781,7 @@ class Drafts(Resource):
 
 class Moderation(Resource):
     """Moderation — `tilo.moderation`."""
-    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
+    __surface__ = "so.tilo.chat@cade1d94f7591781"
     @property
     def reports(self) -> list[Entry[Report]]:
         """Read only."""
@@ -1847,7 +1849,7 @@ class Moderation(Resource):
 
 class WorkspaceEmoji(Resource):
     """Workspace emoji — `tilo.workspace.emoji`."""
-    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
+    __surface__ = "so.tilo.chat@cade1d94f7591781"
     emoji: dict[str, Emoji]
 
     def add_emoji(self,
@@ -1885,7 +1887,7 @@ class WorkspaceEmoji(Resource):
 
 class Skills(Resource):
     """Workspace Skills — `chat.skills`."""
-    __surface__ = "so.tilo.chat@4c16479f75faf9f5"
+    __surface__ = "so.tilo.chat@cade1d94f7591781"
     @property
     def skills(self) -> list[Entry[Skill]]:
         """Read only."""

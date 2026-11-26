@@ -9071,6 +9071,12 @@
               },
               "label": {
                 "type": "string"
+              },
+              "lookGrant": {
+                "type": [
+                  "string",
+                  "null"
+                ]
               }
             },
             "required": [
