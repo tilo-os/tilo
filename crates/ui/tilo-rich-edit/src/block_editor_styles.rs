@@ -145,7 +145,7 @@ impl BlockEditor {
 mod tests {
     use super::*;
     use crate::CursorPlacement;
-    use ui::richtext::{FontFamily, TextAlign};
+    use tilo_ui_base::{richtext::FontFamily, richtext::TextAlign};
 
     /// A paragraph set in a style the document keeps takes that style's look where it says
     /// nothing itself, and follows the style when its look changes; its own look still wins.

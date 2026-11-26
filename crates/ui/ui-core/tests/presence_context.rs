@@ -1,5 +1,7 @@
-use tilo_ui::permissions::MemberId;
-use tilo_ui::presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange};
+use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::{
+    presence::PathSegment, presence::PresenceCtx, presence::PresenceKey, presence::SelectionRange,
+};
 
 tilo_test_env::scenario! {
     fn presence_contexts_hold_query_and_paint_peers;
@@ -142,14 +144,14 @@ tilo_test_env::scenario! {
         }
 
         {
-            use tilo_ui::text_render::TextRenderer;
+            use tilo_ui_base::text_render::TextRenderer;
             use tilo_ui::widget::TextInput;
-            use tilo_ui::widget::Widget;
+            use tilo_ui_base::widget::Widget;
             use vello::kurbo::Affine;
 
             let mut input = TextInput::new(vec![PathSegment::Field("body".into())]);
             let mut presence = PresenceCtx::empty();
-            let key = tilo_ui::presence::capability::presence_key(&input)
+            let key = tilo_ui_base::presence::capability::presence_key(&input)
                 .expect("text_input exposes presence_key");
             presence.set_caret(&key, MemberId::person("alice"), 3);
 
@@ -157,7 +159,7 @@ tilo_test_env::scenario! {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
 
-            input.draw(&mut tilo_ui::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+            input.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             assert!(
                 !scene.encoding().is_empty(),
                 "peer caret should produce scene geometry"
@@ -166,5 +168,5 @@ tilo_test_env::scenario! {
     }
 }
 
-use tilo_ui::theme::Theme;
+use tilo_ui_base::theme::Theme;
 use vello::Scene;

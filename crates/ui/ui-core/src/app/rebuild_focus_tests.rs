@@ -1,8 +1,8 @@
 use super::*;
-use crate::widget::ModelPath;
-use crate::widget::TaffyTreeExt;
 use crate::widget::{Button, Text, TextInput};
 use automerge::AutoCommit;
+use tilo_ui_base::widget::ModelPath;
+use tilo_ui_base::widget::TaffyTreeExt;
 use vello::kurbo::Rect;
 
 /// Recreates its children on every `build_layout`: the focused
@@ -88,14 +88,14 @@ impl Widget for RebuildHarness {
         taffy.widget_node(taffy::Style::default(), &child_nodes, node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if let Ok(child_nodes) = taffy.children(node) {
             for (c, &cn) in self.children.iter_mut().zip(child_nodes.iter()) {
                 c.apply_layout(taffy, cn, Point::new(self.rect.x0, self.rect.y0));
             }
         }
     }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         for child in self.children.iter_mut().rev() {
             child.handle_event(event, ctx);
         }
@@ -112,7 +112,7 @@ impl Widget for RebuildHarness {
     fn on_external_event(
         &mut self,
         payload: &str,
-        _s: &mut crate::widget::Edits<'_>,
+        _s: &mut tilo_ui_base::widget::Edits<'_>,
         _r: &ModelPath,
     ) {
         match payload {
@@ -147,7 +147,7 @@ impl Widget for RebuildHarness {
 fn caret(app: &App) -> Option<String> {
     let id = app.focused_node?;
     let w = *app.layout.node_map.get(&id)?;
-    unsafe { crate::widget::undo_points::get_state(&(*w)) }
+    unsafe { tilo_ui_base::widget::undo_points::get_state(&(*w)) }
 }
 
 /// A window with nothing laid out yet, as a surface host shows it before its
@@ -179,7 +179,7 @@ tilo_test_env::scenario! {
 
             let id = app.focused_node.expect("input focused at startup");
             unsafe {
-                crate::widget::undo_points::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "3");
+                tilo_ui_base::widget::undo_points::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "3");
             }
             assert_eq!(caret(&app).as_deref(), Some("3"));
 
@@ -188,7 +188,7 @@ tilo_test_env::scenario! {
             let mut tmp = AutoCommit::new();
             app.root_widget.on_external_event(
                 "show_status",
-                &mut crate::widget::Edits::lend(&mut tmp),
+                &mut tilo_ui_base::widget::Edits::lend(&mut tmp),
                 &automerge::ROOT,
             );
             app.rebuild_structure();
@@ -216,13 +216,13 @@ tilo_test_env::scenario! {
 
             let id = app.focused_node.unwrap();
             unsafe {
-                crate::widget::undo_points::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "3");
+                tilo_ui_base::widget::undo_points::set_state(&mut (*(*app.layout.node_map.get(&id).unwrap())), "3");
             }
 
             let mut tmp = AutoCommit::new();
             app.root_widget.on_external_event(
                 "reset",
-                &mut crate::widget::Edits::lend(&mut tmp),
+                &mut tilo_ui_base::widget::Edits::lend(&mut tmp),
                 &automerge::ROOT,
             );
             app.rebuild_structure();
@@ -245,7 +245,7 @@ tilo_test_env::scenario! {
         let mut tmp = AutoCommit::new();
         app.root_widget.on_external_event(
             "offer",
-            &mut crate::widget::Edits::lend(&mut tmp),
+            &mut tilo_ui_base::widget::Edits::lend(&mut tmp),
             &automerge::ROOT,
         );
         app.rebuild_structure();
@@ -280,7 +280,7 @@ tilo_test_env::scenario! {
         let mut tmp = AutoCommit::new();
         app.root_widget.on_external_event(
             "swap",
-            &mut crate::widget::Edits::lend(&mut tmp),
+            &mut tilo_ui_base::widget::Edits::lend(&mut tmp),
             &automerge::ROOT,
         );
         app.rebuild_structure();
@@ -320,7 +320,7 @@ tilo_test_env::scenario! {
         let mut tmp = AutoCommit::new();
         app.root_widget.on_external_event(
             "show_status",
-            &mut crate::widget::Edits::lend(&mut tmp),
+            &mut tilo_ui_base::widget::Edits::lend(&mut tmp),
             &automerge::ROOT,
         );
         app.rebuild_structure();
@@ -349,7 +349,7 @@ tilo_test_env::scenario! {
         app.autofocus_first = true;
         assert!(app.layout.root_node.is_none(), "the app has drawn no frame");
 
-        let handled = app.surface_input(&UnlaidWindow, crate::synthetic_input::char_key("s"), false);
+        let handled = app.surface_input(&UnlaidWindow, tilo_ui_base::synthetic_input::char_key("s"), false);
 
         assert!(
             app.layout.root_node.is_some(),

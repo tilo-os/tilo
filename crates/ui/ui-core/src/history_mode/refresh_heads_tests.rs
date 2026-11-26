@@ -532,7 +532,7 @@ impl crate::history_mode::HistoryParts for Parts {
         &self,
         part: &crate::history_mode::HistoryPart,
         heads: &[automerge::ChangeHash],
-        _: &crate::permissions::MemberId,
+        _: &tilo_ui_base::permissions::MemberId,
     ) -> Result<(), String> {
         let body = self.body_at(part, heads);
         let index = usize::try_from(part.index).unwrap();
@@ -621,7 +621,7 @@ fn history_previews_and_restores_the_parts_beside_the_document() {
         .controller
         .as_ref()
         .unwrap()
-        .restore_part(&review, &crate::permissions::MemberId::person("ada"))
+        .restore_part(&review, &tilo_ui_base::permissions::MemberId::person("ada"))
         .unwrap();
     let mut restored = parts.borrow()[0].clone();
     assert_eq!(restored.get_changes(&[]).len(), changes + 1);
@@ -638,7 +638,7 @@ fn history_previews_and_restores_the_parts_beside_the_document() {
             .controller
             .as_ref()
             .unwrap()
-            .restore_part(&review, &crate::permissions::MemberId::person("ada")),
+            .restore_part(&review, &tilo_ui_base::permissions::MemberId::person("ada")),
         Err(crate::history_mode::HistoryError::StaleLiveHeads)
     );
     // The shown version stays behind the part.

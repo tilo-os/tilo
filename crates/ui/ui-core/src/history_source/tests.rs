@@ -12,10 +12,10 @@ use automerge::transaction::{CommitOptions, Transactable};
 use automerge::{ActorId, AutoCommit, ObjType, ROOT};
 
 use super::*;
-use crate::permissions::MemberId;
 use crate::state::State;
 use crate::widget::history::HistoryAuthor;
 use crate::widget::{ActivityTimeline, HistoryFilter};
+use tilo_ui_base::permissions::MemberId;
 
 /// A fixed clock so date-range assertions are deterministic.
 const T0: i64 = 1_780_000_000; // 2026-06-08T…, comfortably in the Tilo era.
@@ -782,7 +782,7 @@ tilo_test_env::scenario! {
                 unnamed(),
                 unnamed(),
                 sentence::sentence(&report),
-                crate::i18n::I18nManager::lookup_plain("history-moved"),
+                tilo_ui_base::i18n::I18nManager::lookup_plain("history-moved"),
             ]
         );
         assert_eq!(summaries[0], "Changed the document");
@@ -837,7 +837,7 @@ tilo_test_env::scenario! {
                 .acting_for("kai"),
         );
         let mut authors = AuthorDirectory::new();
-        authors.set_reader(crate::permissions::MemberId::person("kai"));
+        authors.set_reader(tilo_ui_base::permissions::MemberId::person("kai"));
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
         let rows: Vec<(String, AuthorRelation)> = entries
             .iter()
@@ -864,7 +864,7 @@ tilo_test_env::scenario! {
         let mut doc = AutoCommit::new().with_actor(automerge::ActorId::from(device.to_vec()));
         doc.put(ROOT, "device", "Laptop").unwrap();
         doc.commit();
-        let kai = crate::permissions::MemberId::person("kai");
+        let kai = tilo_ui_base::permissions::MemberId::person("kai");
         let mut authors = AuthorDirectory::new();
         authors.register_roster([(&kai, "Kai")]);
         authors.register_writers(&kai, [hex::encode(device).as_str()]);
@@ -899,7 +899,7 @@ tilo_test_env::scenario! {
             );
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
         let mut authors = AuthorDirectory::new();
-        authors.set_reader(crate::permissions::MemberId::person("kai"));
+        authors.set_reader(tilo_ui_base::permissions::MemberId::person("kai"));
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
         // The agent, for the person it acted for.
         let author = &entries.last().unwrap().author;
@@ -933,9 +933,9 @@ tilo_test_env::scenario! {
         doc.put(ROOT, "title", "y").unwrap();
         doc.commit();
         let mut authors = AuthorDirectory::new();
-        authors.set_reader(crate::permissions::MemberId::person("kai"));
+        authors.set_reader(tilo_ui_base::permissions::MemberId::person("kai"));
         authors.register_member(
-            &crate::permissions::MemberId::person(person.clone()),
+            &tilo_ui_base::permissions::MemberId::person(person.clone()),
             HistoryAuthor::new("Ada", 0.0, "ada00000"),
         );
         authors.register_agent(
@@ -974,7 +974,7 @@ tilo_test_env::scenario! {
         // The line names the agent alone; the hover says whom it worked for, and to that person
         // that it was them.
         assert!(crate::attribution_hover(author).is_some_and(|hover| hover.contains("for Ada")));
-        authors.set_reader(crate::permissions::MemberId::person(person));
+        authors.set_reader(tilo_ui_base::permissions::MemberId::person(person));
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
         let author = &entries.last().unwrap().author;
         assert_eq!(crate::author_line(author), "Scribe");
@@ -998,7 +998,7 @@ tilo_test_env::scenario! {
             .with_invoker(ActionInvoker::agent("scout", "ada").acting_for("ada"));
         doc.commit_with(CommitOptions::default().with_message(context.change_message().unwrap()));
         let mut authors = AuthorDirectory::new();
-        authors.set_reader(crate::permissions::MemberId::person("kai"));
+        authors.set_reader(tilo_ui_base::permissions::MemberId::person("kai"));
         let entries = HistorySource::new().with_authors(authors).entries(&mut doc);
         let entry = entries.last().expect("the change");
         assert_eq!(entry.author.name, "Scout");
@@ -1366,10 +1366,10 @@ fn entries_since_reads_only_appended_changes_and_matches_entries() {
     // phase: a change of locale reads nothing again: the rows are worded in
     // it, and they moved
     let revision = log.rows_revision();
-    crate::i18n::I18nManager::set_pseudo_locale(crate::i18n::PseudoLocale::Expanded);
+    tilo_ui_base::i18n::I18nManager::set_pseudo_locale(tilo_ui_base::i18n::PseudoLocale::Expanded);
     let (rows, read) = read_since(&source, &mut other, &mut log);
     let fresh = source.entries(&mut other);
-    crate::i18n::I18nManager::set_pseudo_locale(crate::i18n::PseudoLocale::Off);
+    tilo_ui_base::i18n::I18nManager::set_pseudo_locale(tilo_ui_base::i18n::PseudoLocale::Off);
     assert_eq!(read, 0, "a new locale reads no change again");
     assert_eq!(rows, fresh, "rows in the new locale");
     assert_ne!(log.rows_revision(), revision, "the rows moved");

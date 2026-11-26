@@ -1,13 +1,15 @@
 //! [`ToggleGroup`] and [`ViewTabs`] as described components.
 
-use crate::component::{Component, Described, Event, Value};
-use crate::icons::Icon;
 use crate::widget::ControlSize;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Value,
+};
 
 use super::{Press, Segment, ToggleGroup};
 use crate::widget::ViewTabs;
 
-crate::component::part_type!(SegmentProps);
+tilo_ui_base::part_type!(SegmentProps);
 
 /// A small set of choices, one of which is made: an alignment, a density, a unit. The chosen one is
 /// a thumb lifted off the track.

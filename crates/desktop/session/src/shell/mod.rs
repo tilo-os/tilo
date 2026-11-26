@@ -73,7 +73,7 @@ fn band() -> u32 {
         reason = "a bar's height, a few dozen pixels"
     )]
     let band = f64::from(tilo_session_core::desktop::overlays::topbar_height(
-        &ui::Theme::dark(),
+        &tilo_ui_base::Theme::dark(),
     ))
     .ceil() as u32;
     band
@@ -145,7 +145,7 @@ pub(crate) struct Shell {
     dispatch_refusals: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     /// The theme the person's appearance settings make: every part draws in it, and a part made for
     /// a display plugged in later starts in it.
-    theme: ui::Theme,
+    theme: tilo_ui_base::Theme,
 }
 
 /// Reconcile the desktop's display partition with the outputs the compositor holds: a display
@@ -207,7 +207,7 @@ impl Shell {
         surfaces: &mut Surfaces,
         lists: DeviceLists,
         wells: Option<ui::widget::Wells>,
-        theme: ui::Theme,
+        theme: tilo_ui_base::Theme,
         daemon: bool,
     ) -> Result<Self, String> {
         // What the person waits for before the shell can draw: its package compiled, its record
@@ -1060,7 +1060,7 @@ impl Shell {
     }
 
     /// Draw every part in `theme` : the person changed their appearance.
-    pub(crate) fn set_theme(&mut self, theme: &ui::Theme) {
+    pub(crate) fn set_theme(&mut self, theme: &tilo_ui_base::Theme) {
         self.theme = theme.clone();
         for (_, part) in &self.parts {
             part.borrow_mut().set_theme(theme.clone());
@@ -1415,7 +1415,8 @@ impl ShellChrome {
         &self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, tilo_actions::ApiError> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, tilo_actions::ApiError>
+    {
         if address.resource != tilo_session_core::desktop::verbs::CHROME_RESOURCE {
             return Ok(None);
         }
@@ -1423,9 +1424,11 @@ impl ShellChrome {
         // strip chosen closes it, so nothing of the chrome's strip switcher draws.
         if address.action == "show-strips" {
             self.surfaces.toggle(crate::device_lists::Surfaces::STRIPS);
-            return Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )));
+            return Ok(Some(
+                tilo_ui_base::host_operation::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ),
+            ));
         }
         // Any other action of the chrome's puts the strips list away, as a menu closes once
         // something is chosen: showing a strip, stepping along them, switching workspace.
@@ -1524,11 +1527,11 @@ impl ShellChrome {
             }
             _ => false,
         };
-        Ok(
-            started.then_some(ui::host_operation::ResourceOperationStart::Completed(
+        Ok(started.then_some(
+            tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
-            )),
-        )
+            ),
+        ))
     }
 }
 
@@ -1539,7 +1542,8 @@ impl ShellChrome {
         &self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, tilo_actions::ApiError> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, tilo_actions::ApiError>
+    {
         use tilo_session_core::desktop::navigation::{ChromeEffect, Verb};
         use tilo_session_core::desktop::state::chrome_verbs::Carried;
         if address.resource != tilo_session_core::desktop::verbs::CHROME_RESOURCE {
@@ -1573,12 +1577,14 @@ impl ShellChrome {
             }
             Carried::Shell => return Ok(None),
         };
-        Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput {
-                value,
-                ..tilo_actions::ActionOutput::default()
-            },
-        )))
+        Ok(Some(
+            tilo_ui_base::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput {
+                    value,
+                    ..tilo_actions::ActionOutput::default()
+                },
+            ),
+        ))
     }
 
     /// Answer what the desktop left of a shortcut to the shell: whether that was all of it. The
@@ -1655,7 +1661,7 @@ impl tilo_session_core::surfaces::Published for ShellChrome {
         address: &ActionAddress,
         arguments: &Map<String, Value>,
         _look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         if let Some(started) = self.show_surface(address, arguments)? {
             return Ok(started);
         }
@@ -1686,7 +1692,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
         address: &ActionAddress,
         arguments: &Map<String, Value>,
         look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         if address.resource == tilo_session_core::desktop::verbs::SHELL_RESOURCE
             && address.action == "search"
         {
@@ -1707,9 +1713,11 @@ impl tilo_session_core::surfaces::Published for ShellLists {
             }
             self.surfaces
                 .toggle(tilo_session_core::desktop::overlays::Overlay::Launcher.name());
-            return Ok(ui::host_operation::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            ));
+            return Ok(
+                tilo_ui_base::host_operation::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ),
+            );
         }
         // The platform search API (a window's search control, its toolbar's magnifier, Ctrl+K)
         // asks for the shell's search under the shell too: the shell draws that search, so the
@@ -1733,7 +1741,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
                         look,
                     )?
                 }
-                None => ui::host_operation::ResourceOperationStart::Completed(
+                None => tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                     tilo_actions::ActionOutput::default(),
                 ),
             };
@@ -1754,7 +1762,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
         address: &ActionAddress,
         arguments: &Map<String, Value>,
         look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         if ui::widget::search_request::is_search_address(address)
             || (address.resource == tilo_session_core::desktop::verbs::SHELL_RESOURCE
                 && address.action == "search")
@@ -2352,7 +2360,7 @@ mod tests {
         use ui::window_targets::{TargetAction, WindowTarget};
 
         // The windows' arrival settles at once rather than over frames that now take no time.
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut desktop = crate::platform::surfaces::desktop(7);
         let mut policy = desktop.well_policy();
         let output = LayoutRect::new(LayoutPoint::from((0, 0)), (1280, 800).into());

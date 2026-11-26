@@ -80,7 +80,7 @@ class AtspiEndpointContractTests(unittest.TestCase):
                     "self.a11y_adapter = None;",
                     update,
                 ]),
-                "crates/ui/ui-core/src/accesskit_bridge.rs": "\n".join([
+                "crates/ui/ui-base/src/accesskit_bridge.rs": "\n".join([
                     "ak.set_live(match politeness",
                     "ak.set_live_atomic()",
                     "if !access.state.protected",
@@ -127,13 +127,13 @@ class AtspiEndpointContractTests(unittest.TestCase):
                 with self.subTest(argument=argument):
                     self.assertEqual(self.audit_update(
                         "adapter.update_if_active(|| {\n"
-                        f"crate::accesskit_bridge::native_tree_update({argument})\n"
+                        f"tilo_ui_base::accesskit_bridge::native_tree_update({argument})\n"
                         "});"
                     ), [])
         with self.subTest(phase='native host extraction preserves endpoint contract'):
             self.assertEqual(self.audit_update(
                 "adapter.update_if_active(|| {\n"
-                "crate::accesskit_bridge::native_tree_update(\n"
+                "tilo_ui_base::accesskit_bridge::native_tree_update(\n"
                 "    app_ref.build_a11y_tree_update(scale),\n"
                 ")\n"
                 "});",
@@ -192,7 +192,7 @@ class AtspiEndpointContractTests(unittest.TestCase):
         with self.subTest(phase="a window tree that skips the native conversion is rejected"):
             self.assertIn("crates/ui/ui-core/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
                 "adapter.update_if_active(|| part_bar::window_tree_update(app_ref, bar, scale));\n"
-                + self.WINDOW_TREE.replace("crate::accesskit_bridge::native_tree_update(update)", "update")
+                + self.WINDOW_TREE.replace("tilo_ui_base::accesskit_bridge::native_tree_update(update)", "update")
             ))
         with self.subTest(phase="a window tree that never reaches the adapter is rejected"):
             self.assertIn("crates/ui/ui-core/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
@@ -200,13 +200,13 @@ class AtspiEndpointContractTests(unittest.TestCase):
             ))
         with self.subTest(phase='disconnected tree build does not satisfy update contract'):
             self.assertIn("crates/ui/ui-core/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
-                "crate::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale));\n"
+                "tilo_ui_base::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale));\n"
                 "adapter.update_if_active(|| unrelated_tree);"
             ))
         with self.subTest(phase='dropping built tree does not satisfy update contract'):
             self.assertIn("crates/ui/ui-core/src/app.rs: missing shared AT-SPI tree updates", self.audit_update(
                 "adapter.update_if_active(|| {\n"
-                "crate::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale));\n"
+                "tilo_ui_base::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale));\n"
                 "unrelated_tree\n});"
             ))
 
@@ -218,15 +218,15 @@ class AtspiEndpointContractTests(unittest.TestCase):
         ") -> accesskit::TreeUpdate {\n"
         "    let mut update = app.build_a11y_tree_update(scale);\n"
         "    if let Some(row) = bar.accessibility(app) {\n"
-        "        crate::accesskit_bridge::publish_host_part(&mut update, &row, scale);\n"
+        "        tilo_ui_base::accesskit_bridge::publish_host_part(&mut update, &row, scale);\n"
         "    }\n"
-        "    crate::accesskit_bridge::native_tree_update(update)\n"
+        "    tilo_ui_base::accesskit_bridge::native_tree_update(update)\n"
         "}\n"
     )
 
     NATIVE_UPDATE = (
         "adapter.update_if_active(|| {\n"
-        "crate::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale))\n"
+        "tilo_ui_base::accesskit_bridge::native_tree_update(app_ref.build_a11y_tree_update(scale))\n"
         "});"
     )
 

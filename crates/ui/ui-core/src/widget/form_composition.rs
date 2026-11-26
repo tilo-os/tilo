@@ -5,10 +5,11 @@ use taffy::style_helpers::{auto, fr, length, minmax, percent};
 use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
-use super::{Actions, Element, FormControl, Scrollable, Text, Widget};
+use super::{Actions, FormControl, Scrollable, Text};
 use taffy::style_helpers::{line, span};
+use tilo_ui_base::{widget::Element, widget::Widget};
 
-use super::composition_parts::{Parts, retained_parts};
+use tilo_ui_base::widget::composition_parts::Parts;
 mod label;
 mod page;
 use label::FieldLabel;
@@ -16,13 +17,15 @@ pub use page::{FormPage, Page};
 #[cfg(test)]
 mod tests;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
-use super::layout_info::{
-    Density, Effective, FieldLayout, FormLayout, LabelPlacement, LayoutInfo, LayoutOrigin,
-    PageLayout, SectionLayout,
+use tilo_ui_base::{
+    widget::layout_info::Density, widget::layout_info::Effective, widget::layout_info::FieldLayout,
+    widget::layout_info::FormLayout, widget::layout_info::LabelPlacement,
+    widget::layout_info::LayoutInfo, widget::layout_info::LayoutOrigin,
+    widget::layout_info::PageLayout, widget::layout_info::SectionLayout,
 };
 
 fn spacing(value: Option<f32>) -> Option<f32> {
@@ -68,7 +71,7 @@ fn column_style(gap: f32) -> Style {
 
 /// Intrinsic ordered sections with a trailing standard action region.
 #[derive(Default)]
-#[crate::component::not_a_component(layout, "the language's `form`")]
+#[tilo_ui_base::component::not_a_component(layout, "the language's `form`")]
 pub struct Form {
     parts: Parts,
     density: Option<Density>,
@@ -131,7 +134,7 @@ impl Form {
 ///
 /// The title is a `Heading`. A section is never a card: it sits on the
 /// ground, separated from the next section by space.
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     layout,
     "the language's `form`, one section per `section` in it"
 )]
@@ -180,7 +183,7 @@ impl FormSection {
                     .with_role(TextRole::Heading)
                     .with_heading_level(2),
             ))
-            .push(Box::new(super::Spacer::new()))
+            .push(Box::new(tilo_ui_base::widget::Spacer::new()))
             .push(action);
         section.parts.children.push(Box::new(header));
         section.has_title = true;
@@ -271,8 +274,10 @@ impl FormSection {
         /// How deep forms are looked for: a page's part, a section, its pane, the form.
         const DEPTH: usize = 6;
         fn each(widget: &mut dyn Widget, depth: usize, f: &mut dyn FnMut(&mut FormSection)) {
-            use super::capability::{capability, capability_mut};
-            use super::{Decorated, DecoratedMut};
+            use tilo_ui_base::{widget::Decorated, widget::DecoratedMut};
+            use tilo_ui_base::{
+                widget::capability::capability, widget::capability::capability_mut,
+            };
             // A wrapper (a language view's pane round the form it shows) answers as itself, and
             // its children are its inner widget's: the form it wraps is reached through it.
             if capability::<dyn Decorated>(widget).is_some() {
@@ -386,7 +391,7 @@ enum FieldKind {
 
 /// One visible label and what it labels: a standard control (which takes the label as its
 /// accessible name, so it is read once), a custom element, or nothing for a control row.
-#[crate::component::not_a_component(layout, "the language's `field`")]
+#[tilo_ui_base::component::not_a_component(layout, "the language's `field`")]
 pub struct Field {
     parts: Parts,
     kind: FieldKind,
@@ -465,7 +470,7 @@ impl Field {
                 Text::new(&value.into())
                     .numeric()
                     .dimmed()
-                    .with_align(crate::ParagraphAlign::End),
+                    .with_align(tilo_ui_base::ParagraphAlign::End),
             ),
         )
         .with_filling_control();
@@ -543,7 +548,7 @@ impl Field {
     }
     #[must_use]
     pub fn with_error(self, text: impl Into<String>) -> Self {
-        self.with_error_live(text, crate::a11y::Politeness::Polite)
+        self.with_error_live(text, tilo_ui_base::a11y::Politeness::Polite)
     }
     /// Announce validation with the urgency of the interaction: polite for live checking,
     /// assertive when an explicit submission is refused.
@@ -551,7 +556,7 @@ impl Field {
     pub fn with_error_live(
         mut self,
         text: impl Into<String>,
-        politeness: crate::a11y::Politeness,
+        politeness: tilo_ui_base::a11y::Politeness,
     ) -> Self {
         if let Some(body) = self
             .parts
@@ -664,8 +669,8 @@ fn measure_owned(
     width: AvailableSpace,
     text: &mut TextRenderer,
 ) -> Size<f32> {
-    let binding = crate::widget::component_walk::binding_of(child);
-    let Some(_entry) = crate::widget::component_walk::enter(binding.as_ref()) else {
+    let binding = tilo_ui_base::widget::component_walk::binding_of(child);
+    let Some(_entry) = tilo_ui_base::widget::component_walk::enter(binding.as_ref()) else {
         return Size::ZERO;
     };
     child.measure(
@@ -711,7 +716,7 @@ struct FieldBody {
     names_content: Option<String>,
 }
 impl FieldBody {
-    fn set_error(&mut self, text: &str, politeness: crate::a11y::Politeness) {
+    fn set_error(&mut self, text: &str, politeness: tilo_ui_base::a11y::Politeness) {
         let copy: Element = Box::new(
             Text::new(text)
                 .with_role(TextRole::Caption)
@@ -739,7 +744,7 @@ impl Widget for Form {
     fn layout_info(&self) -> Option<LayoutInfo> {
         self.effective_layout().map(LayoutInfo::Form)
     }
-    retained_parts!("Form");
+    tilo_ui_base::retained_parts!("Form");
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -826,14 +831,14 @@ impl Widget for Form {
             }
         }
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.parts.draw(&mut crate::draw::DrawCtx::new(
+        self.parts.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -849,7 +854,7 @@ impl Widget for FormSection {
     fn layout_info(&self) -> Option<LayoutInfo> {
         self.effective_layout().map(LayoutInfo::Section)
     }
-    retained_parts!("FormSection", custom_apply_layout);
+    tilo_ui_base::retained_parts!("FormSection", custom_apply_layout);
     fn is_layout_dirty(&self) -> bool {
         // A collapsed section can contain no rows. It is still a layout
         // container, whose intrinsic size changes only with its children.
@@ -995,7 +1000,7 @@ impl Widget for FormSection {
         self.beside = self.beside_at(AvailableSpace::Definite(width), needs);
         self.parts.apply_layout(tree, node, origin);
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1020,7 +1025,7 @@ impl Widget for FormSection {
                 .collect();
             for pair in rows.windows(2) {
                 if let [above, below] = pair {
-                    crate::surface::separator(
+                    tilo_ui_base::surface::separator(
                         scene,
                         transform,
                         below.x0,
@@ -1032,7 +1037,7 @@ impl Widget for FormSection {
                 }
             }
         }
-        self.parts.draw(&mut crate::draw::DrawCtx::new(
+        self.parts.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -1048,13 +1053,16 @@ impl Widget for Field {
     fn layout_info(&self) -> Option<LayoutInfo> {
         self.effective_layout().map(LayoutInfo::Field)
     }
-    retained_parts!("Field", custom_apply_layout);
+    tilo_ui_base::retained_parts!("Field", custom_apply_layout);
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.least_target = environment.minimum_target();
-        super::defaults::set_interaction_environment(self.children_mut(), environment);
+        tilo_ui_base::widget::defaults::set_interaction_environment(
+            self.children_mut(),
+            environment,
+        );
     }
     fn build_layout(
         &mut self,
@@ -1068,10 +1076,10 @@ impl Widget for Field {
         // A beside label sits on the control's first line: a one-line
         // control is at most a large control high, so a taller one (a
         // multi-line entry, a list) keeps its label on its first line.
-        self.first_line =
-            crate::num::f32_of_f64(super::ControlSize::Large.height(theme)).max(self.least_target);
+        self.first_line = tilo_ui_base::num::f32_of_f64(super::ControlSize::Large.height(theme))
+            .max(self.least_target);
         self.comfortable_control = theme.tokens.metrics.chooser_width
-            * crate::tokens::Metrics::text_growth(theme.text_scale);
+            * tilo_ui_base::tokens::Metrics::text_growth(theme.text_scale);
         let placement = self.label_placement.map_or_else(
             || {
                 self.inherited.map_or_else(
@@ -1164,14 +1172,14 @@ impl Widget for Field {
         }
         self.parts.apply_layout(tree, node, origin);
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.parts.draw(&mut crate::draw::DrawCtx::new(
+        self.parts.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -1292,7 +1300,7 @@ impl Widget for FieldBody {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    retained_parts!("FieldBody");
+    tilo_ui_base::retained_parts!("FieldBody");
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -1304,14 +1312,14 @@ impl Widget for FieldBody {
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.parts.draw(&mut crate::draw::DrawCtx::new(
+        self.parts.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,

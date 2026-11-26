@@ -576,9 +576,9 @@ mod tests {
             assert_ne!(says, unreached);
             assert_ne!(says, refused);
 
-            ui::i18n::I18nManager::set_locale("de-DE");
+            tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
             let german = waiting_for(Some(&busy));
-            ui::i18n::I18nManager::set_locale("en-US");
+            tilo_ui_base::i18n::I18nManager::set_locale("en-US");
             assert_eq!(
                 german,
                 "Ada's phone, das Gerät, das die Anrufe und geteilten Fenster dieses Arbeitsbereichs \
@@ -606,9 +606,9 @@ mod tests {
              here: this device hears 32 others at once"
             );
 
-            ui::i18n::I18nManager::set_locale("de-DE");
+            tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
             let german = (not_heard(3), not_heard(1));
-            ui::i18n::I18nManager::set_locale("en-US");
+            tilo_ui_base::i18n::I18nManager::set_locale("en-US");
             assert_eq!(
                 german.0,
                 "3 weitere Geräte sind in den Anrufen und geteilten Fenstern dieses Arbeitsbereichs \

@@ -26,7 +26,7 @@ fn native_focus_and_selection_follow_only_the_semantic_target() {
         let body = target(&app, "body");
         let title = target(&app, "title");
         app.set_focused_node(Some(body));
-        let selection = crate::a11y::Action::SetSelection {
+        let selection = tilo_ui_base::a11y::Action::SetSelection {
             anchor: 0,
             focus: 0,
         };
@@ -51,7 +51,7 @@ fn native_focus_and_selection_follow_only_the_semantic_target() {
     }
 
     {
-        use crate::widget::layout::AnonymousFocusProbe;
+        use tilo_ui_base::widget::layout::AnonymousFocusProbe;
         let mut app = App::new_with_controlled_inputs(
             State::new(),
             Box::new(AnonymousFocusProbe::new("own selection")),
@@ -66,9 +66,9 @@ fn native_focus_and_selection_follow_only_the_semantic_target() {
         assert_ne!(old, current);
         assert_eq!(app.focused_node, Some(current));
         assert_eq!(
-            app.inspect_node(current, |widget| crate::widget::undo_points::get_state(
-                widget
-            ))
+            app.inspect_node(current, |widget| {
+                tilo_ui_base::widget::undo_points::get_state(widget)
+            })
             .unwrap()
             .as_deref(),
             Some("own selection")
@@ -76,7 +76,7 @@ fn native_focus_and_selection_follow_only_the_semantic_target() {
     }
 
     {
-        use crate::widget::layout::AnonymousFocusProbe;
+        use tilo_ui_base::widget::layout::AnonymousFocusProbe;
         for disabled in [false, true] {
             let mut root = Column::new();
             let mut probe = AnonymousFocusProbe::new("one");

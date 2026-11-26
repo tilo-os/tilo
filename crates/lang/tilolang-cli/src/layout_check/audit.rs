@@ -105,12 +105,12 @@ fn has_words(node: &InspectionNode) -> bool {
         || node.children.iter().any(has_words)
 }
 
-fn class_name(class: ui::widget::WidthClass) -> &'static str {
+fn class_name(class: tilo_ui_base::widget::WidthClass) -> &'static str {
     match class {
-        ui::widget::WidthClass::Compact => "a phone's screen",
-        ui::widget::WidthClass::Medium => "a column",
-        ui::widget::WidthClass::Expanded => "an expanded column",
-        ui::widget::WidthClass::Wide => "a wide column",
+        tilo_ui_base::widget::WidthClass::Compact => "a phone's screen",
+        tilo_ui_base::widget::WidthClass::Medium => "a column",
+        tilo_ui_base::widget::WidthClass::Expanded => "an expanded column",
+        tilo_ui_base::widget::WidthClass::Wide => "a wide column",
     }
 }
 
@@ -142,10 +142,10 @@ fn says_day(fact: &str, heading: &str, days: &[String]) -> bool {
 /// The words each day around today reads as a heading (`Today`, `Saturday`, `Jun 29`, `Overdue
 /// since Jun 29`): what a day heading over rows says.
 fn day_words() -> Vec<String> {
-    let today = ui::clock::today();
+    let today = tilo_ui_base::clock::today();
     (-400..=400)
         .filter_map(|days| today.checked_add(jiff::Span::new().days(days)).ok())
-        .map(|day| ui::format::day_fact_today(day, None).text)
+        .map(|day| tilo_ui_base::format::day_fact_today(day, None).text)
         .collect()
 }
 
@@ -201,7 +201,7 @@ struct Scrolls {
 /// Which ways `node` scrolls its content: as a scroll view says of its axis, else down for a widget
 /// that scrolls by its kind (a long list).
 fn scrolls(node: &InspectionNode) -> Scrolls {
-    use ui::widget::{LayoutInfo, ScrollDirection};
+    use tilo_ui_base::{widget::LayoutInfo, widget::ScrollDirection};
     if let Some(LayoutInfo::Scroll(scroll)) = &node.layout {
         return match scroll.direction {
             ScrollDirection::Vertical => Scrolls {
@@ -241,7 +241,7 @@ fn is_row(node: &InspectionNode) -> bool {
     ) || node
         .semantics
         .as_ref()
-        .is_some_and(|access| access.role == ui::a11y::Role::ListItem)
+        .is_some_and(|access| access.role == tilo_ui_base::a11y::Role::ListItem)
 }
 
 /// The names of the rows every list and tree a box
@@ -249,7 +249,10 @@ fn is_row(node: &InspectionNode) -> bool {
 /// lists.
 fn held_rows(node: &InspectionNode, out: &mut Vec<String>) {
     let holds_rows = node.semantics.as_ref().is_some_and(|semantics| {
-        matches!(semantics.role, ui::a11y::Role::List | ui::a11y::Role::Tree)
+        matches!(
+            semantics.role,
+            tilo_ui_base::a11y::Role::List | tilo_ui_base::a11y::Role::Tree
+        )
     });
     for child in &node.children {
         if holds_rows
@@ -337,7 +340,7 @@ fn held_page(node: &InspectionNode) -> Option<&InspectionNode> {
 }
 
 fn is_text(node: &InspectionNode) -> bool {
-    use ui::a11y::Role;
+    use tilo_ui_base::a11y::Role;
     node.widget == "Text"
         || node.semantics.as_ref().is_some_and(|access| {
             matches!(
@@ -372,7 +375,7 @@ fn text_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
 /// The boxes of the headings `node` shows, its own and its descendants', each as much of it as
 /// can be seen: the words a surface goes by.
 fn heading_boxes(node: &InspectionNode, clip: Rect, out: &mut Vec<Rect>) {
-    use ui::a11y::Role;
+    use tilo_ui_base::a11y::Role;
     if floats(&node.widget) {
         return;
     }
@@ -574,8 +577,8 @@ fn is_control(node: &InspectionNode) -> bool {
     }
 }
 
-fn interactive(role: ui::a11y::Role) -> bool {
-    use ui::a11y::Role;
+fn interactive(role: tilo_ui_base::a11y::Role) -> bool {
+    use tilo_ui_base::a11y::Role;
     matches!(
         role,
         Role::Button
@@ -745,7 +748,7 @@ pub fn inspect(
         out.push(Problem {
             kind: Kind::PresenceTag,
             keys: Vec::new(),
-            widget: ui::presence::TAG_WIDGET.to_owned(),
+            widget: tilo_ui_base::presence::TAG_WIDGET.to_owned(),
             id: None,
             detail: fault,
         });
@@ -757,11 +760,11 @@ pub fn inspect(
 /// finger's target where the window is held in the hand, and nothing else.
 pub fn heading_rooms(
     root: &InspectionNode,
-    theme: &ui::Theme,
+    theme: &tilo_ui_base::Theme,
     min_target: Option<f64>,
 ) -> Vec<Problem> {
     let band = band_height(theme).max(min_target.unwrap_or(0.0));
-    let inset = ui::chrome::column_gutter(theme);
+    let inset = tilo_ui_base::chrome::column_gutter(theme);
     let mut out = Vec::new();
     heading_rooms_in(root, &mut Vec::new(), band, inset, &mut out);
     out
@@ -829,7 +832,7 @@ fn heading_rooms_in(
     // content gutter, where a page's first block stands: a heading
     // drawn there, or the first row where the list leaves that heading
     // out.
-    if let Some(ui::widget::LayoutInfo::List(list)) = node.layout
+    if let Some(tilo_ui_base::widget::LayoutInfo::List(list)) = node.layout
         && list.heads_rows
     {
         // The band the person sees: the heading the list draws over its first run says where it
@@ -873,13 +876,20 @@ fn heading_rooms_in(
 /// it.
 pub fn indented_bodies(
     root: &InspectionNode,
-    theme: &ui::Theme,
+    theme: &tilo_ui_base::Theme,
     min_target: Option<f64>,
 ) -> Vec<Problem> {
     let target = min_target.unwrap_or_else(|| {
-        f64::from(ui::interaction::InteractionEnvironment::POINTER.minimum_target())
+        f64::from(tilo_ui_base::interaction::InteractionEnvironment::POINTER.minimum_target())
     });
-    let lead = target + f64::from(theme.tokens.spacing.rhythm.get(ui::tokens::Rhythm::Related));
+    let lead = target
+        + f64::from(
+            theme
+                .tokens
+                .spacing
+                .rhythm
+                .get(tilo_ui_base::tokens::Rhythm::Related),
+        );
     let rem = f64::from(ui::widget::arrange::rem_of(theme));
     let mut out = Vec::new();
     let above = rect(root.rect);
@@ -890,7 +900,7 @@ pub fn indented_bodies(
 /// Whether a column `width` logical pixels wide, at `rem` pixels to the text size, is a phone's
 /// screen: narrower than the width class a column starts at.
 fn phone_screen(width: f64, rem: f64) -> bool {
-    let (_, column) = ui::widget::WidthClass::Compact.band();
+    let (_, column) = tilo_ui_base::widget::WidthClass::Compact.band();
     width / rem < f64::from(column)
 }
 
@@ -996,7 +1006,7 @@ impl Walk<'_> {
     /// half a sentence, where the pill covers what it stands on and so may take the width its
     /// words need.
     fn clipped_pill(&mut self, node: &InspectionNode, keys: &[String]) {
-        let Some(ui::widget::LayoutInfo::List(list)) = &node.layout else {
+        let Some(tilo_ui_base::widget::LayoutInfo::List(list)) = &node.layout else {
             return;
         };
         let Some(pill) = list.pill else {
@@ -1061,8 +1071,10 @@ impl Walk<'_> {
                 self.target(node, keys, own, min);
             }
         }
-        let placed_content = matches!(node.layout, Some(ui::widget::LayoutInfo::Manual(_)))
-            && scroller.down
+        let placed_content = matches!(
+            node.layout,
+            Some(tilo_ui_base::widget::LayoutInfo::Manual(_))
+        ) && scroller.down
             && scroller.across;
         let (inner_parent, inner_scroller) = if geometric && placed_content {
             (own, scroller)
@@ -1195,7 +1207,7 @@ impl Walk<'_> {
         let Some(access) = node.semantics.as_ref() else {
             return;
         };
-        if access.role != ui::a11y::Role::ListItem {
+        if access.role != tilo_ui_base::a11y::Role::ListItem {
             return;
         }
         let Some(value) = access.value.as_deref() else {
@@ -1820,7 +1832,7 @@ impl Walk<'_> {
             return;
         };
         let pressable = interactive(semantics.role)
-            || (node.focusable && semantics.role == ui::a11y::Role::ListItem);
+            || (node.focusable && semantics.role == tilo_ui_base::a11y::Role::ListItem);
         if pressable && !semantics.state.disabled {
             let hit = semantics
                 .bounds
@@ -1897,7 +1909,8 @@ impl Walk<'_> {
             }
             "NavList" => {
                 for place in &access.children {
-                    let Some(bounds) = place.bounds.map(ui::a11y::AccessBounds::to_rect) else {
+                    let Some(bounds) = place.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect)
+                    else {
                         continue;
                     };
                     if !has_area(bounds.intersect(clip)) {
@@ -1938,7 +1951,7 @@ impl Walk<'_> {
     /// and then a place in the row for the menu's overflow button, and the row never drops the app's primary
     /// action.
     fn header_rows(&mut self, node: &InspectionNode, keys: &[String]) {
-        let Some(ui::widget::LayoutInfo::Shell(shell)) = &node.layout else {
+        let Some(tilo_ui_base::widget::LayoutInfo::Shell(shell)) = &node.layout else {
             return;
         };
         for row in shell.rows.rows.iter().flatten() {
@@ -1949,13 +1962,13 @@ impl Walk<'_> {
     }
 
     /// A sidebar beside a pane narrower than the class its content asks for
-    /// ([`ui::widget::ShellLayout::needs`]): the pane beside it is a phone's screen, where the
+    /// ([`tilo_ui_base::widget::ShellLayout::needs`]): the pane beside it is a phone's screen, where the
     /// sidebar folds behind the bar's toggle and the content takes the window instead.
     fn content_beside_sidebar(&mut self, node: &InspectionNode, keys: &[String]) {
-        let Some(ui::widget::LayoutInfo::Shell(shell)) = &node.layout else {
+        let Some(tilo_ui_base::widget::LayoutInfo::Shell(shell)) = &node.layout else {
             return;
         };
-        if shell.sidebar != ui::widget::SidebarPosition::Docked
+        if shell.sidebar != tilo_ui_base::widget::SidebarPosition::Docked
             || shell.beside >= shell.needs
             || shell.beside_width <= 0.0
         {
@@ -2031,7 +2044,7 @@ impl Walk<'_> {
         let Some(access) = node.semantics.as_ref() else {
             return;
         };
-        let heads_group = |child: &ui::a11y::AccessNode| {
+        let heads_group = |child: &tilo_ui_base::a11y::AccessNode| {
             child
                 .action_target
                 .as_deref()
@@ -2057,7 +2070,9 @@ impl Walk<'_> {
                 .value
                 .as_deref()
                 .and_then(|value| value.trim().parse::<u32>().ok()),
-            heading.bounds.map(ui::a11y::AccessBounds::to_rect),
+            heading
+                .bounds
+                .map(tilo_ui_base::a11y::AccessBounds::to_rect),
         ) else {
             return;
         };
@@ -2068,7 +2083,7 @@ impl Walk<'_> {
             .iter()
             .skip(at.saturating_add(1))
             .take_while(|child| !heads_group(child))
-            .filter(|child| child.role == ui::a11y::Role::ListItem)
+            .filter(|child| child.role == tilo_ui_base::a11y::Role::ListItem)
             .filter(|child| child.state.checked != Some(true))
             .count();
         if left != usize::try_from(count).unwrap_or(0) {

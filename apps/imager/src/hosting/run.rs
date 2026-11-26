@@ -1,7 +1,7 @@
 //! The installer's entry: the helpers its binary also is, its shots, and its live window.
 
+use tilo_ui_base::widget::Widget;
 use ui::launch::LaunchArgs;
-use ui::widget::Widget;
 
 use super::Store;
 
@@ -169,7 +169,7 @@ fn shot(launch: &LaunchArgs, out: &std::path::Path) -> Result<(), String> {
     {
         return Err(format!("unknown --scenario {name}"));
     }
-    ui::clock::freeze_for_capture();
+    tilo_ui_base::clock::freeze_for_capture();
     let store = scenario_store(scenario);
     let root = window(
         Flow::of_scenario(scenario),

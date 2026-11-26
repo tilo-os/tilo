@@ -17,10 +17,10 @@ tilo_test_env::scenario! {
         let mut fixture = ActionFixture::new();
         let sampled = clock.clone();
         fixture.permissions.set(
-            crate::permissions::PermissionContext::granted(
-                &crate::permissions::MemberId::person("fixture-user"),
-                &crate::permissions::TreePath::root(),
-                crate::permissions::policy::KindSet::ALL,
+            tilo_ui_base::permissions::PermissionContext::granted(
+                &tilo_ui_base::permissions::MemberId::person("fixture-user"),
+                &tilo_ui_base::permissions::TreePath::root(),
+                tilo_ui_base::permissions::policy::KindSet::ALL,
                 Some(110),
             )
             .with_policy_time_sampler(Arc::new(move || Ok(sampled.load(Ordering::SeqCst)))),
@@ -68,10 +68,10 @@ tilo_test_env::scenario! {
         let fixture = ActionFixture::scoped(crate::wake::WakeScope::new());
         let (sampled, read) = (clock.clone(), readable.clone());
         fixture.permissions.set(
-            crate::permissions::PermissionContext::granted(
-                &crate::permissions::MemberId::person("fixture-user"),
-                &crate::permissions::TreePath::root(),
-                crate::permissions::policy::KindSet::ALL,
+            tilo_ui_base::permissions::PermissionContext::granted(
+                &tilo_ui_base::permissions::MemberId::person("fixture-user"),
+                &tilo_ui_base::permissions::TreePath::root(),
+                tilo_ui_base::permissions::policy::KindSet::ALL,
                 Some(110),
             )
             .with_policy_time_sampler(Arc::new(move || {
@@ -89,7 +89,7 @@ tilo_test_env::scenario! {
             permissions: _permissions,
         } = fixture;
         let mut tile = crate::app::EmbeddedApp::new(app, |_| {}).unwrap();
-        let theme = crate::theme::Theme::light();
+        let theme = tilo_ui_base::theme::Theme::light();
         let model = automerge::AutoCommit::new();
         let mut taffy = taffy::TaffyTree::new();
         let node = tile.build_layout(&mut taffy, &theme, &mut std::collections::HashMap::new());
@@ -104,7 +104,7 @@ tilo_test_env::scenario! {
             .unwrap();
         tile.apply_layout(&taffy, node, vello::kurbo::Point::ZERO);
         let paint = |tile: &mut crate::app::EmbeddedApp| {
-            tile.draw(&mut crate::draw::DrawCtx::new(&mut vello::Scene::new(), vello::kurbo::Affine::IDENTITY, &mut crate::text_render::TextRenderer::new(), &theme, crate::presence::PresenceCtx::empty().draw_env()));
+            tile.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut vello::Scene::new(), vello::kurbo::Affine::IDENTITY, &mut tilo_ui_base::text_render::TextRenderer::new(), &theme, tilo_ui_base::presence::PresenceCtx::empty().draw_env()));
         };
         let start = crate::time::now();
 
@@ -118,7 +118,7 @@ tilo_test_env::scenario! {
         assert_eq!(tile.next_wake_deadline(), None, "nothing to wake for");
 
         readable.store(true, Ordering::SeqCst);
-        crate::permissions::outside_changed();
+        tilo_ui_base::permissions::outside_changed();
         CONTROL_AUTHORITY.with_borrow_mut(Vec::clear);
         with_monotonic_time(start, || {
             assert!(tile.update(&model, &ROOT), "the announcement wakes the app");

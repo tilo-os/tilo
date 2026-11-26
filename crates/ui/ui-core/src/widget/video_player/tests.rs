@@ -1,13 +1,13 @@
 use super::*;
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use automerge::AutoCommit;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 
-use crate::synthetic_input::cursor_moved;
+use tilo_ui_base::synthetic_input::cursor_moved;
 
-use crate::synthetic_input::mouse_press;
 use crate::testing::dispatch;
+use tilo_ui_base::synthetic_input::mouse_press;
 use winit::keyboard::{Key, NamedKey};
 
 tilo_test_env::scenario! {
@@ -78,7 +78,7 @@ tilo_test_env::scenario! {
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+            vp.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             assert!(!vp.is_playing());
             dispatch(&mut vp, &cursor_moved(320.0, 40.0));
             assert!(dispatch(&mut vp, &mouse_press()), "surface click handled");
@@ -103,7 +103,7 @@ tilo_test_env::scenario! {
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+            vp.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             assert!(vp.scrub_track_rect.width() > 0.0, "scrub track laid out");
             let mid_x = vp.scrub_track_rect.x0 + vp.scrub_track_rect.width() * 0.5;
             let mid_y = vp.scrub_track_rect.center().y;
@@ -127,7 +127,7 @@ tilo_test_env::scenario! {
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+            vp.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             let track = vp.scrub_track_rect;
             assert!(track.width() > 0.0);
             let y = track.center().y;
@@ -181,7 +181,7 @@ tilo_test_env::scenario! {
                 let mut tr = TextRenderer::new();
                 let presence = PresenceCtx::default();
                 let mut scene = Scene::new();
-                vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+                vp.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
                 scene.encoding().draw_tags.len()
             };
             vp.set_sponsor_marks(vec![
@@ -192,7 +192,7 @@ tilo_test_env::scenario! {
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            vp.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+            vp.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             assert!(
                 scene.encoding().draw_tags.len() > baseline,
                 "two sponsor bands add fills to the timeline ({} vs {baseline})",
@@ -218,7 +218,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            use crate::fullscreen::{FullscreenTarget, FullscreenView};
+            use tilo_ui_base::{fullscreen::FullscreenTarget, fullscreen::FullscreenView};
             let mut vp = VideoPlayer::new();
             assert_eq!(FullscreenProvider::fullscreen_intent(&vp), None);
             assert_eq!(
@@ -533,7 +533,7 @@ tilo_test_env::scenario! {
     phase accessibility_exposes_transport_state_and_truthful_controls;
     {
         {
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let mut vp = VideoPlayer::new();
             let node = Widget::accessibility(&vp).expect("player is not presentational");
             assert_eq!(node.role, Role::Group);
@@ -544,7 +544,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            use crate::a11y::{Action, Role};
+            use tilo_ui_base::{a11y::Action, a11y::Role};
             let mut engine = media::MediaEngine::new_synthesized();
             engine.open(media::Source::Remote {
                 url: "https://x/v.mp4".into(),
@@ -572,7 +572,7 @@ tilo_test_env::scenario! {
                 &mut vp,
                 "transport.play-pause",
                 &Action::Activate,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!(vp.is_playing());
@@ -580,7 +580,7 @@ tilo_test_env::scenario! {
                 &mut vp,
                 "audio.volume",
                 &Action::SetValue("25%".into()),
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!((vp.volume() - 0.25).abs() < 1e-6);
@@ -621,7 +621,7 @@ fn draw_once(vp: &mut VideoPlayer) {
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    vp.draw(&mut crate::draw::DrawCtx::new(
+    vp.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
@@ -635,9 +635,9 @@ fn draw_once(vp: &mut VideoPlayer) {
 /// The source copy still reads in English.
 #[test]
 fn a_german_shell_hears_the_transport_in_german() {
-    use crate::i18n::I18nManager;
-    const EN: &str = include_str!("../../../locales/en-US.ftl");
-    const DE: &str = include_str!("../../../locales/de-DE.ftl");
+    use tilo_ui_base::i18n::I18nManager;
+    const EN: &str = include_str!("../../../../ui-base/locales/en-US.ftl");
+    const DE: &str = include_str!("../../../../ui-base/locales/de-DE.ftl");
     I18nManager::install("en-US", "de-DE", &[("en-US", EN), ("de-DE", DE)]).unwrap();
 
     let mut engine = media::MediaEngine::new_synthesized();
@@ -858,7 +858,7 @@ tilo_test_env::scenario! {
 /// the light theme and the dark.
 #[test]
 fn over_media_chrome_is_legible_and_dark_in_every_theme() {
-    use crate::a11y::{contrast_ratio, relative_luminance};
+    use tilo_ui_base::{a11y::contrast_ratio, a11y::relative_luminance};
     for theme in [Theme::dark(), Theme::light()] {
         let letterbox = theme.tokens.colors.media.letterbox;
         assert!(
@@ -866,7 +866,7 @@ fn over_media_chrome_is_legible_and_dark_in_every_theme() {
             "{}: the letterbox turned grey",
             theme.name
         );
-        let panel = crate::chrome::panel_ground(&theme);
+        let panel = tilo_ui_base::chrome::panel_ground(&theme);
         assert!(
             contrast_ratio(theme.on_ground(panel).text_primary, panel) >= 4.5,
             "{}: the controls' ink reads on the media panel",

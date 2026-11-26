@@ -1,9 +1,9 @@
 //! How a widget takes part in closing its window and components: unsaved work, persistence checkpoints,
 //! component close reports and deferred window close.
 
-use crate::widget::capability::{capability, capability_mut};
-use crate::widget::{Widget, WindowCloseAdmission};
 use automerge::AutoCommit;
+use tilo_ui_base::{widget::Widget, widget::WindowCloseAdmission};
+use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
 
 /// A widget owning components, documents or a window-close policy.
 pub trait ComponentLifecycle: Widget {
@@ -251,7 +251,7 @@ pub enum Heard {
     /// What the workspace calls each member, from the app's own read of its
     /// `workspace/members` resource: a window with no connection of its own names the people in
     /// its presence marks by these.
-    Names(Vec<(crate::collaboration::MemberId, String)>),
+    Names(Vec<(tilo_ui_base::collaboration::MemberId, String)>),
 }
 
 /// A presentation whose app runs elsewhere hands over what its app's connection heard of the

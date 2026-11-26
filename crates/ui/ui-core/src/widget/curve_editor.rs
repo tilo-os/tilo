@@ -20,10 +20,10 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::ColorCompat;
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::component::{Event, Value};
-use crate::theme::Theme;
-use crate::widget::{TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use tilo_ui_base::{component::Event, component::Value};
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 /// How close to a point a press grabs it rather than adding another, in units of the box.
 pub const POINT_GRAB: f64 = 0.055;
@@ -382,7 +382,7 @@ impl Widget for CurveEditor {
         let style = Style {
             size: Size {
                 width: taffy::style_helpers::percent(1.0_f32),
-                height: taffy::style_helpers::length(crate::num::f32_of_f64(self.height)),
+                height: taffy::style_helpers::length(tilo_ui_base::num::f32_of_f64(self.height)),
             },
             flex_shrink: 0.0,
             ..Style::default()
@@ -391,7 +391,7 @@ impl Widget for CurveEditor {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
     }
 
     /// Its box is the width it is given and the height it was made with, so it asks layout until
@@ -404,7 +404,7 @@ impl Widget for CurveEditor {
         self.layout_dirty = false;
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -414,7 +414,7 @@ impl Widget for CurveEditor {
         self.paint(scene, transform, theme);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.pointer =
@@ -494,7 +494,7 @@ impl Widget for CurveEditor {
             .points
             .iter()
             .map(|point| {
-                crate::i18n::widget_format(
+                tilo_ui_base::i18n::widget_format(
                     "widget-curve-point",
                     &[
                         ("across", percent(point.x).into()),
@@ -506,9 +506,9 @@ impl Widget for CurveEditor {
         Some(
             AccessNode::new(Role::Slider)
                 .with_name(
-                    self.label
-                        .clone()
-                        .unwrap_or_else(|| crate::i18n::widget_format("widget-curve-name", &[])),
+                    self.label.clone().unwrap_or_else(|| {
+                        tilo_ui_base::i18n::widget_format("widget-curve-name", &[])
+                    }),
                 )
                 .with_description(described.join("; "))
                 .with_state(
@@ -523,14 +523,16 @@ impl Widget for CurveEditor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::component::{Fired, Intent};
     use crate::testing::dispatch;
+    use tilo_ui_base::{component::Fired, component::Intent};
 
-    use crate::synthetic_input::{cursor_moved, mouse_press, mouse_release};
+    use tilo_ui_base::{
+        synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release,
+    };
 
     /// An editor over a 200 × 200 box at the origin, reporting each change to `queue`.
-    fn editor_at(points: &[f64]) -> (CurveEditor, crate::Intents<Fired>) {
-        let queue: crate::Intents<Fired> = crate::Intents::default();
+    fn editor_at(points: &[f64]) -> (CurveEditor, tilo_ui_base::Intents<Fired>) {
+        let queue: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
         let change = Event::View(Intent::new(&queue, "curve", "change"));
         let mut editor = CurveEditor::new(points.to_vec(), change);
         editor.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
@@ -543,7 +545,7 @@ mod tests {
     }
 
     /// The points the last report carried, as pairs.
-    fn reported(queue: &crate::Intents<Fired>) -> Vec<(f64, f64)> {
+    fn reported(queue: &tilo_ui_base::Intents<Fired>) -> Vec<(f64, f64)> {
         let fired = queue.take();
         let Some(Fired {
             value: Some(Value::List(items)),

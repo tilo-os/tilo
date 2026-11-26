@@ -1,8 +1,8 @@
 //! How much a time grid (a calendar's week, a schedule) shows of each item, decided from the width
 //! of one day column and the theme's type, so every app that lays out days in columns follows one
 //! rule.
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum TimelineDensity {

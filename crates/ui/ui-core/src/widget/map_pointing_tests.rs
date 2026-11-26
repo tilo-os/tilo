@@ -5,15 +5,15 @@
 //! press on a place is the place's, never the map's, and a middle drag pans.
 
 use super::*;
-use crate::Theme;
 use crate::app::driver::Driver;
-use crate::component::{Fired, Intent, Value};
+use tilo_ui_base::Theme;
+use tilo_ui_base::{component::Fired, component::Intent, component::Value};
 
 /// The key the map reports its pointing under.
 const CANVAS: &str = "canvas";
 
 /// A map of no places that reports what pointing at it does on `queue`, looking with `camera`.
-fn pointing_map(queue: &crate::Intents<Fired>, camera: MapCamera) -> Map {
+fn pointing_map(queue: &tilo_ui_base::Intents<Fired>, camera: MapCamera) -> Map {
     let mut map = Map::new();
     map.press = Event::View(Intent::new(queue, CANVAS, "press"));
     map.frame = Event::View(Intent::new(queue, CANVAS, "frame"));
@@ -25,8 +25,8 @@ fn pointing_map(queue: &crate::Intents<Fired>, camera: MapCamera) -> Map {
 /// A map laid out over the whole viewport, with its camera as given: the camera is the map's
 /// own, kept across the layout, as a live frame leaves it.
 fn laid_out(mut map: Map) -> Driver {
-    let mut text = crate::font_catalog::fixture_renderer();
-    crate::widget::layout::lay_out_detached(
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+    tilo_ui_base::widget::layout::lay_out_detached(
         &mut map,
         Rect::new(0.0, 0.0, 800.0, 600.0),
         &Theme::dark(),
@@ -37,7 +37,7 @@ fn laid_out(mut map: Map) -> Driver {
 }
 
 /// [`laid_out`] of a map with no places, looking with `camera`.
-fn harness(queue: &crate::Intents<Fired>, camera: MapCamera) -> Driver {
+fn harness(queue: &tilo_ui_base::Intents<Fired>, camera: MapCamera) -> Driver {
     laid_out(pointing_map(queue, camera))
 }
 
@@ -71,7 +71,7 @@ fn canvas_rect(camera: MapCamera, from: Point, to: Point) -> (i64, i64, i64, i64
 }
 
 /// The pointing the queue reported.
-fn reported(queue: &crate::Intents<Fired>) -> Vec<Fired> {
+fn reported(queue: &tilo_ui_base::Intents<Fired>) -> Vec<Fired> {
     queue.take()
 }
 
@@ -95,7 +95,7 @@ fn right_click(host: &mut Driver, at: Point) {
 /// with: the point the person pointed at, whatever the pan and the zoom.
 #[test]
 fn a_click_on_free_space_reports_its_canvas_point() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let camera = shifted();
     let mut host = harness(&queue, camera);
     let at = Point::new(400.0, 300.0);
@@ -117,7 +117,7 @@ fn a_click_on_free_space_reports_its_canvas_point() {
 /// person's pointing apart, so the caret can stand at each.
 #[test]
 fn two_clicks_at_two_points_report_two_canvas_points() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let camera = MapCamera::default();
     let mut host = harness(&queue, camera);
     host.click_at(120.0, 90.0);
@@ -146,7 +146,7 @@ fn two_clicks_at_two_points_report_two_canvas_points() {
 /// click: the person pointed at a frame, and the view lays what answers into it.
 #[test]
 fn a_drag_on_free_space_reports_the_rectangle_it_covered() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let camera = shifted();
     let mut host = harness(&queue, camera);
     let (from, to) = (Point::new(200.0, 180.0), Point::new(560.0, 460.0));
@@ -173,7 +173,7 @@ fn a_drag_on_free_space_reports_the_rectangle_it_covered() {
 /// side: a frame is the space between two corners, whichever way the person drew it.
 #[test]
 fn a_drag_reports_its_frame_whichever_way_it_was_drawn() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let camera = MapCamera::default();
     let mut host = harness(&queue, camera);
     host.drag_at((600.0, 500.0), (300.0, 200.0));
@@ -198,7 +198,7 @@ fn a_drag_reports_its_frame_whichever_way_it_was_drawn() {
 /// press on a place reports that place's key: what the person pointed at.
 #[test]
 fn a_right_press_reports_the_place_under_it_and_the_canvas_point() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let camera = MapCamera::default();
     let mut map = pointing_map(&queue, camera);
     map = map.pin(
@@ -212,7 +212,7 @@ fn a_right_press_reports_the_place_under_it_and_the_canvas_point() {
             hug: false,
             grows: false,
         },
-        Box::new(crate::widget::Spacer::new()),
+        Box::new(tilo_ui_base::widget::Spacer::new()),
     );
     let mut host = laid_out(map);
     // Free space: no place, and the point under the pointer.
@@ -254,22 +254,22 @@ fn a_right_press_reports_the_place_under_it_and_the_canvas_point() {
 /// What a place holds that takes right presses itself — a field's copy and paste, a row's own
 /// menu — stood for by a probe that takes them.
 struct TakesRightPress {
-    inner: crate::widget::Spacer,
+    inner: tilo_ui_base::widget::Spacer,
     took: std::rc::Rc<std::cell::Cell<u32>>,
 }
 
-impl crate::widget::Decorator for TakesRightPress {
-    type Inner = crate::widget::Spacer;
+impl tilo_ui_base::widget::Decorator for TakesRightPress {
+    type Inner = tilo_ui_base::widget::Spacer;
 
-    fn inner(&self) -> &crate::widget::Spacer {
+    fn inner(&self) -> &tilo_ui_base::widget::Spacer {
         &self.inner
     }
 
-    fn inner_mut(&mut self) -> &mut crate::widget::Spacer {
+    fn inner_mut(&mut self) -> &mut tilo_ui_base::widget::Spacer {
         &mut self.inner
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let WindowEvent::MouseInput {
             state: ElementState::Pressed,
             button: MouseButton::Right,
@@ -286,7 +286,7 @@ impl crate::widget::Decorator for TakesRightPress {
 /// keeps its copy and paste — and the map reports nothing; free space is still the map's.
 #[test]
 fn a_right_press_on_content_with_its_own_menu_is_the_contents() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let took = std::rc::Rc::new(std::cell::Cell::new(0));
     let mut map = pointing_map(&queue, MapCamera::default());
     map = map.pin(
@@ -301,7 +301,7 @@ fn a_right_press_on_content_with_its_own_menu_is_the_contents() {
             grows: false,
         },
         Box::new(TakesRightPress {
-            inner: crate::widget::Spacer::new(),
+            inner: tilo_ui_base::widget::Spacer::new(),
             took: std::rc::Rc::clone(&took),
         }),
     );
@@ -325,7 +325,7 @@ fn a_right_press_on_content_with_its_own_menu_is_the_contents() {
 /// frame for a press that landed on a pin.
 #[test]
 fn a_press_on_a_place_is_not_pointing_at_the_canvas() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let mut map = pointing_map(&queue, MapCamera::default());
     map = map.pin(
         "one",
@@ -338,7 +338,7 @@ fn a_press_on_a_place_is_not_pointing_at_the_canvas() {
             hug: false,
             grows: false,
         },
-        Box::new(crate::widget::Spacer::new()),
+        Box::new(tilo_ui_base::widget::Spacer::new()),
     );
     let mut host = laid_out(map);
     // A click in the middle of the place.
@@ -368,7 +368,7 @@ fn a_press_on_a_place_is_not_pointing_at_the_canvas() {
 /// neither reports a click, a frame or a place.
 #[test]
 fn a_middle_press_and_a_wheel_report_nothing() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let mut host = harness(&queue, MapCamera::default());
     let device = winit::event::DeviceId::dummy();
     host.dispatch_to_root(&WindowEvent::CursorMoved {
@@ -390,7 +390,7 @@ fn a_middle_press_and_a_wheel_report_nothing() {
 /// reports the frame it covered rather than scrolling.
 #[test]
 fn a_finger_points_as_the_pointer_does() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let camera = shifted();
     let mut host = harness(&queue, camera);
 
@@ -443,7 +443,7 @@ fn a_finger_points_as_the_pointer_does() {
 /// pointed at.
 #[test]
 fn two_fingers_pan_and_a_pinch_zooms() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let mut host = harness(&queue, MapCamera::default());
     let device = winit::event::DeviceId::dummy();
     host.dispatch_to_root(&WindowEvent::CursorMoved {
@@ -482,8 +482,8 @@ fn two_fingers_pan_and_a_pinch_zooms() {
 fn dragging_a_places_corner_reports_its_new_size() {
     // The place stands where it arrives at once: a place still gliding in is grabbed where it
     // has come to, which a single frame does not settle.
-    let _settled = crate::motion::testing::settled();
-    let queue = crate::Intents::default();
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let queue = tilo_ui_base::Intents::default();
     let camera = MapCamera {
         origin: Point::ORIGIN,
         zoom: 2.0,
@@ -507,7 +507,7 @@ fn dragging_a_places_corner_reports_its_new_size() {
             crate::widget::PlaceProps {
                 name: Some("Inbox".into()),
                 carries: Some("tl:mail:root".into()),
-                body: Some(Box::new(crate::widget::Spacer::fixed(300.0))),
+                body: Some(Box::new(tilo_ui_base::widget::Spacer::fixed(300.0))),
                 ..crate::widget::PlaceProps::default()
             },
         )),
@@ -534,13 +534,13 @@ fn dragging_a_places_corner_reports_its_new_size() {
 /// at the camera's pan and zoom, and a map pointing at none draws no outline.
 #[test]
 fn a_pointed_rectangle_is_outlined_where_it_stands() {
-    let theme = crate::Theme::dark();
+    let theme = tilo_ui_base::Theme::dark();
     let render = |outline: Vec<i64>| -> Vec<u8> {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut map = pointing_map(&queue, MapCamera::default());
         map.outline = outline_of(&outline);
-        let mut text = crate::font_catalog::fixture_renderer();
-        crate::widget::layout::lay_out_detached(
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+        tilo_ui_base::widget::layout::lay_out_detached(
             &mut map,
             Rect::new(0.0, 0.0, 400.0, 300.0),
             &theme,
@@ -550,21 +550,22 @@ fn a_pointed_rectangle_is_outlined_where_it_stands() {
         let mut scene = Scene::new();
         Widget::draw(
             &mut map,
-            &mut crate::draw::DrawCtx::new(
+            &mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text,
                 &theme,
-                crate::presence::PresenceCtx::empty().draw_env(),
+                tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
             ),
         );
-        crate::offscreen::OffscreenRenderer::new(400, 300)
+        tilo_ui_base::offscreen::OffscreenRenderer::new(400, 300)
             .render(&scene, vello::peniko::Color::BLACK)
     };
     let plain = render(Vec::new());
     let outlined = render(vec![100, 80, 120, 90]);
-    let at =
-        |rgba: &[u8], x: u32, y: u32| crate::offscreen::OffscreenRenderer::sample(rgba, 400, x, y);
+    let at = |rgba: &[u8], x: u32, y: u32| {
+        tilo_ui_base::offscreen::OffscreenRenderer::sample(rgba, 400, x, y)
+    };
     assert_ne!(
         at(&outlined, 160, 80),
         at(&plain, 160, 80),
@@ -583,7 +584,7 @@ fn a_pointed_rectangle_is_outlined_where_it_stands() {
 /// closed what the press had opened.
 #[test]
 fn a_press_outside_the_map_reports_nothing() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let mut host = harness(&queue, MapCamera::default());
     let device = winit::event::DeviceId::dummy();
     host.dispatch_to_root(&WindowEvent::CursorMoved {
@@ -611,8 +612,8 @@ fn a_press_outside_the_map_reports_nothing() {
 /// only when its view comes to another height.
 #[test]
 fn a_hugging_pin_reports_the_height_it_is_drawn_at_once() {
-    let _frame = crate::motion::pin_frame();
-    let queue = crate::Intents::default();
+    let _frame = tilo_ui_base::motion::pin_frame();
+    let queue = tilo_ui_base::Intents::default();
     let mut map = pointing_map(&queue, MapCamera::default());
     map.drawn = Event::View(Intent::new(&queue, CANVAS, "drawn"));
     // A pin that hugs its words: as tall as they come to, up to its own height.
@@ -686,11 +687,11 @@ fn drawn_height(reports: &[Fired]) -> i64 {
 
 /// Lay `map` out at the pointing tests' viewport: what a change inside a pin lays out again.
 fn lay_out(map: &mut Map) {
-    let mut text = crate::font_catalog::fixture_renderer();
-    crate::widget::layout::lay_out_detached(
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+    tilo_ui_base::widget::layout::lay_out_detached(
         map,
         Rect::new(0.0, 0.0, 800.0, 600.0),
-        &crate::Theme::dark(),
+        &tilo_ui_base::Theme::dark(),
         &mut text,
     )
     .expect("the map lays out");
@@ -701,7 +702,7 @@ fn lay_out(map: &mut Map) {
 /// is no move of the person's, and reports nothing.
 #[test]
 fn the_camera_reports_where_the_person_left_it_when_it_comes_to_rest() {
-    let queue: crate::Intents<Fired> = crate::Intents::default();
+    let queue: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
     let mut map = Map::new();
     map.rest = Event::View(Intent::new(&queue, CANVAS, "rest"));
     // The view opens the map on Munich.
@@ -767,7 +768,7 @@ fn the_camera_reports_where_the_person_left_it_when_it_comes_to_rest() {
 
 /// A map of the world laid out for the person, looking with `camera`, reporting the place a
 /// click lands on.
-fn world_harness(queue: &crate::Intents<Fired>, camera: MapCamera) -> Driver {
+fn world_harness(queue: &tilo_ui_base::Intents<Fired>, camera: MapCamera) -> Driver {
     let mut map = pointing_map(queue, camera);
     map.world = true;
     map.at = Event::View(Intent::new(queue, CANVAS, "at"));
@@ -786,7 +787,7 @@ fn map_camera(host: &mut Driver) -> MapCamera {
 /// pointer where it is: a map is read by zooming, not scrolled.
 #[test]
 fn a_wheel_over_a_map_of_the_world_zooms_about_the_pointer() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let camera = MapCamera {
         origin: Point::new(100.0, 50.0),
         zoom: 0.02,
@@ -821,7 +822,7 @@ fn a_wheel_over_a_map_of_the_world_zooms_about_the_pointer() {
 /// rectangle the person pointed with.
 #[test]
 fn dragging_a_map_of_the_world_pans_it() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let camera = MapCamera {
         origin: Point::new(20.0, 30.0),
         zoom: 0.05,
@@ -869,7 +870,7 @@ fn dragging_a_map_of_the_world_pans_it() {
 /// so the view can open what stands there.
 #[test]
 fn a_click_on_a_map_of_the_world_reports_the_place_under_it() {
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let zoom = 0.05;
     let centre = mercator_project(48.1374, 11.5755);
     let origin = centre - Vec2::new(400.0, 300.0) / zoom;

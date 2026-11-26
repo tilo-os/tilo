@@ -159,7 +159,7 @@ fn the_repl_works_as_the_person(session: &mut Session, repl: &mut Api, note: &st
 /// The person's REPL at the session's API works as them, and nobody is asked about it.
 #[test]
 fn the_persons_repl_at_the_api_works_as_them() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let (mut session, note) = session(root.path());
     until(&mut session, "the bar's controls", |session| {
@@ -183,7 +183,7 @@ fn the_persons_repl_at_the_api_works_as_them() {
 /// image's store holds no shell, and the program is refused as an unknown name.
 #[test]
 fn a_program_names_the_shell_package_the_session_runs_with_none_installed() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // An app store that holds no shell: what an image's own store holds, where the session's
     // copy stands in for the package a person's device installs.
     let store = tempfile::tempdir().expect("a store of the test's own");
@@ -218,7 +218,7 @@ fn a_program_names_the_shell_package_the_session_runs_with_none_installed() {
 #[test]
 fn a_daemon_only_sessions_repl_runs_a_program() {
     use crate::common::dev_apps;
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // A computer that installed this tree's apps and the runtimes they run on, with the launcher
     // its daemon starts every tilolang process through.
     let mut home = crate::common::device_home();
@@ -264,7 +264,7 @@ fn a_daemon_only_sessions_repl_runs_a_program() {
 /// session keeps answering, the program session that asked and a new one alike.
 #[test]
 fn placing_what_text_finds_twice_keeps_the_session_answering() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let (mut session, note) = session(root.path());
     until(&mut session, "the bar's controls", |session| {
@@ -296,7 +296,7 @@ fn placing_what_text_finds_twice_keeps_the_session_answering() {
 /// by its title.
 #[test]
 fn a_record_the_sessions_services_publish_is_found_through_the_server() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
@@ -406,7 +406,7 @@ fn everything(session: &Session) -> Vec<tilo_actions::ResourceSpec> {
 /// German word for what it holds.
 #[test]
 fn a_seeded_apps_catalogue_gives_a_german_session_its_words() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a home");
     home.env()
         .set("LC_ALL", "de_DE.UTF-8")
@@ -512,7 +512,7 @@ fn noted(session: &Session) -> usize {
 /// outside action, which no history holds) stays, and `undo` goes on to the step before it.
 #[test]
 fn showing_the_overview_is_no_step_and_a_refused_undo_holds_no_other_step() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let (mut session, note) = session(root.path());
     until(&mut session, "the bar's controls", |session| {
@@ -585,7 +585,7 @@ fn showing_the_overview_is_no_step_and_a_refused_undo_holds_no_other_step() {
 /// finds the resource it names even where many actions name it too: "Inbox" places the inbox.
 #[test]
 fn a_placed_record_is_drawn_through_its_own_apps_view() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = kept_seeded(root.path());
     show_preset(&mut session, "so.tilo.shell:frames");
@@ -644,7 +644,7 @@ fn a_placed_record_is_drawn_through_its_own_apps_view() {
 /// "my" names nothing.
 #[test]
 fn my_mails_on_the_canvas_places_mails_root() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
@@ -741,7 +741,7 @@ fn inked(shot: &image::RgbaImage, (x, y, w, h): (f64, f64, f64, f64)) -> usize {
 /// nothing a step reads was changed by a step before it.
 #[test]
 fn the_seeded_inbox_placed_through_the_server_fills_in_settles_is_drawn_and_rereads_one_thread() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The bar draws the time, and a minute turning over is a change, not idle work: the test holds
     // the clock at the minute it runs in, as a capture does, so what it watches at rest is the
     // shell and nothing else. Held from before the session starts, as the idle watch needs it.
@@ -800,7 +800,7 @@ fn the_inbox_is_drawn_as_mails_inbox(session: &mut Session, root: &std::path::Pa
 /// inbox's place unloads mail's package.
 #[test]
 fn an_app_no_place_shows_is_unloaded() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     place_the_inbox(&mut session, root.path());
@@ -894,7 +894,7 @@ fn this_minute() -> ui::time::SystemTime {
     ui::time::wall()
         .checked_sub(Duration::from_secs(
             u64::try_from(
-                ui::clock::local_now()
+                tilo_ui_base::clock::local_now()
                     .timestamp()
                     .as_second()
                     .rem_euclid(60),
@@ -1034,7 +1034,7 @@ impl tilo_service::Service for Withholding {
 /// screen's view.
 #[test]
 fn a_place_whose_reading_never_arrives_leaves_the_rest_of_the_screen_working() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
@@ -1107,7 +1107,7 @@ fn then_the_overview_opens_and_closes(session: &mut Session, repl: &mut Api) {
 /// places — never a second ranking that knows a note's title but not Mail's inbox.
 #[test]
 fn the_repl_finds_what_place_found_places() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let apps = crate::common::seeded_apps();
     let mut session = crate::common::headless(Options {
@@ -1188,7 +1188,7 @@ fn the_repl_finds_what_place_found_places() {
 /// and its record's root (`notes.notebook`), which those actions are called on.
 #[test]
 fn an_installed_apps_actions_and_root_are_named_as_it_declares_them() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     crate::common::app_store();
     let root = private_home();
     let mut session = crate::common::headless(Options {

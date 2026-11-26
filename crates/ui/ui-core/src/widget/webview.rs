@@ -1,8 +1,8 @@
 //! `WebView` — a leaf widget that displays the live output of a [`tilo_webview::WebViewEngine`]
 //! and forwards pointer, scroll and keyboard input into it.
-use crate::num::f32_of_f64;
-use crate::widget::{AppModel, ModelPath};
 use std::sync::Arc;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use taffy::{NodeId, TaffyTree};
 use vello::Scene;
@@ -11,12 +11,12 @@ use vello::peniko::{Blob, Fill, ImageData as PenikoImage};
 use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key as WKey, NamedKey as WNamedKey};
 
-use crate::gesture::NavDirection;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
 use crate::widget::control_size::ControlSize;
+use tilo_ui_base::gesture::NavDirection;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 use tilo_webview::{
     KeyInput, KeyModifiers, MouseButton, NamedKey, SharedEngine, WebViewCommand, WebViewEvent,
 };
@@ -113,11 +113,11 @@ pub struct WebView {
     accessible_name: String,
     /// What this view reports the page's navigation and failure through, when its window holds
     /// the engine (`crate::webview::window_engine`).
-    navigate: crate::component::Event,
-    fail: crate::component::Event,
+    navigate: tilo_ui_base::component::Event,
+    fail: tilo_ui_base::component::Event,
     /// What this view reports the shell returning its floated picture through: the person closed
     /// the picture's window, or the shell handed it back, and the app stops asking for it.
-    pip_closed: crate::component::Event,
+    pip_closed: tilo_ui_base::component::Event,
     /// Whether this view is the one that reads the engine's events: a window's page, not an
     /// app's view whose own code polls the engine it passed in.
     reports_events: bool,
@@ -236,9 +236,9 @@ impl WebView {
             painted_seq: 0,
             test_id: "webview".to_string(),
             accessible_name: "Web content".to_string(),
-            navigate: crate::component::Event::None,
-            fail: crate::component::Event::None,
-            pip_closed: crate::component::Event::None,
+            navigate: tilo_ui_base::component::Event::None,
+            fail: tilo_ui_base::component::Event::None,
+            pip_closed: tilo_ui_base::component::Event::None,
             reports_events: false,
             surface: crate::webview::Surface::Page,
             session: None,
@@ -301,7 +301,7 @@ impl WebView {
 
     /// What the person's request floats: the page's video where it stands in this view, the
     /// picture's shape and what it is called. `None` while the page reports no video.
-    fn float_picture(&self) -> Option<crate::widget::PictureInPictureAsk> {
+    fn float_picture(&self) -> Option<tilo_ui_base::widget::PictureInPictureAsk> {
         let media = self.page_video()?;
         let area = self.pip_area(&media)?;
         let [intrinsic_width, intrinsic_height] = media.intrinsic_size;
@@ -317,7 +317,7 @@ impl WebView {
         } else {
             media.label
         };
-        Some(crate::widget::PictureInPictureAsk {
+        Some(tilo_ui_base::widget::PictureInPictureAsk {
             region: area,
             aspect,
             title,
@@ -368,8 +368,8 @@ impl WebView {
     #[must_use]
     pub fn keeping_events(
         mut self,
-        navigate: crate::component::Event,
-        fail: crate::component::Event,
+        navigate: tilo_ui_base::component::Event,
+        fail: tilo_ui_base::component::Event,
     ) -> Self {
         self.navigate = navigate;
         self.fail = fail;
@@ -387,8 +387,8 @@ impl WebView {
     /// The events the host attaches to the view now.
     pub fn update_events(
         &mut self,
-        navigate: crate::component::Event,
-        fail: crate::component::Event,
+        navigate: tilo_ui_base::component::Event,
+        fail: tilo_ui_base::component::Event,
     ) {
         self.navigate = navigate;
         self.fail = fail;
@@ -396,7 +396,7 @@ impl WebView {
 
     /// Report the shell returning this view's floated picture through `closed`: the person closed
     /// the picture's window, and the app stops asking for one.
-    pub fn set_pip_closed(&mut self, closed: crate::component::Event) {
+    pub fn set_pip_closed(&mut self, closed: tilo_ui_base::component::Event) {
         self.pip_closed = closed;
     }
 
@@ -406,8 +406,8 @@ impl WebView {
     #[must_use]
     pub fn reporting(
         mut self,
-        navigate: crate::component::Event,
-        fail: crate::component::Event,
+        navigate: tilo_ui_base::component::Event,
+        fail: tilo_ui_base::component::Event,
     ) -> Self {
         self.navigate = navigate;
         self.fail = fail;
@@ -420,8 +420,9 @@ impl WebView {
         if !self.reports_events {
             return;
         }
-        let fire = |event: &crate::component::Event, value: crate::component::Value| {
-            if let crate::component::Event::View(intent) = event {
+        let fire = |event: &tilo_ui_base::component::Event,
+                    value: tilo_ui_base::component::Value| {
+            if let tilo_ui_base::component::Event::View(intent) = event {
                 intent.fire(Some(value));
             }
         };
@@ -440,10 +441,10 @@ impl WebView {
         for event in events {
             match event {
                 WebViewEvent::LoadFinishedAt { uri } | WebViewEvent::UriChanged(uri) => {
-                    fire(&self.navigate, crate::component::Value::Text(uri));
+                    fire(&self.navigate, tilo_ui_base::component::Value::Text(uri));
                 }
                 WebViewEvent::LoadFailed { error, .. } => {
-                    fire(&self.fail, crate::component::Value::Text(error));
+                    fire(&self.fail, tilo_ui_base::component::Value::Text(error));
                 }
                 _ => {}
             }
@@ -563,7 +564,7 @@ impl WebView {
 
     pub fn lands_at(&mut self, transform: Affine) {
         if !self.host_scaled {
-            let coefficients = crate::scroll_copy::on_screen(transform).as_coeffs();
+            let coefficients = tilo_ui_base::scroll_copy::on_screen(transform).as_coeffs();
             self.rescale(f32_of_f64(coefficients[0].hypot(coefficients[1])));
         }
     }
@@ -915,8 +916,8 @@ impl WebView {
     }
 }
 
-impl crate::widget::NativeViewLifecycle for WebView {
-    fn mount_native_view(&mut self, host: &crate::widget::NativeViewHost<'_>) {
+impl tilo_ui_base::widget::NativeViewLifecycle for WebView {
+    fn mount_native_view(&mut self, host: &tilo_ui_base::widget::NativeViewHost<'_>) {
         let first_mount = !self.native_mounted;
         self.native_mounted = true;
         let host_scale = f32_of_f64(host.scale_factor());
@@ -950,22 +951,22 @@ impl crate::widget::NativeViewLifecycle for WebView {
     fn native_view_frame_start(&mut self) {}
 }
 
-impl crate::widget::undo_access::LocalUndo for WebView {
+impl tilo_ui_base::widget::undo_access::LocalUndo for WebView {
     fn local_undo_is_deferred(&self) -> bool {
         true
     }
-    fn local_undo_status(&self) -> Option<crate::widget::undo_access::LocalUndoStatus> {
+    fn local_undo_status(&self) -> Option<tilo_ui_base::widget::undo_access::LocalUndoStatus> {
         (self.focused && self.engine.supports_guarded_edit_history()).then(|| {
             self.text_input.history_status().map_or(
-                crate::widget::undo_access::LocalUndoStatus::Pending,
-                crate::widget::undo_access::LocalUndoStatus::Ready,
+                tilo_ui_base::widget::undo_access::LocalUndoStatus::Pending,
+                tilo_ui_base::widget::undo_access::LocalUndoStatus::Ready,
             )
         })
     }
 
     fn handle_local_undo_request(
         &mut self,
-        request: crate::widget::undo_access::UndoRequest,
+        request: tilo_ui_base::widget::undo_access::UndoRequest,
     ) -> bool {
         if self.focused
             && self.engine.supports_guarded_edit_history()
@@ -985,12 +986,12 @@ impl crate::widget::undo_access::LocalUndo for WebView {
 /// its window the picture where the page draws it, so the surface mirrors the live video, and
 /// takes the person's request once. A page that reports no video yet keeps the request until
 /// the engine says what it shows.
-impl crate::widget::PictureInPictureProvider for WebView {
+impl tilo_ui_base::widget::PictureInPictureProvider for WebView {
     fn wants_picture_in_picture(&self) -> bool {
         self.pip
     }
 
-    fn take_picture_in_picture(&self) -> Option<crate::widget::PictureInPictureAsk> {
+    fn take_picture_in_picture(&self) -> Option<tilo_ui_base::widget::PictureInPictureAsk> {
         if !self.pip {
             return None;
         }
@@ -1033,7 +1034,7 @@ impl crate::widget::PictureInPictureProvider for WebView {
         &mut self,
         source: Rect,
         target: Rect,
-        ctx: &mut crate::draw::DrawCtx<'_>,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
     ) -> bool {
         #[allow(unused_variables, reason = "a draw binds only the parts it uses")]
         let (scene, transform, _text, _theme, _env) = ctx.parts();
@@ -1074,13 +1075,13 @@ impl crate::widget::PictureInPictureProvider for WebView {
 }
 
 impl Widget for WebView {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(
-        dyn crate::widget::NativeViewLifecycle,
-        dyn crate::widget::undo_access::LocalUndo,
-        dyn crate::widget::ResourceOperations,
-        dyn crate::widget::PictureInPictureProvider
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::NativeViewLifecycle,
+        dyn tilo_ui_base::widget::undo_access::LocalUndo,
+        dyn tilo_ui_base::widget::ResourceOperations,
+        dyn tilo_ui_base::widget::PictureInPictureProvider
     );
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
@@ -1096,22 +1097,22 @@ impl Widget for WebView {
         );
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         if let Some(field) = self.page_field() {
             // A password never reaches the input method: its keys go to
             // the page as they are, as in a native password field.
-            return (field.purpose != crate::ime::InputPurpose::Password).then(|| {
-                crate::ime::InputContent {
+            return (field.purpose != tilo_ui_base::ime::InputPurpose::Password).then(|| {
+                tilo_ui_base::ime::InputContent {
                     purpose: field.purpose,
-                    hints: crate::ime::InputHints {
+                    hints: tilo_ui_base::ime::InputHints {
                         multiline: field.multiline,
-                        ..crate::ime::InputHints::default()
+                        ..tilo_ui_base::ime::InputHints::default()
                     },
                 }
             });
         }
         self.deferred_ready()
-            .then_some(crate::ime::InputContent::TEXT)
+            .then_some(tilo_ui_base::ime::InputContent::TEXT)
     }
 
     fn ime_multiline(&self) -> bool {
@@ -1200,7 +1201,11 @@ impl Widget for WebView {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.field_line_height = Some(ControlSize::Regular.height(theme));
-        taffy.widget_leaf(crate::widget::layout::natural_filling(), node_map, self)
+        taffy.widget_leaf(
+            tilo_ui_base::widget::layout::natural_filling(),
+            node_map,
+            self,
+        )
     }
 
     /// Where nothing gives it a height (a column that grows with what it holds), the page stands
@@ -1211,11 +1216,11 @@ impl Widget for WebView {
         available: taffy::Size<taffy::AvailableSpace>,
         _text_renderer: &mut TextRenderer,
     ) -> taffy::Size<f32> {
-        crate::widget::layout::natural_shape(known, available, 16.0 / 10.0)
+        tilo_ui_base::widget::layout::natural_shape(known, available, 16.0 / 10.0)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.send_resize_if_needed();
     }
 
@@ -1224,7 +1229,7 @@ impl Widget for WebView {
         self.rect == Rect::ZERO
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1251,7 +1256,7 @@ impl Widget for WebView {
         self.submitted.clone_from(&self.drawing);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let WindowEvent::Ime(ime) = event {
             if self.focused && self.engine.supports_composition() {
                 self.input_method(ime);
@@ -1401,7 +1406,7 @@ impl Widget for WebView {
                 tilo_webview::profile::record_input("scroll");
                 self.engine.send(WebViewCommand::Scroll { dx, dy, x, y });
                 *ctx.handled = true;
-                crate::widget::note_view_only_pan();
+                tilo_ui_base::widget::note_view_only_pan();
             }
             WindowEvent::KeyboardInput {
                 event: key_event, ..
@@ -1456,12 +1461,12 @@ impl Widget for WebView {
         self.rect
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Document)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Document)
                 .with_name(self.accessible_name.clone())
                 .with_state(
-                    crate::a11y::AccessState::new()
+                    tilo_ui_base::a11y::AccessState::new()
                         .focusable(true)
                         .focused(self.focused),
                 ),
@@ -1515,19 +1520,19 @@ impl Widget for WebView {
     }
 }
 
-impl crate::widget::ResourceOperations for WebView {
+impl tilo_ui_base::widget::ResourceOperations for WebView {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
-        &[crate::widget::undo_access::EDIT_OPERATION]
+        &[tilo_ui_base::widget::undo_access::EDIT_OPERATION]
     }
 
     fn start_operation(
         &mut self,
-        operation: &crate::widget::ResourceOperation<'_>,
-        _: &mut crate::widget::Edits<'_>,
+        operation: &tilo_ui_base::widget::ResourceOperation<'_>,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         let request = operation.request();
-        if request.type_id != crate::widget::undo_access::EDIT_OPERATION {
+        if request.type_id != tilo_ui_base::widget::undo_access::EDIT_OPERATION {
             return Ok(None);
         }
         if !self.focused || !self.engine.supports_guarded_edit_history() {
@@ -1535,12 +1540,12 @@ impl crate::widget::ResourceOperations for WebView {
         }
         if let Some((invocation, _)) = &self.history_operation {
             return if *invocation == request.invocation {
-                Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+                Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Accepted))
             } else {
                 Err("An original-field history request is already pending".into())
             };
         }
-        let direction: crate::widget::undo_access::UndoRequest =
+        let direction: tilo_ui_base::widget::undo_access::UndoRequest =
             serde_json::from_slice(request.payload).map_err(|_| "Invalid native Edit request")?;
         if !self
             .text_input
@@ -1554,7 +1559,7 @@ impl crate::widget::ResourceOperations for WebView {
             .history(direction)
             .ok_or("The original field's history reservation retired")?;
         self.history_operation = Some((request.invocation, receipt));
-        Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+        Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Accepted))
     }
 
     fn poll_resource_operation(
@@ -1582,7 +1587,7 @@ impl crate::widget::ResourceOperations for WebView {
                 invocation,
                 error: tilo_actions::ActionFailure {
                     code: "native_history_unconfirmed".into(),
-                    message: crate::i18n::I18nManager::lookup_plain(
+                    message: tilo_ui_base::i18n::I18nManager::lookup_plain(
                         "host-native-history-unconfirmed",
                     ),
                     details: None,
@@ -1596,10 +1601,10 @@ impl crate::widget::ResourceOperations for WebView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
     use crate::testing::Dispatch;
     use automerge::AutoCommit;
     use std::sync::Arc;
+    use tilo_ui_base::presence::PresenceCtx;
     use tilo_webview::WebViewEngine; // send()/commands() on the concrete TestEngine
     use tilo_webview::test_engine::TestEngine;
     use winit::event::{ElementState, WindowEvent};
@@ -1670,14 +1675,14 @@ mod tests {
                 });
                 let (mut page, tree, node) = laid_out(engine.clone());
                 page.focused = true;
-                let edit = crate::host_chrome::edit::edit_resource(&crate::widget::undo_access::UndoStatus {
+                let edit = crate::host_chrome::edit::edit_resource(&tilo_ui_base::widget::undo_access::UndoStatus {
                     can_undo: true,
                     ..Default::default()
                 });
                 let violations = tilo_actions::validate_surface(
                     &[edit],
                     &tilo_actions::ActionRegistry::new(),
-                    &crate::widget::resource_operation_handlers(&page),
+                    &tilo_ui_base::widget::resource_operation_handlers(&page),
                 );
                 assert!(
                     violations.is_empty(),
@@ -1687,25 +1692,25 @@ mod tests {
                 page.sync(&doc, &automerge::ROOT);
                 page.sync(&doc, &automerge::ROOT);
                 let invocation = tilo_actions::InvocationId::new();
-                let payload = serde_json::to_vec(&crate::widget::undo_access::UndoRequest::Undo).unwrap();
-                let operation = crate::widget::ResourceOperation::local(
+                let payload = serde_json::to_vec(&tilo_ui_base::widget::undo_access::UndoRequest::Undo).unwrap();
+                let operation = tilo_ui_base::widget::ResourceOperation::local(
                     invocation,
                     tilo_actions::OperationKind::Effect,
                     crate::host_chrome::edit::EDIT_OPERATION,
                     &payload,
                 );
                 assert_eq!(
-                    crate::widget::start_operation(
+                    tilo_ui_base::widget::start_operation(
                         &mut page,
                         &operation,
-                        &mut crate::widget::Edits::lend(&mut doc),
+                        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                         &automerge::ROOT
                     )
                     .unwrap(),
-                    Some(crate::widget::ResourceOperationStart::Accepted)
+                    Some(tilo_ui_base::widget::ResourceOperationStart::Accepted)
                 );
                 assert!(
-                    crate::widget::poll_resource_operation(
+                    tilo_ui_base::widget::poll_resource_operation(
                         &mut page,
                         invocation,
                         false,
@@ -1723,7 +1728,7 @@ mod tests {
                         &mut page,
                         &tree,
                         node,
-                        &crate::synthetic_input::key_input(
+                        &tilo_ui_base::synthetic_input::key_input(
                             &winit::keyboard::Key::Character("z".into()),
                             edge,
                         ),
@@ -1744,7 +1749,7 @@ mod tests {
                 } else {
                     assert_eq!(edits.len(), 1);
                     assert!(
-                        crate::widget::poll_resource_operation(
+                        tilo_ui_base::widget::poll_resource_operation(
                             &mut page,
                             invocation,
                             false,
@@ -1757,7 +1762,7 @@ mod tests {
                 }
                 drop(edits);
                 page.sync(&doc, &automerge::ROOT);
-                let terminal = crate::widget::poll_resource_operation(
+                let terminal = tilo_ui_base::widget::poll_resource_operation(
                     &mut page,
                     invocation,
                     false,
@@ -1770,7 +1775,7 @@ mod tests {
                     !retired && acknowledged
                 );
                 assert!(
-                    crate::widget::poll_resource_operation(
+                    tilo_ui_base::widget::poll_resource_operation(
                         &mut page,
                         invocation,
                         false,
@@ -1785,7 +1790,7 @@ mod tests {
 
         phase system_undo_delegates_only_to_focused_native_page;
         {
-            use crate::widget::undo_access::{UndoRequest, handle_local_undo_request};
+            use tilo_ui_base::{widget::undo_access::UndoRequest, widget::undo_access::handle_local_undo_request};
             let engine = Arc::new(NativeHistory {
                 inner: TestEngine::new(),
                 requests: Default::default(),
@@ -1815,7 +1820,7 @@ mod tests {
 
     struct NativeHistory {
         inner: tilo_webview::SharedEngine,
-        requests: std::sync::Mutex<Vec<crate::widget::undo_access::UndoRequest>>,
+        requests: std::sync::Mutex<Vec<tilo_ui_base::widget::undo_access::UndoRequest>>,
         modifiers: std::sync::Mutex<Vec<KeyModifiers>>,
         pointer_modifiers: std::sync::Mutex<Vec<KeyModifiers>>,
     }
@@ -1845,7 +1850,10 @@ mod tests {
         fn wrapped(&self) -> Option<&tilo_webview::SharedEngine> {
             Some(&self.inner)
         }
-        fn handle_undo_request(&self, request: crate::widget::undo_access::UndoRequest) -> bool {
+        fn handle_undo_request(
+            &self,
+            request: tilo_ui_base::widget::undo_access::UndoRequest,
+        ) -> bool {
             self.requests
                 .lock()
                 .expect("native history fixture")
@@ -2148,7 +2156,7 @@ mod tests {
             }
 
             {
-                use crate::gesture::NavDirection;
+                use tilo_ui_base::gesture::NavDirection;
                 let engine = TestEngine::new();
                 let mut w = WebView::new(engine.clone());
                 let state = AutoCommit::new();
@@ -2242,7 +2250,7 @@ mod tests {
 
     fn draw_at(view: &mut WebView, transform: Affine) -> Scene {
         let mut scene = Scene::new();
-        view.draw(&mut crate::draw::DrawCtx::new(
+        view.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             transform,
             &mut TextRenderer::new(),

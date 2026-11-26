@@ -196,7 +196,7 @@ fn no_app_hands_the_session_a_string() {
 /// rather than at the next input.
 #[test]
 fn the_centre_draws_nothing_at_rest_and_a_press_in_it_hands_the_session_its_notice_action() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut part, link) =
         part_with(super::tests_support::Staged::from(reading()).showing("centre"));
     publish_notices(
@@ -290,7 +290,7 @@ fn a_press_on_the_bar_hands_its_effect_to_the_session() {
 /// the quick settings.
 #[test]
 fn the_bars_status_reads_the_devices_published_resources() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut part, link) = part();
     link.publish_reading(
         "sound",
@@ -353,7 +353,7 @@ fn the_bars_status_reads_the_devices_published_resources() {
 /// button opens the session's roster.
 #[test]
 fn the_bars_faces_are_who_is_here_and_the_button_opens_the_roster() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut part, link) = part_with(LayoutReading {
         people: vec![
             LayoutPersonReading {
@@ -561,7 +561,7 @@ fn choosing_a_workspace_in_the_menu_asks_the_session_to_switch() {
 /// chrome, and the app's place on the shell comes to the front.
 #[test]
 fn a_press_on_a_dock_app_asks_the_session_to_open_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut part, link) = part();
     let host = part.instance.host().expect("the shell runs");
     let app = part.instance.app().to_owned();
@@ -704,7 +704,7 @@ fn a_field_put_in_focus_takes_the_keys_and_a_press_elsewhere_hands_them_back() {
     // The compositor routes a key to the topmost surface that wants the keyboard. A part that
     // never says it wants it never hears a key, however the field is focused: the canvas's
     // caret (and every field the shell draws) stays empty.
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut part, _link) = part();
     for _ in 0..6 {
         part.prepare_frame();
@@ -950,7 +950,7 @@ fn the_screen_shows_the_layout_and_a_canvas_pan_carries_each_windows_well() {
 /// up over every window rather than underneath the window it is showing.
 #[test]
 fn a_surface_of_the_shells_stands_over_the_windows() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut part, link) = super::tests_support::part_as(reading(), None);
     for _ in 0..4 {
         part.prepare_frame();
@@ -1034,7 +1034,7 @@ fn overview_with(strips: &[&str]) -> super::tests_support::Staged {
 /// (two strips), which is drawn later and so asked first. Either way the press is the menu's.
 #[test]
 fn a_press_on_a_window_menus_item_runs_it_wherever_the_menu_hangs() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let packages = compiled();
     for strips in [&["Main"][..], &["Main", "Research"][..]] {
         let (mut part, link) = part_of(&packages, overview_with(strips), (1280, 800));
@@ -1090,7 +1090,7 @@ fn click_pressed(part: &mut ShellPart, name: &str, serial: u32) {
 /// theirs runs as none, and the press of the first choice is not the second's.
 #[test]
 fn a_window_menu_item_the_person_pressed_runs_its_call_as_their_press() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let packages = compiled();
     let (mut part, link) = part_of(&packages, overview_with(&["Main"]), (1280, 800));
     for _ in 0..6 {
@@ -1137,7 +1137,7 @@ fn a_window_menu_item_the_person_pressed_runs_its_call_as_their_press() {
 /// named as the layout publishes it.
 #[test]
 fn moving_a_window_to_another_row_moves_its_place_there() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut part, link) = part_with(overview_with(&["Main", "Research"]));
     for _ in 0..6 {
         part.prepare_frame();
@@ -1175,7 +1175,7 @@ fn moving_a_window_to_another_row_moves_its_place_there() {
 
 #[test]
 fn a_workspace_named_in_the_workspaces_surface_is_made_with_its_name() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut part, link) =
         part_with(super::tests_support::Staged::from(reading()).showing("workspaces"));
     for _ in 0..6 {
@@ -1209,7 +1209,7 @@ fn a_workspace_named_in_the_workspaces_surface_is_made_with_its_name() {
 fn every_letter_typed_into_the_launcher_reaches_its_search() {
     // Once something is typed, the launcher's footer and body change; the panel keeps its
     // header's field through that, so the next letter lands in the same field.
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut part, link) =
         part_with(super::tests_support::Staged::from(reading()).showing("launcher"));
     for _ in 0..6 {
@@ -1399,7 +1399,7 @@ fn the_room_a_widget_rests_in_is_what_the_bar_and_dock_left() {
 /// the person's first press to hear how much space it has.
 #[test]
 fn a_wide_bar_shows_the_strip_and_the_person_with_nothing_touched() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut part, _link) = part();
     for _ in 0..8 {
         part.prepare_frame();
@@ -1419,7 +1419,7 @@ fn a_wide_bar_shows_the_strip_and_the_person_with_nothing_touched() {
 /// display, and a pointer's press on it opens their own card.
 #[test]
 fn the_persons_face_is_pressed_by_the_pointer_on_a_narrow_bar() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let packages = compiled();
     for width in [360, 480, 640, 1280] {
         let (mut part, link) = part_of(&packages, reading(), (width, 800));
@@ -1455,7 +1455,7 @@ fn the_persons_face_is_pressed_by_the_pointer_on_a_narrow_bar() {
 /// pictured — whose card shows its app's mark instead.
 #[test]
 fn the_switcher_pictures_each_window_above_its_own_title() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut part, link) = part_with(super::tests_support::reading_with_windows());
     let previews = ui::widget::Previews::new();
     // What the compositor holds for each window the reading names: every one but "12", whose
@@ -1528,7 +1528,7 @@ const HERE: [&str; 4] = ["Mia Clayton", "Sam Okafor", "Jo Park", "Ada Byron"];
 /// one, four and one again, the bar names those people and no others.
 #[test]
 fn the_bars_people_stay_who_is_here_across_a_commit() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut part, link) = part_with(reading());
     let mut now = reading();
     for count in [0_usize, 1, 4, 1] {
@@ -1583,7 +1583,7 @@ fn the_bars_people_stay_who_is_here_across_a_commit() {
 /// high shows no window at all.
 #[test]
 fn the_overview_pictures_every_window_of_a_strip_at_its_share() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let windows: serde_json::Value = [(7, 0.5, "wide"), (8, 0.25, "narrow")]
         .into_iter()
         .enumerate()

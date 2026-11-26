@@ -5,10 +5,14 @@ use std::collections::HashMap;
 use tilo_rich_edit::BlockEditor;
 use tilo_ui::headless::Driver;
 use tilo_ui::retained_raster::{Repaint, RetainedFrames, TargetKey};
-use tilo_ui::theme::Theme;
-use tilo_ui::widget::{
-    AppKind, AppModel, AppWidget, EventCtx, GroupRow, IconDescriptor, ModelPath, ScrollAxis,
-    Scrollable, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth,
+use tilo_ui::{
+    widget::AppKind, widget::AppWidget, widget::GroupRow, widget::IconDescriptor,
+    widget::Scrollable, widget::TabDescriptor, widget::TileContent, widget::WindowGroup,
+    widget::WindowWidth,
+};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{
+    widget::AppModel, widget::EventCtx, widget::ModelPath, widget::ScrollAxis, widget::Widget,
 };
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
@@ -53,14 +57,14 @@ impl Widget for Note {
     fn apply_layout(&mut self, tree: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
         self.page.apply_layout(tree, node, origin);
     }
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.page.draw(&mut tilo_ui::DrawCtx::new(
+        self.page.draw(&mut tilo_ui_base::DrawCtx::new(
             scene,
             transform,
             text,
@@ -185,14 +189,14 @@ fn a_dragged_selection_repaints_the_rows_it_changed() {
     let (mut harness, mut frames, key, editor) = note_window();
     let scale = harness.input_scale();
     let move_to = |harness: &mut Driver, x: f64, y: f64| {
-        harness.send(&tilo_ui::synthetic_input::cursor_moved(
+        harness.send(&tilo_ui_base::synthetic_input::cursor_moved(
             x * scale,
             y * scale,
         ));
     };
     let (x, y) = (editor.x0 + 40.0, editor.y0 + 12.0);
     move_to(&mut harness, x, y);
-    harness.send(&tilo_ui::synthetic_input::mouse_press());
+    harness.send(&tilo_ui_base::synthetic_input::mouse_press());
     present(&mut harness, &mut frames, key);
     move_to(&mut harness, x + 60.0, y);
     let repaint = present(&mut harness, &mut frames, key);
@@ -202,5 +206,5 @@ fn a_dragged_selection_repaints_the_rows_it_changed() {
         let repaint = present(&mut harness, &mut frames, key);
         assert_lines("a drag across the paragraphs", repaint, editor);
     }
-    harness.send(&tilo_ui::synthetic_input::mouse_release());
+    harness.send(&tilo_ui_base::synthetic_input::mouse_release());
 }

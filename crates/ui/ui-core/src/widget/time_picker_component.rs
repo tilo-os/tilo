@@ -1,7 +1,9 @@
 //! [`TimePicker`] as a described component.
 
-use crate::component::{Bound, Component, Described, Event};
 use crate::widget::TimeValue;
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+};
 
 use super::TimePicker;
 
@@ -13,14 +15,14 @@ use super::TimePicker;
 pub struct TimePickerProps {
     /// The moment, as the instant a component binds (its ISO text): today at the time chosen.
     /// A change sets the time kept in it.
-    #[component(bind(ty = crate::component::Moment))]
+    #[component(bind(ty = tilo_ui_base::component::Moment))]
     pub value: Bound<String>,
     /// Its spoken name.
     pub label: Option<String>,
     /// The minutes the wheel and the chevrons step the minute cell by: a quarter hour by default.
     pub step: i64,
     /// The time changed: carries the instant, at the time chosen today.
-    #[component(event(value = crate::component::Moment))]
+    #[component(event(value = tilo_ui_base::component::Moment))]
     pub changed: Event,
 }
 
@@ -49,7 +51,7 @@ fn instant_today(time: TimeValue) -> String {
         0,
     )
     .unwrap_or(jiff::civil::Time::midnight());
-    crate::widget::date_field::instant_text(crate::clock::today(), at)
+    crate::widget::date_field::instant_text(tilo_ui_base::clock::today(), at)
 }
 
 impl Described for TimePicker {
@@ -72,8 +74,8 @@ impl Described for TimePicker {
                     seconds: seconds.map(|seconds| seconds.min(59)),
                 };
                 let instant = instant_today(time);
-                shown.edited(crate::component::Value::Text(instant.clone()));
-                fires.fire(Some(crate::component::Value::Text(instant)));
+                shown.edited(tilo_ui_base::component::Value::Text(instant.clone()));
+                fires.fire(Some(tilo_ui_base::component::Value::Text(instant)));
             })
             .with_step(step_of(step))
             .with_id(key);

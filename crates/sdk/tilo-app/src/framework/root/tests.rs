@@ -130,7 +130,7 @@ tilo_test_env::scenario! {
             .expect("the marker is found");
         assert_eq!(marker.kind, "Timeline markers");
         assert_eq!(marker.subtitle.as_deref(), Some("0:21 · Drone"));
-        assert_eq!(marker.icon, Some(ui_core::icons::Icon::Star));
+        assert_eq!(marker.icon, Some(tilo_ui_base::icons::Icon::Star));
         let plain = hits
             .iter()
             .find(|hit| hit.title == "Sunset take")

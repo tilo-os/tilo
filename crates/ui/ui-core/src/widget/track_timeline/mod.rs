@@ -83,7 +83,7 @@ pub fn timecode(seconds: f64, fine: bool) -> String {
         clippy::cast_sign_loss,
         reason = "a timeline's moment is a few hours of seconds at most, never negative"
     )]
-    let base = crate::format::timecode(whole as u64);
+    let base = tilo_ui_base::format::timecode(whole as u64);
     if fine {
         #[allow(
             clippy::cast_possible_truncation,

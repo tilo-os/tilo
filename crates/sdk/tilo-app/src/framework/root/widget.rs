@@ -5,19 +5,22 @@
 
 use std::collections::HashSet;
 
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
+use tilo_ui_base::widget::Decorated;
+use tilo_ui_base::widget::resources::PublishesResources;
+use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::ModelPath, widget::Widget};
+use tilo_ui_base::{widget::capability::Request, widget::capability::RequestMut};
+use tilo_ui_base::{
+    widget::controls::ActionControls, widget::controls::AttributedControlInvocation,
+};
 use ui_core::application_view::{ApplicationFocusRestore, ApplicationLocalView};
 use ui_core::automerge::AutoCommit;
 use ui_core::bound_dispatch::BoundWidget;
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use ui_core::resource::ResourceSaveStatus;
 use ui_core::search::capability::SearchSource;
 use ui_core::view::ThawError;
-use ui_core::widget::Decorated;
-use ui_core::widget::capability::{Request, RequestMut};
-use ui_core::widget::controls::{ActionControls, AttributedControlInvocation};
 use ui_core::widget::empty_state::PaintedEmptyStates;
-use ui_core::widget::resources::PublishesResources;
-use ui_core::widget::{AppKind, AppModel, AppWidget, Decorator, IconDescriptor, ModelPath, Widget};
+use ui_core::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
 
 /// What the root widget asks of the root of one resource type: the view it
 /// shows, the widget methods the root answers itself, and the capabilities it
@@ -38,12 +41,16 @@ pub(crate) trait RootModel:
     fn provide<'a>(&'a self, request: &mut Request<'a, '_>);
     fn provide_mut<'a>(&'a mut self, request: &mut RequestMut<'a, '_>);
     fn take_structure_dirty(&mut self) -> bool;
-    fn take_structure_change(&mut self) -> ui_core::widget::StructureChange;
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange;
     fn view_only_scroll(&self, event: &ui_core::winit::event::WindowEvent) -> bool;
     fn resource_owners(&self) -> Vec<ui_core::history_mode::HistoryOwner>;
     fn sync(&mut self, state: &AppModel, path: &ModelPath);
-    fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId);
-    fn draw(&mut self, ctx: &mut ui_core::draw::DrawCtx<'_>);
+    fn settle(
+        &mut self,
+        edits: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &ui_core::automerge::ObjId,
+    );
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>);
     fn needs_redraw(&self) -> bool;
     /// The window's save status the root says in the window's bar.
     fn save_indicator(&self) -> &crate::framework::saves::SaveIndicator;
@@ -63,10 +70,10 @@ pub(crate) trait RootModel:
     ) -> Option<tilo_actions::InvocationUpdate>;
     fn start_operation(
         &mut self,
-        op: &ui_core::host_operation::ResourceOperation<'_>,
-        doc: &mut ui_core::widget::Edits<'_>,
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
-    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String>;
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String>;
 
     /// [`Self::start_operation`], keeping the refusal the app gave: an
     /// action's answer that names a code (a message the mailbox holds
@@ -75,7 +82,7 @@ pub(crate) trait RootModel:
     fn start_operation_refused(
         &mut self,
         op: &ResourceOperation<'_>,
-        doc: &mut ui_core::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ResourceOperationStart>, tilo_resource::Refusal>;
 }
@@ -112,7 +119,7 @@ pub(crate) trait RootPublishes {
         &self,
         presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
-    ) -> Option<Vec<ui_core::published::SharedResource>>;
+    ) -> Option<Vec<tilo_ui_base::published::SharedResource>>;
     fn resources_for(
         &self,
         presence: Option<&tilo_actions::PresenceId>,
@@ -157,7 +164,7 @@ pub(crate) trait RootPublishes {
         id: &str,
     ) -> Option<tilo_actions::ResourceSpec>;
     /// An action of the resource `id` as this root publishes it now
-    /// ([`ui_core::widget::resources::PublishesResources::published_action`]), built from the surfaces' own
+    /// ([`tilo_ui_base::widget::resources::PublishesResources::published_action`]), built from the surfaces' own
     /// statuses rather than a publication.
     fn published_action(
         &self,
@@ -183,7 +190,7 @@ pub(crate) trait RootSearch {
     fn activate_search_result(
         &mut self,
         action_id: &str,
-        doc: &mut ui_core::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     );
 }
@@ -193,15 +200,18 @@ pub(crate) trait RootSearch {
 pub(crate) trait RootControls {
     fn attach_controls(
         &mut self,
-        domain: &ui_core::ControlDomain,
-        attachment: ui_core::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     );
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation>;
     fn take_attributed_control_invocation(&mut self) -> Option<AttributedControlInvocation>;
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
+        result: &Result<
+            tilo_ui_base::host_operation::ResourceOperationStart,
+            tilo_actions::ApiError,
+        >,
     );
     fn has_pending_control_invocation(&self) -> bool;
 }
@@ -224,9 +234,9 @@ impl RootWidget {
 
 // The root stands in the record its view stands in, and keeps the person's
 // records open beside it.
-impl ui_core::widget::component_walk::ComponentBoundary for RootWidget {
-    fn component_scope(&self) -> Option<ui_core::widget::component_walk::Binding> {
-        ui_core::widget::component_walk::binding_of(self.0.view())
+impl tilo_ui_base::widget::component_walk::ComponentBoundary for RootWidget {
+    fn component_scope(&self) -> Option<tilo_ui_base::widget::component_walk::Binding> {
+        tilo_ui_base::widget::component_walk::binding_of(self.0.view())
     }
 }
 
@@ -256,8 +266,8 @@ impl Decorator for RootWidget {
             request.provide::<dyn ResourceOperations>(self);
         } else if request.wants::<dyn BoundWidget>() {
             request.provide::<dyn BoundWidget>(self);
-        } else if request.wants::<dyn ui_core::widget::component_walk::ComponentBoundary>() {
-            request.provide::<dyn ui_core::widget::component_walk::ComponentBoundary>(self);
+        } else if request.wants::<dyn tilo_ui_base::widget::component_walk::ComponentBoundary>() {
+            request.provide::<dyn tilo_ui_base::widget::component_walk::ComponentBoundary>(self);
         } else {
             self.0.provide(request);
         }
@@ -294,7 +304,7 @@ impl Decorator for RootWidget {
         self.0.take_structure_dirty()
     }
 
-    fn take_structure_change(&mut self) -> ui_core::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         self.0.take_structure_change()
     }
 
@@ -306,11 +316,15 @@ impl Decorator for RootWidget {
         self.0.sync(state, path);
     }
 
-    fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
+    fn settle(
+        &mut self,
+        edits: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &ui_core::automerge::ObjId,
+    ) {
         self.0.settle(edits, path);
     }
 
-    fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -319,7 +333,7 @@ impl Decorator for RootWidget {
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let root = &mut self.0;
         self.1.draw(transform, || {
-            root.draw(&mut ui_core::DrawCtx::new(
+            root.draw(&mut tilo_ui_base::DrawCtx::new(
                 scene, transform, text, theme, env,
             ));
         });
@@ -370,7 +384,7 @@ impl Decorator for RootWidget {
     fn handle_event(
         &mut self,
         event: &ui_core::winit::event::WindowEvent,
-        ctx: &mut ui_core::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.0.view_mut().handle_event(event, ctx);
     }
@@ -379,7 +393,7 @@ impl Decorator for RootWidget {
     // own paint) is described as well, its action a button that clicks
     // where it is drawn: often the only way on from a first-use screen, for
     // a screen reader as much as for anyone.
-    fn accessibility(&self) -> Option<ui_core::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let view = self.0.view();
         self.1.describe(view.accessibility(), view)
     }
@@ -400,8 +414,8 @@ impl Decorator for RootWidget {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &ui_core::a11y::Action,
-        state: &mut ui_core::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.0
@@ -438,17 +452,17 @@ impl ResourceOperations for RootWidget {
 
     fn start_operation(
         &mut self,
-        op: &ui_core::host_operation::ResourceOperation<'_>,
-        doc: &mut ui_core::widget::Edits<'_>,
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
-    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         self.0.start_operation(op, doc, path)
     }
 
     fn start_operation_refused(
         &mut self,
         op: &ResourceOperation<'_>,
-        doc: &mut ui_core::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ResourceOperationStart>, tilo_resource::Refusal> {
         self.0.start_operation_refused(op, doc, path)
@@ -490,11 +504,14 @@ impl AppWidget for RootWidget {
     /// Every Tilo app has a compact layout that works at phone width, and a
     /// person resizing its window is stopped there rather than squeezing it:
     /// at what the app's layout states it needs
-    /// ([`ui_core::widget::minimum_window_width`], a `NavShell`'s compact
+    /// ([`tilo_ui_base::widget::minimum_window_width`], a `NavShell`'s compact
     /// layout), never below phone width.
     fn min_window_width(&self) -> Option<f64> {
-        let phone = f64::from(ui_core::tokens::Metrics::BASE.window_min_width);
-        Some(ui_core::widget::minimum_window_width(self).map_or(phone, |width| width.max(phone)))
+        let phone = f64::from(tilo_ui_base::tokens::Metrics::BASE.window_min_width);
+        Some(
+            tilo_ui_base::widget::minimum_window_width(self)
+                .map_or(phone, |width| width.max(phone)),
+        )
     }
 
     fn resource_save_status(&mut self, status: ResourceSaveStatus) -> bool {
@@ -539,7 +556,7 @@ impl PublishesResources for RootWidget {
         &self,
         presence: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
-    ) -> Option<Vec<ui_core::published::SharedResource>> {
+    ) -> Option<Vec<tilo_ui_base::published::SharedResource>> {
         self.0.shared_resources_for(presence, doc)
     }
 
@@ -629,7 +646,7 @@ impl SearchSource for RootWidget {
     fn activate_search_result(
         &mut self,
         action_id: &str,
-        doc: &mut ui_core::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) {
         self.0.activate_search_result(action_id, doc, path);
@@ -643,18 +660,18 @@ impl ActionControls for RootWidget {
     /// (`docs/designs/app-language/one-app-model.md` §4).
     fn attach_controls(
         &mut self,
-        domain: &ui_core::ControlDomain,
-        attachment: ui_core::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         self.0.attach_controls(domain, attachment);
     }
 
-    fn action_control_bindings(&self) -> Vec<ui_core::widget::ControlBindingMetadata> {
-        ui_core::widget::controls::children_action_control_bindings(self)
+    fn action_control_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
+        tilo_ui_base::widget::controls::children_action_control_bindings(self)
     }
 
     fn has_action_control_bindings(&self) -> bool {
-        ui_core::widget::controls::children_have_action_control_bindings(self)
+        tilo_ui_base::widget::controls::children_have_action_control_bindings(self)
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
@@ -668,7 +685,10 @@ impl ActionControls for RootWidget {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
+        result: &Result<
+            tilo_ui_base::host_operation::ResourceOperationStart,
+            tilo_actions::ApiError,
+        >,
     ) {
         self.0.on_control_invocation_result(address, result);
     }

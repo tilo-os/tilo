@@ -12,21 +12,24 @@ use std::collections::HashMap;
 use std::rc::Rc;
 
 use crate::{UiNode, Value};
-use ui::LocalState;
-use ui::tokens::{Rhythm, TextRole};
-use ui::widget::Length;
+use tilo_ui_base::LocalState;
+use tilo_ui_base::widget::Length;
+use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
+use tilo_ui_base::{widget::AvatarSize, widget::Element, widget::Spacer};
 use ui::widget::arrange::{
     Align, At, Collapse, Distribute, Fit, Grid, Layers, Navigation, Page, Part, Row, Side, Split,
     Stack,
 };
-use ui::widget::{
-    Avatar, AvatarSize, Button, Checkbox, Container, Divider, Dropdown, Element, EmptyState, Field,
-    FormSection, Scrollable, Section, Segment, Spacer, Text, Toggle, ToggleGroup, labeled_check,
+use ui::{
+    widget::Avatar, widget::Button, widget::Checkbox, widget::Container, widget::Divider,
+    widget::Dropdown, widget::EmptyState, widget::Field, widget::FormSection, widget::Scrollable,
+    widget::Section, widget::Segment, widget::Text, widget::Toggle, widget::ToggleGroup,
+    widget::labeled_check,
 };
 
 use crate::adapter::{Adapter, NodeSource};
 use crate::pane::Pane;
-use ui::presence::PathSegment;
+use tilo_ui_base::presence::PathSegment;
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum UiEvent {
@@ -92,7 +95,7 @@ pub struct Case {
     /// The variant's name, what the runtime is told.
     pub name: String,
     pub label: String,
-    pub icon: Option<ui::icons::Icon>,
+    pub icon: Option<tilo_ui_base::icons::Icon>,
 }
 
 pub struct Reconciler {
@@ -132,7 +135,7 @@ fn prop<'a>(node: &'a UiNode, name: &str) -> Option<&'a Value> {
 
 #[must_use]
 pub fn display(value: &Value) -> String {
-    let formats = ui::format::Formats::current();
+    let formats = tilo_ui_base::format::Formats::current();
     match value {
         Value::Text(text) | Value::Error(text) => text.clone(),
         Value::Int(number) => {
@@ -185,7 +188,7 @@ fn cases_of(node: &UiNode) -> Vec<Case> {
                     label: label.clone(),
                     icon: match icon {
                         Value::Opt(Some(icon)) => match &**icon {
-                            Value::Text(icon) => ui::icons::Icon::from_name(icon),
+                            Value::Text(icon) => tilo_ui_base::icons::Icon::from_name(icon),
                             _ => None,
                         },
                         _ => None,
@@ -266,10 +269,10 @@ fn lead(node: &UiNode) -> i16 {
 /// The pace a container's parts move at when what it holds changes (`motion: .calm`), when it names
 /// one: read as a component's `motion:` is. The checker admits only the cases a `Motion` has, so a
 /// case it does not know is said and the container keeps the standard pace.
-fn feel(node: &UiNode) -> Option<ui::motion::Feel> {
-    use ui::component::PropType;
-    let case = ui::component::Value::Text(token(node, "motion")?.to_owned());
-    match ui::motion::Feel::from_value(&case) {
+fn feel(node: &UiNode) -> Option<tilo_ui_base::motion::Feel> {
+    use tilo_ui_base::component::PropType;
+    let case = tilo_ui_base::component::Value::Text(token(node, "motion")?.to_owned());
+    match tilo_ui_base::motion::Feel::from_value(&case) {
         Ok(feel) => Some(feel),
         Err(error) => {
             tracing::warn!(%error, key = %node.key, "a container's motion is not a pace");
@@ -464,7 +467,7 @@ trait PartContainer {
     fn move_part(&mut self, from: usize, to: usize);
     fn set_placement(&mut self, index: usize, placement: Placement);
     fn set_lead(&mut self, lead: i16);
-    fn set_feel(&mut self, feel: ui::motion::Feel);
+    fn set_feel(&mut self, feel: tilo_ui_base::motion::Feel);
 }
 
 impl<L: ui::widget::arrange::Layout + 'static> PartContainer for ui::widget::arrange::Arranged<L> {
@@ -503,7 +506,7 @@ impl<L: ui::widget::arrange::Layout + 'static> PartContainer for ui::widget::arr
         ui::widget::arrange::Arranged::set_lead(self, lead);
     }
 
-    fn set_feel(&mut self, feel: ui::motion::Feel) {
+    fn set_feel(&mut self, feel: tilo_ui_base::motion::Feel) {
         ui::widget::arrange::Arranged::set_feel(self, feel);
     }
 }
@@ -641,7 +644,7 @@ impl Reconciler {
         Rc::clone(&self.shown_page)
     }
 
-    fn note_broken(&self, node: &UiNode, error: &ui::component::Error) {
+    fn note_broken(&self, node: &UiNode, error: &tilo_ui_base::component::Error) {
         tracing::warn!(%error, key = %node.key, "a component of the view did not build");
         self.broken
             .borrow_mut()
@@ -655,7 +658,7 @@ impl Reconciler {
     }
 
     #[must_use]
-    pub fn rows_of(&self, key: &str) -> Option<ui::component::SharedRows> {
+    pub fn rows_of(&self, key: &str) -> Option<tilo_ui_base::component::SharedRows> {
         self.rows.as_ref().and_then(|rows| rows(key))
     }
 
@@ -804,10 +807,10 @@ impl Reconciler {
     fn menu_parts(
         &mut self,
         node: &UiNode,
-    ) -> Result<Vec<ui::widget::MenuPart>, ui::component::Error> {
-        use ui::component::Component as _;
+    ) -> Result<Vec<ui::widget::MenuPart>, tilo_ui_base::component::Error> {
+        use tilo_ui_base::component::Component as _;
         let description = crate::adapter::description_of(node)
-            .ok_or_else(|| ui::component::Error::unknown(&node.kind))?;
+            .ok_or_else(|| tilo_ui_base::component::Error::unknown(&node.kind))?;
         let mut source = NodeSource::new(node, description, self);
         ui::widget::ContextMenuProps::from_source(&mut source).map(|props| props.items)
     }
@@ -884,7 +887,7 @@ impl Reconciler {
 
     fn component(&mut self, node: &UiNode) -> Element {
         let Some(description) = crate::adapter::description_of(node) else {
-            self.note_broken(node, &ui::component::Error::unknown(&node.kind));
+            self.note_broken(node, &tilo_ui_base::component::Error::unknown(&node.kind));
             return self.text_of(node, "", TextRole::Caption);
         };
         // A page is shown with the window's engine: the window holds it, and hands it to the
@@ -934,7 +937,7 @@ impl Reconciler {
         widget: &mut Element,
         old_node: &UiNode,
         new_node: &UiNode,
-        description: &'static ui::component::Description,
+        description: &'static tilo_ui_base::component::Description,
     ) -> Option<Element> {
         // What the control does is not a prop it takes in place: a control the view now binds to
         // another action says so by being built again. A field that edits another record does
@@ -969,7 +972,7 @@ impl Reconciler {
         for part in description
             .parts
             .iter()
-            .filter(|part| part.accepts == ui::component::Accepts::View)
+            .filter(|part| part.accepts == tilo_ui_base::component::Accepts::View)
         {
             let old = crate::adapter::part_nodes(old_node, description, &part.name);
             let new = crate::adapter::part_nodes(new_node, description, &part.name);
@@ -1006,7 +1009,7 @@ impl Reconciler {
                 for of in item
                     .parts
                     .iter()
-                    .filter(|of| of.accepts == ui::component::Accepts::View)
+                    .filter(|of| of.accepts == tilo_ui_base::component::Accepts::View)
                 {
                     let old = crate::adapter::part_nodes(before, item, &of.name);
                     let new = crate::adapter::part_nodes(child, item, &of.name);
@@ -1033,7 +1036,7 @@ impl Reconciler {
     /// kept moved to their place and reconciled in it, those new built and inserted.
     fn reconcile_views(
         &mut self,
-        views: &mut dyn ui::component::PartViews,
+        views: &mut dyn tilo_ui_base::component::PartViews,
         old: &[&UiNode],
         new: &[&UiNode],
     ) {
@@ -1339,9 +1342,9 @@ impl Reconciler {
         let across = token(node, "axis");
         let scroll = if filling {
             let axis = match across {
-                Some("horizontal") => ui::widget::ScrollAxis::Horizontal,
-                Some("both") => ui::widget::ScrollAxis::Both,
-                _ => ui::widget::ScrollAxis::Vertical,
+                Some("horizontal") => tilo_ui_base::widget::ScrollAxis::Horizontal,
+                Some("both") => tilo_ui_base::widget::ScrollAxis::Both,
+                _ => tilo_ui_base::widget::ScrollAxis::Vertical,
             };
             Scrollable::new(axis).fill_parent_height()
         } else if across == Some("horizontal") {
@@ -1465,8 +1468,10 @@ impl Reconciler {
     /// the system asks them, never in the app.
     fn suggestion(&mut self, node: &UiNode) -> Element {
         let author = match prop(node, "author") {
-            Some(Value::Actor(who)) => ui::component::Person::new(who.id.clone(), who.name.clone()),
-            other => ui::component::Person::named(other.map(display).unwrap_or_default()),
+            Some(Value::Actor(who)) => {
+                tilo_ui_base::component::Person::new(who.id.clone(), who.name.clone())
+            }
+            other => tilo_ui_base::component::Person::named(other.map(display).unwrap_or_default()),
         };
         let says = crate::i18n::word(
             "tilolang-suggestion-says",
@@ -1552,7 +1557,7 @@ impl Reconciler {
     fn field_of(&mut self, node: &UiNode) -> Field {
         let mut panes: Vec<Element> = node.children.iter().map(|child| self.pane(child)).collect();
         let content = match panes.len() {
-            0 => Box::new(Spacer::token(ui::tokens::SpacingStep::S0)) as Element,
+            0 => Box::new(Spacer::token(tilo_ui_base::tokens::SpacingStep::S0)) as Element,
             1 => panes.remove(0),
             _ => {
                 let mut stack = Stack::stack();
@@ -2232,7 +2237,10 @@ fn holder_shape(node: &UiNode) -> Vec<PartShape> {
     shape
 }
 
-fn collect_panes<'a>(widget: &'a mut dyn ui::widget::Widget, out: &mut Vec<&'a mut Pane>) {
+fn collect_panes<'a>(
+    widget: &'a mut dyn tilo_ui_base::widget::Widget,
+    out: &mut Vec<&'a mut Pane>,
+) {
     if widget.as_any().is_some_and(<dyn std::any::Any>::is::<Pane>) {
         if let Some(pane) = widget
             .as_any_mut()
@@ -2301,7 +2309,9 @@ mod tests {
         container
             .children()
             .iter()
-            .map(|child| std::ptr::from_ref::<dyn ui::widget::Widget>(*child).cast::<()>() as usize)
+            .map(|child| {
+                std::ptr::from_ref::<dyn tilo_ui_base::widget::Widget>(*child).cast::<()>() as usize
+            })
             .collect()
     }
 
@@ -2395,7 +2405,9 @@ mod tests {
         collect_panes(built.as_mut(), &mut panes);
         let before: Vec<usize> = panes
             .iter()
-            .map(|pane| std::ptr::from_ref::<dyn ui::widget::Widget>(*pane).cast::<()>() as usize)
+            .map(|pane| {
+                std::ptr::from_ref::<dyn tilo_ui_base::widget::Widget>(*pane).cast::<()>() as usize
+            })
             .collect();
         assert_eq!(before.len(), 2, "both controls sit in a pane");
         // The time moves: both panes stay, and each reconciles in place.
@@ -2408,7 +2420,9 @@ mod tests {
         collect_panes(updated.as_mut(), &mut panes);
         let after: Vec<usize> = panes
             .iter()
-            .map(|pane| std::ptr::from_ref::<dyn ui::widget::Widget>(*pane).cast::<()>() as usize)
+            .map(|pane| {
+                std::ptr::from_ref::<dyn tilo_ui_base::widget::Widget>(*pane).cast::<()>() as usize
+            })
             .collect();
         assert_eq!(after, before, "both keep their pane");
     }
@@ -2629,7 +2643,9 @@ mod tests {
 
     /// The built view as a window shows it: the window's place fills the surface the host gives
     /// the window, and the view takes the room that place gives it.
-    fn window_content(built: Box<dyn ui::widget::Widget>) -> Box<dyn ui::widget::Widget> {
+    fn window_content(
+        built: Box<dyn tilo_ui_base::widget::Widget>,
+    ) -> Box<dyn tilo_ui_base::widget::Widget> {
         Box::new(
             ui::widget::Container::new()
                 .with_no_padding()
@@ -2641,7 +2657,7 @@ mod tests {
     fn laid_out(view: &UiNode, size: (u32, u32), key: &str) -> ui::vello::kurbo::Rect {
         let built = reconciler().build(view);
         let harness = ui::headless::Driver::new(ui::State::new(), window_content(built), size);
-        ui::widget::find_test_id(harness.root_widget(), key)
+        tilo_ui_base::widget::find_test_id(harness.root_widget(), key)
             .unwrap_or_else(|| panic!("{key} is built"))
             .get_rect()
     }
@@ -2701,7 +2717,7 @@ mod tests {
 
     /// The scroll view in a view built of stacks: the only `Scrollable` in the tree.
     fn the_scrollable(view: &UiNode, size: (u32, u32)) -> ui::vello::kurbo::Rect {
-        fn walk(w: &dyn ui::widget::Widget, out: &mut Option<ui::vello::kurbo::Rect>) {
+        fn walk(w: &dyn tilo_ui_base::widget::Widget, out: &mut Option<ui::vello::kurbo::Rect>) {
             if w.name() == "Scrollable" {
                 *out = Some(w.get_rect());
             }
@@ -2818,7 +2834,7 @@ mod tests {
         let updated = reconciler.update(built, &view(text("empty", "Nothing here")), &next);
         let harness =
             ui::headless::Driver::new(ui::State::new(), window_content(updated), (400, 600));
-        let root = ui::widget::find_test_id(harness.root_widget(), "root")
+        let root = tilo_ui_base::widget::find_test_id(harness.root_widget(), "root")
             .expect("the root is built")
             .get_rect();
         assert!(

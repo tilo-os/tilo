@@ -91,7 +91,7 @@ use tilo_app::time::Instant;
 use tilo_app::winit::dpi::{PhysicalPosition, PhysicalSize};
 use tilo_app::winit::event::{DeviceId, WindowEvent};
 use tilo_app::winit::window::CursorIcon;
-use ui_core::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 static CATALOG: EmbeddedCatalog = EmbeddedCatalog::new(
     "en-US",

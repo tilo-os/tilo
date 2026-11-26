@@ -3,8 +3,8 @@
 
 use super::{Element, Widget};
 use super::{ListKey, VirtualRows};
-use crate::arriving::Arrival;
-use crate::widget::Decorator;
+use tilo_ui_base::arriving::Arrival;
+use tilo_ui_base::widget::Decorator;
 
 /// How far a row's height may be from where it is going before it is drawn on its way there
 /// ([`VirtualList::grown_height`]), in logical pixels.
@@ -125,7 +125,7 @@ impl VirtualRows {
 
     /// The height a row stands at this frame on its way to `target`: a row
     /// whose height changed (it opened into its item, or closed again) grows
-    /// or shrinks on the expand/collapse motion ([`crate::motion::Disclose`]),
+    /// or shrinks on the expand/collapse motion ([`tilo_ui_base::motion::Disclose`]),
     /// and the rows after it move with its edge, so opening a row pushes the
     /// list down rather than jumping it there. A row measured for the first
     /// time was never on screen at another height and stands at `target` at
@@ -148,35 +148,35 @@ impl VirtualRows {
             self.growing.remove(key);
             return target;
         }
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let Some(at) = at else {
             let from = self.viewport.item_height(index).unwrap_or(target);
             if (target - from).abs() < GROWN_EPSILON {
                 self.growing.remove(key);
                 return target;
             }
-            let timing = crate::motion::Disclose::timing(
+            let timing = tilo_ui_base::motion::Disclose::timing(
                 from,
                 target,
                 self.motion,
-                crate::motion::input_source(),
+                tilo_ui_base::motion::input_source(),
             );
             if timing.is_instant() {
                 self.growing.remove(key);
                 return target;
             }
             let mut motion =
-                crate::motion::MotionValue::new(from).with_tolerance(GROWN_EPSILON / 2.0);
+                tilo_ui_base::motion::MotionValue::new(from).with_tolerance(GROWN_EPSILON / 2.0);
             motion.set(target, timing, now);
             self.growth.push((key.clone(), motion));
             return motion.get(now);
         };
         let motion = &mut self.growth[at].1;
-        let timing = crate::motion::Disclose::timing(
+        let timing = tilo_ui_base::motion::Disclose::timing(
             motion.get(now),
             target,
             self.motion,
-            crate::motion::input_source(),
+            tilo_ui_base::motion::input_source(),
         );
         motion.set(target, timing, now);
         if motion.is_moving(now) {
@@ -219,18 +219,18 @@ impl Decorator for RowOpen {
         true
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let document = self.inner.as_ref();
         let name = first_page_title(document)
             .or_else(|| document.accessibility().and_then(|node| node.name))?;
         Some(
-            crate::a11y::AccessNode::new(if self.tree {
-                crate::a11y::Role::TreeItem
+            tilo_ui_base::a11y::AccessNode::new(if self.tree {
+                tilo_ui_base::a11y::Role::TreeItem
             } else {
-                crate::a11y::Role::ListItem
+                tilo_ui_base::a11y::Role::ListItem
             })
             .with_name(name)
-            .with_state(crate::a11y::AccessState::new().expanded(true)),
+            .with_state(tilo_ui_base::a11y::AccessState::new().expanded(true)),
         )
     }
 }

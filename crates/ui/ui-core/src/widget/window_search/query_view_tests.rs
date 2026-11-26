@@ -5,10 +5,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
-use crate::tokens::MotionSource;
 use crate::widget::find_bar::FindOptions;
 use crate::widget::search_field::Filterable;
-use crate::widget::{Column, InPlace, SearchDriver, Text, Widget, WindowSearch};
+use crate::{
+    widget::Column, widget::InPlace, widget::SearchDriver, widget::Text, widget::WindowSearch,
+};
+use tilo_ui_base::tokens::MotionSource;
+use tilo_ui_base::widget::Widget;
 
 const ROWS: [&str; 4] = ["Ada's change", "Bo's change", "Ada again", "Cy's change"];
 
@@ -174,15 +177,15 @@ impl Filterable for Names {
 }
 
 impl Widget for Names {
-    crate::provides!(dyn Filterable);
+    tilo_ui_base::provides!(dyn Filterable);
 
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        _theme: &crate::theme::Theme,
+        _theme: &tilo_ui_base::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        use crate::widget::TaffyTreeExt;
+        use tilo_ui_base::widget::TaffyTreeExt;
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
 

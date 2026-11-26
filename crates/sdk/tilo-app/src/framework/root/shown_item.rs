@@ -27,12 +27,12 @@ impl ResourceRoot {
             .as_ref()
             .map_or("", |record| record.route());
         permissions.check(&PermissionScope::Action {
-            node: ui_core::permissions::TreePath::root()
+            node: tilo_ui_base::permissions::TreePath::root()
                 .app(self.dispatch.app_id())
                 .kind(kind)
                 .resource(record)
                 .item(item),
-            kind: ui_core::permissions::ActionKind::Undoable,
+            kind: tilo_ui_base::permissions::ActionKind::Undoable,
         })
     }
 }

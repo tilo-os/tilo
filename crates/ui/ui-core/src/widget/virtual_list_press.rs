@@ -80,7 +80,7 @@ impl VirtualRows {
             return false;
         }
         let Some(key) = self.focused_row_key() else {
-            let inset = f64::from(crate::tokens::Spacing::BASE.s6);
+            let inset = f64::from(tilo_ui_base::tokens::Spacing::BASE.s6);
             return self
                 .open_context_menu(None, Point::new(self.rect.x0 + inset, self.rect.y0 + inset));
         };

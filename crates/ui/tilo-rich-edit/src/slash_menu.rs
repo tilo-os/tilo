@@ -4,8 +4,8 @@
 //! another page, a page inside this one).
 
 use crate::block_editor::{BlockKind, CalloutKind};
-use ui::i18n::widget_text;
-use ui::icons::Icon;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::icons::Icon;
 use ui::widget::filter_menu::{FilterMenu, MenuEntry, MenuSpec};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -311,10 +311,10 @@ mod tests {
     use winit::event::WindowEvent;
     use winit::keyboard::{Key, NamedKey, SmolStr};
 
-    use ui::synthetic_input::key_press;
-    use ui::text_render::TextRenderer;
-    use ui::theme::Theme;
-    use ui::widget::Widget;
+    use tilo_ui_base::synthetic_input::key_press;
+    use tilo_ui_base::text_render::TextRenderer;
+    use tilo_ui_base::theme::Theme;
+    use tilo_ui_base::widget::Widget;
 
     fn char_press(c: &str) -> WindowEvent {
         key_press(Key::Character(SmolStr::new(c)), Some(c))
@@ -327,7 +327,7 @@ mod tests {
 
         phase visibility_resets_filter_and_invisible_menu_ignores_keys;
         {
-            let _settled = ui::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             {
                 let m = SlashMenu::new();
                 assert!(!m.is_visible());
@@ -354,7 +354,7 @@ mod tests {
 
         phase filter_narrows_rows_from_typing_ime_and_backspace;
         {
-            let _settled = ui::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             {
                 let mut m = SlashMenu::new();
                 m.set_filter("h");
@@ -447,7 +447,7 @@ mod tests {
 
         phase keyboard_moves_the_cursor_and_commits_or_escapes;
         {
-            let _settled = ui::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             {
                 let mut m = SlashMenu::new();
                 m.set_visible(true);
@@ -557,7 +557,7 @@ mod tests {
 
         phase pointer_and_semantic_activation_commit_the_exact_row;
         {
-            let _settled = ui::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             {
                 let mut menu = SlashMenu::new();
                 menu.set_visible(true);
@@ -572,8 +572,8 @@ mod tests {
                 assert!(Widget::perform_semantic_action(
                     &mut *menu,
                     &target,
-                    &ui::a11y::Action::Activate,
-                    &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+                    &tilo_ui_base::a11y::Action::Activate,
+                    &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                     &automerge::ROOT,
                 ));
                 assert_eq!(
@@ -640,7 +640,7 @@ mod tests {
 
         phase labels_that_start_with_the_query_come_first;
         {
-            let _settled = ui::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let mut m = SlashMenu::new();
             m.set_filter("c");
             assert_eq!(
@@ -661,7 +661,7 @@ mod tests {
 
         phase an_inline_menu_leaves_typing_to_the_document_and_gives_back_a_dead_enter;
         {
-            let _settled = ui::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let mut m = SlashMenu::new();
             m.set_inline(true);
             m.set_visible(true);
@@ -691,7 +691,7 @@ mod tests {
 
         phase a_menu_at_the_bottom_of_the_view_opens_above_the_caret_and_stays_inside;
         {
-            let _settled = ui::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let mut m = SlashMenu::new();
             m.set_inline(true);
             m.set_visible(true);
@@ -715,7 +715,7 @@ mod tests {
 
         phase host_commands_are_offered_only_by_a_host_that_answers_them;
         {
-            let _settled = ui::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let mut m = SlashMenu::new();
             m.set_filter("image");
             assert_eq!(m.visible_len(), 0);

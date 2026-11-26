@@ -1,7 +1,7 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::component::{BoundValue, Fired, Value};
+use tilo_ui_base::{component::BoundValue, component::Fired, component::Value};
 
 fn message_actions(on: &str) -> tilo_actions::ResourceSpec {
     let mut published = tilo_actions::ResourceSpec::new(on, "test.message", "Message");
@@ -33,11 +33,11 @@ struct Node {
     props: BTreeMap<String, Value>,
     events: Vec<(&'static str, Option<(&'static str, &'static str)>)>,
     parts: BTreeMap<&'static str, Vec<Node>>,
-    queue: crate::Intents<Fired>,
+    queue: tilo_ui_base::Intents<Fired>,
 }
 
 impl Node {
-    fn new(kind: &'static str, key: &str, queue: &crate::Intents<Fired>) -> Self {
+    fn new(kind: &'static str, key: &str, queue: &tilo_ui_base::Intents<Fired>) -> Self {
         Self {
             kind,
             key: key.to_owned(),
@@ -76,9 +76,11 @@ impl Source for Node {
     fn event(&mut self, name: &str) -> Event {
         match self.events.iter().find(|(event, _)| *event == name) {
             Some((_, Some((on, action)))) => bound(on, action),
-            Some((_, None)) => {
-                Event::View(crate::component::Intent::new(&self.queue, &self.key, name))
-            }
+            Some((_, None)) => Event::View(tilo_ui_base::component::Intent::new(
+                &self.queue,
+                &self.key,
+                name,
+            )),
             None => Event::None,
         }
     }
@@ -114,7 +116,7 @@ impl Source for Node {
 }
 
 fn item(
-    queue: &crate::Intents<Fired>,
+    queue: &tilo_ui_base::Intents<Fired>,
     label: &str,
     runs: Option<(&'static str, &'static str)>,
 ) -> Node {
@@ -134,7 +136,7 @@ fn labels(parts: &[MenuPart]) -> Vec<String> {
         .collect()
 }
 
-fn message(queue: &crate::Intents<Fired>) -> (Attachments, Vec<MenuPart>) {
+fn message(queue: &tilo_ui_base::Intents<Fired>) -> (Attachments, Vec<MenuPart>) {
     let menu = Node::new("ContextMenu", "menu", queue).part(
         "items",
         vec![
@@ -183,7 +185,7 @@ tilo_test_env::scenario! {
 
     phase the_views_menu_comes_first_and_the_system_adds_only_what_it_did_not_place;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
 
         // The view's order first; Pin is placed already, so only Delete is added
         // after a rule.
@@ -231,7 +233,7 @@ tilo_test_env::scenario! {
         let own = |label: &str| {
             MenuPart::Item(MenuItemProps {
                 label: label.into(),
-                choose: Event::View(crate::component::Intent::new(&queue, label, "choose")),
+                choose: Event::View(tilo_ui_base::component::Intent::new(&queue, label, "choose")),
                 ..MenuItemProps::default()
             })
         };
@@ -241,12 +243,12 @@ tilo_test_env::scenario! {
 
     phase a_menus_entries_drop_rules_at_either_end_and_doubled;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let parts = vec![
             MenuPart::Separator,
             MenuPart::Item(MenuItemProps {
                 label: "Reply".into(),
-                choose: Event::View(crate::component::Intent::new(&queue, "r", "choose")),
+                choose: Event::View(tilo_ui_base::component::Intent::new(&queue, "r", "choose")),
                 ..MenuItemProps::default()
             }),
             MenuPart::Separator,
@@ -255,7 +257,7 @@ tilo_test_env::scenario! {
                 label: "Delete".into(),
                 destructive: true,
                 key: Some("Ctrl+Enter".into()),
-                choose: Event::View(crate::component::Intent::new(&queue, "d", "choose")),
+                choose: Event::View(tilo_ui_base::component::Intent::new(&queue, "d", "choose")),
                 ..MenuItemProps::default()
             }),
             MenuPart::Separator,
@@ -265,14 +267,14 @@ tilo_test_env::scenario! {
         assert_eq!(shown, [Some("Reply"), None, Some("Delete")]);
         assert_eq!(
             entries[2].item().shortcut(),
-            Some(&crate::platform::Shortcut::from("Ctrl+Enter")),
+            Some(&tilo_ui_base::platform::Shortcut::from("Ctrl+Enter")),
             "the key the command declares shows at its row's end"
         );
     }
 
     phase what_a_view_attached_reads_its_swipe_and_its_menu;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let (attached, _) = message(&queue);
         assert_eq!(
             attached
@@ -289,7 +291,7 @@ tilo_test_env::scenario! {
 
     phase picking_from_the_menus_emoji_bar_reports_the_emoji;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let (attached, _) = message(&queue);
         let entries = menu_entries(attached.menu);
         let mut menu = crate::widget::ContextMenu::new();
@@ -302,11 +304,11 @@ tilo_test_env::scenario! {
         menu.focus_item(0);
         crate::testing::dispatch(
             &mut menu,
-            &crate::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowRight),
+            &tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowRight),
         );
         crate::testing::dispatch(
             &mut menu,
-            &crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
+            &tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
         );
         assert_eq!(menu.take_selection(), Some(0), "the bar's row was chosen");
         if let Some(run) = &runs[0] {
@@ -320,12 +322,12 @@ tilo_test_env::scenario! {
 
     phase a_run_of_grouped_commands_folds_into_one_row_that_opens_them;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let grouped = |label: &str| {
             MenuPart::Item(MenuItemProps {
                 label: label.into(),
                 group: Some("Due".into()),
-                choose: Event::View(crate::component::Intent::new(&queue, label, "choose")),
+                choose: Event::View(tilo_ui_base::component::Intent::new(&queue, label, "choose")),
                 ..MenuItemProps::default()
             })
         };

@@ -118,7 +118,8 @@ tilo_test_env::scenario! {
 
     phase deferred_input_embedded_app_follows_its_actual_editable_child;
     {
-        use crate::widget::{Column, TextInput, Widget};
+        use crate::{widget::Column, widget::TextInput};
+        use tilo_ui_base::widget::Widget;
         let mut app = App::from_scoped_parts_with_controlled_inputs(
             crate::wake::WakeScope::new(),
             State::new(),
@@ -134,7 +135,7 @@ tilo_test_env::scenario! {
         let second = app.focusable_order[1];
         app.set_focused_node(Some(first));
         let mut embedded = crate::app::EmbeddedApp::new(app, |_| {}).unwrap();
-        assert!(crate::ime::ImeWindowState::from_widget(&embedded).is_some());
+        assert!(tilo_ui_base::ime::ImeWindowState::from_widget(&embedded).is_some());
         let stamp = embedded.ime_edit_fingerprint(&[3; 32]).unwrap();
         embedded.app_mut().set_focused_node(Some(second));
         assert_ne!(
@@ -156,7 +157,7 @@ tilo_test_env::scenario! {
             "an edit and inverse must invalidate deferred embedded input"
         );
         embedded.app_mut().set_focused_node(None);
-        assert!(crate::ime::ImeWindowState::from_widget(&embedded).is_none());
+        assert!(tilo_ui_base::ime::ImeWindowState::from_widget(&embedded).is_none());
         assert!(embedded.ime_edit_fingerprint(&[3; 32]).is_none());
     }
 }

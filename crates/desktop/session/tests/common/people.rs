@@ -2850,7 +2850,7 @@ fn stage_app(app: &str, directory: &Path, programs: &[(PathBuf, &str)]) -> (Path
     // carries: an installed app is handed the one in its runtime bundle, which the manifest here
     // leaves out ([`manifest_of`]). An app without one sets its text in the system's fonts, found
     // by parsing every face the system has at each launch, which no installed app does.
-    if let Some(catalog) = ui::font_catalog::catalog_root() {
+    if let Some(catalog) = tilo_ui_base::font_catalog::catalog_root() {
         link_tree(&catalog, &payload.join("bin").join("fonts"));
     }
     let manifest = manifest_of(app, directory).into_bytes();

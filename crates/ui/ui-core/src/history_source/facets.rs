@@ -4,8 +4,8 @@
 //! them later. Counts are derived from durable action context; legacy entries
 //! simply contribute to people and operation-class lenses.
 
-use crate::i18n::widget_text;
 use std::collections::BTreeMap;
+use tilo_ui_base::i18n::widget_text;
 
 use crate::widget::EntryKind;
 
@@ -89,7 +89,8 @@ mod tests {
     use tilo_actions::{ActionContext, ActionFacet};
 
     use super::*;
-    use crate::widget::{HistoryAuthor, HistoryEntryId};
+    use crate::widget::HistoryAuthor;
+    use tilo_ui_base::widget::HistoryEntryId;
 
     #[test]
     fn indexes_open_action_dimensions_and_keeps_legacy_people() {

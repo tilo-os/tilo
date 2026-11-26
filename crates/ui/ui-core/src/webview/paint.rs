@@ -21,9 +21,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill, ImageBrush, ImageData};
 
-use crate::text_render::{FontChoice, TextRenderer, TextStyle, TextWeight};
 use crate::time::{Duration, Instant};
 use tilo_lock::MutexRecover as _;
+use tilo_ui_base::{
+    text_render::FontChoice, text_render::TextRenderer, text_render::TextStyle,
+    text_render::TextWeight,
+};
 use tilo_webview::{
     FrameSlot, KeyModifiers, SharedEngine, WebViewCommand, WebViewEngine, WebViewEvent,
 };
@@ -1541,7 +1544,7 @@ impl PageRenderer {
             return cached.clone();
         }
         let bytes = blobs.blob(hash)?;
-        let decoded = crate::image_decoders::page(&bytes);
+        let decoded = tilo_ui_base::image_decoders::page(&bytes);
         self.images.insert(*hash, decoded.clone());
         decoded
     }
@@ -2065,7 +2068,7 @@ mod tests {
                 renderer.family(&text, "\"Courier New\", monospace"),
                 FontChoice::Monospace
             );
-            let has = crate::text_render::UI_MONOSPACE_FAMILY;
+            let has = tilo_ui_base::text_render::UI_MONOSPACE_FAMILY;
             assert_eq!(
                 renderer.family(&text, &format!("Harbour, \"{has}\", serif")),
                 FontChoice::Named(has.to_owned()),
@@ -2629,7 +2632,7 @@ mod tests {
             },
             &frame,
         );
-        let pixels = crate::offscreen::OffscreenRenderer::new(400, 80)
+        let pixels = tilo_ui_base::offscreen::OffscreenRenderer::new(400, 80)
             .render_resilient(&scene, Color::WHITE);
         let dark: Vec<usize> = pixels
             .chunks_exact(4)
@@ -2690,7 +2693,7 @@ mod tests {
             },
             &frame,
         );
-        let mut renderer = crate::offscreen::OffscreenRenderer::new(800, 600);
+        let mut renderer = tilo_ui_base::offscreen::OffscreenRenderer::new(800, 600);
         let ours = renderer.render_resilient(&scene, Color::WHITE);
         let reference = image::load_from_memory(TOP_PNG).expect("png").to_rgba8();
         let (mut close, mut total) = (0_usize, 0_usize);

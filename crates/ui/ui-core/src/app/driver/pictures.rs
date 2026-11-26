@@ -91,7 +91,7 @@ impl Driver {
         // SAFETY: the driver owns the app's laid-out tree and holds it exclusively here; no
         // reference into it outlives the call.
         unsafe {
-            crate::widget::bound_nodes::mutate_bound_node(
+            tilo_ui_base::widget::bound_nodes::mutate_bound_node(
                 &app.bindings,
                 &app.layout.node_map,
                 node,
@@ -100,7 +100,7 @@ impl Driver {
                     let mut scene = Scene::new();
                     let transform =
                         Affine::scale(PICTURE_SCALE) * Affine::translate((-rect[0], -rect[1]));
-                    crate::widget::DrawChild::draw_child(
+                    tilo_ui_base::widget::DrawChild::draw_child(
                         widget,
                         &mut scene,
                         transform,
@@ -122,13 +122,17 @@ fn picture_of(path: &str, scene: &Scene, width: f64, height: f64) -> Option<Arc<
         let device = (logical * PICTURE_SCALE).ceil();
         (1.0..=f64::from(u16::MAX))
             .contains(&device)
-            .then(|| crate::num::u32_of_f64(device))
+            .then(|| tilo_ui_base::num::u32_of_f64(device))
     };
     let (width, height) = (pixels(width)?, pixels(height)?);
-    let rgba =
-        crate::offscreen::render_picture(scene, width, height, vello::peniko::Color::TRANSPARENT)
-            .inspect_err(|why| tracing::warn!(path, %why, "a page's picture could not be drawn"))
-            .ok()?;
+    let rgba = tilo_ui_base::offscreen::render_picture(
+        scene,
+        width,
+        height,
+        vello::peniko::Color::TRANSPARENT,
+    )
+    .inspect_err(|why| tracing::warn!(path, %why, "a page's picture could not be drawn"))
+    .ok()?;
     let png = crate::png::encode_rgba8(width, height, &rgba).ok()?;
     let encoded = base64::engine::general_purpose::STANDARD.encode(png);
     Some(format!("data:image/png;base64,{encoded}").into())

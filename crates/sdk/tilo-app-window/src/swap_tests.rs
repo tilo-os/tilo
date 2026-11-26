@@ -4,9 +4,9 @@
 
 use super::*;
 use tilo_render_protocol::patch::{Patch, local};
+use tilo_ui_base::tokens::MotionSource;
 use ui::time::testing::with_monotonic_time as clock;
 use ui::time::{Duration, Instant};
-use ui::tokens::MotionSource;
 use ui::widget::Swapped;
 
 /// A page of the stage: a stack keyed by its name, holding a line of its own.
@@ -55,8 +55,8 @@ impl Shown {
         let window = Box::new(AppWindow::new(Box::new(end), Vec::new()));
         let harness = clock(now, || {
             let mut harness = ui::headless::Driver::new(ui::State::new(), window, (600, 800));
-            harness.set_theme(ui::Theme::dark().with_reduce_motion(reduced));
-            ui::widget::find_mut::<AppWindow>(harness.root_widget_mut())
+            harness.set_theme(tilo_ui_base::Theme::dark().with_reduce_motion(reduced));
+            tilo_ui_base::widget::find_mut::<AppWindow>(harness.root_widget_mut())
                 .expect("the window")
                 .receive();
             harness.relayout();
@@ -72,7 +72,7 @@ impl Shown {
             patches,
         }];
         clock(now, || {
-            ui::motion::note_source(source);
+            tilo_ui_base::motion::note_source(source);
             self.app
                 .send(wire::encode_batch(&batch).expect("encodes"))
                 .expect("sends");
@@ -82,7 +82,7 @@ impl Shown {
 
     fn frame(&mut self, now: Instant) {
         clock(now, || {
-            ui::widget::find_mut::<AppWindow>(self.harness.root_widget_mut())
+            tilo_ui_base::widget::find_mut::<AppWindow>(self.harness.root_widget_mut())
                 .expect("the window")
                 .receive();
             self.harness.relayout();
@@ -90,7 +90,7 @@ impl Shown {
     }
 
     fn stage(&self) -> &Swapped {
-        ui::widget::find_test_id(self.harness.root_widget(), "stage")
+        tilo_ui_base::widget::find_test_id(self.harness.root_widget(), "stage")
             .and_then(|widget| widget.as_any())
             .and_then(|any| any.downcast_ref::<Swapped>())
             .expect("the stage swaps its page")
@@ -223,7 +223,7 @@ fn a_change_of_the_same_page_is_reconciled_in_place_and_never_swaps() {
     let frame = start + FRAME;
     shown.frame(frame);
     assert!(
-        ui::widget::find_test_id(shown.harness.root_widget(), "stage")
+        tilo_ui_base::widget::find_test_id(shown.harness.root_widget(), "stage")
             .and_then(|widget| widget.as_any())
             .and_then(|any| any.downcast_ref::<Swapped>())
             .is_none(),
@@ -259,7 +259,7 @@ impl Shown {
             self.harness
                 .click_named(name)
                 .expect("the control is drawn");
-            ui::widget::find_mut::<AppWindow>(self.harness.root_widget_mut())
+            tilo_ui_base::widget::find_mut::<AppWindow>(self.harness.root_widget_mut())
                 .expect("the window")
                 .flush();
         });

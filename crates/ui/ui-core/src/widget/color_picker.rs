@@ -2,21 +2,21 @@
 //! it leaves the widget rect (see `wants_pointer_capture`).
 
 use crate::color_compat::ColorCompat;
-use crate::i18n::widget_text;
-use crate::text_render::{TextRenderer, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::ButtonRole;
-use crate::widget::DrawChild;
-use crate::widget::TaffyTreeExt;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
 #[path = "color_picker_component.rs"]
 mod component;
-use crate::widget::Widget;
-use crate::widget::{AppModel, ModelPath};
 use crate::widget::{Button, ButtonFace, ColorSwatch, ColorSwatchFace};
 use crate::widget::{TextInput, TextInputKind};
 pub use component::ColorPickerProps;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::Color;
@@ -47,18 +47,18 @@ const COMPONENT_GAP: f64 = 8.0;
 const fn token(value: f32) -> f64 {
     value as f64
 }
-const SPACE: crate::tokens::Spacing = crate::tokens::Spacing::BASE;
+const SPACE: tilo_ui_base::tokens::Spacing = tilo_ui_base::tokens::Spacing::BASE;
 const SV_GROWTH_MAX: f64 = token(SPACE.s16) + token(SPACE.s4);
 const TITLE_HEIGHT: f64 = token(SPACE.s6);
 /// Gap between the base block and each optional row.
 const SECTION_GAP: f64 = token(SPACE.s3);
 const SWATCH_SIZE: f64 = token(SPACE.s6);
 const SWATCH_GAP: f64 = token(SPACE.s2);
-const BUTTON_HEIGHT: f64 = token(crate::tokens::Metrics::BASE.min_pointer_target);
+const BUTTON_HEIGHT: f64 = token(tilo_ui_base::tokens::Metrics::BASE.min_pointer_target);
 const BUTTON_WIDTH: f64 = token(SPACE.s16) + token(SPACE.s6);
 const BUTTON_GAP: f64 = token(SPACE.s2);
 const COLUMN_WIDTH: f64 = token(SPACE.s16) + token(SPACE.s8);
-const FIELD_HEIGHT: f64 = token(crate::tokens::Metrics::BASE.bar_control_height);
+const FIELD_HEIGHT: f64 = token(tilo_ui_base::tokens::Metrics::BASE.bar_control_height);
 
 /// Where every part of a picker sits in one rect: shared by layout and by
 /// the size the picker reports, so the reported size is the drawn one.
@@ -119,7 +119,7 @@ pub struct ColorPicker {
     accessible_name: Option<String>,
     color: Color,
     on_change: Option<Box<dyn FnMut(Color)>>,
-    local_state: Option<crate::widget::binding::BoxedBinding<Color>>,
+    local_state: Option<tilo_ui_base::widget::binding::BoxedBinding<Color>>,
     rect: Rect,
     sv_rect: Rect,
     hue_strip_rect: Rect,
@@ -155,14 +155,14 @@ pub struct ColorPicker {
     title_rect: Rect,
     cancel_rect: Rect,
     done_rect: Rect,
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     /// The columns before and after each channel's track: as wide as the widest channel
     /// name and value it shows, measured in the theme and language of its last layout so
     /// no word is shortened while the picker has room.
     label_column: f64,
     value_column: f64,
     /// The style the channel names and values are drawn and measured in.
-    caption_style: Option<crate::text_render::TextStyle>,
+    caption_style: Option<tilo_ui_base::text_render::TextStyle>,
 
     dirty: bool,
 }
@@ -171,7 +171,7 @@ impl ColorPicker {
     pub fn new(initial: Color) -> Self {
         let mut s = Self {
             dirty: true,
-            accessible_name: Some(crate::i18n::widget_format("widget-color-name", &[])),
+            accessible_name: Some(tilo_ui_base::i18n::widget_format("widget-color-name", &[])),
             color: initial,
             on_change: None,
             local_state: None,
@@ -190,7 +190,7 @@ impl ColorPicker {
                 .control_size(crate::widget::ControlSize::Small)
                 .with_kind(TextInputKind::Code)
                 .with_id("color_picker.hex")
-                .with_accessible_name(crate::i18n::widget_format("widget-color-hex", &[])),
+                .with_accessible_name(tilo_ui_base::i18n::widget_format("widget-color-hex", &[])),
             hex_input_rect: Rect::ZERO,
             #[cfg(any(test, debug_assertions))]
             hex_input_force_dirty_for_test: false,
@@ -205,7 +205,7 @@ impl ColorPicker {
             title_rect: Rect::ZERO,
             cancel_rect: Rect::ZERO,
             done_rect: Rect::ZERO,
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             label_column: SLIDER_COLUMN_MIN,
             value_column: SLIDER_COLUMN_MIN,
             caption_style: None,
@@ -215,8 +215,8 @@ impl ColorPicker {
         s
     }
 
-    pub fn from_state(state: &crate::LocalState<Color>) -> Self {
-        let (color, binding) = crate::widget::binding::local(state);
+    pub fn from_state(state: &tilo_ui_base::LocalState<Color>) -> Self {
+        let (color, binding) = tilo_ui_base::widget::binding::local(state);
         let mut picker = Self::new(color);
         picker.local_state = Some(binding);
         picker
@@ -224,9 +224,10 @@ impl ColorPicker {
 
     /// Create a colour picker following a colour held as its hex text: `fallback` until the
     /// text names one.
-    pub fn from_text_state(state: &crate::LocalState<String>, fallback: Color) -> Self {
-        let (color, binding) =
-            crate::widget::binding::derived(state, move |text| parse_hex(text).unwrap_or(fallback));
+    pub fn from_text_state(state: &tilo_ui_base::LocalState<String>, fallback: Color) -> Self {
+        let (color, binding) = tilo_ui_base::widget::binding::derived(state, move |text| {
+            parse_hex(text).unwrap_or(fallback)
+        });
         let mut picker = Self::new(color);
         picker.local_state = Some(binding);
         picker
@@ -341,7 +342,7 @@ impl ColorPicker {
         if natural.bottom <= rect.height() {
             return natural;
         }
-        let minimum = token(crate::tokens::Metrics::BASE.min_pointer_target);
+        let minimum = token(tilo_ui_base::tokens::Metrics::BASE.min_pointer_target);
         let side = (side - (natural.bottom - rect.height())).max(minimum.min(side));
         self.layout_with_sv(rect, side)
     }
@@ -587,10 +588,10 @@ impl ColorPicker {
     /// Map a press inside `sv_rect` to saturation (x) and value (y): top
     /// left is sat=0/value=1, matching the standard SV-square convention.
     fn sv_from_point(&self, p: Point) -> (f32, f32) {
-        let sx = crate::num::f32_of_f64(
+        let sx = tilo_ui_base::num::f32_of_f64(
             ((p.x - self.sv_rect.x0) / self.sv_rect.width()).clamp(0.0, 1.0),
         );
-        let sy = crate::num::f32_of_f64(
+        let sy = tilo_ui_base::num::f32_of_f64(
             ((p.y - self.sv_rect.y0) / self.sv_rect.height()).clamp(0.0, 1.0),
         );
         let s = sx;
@@ -600,13 +601,13 @@ impl ColorPicker {
 
     /// Hue from cursor y in the hue strip rect, 0..1 top to bottom.
     fn hue_from_point(&self, p: Point) -> f32 {
-        crate::num::f32_of_f64(
+        tilo_ui_base::num::f32_of_f64(
             ((p.y - self.hue_strip_rect.y0) / self.hue_strip_rect.height()).clamp(0.0, 1.0),
         )
     }
 
     fn channel_from_point(slider_rect: Rect, p: Point) -> f32 {
-        crate::num::f32_of_f64(crate::widget::SliderFace::new(slider_rect, 0.0).value_at(p))
+        tilo_ui_base::num::f32_of_f64(crate::widget::SliderFace::new(slider_rect, 0.0).value_at(p))
     }
 
     fn target_at(&self, p: Point) -> Option<DragTarget> {
@@ -677,7 +678,7 @@ impl ColorPicker {
         &self,
         scene: &mut Scene,
         transform: Affine,
-        colors: &crate::tokens::colors::Colors,
+        colors: &tilo_ui_base::tokens::colors::Colors,
         radius_sm: f64,
     ) {
         use vello::peniko::{ColorStop, Extend, Gradient};
@@ -729,7 +730,7 @@ impl ColorPicker {
         } else {
             // The field holds every colour; its edge is measured against the
             // surface the picker sits on (HIG §9.5).
-            (1.0, crate::surface::edge_on(colors.surfaces.raised))
+            (1.0, tilo_ui_base::surface::edge_on(colors.surfaces.raised))
         };
         scene.stroke(
             &Stroke::new(sv_border_w),
@@ -786,7 +787,7 @@ impl ColorPicker {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            crate::surface::edge_on(colors.surfaces.raised),
+            tilo_ui_base::surface::edge_on(colors.surfaces.raised),
             None,
             &hue_shape,
         );
@@ -820,7 +821,7 @@ impl ColorPicker {
             title,
             theme.tokens.colors.text_primary,
             transform.pre_translate(Vec2::new(self.title_rect.x0, y)),
-            Some(crate::num::f32_of_f64(self.title_rect.width())),
+            Some(tilo_ui_base::num::f32_of_f64(self.title_rect.width())),
             &style.clone().with_weight(TextWeight::Semibold),
         );
     }
@@ -934,7 +935,7 @@ impl ColorPicker {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            crate::surface::edge_on(self.color),
+            tilo_ui_base::surface::edge_on(self.color),
             None,
             &preview_shape,
         );
@@ -970,7 +971,7 @@ impl ColorPicker {
             let name_column = self.slider_name_column(slider);
             let words = text_renderer.elide_to_width_style(
                 &widget_text(name),
-                crate::num::f32_of_f64(name_column.width()),
+                tilo_ui_base::num::f32_of_f64(name_column.width()),
                 &style,
             );
             text_renderer.draw_style(
@@ -1012,13 +1013,13 @@ impl Widget for ColorPicker {
         false
     }
 
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         // A sync is a read of what the document holds, not a paint: only the
         // pull landing a colour this picker was not already showing is one.
         if let Some(binding) = &mut self.local_state
-            && let crate::widget::binding::Pulled::Value(color) = binding.pull(state, root)
+            && let tilo_ui_base::widget::binding::Pulled::Value(color) = binding.pull(state, root)
             && self.color != color
         {
             self.color = color;
@@ -1035,8 +1036,8 @@ impl Widget for ColorPicker {
         self.caption_style = Some(theme.text(TextRole::Caption));
         let style = Style {
             size: Size::from_lengths(
-                crate::num::f32_of_f64(PICKER_WIDTH),
-                crate::num::f32_of_f64(self.content_height(PICKER_WIDTH)),
+                tilo_ui_base::num::f32_of_f64(PICKER_WIDTH),
+                tilo_ui_base::num::f32_of_f64(self.content_height(PICKER_WIDTH)),
             ),
             max_size: Size {
                 width: Dimension::percent(1.0),
@@ -1052,7 +1053,7 @@ impl Widget for ColorPicker {
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
-        text: &mut crate::text_render::TextRenderer,
+        text: &mut tilo_ui_base::text_render::TextRenderer,
     ) -> bool {
         // The columns beside the channel tracks take the words they hold, as the theme
         // and the window's language set them and this pass can measure them.
@@ -1068,7 +1069,8 @@ impl Widget for ColorPicker {
             return false;
         };
         let mut style = current.clone();
-        style.size.height = Dimension::length(crate::num::f32_of_f64(self.content_height(width)));
+        style.size.height =
+            Dimension::length(tilo_ui_base::num::f32_of_f64(self.content_height(width)));
         if style == *current {
             return false;
         }
@@ -1076,10 +1078,10 @@ impl Widget for ColorPicker {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
+        self.apply_layout_external(tilo_ui_base::widget::layout_rect(taffy, node, origin));
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1103,7 +1105,7 @@ impl Widget for ColorPicker {
             .draw_child(scene, transform, text_renderer, theme, &env);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         // Embedded hex input gets the event first. It isn't registered in
         // the parent's taffy/node_map, though, so its own
@@ -1265,11 +1267,11 @@ impl Widget for ColorPicker {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -1341,7 +1343,7 @@ impl Widget for ColorPicker {
         self.hex_input.ime_edit_fingerprint(key)
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         Widget::ime_content(&self.hex_input)
     }
 
@@ -1353,7 +1355,7 @@ impl Widget for ColorPicker {
     /// What inputs the host has, from the frame: a swatch is a finger's target on touch.
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.interaction = environment;
     }
@@ -1362,8 +1364,8 @@ impl Widget for ColorPicker {
     /// the hue strip and the red, green and blue sliders — each named and reading its own
     /// value — then one radio button per swatch (checked while it is the current colour) and,
     /// in confirm mode, *Cancel* and *Done*.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let value = AccessNode::new(Role::ComboBox)
             .with_action_target(TARGET_VALUE)
             .with_optional_name(self.accessible_name.as_ref().map(|name| widget_text(name)))
@@ -1445,11 +1447,11 @@ impl Widget for ColorPicker {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         if let Some(index) = target.strip_prefix(TARGET_SWATCH) {
             return matches!(action, Action::Activate)
                 && index
@@ -1476,12 +1478,12 @@ impl Widget for ColorPicker {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
-        let crate::a11y::Action::SetValue(value) = action else {
+        let tilo_ui_base::a11y::Action::SetValue(value) = action else {
             return false;
         };
         let Some(color) = parse_hex(value) else {
@@ -1500,8 +1502,8 @@ impl ColorPicker {
         value: String,
         target: &'static str,
         bounds: Rect,
-    ) -> crate::a11y::AccessNode {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    ) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         AccessNode::new(Role::Slider)
             .with_name(widget_text(name))
             .with_value(value)
@@ -1511,8 +1513,8 @@ impl ColorPicker {
     }
 
     /// A slider's step from a reader: five steps a press, or the value it names.
-    fn move_channel(&mut self, action: &crate::a11y::Action, channel: Channel) -> bool {
-        use crate::a11y::Action;
+    fn move_channel(&mut self, action: &tilo_ui_base::a11y::Action, channel: Channel) -> bool {
+        use tilo_ui_base::a11y::Action;
         let span = if channel == Channel::Hue {
             360.0
         } else {
@@ -1542,19 +1544,19 @@ impl ColorPicker {
         .clamp(0.0, span);
         match channel {
             Channel::Hue => {
-                let hue = crate::num::f32_of_f64(target / 360.0).min(0.999_9);
+                let hue = tilo_ui_base::num::f32_of_f64(target / 360.0).min(0.999_9);
                 self.set_hue(hue);
             }
             Channel::Red => {
-                let red = Self::channel_u8(crate::num::f32_of_f64(target));
+                let red = Self::channel_u8(tilo_ui_base::num::f32_of_f64(target));
                 self.set_rgb(red, self.color.g(), self.color.b());
             }
             Channel::Green => {
-                let green = Self::channel_u8(crate::num::f32_of_f64(target));
+                let green = Self::channel_u8(tilo_ui_base::num::f32_of_f64(target));
                 self.set_rgb(self.color.r(), green, self.color.b());
             }
             Channel::Blue => {
-                let blue = Self::channel_u8(crate::num::f32_of_f64(target));
+                let blue = Self::channel_u8(tilo_ui_base::num::f32_of_f64(target));
                 self.set_rgb(self.color.r(), self.color.g(), blue);
             }
         }
@@ -1574,8 +1576,8 @@ fn parse_hex(s: &str) -> Option<Color> {
 mod tests {
     use super::*;
     use crate::testing::dispatch;
-    use crate::theme::Theme;
     use automerge::AutoCommit;
+    use tilo_ui_base::theme::Theme;
 
     fn picker_at(initial: Color, origin: Point) -> ColorPicker {
         let mut p = ColorPicker::new(initial);
@@ -1584,11 +1586,11 @@ mod tests {
         p
     }
 
-    use crate::synthetic_input::cursor_moved;
+    use tilo_ui_base::synthetic_input::cursor_moved;
 
-    use crate::synthetic_input::mouse_press;
+    use tilo_ui_base::synthetic_input::mouse_press;
 
-    use crate::synthetic_input::mouse_release;
+    use tilo_ui_base::synthetic_input::mouse_release;
 
     fn finger(phase: winit::event::TouchPhase, x: f64, y: f64) -> WindowEvent {
         WindowEvent::Touch(winit::event::Touch {
@@ -1768,7 +1770,7 @@ mod tests {
                     );
                 }
                 assert!(
-                    picker.sv_rect.width() >= token(crate::tokens::Metrics::BASE.min_pointer_target)
+                    picker.sv_rect.width() >= token(tilo_ui_base::tokens::Metrics::BASE.min_pointer_target)
                 );
                 assert_eq!(
                     picker.preferred_height(area.width()),
@@ -1806,7 +1808,7 @@ mod tests {
             }
 
             fn every_swatch_is_a_radio_with_its_own_action() {
-                use crate::a11y::{Action, Role};
+                use tilo_ui_base::{a11y::Action, a11y::Role};
                 let mut p = laid_out(
                     ColorPicker::new(Color::from_rgb8(0xEF, 0x44, 0x44)).with_swatches(swatches()),
                 );
@@ -1833,7 +1835,7 @@ mod tests {
                     &mut p,
                     &target,
                     &Action::Activate,
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
                 assert_eq!(p.hex_string(), "#10B981");
@@ -1841,7 +1843,7 @@ mod tests {
                     &mut p,
                     &format!("{TARGET_SWATCH}9"),
                     &Action::Activate,
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
             }
@@ -1884,12 +1886,12 @@ mod tests {
                 let mut text = TextRenderer::new();
                 Widget::draw(
                     &mut p,
-                    &mut crate::draw::DrawCtx::new(
+                    &mut tilo_ui_base::draw::DrawCtx::new(
                         &mut scene,
                         Affine::IDENTITY,
                         &mut text,
                         &theme,
-                        crate::presence::PresenceCtx::default().draw_env(),
+                        tilo_ui_base::presence::PresenceCtx::default().draw_env(),
                     ),
                 );
                 assert!(
@@ -1899,29 +1901,29 @@ mod tests {
             }
 
             fn every_channel_name_is_drawn_whole_in_each_language() {
-                use crate::tokens::TextRole;
+                use tilo_ui_base::tokens::TextRole;
 
                 /// Puts the thread back in the language the other cases write in.
                 struct Speaking;
                 impl Drop for Speaking {
                     fn drop(&mut self) {
-                        crate::i18n::set_person_locale(None);
-                        crate::i18n::I18nManager::set_locale("en-US");
+                        tilo_ui_base::i18n::set_person_locale(None);
+                        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
                     }
                 }
 
                 let _restore = Speaking;
                 for language in ["en-US", "de-DE"] {
-                    crate::i18n::set_person_locale(Some(language));
-                    crate::i18n::I18nManager::register_widget_messages();
+                    tilo_ui_base::i18n::set_person_locale(Some(language));
+                    tilo_ui_base::i18n::I18nManager::register_widget_messages();
                     if language == "de-DE" {
-                        crate::i18n::I18nManager::add_resource(
+                        tilo_ui_base::i18n::I18nManager::add_resource(
                             language,
-                            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/locales/de-DE.ftl"))
+                            include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../ui-base/locales/de-DE.ftl"))
                                 .to_owned(),
                         );
                     }
-                    crate::i18n::I18nManager::set_locale(language);
+                    tilo_ui_base::i18n::I18nManager::set_locale(language);
                     if language == "de-DE" {
                         assert_eq!(
                             widget_text("widget-colour-green"),
@@ -1935,7 +1937,7 @@ mod tests {
                     let theme = Theme::dark();
                     let style = theme.text(TextRole::Caption);
                     let mut text = TextRenderer::new();
-                    crate::widget::layout::lay_out_detached(
+                    tilo_ui_base::widget::layout::lay_out_detached(
                         &mut picker,
                         Rect::new(0.0, 0.0, width, height),
                         &theme,
@@ -1958,7 +1960,7 @@ mod tests {
                         assert_eq!(
                             text.elide_to_width_style(
                                 &words,
-                                crate::num::f32_of_f64(column),
+                                tilo_ui_base::num::f32_of_f64(column),
                                 &style
                             ),
                             words,
@@ -1969,14 +1971,14 @@ mod tests {
             }
 
             fn a_reader_steps_a_channel_without_a_pointer() {
-                use crate::a11y::Action;
+                use tilo_ui_base::a11y::Action;
                 let mut p = laid_out(ColorPicker::new(Color::from_rgb8(0x12, 0x34, 0x56)));
                 let mut doc = AutoCommit::new();
                 assert!(Widget::perform_semantic_action(
                     &mut p,
                     TARGET_B,
                     &Action::SetValue("255".into()),
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
                 assert_eq!(p.color().b(), 255);
@@ -2032,7 +2034,7 @@ mod tests {
             }
 
             fn confirm_mode_exposes_titled_group_with_cancel_and_done_actions() {
-                use crate::a11y::{Action, Role};
+                use tilo_ui_base::{a11y::Action, a11y::Role};
                 let mut p = laid_out(ColorPicker::new(Color::from_rgb8(9, 9, 9)).confirming("Accent"));
                 let node = Widget::accessibility(&p).expect("picker semantics");
                 assert_eq!(node.role, Role::Group);
@@ -2049,7 +2051,7 @@ mod tests {
                     &mut p,
                     TARGET_DONE,
                     &Action::Activate,
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
                 assert!(matches!(
@@ -2060,7 +2062,7 @@ mod tests {
                     &mut p,
                     TARGET_VALUE,
                     &Action::SetValue("#ABCDEF".into()),
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
                 assert_eq!(p.hex_string(), "#ABCDEF");
@@ -2073,7 +2075,7 @@ mod tests {
 
         phase a_bound_text_colour_is_shown_and_followed;
         {
-            let state = crate::LocalState::new("#ff0000".to_owned());
+            let state = tilo_ui_base::LocalState::new("#ff0000".to_owned());
             let mut picker = ColorPicker::from_text_state(&state, Color::TRANSPARENT);
             assert_eq!(
                 Some(picker.color()),
@@ -2112,7 +2114,11 @@ mod tests {
     }
 
     fn key(p: &mut ColorPicker, named: NamedKey) {
-        let ev = crate::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
-        dispatch(p, &crate::synthetic_input::keyboard_input(ev));
+        let ev = tilo_ui_base::synthetic_input::key_event(
+            Key::Named(named),
+            None,
+            ElementState::Pressed,
+        );
+        dispatch(p, &tilo_ui_base::synthetic_input::keyboard_input(ev));
     }
 }

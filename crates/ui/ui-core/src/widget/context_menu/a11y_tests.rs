@@ -1,10 +1,10 @@
 use super::*;
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 #[test]
 fn menu_accessibility_reports_state_rows_and_checks() {
     fn accessibility_reports_menu_role_and_collapsed_when_closed() {
-        use crate::a11y::Role;
+        use tilo_ui_base::a11y::Role;
         let mut menu = ContextMenu::new();
         menu.push(MenuItem::action("Open", || {}));
         let node = Widget::accessibility(&menu).expect("menu is not presentational");
@@ -39,7 +39,7 @@ fn menu_accessibility_reports_state_rows_and_checks() {
         assert!(menu.is_open(), "a click on the caption chooses nothing");
         let node = Widget::accessibility(&menu).expect("menu semantics");
         let caption = &node.children[1];
-        assert_eq!(caption.role, crate::a11y::Role::StaticText);
+        assert_eq!(caption.role, tilo_ui_base::a11y::Role::StaticText);
         assert_eq!(caption.name.as_deref(), Some("Hosted by example.org"));
         assert!(
             menu.item_height(1) < menu.item_height(0),
@@ -60,15 +60,15 @@ fn menu_accessibility_reports_state_rows_and_checks() {
         assert_eq!(
             roles,
             [
-                crate::a11y::Role::MenuItem,
-                crate::a11y::Role::Separator,
-                crate::a11y::Role::MenuItem
+                tilo_ui_base::a11y::Role::MenuItem,
+                tilo_ui_base::a11y::Role::Separator,
+                tilo_ui_base::a11y::Role::MenuItem
             ]
         );
         assert!(!node.children[1].state.focusable);
         let mut node = node;
         node.children
-            .retain(|child| child.role != crate::a11y::Role::Separator);
+            .retain(|child| child.role != tilo_ui_base::a11y::Role::Separator);
         assert_eq!(node.children[0].name.as_deref(), Some("Keep Offline"));
         assert_eq!(
             node.children[0].action_target.as_deref(),
@@ -98,7 +98,7 @@ fn menu_accessibility_reports_state_rows_and_checks() {
     }
 
     // Motion reads at its end: this test checks the resting frame.
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     accessibility_reports_menu_role_and_collapsed_when_closed();
     a_caption_is_read_among_the_rows_but_never_chosen();
     accessibility_exposes_named_action_rows_and_the_rule_between_them();

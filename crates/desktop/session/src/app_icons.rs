@@ -21,7 +21,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use desktop_entry::icon_theme::{self, IconFormat, IconLookup, IconSearchPath};
 use tilo_lock::MutexRecover as _;
-use ui::icons::{AppImage, AppImageSource};
+use tilo_ui_base::{icons::AppImage, icons::AppImageSource};
 
 use crate::lists::{AppLists, Lists};
 
@@ -56,7 +56,7 @@ impl AppImageSource for Artwork {
     /// Never touches the disk on the frame's thread: an icon that is not rasterised yet is asked
     /// for, and this frame paints without it.
     fn pixels(&self, device_px: u32) -> Option<ui::peniko::ImageData> {
-        let device_px = device_px.clamp(1, ui::icons::MAX_DEVICE_PX);
+        let device_px = device_px.clamp(1, tilo_ui_base::icons::MAX_DEVICE_PX);
         for layer in &self.layers {
             match layer {
                 Layer::Pixels(images) => return pick(images, device_px),
@@ -121,7 +121,10 @@ impl crate::Session {
             if self.window_artwork.get(&window.id) != Some(&source) {
                 let image = match window.icon.as_ref() {
                     Some(icon) => Some(window_art(window.id, icon)),
-                    None => window.app_id.as_deref().and_then(ui::icons::app_artwork),
+                    None => window
+                        .app_id
+                        .as_deref()
+                        .and_then(tilo_ui_base::icons::app_artwork),
                 };
                 self.shared.handle.set_window_artwork(window.id, image);
             }
@@ -137,7 +140,7 @@ impl crate::Session {
 }
 
 /// The app `app_id`'s own artwork, as every surface that lists it draws it
-/// ([`ui::icons::app_artwork`]): the icon its installed package signed, else the icon its desktop
+/// ([`tilo_ui_base::icons::app_artwork`]): the icon its installed package signed, else the icon its desktop
 /// entry names. `None` for an app with neither, which wears its glyph. Never touches the disk on
 /// the frame's thread: both are read from the app lists and the memoised entry scan, and the
 /// pixels come from the worker.
@@ -167,11 +170,11 @@ fn app_icon_name(app_id: &str) -> Option<String> {
 /// kept in the same cache the frame's artwork reads.
 pub(crate) fn app_png(app_id: &str, px: u32) -> Option<Vec<u8>> {
     let name = app_icon_name(app_id)?;
-    let px = px.clamp(1, ui::icons::MAX_DEVICE_PX);
+    let px = px.clamp(1, tilo_ui_base::icons::MAX_DEVICE_PX);
     let image = registry().resolve_now(&name, px)?;
     let rgba = image.data.data();
     let encoded = encode_png(rgba, image.width, image.height)?;
-    (encoded.len() <= ui::icons::MAX_PNG_BYTES).then_some(encoded)
+    (encoded.len() <= tilo_ui_base::icons::MAX_PNG_BYTES).then_some(encoded)
 }
 
 /// Straight-alpha RGBA pixels as a PNG.
@@ -346,10 +349,10 @@ pub(crate) fn app_lists_snapshot() -> Option<(u64, Arc<AppLists>)> {
 }
 
 /// Wake the loop once artwork is ready, so what paints it repaints with it, and answer every
-/// surface of this process that asks for an app's artwork ([`ui::icons::app_artwork`]).
+/// surface of this process that asks for an app's artwork ([`tilo_ui_base::icons::app_artwork`]).
 pub(crate) fn set_wake(wake: Arc<dyn Fn() + Send + Sync>) {
     *registry().wake.lock_recover() = Some(wake);
-    ui::icons::set_app_artwork(Arc::new(app_art));
+    tilo_ui_base::icons::set_app_artwork(Arc::new(app_art));
 }
 
 struct Registry {
@@ -454,7 +457,7 @@ pub(crate) fn tray_raster(
     theme_path: Option<&str>,
     device_px: u32,
 ) -> Option<(u32, u32, Arc<Vec<u8>>)> {
-    let device_px = device_px.clamp(1, ui::icons::MAX_DEVICE_PX);
+    let device_px = device_px.clamp(1, tilo_ui_base::icons::MAX_DEVICE_PX);
     let file = match theme_path.map(str::trim).filter(|path| !path.is_empty()) {
         Some(path) => IconLookup::new(
             IconSearchPath::system().with_first_base(PathBuf::from(path)),
@@ -573,7 +576,8 @@ fn dimension(edge: f32) -> Option<u32> {
     if !edge.is_finite() || edge < 1.0 {
         return Some(1);
     }
-    (edge <= f32::from(u16::try_from(ui::icons::MAX_DEVICE_PX).ok()?)).then_some(edge as u32)
+    (edge <= f32::from(u16::try_from(tilo_ui_base::icons::MAX_DEVICE_PX).ok()?))
+        .then_some(edge as u32)
 }
 
 #[cfg(test)]
@@ -698,7 +702,7 @@ mod tests {
         }));
         set_wake(Arc::new(|| {}));
 
-        let image = ui::icons::app_artwork("so.tilo.mail").expect("the app's artwork");
+        let image = tilo_ui_base::icons::app_artwork("so.tilo.mail").expect("the app's artwork");
         assert!(image.pixels(32).is_none(), "the frame never reads the disk");
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
         while image.pixels(32).is_none() {
@@ -729,7 +733,7 @@ mod tests {
         );
 
         assert!(
-            ui::icons::app_artwork("so.tilo.none").is_none(),
+            tilo_ui_base::icons::app_artwork("so.tilo.none").is_none(),
             "no icon: the glyph"
         );
         assert!(app_png("so.tilo.none", 48).is_none());

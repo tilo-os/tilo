@@ -36,8 +36,8 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use tilo_resource::Resource;
-use ui_core::arriving::{Arrival, ArrivalClock, Source};
-use ui_core::collection_transition::ListModelChange;
+use tilo_ui_base::collection_transition::ListModelChange;
+use tilo_ui_base::{arriving::Arrival, arriving::ArrivalClock, arriving::Source};
 use ui_core::widget::virtual_list::ListModel;
 
 use super::chain::{Chain, Chained, PartArrival};

@@ -1,22 +1,22 @@
 //! Colour swatches: one named swatch type, one painter, one picker.
 
-use crate::widget::ModelPath;
 use std::collections::HashMap;
 use taffy::{NodeId, Style, TaffyTree};
+use tilo_ui_base::widget::ModelPath;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 #[path = "color_swatch_component.rs"]
 mod component;
-use crate::widget::{TaffyTreeExt, Widget};
 pub use component::ColorSwatchPickerProps;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct ColorSwatch {
@@ -48,7 +48,7 @@ impl ColorSwatch {
 /// The colour in words: the family a person names it by, or black, white or grey.
 fn colour_name(color: Color) -> String {
     let (hue, saturation, value) = crate::color::rgb_to_hsv(color);
-    crate::i18n::widget_text(colour_name_key(hue, saturation, value))
+    tilo_ui_base::i18n::widget_text(colour_name_key(hue, saturation, value))
 }
 
 /// The word for a colour with this hue (degrees), saturation and value.
@@ -201,7 +201,7 @@ impl ColorSwatchFace {
             transform,
             swatch_edge(theme, self.color, ground),
             None,
-            &crate::surface::edge_outline(fill_rect, fill_radius),
+            &tilo_ui_base::surface::edge_outline(fill_rect, fill_radius),
         );
         self.paint_mark(scene, transform, theme);
         if let Some(marker) = &self.marker {
@@ -229,14 +229,14 @@ impl ColorSwatchFace {
         let ink = colors.ink_on_any(
             &[ground],
             colors.text_dim,
-            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST,
         );
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             transform,
             ink,
             None,
-            &crate::surface::edge_outline(self.rect, radius),
+            &tilo_ui_base::surface::edge_outline(self.rect, radius),
         );
         let inset = radius * (1.0 - std::f64::consts::FRAC_1_SQRT_2);
         let r = self.rect.inset(-inset);
@@ -259,7 +259,7 @@ impl ColorSwatchFace {
             transform,
             swatch_edge(theme, self.color, theme.tokens.colors.surfaces.content),
             None,
-            &crate::surface::edge_outline(self.rect, radius),
+            &tilo_ui_base::surface::edge_outline(self.rect, radius),
         );
         self.paint_mark(scene, transform, theme);
     }
@@ -293,7 +293,7 @@ impl ColorSwatchFace {
                 transform,
                 colors.ink_on_any(&[self.color], colors.text_primary, 3.0),
                 None,
-                &crate::surface::edge_outline(self.rect, radius),
+                &tilo_ui_base::surface::edge_outline(self.rect, radius),
             );
         }
     }
@@ -310,7 +310,7 @@ pub type ThemeColours = dyn FnMut(&Theme) -> Vec<Color>;
 fn swatch_edge(theme: &Theme, fill: Color, ground: Color) -> Color {
     theme.tokens.colors.ink_on_any(
         &[fill, ground],
-        crate::tokens::colors::composite(crate::surface::edge_on(fill), fill),
+        tilo_ui_base::tokens::colors::composite(tilo_ui_base::surface::edge_on(fill), fill),
         SWATCH_EDGE_CONTRAST,
     )
 }
@@ -339,7 +339,7 @@ pub struct ColorSwatchPicker {
     focus_index: usize,
     /// Told each chosen index, as well as [`ColorSwatchPicker::take_choice`].
     on_change: Option<Box<dyn FnMut(usize)>>,
-    action: Option<crate::widget::ActionEmitter<usize>>,
+    action: Option<tilo_ui_base::widget::ActionEmitter<usize>>,
     /// The cell's width (and height, unless `cell_height`), when it is not
     /// a pointer target.
     cell_width: Option<f64>,
@@ -349,11 +349,14 @@ pub struct ColorSwatchPicker {
     /// Works out the swatches' colours from the theme they are drawn in.
     theme_colours: Option<Box<ThemeColours>>,
     /// The theme `theme_colours` last worked the colours out for.
-    coloured_for: Option<(crate::theme::ThemeDocument, crate::tokens::PresenceHue)>,
+    coloured_for: Option<(
+        tilo_ui_base::theme::ThemeDocument,
+        tilo_ui_base::tokens::PresenceHue,
+    )>,
     /// What the palette is called ("Accent"), said before the swatch a reader is on.
     name: Option<String>,
     /// The chosen ring's place: it slides from the swatch chosen before to the one chosen now.
-    ring: crate::motion::MotionValue<Rect>,
+    ring: tilo_ui_base::motion::MotionValue<Rect>,
     /// The swatch `ring` was last placed on.
     ring_for: Option<usize>,
 
@@ -363,7 +366,7 @@ pub struct ColorSwatchPicker {
 impl ColorSwatchPicker {
     /// `columns` swatches per row (at least one).
     pub fn new(swatches: impl IntoIterator<Item = ColorSwatch>, columns: usize) -> Self {
-        let metrics = crate::tokens::Metrics::BASE;
+        let metrics = tilo_ui_base::tokens::Metrics::BASE;
         Self {
             dirty: true,
             swatches: swatches.into_iter().collect(),
@@ -375,7 +378,7 @@ impl ColorSwatchPicker {
             rect: Rect::ZERO,
             swatch_rects: Vec::new(),
             cell: f64::from(metrics.min_pointer_target),
-            pad: f64::from(crate::tokens::Spacing::BASE.s1),
+            pad: f64::from(tilo_ui_base::tokens::Spacing::BASE.s1),
             last_cursor: Point::ZERO,
             hovered: None,
             focused: false,
@@ -388,7 +391,7 @@ impl ColorSwatchPicker {
             theme_colours: None,
             coloured_for: None,
             name: None,
-            ring: crate::motion::MotionValue::new(Rect::ZERO),
+            ring: tilo_ui_base::motion::MotionValue::new(Rect::ZERO),
             ring_for: None,
         }
     }
@@ -402,9 +405,9 @@ impl ColorSwatchPicker {
 
     /// Where the chosen ring stands this frame, while it slides to the chosen swatch: `None`
     /// once it rests there (the chosen swatch draws its own ring) or when none is chosen.
-    fn follow_ring(&mut self, motion: crate::tokens::EffectiveMotion) -> Option<Rect> {
-        use crate::motion::{Direction, ListChange};
-        let now = crate::motion::frame_now();
+    fn follow_ring(&mut self, motion: tilo_ui_base::tokens::EffectiveMotion) -> Option<Rect> {
+        use tilo_ui_base::{motion::Direction, motion::ListChange};
+        let now = tilo_ui_base::motion::frame_now();
         let Some(target) = self
             .shown_selected()
             .and_then(|i| self.swatch_rects.get(i).copied())
@@ -417,11 +420,14 @@ impl ColorSwatchPicker {
             .is_some_and(|before| Some(before) != self.selected)
             && self.ring.target().area() > 0.0;
         if moved_from_another {
-            let timing =
-                ListChange::MOVE.timing(Direction::Enter, motion, crate::motion::input_source());
+            let timing = ListChange::MOVE.timing(
+                Direction::Enter,
+                motion,
+                tilo_ui_base::motion::input_source(),
+            );
             self.ring.set(target, timing, now);
             if let Some(until) = self.ring.settles_at() {
-                crate::motion::want_frames_until(until);
+                tilo_ui_base::motion::want_frames_until(until);
             }
         } else if self.ring.target() != target {
             self.ring.snap(target);
@@ -449,7 +455,7 @@ impl ColorSwatchPicker {
     /// the state it changes answers.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<usize>) -> Self {
-        self.action = Some(crate::widget::ActionEmitter::new(binding));
+        self.action = Some(tilo_ui_base::widget::ActionEmitter::new(binding));
         self
     }
 
@@ -628,7 +634,7 @@ impl ColorSwatchPicker {
         if self
             .action
             .as_ref()
-            .is_none_or(crate::widget::ActionEmitter::is_available)
+            .is_none_or(tilo_ui_base::widget::ActionEmitter::is_available)
         {
             self.selected = Some(index);
             self.choice = Some(index);
@@ -646,14 +652,14 @@ impl ColorSwatchPicker {
     }
 }
 
-impl crate::widget::controls::ActionControls for ColorSwatchPicker {
-    crate::widget::controls::optional_emitter_controls!();
+impl tilo_ui_base::widget::controls::ActionControls for ColorSwatchPicker {
+    tilo_ui_base::optional_emitter_controls!();
 
     /// Each swatch is the control its semantic target names, bound to the
     /// picker's action.
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         let Some(action) = &self.action else {
-            return crate::widget::controls::default_bindings(self);
+            return tilo_ui_base::widget::controls::default_bindings(self);
         };
         (0..self.swatches.len())
             .map(|index| action.metadata(format!("swatch:{index}")))
@@ -668,9 +674,9 @@ impl Widget for ColorSwatchPicker {
         false
     }
 
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls);
 
     fn build_layout(
         &mut self,
@@ -693,7 +699,9 @@ impl Widget for ColorSwatchPicker {
             // not draw in.
             align_self: Some(taffy::AlignSelf::FlexStart),
             min_size: taffy::Size {
-                width: taffy::Dimension::length(crate::num::f32_of_f64(self.cell - self.pad)),
+                width: taffy::Dimension::length(tilo_ui_base::num::f32_of_f64(
+                    self.cell - self.pad,
+                )),
                 height: taffy::Dimension::auto(),
             },
             max_size: taffy::Size {
@@ -722,12 +730,12 @@ impl Widget for ColorSwatchPicker {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.fit = self.fit_in(self.rect.width());
         self.recompute_swatches();
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -764,10 +772,10 @@ impl Widget for ColorSwatchPicker {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.ring.is_moving(crate::motion::frame_now())
+        self.ring.is_moving(tilo_ui_base::motion::frame_now())
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -832,12 +840,12 @@ impl Widget for ColorSwatchPicker {
     }
 
     fn needs_redraw(&self) -> bool {
-        let sliding = self.ring.is_moving(crate::motion::frame_now());
-        crate::widget::redraw_or_children(self.dirty || sliding, self)
+        let sliding = self.ring.is_moving(tilo_ui_base::motion::frame_now());
+        tilo_ui_base::widget::redraw_or_children(self.dirty || sliding, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -929,8 +937,8 @@ impl Widget for ColorSwatchPicker {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         let Some(index) = target
@@ -940,12 +948,12 @@ impl Widget for ColorSwatchPicker {
         else {
             return false;
         };
-        if matches!(action, crate::a11y::Action::Focus) {
+        if matches!(action, tilo_ui_base::a11y::Action::Focus) {
             self.focused = true;
             self.focus_index = index;
             return true;
         }
-        if !matches!(action, crate::a11y::Action::Activate) {
+        if !matches!(action, tilo_ui_base::a11y::Action::Activate) {
             return false;
         }
         self.choose(index);
@@ -956,9 +964,9 @@ impl Widget for ColorSwatchPicker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
     use crate::testing::dispatch;
     use automerge::AutoCommit;
+    use tilo_ui_base::presence::PresenceCtx;
 
     fn rgb(r: u8, g: u8, b: u8) -> Color {
         Color::from_rgb8(r, g, b)
@@ -974,7 +982,7 @@ mod tests {
 
     fn lay_out(w: &mut dyn Widget) {
         let theme = Theme::dark();
-        crate::widget::layout::lay_out_detached(
+        tilo_ui_base::widget::layout::lay_out_detached(
             w,
             vello::kurbo::Rect::new(0.0, 0.0, 300.0, 300.0),
             &theme,
@@ -983,7 +991,7 @@ mod tests {
         .unwrap();
     }
 
-    use crate::synthetic_input::named_key;
+    use tilo_ui_base::synthetic_input::named_key;
 
     tilo_test_env::scenario! {
         /// A swatch and the picker of swatches.
@@ -1004,7 +1012,7 @@ mod tests {
             lay_out(&mut picker);
             // Three cells of 60 by 40, less the gap after the last: the grid
             // has no outer inset.
-            let gap = f64::from(crate::tokens::Spacing::BASE.s1);
+            let gap = f64::from(tilo_ui_base::tokens::Spacing::BASE.s1);
             assert_eq!(picker.get_rect().size(), (180.0 - gap, 40.0 - gap).into(),);
             let first = picker.swatch_rects[0];
             assert!(first.width() > first.height(), "cells are wider than tall");
@@ -1012,9 +1020,9 @@ mod tests {
 
             dispatch(
                 &mut picker,
-                &crate::synthetic_input::cursor_moved(third.x, third.y),
+                &tilo_ui_base::synthetic_input::cursor_moved(third.x, third.y),
             );
-            dispatch(&mut picker, &crate::synthetic_input::mouse_press());
+            dispatch(&mut picker, &tilo_ui_base::synthetic_input::mouse_press());
             assert_eq!(*chosen.borrow(), vec![2]);
 
             picker.set_selected(Some(0));
@@ -1023,7 +1031,7 @@ mod tests {
 
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
-            picker.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark(), PresenceCtx::default().draw_env()));
+            picker.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark(), PresenceCtx::default().draw_env()));
             assert_eq!(painted.get(), 3, "every cell is painted by the sampler");
         }
 
@@ -1062,7 +1070,7 @@ mod tests {
         phase the_chosen_ring_slides_to_the_swatch_chosen_next;
         {
             let motion =
-                crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), false);
+                tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), false);
             let mut picker = ColorSwatchPicker::new(
                 [rgb(0x11, 0x22, 0x33), rgb(0x33, 0x22, 0x11)].map(ColorSwatch::new),
                 2,
@@ -1078,7 +1086,7 @@ mod tests {
             let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
             with_monotonic_time(t0, || {
                 assert_eq!(picker.follow_ring(motion), None, "the first ring is placed, not slid");
-                crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+                tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
                 picker.choose(1);
                 let _ = picker.follow_ring(motion);
             });
@@ -1138,11 +1146,11 @@ mod tests {
 
             dispatch(
                 &mut picker,
-                &crate::synthetic_input::cursor_moved(centre.x, centre.y),
+                &tilo_ui_base::synthetic_input::cursor_moved(centre.x, centre.y),
             );
             assert!(dispatch(
                 &mut picker,
-                &crate::synthetic_input::mouse_press()
+                &tilo_ui_base::synthetic_input::mouse_press()
             ));
             assert_eq!(picker.take_choice(), Some(2));
 
@@ -1155,8 +1163,8 @@ mod tests {
             assert!(Widget::perform_semantic_action(
                 &mut picker,
                 "swatch:0",
-                &crate::a11y::Action::Activate,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &tilo_ui_base::a11y::Action::Activate,
+                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(picker.take_choice(), Some(0));
@@ -1177,7 +1185,7 @@ mod tests {
             let cell = f64::from(theme.tokens.metrics.min_pointer_target);
             let swatches = (0..9).map(|_| ColorSwatch::new(Color::from_rgb8(90, 90, 90)));
             let mut picker = ColorSwatchPicker::new(swatches, 9);
-            crate::widget::layout::lay_out_detached(
+            tilo_ui_base::widget::layout::lay_out_detached(
                 &mut picker,
                 vello::kurbo::Rect::new(0.0, 0.0, cell * 4.5, 400.0),
                 &theme,
@@ -1256,7 +1264,7 @@ mod tests {
                 Theme::light().tokens.colors.surfaces.content,
             );
             assert!(
-                crate::a11y::contrast_ratio(edge, Color::WHITE) >= SWATCH_EDGE_CONTRAST - 1e-6,
+                tilo_ui_base::a11y::contrast_ratio(edge, Color::WHITE) >= SWATCH_EDGE_CONTRAST - 1e-6,
                 "a white swatch keeps an edge on paper"
             );
         }

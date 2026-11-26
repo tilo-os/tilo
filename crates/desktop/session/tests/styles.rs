@@ -104,7 +104,7 @@ fn style_state(session: &Session, style: &str) -> Option<(bool, String)> {
 /// draws the one the person chooses through `show`. Switching keeps the layout.
 #[test]
 fn the_four_shipped_styles_are_listed_and_drawn() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     crate::common::app_store();
     let mut session = session();
     // Frames until the shell has drawn its bar: a part reports its placement once it has, and
@@ -154,7 +154,7 @@ fn the_four_shipped_styles_are_listed_and_drawn() {
 /// package's own `meta.types` never listed a second package's style at all.
 #[test]
 fn a_style_from_another_installed_package_is_listed_and_draws_the_shell() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let store = crate::common::app_store();
     // The person's own style package, written into a scratch directory and installed into the
     // store as any package is: a view of the layout and nothing else, its one line naming
@@ -243,7 +243,7 @@ view timeline(a: shell.Layout) {
 /// styles in the person's own workspace, which the session follows.
 #[test]
 fn a_style_installed_while_the_session_runs_is_listed_without_a_restart() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let store = crate::common::app_store();
     let mut session = session();
     until(&mut session, |session| !session.shell_parts().is_empty());
@@ -288,7 +288,7 @@ view later(a: shell.Layout) {
 /// `tilolang-runtime`'s `a_style_whose_package_does_not_load_draws_a_failed_state_and_is_reported`).
 #[test]
 fn a_style_whose_package_does_not_load_shows_the_strips_and_a_notice_and_keeps_the_choice() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let store = crate::common::app_store();
     let scratch = Scratch::new("layout-style-broken");
     let installed = scratch.install("broken", WORKING_STYLE, store);
@@ -445,7 +445,7 @@ view trapping(a: shell.Layout) {
 
 #[test]
 fn a_style_whose_view_traps_shows_the_strips_and_a_notice() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let store = crate::common::app_store();
     let scratch = Scratch::new("layout-style-trapping");
     let installed = scratch.install("trapping", TRAPPING, store);
@@ -486,7 +486,7 @@ fn a_style_whose_view_traps_shows_the_strips_and_a_notice() {
 /// returns to it as soon as its package loads (`shell.md` §6).
 #[test]
 fn a_fixed_style_package_brings_the_style_back_live() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let store = crate::common::app_store();
     let scratch = Scratch::new("layout-style-fixed");
     let installed = scratch.install("fixed", TRAPPING, store);
@@ -543,7 +543,7 @@ view trapping(a: shell.Layout) {
 #[test]
 fn a_style_chosen_by_a_named_press_draws_within_a_frame_or_two() {
     use ui::window_targets::TargetAction;
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     crate::common::app_store();
     let mut session = session();
     until(&mut session, |session| {
@@ -590,7 +590,7 @@ fn a_style_chosen_by_a_named_press_draws_within_a_frame_or_two() {
 /// from the place they pick the style.
 #[test]
 fn the_desktops_dock_edge_setting_moves_the_dock() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     crate::common::app_store();
     let root = crate::common::private_home();
     let mut session = crate::common::seeded_session(root.path());
@@ -642,7 +642,7 @@ fn the_desktops_dock_edge_setting_moves_the_dock() {
 /// could switch the style but not change what the style shows.
 #[test]
 fn the_repl_moves_the_desktops_dock_by_the_styles_own_action() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     crate::common::app_store();
     let root = crate::common::private_home();
     let mut session = crate::common::seeded_session(root.path());

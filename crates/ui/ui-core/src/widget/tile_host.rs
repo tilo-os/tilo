@@ -1,26 +1,27 @@
 use crate::bound_dispatch::BoundWidget;
 use crate::floating_surface::{FloatingSurfaceProvider, FloatingSurfaceWidgetExt};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use crate::time::{Duration, Instant};
-use crate::widget::TaffyTreeExt;
 use crate::widget::app_widget::{AppKind, AppWidget};
-use crate::widget::component_walk::ComponentBoundary;
-use crate::widget::{AppModel, ModelPath};
-use crate::widget::{
-    AudiencePresentationProvider, AudiencePresentationWidgetExt, CompleteContentWidgetExt as _,
-    FullscreenProvider, FullscreenWidgetExt, Widget,
-};
 use automerge::{AutoCommit, ObjId};
 use std::collections::{HashMap, VecDeque};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::component_walk::ComponentBoundary;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+use tilo_ui_base::{
+    widget::AudiencePresentationProvider, widget::AudiencePresentationWidgetExt,
+    widget::CompleteContentWidgetExt as _, widget::FullscreenProvider, widget::FullscreenWidgetExt,
+    widget::Widget,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Shape};
 use winit::event::WindowEvent;
 
-use crate::motion::{Direction, WindowMotion};
-use crate::tokens::{EffectiveMotion, MotionSource};
-use crate::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{motion::Direction, motion::WindowMotion};
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 
 fn spawn_progress(elapsed: Duration) -> f64 {
     WindowMotion::OPEN.progress_after(
@@ -97,7 +98,7 @@ pub enum TileContent {
     /// browser bundle fetches each app's module the first time one of its
     /// windows opens). It has drawn nothing, so its window reserves its
     /// place and shows the framework's placeholder, as for any content whose
-    /// first frame is not drawn yet ([`crate::arriving`]); the app built in
+    /// first frame is not drawn yet ([`tilo_ui_base::arriving`]); the app built in
     /// its place once it is in goes on with the same arrival
     /// ([`TileHost::continue_arrival`]). It holds no record and takes no
     /// focus or input: nothing typed while it waits lands in a field that is
@@ -114,7 +115,7 @@ const APP_DAMAGE_REACH: f64 = 16.0;
 struct ContentDamage {
     source: u64,
     generation: u64,
-    painted: Option<(Affine, Vec<(crate::damage::WidgetIdentity, Rect)>)>,
+    painted: Option<(Affine, Vec<(tilo_ui_base::damage::WidgetIdentity, Rect)>)>,
     steps: std::collections::VecDeque<(u64, Vec<Rect>)>,
 }
 
@@ -140,17 +141,17 @@ impl ContentDamage {
     /// With `copies` (the host's device pixels per unit of the app's own
     /// coordinates), the host keeps the pixels it presented and can move
     /// them: a scroll in the app is handed over as what moved
-    /// ([`crate::scene_parts::DamageHint::copies`]) and the strip it
+    /// ([`tilo_ui_base::scene_parts::DamageHint::copies`]) and the strip it
     /// exposed, not as its whole viewport.
     fn hint(
         &mut self,
         app: &dyn Widget,
         placement: Affine,
         clip: Rect,
-        env: &crate::draw::DrawEnv<'_>,
+        env: &tilo_ui_base::draw::DrawEnv<'_>,
         copies: Option<f64>,
-    ) -> Option<crate::scene_parts::DamageHint> {
-        let boxes = crate::damage::widget_boxes(app);
+    ) -> Option<tilo_ui_base::scene_parts::DamageHint> {
+        let boxes = tilo_ui_base::damage::widget_boxes(app);
         let from = self.generation;
         self.generation = self.generation.wrapping_add(1);
         let previous = self.painted.replace((placement, boxes));
@@ -166,7 +167,7 @@ impl ContentDamage {
         };
         let mut damage = Vec::new();
         let offers = if copies.is_some() {
-            crate::scroll_copy::accepting(|| app.collect_damage(&mut damage))
+            tilo_ui_base::scroll_copy::accepting(|| app.collect_damage(&mut damage))
         } else {
             app.collect_damage(&mut damage);
             Vec::new()
@@ -178,7 +179,7 @@ impl ContentDamage {
         };
         let (mut rects, copies) = match copies.filter(|_| !offers.is_empty()) {
             None => {
-                damage.extend(crate::damage::changed_boxes_besides_own_damage(
+                damage.extend(tilo_ui_base::damage::changed_boxes_besides_own_damage(
                     app, &before, after,
                 ));
                 (
@@ -220,7 +221,7 @@ impl ContentDamage {
         if self.steps.len() > APP_DAMAGE_STEPS {
             self.steps.pop_front();
         }
-        Some(crate::scene_parts::DamageHint {
+        Some(tilo_ui_base::scene_parts::DamageHint {
             source: self.source,
             from,
             to: self.generation,
@@ -240,7 +241,7 @@ impl ContentDamage {
 /// What an app's drawing changed when the host can move what its scrollers
 /// offer to copy (`offers`, collected with its `damage` in the app's own
 /// coordinates): the damage, with what moved otherwise and what came or
-/// went in a scrolled content ([`crate::scroll_copy::moves_besides`]), in
+/// went in a scrolled content ([`tilo_ui_base::scroll_copy::moves_besides`]), in
 /// the app's coordinates; and the copies (in the section's, moved by the
 /// placement) with what they expose and what stays put over them (in the
 /// section's, clipped to `clip`). `scale` is the host's device pixels per
@@ -248,23 +249,27 @@ impl ContentDamage {
 fn planned_copies(
     app: &dyn Widget,
     (before, after): (
-        &[(crate::damage::WidgetIdentity, Rect)],
-        &[(crate::damage::WidgetIdentity, Rect)],
+        &[(tilo_ui_base::damage::WidgetIdentity, Rect)],
+        &[(tilo_ui_base::damage::WidgetIdentity, Rect)],
     ),
-    offers: &[crate::scroll_copy::ScrollOffer],
+    offers: &[tilo_ui_base::scroll_copy::ScrollOffer],
     mut damage: Vec<Rect>,
     (placement, clip): (Affine, Rect),
     scale: f64,
-) -> (Vec<Rect>, (Vec<crate::scroll_copy::MovedRegion>, Vec<Rect>)) {
-    let covered = crate::damage::boxes_covered_by_own_damage(app);
-    let uncovered = |boxes: &[(crate::damage::WidgetIdentity, Rect)]| -> Vec<_> {
+) -> (
+    Vec<Rect>,
+    (Vec<tilo_ui_base::scroll_copy::MovedRegion>, Vec<Rect>),
+) {
+    let covered = tilo_ui_base::damage::boxes_covered_by_own_damage(app);
+    let uncovered = |boxes: &[(tilo_ui_base::damage::WidgetIdentity, Rect)]| -> Vec<_> {
         boxes
             .iter()
             .filter(|(widget, _)| !covered.contains(widget))
             .copied()
             .collect()
     };
-    let moves = crate::scroll_copy::moves_besides(&uncovered(before), &uncovered(after), offers);
+    let moves =
+        tilo_ui_base::scroll_copy::moves_besides(&uncovered(before), &uncovered(after), offers);
     damage.extend(moves.besides);
     damage.extend(moves.carried);
     // What the window shows, in the app's coordinates; the planner's target
@@ -287,7 +292,8 @@ fn planned_copies(
         (shown.x1 * scale).ceil().clamp(0.0, f64::from(u32::MAX)) as u32,
         (shown.y1 * scale).ceil().clamp(0.0, f64::from(u32::MAX)) as u32,
     );
-    let plan = crate::scroll_copy::plan_placed(offers, &[app], (placement, shown), scale, size);
+    let plan =
+        tilo_ui_base::scroll_copy::plan_placed(offers, &[app], (placement, shown), scale, size);
     let to_section = |rect: Rect| {
         placement
             .transform_rect_bbox(Rect::new(
@@ -307,7 +313,7 @@ fn planned_copies(
         .collect();
     let mut copies = Vec::with_capacity(plan.copies.len());
     for copy in &plan.copies {
-        let moved = crate::scroll_copy::MovedRegion::of(copy, scale);
+        let moved = tilo_ui_base::scroll_copy::MovedRegion::of(copy, scale);
         match moved.transformed(placement) {
             Some(moved) => copies.push(moved),
             None => fixed.push(to_section(copy.destination_rect())),
@@ -319,7 +325,7 @@ fn planned_copies(
 /// The name of the card a tile shows while its record cannot be opened.
 #[must_use]
 pub fn resource_unavailable_title() -> String {
-    crate::i18n::I18nManager::lookup_plain("record-unavailable-title")
+    tilo_ui_base::i18n::I18nManager::lookup_plain("record-unavailable-title")
 }
 
 /// The card a tile shows while its record cannot be opened: what happened
@@ -327,8 +333,8 @@ pub fn resource_unavailable_title() -> String {
 /// behind "Details".
 fn resource_unavailable_card(detail: &str) -> super::EmptyState {
     super::EmptyState::new(resource_unavailable_title())
-        .with_icon(crate::icons::Icon::File)
-        .with_message(crate::i18n::I18nManager::lookup_plain(
+        .with_icon(tilo_ui_base::icons::Icon::File)
+        .with_message(tilo_ui_base::i18n::I18nManager::lookup_plain(
             "record-unavailable-hint",
         ))
         .with_details(detail)
@@ -341,7 +347,7 @@ mod window_search;
     clippy::struct_excessive_bools,
     reason = "history policy, record refusal, focus, layout dirtiness and presentation latches are independent"
 )]
-#[crate::component::not_a_component(shell, "hosts an app's window in the strip")]
+#[tilo_ui_base::component::not_a_component(shell, "hosts an app's window in the strip")]
 pub struct TileHost {
     content: TileContent,
     #[cfg(feature = "model")]
@@ -360,10 +366,10 @@ pub struct TileHost {
     /// component taking its place cannot leave them unanswered.
     component_invocations: std::collections::HashSet<tilo_actions::InvocationId>,
     close_reports: Vec<crate::application::ComponentCloseReport>,
-    owner_lifetime: std::rc::Rc<crate::control_domain::ResourceOwnerLifetime>,
-    ownership_parent: Option<crate::ControlDomain>,
-    ownership_scope: Option<crate::ControlDomain>,
-    ownership_renewal: Option<crate::control_domain::DomainAttachment>,
+    owner_lifetime: std::rc::Rc<tilo_ui_base::control_domain::ResourceOwnerLifetime>,
+    ownership_parent: Option<tilo_ui_base::ControlDomain>,
+    ownership_scope: Option<tilo_ui_base::ControlDomain>,
+    ownership_renewal: Option<tilo_ui_base::control_domain::DomainAttachment>,
     resource_error: Option<String>,
     error_card: Option<(String, super::EmptyState)>,
     record_transition_error: Option<String>,
@@ -382,7 +388,7 @@ pub struct TileHost {
     panic_scope: std::cell::Cell<Option<u64>>,
     hosted_window: Option<crate::hosted_window::HostedWindow>,
     rect: Rect,
-    declared_arrival_shape: Option<super::SkeletonShape>,
+    declared_arrival_shape: Option<tilo_ui_base::widget::SkeletonShape>,
     /// How far [`Self::offset_layout`] moved the tile from where layout put
     /// it. The content keeps its own layout rect, so it is drawn this much
     /// further right instead.
@@ -411,7 +417,7 @@ pub struct TileHost {
 /// While a tile's application runs: its tab named to a panic hook, and its
 /// window current for its bar's slots.
 struct Running {
-    _panic: super::panic_scope::Scope,
+    _panic: tilo_ui_base::widget::panic_scope::Scope,
     _window: crate::window_toolbar::WindowScope,
 }
 
@@ -432,7 +438,7 @@ impl TileHost {
         self.content_shift
     }
 
-    fn attach_live(&mut self, attachment: crate::control_domain::DomainAttachment) {
+    fn attach_live(&mut self, attachment: tilo_ui_base::control_domain::DomainAttachment) {
         let Some(parent) = self.ownership_parent.clone() else {
             return;
         };
@@ -458,7 +464,7 @@ impl TileHost {
             }
             let attachment = self.ownership_renewal.take().unwrap_or(attachment);
             if let TileContent::App(root) = &mut self.content {
-                crate::widget::controls::attach_controls(root.as_mut(), &domain, attachment);
+                tilo_ui_base::widget::controls::attach_controls(root.as_mut(), &domain, attachment);
             }
             #[cfg(feature = "model")]
             if let Some(history) = &mut self.history {
@@ -525,7 +531,7 @@ impl TileHost {
 
     fn app_history(&self) -> Option<&dyn crate::widget::WindowHistory> {
         match &self.content {
-            TileContent::App(app) => super::capability::capability::<
+            TileContent::App(app) => tilo_ui_base::widget::capability::capability::<
                 dyn crate::widget::WindowHistory,
             >(app.as_ref() as &dyn Widget),
             TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
@@ -534,7 +540,7 @@ impl TileHost {
 
     fn app_history_mut(&mut self) -> Option<&mut (dyn crate::widget::WindowHistory + 'static)> {
         match &mut self.content {
-            TileContent::App(app) => super::capability::capability_mut::<
+            TileContent::App(app) => tilo_ui_base::widget::capability::capability_mut::<
                 dyn crate::widget::WindowHistory,
             >(app.as_mut() as &mut dyn Widget),
             TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
@@ -573,11 +579,15 @@ impl TileHost {
             return None;
         };
         let app = app.as_mut() as &mut dyn Widget;
-        let runtime =
-            super::capability::capability::<dyn crate::widget::SearchableWindow>(&*app).is_some();
+        let runtime = tilo_ui_base::widget::capability::capability::<
+            dyn crate::widget::SearchableWindow,
+        >(&*app)
+        .is_some();
         let changed = if runtime {
-            super::capability::capability_mut::<dyn crate::widget::SearchableWindow>(app)
-                .is_some_and(|window| window.visit_search_root(visit))
+            tilo_ui_base::widget::capability::capability_mut::<dyn crate::widget::SearchableWindow>(
+                app,
+            )
+            .is_some_and(|window| window.visit_search_root(visit))
         } else {
             visit(app)
         };
@@ -703,7 +713,7 @@ impl TileHost {
             retained_updates: HashMap::new(),
             component_invocations: std::collections::HashSet::new(),
             close_reports: vec![],
-            owner_lifetime: crate::control_domain::ResourceOwnerLifetime::new(),
+            owner_lifetime: tilo_ui_base::control_domain::ResourceOwnerLifetime::new(),
             ownership_parent: None,
             ownership_scope: None,
             ownership_renewal: None,
@@ -775,13 +785,13 @@ impl TileHost {
     }
 
     #[must_use]
-    pub fn with_arrival_shape(mut self, shape: super::SkeletonShape) -> Self {
+    pub fn with_arrival_shape(mut self, shape: tilo_ui_base::widget::SkeletonShape) -> Self {
         self.declared_arrival_shape = Some(shape);
         self
     }
 
     #[must_use]
-    pub fn arriving_from(mut self, from: crate::arriving::Source) -> Self {
+    pub fn arriving_from(mut self, from: tilo_ui_base::arriving::Source) -> Self {
         if let Some(arrival) = &self.arrival
             && !arrival.revealed()
         {
@@ -797,11 +807,11 @@ impl TileHost {
         }
         let from = match &self.content {
             TileContent::App(app) => app.arrives_from(),
-            _ => crate::arriving::Source::Local,
+            _ => tilo_ui_base::arriving::Source::Local,
         };
         let since = since.unwrap_or_else(crate::time::now);
         let mut arrival =
-            arrival::TileArrival::new(crate::arriving::ArrivalClock::new(since, from));
+            arrival::TileArrival::new(tilo_ui_base::arriving::ArrivalClock::new(since, from));
         if !pending {
             arrival.arrive(crate::time::now());
         }
@@ -853,7 +863,7 @@ impl TileHost {
         if self.prepare_resource_resolution().is_err() {
             return false;
         }
-        self.attach_live(crate::control_domain::DomainAttachment::Dynamic);
+        self.attach_live(tilo_ui_base::control_domain::DomainAttachment::Dynamic);
         if self.resource_error.is_some() {
             return false;
         }
@@ -866,7 +876,7 @@ impl TileHost {
     /// The placeholder step current in the tile at `now`, while one does:
     /// the content's first frame is not shown yet.
     #[must_use]
-    pub fn arrival_step(&self, now: Instant) -> Option<crate::arriving::Step> {
+    pub fn arrival_step(&self, now: Instant) -> Option<tilo_ui_base::arriving::Step> {
         let arrival = self.arrival_now()?;
         let due = arrival.clock().shows_at().is_some_and(|at| now >= at);
         (!arrival.revealed() && !due).then(|| arrival.placeholder_step(now))
@@ -903,14 +913,14 @@ impl TileHost {
     }
 
     /// Name `tab` to a panic hook while this tile's application runs: see
-    /// [`panic_scope`](super::panic_scope).
+    /// [`panic_scope`](tilo_ui_base::widget::panic_scope).
     pub fn set_panic_scope(&self, tab: u64) {
         self.panic_scope.set(Some(tab));
     }
 
     fn running(&self) -> Running {
         Running {
-            _panic: super::panic_scope::enter(self.panic_scope.get()),
+            _panic: tilo_ui_base::widget::panic_scope::enter(self.panic_scope.get()),
             _window: crate::window_toolbar::enter(self.hosted_window.as_ref()),
         }
     }
@@ -970,7 +980,7 @@ impl TileHost {
             _ => current.clock().source().clone(),
         };
         let mut arrival =
-            arrival::TileArrival::new(crate::arriving::ArrivalClock::new(since, from));
+            arrival::TileArrival::new(tilo_ui_base::arriving::ArrivalClock::new(since, from));
         if self.content_presented() {
             arrival.arrive(
                 self.content_presented_at
@@ -1019,7 +1029,7 @@ impl TileHost {
         self.owner_lifetime.control_domain.close();
         self.owner_lifetime.active.set(false);
         let previous = self.owner_lifetime.control_domain.clone();
-        self.owner_lifetime = crate::control_domain::ResourceOwnerLifetime::new();
+        self.owner_lifetime = tilo_ui_base::control_domain::ResourceOwnerLifetime::new();
         self.ownership_renewal = Some(self.owner_lifetime.control_domain.renewal_from(&previous));
     }
 
@@ -1089,7 +1099,7 @@ impl TileHost {
         self.retained_updates.clear();
         self.record_transition_error = None;
         self.content = content;
-        self.attach_live(crate::control_domain::DomainAttachment::Dynamic);
+        self.attach_live(tilo_ui_base::control_domain::DomainAttachment::Dynamic);
         #[cfg(feature = "model")]
         {
             let registration = match &self.content {
@@ -1118,7 +1128,7 @@ impl TileHost {
         self.content_was_presented.set(false);
         self.content_presented_at.set(None);
         self.arrival = self.begin_arrival(current);
-        self.attach_live(crate::control_domain::DomainAttachment::Dynamic);
+        self.attach_live(tilo_ui_base::control_domain::DomainAttachment::Dynamic);
         self.structure_dirty = true;
     }
     pub fn content(&self) -> &TileContent {
@@ -1174,7 +1184,7 @@ impl TileHost {
     /// focus edge remain toolkit code, exactly as on screen.
     pub fn draw_complete_content_capture(
         &mut self,
-        ctx: &mut crate::draw::DrawCtx<'_>,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
     ) -> Option<Rect> {
         #[allow(
             unused_variables,
@@ -1205,7 +1215,7 @@ impl TileHost {
         let painted = match &mut self.content {
             TileContent::App(app) => app.draw_complete_content(
                 rect,
-                &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
+                &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
             ),
             TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => false,
         };
@@ -1223,23 +1233,24 @@ impl TileHost {
     pub fn spawn_alpha(&self) -> Option<f32> {
         self.spawned_at.and_then(|t| {
             let elapsed = crate::time::now().saturating_duration_since(t);
-            (elapsed < spawn_time()).then(|| crate::motion::unit_opacity(spawn_progress(elapsed)))
+            (elapsed < spawn_time())
+                .then(|| tilo_ui_base::motion::unit_opacity(spawn_progress(elapsed)))
         })
     }
 }
 
 #[cfg(feature = "model")]
-impl crate::widget::Continuable for TileHost {
+impl tilo_ui_base::widget::Continuable for TileHost {
     fn continuation_metadata(
         &self,
         state: &AutoCommit,
         path: &ObjId,
     ) -> Option<::collaboration::ContinuationMetadata> {
         match &self.content {
-            TileContent::App(app) => {
-                crate::widget::capability::capability::<dyn crate::widget::Continuable>(&**app)
-                    .and_then(|continuable| continuable.continuation_metadata(state, path))
-            }
+            TileContent::App(app) => tilo_ui_base::widget::capability::capability::<
+                dyn tilo_ui_base::widget::Continuable,
+            >(&**app)
+            .and_then(|continuable| continuable.continuation_metadata(state, path)),
             _ => None,
         }
     }
@@ -1247,12 +1258,12 @@ impl crate::widget::Continuable for TileHost {
     fn restore_continuation_metadata(
         &mut self,
         metadata: &::collaboration::ContinuationMetadata,
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         match &mut self.content {
-            TileContent::App(app) => crate::widget::capability::capability_mut::<
-                dyn crate::widget::Continuable,
+            TileContent::App(app) => tilo_ui_base::widget::capability::capability_mut::<
+                dyn tilo_ui_base::widget::Continuable,
             >(&mut **app)
             .is_some_and(|continuable| {
                 continuable.restore_continuation_metadata(metadata, state, path)
@@ -1285,7 +1296,7 @@ impl FloatingSurfaceProvider for TileHost {
         &mut self,
         id: &str,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         match &mut self.content {
             TileContent::App(widget) => widget.floating_surface_event(id, event, ctx),
@@ -1293,7 +1304,7 @@ impl FloatingSurfaceProvider for TileHost {
         }
     }
 
-    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+    fn floating_surface_accessibility(&self, id: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
         match &self.content {
             TileContent::App(widget) => widget.floating_surface_accessibility(id),
             TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
@@ -1304,8 +1315,8 @@ impl FloatingSurfaceProvider for TileHost {
         &mut self,
         id: &str,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         match &mut self.content {
@@ -1315,7 +1326,7 @@ impl FloatingSurfaceProvider for TileHost {
         }
     }
 
-    fn floating_surface_ime(&self, id: &str) -> Option<(crate::ime::InputContent, Rect)> {
+    fn floating_surface_ime(&self, id: &str) -> Option<(tilo_ui_base::ime::InputContent, Rect)> {
         match &self.content {
             TileContent::App(widget) => widget.floating_surface_ime(id),
             TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => None,
@@ -1347,7 +1358,7 @@ impl FloatingSurfaceProvider for TileHost {
         }
     }
 
-    fn draw_floating_surfaces(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_floating_surfaces(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1355,7 +1366,7 @@ impl FloatingSurfaceProvider for TileHost {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if let TileContent::App(widget) = &mut self.content {
-            widget.draw_floating_surfaces(&mut crate::draw::DrawCtx::new(
+            widget.draw_floating_surfaces(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -1365,7 +1376,11 @@ impl FloatingSurfaceProvider for TileHost {
         }
     }
 
-    fn draw_floating_surface(&mut self, id: &str, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
+    ) -> bool {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1375,7 +1390,13 @@ impl FloatingSurfaceProvider for TileHost {
         match &mut self.content {
             TileContent::App(widget) => widget.draw_floating_surface(
                 id,
-                &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+                &mut tilo_ui_base::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    env.clone(),
+                ),
             ),
             TileContent::Stub { .. } | TileContent::Notice { .. } | TileContent::Arriving => false,
         }
@@ -1420,7 +1441,7 @@ impl FloatingSurfaceProvider for TileHost {
 impl AudiencePresentationProvider for TileHost {
     fn audience_presentation_request(
         &self,
-    ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
+    ) -> Option<tilo_ui_base::fullscreen::AudiencePresentationRequest> {
         match &self.content {
             TileContent::App(app) => app.audience_presentation_request(),
             _ => None,
@@ -1452,7 +1473,7 @@ impl AudiencePresentationProvider for TileHost {
     fn handle_audience_presentation_event(
         &mut self,
         event: &WindowEvent,
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         match &mut self.content {
@@ -1476,11 +1497,11 @@ impl FullscreenProvider for TileHost {
         }
     }
 
-    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+    fn fullscreen_params(&self) -> tilo_ui_base::fullscreen::FullscreenRequest {
         match &self.content {
             TileContent::App(app) => app.fullscreen_params(),
-            _ => crate::fullscreen::FullscreenRequest::mirror(
-                crate::fullscreen::FullscreenTarget::Largest,
+            _ => tilo_ui_base::fullscreen::FullscreenRequest::mirror(
+                tilo_ui_base::fullscreen::FullscreenTarget::Largest,
             ),
         }
     }
@@ -1493,23 +1514,23 @@ impl FullscreenProvider for TileHost {
 }
 
 impl Widget for TileHost {
-    crate::provides!(
-        dyn crate::widget::FullscreenProvider,
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::FullscreenProvider,
         #[cfg(feature = "model")]
-        dyn crate::widget::Continuable,
+        dyn tilo_ui_base::widget::Continuable,
         dyn crate::floating_surface::FloatingSurfaceProvider,
-        dyn crate::widget::AudiencePresentationProvider,
+        dyn tilo_ui_base::widget::AudiencePresentationProvider,
         #[cfg(feature = "model")]
-        dyn crate::widget::presence_topology::CollaborationTopology,
+        dyn tilo_ui_base::widget::presence_topology::CollaborationTopology,
         #[cfg(feature = "model")]
         dyn crate::history_mode::capability::FrameworkHistoryTopology,
-        dyn crate::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::controls::ActionControls,
         dyn crate::search::capability::SearchSource,
         dyn crate::view::capability::ViewState,
         dyn crate::component_lifecycle::ComponentLifecycle,
-        dyn crate::widget::ResourceOperations,
+        dyn tilo_ui_base::widget::ResourceOperations,
         dyn crate::bound_dispatch::BoundWidget,
-        dyn crate::widget::component_walk::ComponentBoundary,
+        dyn tilo_ui_base::widget::component_walk::ComponentBoundary,
         dyn crate::bound_dispatch::BoundTraversal
     );
 
@@ -1517,7 +1538,7 @@ impl Widget for TileHost {
         Some(self)
     }
 
-    fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
+    fn primary_vertical_scroll(&self) -> Option<tilo_ui_base::widget::PrimaryScrollRegion> {
         if !self.live_interactive() {
             return None;
         }
@@ -1529,15 +1550,15 @@ impl Widget for TileHost {
     }
     fn apply_primary_vertical_scroll(
         &mut self,
-        action: crate::widget::PrimaryScrollAction,
-    ) -> crate::widget::PrimaryScrollResult {
+        action: tilo_ui_base::widget::PrimaryScrollAction,
+    ) -> tilo_ui_base::widget::PrimaryScrollResult {
         if !self.live_interactive() {
-            return crate::widget::PrimaryScrollResult::Unsupported;
+            return tilo_ui_base::widget::PrimaryScrollResult::Unsupported;
         }
         if let TileContent::App(app) = &mut self.content {
             app.apply_primary_vertical_scroll(action)
         } else {
-            crate::widget::PrimaryScrollResult::Unsupported
+            tilo_ui_base::widget::PrimaryScrollResult::Unsupported
         }
     }
 
@@ -1551,7 +1572,7 @@ impl Widget for TileHost {
             .filter(|history| !history.live_interactive())
             .and_then(|history| history.live_layout_node())
     }
-    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+    fn mount_native_views(&mut self, host: &tilo_ui_base::widget::native_view::NativeViewHost<'_>) {
         let _running = self.running();
         let interactive = self.live_interactive();
         if let TileContent::App(live) = &mut self.content {
@@ -1578,7 +1599,7 @@ impl Widget for TileHost {
     fn on_external_event(
         &mut self,
         payload: &str,
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         root: &ModelPath,
     ) {
         let _running = self.running();
@@ -1592,7 +1613,7 @@ impl Widget for TileHost {
             _ => false,
         }
     }
-    fn take_app_activation(&mut self, _ready: bool) -> Option<crate::widget::AppActivation> {
+    fn take_app_activation(&mut self, _ready: bool) -> Option<tilo_ui_base::widget::AppActivation> {
         None
     }
     fn needs_idle_sync(&self) -> bool {
@@ -1683,10 +1704,10 @@ impl Widget for TileHost {
             // the host polls them, and work it cannot finish is reported
             // unavailable rather than inherited by the new component.
             let mut answers = std::mem::take(&mut self.retained_updates);
-            let (doc, path) = crate::doc::document_ref(s, p);
+            let (doc, path) = tilo_ui_base::doc::document_ref(s, p);
             for invocation in std::mem::take(&mut self.component_invocations) {
                 if let TileContent::App(app) = &mut self.content
-                    && let Some(update) = crate::widget::poll_resource_operation(
+                    && let Some(update) = tilo_ui_base::widget::poll_resource_operation(
                         app.as_mut(),
                         invocation,
                         false,
@@ -1711,7 +1732,7 @@ impl Widget for TileHost {
         if self.prepare_resource_resolution().is_err() {
             return;
         }
-        self.attach_live(crate::control_domain::DomainAttachment::Dynamic);
+        self.attach_live(tilo_ui_base::control_domain::DomainAttachment::Dynamic);
         if self.resource_error.is_some() {
             return;
         }
@@ -1720,7 +1741,7 @@ impl Widget for TileHost {
         }
     }
 
-    fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, path: &ObjId) {
+    fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, path: &ObjId) {
         let _running = self.running();
         if !self.owner_lifetime.active.get()
             || crate::history_mode::frame::FrameworkInputFrame::active()
@@ -1735,7 +1756,7 @@ impl Widget for TileHost {
 
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         let progress = self.arrival_progress();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let arrival = self
             .arrival_now()
             .is_some_and(|arrival| arrival.needs_redraw(now, progress));
@@ -1770,7 +1791,7 @@ impl Widget for TileHost {
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let _running = self.running();
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if self.remount {
             return;
         }
@@ -1796,7 +1817,7 @@ impl Widget for TileHost {
             }
         }
     }
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1805,9 +1826,15 @@ impl Widget for TileHost {
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let outer = (self.rect.width() > 0.0 && self.rect.height() > 0.0)
             .then(|| env.push_viewport(self.rect));
-        crate::widget::defaults::draw_overlay(
+        tilo_ui_base::widget::defaults::draw_overlay(
             self.children_mut(),
-            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
         if let Some(outer) = outer {
             env.pop_viewport(outer);
@@ -1819,7 +1846,7 @@ impl Widget for TileHost {
             app.set_full_bleed(full_bleed);
         }
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1838,8 +1865,9 @@ impl Widget for TileHost {
         if self.spawn_in_flight()
             && let Some(started) = self.spawned_at
         {
-            let progress =
-                spawn_progress(crate::motion::frame_now().saturating_duration_since(started));
+            let progress = spawn_progress(
+                tilo_ui_base::motion::frame_now().saturating_duration_since(started),
+            );
             let pose = WindowMotion::content_pose(progress, self.rect, theme.motion());
             let alpha = pose.opacity;
             // The window edge sits just outside the card; a few pixels of
@@ -1858,7 +1886,7 @@ impl Widget for TileHost {
                 &clip,
             );
             let anim_transform = pose.applied_to(transform);
-            self.draw_window(&mut crate::draw::DrawCtx::new(
+            self.draw_window(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 anim_transform,
                 tr,
@@ -1866,29 +1894,29 @@ impl Widget for TileHost {
                 env.clone(),
             ));
             scene.pop_layer();
-            crate::widget::draw_over(
+            tilo_ui_base::widget::draw_over(
                 self,
-                &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
+                &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
             );
             return;
         }
-        self.draw_window(&mut crate::draw::DrawCtx::new(
+        self.draw_window(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             tr,
             theme,
             env.clone(),
         ));
-        crate::widget::draw_over(
+        tilo_ui_base::widget::draw_over(
             self,
-            &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
         );
     }
     fn needs_redraw(&self) -> bool {
         if let Some(redraw) = self.held_redraw() {
             return redraw;
         }
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let progress = self.arrival_progress();
         let arrival = self.arrival_now();
         if arrival
@@ -1905,13 +1933,14 @@ impl Widget for TileHost {
         }
         let mut children = 0usize;
         self.for_each_child(&mut |_| children += 1);
-        children > 0 && super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
+        children > 0
+            && tilo_ui_base::widget::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
     fn mark_drawn(&mut self) {
         self.drop_ended_hold();
-        super::defaults::mark_drawn(self.children_mut());
+        tilo_ui_base::widget::defaults::mark_drawn(self.children_mut());
     }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let _running = self.running();
         if *ctx.handled {
             return;
@@ -1938,7 +1967,7 @@ impl Widget for TileHost {
             *ctx.handled |= self.event_is_for_this_tile(event, ctx.scale_factor);
             return;
         }
-        self.attach_live(crate::control_domain::DomainAttachment::Dynamic);
+        self.attach_live(tilo_ui_base::control_domain::DomainAttachment::Dynamic);
         if self.resource_error.is_some() {
             *ctx.handled |= self.event_is_for_this_tile(event, ctx.scale_factor);
             return;
@@ -1975,31 +2004,31 @@ impl Widget for TileHost {
     fn name(&self) -> &'static str {
         "TileHost"
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let _running = self.running();
         if let Some(detail) = &self.resource_error {
             let card = resource_unavailable_card(detail);
-            let node = card
-                .accessibility()
-                .unwrap_or_else(|| crate::a11y::AccessNode::new(crate::a11y::Role::Group));
+            let node = card.accessibility().unwrap_or_else(|| {
+                tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
+            });
             return Some(node.with_bounds(self.rect));
         }
         if let Some(detail) = &self.record_transition_error {
             return Some(
-                crate::a11y::AccessNode::new(crate::a11y::Role::Group)
-                    .with_name(crate::i18n::widget_format(
+                tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
+                    .with_name(tilo_ui_base::i18n::widget_format(
                         "widget-document-switch-blocked",
                         &[],
                     ))
                     .with_description(detail.clone())
-                    .with_live(crate::a11y::Politeness::Assertive)
+                    .with_live(tilo_ui_base::a11y::Politeness::Assertive)
                     .with_bounds(self.rect),
             );
         }
         if let Some(step) = self.arrival_step(crate::time::now()) {
             let face = super::ArrivalFace::at_step(self.arrival_shape(), step)
                 .with_progress(self.arrival_progress());
-            let mut node = crate::a11y::AccessNode::new(crate::a11y::Role::Group);
+            let mut node = tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group);
             let title = match &self.content {
                 TileContent::App(app) => app.app_title(),
                 TileContent::Stub { label, .. } => label.as_str(),
@@ -2011,13 +2040,13 @@ impl Widget for TileHost {
             }
             return Some(
                 node.with_description(face.description())
-                    .with_state(crate::a11y::AccessState::new().busy(true))
+                    .with_state(tilo_ui_base::a11y::AccessState::new().busy(true))
                     .with_bounds(self.rect),
             );
         }
         match &self.content {
             TileContent::Notice { title, detail } => Some(
-                crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
                     .with_name(title.clone())
                     .with_description(detail.clone())
                     .with_bounds(self.rect),
@@ -2040,15 +2069,18 @@ impl Widget for TileHost {
         }
         self.was_presented.get()
     }
-    fn arrives_from(&self) -> crate::arriving::Source {
+    fn arrives_from(&self) -> tilo_ui_base::arriving::Source {
         self.arrival
             .as_ref()
-            .map_or(crate::arriving::Source::Local, |arrival| {
+            .map_or(tilo_ui_base::arriving::Source::Local, |arrival| {
                 arrival.clock().source().clone()
             })
     }
     fn holds_frame_until(&self, now: Instant) -> Option<Instant> {
-        let content = super::defaults::holds_frame_until(&|visit| self.for_each_child(visit), now);
+        let content = tilo_ui_base::widget::defaults::holds_frame_until(
+            &|visit| self.for_each_child(visit),
+            now,
+        );
         self.holds_first_frame_until(now)
             .into_iter()
             .chain(content)
@@ -2062,9 +2094,11 @@ impl Widget for TileHost {
         let held = self.holds_first_frame_until(now);
         own.into_iter()
             .chain(held)
-            .chain(super::defaults::next_wake_deadline(&|visit| {
-                self.for_each_child(visit);
-            }))
+            .chain(tilo_ui_base::widget::defaults::next_wake_deadline(
+                &|visit| {
+                    self.for_each_child(visit);
+                },
+            ))
             .min()
     }
     fn get_rect(&self) -> Rect {
@@ -2080,8 +2114,8 @@ impl Widget for TileHost {
     fn take_structure_dirty(&mut self) -> bool {
         self.take_structure_change().rebuilds()
     }
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-        use crate::widget::StructureChange;
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
+        use tilo_ui_base::widget::StructureChange;
         let swapped = std::mem::take(&mut self.structure_dirty);
         let composes_live = self.composes_live_app();
         let inner = match &mut self.content {
@@ -2123,7 +2157,7 @@ impl Widget for TileHost {
     }
     /// Lay the content that took a placeholder's place out under the
     /// tile's retained node; otherwise carry out the app's own change.
-    fn remount_children(&mut self, remount: &mut crate::widget::Remount<'_>) -> bool {
+    fn remount_children(&mut self, remount: &mut tilo_ui_base::widget::Remount<'_>) -> bool {
         if !self.remount {
             return self
                 .children_mut()
@@ -2160,7 +2194,7 @@ impl Widget for TileHost {
         let arrival = self
             .arrival
             .as_ref()
-            .is_some_and(|arrival| arrival.is_moving(crate::motion::frame_now()));
+            .is_some_and(|arrival| arrival.is_moving(tilo_ui_base::motion::frame_now()));
         self.spawn_in_flight() || arrival || inner
     }
 }
@@ -2173,10 +2207,12 @@ impl crate::bound_dispatch::BoundWidget for TileHost {
     }
 }
 
-impl crate::widget::component_walk::ComponentBoundary for TileHost {
-    fn component_scope(&self) -> Option<crate::widget::component_walk::Binding> {
+impl tilo_ui_base::widget::component_walk::ComponentBoundary for TileHost {
+    fn component_scope(&self) -> Option<tilo_ui_base::widget::component_walk::Binding> {
         match &self.content {
-            TileContent::App(widget) => crate::widget::component_walk::binding_of(widget.as_ref()),
+            TileContent::App(widget) => {
+                tilo_ui_base::widget::component_walk::binding_of(widget.as_ref())
+            }
             _ => None,
         }
     }
@@ -2207,13 +2243,13 @@ impl crate::bound_dispatch::BoundTraversal for TileHost {
     }
 }
 
-impl crate::widget::ResourceOperations for TileHost {
+impl tilo_ui_base::widget::ResourceOperations for TileHost {
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         let _running = self.running();
         if !matches!(&self.content, TileContent::App(_)) {
             return Ok(None);
@@ -2222,19 +2258,19 @@ impl crate::widget::ResourceOperations for TileHost {
             return Err("The current document owner is closed".into());
         }
         self.prepare_resource_resolution()?;
-        self.attach_live(crate::control_domain::DomainAttachment::Dynamic);
+        self.attach_live(tilo_ui_base::control_domain::DomainAttachment::Dynamic);
         let TileContent::App(app) = &mut self.content else {
             return Ok(None);
         };
-        let started = crate::widget::start_operation(
+        let started = tilo_ui_base::widget::start_operation(
             app.as_mut(),
             op,
-            &mut crate::widget::Edits::lend(doc.document_mut()),
+            &mut tilo_ui_base::widget::Edits::lend(doc.document_mut()),
             path,
         )?;
         if matches!(
             started,
-            Some(crate::widget::ResourceOperationStart::Accepted)
+            Some(tilo_ui_base::widget::ResourceOperationStart::Accepted)
         ) && self.component_scope().is_some()
         {
             self.component_invocations.insert(op.invocation());
@@ -2257,7 +2293,7 @@ impl crate::widget::ResourceOperations for TileHost {
             let TileContent::App(app) = &mut self.content else {
                 return None;
             };
-            let update = crate::widget::poll_resource_operation(
+            let update = tilo_ui_base::widget::poll_resource_operation(
                 app.as_mut(),
                 invocation,
                 cancellation_requested,
@@ -2273,7 +2309,7 @@ impl crate::widget::ResourceOperations for TileHost {
             return update;
         }
         match &mut self.content {
-            TileContent::App(app) => crate::widget::poll_resource_operation(
+            TileContent::App(app) => tilo_ui_base::widget::poll_resource_operation(
                 app.as_mut(),
                 invocation,
                 cancellation_requested,
@@ -2358,11 +2394,11 @@ impl crate::view::capability::ViewState for TileHost {
     }
 }
 
-impl crate::widget::controls::ActionControls for TileHost {
+impl tilo_ui_base::widget::controls::ActionControls for TileHost {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         // An unbound tile inherits its surrounding owner exactly once. Moving
         // within that incarnation is presentation reparenting; a different
@@ -2376,7 +2412,8 @@ impl crate::widget::controls::ActionControls for TileHost {
                 if domain.permits_renewal(previous, attachment) {
                     self.owner_lifetime.control_domain.close();
                     self.owner_lifetime.active.set(false);
-                    self.owner_lifetime = crate::control_domain::ResourceOwnerLifetime::new();
+                    self.owner_lifetime =
+                        tilo_ui_base::control_domain::ResourceOwnerLifetime::new();
                     self.ownership_scope = None;
                     self.ownership_renewal = None;
                 } else if previous.closed() || !previous.same_owner_incarnation(domain) {
@@ -2394,7 +2431,7 @@ impl crate::widget::controls::ActionControls for TileHost {
         }
         self.children_mut()
             .into_iter()
-            .find_map(crate::widget::controls::take_control_invocation)
+            .find_map(tilo_ui_base::widget::controls::take_control_invocation)
     }
     fn refresh_control_action_availability(
         &mut self,
@@ -2404,7 +2441,7 @@ impl crate::widget::controls::ActionControls for TileHost {
             return;
         }
         for child in self.children_mut() {
-            crate::widget::controls::refresh_control_action_availability(child, allowed);
+            tilo_ui_base::widget::controls::refresh_control_action_availability(child, allowed);
         }
     }
 }
@@ -2438,7 +2475,7 @@ impl crate::history_mode::capability::FrameworkHistoryTopology for TileHost {
 }
 
 #[cfg(feature = "model")]
-impl crate::widget::presence_topology::CollaborationTopology for TileHost {
+impl tilo_ui_base::widget::presence_topology::CollaborationTopology for TileHost {
     fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         match &mut self.content {
             TileContent::App(live) => vec![live.as_mut()],
@@ -2539,7 +2576,7 @@ impl TileHost {
             self.rect.y1 - margin,
         );
         crate::widget::Banner::paint(
-            &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
+            &mut tilo_ui_base::paint::PaintCtx::new(scene, transform, tr, theme),
             banner,
             &crate::widget::BannerContent::new(
                 crate::widget::BannerKind::Error,
@@ -2550,7 +2587,7 @@ impl TileHost {
         );
     }
 
-    fn draw_steady_state(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_steady_state(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2558,7 +2595,7 @@ impl TileHost {
         )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         if self.full_bleed {
-            self.draw_full_bleed(&mut crate::draw::DrawCtx::new(
+            self.draw_full_bleed(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 tr,
@@ -2569,13 +2606,13 @@ impl TileHost {
         }
         let radius = f64::from(theme.tokens.radii.tile);
         let shadow = theme.tokens.elevation.window;
-        if let Some(reach) = crate::surface::shadow_bounds(self.rect, &shadow) {
+        if let Some(reach) = tilo_ui_base::surface::shadow_bounds(self.rect, &shadow) {
             let below = Rect::new(self.rect.x0, self.rect.y0, self.rect.x1, reach.y1);
-            let key = crate::scene_parts::PartKey::new("ui.tile-shadow", ());
+            let key = tilo_ui_base::scene_parts::PartKey::new("ui.tile-shadow", ());
             let bounds = vec![transform.transform_rect_bbox(below)];
-            crate::scene_parts::part(scene, key, bounds, |scene| {
+            tilo_ui_base::scene_parts::part(scene, key, bounds, |scene| {
                 scene.push_clip_layer(vello::peniko::Fill::NonZero, transform, &below);
-                crate::surface::shadow(scene, transform, self.rect, radius, &shadow);
+                tilo_ui_base::surface::shadow(scene, transform, self.rect, radius, &shadow);
                 scene.pop_layer();
             });
         }
@@ -2597,28 +2634,28 @@ impl TileHost {
             transform,
             &shape,
         );
-        let content = crate::scene_parts::PartKey::new("ui.tile-content", ());
+        let content = tilo_ui_base::scene_parts::PartKey::new("ui.tile-content", ());
         let bounds = vec![transform.transform_rect_bbox(self.rect)];
-        crate::scene_parts::part(scene, content, bounds, |scene| {
+        tilo_ui_base::scene_parts::part(scene, content, bounds, |scene| {
             self.draw_clipped_content(
-                &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env),
+                &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, tr, theme, env),
                 &shape,
             );
         });
         scene.pop_layer();
-        let edge = crate::scene_parts::PartKey::new("ui.tile-edge", ());
+        let edge = tilo_ui_base::scene_parts::PartKey::new("ui.tile-edge", ());
         let bounds = edge_bands(self.rect, radius)
             .into_iter()
             .map(|band| transform.transform_rect_bbox(band))
             .collect();
         if !self.inside_growing_frame && !self.edge_by_card {
-            crate::scene_parts::part(scene, edge, bounds, |scene| {
+            tilo_ui_base::scene_parts::part(scene, edge, bounds, |scene| {
                 self.draw_edge(scene, transform, theme, radius);
             });
         }
     }
 
-    fn draw_full_bleed(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_full_bleed(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2633,24 +2670,28 @@ impl TileHost {
             &self.rect,
         );
         let shape = RoundedRect::from_rect(self.rect, 0.0);
-        let content = crate::scene_parts::PartKey::new("ui.tile-content", ());
+        let content = tilo_ui_base::scene_parts::PartKey::new("ui.tile-content", ());
         let bounds = vec![transform.transform_rect_bbox(self.rect)];
-        crate::scene_parts::part(scene, content, bounds, |scene| {
+        tilo_ui_base::scene_parts::part(scene, content, bounds, |scene| {
             self.draw_clipped_content(
-                &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env),
+                &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, tr, theme, env),
                 &shape,
             );
         });
     }
 
-    fn draw_clipped_content(&mut self, ctx: &mut crate::draw::DrawCtx<'_>, shape: &RoundedRect) {
+    fn draw_clipped_content(
+        &mut self,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
+        shape: &RoundedRect,
+    ) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.arrival_motion = theme.motion();
         self.advance_arrival(now);
         let progress = self.arrival_progress();
@@ -2688,7 +2729,7 @@ impl TileHost {
                     transform,
                     shape,
                 );
-                self.draw_content(&mut crate::draw::DrawCtx::new(
+                self.draw_content(&mut tilo_ui_base::draw::DrawCtx::new(
                     scene,
                     transform,
                     tr,
@@ -2697,7 +2738,7 @@ impl TileHost {
                 ));
                 scene.pop_layer();
             }
-            None => self.draw_content(&mut crate::draw::DrawCtx::new(
+            None => self.draw_content(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 tr,
@@ -2713,41 +2754,45 @@ impl TileHost {
         transform: Affine,
         tr: &mut TextRenderer,
         theme: &Theme,
-        step: crate::arriving::Step,
+        step: tilo_ui_base::arriving::Step,
     ) {
         let margin = f64::from(theme.tokens.spacing.rhythm.group);
         let page = self.rect.inset(-margin);
         super::ArrivalFace::at_step(self.arrival_shape(), step)
             .with_progress(self.arrival_progress())
             .paint(
-                &mut crate::paint::PaintCtx::new(scene, transform, tr, theme),
+                &mut tilo_ui_base::paint::PaintCtx::new(scene, transform, tr, theme),
                 page,
             );
     }
 
-    fn arrival_shape(&self) -> super::SkeletonShape {
+    fn arrival_shape(&self) -> tilo_ui_base::widget::SkeletonShape {
         let declared = self.declared_arrival_shape;
         match &self.content {
             // What the app's own root declares, and while it declares
             // nothing (its first frame is not drawn yet), what its manifest
             // declared for the window before the code was in.
             TileContent::App(app) => match app.arrival_shape() {
-                super::SkeletonShape::Ground => declared.unwrap_or(super::SkeletonShape::Ground),
+                tilo_ui_base::widget::SkeletonShape::Ground => {
+                    declared.unwrap_or(tilo_ui_base::widget::SkeletonShape::Ground)
+                }
                 own => own,
             },
-            TileContent::Arriving => declared.unwrap_or(super::SkeletonShape::Ground),
-            _ => super::SkeletonShape::Ground,
+            TileContent::Arriving => {
+                declared.unwrap_or(tilo_ui_base::widget::SkeletonShape::Ground)
+            }
+            _ => tilo_ui_base::widget::SkeletonShape::Ground,
         }
     }
 
-    fn arrival_progress(&self) -> Option<crate::arriving::Progress> {
+    fn arrival_progress(&self) -> Option<tilo_ui_base::arriving::Progress> {
         match &self.content {
             TileContent::App(app) if !self.content_was_presented.get() => app.arrival_progress(),
             _ => None,
         }
     }
 
-    fn draw_content(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_content(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2777,12 +2822,12 @@ impl TileHost {
             match &mut self.content {
                 TileContent::App(w) => {
                     if composes_live {
-                        let key = crate::scene_parts::PartKey::new("ui.tile-app", ());
-                        crate::scene_parts::begin(scene, key);
+                        let key = tilo_ui_base::scene_parts::PartKey::new("ui.tile-app", ());
+                        tilo_ui_base::scene_parts::begin(scene, key);
                         w.draw_child(scene, content_transform, tr, theme, &env);
-                        let copies = (crate::scroll_copy::host_copies()
+                        let copies = (tilo_ui_base::scroll_copy::host_copies()
                             && theme.tokens.colors.surfaces.content.components[3] >= 1.0)
-                            .then(crate::scroll_copy::host_device_scale);
+                            .then(tilo_ui_base::scroll_copy::host_device_scale);
                         let hint = self.content_damage.hint(
                             &**w,
                             content_transform,
@@ -2790,7 +2835,7 @@ impl TileHost {
                             &env,
                             copies,
                         );
-                        crate::scene_parts::end_hinted(scene, hint);
+                        tilo_ui_base::scene_parts::end_hinted(scene, hint);
                     } else {
                         self.content_damage.forget();
                     }
@@ -2826,7 +2871,7 @@ fn draw_card_text(
 ) {
     let mut content = super::EmptyStateContent::new(title);
     content.message = (!detail.is_empty()).then_some(detail);
-    let mut paint = crate::paint::PaintCtx::new(scene, transform, tr, theme);
+    let mut paint = tilo_ui_base::paint::PaintCtx::new(scene, transform, tr, theme);
     super::EmptyState::paint(&mut paint, rect, &content, Point::new(-1.0, -1.0));
 }
 

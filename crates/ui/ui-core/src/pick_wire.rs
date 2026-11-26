@@ -9,7 +9,7 @@
 use serde::{Deserialize, Serialize};
 use vello::kurbo::{Point, Rect};
 
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 /// Most parts one answer names: the chain under a point is never this deep in a person's interface, and
 /// a dragged rectangle asks for fewer.

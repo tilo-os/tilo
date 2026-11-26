@@ -55,9 +55,9 @@ pub struct AppEntry {
 pub struct Applications {
     entries: Vec<AppEntry>,
     /// Each app's searchable text, built once with the list.
-    fields: Vec<Vec<(String, ui::text_match::FieldWeight)>>,
+    fields: Vec<Vec<(String, tilo_ui_base::text_match::FieldWeight)>>,
     /// The apps' searchable text, indexed while it stays the same.
-    ranker: ui::text_match::ListIndex,
+    ranker: tilo_ui_base::text_match::ListIndex,
 }
 
 impl Applications {
@@ -75,7 +75,7 @@ impl Applications {
         Self {
             entries,
             fields,
-            ranker: ui::text_match::ListIndex::default()
+            ranker: tilo_ui_base::text_match::ListIndex::default()
                 .with_ranks(ui::search::system::application_ranks),
         }
     }
@@ -201,7 +201,7 @@ pub struct CommandSpec {
     pub subtitle: Option<String>,
     /// The command's own picture, as the action that declares it gives one:
     /// the same glyph its menu row wears.
-    pub icon: Option<ui::icons::Icon>,
+    pub icon: Option<tilo_ui_base::icons::Icon>,
     /// Whether the empty card lists it: what a person may want to do from
     /// here without having asked for anything (making a workspace, joining
     /// one), never closing a window or leaving the workspace.
@@ -212,11 +212,11 @@ pub struct CommandSpec {
 pub struct Commands {
     specs: Vec<CommandSpec>,
     /// Each command's searchable text, built once with the list.
-    fields: Vec<Vec<(String, ui::text_match::FieldWeight)>>,
+    fields: Vec<Vec<(String, tilo_ui_base::text_match::FieldWeight)>>,
     /// The commands' searchable text, indexed while it stays the same: one
     /// index for the list, so a keystroke ranks every command at once rather
     /// than building an index per command.
-    ranker: ui::text_match::ListIndex,
+    ranker: tilo_ui_base::text_match::ListIndex,
 }
 
 impl Commands {
@@ -226,10 +226,13 @@ impl Commands {
             .iter()
             .map(|command| {
                 vec![
-                    (command.title.clone(), ui::text_match::FieldWeight::TITLE),
+                    (
+                        command.title.clone(),
+                        tilo_ui_base::text_match::FieldWeight::TITLE,
+                    ),
                     (
                         command.subtitle.clone().unwrap_or_default(),
-                        ui::text_match::FieldWeight::SUBTITLE,
+                        tilo_ui_base::text_match::FieldWeight::SUBTITLE,
                     ),
                 ]
             })
@@ -237,7 +240,7 @@ impl Commands {
         Self {
             specs: commands,
             fields,
-            ranker: ui::text_match::ListIndex::default(),
+            ranker: tilo_ui_base::text_match::ListIndex::default(),
         }
     }
 }
@@ -539,7 +542,10 @@ impl Published {
             }),
             facts: Vec::new(),
             score,
-            icon: action.icon.as_deref().and_then(ui::icons::Icon::from_name),
+            icon: action
+                .icon
+                .as_deref()
+                .and_then(tilo_ui_base::icons::Icon::from_name),
             target: Target::Invoke(Box::new(crate::model::InvokeTarget {
                 arguments,
                 descriptor: Some(action.clone()),
@@ -919,7 +925,7 @@ impl Source for Content {
                 }
                 let icon = result.icon.or_else(|| {
                     resource.app().map(|app| {
-                        ui::icons::app_glyph(app, crate::availability::category_for(app))
+                        tilo_ui_base::icons::app_glyph(app, crate::availability::category_for(app))
                     })
                 });
                 let mut id = key(&address);
@@ -1060,7 +1066,8 @@ impl Answers {
                         ("amount", from.into()),
                         (
                             "age",
-                            ui::format::relative(i64::try_from(age).unwrap_or(i64::MAX)).into(),
+                            tilo_ui_base::format::relative(i64::try_from(age).unwrap_or(i64::MAX))
+                                .into(),
                         ),
                     ],
                 )
@@ -1191,7 +1198,7 @@ impl WebSearch {
             subtitle: Some(crate::i18n::t("search-web-subtitle")),
             facts: Vec::new(),
             score: 1,
-            icon: Some(ui::icons::Icon::Globe),
+            icon: Some(tilo_ui_base::icons::Icon::Globe),
             target: Target::Open {
                 uri: web_search_uri(query),
                 fallback: Some(fallback_search_url(query)),
@@ -1407,7 +1414,7 @@ pub struct Switches {
     /// what it says, worded once when the switches are built.
     rows: Vec<(String, String)>,
     /// What each switch is found by, in the order of `sources`.
-    fields: Vec<Vec<(String, ui::text_match::FieldWeight)>>,
+    fields: Vec<Vec<(String, tilo_ui_base::text_match::FieldWeight)>>,
 }
 
 impl Switches {
@@ -1437,9 +1444,15 @@ impl Switches {
             .iter()
             .map(|(title, detail)| {
                 vec![
-                    (title.clone(), ui::text_match::FieldWeight::TITLE),
-                    (detail.clone(), ui::text_match::FieldWeight::SUBTITLE),
-                    (keywords.clone(), ui::text_match::FieldWeight::KEYWORD),
+                    (title.clone(), tilo_ui_base::text_match::FieldWeight::TITLE),
+                    (
+                        detail.clone(),
+                        tilo_ui_base::text_match::FieldWeight::SUBTITLE,
+                    ),
+                    (
+                        keywords.clone(),
+                        tilo_ui_base::text_match::FieldWeight::KEYWORD,
+                    ),
                 ]
             })
             .collect();
@@ -1468,7 +1481,11 @@ impl Source for Switches {
             return Vec::new();
         }
         // One index over every switch, built where the search asks them.
-        let ranks = rank::rank_rows(&ui::text_match::ListIndex::default(), needle, &self.fields);
+        let ranks = rank::rank_rows(
+            &tilo_ui_base::text_match::ListIndex::default(),
+            needle,
+            &self.fields,
+        );
         self.sources
             .iter()
             .zip(&self.rows)
@@ -1753,7 +1770,7 @@ mod tests {
     /// offers them: making something and bringing someone in, then locking
     /// the screen. What only takes something away or closes the computer is
     /// not listed unasked, and typing still finds every one of them.
-    fn verb(id: &str, title: &str, icon: ui::icons::Icon, unasked: bool) -> CommandSpec {
+    fn verb(id: &str, title: &str, icon: tilo_ui_base::icons::Icon, unasked: bool) -> CommandSpec {
         CommandSpec {
             id: id.into(),
             title: title.into(),
@@ -1785,28 +1802,28 @@ mod tests {
                 verb(
                     "session-host-new-workspace",
                     "New workspace",
-                    ui::icons::Icon::Plus,
+                    tilo_ui_base::icons::Icon::Plus,
                     true,
                 ),
                 verb(
                     "session-host-join-workspace",
                     "Join a workspace",
-                    ui::icons::Icon::Link,
+                    tilo_ui_base::icons::Icon::Link,
                     true,
                 ),
                 verb(
                     "session-host-leave-workspace",
                     "Leave workspace",
-                    ui::icons::Icon::ArrowUpRight,
+                    tilo_ui_base::icons::Icon::ArrowUpRight,
                     false,
                 ),
                 verb(
                     "desktop.close-window",
                     "Close window",
-                    ui::icons::Icon::X,
+                    tilo_ui_base::icons::Icon::X,
                     false,
                 ),
-                verb("session-host-lock", "Lock", ui::icons::Icon::Lock, true),
+                verb("session-host-lock", "Lock", tilo_ui_base::icons::Icon::Lock, true),
             ]);
             let groups = search("", &[&apps(), &windows, &actions, &commands], 0, &|_| 0.0);
             let kinds: Vec<&str> = groups.iter().map(|g| g.kind.label()).collect();
@@ -1836,9 +1853,9 @@ mod tests {
                 verbs.as_deref(),
                 Some(
                     [
-                        ("New workspace", Some(ui::icons::Icon::Plus)),
-                        ("Join a workspace", Some(ui::icons::Icon::Link)),
-                        ("Lock", Some(ui::icons::Icon::Lock)),
+                        ("New workspace", Some(tilo_ui_base::icons::Icon::Plus)),
+                        ("Join a workspace", Some(tilo_ui_base::icons::Icon::Link)),
+                        ("Lock", Some(tilo_ui_base::icons::Icon::Lock)),
                     ]
                     .as_slice()
                 ),
@@ -1865,13 +1882,13 @@ mod tests {
                 verb(
                     "session-host-new-workspace",
                     "New workspace",
-                    ui::icons::Icon::Plus,
+                    tilo_ui_base::icons::Icon::Plus,
                     true,
                 ),
                 verb(
                     "session-host-workspace-settings",
                     "Workspace settings",
-                    ui::icons::Icon::Settings,
+                    tilo_ui_base::icons::Icon::Settings,
                     true,
                 ),
             ]);
@@ -1919,7 +1936,7 @@ mod tests {
             let commands = Commands::new(vec![verb(
                 "desktop.close-window",
                 "Close window",
-                ui::icons::Icon::X,
+                tilo_ui_base::icons::Icon::X,
                 false,
             )]);
             assert_eq!(commands.query("close").len(), 1);
@@ -2718,9 +2735,11 @@ mod tests {
         }
 
         fn query(&self, needle: &str) -> Vec<Hit> {
-            let typed = ui::text_match::fold_search_text(needle.trim());
+            let typed = tilo_ui_base::text_match::fold_search_text(needle.trim());
             let title = "Write a launch checklist note in Notes with five short items";
-            if typed.is_empty() || !ui::text_match::fold_search_text(title).contains(&typed) {
+            if typed.is_empty()
+                || !tilo_ui_base::text_match::fold_search_text(title).contains(&typed)
+            {
                 return Vec::new();
             }
             vec![Hit {

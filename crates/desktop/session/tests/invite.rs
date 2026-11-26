@@ -23,8 +23,8 @@ use tilo_peer_state::owner::{self, DeviceWorkspaces};
 use tilo_session::Session;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::invite::InviteApp;
+use tilo_ui_base::a11y::Action as A11yAction;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
-use ui::a11y::Action as A11yAction;
 
 use crate::common::held::{certified, this_computer_with_an_identity};
 use crate::common::{HEIGHT, WIDTH};
@@ -285,7 +285,7 @@ fn press_create(app: &mut TestApp<InviteApp>, session: &mut Session) -> String {
 
 #[test]
 fn a_link_the_sheet_makes_admits_a_second_persons_device() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     // The sheet hands over the link that names the invitation this computer keeps in the
@@ -431,7 +431,7 @@ fn a_link_the_sheet_makes_admits_a_second_persons_device() {
 
 #[test]
 fn a_native_invitation_scans_from_the_sheet_and_admits_over_iroh() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let community = home.config().join("community.toml");
@@ -453,7 +453,10 @@ fn a_native_invitation_scans_from_the_sheet_and_admits_over_iroh() {
     assert_eq!(invitations_on_the_sheet(&mut session, 1), 1);
     crate::common::app_shot(&mut app, "invite-sheet-native");
     let mut read = String::new();
-    for theme in [ui::theme::Theme::light(), ui::theme::Theme::dark()] {
+    for theme in [
+        tilo_ui_base::theme::Theme::light(),
+        tilo_ui_base::theme::Theme::dark(),
+    ] {
         app.harness().set_theme(theme);
         let (bytes, _) = scanned(&mut app).expect("Camera can read the painted QR");
         assert_eq!(bytes, link.as_bytes());

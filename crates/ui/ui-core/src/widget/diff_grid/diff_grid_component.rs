@@ -1,12 +1,12 @@
 //! [`DiffGrid`] as a described component: two texts aligned line by line, each with its own line
 //! numbers, the changed rows washed in their tone and a strip showing where the changes stand.
 
-use crate::component::{Component, Described, Event};
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 
 use super::super::code_editor::Language;
 use super::{DiffGrid, DiffSide};
 
-crate::component::choice!(DiffSide, "DiffSide", {
+tilo_ui_base::choice!(DiffSide, "DiffSide", {
     Both => "both",
     Left => "left",
     Right => "right",
@@ -83,7 +83,7 @@ impl Described for DiffGrid {
         let press = props.press;
         self.on_press = (!press.is_none()).then(|| {
             Box::new(move |row: usize| {
-                press.fire(Some(crate::component::Value::Int(
+                press.fire(Some(tilo_ui_base::component::Value::Int(
                     i64::try_from(row).unwrap_or(i64::MAX),
                 )));
             }) as Box<dyn FnMut(usize)>
@@ -91,7 +91,7 @@ impl Described for DiffGrid {
         let wheel = props.wheel;
         self.on_wheel = (!wheel.is_none()).then(|| {
             Box::new(move |rows: i64| {
-                wheel.fire(Some(crate::component::Value::Int(rows)));
+                wheel.fire(Some(tilo_ui_base::component::Value::Int(rows)));
             }) as Box<dyn FnMut(i64)>
         });
         if changed {

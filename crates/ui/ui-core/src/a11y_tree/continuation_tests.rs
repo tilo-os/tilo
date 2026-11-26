@@ -7,7 +7,7 @@ fn projected() -> (SemanticTree, SemanticId) {
     field.set_semantic_target(Some("notes:page-title:page-a".into()));
     let mut taffy = taffy::TaffyTree::<()>::new();
     let mut map = HashMap::new();
-    let root = field.build_layout(&mut taffy, &crate::theme::Theme::dark(), &mut map);
+    let root = field.build_layout(&mut taffy, &tilo_ui_base::theme::Theme::dark(), &mut map);
     taffy
         .compute_layout(
             root,

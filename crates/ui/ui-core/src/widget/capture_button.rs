@@ -4,8 +4,8 @@ use vello::kurbo::{Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 
 use crate::ColorCompat;
-use crate::paint::PaintCtx;
-use crate::theme::Theme;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::theme::Theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CaptureKind {
@@ -105,7 +105,7 @@ impl CaptureButtonFace {
             (true, true) => colors.text_primary,
             (true, false) => colors
                 .text_primary
-                .with_alpha_factor(crate::widget::DISABLED_ALPHA),
+                .with_alpha_factor(tilo_ui_base::widget::DISABLED_ALPHA),
         };
         let danger = colors.semantic.danger;
         let recording = self.kind == CaptureKind::Recording;
@@ -157,13 +157,13 @@ impl CaptureButtonFace {
             }
             CaptureKind::Pip => {
                 let edge = core * std::f64::consts::SQRT_2;
-                crate::icons::draw_icon(
+                tilo_ui_base::icons::draw_icon(
                     ctx.scene,
                     ctx.transform,
                     Rect::from_center_size(center, (edge, edge)),
-                    crate::icons::Icon::PictureInPicture2,
+                    tilo_ui_base::icons::Icon::PictureInPicture2,
                     ink,
-                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
         }
@@ -173,8 +173,8 @@ impl CaptureButtonFace {
         rect
     }
 
-    pub fn accessibility(&self, rect: Rect) -> crate::a11y::AccessNode {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    pub fn accessibility(&self, rect: Rect) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         AccessNode::new(Role::Button)
             .with_name(self.kind.name().to_owned())
             .with_bounds(rect)
@@ -190,7 +190,7 @@ impl CaptureButtonFace {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text_render::TextRenderer;
+    use tilo_ui_base::text_render::TextRenderer;
     use vello::Scene;
     use vello::kurbo::Affine;
 

@@ -55,17 +55,20 @@ fn send(app: &mut App, event: &winit::event::WindowEvent) {
 }
 
 fn right_click(app: &mut App, at: Point) {
-    send(app, &crate::synthetic_input::cursor_moved(at.x, at.y));
     send(
         app,
-        &crate::synthetic_input::mouse_input(
+        &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y),
+    );
+    send(
+        app,
+        &tilo_ui_base::synthetic_input::mouse_input(
             winit::event::ElementState::Pressed,
             winit::event::MouseButton::Right,
         ),
     );
     send(
         app,
-        &crate::synthetic_input::mouse_input(
+        &tilo_ui_base::synthetic_input::mouse_input(
             winit::event::ElementState::Released,
             winit::event::MouseButton::Right,
         ),
@@ -85,12 +88,15 @@ fn menu_row(app: &App, index: usize) -> Point {
 }
 
 fn press(app: &mut App, at: Point) {
-    send(app, &crate::synthetic_input::cursor_moved(at.x, at.y));
-    send(app, &crate::synthetic_input::mouse_press());
+    send(
+        app,
+        &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y),
+    );
+    send(app, &tilo_ui_base::synthetic_input::mouse_press());
 }
 
 fn release(app: &mut App) {
-    send(app, &crate::synthetic_input::mouse_release());
+    send(app, &tilo_ui_base::synthetic_input::mouse_release());
 }
 
 #[test]
@@ -138,7 +144,7 @@ fn a_right_click_on_a_row_sends_about_that_row_and_the_typing_is_the_message() {
     );
     press(&mut app, send_row);
     release(&mut app);
-    let about = crate::shared_subject::SharedSelection::of_text("Budget")
+    let about = tilo_ui_base::shared_subject::SharedSelection::of_text("Budget")
         .at(tilo_actions::SelectionPlace::item("file-b"));
     let subjects: Vec<_> = menu(&app)
         .send_to()
@@ -158,7 +164,7 @@ fn a_right_click_on_a_row_sends_about_that_row_and_the_typing_is_the_message() {
         crate::widget::SendToFocus::Message,
         "the box opens with the keyboard in the message"
     );
-    send(&mut app, &crate::synthetic_input::char_key("h"));
+    send(&mut app, &tilo_ui_base::synthetic_input::char_key("h"));
     assert_eq!(
         menu(&app).send_to().text(),
         "h",

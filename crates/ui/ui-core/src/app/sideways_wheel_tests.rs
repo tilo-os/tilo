@@ -21,7 +21,7 @@ use super::surface::AppSurface;
 
 /// A window 900×650 whose root is `root`, on a shell-ui connection whose
 /// shell end the test holds.
-fn window(root: Box<dyn crate::widget::Widget>) -> (App, UnixStream) {
+fn window(root: Box<dyn tilo_ui_base::widget::Widget>) -> (App, UnixStream) {
     let mut app = app_with_root(crate::State::new(), root);
     let (app_side, shell_side) = UnixStream::pair().unwrap();
     app.floating.client = Some(FloatingSurfaceServiceClient::from_stream(app_side).unwrap());
@@ -29,7 +29,7 @@ fn window(root: Box<dyn crate::widget::Widget>) -> (App, UnixStream) {
     // The wheel goes to what is under the pointer: the window's own content.
     app.surface_input(
         &Surface,
-        crate::synthetic_input::cursor_moved(450.0, 325.0),
+        tilo_ui_base::synthetic_input::cursor_moved(450.0, 325.0),
         false,
     );
     (app, shell_side)
@@ -117,12 +117,15 @@ impl Wide {
     const WIDTH: f64 = 1800.0;
 }
 
-impl crate::widget::Widget for Wide {
+impl tilo_ui_base::widget::Widget for Wide {
     fn build_layout(
         &mut self,
         taffy: &mut crate::taffy::TaffyTree<()>,
-        _: &crate::Theme,
-        _: &mut std::collections::HashMap<crate::taffy::NodeId, *mut dyn crate::widget::Widget>,
+        _: &tilo_ui_base::Theme,
+        _: &mut std::collections::HashMap<
+            crate::taffy::NodeId,
+            *mut dyn tilo_ui_base::widget::Widget,
+        >,
     ) -> crate::taffy::NodeId {
         taffy
             .new_leaf(crate::taffy::Style {
@@ -138,14 +141,14 @@ impl crate::widget::Widget for Wide {
         node: crate::taffy::NodeId,
         origin: crate::kurbo::Point,
     ) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let WindowEvent::MouseWheel { delta, .. } = event else {
             return;
         };
-        let Some(travel) = crate::widget::sideways_travel(delta, ctx.scale_factor) else {
+        let Some(travel) = tilo_ui_base::widget::sideways_travel(delta, ctx.scale_factor) else {
             return;
         };
         let reach = (Self::WIDTH - self.rect.width()).max(0.0);

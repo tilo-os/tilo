@@ -293,7 +293,7 @@ fn focused(compositor: &mut Compositor) -> Result<image::RgbaImage, String> {
 pub(crate) fn unique(directory: &Path, kind: &str, extension: &str) -> PathBuf {
     // A file's name is a machine form, and dots where the ISO form has
     // colons: colons are not a name every filesystem accepts.
-    let name = ui::format::machine!(
+    let name = tilo_ui_base::format::machine!(
         "a file name, which every filesystem accepts and search finds",
         format!(
             "{kind} {}",

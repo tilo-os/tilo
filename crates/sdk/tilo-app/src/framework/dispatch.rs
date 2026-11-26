@@ -17,9 +17,12 @@ use tilo_actions::{
 
 use super::controls::Actions;
 use tilo_resource::{Edit, Effect, Invoke, MemberId, Resource};
-use ui_core::LocalState;
+use tilo_ui_base::LocalState;
+use tilo_ui_base::{
+    permissions::ActionKind, permissions::LivePermissions, permissions::PermissionScope,
+    permissions::TreePath, permissions::policy,
+};
 use ui_core::automerge::ChangeHash;
-use ui_core::permissions::{ActionKind, LivePermissions, PermissionScope, TreePath, policy};
 
 /// What a view asks whether its member may do.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,8 +33,8 @@ enum Asked {
     /// record (a free seat) is made from what everyone sees.
     Arrived,
 }
-use ui_core::widget::Edits;
-use ui_core::widget::controls::{AttributedControlInvocation, Origin};
+use tilo_ui_base::widget::Edits;
+use tilo_ui_base::{widget::controls::AttributedControlInvocation, widget::controls::Origin};
 
 /// What reacting needs: an undoable change below the reactions field,
 /// wherever it is.
@@ -105,7 +108,7 @@ impl<R: Resource> Submit<R> for Edit<R> {
 /// queue an invocation the host resolves after the event, exactly as a
 /// control bound to an action would. [`apply_now`](Self::apply_now) applies
 /// one typed action immediately, inside the event or the settle pass
-/// ([`Widget::settle`](ui_core::widget::Widget::settle)), for an editor that must
+/// ([`Widget::settle`](tilo_ui_base::widget::Widget::settle)), for an editor that must
 /// see the result of its own edit before the next keystroke (the paragraph a
 /// split created, the cell a table insert made). Both check the
 /// member's permission, apply through the replayable executor with
@@ -534,14 +537,17 @@ impl DispatchCore {
         &self,
         invocation: tilo_actions::InvocationId,
         action: &str,
-        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
+        result: &Result<
+            tilo_ui_base::host_operation::ResourceOperationStart,
+            tilo_actions::ApiError,
+        >,
     ) {
         let landed = match result {
-            Ok(ui_core::host_operation::ResourceOperationStart::Completed(output)) => {
+            Ok(tilo_ui_base::host_operation::ResourceOperationStart::Completed(output)) => {
                 Ok(Landed::of(action, output))
             }
             // Handed on to the broker: it applies there, answering nothing here.
-            Ok(ui_core::host_operation::ResourceOperationStart::Accepted) => Ok(Landed {
+            Ok(tilo_ui_base::host_operation::ResourceOperationStart::Accepted) => Ok(Landed {
                 action: action.to_owned(),
                 answer: None,
                 created: Vec::new(),
@@ -585,7 +591,7 @@ impl DispatchCore {
         match asked {
             Asked::Need(need) => self.may(need),
             Asked::Govern => self.may_govern(),
-            Asked::Arrived => !ui_core::workspace_sync::before_first_sync(),
+            Asked::Arrived => !tilo_ui_base::workspace_sync::before_first_sync(),
         }
     }
 
@@ -658,7 +664,7 @@ impl DispatchCore {
         self.permissions
             .borrow()
             .as_ref()
-            .is_some_and(ui_core::permissions::LivePermissions::workspace_has_others)
+            .is_some_and(tilo_ui_base::permissions::LivePermissions::workspace_has_others)
     }
 
     /// React (or take a reaction back) at `path`, a [`Reactions`](tilo_resource::Reactions)
@@ -923,7 +929,7 @@ impl DispatchCore {
     /// The host draining it hears who asked for it.
     pub(crate) fn take_attributed(&self) -> Option<AttributedControlInvocation> {
         let (taken, origin) = self.queue.borrow_mut().pop_front()?;
-        ui_core::widget::controls::note_drained_origin(origin);
+        tilo_ui_base::widget::controls::note_drained_origin(origin);
         Some(taken)
     }
 
@@ -1123,7 +1129,7 @@ impl<R: Resource> Dispatcher<R> {
 
     /// Whether what the workspace holds has arrived, as observable view state:
     /// false while the window's workspace has not finished its first sync with
-    /// its host ([`ui_core::workspace_sync`]), when a record joined from it may
+    /// its host ([`tilo_ui_base::workspace_sync`]), when a record joined from it may
     /// still be missing the content its creator wrote. True outside a workspace
     /// that syncs with a host, and for a host's own view of a record, which
     /// holds what the workspace holds.
@@ -1427,7 +1433,7 @@ impl<R: Resource> Dispatcher<R> {
         &self,
         parent: Option<tilo_actions::InvocationId>,
         call: &super::Call,
-    ) -> Result<ui_core::InvocationCall, String> {
+    ) -> Result<tilo_ui_base::InvocationCall, String> {
         if self.core.past {
             return Err("a past version calls nothing".into());
         }
@@ -1441,7 +1447,7 @@ impl<R: Resource> Dispatcher<R> {
         &self,
         parent: Option<tilo_actions::InvocationId>,
         read: tilo_actions::remote::ResourceReadRequest,
-    ) -> Result<ui_core::remote_actions::ResourceReadCall, String> {
+    ) -> Result<tilo_ui_base::remote_actions::ResourceReadCall, String> {
         if self.core.past {
             return Err("a past version reads nothing".into());
         }
@@ -1857,7 +1863,7 @@ impl<R: Resource> Dispatcher<R> {
             // is open while it is written, so the record's history takes
             // the step back as one.
             submit_now: Rc::new(move |_, _, action: &C::Action, context: ActionContext| {
-                let event = ui_core::input_generation::generation();
+                let event = tilo_ui_base::input_generation::generation();
                 // Typing is a run of its own: a correction made as a word
                 // ends is a step apart from the word.
                 let typing = C::continuable(action);
@@ -2120,7 +2126,7 @@ fn asks<A: tilo_actions::Action>(action: &A) -> bool {
 #[cfg(debug_assertions)]
 fn not_painting() {
     debug_assert!(
-        !ui_core::widget::painting(),
+        !tilo_ui_base::widget::painting(),
         "a document write was dispatched from a widget's draw: take it up in update, and write it in settle"
     );
 }

@@ -1,5 +1,5 @@
 fn platform_palette() -> ActionPalette {
-    ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+    ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
         SearchField::with_language("en_US")
     })
 }
@@ -140,8 +140,8 @@ tilo_test_env::scenario! {
 
     phase select_resource_puts_the_row_of_that_resource_under_the_cursor;
     {
-        let _settled = crate::motion::testing::settled();
-        let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let mut palette = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
             SearchField::with_language("en_US")
         });
         palette.load_open_resources(&[]);

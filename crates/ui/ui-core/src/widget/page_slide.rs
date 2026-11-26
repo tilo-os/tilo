@@ -7,14 +7,14 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
-use crate::component::{Component, Described, PartViews};
-use crate::motion::{Drill, DrillDepth, Pose};
+use tilo_ui_base::{component::Component, component::Described, component::PartViews};
+use tilo_ui_base::{motion::Drill, motion::DrillDepth, motion::Pose};
 
-use crate::theme::Theme;
-use crate::tokens::MotionSource;
-use crate::widget::DrawChild;
-use crate::widget::identity::concrete::Decorator;
-use crate::widget::{Element, Placement, layout_rect};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::MotionSource;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::identity::concrete::Decorator;
+use tilo_ui_base::{widget::Element, widget::Placement, widget::layout_rect};
 
 /// The identity a slide built by [`PageSlide::new`] leaves its motion under: one page part in
 /// a window.
@@ -81,12 +81,12 @@ impl PageSlide {
     }
 
     #[must_use]
-    pub fn page(&self) -> &dyn crate::widget::Widget {
+    pub fn page(&self) -> &dyn tilo_ui_base::widget::Widget {
         self.page.as_ref()
     }
 
     fn no_page() -> Element {
-        Box::new(crate::widget::Spacer::new())
+        Box::new(tilo_ui_base::widget::Spacer::new())
     }
 
     fn put(&mut self, page: Element) {
@@ -101,7 +101,12 @@ impl PageSlide {
     }
 
     /// Draw `page` under `pose`, clipped to `clip`.
-    fn draw_posed(page: &mut Element, pose: Pose, clip: Rect, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_posed(
+        page: &mut Element,
+        pose: Pose,
+        clip: Rect,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
+    ) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -127,7 +132,8 @@ impl PageSlide {
     /// Where the page it shows is drawn: its box, and past its foot what follows a band on its
     /// way in the page.
     fn shown_rect(&self) -> Rect {
-        let grows = crate::widget::Widget::disclosing(self).map_or(0.0, |moving| moving.reach(0.0));
+        let grows =
+            tilo_ui_base::widget::Widget::disclosing(self).map_or(0.0, |moving| moving.reach(0.0));
         self.rect
             .with_size((self.rect.width(), self.rect.height() + grows))
     }
@@ -192,13 +198,13 @@ impl PartViews for PageSlide {
 }
 
 impl Decorator for PageSlide {
-    type Inner = dyn crate::widget::Widget;
+    type Inner = dyn tilo_ui_base::widget::Widget;
 
-    fn inner(&self) -> &(dyn crate::widget::Widget + 'static) {
+    fn inner(&self) -> &(dyn tilo_ui_base::widget::Widget + 'static) {
         self.page.as_ref()
     }
 
-    fn inner_mut(&mut self) -> &mut (dyn crate::widget::Widget + 'static) {
+    fn inner_mut(&mut self) -> &mut (dyn tilo_ui_base::widget::Widget + 'static) {
         self.page.as_mut()
     }
 
@@ -206,10 +212,10 @@ impl Decorator for PageSlide {
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn crate::widget::Widget>,
+        node_map: &mut HashMap<NodeId, *mut dyn tilo_ui_base::widget::Widget>,
     ) -> NodeId {
         if self.aimed.is_none()
-            && let Some(left) = crate::motion::take_kept::<Left>(&self.kept_as)
+            && let Some(left) = tilo_ui_base::motion::take_kept::<Left>(&self.kept_as)
         {
             self.depth = left.depth;
             self.leaving = Some(Leaving {
@@ -224,7 +230,7 @@ impl Decorator for PageSlide {
                 self.level,
                 theme.motion(),
                 MotionSource::Pointer,
-                crate::motion::frame_now(),
+                tilo_ui_base::motion::frame_now(),
             );
             self.aimed = Some(self.level);
         }
@@ -240,14 +246,14 @@ impl Decorator for PageSlide {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let motion = theme.motion();
         let moving = self.depth.is_moving(now);
         let depth = self.depth.get(now);
@@ -261,7 +267,13 @@ impl Decorator for PageSlide {
                     page,
                     pose,
                     if clip.width() > 0.0 { clip } else { *rect },
-                    &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
+                    &mut tilo_ui_base::draw::DrawCtx::new(
+                        scene,
+                        transform,
+                        text,
+                        theme,
+                        env.clone(),
+                    ),
                 );
             }
         } else if self.leaving.take().is_some() {
@@ -272,17 +284,17 @@ impl Decorator for PageSlide {
             &mut self.page,
             pose,
             clip,
-            &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
         );
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.depth.is_moving(crate::motion::frame_now()) || self.page.needs_animation_frame()
+        self.depth.is_moving(tilo_ui_base::motion::frame_now()) || self.page.needs_animation_frame()
     }
 
     /// A band opening or closing in the page it shows moves what follows the slide, as one in a
     /// column would; a page on its way in or out moves nothing past it.
-    fn disclosing(&self) -> Option<crate::widget::Disclosing> {
+    fn disclosing(&self) -> Option<tilo_ui_base::widget::Disclosing> {
         self.leaving
             .is_none()
             .then(|| self.page.disclosing())
@@ -293,7 +305,7 @@ impl Decorator for PageSlide {
         self.dirty
             || self.leaving.is_some()
             || self.page.needs_redraw()
-            || crate::widget::Widget::needs_animation_frame(self)
+            || tilo_ui_base::widget::Widget::needs_animation_frame(self)
     }
 
     fn mark_drawn(&mut self) {
@@ -335,8 +347,11 @@ impl Drop for PageSlide {
         if self.rect.width() <= 0.0 {
             return;
         }
-        let page = std::mem::replace(&mut self.page, Box::new(crate::widget::Spacer::new()));
-        crate::motion::keep(
+        let page = std::mem::replace(
+            &mut self.page,
+            Box::new(tilo_ui_base::widget::Spacer::new()),
+        );
+        tilo_ui_base::motion::keep(
             std::mem::take(&mut self.kept_as),
             Some(self.rect),
             Left {

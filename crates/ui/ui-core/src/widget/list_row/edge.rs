@@ -1,8 +1,8 @@
 //! What a row shows and offers at its edges: the unseen change its trailing side carries,
 //! the action a hover offers, the action a swipe reveals.
 
-use crate::component::Person;
-use crate::icons::Icon;
+use tilo_ui_base::component::Person;
+use tilo_ui_base::icons::Icon;
 
 /// A change someone else made to what the row shows and the person has not seen yet (task-
 /// legibility §3): their face on the row's trailing edge, their colour faintly under it, at

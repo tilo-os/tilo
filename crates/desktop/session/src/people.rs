@@ -19,14 +19,16 @@ use tilo_session_core::desktop::navigation::LayoutEffect;
 use tilo_session_core::desktop::people::{RosterRow, roster_rows};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::surfaces::{Look, Published};
-use ui::host_operation::ResourceOperationStart;
+use tilo_ui_base::host_operation::ResourceOperationStart;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    motion::Appear, motion::Direction, motion::MotionValue, motion::Presence, motion::Snap,
+};
 use ui::kurbo::{Point, Rect, Size, Vec2};
-use ui::motion::{Appear, Direction, MotionValue, Presence, Snap};
 use ui::peniko::{BlendMode, Fill};
 use ui::taffy::{NodeId, Style, TaffyTree};
-use ui::theme::Theme;
 use ui::time::Duration;
-use ui::widget::Widget;
 use ui::widgets::DockEdge;
 use ui::winit::event::WindowEvent;
 
@@ -89,13 +91,13 @@ pub enum PeopleAsk {
 /// identity derives, so their face is the same on every surface and on every device that paints
 /// them.
 pub(crate) fn own_rgb(identity: &str) -> (u8, u8, u8) {
-    ui::presence::identity_rgb(own_hue(identity))
+    tilo_ui_base::presence::identity_rgb(own_hue(identity))
 }
 
 /// The hue of [`own_rgb`].
-pub(crate) fn own_hue(identity: &str) -> ui::tokens::PresenceHue {
-    ui::local_identity::own_colour()
-        .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(identity))
+pub(crate) fn own_hue(identity: &str) -> tilo_ui_base::tokens::PresenceHue {
+    tilo_ui_base::local_identity::own_colour()
+        .unwrap_or_else(|| tilo_ui_base::tokens::PresenceHue::of_identity(identity))
 }
 
 /// The colour this person's own avatar and card wear: in a live room, the one everyone here draws
@@ -103,7 +105,7 @@ pub(crate) fn own_hue(identity: &str) -> ui::tokens::PresenceHue {
 /// they see themselves in the colour everyone else sees; with no room settled yet, [`own_rgb`].
 pub(crate) fn own_live_rgb(sync: Option<&crate::sync::Client>, identity: &str) -> (u8, u8, u8) {
     sync.and_then(|sync| sync.here().borrow().own_rgb())
-        .filter(|rgb| *rgb != ui::presence::UNSETTLED_RGB)
+        .filter(|rgb| *rgb != tilo_ui_base::presence::UNSETTLED_RGB)
         .unwrap_or_else(|| own_rgb(identity))
 }
 
@@ -120,7 +122,7 @@ pub(crate) fn own_face(
     let Some(own) = own else {
         return (
             crate::platform::person::person_name(
-                ui::local_identity::load().map(|identity| identity.display_name),
+                tilo_ui_base::local_identity::load().map(|identity| identity.display_name),
                 "",
             ),
             device_person.to_owned(),
@@ -134,7 +136,7 @@ pub(crate) fn own_face(
         .unwrap_or(device_person)
         .to_owned();
     let name = crate::platform::person::given_name(
-        ui::local_identity::load().map(|identity| identity.display_name),
+        tilo_ui_base::local_identity::load().map(|identity| identity.display_name),
     )
     .unwrap_or_else(|| own.label.clone());
     (name, identity)
@@ -343,7 +345,7 @@ impl People {
     }
 
     /// Draw in the person's theme, as their settings now have it.
-    pub fn set_theme(&self, theme: ui::Theme) {
+    pub fn set_theme(&self, theme: tilo_ui_base::Theme) {
         if let Some(layer) = self.layer.borrow().as_ref() {
             layer.set_theme(theme);
         }
@@ -393,7 +395,11 @@ impl Published for People {
         Some(crate::i18n::t("session-people"))
     }
 
-    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+    fn a11y_action(
+        &mut self,
+        target: ui::accesskit::NodeId,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         (self.open.get() || self.shown.borrow().is_kept())
             && self
                 .layer()
@@ -570,7 +576,7 @@ struct Panel {
     /// The workspace in front said this person may not invite into it.
     invite_withheld: Rc<Cell<bool>>,
     /// What everyone here says beside their pointer, as the toolkit times it for every host.
-    chats: RefCell<ui::presence::CursorChats>,
+    chats: RefCell<tilo_ui_base::presence::CursorChats>,
     /// Keep drawing until then: the newest pointer heard plus the window it eases to rest in.
     motion_until: Cell<f64>,
 }
@@ -743,7 +749,7 @@ impl Panel {
     /// Where everyone here points, drawn by the one rule both hosts draw pointers by: over the
     /// tile of the tab it is on, in the colour and under the name the workspace knows them by,
     /// with what they say beside it. What each tab is called names where they are.
-    fn draw_pointers(&self, ctx: &mut ui::DrawCtx<'_>, shown: &mut Shown) {
+    fn draw_pointers(&self, ctx: &mut tilo_ui_base::DrawCtx<'_>, shown: &mut Shown) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -761,7 +767,7 @@ impl Panel {
             .collect();
         let mut labels: HashMap<u64, String> = HashMap::new();
         let mut pointers = tilo_session_core::presence::Pointers::default();
-        let no_presence = ui::presence::PresenceCtx::default();
+        let no_presence = tilo_ui_base::presence::PresenceCtx::default();
         if let Some(sync) = &self.sync
             && let Some((workspace_id, named)) = self.handle.read(|tree| {
                 let workspace = tree.active_workspace()?;
@@ -814,20 +820,27 @@ impl Panel {
             .collect();
         if !pointers.drawn.is_empty() {
             let area = shown.area;
-            ui::presence::draw_peer_cursors(scene, transform, area, text, theme, &pointers.drawn);
+            tilo_ui_base::presence::draw_peer_cursors(
+                scene,
+                transform,
+                area,
+                text,
+                theme,
+                &pointers.drawn,
+            );
         }
     }
 
     /// The roster, drawn where it stands: under the bar as the faces open it, or kept on screen at
     /// an edge with a mirror of each person's screen. One painting for both.
-    fn draw_roster(&self, ctx: &mut ui::DrawCtx<'_>, shown: &mut Shown) {
+    fn draw_roster(&self, ctx: &mut tilo_ui_base::DrawCtx<'_>, shown: &mut Shown) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        let now = ui::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let motion = theme.motion();
         // The roster is the panel's only while it is up or kept at an edge: closed, it draws
         // nothing, so the surface stands transparent and a press under the bar reaches the bar.
@@ -837,7 +850,7 @@ impl Panel {
         // The bar's faces open the roster where they stand, kept on screen or not.
         if self.open.get() {
             self.draw_one_roster(
-                &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
+                &mut tilo_ui_base::DrawCtx::new(scene, transform, text, theme, env.clone()),
                 shown,
                 None,
             );
@@ -846,8 +859,13 @@ impl Panel {
         if let Some(pin) = shown.pinned.as_mut() {
             match pin.rest {
                 Rest::Leaving => {
-                    pin.shown
-                        .show(false, Appear::SPEC, motion, ui::motion::input_source(), now);
+                    pin.shown.show(
+                        false,
+                        Appear::SPEC,
+                        motion,
+                        tilo_ui_base::motion::input_source(),
+                        now,
+                    );
                     if !pin.shown.is_visible(now) {
                         shown.pinned = None;
                     }
@@ -862,8 +880,13 @@ impl Panel {
                 }
                 Rest::Arriving | Rest::Waiting => {
                     pin.rest = Rest::Here;
-                    pin.shown
-                        .show(true, Appear::SPEC, motion, ui::motion::input_source(), now);
+                    pin.shown.show(
+                        true,
+                        Appear::SPEC,
+                        motion,
+                        tilo_ui_base::motion::input_source(),
+                        now,
+                    );
                 }
                 Rest::Here => {}
             }
@@ -909,7 +932,7 @@ impl Panel {
             &slot.inflate(32.0, 32.0),
         );
         self.draw_one_roster(
-            &mut ui::DrawCtx::new(scene, placed, text, theme, env.clone()),
+            &mut tilo_ui_base::DrawCtx::new(scene, placed, text, theme, env.clone()),
             shown,
             Some(slot),
         );
@@ -927,7 +950,12 @@ impl Panel {
     }
 
     /// The roster's one painting, with the model this session builds of who is here.
-    fn draw_one_roster(&self, ctx: &mut ui::DrawCtx<'_>, shown: &mut Shown, panel: Option<Rect>) {
+    fn draw_one_roster(
+        &self,
+        ctx: &mut tilo_ui_base::DrawCtx<'_>,
+        shown: &mut Shown,
+        panel: Option<Rect>,
+    ) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1027,7 +1055,7 @@ impl Panel {
             let timing = Snap::SPEC.timing(
                 Direction::Enter,
                 theme.motion(),
-                ui::tokens::MotionSource::Gesture,
+                tilo_ui_base::tokens::MotionSource::Gesture,
             );
             pin.settle.set(Point::ZERO, timing, now);
         }
@@ -1060,7 +1088,11 @@ impl Panel {
 
     /// What a drag of the pinned roster asks: the pointer moved, a press started on it, or it was
     /// let go at an edge.
-    fn handle_pinned(&self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
+    fn handle_pinned(
+        &self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         let roster = Rc::clone(&self.shown);
         let mut shown = roster.borrow_mut();
         let cursor = shown.cursor;
@@ -1135,7 +1167,7 @@ impl Widget for Panel {
         _theme: &Theme,
         map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        use ui::widget::TaffyTreeExt;
+        use tilo_ui_base::widget::TaffyTreeExt;
         let style = Style {
             position: ui::taffy::Position::Absolute,
             inset: ui::taffy::Rect {
@@ -1150,14 +1182,14 @@ impl Widget for Panel {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.shown.borrow_mut().area = ui::widget::layout_rect(taffy, node, origin);
+        self.shown.borrow_mut().area = tilo_ui_base::widget::layout_rect(taffy, node, origin);
     }
 
     fn get_rect(&self) -> Rect {
         self.shown.borrow().area
     }
 
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let shown = self.shown.borrow();
         // Each control says where it stands and carries what pressing it does, so a reader
         // presses the roster's own buttons as the person does.
@@ -1171,11 +1203,11 @@ impl Widget for Panel {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &ui::a11y::Action,
-        _state: &mut ui::widget::Edits<'_>,
-        _path: &ui::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        if !matches!(action, ui::a11y::Action::Activate) {
+        if !matches!(action, tilo_ui_base::a11y::Action::Activate) {
             return false;
         }
         // The roster's own controls, as its tree names them.
@@ -1193,7 +1225,7 @@ impl Widget for Panel {
         false
     }
 
-    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1205,17 +1237,17 @@ impl Widget for Panel {
         let roster = Rc::clone(&self.shown);
         let mut shown = roster.borrow_mut();
         self.draw_pointers(
-            &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
+            &mut tilo_ui_base::DrawCtx::new(scene, transform, text, theme, env.clone()),
             &mut shown,
         );
         self.draw_roster(
-            &mut ui::DrawCtx::new(scene, transform, text, theme, env.clone()),
+            &mut tilo_ui_base::DrawCtx::new(scene, transform, text, theme, env.clone()),
             &mut shown,
         );
         self.drawn.set(revision);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         // Where the pointer is, as the panel draws by it: under the pointer of the bar's faces and
         // every other person's name.
         if let WindowEvent::CursorMoved { position, .. } = event {
@@ -1263,7 +1295,7 @@ impl Widget for Panel {
     /// or a bubble or a reaction is playing. A shell where a remote pointer rests where it was
     /// drawn asks for no frame.
     fn needs_redraw(&self) -> bool {
-        let now = ui::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         if self.shown.borrow().pinned.is_some() {
             // The pinned roster draws while its cards arrive and move, and when what the workspace
             // says of its people changed: a pointer at rest asks for no frame.

@@ -50,10 +50,10 @@ pub(super) fn dispatch(
 mod tests {
     use super::*;
     use crate::{
-        headless::Driver,
-        widget::{Column, Scrollable, Text, TextInput, Widget},
+        headless::Driver, widget::Column, widget::Scrollable, widget::Text, widget::TextInput,
     };
     use std::{cell::Cell, rc::Rc};
+    use tilo_ui_base::widget::Widget;
     use winit::event::{DeviceId, ElementState};
 
     fn driver(root: Box<dyn Widget>) -> Driver {
@@ -61,16 +61,16 @@ mod tests {
             crate::State::new(),
             root,
             (400, 300),
-            crate::Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::MemberId::person("isolation-test"),
+            tilo_ui_base::Theme::dark(),
+            tilo_ui_base::font_catalog::fixture_renderer(),
+            tilo_ui_base::permissions::MemberId::person("isolation-test"),
         )
     }
 
-    use crate::synthetic_input::cursor_moved;
+    use tilo_ui_base::synthetic_input::cursor_moved;
 
     fn wheel() -> WindowEvent {
-        crate::synthetic_input::mouse_wheel(0.0, -3.0)
+        tilo_ui_base::synthetic_input::mouse_wheel(0.0, -3.0)
     }
 
     #[test]
@@ -121,11 +121,11 @@ mod tests {
         }
         // phase: native_input_isolation_keeps_injected_text_and_rejects_platform_text
         {
-            let text = crate::LocalState::new(String::new());
+            let text = tilo_ui_base::LocalState::new(String::new());
             let mut driver = driver(Box::new(TextInput::from_state(&text).with_id("query")));
             driver.click_named("query").unwrap();
             let key = || {
-                crate::synthetic_input::key_input(
+                tilo_ui_base::synthetic_input::key_input(
                     &winit::keyboard::Key::Character("x".into()),
                     ElementState::Pressed,
                 )

@@ -3,8 +3,8 @@
 
 use vello::kurbo::{Rect, RoundedRect};
 
-use crate::paint::PaintCtx;
-use crate::theme::Theme;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::theme::Theme;
 
 /// One face a tab's view gave its pill: a person or an agent, the name they are known by here and
 /// the hue they wear. A pill shows these when its view gave any, and the live presence feed's
@@ -12,7 +12,7 @@ use crate::theme::Theme;
 #[derive(Clone, Debug, PartialEq)]
 pub struct TabFaceSpec {
     pub name: String,
-    pub hue: crate::tokens::PresenceHue,
+    pub hue: tilo_ui_base::tokens::PresenceHue,
     pub agent: bool,
 }
 
@@ -64,7 +64,7 @@ impl PillFaces {
             0 => 0.0,
             parts => {
                 metrics.face
-                    + crate::num::f64_of_usize(parts.saturating_sub(1)) * metrics.step()
+                    + tilo_ui_base::num::f64_of_usize(parts.saturating_sub(1)) * metrics.step()
                     + metrics.gap
             }
         }
@@ -107,16 +107,16 @@ pub(super) fn paint_tab_face(
                 f64::from(theme.tokens.radii.detail),
             ),
         );
-        crate::agent_identity::draw_agent_identity_mark(
+        tilo_ui_base::agent_identity::draw_agent_identity_mark(
             ctx.scene,
             ctx.transform,
             rect,
             colour,
             theme,
-            crate::agent_identity::AgentIdentityStyle::Solid,
+            tilo_ui_base::agent_identity::AgentIdentityStyle::Solid,
         );
     } else {
-        crate::widget::AvatarFace::new(name, "")
+        tilo_ui_base::widget::AvatarFace::new(name, "")
             .presence(colour)
             .ringed_on(ring)
             .paint(ctx, rect);

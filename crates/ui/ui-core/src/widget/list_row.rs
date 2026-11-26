@@ -10,31 +10,32 @@
 //! text scale. Selection is the lift (HIG §9.3), and rows sit edge to edge, with no rule
 //! between them.
 
-use crate::i18n::widget_text;
 use std::borrow::Cow;
 use std::collections::HashMap;
+use tilo_ui_base::i18n::widget_text;
 
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::chrome::{RowJoin, SelectionState};
-use crate::component::Person;
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
+use tilo_ui_base::component::Person;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use tilo_ui_base::{chrome::RowJoin, chrome::SelectionState};
 
-use crate::text_render::{FontChoice, TextRenderer};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::tokens::colors::PresenceHue;
 use crate::widget::activation::{Activation, Interaction};
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Style, TaffyTree};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::tokens::colors::PresenceHue;
+use tilo_ui_base::{text_render::FontChoice, text_render::TextRenderer};
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{Color, ImageData};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::widget::avatar_face::AvatarFace;
-use crate::widget::{
-    ActionEmitter, ChipStyle, DrawChild, Element, Fact, MediaArt, MediaAspect, MediaSource,
-    TaffyTreeExt, Tone, Widget,
+use crate::{widget::ChipStyle, widget::Fact, widget::MediaArt, widget::MediaSource};
+use tilo_ui_base::widget::avatar_face::AvatarFace;
+use tilo_ui_base::{
+    widget::ActionEmitter, widget::DrawChild, widget::Element, widget::MediaAspect,
+    widget::TaffyTreeExt, widget::Tone, widget::Widget,
 };
 
 /// Who made what a row shows, as the fields the row paints: the person's face and
@@ -73,7 +74,7 @@ pub enum RowLeading<'a> {
     Checkbox { checked: bool, icon: Option<Icon> },
     Swatch(Color),
     Signal(crate::widget::SignalLevel),
-    Face(crate::presence::Face<'a>),
+    Face(tilo_ui_base::presence::Face<'a>),
     Paint(&'a dyn Fn(&mut PaintCtx<'_>, Rect)),
 }
 
@@ -160,7 +161,8 @@ pub fn badge_column_width(text: &mut TextRenderer, theme: &Theme, badges: &[&str
 fn row_fill(theme: &Theme, selected: bool, hovered: bool) -> Option<Color> {
     let state = SelectionState::new(selected, hovered, false);
     (selected || hovered).then(|| {
-        crate::chrome::selection_tier_on(theme, state, theme.tokens.colors.surfaces.content).fill
+        tilo_ui_base::chrome::selection_tier_on(theme, state, theme.tokens.colors.surfaces.content)
+            .fill
     })
 }
 
@@ -175,7 +177,7 @@ struct RowGeometry {
     avatar: Option<Rect>,
     value_right: f64,
     /// The left edge of the room the value keeps: its own width, capped so
-    /// the title always keeps a column ([`crate::tokens::Metrics::row_title_min_width`]).
+    /// the title always keeps a column ([`tilo_ui_base::tokens::Metrics::row_title_min_width`]).
     value_left: f64,
     dot_x: Option<f64>,
     change: Option<Rect>,
@@ -201,7 +203,7 @@ pub const CARD_TITLE_LINES: u8 = 3;
 /// widget's own surface and what it says is written once. Asked as a capability, so a widget
 /// wrapped in a host's pane, a context menu or any other decorator still answers.
 pub trait CardBody {
-    fn show_as_card(&mut self, selected: bool, activate: crate::component::Event);
+    fn show_as_card(&mut self, selected: bool, activate: tilo_ui_base::component::Event);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -310,7 +312,7 @@ impl<'a> ListRowFace<'a> {
     }
 
     /// Say which item of its collection the row shows
-    /// ([`AccessNode::item`](crate::a11y::AccessNode::item)).
+    /// ([`AccessNode::item`](tilo_ui_base::a11y::AccessNode::item)).
     #[must_use]
     pub fn item(mut self, item: Option<&'a str>) -> Self {
         self.item = item;
@@ -709,7 +711,7 @@ impl<'a> ListRowFace<'a> {
 
     /// A trailing chevron for a row that opens in place, turned `turn` of the way (0
     /// closed, 1 open) from pointing at the row's end to pointing down —
-    /// [`crate::motion::Disclose`]'s `turn`.
+    /// [`tilo_ui_base::motion::Disclose`]'s `turn`.
     #[must_use]
     pub fn disclosure_turned(mut self, turn: f64) -> Self {
         self.disclosure = true;
@@ -856,7 +858,7 @@ impl<'a> ListRowFace<'a> {
     /// The row's accessibility node: a list item named by its badge, title and secondary
     /// line, with the subtitle, meta, value, count, tags and status as its value, and one
     /// button child per action. The title alone is kept as the node's
-    /// [`title`](crate::a11y::AccessNode::title), the line the row is found by.
+    /// [`title`](tilo_ui_base::a11y::AccessNode::title), the line the row is found by.
     pub fn accessibility(&self, rect: Rect, action_target: impl Into<String>) -> AccessNode {
         let spans: String = self
             .meta_spans
@@ -969,7 +971,7 @@ enum Leading {
 struct FactAvatar {
     name: String,
     identity: String,
-    who: Option<crate::component::Person>,
+    who: Option<tilo_ui_base::component::Person>,
     image: Option<ImageData>,
     square: bool,
     glyph: Option<Icon>,
@@ -1048,7 +1050,7 @@ struct OwnedSwipe {
     label: String,
     destructive: bool,
     on_activate: Option<Box<dyn FnMut()>>,
-    press: crate::widget::Press,
+    press: tilo_ui_base::widget::Press,
 }
 
 impl OwnedSwipe {
@@ -1132,7 +1134,7 @@ pub struct ListRow {
     tooltip: Option<String>,
     description: Option<String>,
     /// The files the row can be dragged out of the window with
-    /// ([`crate::carry_out`]), by their offer's key.
+    /// ([`tilo_ui_base::carry_out`]), by their offer's key.
     carries_out: Option<String>,
     status: Option<RowStatus>,
     change: Option<Changed>,
@@ -1151,26 +1153,26 @@ pub struct ListRow {
     armed_action: Option<usize>,
     tooltips_suppressed: bool,
     pressed_part: crate::pointer_replay::HeldPress<RowPart>,
-    shortcuts: Vec<(crate::platform::Shortcut, std::rc::Rc<dyn Fn()>)>,
+    shortcuts: Vec<(tilo_ui_base::platform::Shortcut, std::rc::Rc<dyn Fn()>)>,
     swipe: Option<OwnedSwipe>,
     swipe_origin: Option<(u64, f64)>,
     swipe_offset: f64,
     trailing: Option<Trailing>,
     activation: Activation,
-    check_binding: Option<crate::widget::binding::BoxedBinding<bool>>,
-    check_action: Option<crate::widget::ActionEmitter<()>>,
+    check_binding: Option<tilo_ui_base::widget::binding::BoxedBinding<bool>>,
+    check_action: Option<tilo_ui_base::widget::ActionEmitter<()>>,
     /// What the box edits, when the app binds it to a field and gives it no action of its own: the
     /// identity anyone looks it up by, as the host names the field.
     check_identity: Option<String>,
-    environment: crate::interaction::InteractionEnvironment,
+    environment: tilo_ui_base::interaction::InteractionEnvironment,
     metrics: Option<RowMetrics>,
     theme: Option<Theme>,
     rect: Rect,
     dirty: bool,
-    feel: crate::motion::Feel,
+    feel: tilo_ui_base::motion::Feel,
     check: crate::widget::checkbox::CheckMotion,
     check_pose: Option<crate::widget::checkbox::CheckPose>,
-    hand_on: crate::motion::HandOn<KeptRow>,
+    hand_on: tilo_ui_base::motion::HandOn<KeptRow>,
     card: bool,
     card_lines: u8,
     dense: bool,
@@ -1249,15 +1251,15 @@ impl ListRow {
             check_binding: None,
             check_action: None,
             check_identity: None,
-            environment: crate::interaction::InteractionEnvironment::default(),
+            environment: tilo_ui_base::interaction::InteractionEnvironment::default(),
             metrics: None,
             theme: None,
             rect: Rect::ZERO,
             dirty: true,
-            feel: crate::motion::Feel::Standard,
+            feel: tilo_ui_base::motion::Feel::Standard,
             check: crate::widget::checkbox::CheckMotion::default(),
             check_pose: None,
-            hand_on: crate::motion::HandOn::default(),
+            hand_on: tilo_ui_base::motion::HandOn::default(),
             card: false,
             card_lines: 1,
             dense: false,
@@ -1331,7 +1333,7 @@ impl ListRow {
 
     /// Have a press on the row (or Enter or Space while it has the keyboard) report
     /// `event`: what a component's card does when it opens what it stands for.
-    pub fn set_activate(&mut self, event: crate::component::Event) {
+    pub fn set_activate(&mut self, event: tilo_ui_base::component::Event) {
         self.activation.set_event(event);
         self.dirty = true;
     }
@@ -1341,7 +1343,7 @@ impl ListRow {
     #[must_use]
     pub fn shortcuts(
         mut self,
-        shortcuts: Vec<(crate::platform::Shortcut, std::rc::Rc<dyn Fn()>)>,
+        shortcuts: Vec<(tilo_ui_base::platform::Shortcut, std::rc::Rc<dyn Fn()>)>,
     ) -> Self {
         self.shortcuts = shortcuts;
         self
@@ -1417,7 +1419,7 @@ impl ListRow {
     }
 
     /// Say which item of its collection the row shows
-    /// ([`AccessNode::item`](crate::a11y::AccessNode::item)): a task's issue, a note's
+    /// ([`AccessNode::item`](tilo_ui_base::a11y::AccessNode::item)): a task's issue, a note's
     /// block.
     #[must_use]
     pub fn item(mut self, item: impl Into<String>) -> Self {
@@ -1483,7 +1485,7 @@ impl ListRow {
 
     /// The row can be dragged out of the window, onto the computer's desktop
     /// or file manager, with the files offered under `key`
-    /// ([`crate::carry_out::Offers::offer`]).
+    /// ([`tilo_ui_base::carry_out::Offers::offer`]).
     #[must_use]
     pub fn carries_out(mut self, key: impl Into<String>) -> Self {
         self.carries_out = Some(key.into());
@@ -1607,13 +1609,13 @@ impl ListRow {
     /// Play the row's own motion — its mark, its coming and going in a list — at `feel`
     /// rather than the theme's pace.
     #[must_use]
-    pub fn with_feel(mut self, feel: crate::motion::Feel) -> Self {
+    pub fn with_feel(mut self, feel: tilo_ui_base::motion::Feel) -> Self {
         self.feel = feel;
         self
     }
 
     /// [`Self::with_feel`] on a row already built.
-    pub fn set_feel(&mut self, feel: crate::motion::Feel) {
+    pub fn set_feel(&mut self, feel: tilo_ui_base::motion::Feel) {
         if self.feel != feel {
             self.feel = feel;
             self.dirty = true;
@@ -1987,7 +1989,7 @@ impl ListRow {
             label: label.into(),
             destructive,
             on_activate: Some(Box::new(on_activate)),
-            press: crate::widget::Press::default(),
+            press: tilo_ui_base::widget::Press::default(),
         });
         self
     }
@@ -2007,7 +2009,7 @@ impl ListRow {
             label: label.into(),
             destructive,
             on_activate: None,
-            press: crate::widget::Press::of(crate::component::Event::Action(binding)),
+            press: tilo_ui_base::widget::Press::of(tilo_ui_base::component::Event::Action(binding)),
         });
         self
     }
@@ -2087,51 +2089,58 @@ impl ListRow {
             (geo.second_right - geo.text_x).max(0.0)
         });
         let lines = text
-            .wrap_lines(secondary, &metrics.secondary, crate::num::f32_of_f64(width))
+            .wrap_lines(
+                secondary,
+                &metrics.secondary,
+                tilo_ui_base::num::f32_of_f64(width),
+            )
             .len();
         Some(lines.clamp(1, usize::from(self.secondary_line_count)) as u8)
     }
 
     /// The grid the row laid itself out on, for an audit comparing rows with each other. Read
     /// from the geometry the row paints from, so the two never disagree.
-    fn grid(&self) -> Option<crate::widget::RowLayout> {
+    fn grid(&self) -> Option<tilo_ui_base::widget::RowLayout> {
         let metrics = self.metrics.as_ref()?;
         let theme = self.theme.as_ref()?;
         let band = self.text_band();
-        Some(crate::text_render::with_layout_renderer(theme, |text| {
-            self.with_face(|face| {
-                let geo = face.geometry(band, metrics, text, theme);
-                let content_right = band.x1 - metrics.bleed;
-                let mut facts_left = content_right;
-                if let Some(right) = geo.marks_right {
-                    facts_left = facts_left.min(right - face.marks_width(metrics));
-                }
-                if let Some(count_right) = geo.count_right {
-                    facts_left = facts_left.min(count_right);
-                }
-                if let Some(avatar) = geo.avatar {
-                    facts_left = facts_left.min(avatar.x0);
-                }
-                if self.value.is_some() {
-                    facts_left = facts_left.min(geo.value_right);
-                }
-                if let Some(trailing) = geo.trailing {
-                    facts_left = facts_left.min(trailing.x0);
-                }
-                facts_left = facts_left.min(geo.meta_left).max(geo.text_right);
-                crate::widget::RowLayout {
-                    depth: self.depth,
-                    content_left: crate::num::f32_of_f64(geo.leading.x0),
-                    text_x: crate::num::f32_of_f64(geo.text_x),
-                    text_right: crate::num::f32_of_f64(geo.text_right),
-                    facts_left: crate::num::f32_of_f64(facts_left),
-                    content_right: crate::num::f32_of_f64(content_right),
-                    marks_left: geo
-                        .marks_right
-                        .map(|right| crate::num::f32_of_f64(right - face.marks_width(metrics))),
-                }
-            })
-        }))
+        Some(tilo_ui_base::text_render::with_layout_renderer(
+            theme,
+            |text| {
+                self.with_face(|face| {
+                    let geo = face.geometry(band, metrics, text, theme);
+                    let content_right = band.x1 - metrics.bleed;
+                    let mut facts_left = content_right;
+                    if let Some(right) = geo.marks_right {
+                        facts_left = facts_left.min(right - face.marks_width(metrics));
+                    }
+                    if let Some(count_right) = geo.count_right {
+                        facts_left = facts_left.min(count_right);
+                    }
+                    if let Some(avatar) = geo.avatar {
+                        facts_left = facts_left.min(avatar.x0);
+                    }
+                    if self.value.is_some() {
+                        facts_left = facts_left.min(geo.value_right);
+                    }
+                    if let Some(trailing) = geo.trailing {
+                        facts_left = facts_left.min(trailing.x0);
+                    }
+                    facts_left = facts_left.min(geo.meta_left).max(geo.text_right);
+                    tilo_ui_base::widget::RowLayout {
+                        depth: self.depth,
+                        content_left: tilo_ui_base::num::f32_of_f64(geo.leading.x0),
+                        text_x: tilo_ui_base::num::f32_of_f64(geo.text_x),
+                        text_right: tilo_ui_base::num::f32_of_f64(geo.text_right),
+                        facts_left: tilo_ui_base::num::f32_of_f64(facts_left),
+                        content_right: tilo_ui_base::num::f32_of_f64(content_right),
+                        marks_left: geo.marks_right.map(|right| {
+                            tilo_ui_base::num::f32_of_f64(right - face.marks_width(metrics))
+                        }),
+                    }
+                })
+            },
+        ))
     }
 
     /// The row as the face it draws, read by the list that builds it and by its tests.
@@ -2395,7 +2404,7 @@ impl ListRow {
             return Vec::new();
         };
         let band = self.text_band();
-        crate::text_render::with_layout_renderer(theme, |text| {
+        tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
             self.with_face(|face| face.action_rects_with(band, metrics, text, theme))
         })
     }
@@ -2405,7 +2414,7 @@ impl ListRow {
             return Vec::new();
         };
         let band = self.text_band();
-        crate::text_render::with_layout_renderer(theme, |text| {
+        tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
             self.with_face(|face| face.action_slots_with(band, metrics, text, theme))
         })
     }
@@ -2431,7 +2440,7 @@ impl ListRow {
         self.change.as_ref()?.show.as_ref()?;
         let theme = self.theme.as_ref()?;
         let band = self.text_band();
-        crate::text_render::with_layout_renderer(theme, |text| {
+        tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
             self.with_face(|face| face.change_rect(band, text, theme))
         })
     }
@@ -2450,14 +2459,15 @@ impl ListRow {
             return None;
         }
         let band = self.text_band();
-        Some(crate::text_render::with_layout_renderer(theme, |text| {
-            self.with_face(|face| face.leading_rect(band, text, theme))
-        }))
+        Some(tilo_ui_base::text_render::with_layout_renderer(
+            theme,
+            |text| self.with_face(|face| face.leading_rect(band, text, theme)),
+        ))
     }
 
     /// The person's click on the row's check. One whose action they may not run keeps its mark,
     /// and the press is sent all the same, to be refused with why
-    /// ([`crate::widget::ActionEmitter::press`]).
+    /// ([`tilo_ui_base::widget::ActionEmitter::press`]).
     fn click_checkbox(&mut self) -> bool {
         if let Some(action) = &mut self.check_action
             && !action.is_available()
@@ -2511,7 +2521,7 @@ impl ListRow {
         false
     }
 
-    fn handle_swipe(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_swipe(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         use winit::event::TouchPhase;
         let WindowEvent::Touch(touch) = event else {
             return;
@@ -2557,8 +2567,8 @@ impl ListRow {
 }
 
 impl crate::widget::ReservedShape for ListRow {
-    fn reserved_shape(&self) -> crate::widget::SkeletonShape {
-        crate::widget::SkeletonShape::Row(self.shape())
+    fn reserved_shape(&self) -> tilo_ui_base::widget::SkeletonShape {
+        tilo_ui_base::widget::SkeletonShape::Row(self.shape())
     }
 }
 
@@ -2576,7 +2586,7 @@ impl crate::widget::RowActionRects for ListRow {
 }
 
 impl CardBody for ListRow {
-    fn show_as_card(&mut self, selected: bool, activate: crate::component::Event) {
+    fn show_as_card(&mut self, selected: bool, activate: tilo_ui_base::component::Event) {
         self.set_card();
         self.set_selected(selected);
         self.set_activate(activate);
@@ -2602,7 +2612,7 @@ fn settle_trailing(
     let Some(trailing) = &mut row.trailing else {
         return filled;
     };
-    let height = crate::num::f32_of_f64(height);
+    let height = tilo_ui_base::num::f32_of_f64(height);
     if (height - trailing.band_height).abs() < 0.5 {
         return filled;
     }
@@ -2619,10 +2629,10 @@ fn settle_trailing(
 }
 
 impl Widget for ListRow {
-    crate::provides!(
+    tilo_ui_base::provides!(
         dyn crate::widget::CardBody,
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::widget::ResourceOperations,
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::ResourceOperations,
         dyn crate::widget::ReservedShape,
         dyn crate::widget::RowActionRects,
         dyn crate::widget::RowSelectionSink
@@ -2630,7 +2640,7 @@ impl Widget for ListRow {
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         if self.environment != environment {
             self.environment = environment;
@@ -2641,9 +2651,13 @@ impl Widget for ListRow {
         }
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         if let Some(binding) = &mut self.check_binding
-            && let crate::widget::binding::Pulled::Value(checked) = binding.pull(state, path)
+            && let tilo_ui_base::widget::binding::Pulled::Value(checked) = binding.pull(state, path)
             && let Some(Leading::Checkbox { checked: shown, .. }) = &mut self.leading
             && *shown != checked
         {
@@ -2666,7 +2680,11 @@ impl Widget for ListRow {
         }
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         self.trailing
             .as_mut()
             .is_some_and(|trailing| trailing.element.update(state, path))
@@ -2691,7 +2709,7 @@ impl Widget for ListRow {
         self.theme = Some(theme.clone());
         if let Some(badges) = &self.column_badges {
             let badges: Vec<&str> = badges.iter().map(String::as_str).collect();
-            let width = crate::text_render::with_layout_renderer(theme, |text| {
+            let width = tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
                 badge_column_width(text, theme, &badges)
             });
             if self.leading_column != Some(width) {
@@ -2717,7 +2735,7 @@ impl Widget for ListRow {
             return node;
         };
         if trailing.band_height <= 0.0 {
-            trailing.band_height = crate::num::f32_of_f64(
+            trailing.band_height = tilo_ui_base::num::f32_of_f64(
                 f64::from(theme.text(TextRole::Body).line_height_px()) + 2.0 * pad_y,
             )
             .max(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s2);
@@ -2731,7 +2749,7 @@ impl Widget for ListRow {
                 height: length(trailing.band_height),
             },
             min_size: taffy::Size {
-                width: length(crate::num::f32_of_f64(min_text)),
+                width: length(tilo_ui_base::num::f32_of_f64(min_text)),
                 height: auto(),
             },
             ..Default::default()
@@ -2748,13 +2766,13 @@ impl Widget for ListRow {
             style.flex_shrink = 0.0;
             style.align_self = Some(taffy::AlignSelf::Center);
             let (before, after) = (
-                crate::num::f32_of_f64(column_gap),
-                crate::num::f32_of_f64(after_trailing),
+                tilo_ui_base::num::f32_of_f64(column_gap),
+                tilo_ui_base::num::f32_of_f64(after_trailing),
             );
             style.margin.left = length(before);
             style.margin.right = length(after);
-            style.margin.top = length(crate::num::f32_of_f64(pad_y));
-            style.margin.bottom = length(crate::num::f32_of_f64(pad_y));
+            style.margin.top = length(tilo_ui_base::num::f32_of_f64(pad_y));
+            style.margin.bottom = length(tilo_ui_base::num::f32_of_f64(pad_y));
             trailing.own_min = style.min_size.width;
             trailing.margins = before + after;
             trailing.fill = None;
@@ -2823,16 +2841,16 @@ impl Widget for ListRow {
         });
         taffy::Size {
             width,
-            height: crate::num::f32_of_f64(height),
+            height: tilo_ui_base::num::f32_of_f64(height),
         }
     }
 
-    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
-        Some(crate::widget::LayoutInfo::Row(self.grid()?))
+    fn layout_info(&self) -> Option<tilo_ui_base::widget::LayoutInfo> {
+        Some(tilo_ui_base::widget::LayoutInfo::Row(self.grid()?))
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.dirty = true;
         }
@@ -2859,7 +2877,7 @@ impl Widget for ListRow {
             let shift = theme.map_or(0.0, |theme| {
                 let band_rect = self.text_band();
                 let m = self.metrics(&theme);
-                crate::text_render::with_layout_renderer(&theme, |text| {
+                tilo_ui_base::text_render::with_layout_renderer(&theme, |text| {
                     self.with_face(|face| face.text_x(band_rect, &m, text, &theme))
                 }) - self.rect.x0
                     - f64::from(child_layout.location.x)
@@ -2867,7 +2885,7 @@ impl Widget for ListRow {
             let spare = rect.width()
                 - f64::from(child_layout.location.x)
                 - f64::from(child_layout.size.width);
-            let scale = f64::from(crate::widget::device_scale());
+            let scale = f64::from(tilo_ui_base::widget::device_scale());
             child_origin.x = ((child_origin.x + shift.min(spare)) * scale).round() / scale;
         } else if trailing.on_disclosure_column
             && let Some(metrics) = &self.metrics
@@ -2882,7 +2900,7 @@ impl Widget for ListRow {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2898,7 +2916,7 @@ impl Widget for ListRow {
             _ => None,
         };
         if let Some(checked) = checked {
-            let now = crate::motion::frame_now();
+            let now = tilo_ui_base::motion::frame_now();
             self.check.follow_input(
                 checked,
                 crate::widget::checkbox::CheckGlyph::Check,
@@ -2914,9 +2932,15 @@ impl Widget for ListRow {
             );
             face.title_elided(band, text_renderer, theme)
         });
-        crate::widget::draw_over(
+        tilo_ui_base::widget::draw_over(
             self,
-            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
         if let Some(trailing) = &mut self.trailing {
             trailing
@@ -2925,7 +2949,7 @@ impl Widget for ListRow {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let Some(trailing) = &mut self.trailing
             && let Some(node) = trailing.node
         {
@@ -3010,7 +3034,7 @@ impl Widget for ListRow {
                 && let Some(node) = trailing.node
             {
                 let centre = trailing.element.get_rect().center();
-                let moved = crate::synthetic_input::cursor_moved(
+                let moved = tilo_ui_base::synthetic_input::cursor_moved(
                     centre.x * ctx.scale_factor,
                     centre.y * ctx.scale_factor,
                 );
@@ -3130,14 +3154,14 @@ impl Widget for ListRow {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         match key_path {
             [] => {
-                use crate::a11y::Action;
+                use tilo_ui_base::a11y::Action;
                 match action {
                     Action::Activate => {
                         if let Some(armed) = self.armed_action {
@@ -3162,7 +3186,7 @@ impl Widget for ListRow {
                     _ => false,
                 }
             }
-            [index] if matches!(action, crate::a11y::Action::Activate) => {
+            [index] if matches!(action, tilo_ui_base::a11y::Action::Activate) => {
                 usize::try_from(*index).is_ok_and(|index| self.run_action(index))
             }
             _ => false,
@@ -3171,7 +3195,7 @@ impl Widget for ListRow {
 
     fn needs_redraw(&self) -> bool {
         self.dirty
-            || self.check.is_moving(crate::motion::frame_now())
+            || self.check.is_moving(tilo_ui_base::motion::frame_now())
             || self
                 .trailing
                 .as_ref()
@@ -3180,8 +3204,10 @@ impl Widget for ListRow {
 
     /// Frames only while its leading checkbox is on its way.
     fn needs_animation_frame(&self) -> bool {
-        self.check.is_moving(crate::motion::frame_now())
-            || crate::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+        self.check.is_moving(tilo_ui_base::motion::frame_now())
+            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
+                self.for_each_child(visit)
+            })
     }
 
     fn mark_drawn(&mut self) {
@@ -3317,7 +3343,10 @@ impl Widget for ListRow {
             let mut args = fluent::FluentArgs::new();
             args.set("title", node.name.clone().unwrap_or_default());
             let mut box_node = AccessNode::new(Role::Checkbox)
-                .with_name(crate::i18n::widget_text_with("list-row-check", Some(&args)))
+                .with_name(tilo_ui_base::i18n::widget_text_with(
+                    "list-row-check",
+                    Some(&args),
+                ))
                 .with_action_target(format!("{id}/check"))
                 .with_bounds(rect.into())
                 .with_state(
@@ -3344,9 +3373,9 @@ impl Widget for ListRow {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         let id = self.activation.id().to_owned();
         if target == id {
@@ -3355,7 +3384,7 @@ impl Widget for ListRow {
         if target.strip_prefix(id.as_str()) == Some("/check") {
             return matches!(
                 action,
-                crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck
+                tilo_ui_base::a11y::Action::Activate | tilo_ui_base::a11y::Action::ToggleCheck
             ) && self.toggle_checkbox();
         }
         let Some(index) = target
@@ -3365,7 +3394,7 @@ impl Widget for ListRow {
         else {
             return false;
         };
-        if !matches!(action, crate::a11y::Action::Activate) {
+        if !matches!(action, tilo_ui_base::a11y::Action::Activate) {
             return false;
         }
         let control = id;
@@ -3379,11 +3408,11 @@ impl Widget for ListRow {
     }
 }
 
-impl crate::widget::ResourceOperations for ListRow {
+impl tilo_ui_base::widget::ResourceOperations for ListRow {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         let mut handlers = std::collections::HashSet::new();
         if let Some(trailing) = &self.trailing {
-            handlers.extend(crate::widget::resource_operation_handlers(
+            handlers.extend(tilo_ui_base::widget::resource_operation_handlers(
                 &*trailing.element,
             ));
         }
@@ -3392,11 +3421,11 @@ impl crate::widget::ResourceOperations for ListRow {
 
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
-        crate::widget::start_in_children(self, op, doc, path)
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
+        tilo_ui_base::widget::start_in_children(self, op, doc, path)
     }
 }
 
@@ -3405,6 +3434,7 @@ mod keys;
 
 #[path = "list_row_shape.rs"]
 mod shape;
+pub use shape::RowShapeFace;
 
 mod kept;
 use kept::KeptRow;
@@ -3451,15 +3481,15 @@ pub use control_row::ControlRow;
 mod control_row_component;
 pub use control_row_component::ControlRowProps;
 
-impl crate::presence::capability::PublishesPresence for ListRow {
+impl tilo_ui_base::presence::capability::PublishesPresence for ListRow {
     fn written_place<'a>(
         &'a self,
         theme: &'a Theme,
-    ) -> Option<crate::presence::capability::WrittenPlace<'a>> {
+    ) -> Option<tilo_ui_base::presence::capability::WrittenPlace<'a>> {
         let field = self.edits.as_ref()?;
         let item = self.item.as_ref()?;
         let band = self.text_band();
-        Some(crate::presence::capability::WrittenPlace {
+        Some(tilo_ui_base::presence::capability::WrittenPlace {
             region: Some(field.as_str()),
             block: item.as_str(),
             text: std::borrow::Cow::Borrowed(self.title.as_str()),

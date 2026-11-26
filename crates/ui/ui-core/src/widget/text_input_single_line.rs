@@ -2,22 +2,22 @@
 //! into per-character offsets, scrolling the caret into view, and drawing
 //! the selection, decorations, text and caret.
 
-use crate::i18n::widget_text;
+use tilo_ui_base::i18n::widget_text;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 
 use super::{LINE_HEIGHT_RATIO, TextInput};
-use crate::paint::PaintCtx;
-use crate::richtext::{RichTextLayout, TextAlign};
-use crate::text_break::grapheme_indices;
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::text_selection::TextPosition;
-use crate::theme::Theme;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_break::grapheme_indices;
+use tilo_ui_base::text_selection::TextPosition;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{richtext::RichTextLayout, richtext::TextAlign};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 
 impl TextInput {
     #[must_use]
-    pub fn autofill(&self) -> Option<crate::a11y::Autofill> {
-        use crate::a11y::Autofill;
+    pub fn autofill(&self) -> Option<tilo_ui_base::a11y::Autofill> {
+        use tilo_ui_base::a11y::Autofill;
         if self.multiline {
             return None;
         }
@@ -56,9 +56,9 @@ impl TextInput {
             reason = "Affine transform composition over f64 screen coordinates"
         )]
         let line_origin = transform * Affine::translate((self.single_origin.x, text_y));
-        self.host_shows_text = crate::scene_parts::native_field(
+        self.host_shows_text = tilo_ui_base::scene_parts::native_field(
             text_renderer,
-            &crate::scene_parts::FieldText {
+            &tilo_ui_base::scene_parts::FieldText {
                 style: &TextStyle::new(text_size).with_family(family),
                 origin: line_origin,
                 area: transform.transform_rect_bbox(area),
@@ -406,7 +406,7 @@ impl TextInput {
         transform: Affine,
         theme: &Theme,
     ) {
-        if self.caret_paint_suppressed || !crate::caret_owner::shown() {
+        if self.caret_paint_suppressed || !tilo_ui_base::caret_owner::shown() {
             return;
         }
         let cursor_rect = if self.core.has_preedit()

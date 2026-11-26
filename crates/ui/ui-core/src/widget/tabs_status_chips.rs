@@ -2,10 +2,10 @@
 //! its presence colour, which opens the invocation that opened the window in History. Pointing at it, or
 //! reaching it with the keyboard, says whom the agent opened it for and which invocation that was.
 use super::{Point, Rect, TOOLBAR_LEAD_GAP, TabBar, TextRenderer, Theme};
-use crate::a11y::AccessNode;
-use crate::i18n::widget_format;
 use crate::widget::{ChipFace, ChipLead, ChipStyle};
 use tilo_actions::opened_by::OpenedBy;
+use tilo_ui_base::a11y::AccessNode;
+use tilo_ui_base::i18n::widget_format;
 use vello::Scene;
 use vello::kurbo::Affine;
 
@@ -24,7 +24,7 @@ pub(super) struct OpenedByChip {
 /// The agent's colour, as presence draws the agent everywhere: by the agent, never by its display
 /// name or by the session that opened the window.
 fn agent_colour(opened: &OpenedBy) -> vello::peniko::Color {
-    let (red, green, blue) = crate::presence::member_color(&opened.agent);
+    let (red, green, blue) = tilo_ui_base::presence::member_color(&opened.agent);
     vello::peniko::Color::from_rgb8(red, green, blue)
 }
 
@@ -127,7 +127,7 @@ impl TabBar {
     pub(crate) fn opened_by_stop(&self) -> Option<(Rect, AccessNode)> {
         let rect = self.opened.painted?;
         let run = self.opened_by(self.active_id)?;
-        let node = AccessNode::new(crate::a11y::Role::Button)
+        let node = AccessNode::new(tilo_ui_base::a11y::Role::Button)
             .with_name(run.label.clone())
             .with_description(self.opened_tip(self.active_id).unwrap_or_default())
             .with_action_target(OPENED_BY_TARGET)
@@ -143,7 +143,7 @@ impl TabBar {
         theme: &Theme,
         spare: Rect,
     ) {
-        let keyboard = self.opened.focused && crate::focus_visible::shown();
+        let keyboard = self.opened.focused && tilo_ui_base::focus_visible::shown();
         let Some(rect) = self
             .opened
             .painted
@@ -161,7 +161,7 @@ impl TabBar {
             transform,
             tr,
             theme,
-            (rect, crate::widget::TooltipSide::Below),
+            (rect, tilo_ui_base::widget::TooltipSide::Below),
             (&tip, colour),
             spare,
         );
@@ -239,7 +239,7 @@ impl TabBar {
             return;
         };
         let colour = agent_colour(run);
-        let focused = self.opened.focused && crate::focus_visible::shown();
+        let focused = self.opened.focused && tilo_ui_base::focus_visible::shown();
         let lifted = focused || rect.contains(self.last_cursor);
         let face = ChipFace::new(rect, &label)
             .lead(ChipLead::Agent(colour))

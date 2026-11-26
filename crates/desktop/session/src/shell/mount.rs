@@ -42,7 +42,7 @@ pub(crate) fn mount_setup(
 /// drove the desktop with, whether the keys being routed are that controller's own, the display
 /// sheet Super+P puts up, and the surfaces over the shell.
 pub(crate) struct KeyContext {
-    pub(crate) controller: Rc<Cell<Option<ui::ControllerFamily>>>,
+    pub(crate) controller: Rc<Cell<Option<tilo_ui_base::ControllerFamily>>>,
     pub(crate) controller_keys: Rc<Cell<bool>>,
     pub(crate) sheets: crate::keys::SheetKeys,
     /// What stands over the shell, which Escape closes from the top.

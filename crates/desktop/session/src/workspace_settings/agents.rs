@@ -379,11 +379,11 @@ impl Agents {
 
     /// The mark a row wears: an app's own glyph, and the people's mark where the row covers
     /// the workspace's members and settings.
-    fn access_icon(app: &str) -> ui::icons::Icon {
+    fn access_icon(app: &str) -> tilo_ui_base::icons::Icon {
         if app == tilo_action_policy::agent_answers::WORKSPACE_APP {
-            ui::icons::Icon::Users
+            tilo_ui_base::icons::Icon::Users
         } else {
-            ui::icons::app_glyph(app, None)
+            tilo_ui_base::icons::app_glyph(app, None)
         }
     }
 
@@ -674,7 +674,7 @@ impl Agents {
                 let limit_micros = if dollars.is_empty() {
                     None
                 } else {
-                    let Some(micros) = ui::format::parse_money(dollars) else {
+                    let Some(micros) = tilo_ui_base::format::parse_money(dollars) else {
                         return Some(Answered::Refused(t(
                             "workspace-settings-agent-limit-not-amount",
                         )));
@@ -851,7 +851,7 @@ impl Agents {
 
 /// Today, as a day's counter keeps it: this device's clock.
 fn today() -> String {
-    ui::clock::today().to_string()
+    tilo_ui_base::clock::today().to_string()
 }
 
 /// What an agent may spend a day, as its review shows it: the workspace's limit, what it spent of
@@ -862,7 +862,10 @@ fn limit_of(agent: &tilo_app::tilo_workspace_agent::Agent, can_choose: bool) -> 
         summary: limit_summary(agent.spend_limit_micros),
         today: t_args(
             "workspace-settings-agent-limit-today",
-            &[("spent", ui::format::money(agent.spent_on(&today())).into())],
+            &[(
+                "spent",
+                tilo_ui_base::format::money(agent.spent_on(&today())).into(),
+            )],
         ),
         note: if can_choose {
             t("workspace-settings-agent-limit-note")
@@ -878,13 +881,13 @@ fn limit_of(agent: &tilo_app::tilo_workspace_agent::Agent, can_choose: bool) -> 
 /// What `agent` spends of its day, as its row reads it: the money it spent today beside what it
 /// may, or only the money where no limit is set.
 fn spend_line(agent: &tilo_app::tilo_workspace_agent::Agent) -> String {
-    let spent = ui::format::money(agent.spent_on(&today()));
+    let spent = tilo_ui_base::format::money(agent.spent_on(&today()));
     match agent.spend_limit_micros {
         Some(limit) => t_args(
             "workspace-settings-agent-spend-of",
             &[
                 ("spent", spent.into()),
-                ("limit", ui::format::money(limit).into()),
+                ("limit", tilo_ui_base::format::money(limit).into()),
             ],
         ),
         None if agent.spent_on(&today()) > 0 => {
@@ -901,7 +904,7 @@ fn limit_summary(limit_micros: Option<u64>) -> String {
         |limit| {
             t_args(
                 "workspace-settings-agent-limit-amount",
-                &[("limit", ui::format::money(limit).into())],
+                &[("limit", tilo_ui_base::format::money(limit).into())],
             )
         },
     )

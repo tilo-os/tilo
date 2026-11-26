@@ -167,7 +167,7 @@ tilo_test_env::scenario! {
     phase a_sheet_opens_on_the_display_in_focus;
     // Where every sheet puts itself: on the display the person is working on.
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = docked();
         let mut client = client(&mut session);
         assert_eq!(displays(&session).len(), 2, "the shell tells both apart");
@@ -225,7 +225,7 @@ tilo_test_env::scenario! {
         use tilo_session_core::desktop::notifications::Notification;
         use ui::live_activity::{Kind, Published, Summary};
 
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = docked();
         let mut client = client(&mut session);
         assert_eq!(displays(&session).len(), 2, "the shell tells both apart");
@@ -293,7 +293,7 @@ tilo_test_env::scenario! {
     // A window maximised over the whole display stays under the sheet, and the sheet, not the window,
     // gets the person's keys while it is up.
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = session_at(&[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)]);
         let mut client = client(&mut session);
         let editor = map(

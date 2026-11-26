@@ -7,8 +7,8 @@ use std::collections::{HashMap, HashSet};
 
 use vello::kurbo::Rect;
 
-use crate::a11y::{AccessNode, Role};
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 
 /// One node in a developer inspection snapshot; `semantics` is the [`AccessNode`] the exported
 /// AccessKit tree was built from, and `children` include virtualized rows and cells that own no
@@ -31,9 +31,9 @@ pub struct InspectionNode {
     pub page_title: Option<String>,
     /// Effective policy and authoring origins, when supplied by the widget.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub layout: Option<crate::widget::LayoutInfo>,
+    pub layout: Option<tilo_ui_base::widget::LayoutInfo>,
     /// The key the widget's draws carried in the last frame, while a host keys them
-    /// ([`crate::scene_parts::key_widgets`]): a page shown as HTML finds the widget's element by it and
+    /// ([`tilo_ui_base::scene_parts::key_widgets`]): a page shown as HTML finds the widget's element by it and
     /// makes it the semantic node's home, so the drawn and the accessible tree are one.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paint_key: Option<String>,
@@ -131,7 +131,7 @@ pub(crate) mod patch;
 pub use patch::{InspectionPatchStats, write_inspection_patch};
 
 /// What `widget` shows, as a driven frame's inspection reads it: a skipped pass is checked against
-/// it ([`crate::component_inputs`]).
+/// it ([`tilo_ui_base::component_inputs`]).
 #[cfg(debug_assertions)]
 pub(crate) fn widget_inspection_json(widget: &dyn Widget) -> String {
     serde_json::to_string(&collect_inspection(widget, "", &mut HashMap::new(), None))
@@ -200,7 +200,7 @@ pub(crate) fn compare_text_selection(
     mismatches: &mut Vec<String>,
     field: &str,
     expected: Option<(usize, usize)>,
-    actual: Option<crate::a11y::AccessibleTextSelection>,
+    actual: Option<tilo_ui_base::a11y::AccessibleTextSelection>,
 ) {
     let Some((anchor, focus)) = expected else {
         return;
@@ -230,13 +230,7 @@ pub(crate) fn compare_optional_bool(
     }
 }
 
-impl From<crate::a11y::Role> for String {
-    fn from(role: crate::a11y::Role) -> Self {
-        role_name(role).to_owned()
-    }
-}
-
-pub(super) use crate::a11y::role_name;
+pub(super) use tilo_ui_base::a11y::role_name;
 
 pub(crate) fn collect_targets(
     w: &dyn Widget,
@@ -255,13 +249,14 @@ fn collect_targets_called(
     sibling_counts: &mut HashMap<String, usize>,
     out: &mut HashMap<String, Rect>,
 ) {
-    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(w) else {
+    let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(w) else {
         return;
     };
     if w.accessibility_hidden() {
         return;
     }
-    let (name, path, my_index) = crate::widget::widget_path(w, parent_path, called, sibling_counts);
+    let (name, path, my_index) =
+        tilo_ui_base::widget::widget_path(w, parent_path, called, sibling_counts);
     out.insert(path.clone(), w.get_rect());
     if my_index == 0 {
         let bare = if parent_path.is_empty() {
@@ -278,10 +273,10 @@ fn collect_targets_called(
         let rect = w
             .accessibility()
             .and_then(|node| {
-                let node = crate::a11y::with_synthetic_bounds(node, w);
+                let node = tilo_ui_base::a11y::with_synthetic_bounds(node, w);
                 control_bounds(&node, id).or(node.bounds)
             })
-            .map(crate::a11y::AccessBounds::to_rect)
+            .map(tilo_ui_base::a11y::AccessBounds::to_rect)
             .filter(|bounds| bounds.width() > 0.0 && bounds.height() > 0.0)
             .unwrap_or_else(|| w.get_rect());
         // A control whose widget was never laid out has no place on the window: what names it
@@ -314,7 +309,10 @@ fn collect_targets_called(
     }
 }
 
-fn control_bounds(node: &crate::a11y::AccessNode, id: &str) -> Option<crate::a11y::AccessBounds> {
+fn control_bounds(
+    node: &tilo_ui_base::a11y::AccessNode,
+    id: &str,
+) -> Option<tilo_ui_base::a11y::AccessBounds> {
     if node.action_target.as_deref() == Some(id) && node.bounds.is_some() {
         return node.bounds;
     }
@@ -347,11 +345,11 @@ fn collect_named_targets_called(
     sibling_counts: &mut HashMap<String, usize>,
     out: &mut Vec<RetainedNamedTarget>,
 ) {
-    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
+    let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(widget) else {
         return;
     };
     let (name, path, my_index) =
-        crate::widget::widget_path(widget, parent_path, called, sibling_counts);
+        tilo_ui_base::widget::widget_path(widget, parent_path, called, sibling_counts);
     // Include even unregistered wrappers: otherwise their same-name inline
     // child could be mistaken for them by a registration-only uniqueness check.
     let bare = (my_index == 0).then(|| {
@@ -402,7 +400,7 @@ fn collect_inspection_called(
     sibling_counts: &mut HashMap<String, usize>,
     slot: Option<(&dyn Widget, usize)>,
 ) -> InspectionNode {
-    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
+    let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(widget) else {
         return InspectionNode {
             path: parent_path.into(),
             widget: "ClosedComponent".into(),
@@ -417,11 +415,12 @@ fn collect_inspection_called(
             children: vec![],
         };
     };
-    let (name, path, _) = crate::widget::widget_path(widget, parent_path, called, sibling_counts);
+    let (name, path, _) =
+        tilo_ui_base::widget::widget_path(widget, parent_path, called, sibling_counts);
     let rect = widget.get_rect();
     let mut semantics = widget.accessibility();
     if let Some(node) = &mut semantics {
-        crate::a11y_walk::with_slot_words(node, slot.as_ref());
+        tilo_ui_base::a11y_walk::with_slot_words(node, slot.as_ref());
     }
     let children_of = widget.children().len();
     let inherited = (semantics.is_none() && children_of == 1)
@@ -459,8 +458,9 @@ fn collect_inspection_called(
             .map(|r| [r.x0, r.y0, r.width(), r.height()]),
         page_title: widget.own_page_title(),
         layout: widget.layout_info(),
-        paint_key: crate::scene_parts::painted_key(widget),
-        semantics: semantics.map(|access| crate::a11y::with_synthetic_bounds(access, widget)),
+        paint_key: tilo_ui_base::scene_parts::painted_key(widget),
+        semantics: semantics
+            .map(|access| tilo_ui_base::a11y::with_synthetic_bounds(access, widget)),
         children,
     }
 }
@@ -848,7 +848,7 @@ pub fn tag_faults(root: &InspectionNode) -> Vec<String> {
         tags: &mut Vec<&'a InspectionNode>,
         words: &mut Vec<&'a InspectionNode>,
     ) {
-        if node.widget == crate::presence::TAG_WIDGET {
+        if node.widget == tilo_ui_base::presence::TAG_WIDGET {
             tags.push(node);
             return;
         }
@@ -878,7 +878,7 @@ pub fn tag_faults(root: &InspectionNode) -> Vec<String> {
     for (index, tag) in tags.iter().enumerate() {
         let at = rect(tag.rect);
         for word in &words {
-            if crate::presence::overlaps(at, rect(word.rect)) {
+            if tilo_ui_base::presence::overlaps(at, rect(word.rect)) {
                 let said = word
                     .semantics
                     .as_ref()

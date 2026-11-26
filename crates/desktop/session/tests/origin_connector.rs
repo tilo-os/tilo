@@ -252,7 +252,7 @@ fn session(root: &Path) -> Session {
 
 #[test]
 fn an_outside_effect_reaches_the_connector_and_the_answer_lands_in_the_record() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let dir = private_home();
     let mut session = session(dir.path());
 
@@ -510,7 +510,7 @@ fn client_items(session: &Session, kind: &str) -> Vec<(String, String)> {
 /// answers it (search.md §4, §7; shell.md §8 "Finding what to place").
 #[test]
 fn a_live_canvas_query_places_a_channel_the_client_never_held() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
 
@@ -625,7 +625,7 @@ fn live_session(root: &Path) -> Session {
 /// the same place (search.md §4, §7; shell.md §8 "Finding what to place").
 #[test]
 fn a_live_canvas_query_that_matches_several_shows_the_rows_it_found() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = live_session(root.path());
 
@@ -683,7 +683,7 @@ fn a_live_canvas_query_that_matches_several_shows_the_rows_it_found() {
 /// (shell.md §8, search.md §7).
 #[test]
 fn a_live_canvas_query_the_origin_answers_empty_settles_matched_nothing() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = live_session(root.path());
 

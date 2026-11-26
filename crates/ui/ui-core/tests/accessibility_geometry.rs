@@ -9,10 +9,10 @@
 //! carries the test-wide lint allowances.
 
 use tilo_ui::State;
-use tilo_ui::a11y::{AccessNode, Action, Role};
 use tilo_ui::headless::{Driver, InspectionNode};
-use tilo_ui::theme::Theme;
 use tilo_ui::widget::{Dropdown, EmptyState};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{a11y::AccessNode, a11y::Action, a11y::Role};
 
 fn find<'a>(node: &'a AccessNode, matches: &dyn Fn(&AccessNode) -> bool) -> Option<&'a AccessNode> {
     if matches(node) {
@@ -61,7 +61,7 @@ fn an_empty_states_action_reports_the_rect_it_is_drawn_in() {
     })
     .expect("the action is in the tree");
     assert_eq!(
-        button.bounds.map(tilo_ui::a11y::AccessBounds::to_rect),
+        button.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect),
         Some(drawn),
         "the action reports where it is drawn, not the whole state"
     );
@@ -191,7 +191,7 @@ fn an_open_dropdown_keeps_focus_and_names_its_highlighted_option() {
     let combo = harness
         .focused_access_node()
         .expect("the combobox is focused");
-    let spoken = tilo_ui::screen_reader::describe_state(&combo);
+    let spoken = tilo_ui_base::screen_reader::describe_state(&combo);
     assert!(spoken.starts_with(&second), "{spoken:?}");
 
     harness.key("Escape");

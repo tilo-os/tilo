@@ -55,7 +55,7 @@ fn published(session: &Session) -> Vec<(String, String)> {
 /// name, and the videos it published under it.
 #[test]
 fn youtube_videos_of_a_creator_places_the_channel_and_its_page_draws() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
 
@@ -110,7 +110,7 @@ fn youtube_videos_of_a_creator_places_the_channel_and_its_page_draws() {
 /// follows, drawn as cards, with the subscriptions themselves in the sidebar.
 #[test]
 fn youtube_places_the_client_and_its_feed_draws() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let mut repl = Api::open(&mut session, root.path());
@@ -143,7 +143,7 @@ fn youtube_places_the_client_and_its_feed_draws() {
 /// own page: the video's title, and the way to play it, which records the watch.
 #[test]
 fn the_watch_history_is_published_and_a_video_it_names_opens() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let entries = session
@@ -223,7 +223,7 @@ fn args(given: serde_json::Value) -> serde_json::Map<String, serde_json::Value> 
 /// it, and a playlist opens its own page.
 #[test]
 fn the_clients_history_and_playlist_actions_run_by_their_published_addresses() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
 

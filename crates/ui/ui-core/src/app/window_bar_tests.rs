@@ -14,14 +14,16 @@ use winit::keyboard::NamedKey;
 use crate::floating_surface::{
     FloatingSurfaceClientMessage, FloatingSurfaceHostMessage, FloatingSurfaceServiceClient,
 };
-use crate::synthetic_input::{char_key, named_key};
 use crate::testing::Dispatch;
-use crate::theme::Theme;
 use crate::widget::find_bar::{FindMatch, FindOptions, Findable};
-use crate::widget::{
-    AppKind, HistoryControl, InPlace, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth,
-};
 use crate::window_toolbar::{HistoryOffer, SearchOffer, ToolbarEvent, WindowOffer};
+use crate::{
+    widget::AppKind, widget::HistoryControl, widget::InPlace, widget::TabDescriptor,
+    widget::TileContent, widget::WindowGroup, widget::WindowWidth,
+};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{synthetic_input::char_key, synthetic_input::named_key};
 
 use super::super::App;
 
@@ -62,18 +64,18 @@ impl Findable for Note {
 }
 
 impl Widget for Note {
-    crate::provides!(dyn Findable);
+    tilo_ui_base::provides!(dyn Findable);
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        use crate::widget::TaffyTreeExt;
+        use tilo_ui_base::widget::TaffyTreeExt;
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
     }
     fn get_rect(&self) -> Rect {
         self.rect
@@ -285,7 +287,7 @@ fn an_app_in_its_own_process_is_searched_and_its_history_opened_from_the_window_
         .perform_semantic_named(
             "tabs",
             Some(crate::widget::tabs::WINDOW_HISTORY_TARGET),
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
         )
         .unwrap();
     let mut window = frame.root_mut::<WindowGroup>();
@@ -364,7 +366,11 @@ impl Omnibox {
 }
 
 impl Widget for Omnibox {
-    fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
+    ) {
         for event in crate::window_toolbar::take_events() {
             match event {
                 ToolbarEvent::Edit { text } => self.typed = text,
@@ -383,11 +389,11 @@ impl Widget for Omnibox {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        use crate::widget::TaffyTreeExt;
+        use tilo_ui_base::widget::TaffyTreeExt;
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
     }
     fn get_rect(&self) -> Rect {
         self.rect

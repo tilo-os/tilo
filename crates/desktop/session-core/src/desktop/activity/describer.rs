@@ -12,10 +12,10 @@
 use std::collections::{HashMap, HashSet};
 
 use automerge::{AutoCommit, ReadDoc as _};
+use tilo_ui_base::widget::HistoryEntryId;
 use ui::history_source::groups::MAX_LABEL_LEN;
 use ui::history_source::{GENERATED_BY, descriptions, groups};
 use ui::models::{Content, Message, ModelRequest, Role, ToolChoice};
-use ui::widget::HistoryEntryId;
 use ui::widget::history::HistoryEntry;
 use ui::widget::history_group::{GroupingConfig, NamedRange, group_entries};
 

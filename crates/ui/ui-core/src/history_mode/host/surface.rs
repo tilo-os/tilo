@@ -4,8 +4,8 @@ use super::{
     Affine, Dimension, FlexDirection, HashMap, HistoryHost, NodeId, Point, PreviewSide, Rect, Size,
     Style, TaffyTree, TaffyTreeExt, Theme, Widget, WindowEvent,
 };
-use crate::widget::DrawChild;
-use crate::widget::{AppModel, ModelPath};
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 impl HistoryHost {
     pub(crate) fn build_composition(
@@ -278,7 +278,7 @@ impl HistoryHost {
     fn body_child_origin(&self, tree: &TaffyTree<()>, node: Option<NodeId>) -> Point {
         let body = self.body_origin(tree);
         node.map_or(body, |node| {
-            crate::widget::layout_rect(tree, node, body).origin()
+            tilo_ui_base::widget::layout_rect(tree, node, body).origin()
         })
     }
 
@@ -297,7 +297,7 @@ impl HistoryHost {
     fn body_origin(&self, tree: &TaffyTree<()>) -> Point {
         let origin = self.rect.origin();
         self.body_node.map_or(origin, |node| {
-            crate::widget::layout_rect(tree, node, origin).origin()
+            tilo_ui_base::widget::layout_rect(tree, node, origin).origin()
         })
     }
     pub(crate) fn apply_composition(
@@ -320,7 +320,7 @@ impl HistoryHost {
         &mut self,
         live: &mut dyn Widget,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         let scale = ctx.scale_factor;
         // Escape leaves History, as the History control does, unless the
@@ -349,7 +349,7 @@ impl HistoryHost {
             // their host, so it answers it here, before the frame seals what
             // the live app queued for ownership.
             let path = ctx.path;
-            crate::widget::controls::start_pending_control_invocations(
+            tilo_ui_base::widget::controls::start_pending_control_invocations(
                 self,
                 &mut ctx.edits(),
                 path,
@@ -391,7 +391,7 @@ impl Widget for HistoryHost {
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         let narrow = self.rect.width() < 600.0;
-        self.rect = crate::widget::layout_rect(tree, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(tree, node, origin);
         if (self.rect.width() < 600.0) != narrow {
             super::super::note_news();
         }
@@ -406,7 +406,7 @@ impl Widget for HistoryHost {
         let (bar, list, preview) = if side {
             let panel = self.body_child_origin(tree, self.panel_node);
             self.panel_rect = self.panel_node.map_or(Rect::ZERO, |node| {
-                crate::widget::layout_rect(tree, node, self.body_origin(tree))
+                tilo_ui_base::widget::layout_rect(tree, node, self.body_origin(tree))
             });
             (
                 panel,
@@ -437,7 +437,7 @@ impl Widget for HistoryHost {
             self.canvas_mut().apply_layout(tree, canvas, preview);
         }
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -468,22 +468,24 @@ impl Widget for HistoryHost {
         if side && !self.panel_motion.is_open() {
             self.panel_motion.show(
                 true,
-                crate::motion::PanelSlide::SPEC,
+                tilo_ui_base::motion::PanelSlide::SPEC,
                 self.motion,
-                crate::motion::input_source(),
-                crate::motion::frame_now(),
+                tilo_ui_base::motion::input_source(),
+                tilo_ui_base::motion::frame_now(),
             );
             // The panel is drawn outside the tree a frame pump polls: the
             // motion clock keeps frames coming until it has slid in.
             if let Some(until) = self.panel_motion.settles_at() {
-                crate::motion::want_frames_until(until);
+                tilo_ui_base::motion::want_frames_until(until);
             }
         } else if !self.open && self.panel_motion.is_open() {
             self.panel_motion.snap(false);
         }
         let slide = if side {
-            let progress = self.panel_motion.progress(crate::motion::frame_now());
-            crate::motion::PanelSlide::shown(progress, self.panel_rect.width())
+            let progress = self
+                .panel_motion
+                .progress(tilo_ui_base::motion::frame_now());
+            tilo_ui_base::motion::PanelSlide::shown(progress, self.panel_rect.width())
         } else {
             self.panel_rect.width()
         };
@@ -516,8 +518,8 @@ impl Widget for HistoryHost {
         self.toolbar
             .draw_child(scene, bar_transform, text, theme, &env);
         if side && let Some(head) = self.toolbar.children().first() {
-            let style = theme.text(crate::tokens::TextRole::Title);
-            let title = crate::i18n::I18nManager::lookup_plain("history-panel-title");
+            let style = theme.text(tilo_ui_base::tokens::TextRole::Title);
+            let title = tilo_ui_base::i18n::I18nManager::lookup_plain("history-panel-title");
             let row = head.get_rect();
             let line = f64::from(text.measure_style(&title, None, &style).1);
             text.draw_style(
@@ -553,7 +555,7 @@ impl Widget for HistoryHost {
         }
         if self.footer_node.is_some() {
             let foot = self.footer.get_rect();
-            crate::surface::separator(
+            tilo_ui_base::surface::separator(
                 scene,
                 bar_transform,
                 foot.x0,
@@ -569,7 +571,7 @@ impl Widget for HistoryHost {
             scene.pop_layer();
         }
     }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let (Some(panel), Some(node)) = (&mut self.review, self.review_node) {
             panel
                 .dialog
@@ -683,7 +685,8 @@ impl Widget for HistoryHost {
         self.rect
     }
     fn needs_animation_frame(&self) -> bool {
-        self.panel_motion.is_moving(crate::motion::frame_now())
+        self.panel_motion
+            .is_moving(tilo_ui_base::motion::frame_now())
             || self
                 .children()
                 .into_iter()
@@ -703,7 +706,7 @@ fn route_to_part(
     part: &mut dyn Widget,
     node: Option<NodeId>,
     event: &WindowEvent,
-    ctx: &mut crate::widget::EventCtx<'_>,
+    ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     handled: &mut bool,
 ) {
     let Some(node) = node else {

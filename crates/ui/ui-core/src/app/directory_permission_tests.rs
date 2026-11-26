@@ -2,12 +2,12 @@
 fn directory_sampled_permission(
     time: std::sync::Arc<std::sync::atomic::AtomicU64>,
     fail: std::sync::Arc<std::sync::atomic::AtomicBool>,
-) -> crate::permissions::PermissionContext {
+) -> tilo_ui_base::permissions::PermissionContext {
     let now = time.load(std::sync::atomic::Ordering::Acquire);
-    crate::permissions::PermissionContext::granted(
-        &crate::permissions::MemberId::person("fixture-user"),
-        &crate::permissions::TreePath::root(),
-        crate::permissions::policy::KindSet::ALL,
+    tilo_ui_base::permissions::PermissionContext::granted(
+        &tilo_ui_base::permissions::MemberId::person("fixture-user"),
+        &tilo_ui_base::permissions::TreePath::root(),
+        tilo_ui_base::permissions::policy::KindSet::ALL,
         Some(110),
     )
     .at_unix_time(now)
@@ -70,7 +70,7 @@ tilo_test_env::scenario! {
 
     phase directory_permission_retained_clock_expiry_invalidates_actual_bound_revision;
     {
-        use crate::permissions::{Answer, KindSet, TreePath, policy};
+        use tilo_ui_base::{permissions::Answer, permissions::KindSet, permissions::TreePath, permissions::policy};
         use std::sync::{
             Arc,
             atomic::{AtomicBool, AtomicU64, Ordering},
@@ -82,7 +82,7 @@ tilo_test_env::scenario! {
             let grant = policy::Grant::new(
                 "other",
                 policy::Grantee::person("fixture-user"),
-                TreePath::workspace(crate::permissions::LOCAL_WORKSPACE).app("other"),
+                TreePath::workspace(tilo_ui_base::permissions::LOCAL_WORKSPACE).app("other"),
                 KindSet::UNDOABLE,
                 if restrict {
                     Answer::Deny
@@ -166,9 +166,7 @@ tilo_test_env::scenario! {
 
     phase directory_permission_actor_and_capability_semantics_invalidate_revision;
     {
-        use crate::permissions::{
-            Access, Acting, CapOverride, Grantee, PermissionContext, Scope, MemberAccess,
-        };
+        use tilo_ui_base::{permissions::Access, permissions::Acting, permissions::CapOverride, permissions::Grantee, permissions::PermissionContext, permissions::Scope, permissions::MemberAccess};
         for actor_change in [false, true] {
             let mut fixture = ActionFixture::broker();
             let revision = capture_bound_directory(&mut fixture);
@@ -228,7 +226,7 @@ tilo_test_env::scenario! {
 
     phase directory_filtered_cache_expired_restriction_restores_republished_action;
     {
-        use crate::permissions::{Answer, KindSet, TreePath, policy};
+        use tilo_ui_base::{permissions::Answer, permissions::KindSet, permissions::TreePath, permissions::policy};
         use std::sync::{
             Arc,
             atomic::{AtomicBool, AtomicU64, Ordering},
@@ -237,7 +235,7 @@ tilo_test_env::scenario! {
         let restriction = policy::Grant::new(
             "restriction",
             policy::Grantee::person("fixture-user"),
-            TreePath::workspace(crate::permissions::LOCAL_WORKSPACE),
+            TreePath::workspace(tilo_ui_base::permissions::LOCAL_WORKSPACE),
             KindSet::ALL,
             Answer::Deny,
             policy::Grantee::person("owner"),
@@ -329,19 +327,19 @@ tilo_test_env::scenario! {
 
     phase directory_permission_action_authority_revoke_invalidates_actual_bound_revision;
     {
-        use crate::permissions::{PermissionContext, Role};
+        use tilo_ui_base::{permissions::PermissionContext, permissions::Role};
         use std::sync::{Arc, Mutex};
         let current = Arc::new(Mutex::new(Some(Role::Owner)));
         let source = current.clone();
         let mut fixture = ActionFixture::broker();
         fixture.permissions.set(
-            crate::permissions::PermissionContext::member(&crate::permissions::MemberId::person("fixture-user"), Role::Editor)
+            tilo_ui_base::permissions::PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("fixture-user"), Role::Editor)
                 .with_action_authority(
                     "so.tilo.binding-probe".into(),
                     Arc::new(move || {
                         Ok(match *source.lock().unwrap() {
-                            Some(role) => PermissionContext::member(&crate::permissions::MemberId::person("fixture-user"), role),
-                            None => PermissionContext::stranger(&crate::permissions::MemberId::person("fixture-user")),
+                            Some(role) => PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("fixture-user"), role),
+                            None => PermissionContext::stranger(&tilo_ui_base::permissions::MemberId::person("fixture-user")),
                         })
                     }),
                 ),

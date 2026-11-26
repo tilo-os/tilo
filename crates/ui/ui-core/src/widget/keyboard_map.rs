@@ -1,17 +1,14 @@
 //! A physical keyboard map. Geometry and XKB legends are provided by the device's native
 //! compiler; focused pressed keys are private paint state.
-use crate::{
-    a11y::{AccessNode, AccessState, Role},
-    text_render::TextRenderer,
-    theme::Theme,
-    tokens::TextRole,
-    widget::{EventCtx, TaffyTreeExt, Widget},
-};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_lock::MutexRecover as _;
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::{
+    a11y::AccessNode, a11y::AccessState, a11y::Role, text_render::TextRenderer, theme::Theme,
+    tokens::TextRole, widget::EventCtx, widget::TaffyTreeExt, widget::Widget,
+};
 use vello::{
     Scene,
     kurbo::{Affine, BezPath, Point, Rect, Stroke},
@@ -80,16 +77,16 @@ impl Default for KeyboardMapInput {
 impl KeyboardMapInput {
     /// Cache only native configuration while the page is absent. Off-page
     /// key presses are never retained; actual window blur revokes the cache.
-    pub fn observe_configuration(&self, input: &crate::widget::PhysicalInput) {
+    pub fn observe_configuration(&self, input: &tilo_ui_base::widget::PhysicalInput) {
         let changed = {
             let mut state = self.state.lock_recover();
             match input {
-                crate::widget::PhysicalInput::Layout(layout) => {
+                tilo_ui_base::widget::PhysicalInput::Layout(layout) => {
                     let changed = state.layout != *layout;
                     state.layout.clone_from(layout);
                     changed
                 }
-                crate::widget::PhysicalInput::Focused(false) => {
+                tilo_ui_base::widget::PhysicalInput::Focused(false) => {
                     let changed = state.layout.is_some() || !state.keys.is_empty();
                     state.layout = None;
                     state.keys.clear();
@@ -122,7 +119,10 @@ impl KeyboardMapInput {
 /// Theme-aware map of an explicitly selected physical model. It observes
 /// only ordinary focused window events, never global devices or document edits.
 #[derive(Clone)]
-#[crate::component::not_a_component(system, "the keyboard settings' map of a physical model")]
+#[tilo_ui_base::component::not_a_component(
+    system,
+    "the keyboard settings' map of a physical model"
+)]
 pub struct KeyboardMap {
     keys: Vec<KeyboardMapKey>,
     model_size: Size<f64>,
@@ -255,7 +255,7 @@ impl KeyboardMap {
     pub fn live_agrees(&self) -> Option<bool> {
         let state = self.input.state.lock_recover();
         let layout = state.layout.as_ref()?;
-        let caps = crate::keycaps::active();
+        let caps = tilo_ui_base::keycaps::active();
         let mut compared = 0_usize;
         for key in &self.keys {
             let Some(shown) = key.levels.first().filter(|legend| {
@@ -373,17 +373,17 @@ impl KeyboardMap {
     /// Ordinary window event route, shared with the retained widget handler.
     /// No logical key or typed text is retained.
     pub fn observe_window_event(&mut self, event: &WindowEvent) {
-        if let Some(input) = crate::widget::PhysicalInput::from_window_event(event) {
+        if let Some(input) = tilo_ui_base::widget::PhysicalInput::from_window_event(event) {
             self.observe_physical_input(input);
         }
     }
 
     /// Content-free foreground feedback, including framework-owned shortcuts.
-    pub fn observe_physical_input(&mut self, input: crate::widget::PhysicalInput) {
+    pub fn observe_physical_input(&mut self, input: tilo_ui_base::widget::PhysicalInput) {
         let changed = {
             let mut pressed = self.input.state.lock_recover();
             match input {
-                crate::widget::PhysicalInput::Focused(false) => {
+                tilo_ui_base::widget::PhysicalInput::Focused(false) => {
                     self.focused = false;
                     pressed.foreground = false;
                     let changed = !pressed.keys.is_empty() || pressed.layout.is_some();
@@ -391,16 +391,16 @@ impl KeyboardMap {
                     pressed.layout = None;
                     changed
                 }
-                crate::widget::PhysicalInput::Focused(true) => {
+                tilo_ui_base::widget::PhysicalInput::Focused(true) => {
                     pressed.foreground = true;
                     false
                 }
-                crate::widget::PhysicalInput::Layout(layout) => {
+                tilo_ui_base::widget::PhysicalInput::Layout(layout) => {
                     let changed = pressed.layout != layout;
                     pressed.layout = layout;
                     changed
                 }
-                crate::widget::PhysicalInput::Key { key, state }
+                tilo_ui_base::widget::PhysicalInput::Key { key, state }
                     if self.keys.iter().any(|entry| entry.physical == key) =>
                 {
                     pressed.foreground = true;
@@ -461,7 +461,9 @@ impl KeyboardMap {
                 .unwrap_or_default();
             let legend = symbols
                 .into_iter()
-                .map(|symbol| crate::keycaps::active().native_symbol(&symbol.name, &symbol.text))
+                .map(|symbol| {
+                    tilo_ui_base::keycaps::active().native_symbol(&symbol.name, &symbol.text)
+                })
                 .collect::<Vec<_>>()
                 .join(" ");
             vec![legend]
@@ -509,7 +511,7 @@ impl KeyboardMap {
             if self.inspected_key.as_deref() == Some(key.name.as_str()) {
                 colours.border_focus
             } else {
-                crate::surface::edge_on(fill)
+                tilo_ui_base::surface::edge_on(fill)
             },
             None,
             &path,
@@ -588,7 +590,7 @@ impl KeyboardMap {
 }
 
 impl Widget for KeyboardMap {
-    fn observe_physical_input(&mut self, input: crate::widget::PhysicalInput) {
+    fn observe_physical_input(&mut self, input: tilo_ui_base::widget::PhysicalInput) {
         KeyboardMap::observe_physical_input(self, input);
     }
 
@@ -603,7 +605,7 @@ impl Widget for KeyboardMap {
                 width: Dimension::percent(1.0),
                 height: Dimension::auto(),
             },
-            aspect_ratio: Some(crate::num::f32_of_f64(
+            aspect_ratio: Some(tilo_ui_base::num::f32_of_f64(
                 self.model_size.width / self.model_size.height.max(1.0),
             )),
             ..Style::default()
@@ -611,10 +613,10 @@ impl Widget for KeyboardMap {
         taffy.widget_leaf(style, nodes, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.dirty = true;
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -703,7 +705,7 @@ impl Widget for KeyboardMap {
     fn is_layout_dirty(&self) -> bool {
         false
     }
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
     fn name(&self) -> &'static str {
         "KeyboardMap"
     }
@@ -731,10 +733,13 @@ impl Widget for KeyboardMap {
 
 /// Action-bound inspection over the shared physical map. Keyboard presses
 /// never select an inspector or publish entered text.
-#[crate::component::not_a_component(system, "the keyboard settings' map of a physical model")]
+#[tilo_ui_base::component::not_a_component(
+    system,
+    "the keyboard settings' map of a physical model"
+)]
 pub struct KeyboardMapSelection {
     map: KeyboardMap,
-    action: Option<crate::widget::ActionEmitter<String>>,
+    action: Option<tilo_ui_base::widget::ActionEmitter<String>>,
     enabled: bool,
     pointer: Option<Point>,
     pressed: Option<String>,
@@ -744,7 +749,7 @@ impl KeyboardMapSelection {
     /// Bind inspection to the host-admitted Settings resource effect.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
-        self.action = Some(crate::widget::ActionEmitter::new(binding));
+        self.action = Some(tilo_ui_base::widget::ActionEmitter::new(binding));
         self
     }
 
@@ -795,7 +800,7 @@ impl KeyboardMapSelection {
     }
 }
 
-impl crate::widget::Decorator for KeyboardMapSelection {
+impl tilo_ui_base::widget::Decorator for KeyboardMapSelection {
     type Inner = KeyboardMap;
     fn inner(&self) -> &KeyboardMap {
         &self.map
@@ -803,7 +808,7 @@ impl crate::widget::Decorator for KeyboardMapSelection {
     fn inner_mut(&mut self) -> &mut KeyboardMap {
         &mut self.map
     }
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls);
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(&self.map)
@@ -851,11 +856,11 @@ impl crate::widget::Decorator for KeyboardMapSelection {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        if !self.inspection_enabled() || !matches!(action, crate::a11y::Action::Activate) {
+        if !self.inspection_enabled() || !matches!(action, tilo_ui_base::a11y::Action::Activate) {
             return false;
         }
         let Some(key) = self
@@ -918,9 +923,9 @@ impl crate::widget::Decorator for KeyboardMapSelection {
     }
 }
 
-impl crate::widget::controls::ActionControls for KeyboardMapSelection {
-    crate::widget::controls::optional_emitter_controls!();
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+impl tilo_ui_base::widget::controls::ActionControls for KeyboardMapSelection {
+    tilo_ui_base::optional_emitter_controls!();
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         self.action
             .as_ref()
             .map(|action| {

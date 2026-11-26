@@ -31,7 +31,7 @@ fn draw(w: &mut dyn Widget) -> Scene {
     let mut tr = TextRenderer::new();
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    w.draw(&mut crate::draw::DrawCtx::new(
+    w.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
@@ -42,9 +42,9 @@ fn draw(w: &mut dyn Widget) -> Scene {
 }
 
 fn cursor(p: Point) -> WindowEvent {
-    crate::synthetic_input::cursor_moved(p.x, p.y)
+    tilo_ui_base::synthetic_input::cursor_moved(p.x, p.y)
 }
-use crate::synthetic_input::mouse_press;
+use tilo_ui_base::synthetic_input::mouse_press;
 
 tilo_test_env::scenario! {
     /// What an empty state shows in the width it has.
@@ -75,7 +75,7 @@ tilo_test_env::scenario! {
         // hugs its content keeps it rather than shedding it.
         let mut with_icon = EmptyState::new("No archived items")
             .with_message("Archive an item to put it aside.")
-            .with_icon(crate::icons::Icon::Archive)
+            .with_icon(tilo_ui_base::icons::Icon::Archive)
             .inline();
         lay_out(&mut with_icon, 600.0, 600.0);
         let rect = with_icon.get_rect();
@@ -147,7 +147,7 @@ tilo_test_env::scenario! {
             let node = Widget::accessibility(&es).expect("empty state is semantic");
             assert!(node.state.focusable && node.state.focused);
             assert_eq!(node.children.len(), 1);
-            assert_eq!(node.children[0].role, crate::a11y::Role::Button);
+            assert_eq!(node.children[0].role, tilo_ui_base::a11y::Role::Button);
             assert_eq!(node.children[0].name.as_deref(), Some("Create note"));
             assert!(node.children[0].state.focused);
             assert_eq!(
@@ -158,9 +158,9 @@ tilo_test_env::scenario! {
             let mut doc = AutoCommit::new();
             assert!(Widget::perform_action(
                 &mut es,
-                &crate::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
                 &[],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(fired.get(), "Enter/Space/AT Activate reaches the CTA");
@@ -190,7 +190,7 @@ tilo_test_env::scenario! {
                 "pointer activation invokes the published action"
             );
             harness
-                .perform_named("empty.open", &crate::a11y::Action::Activate)
+                .perform_named("empty.open", &tilo_ui_base::a11y::Action::Activate)
                 .unwrap();
             assert_eq!(
                 invoked.get(),
@@ -231,17 +231,17 @@ tilo_test_env::scenario! {
             let target = es.action_rect().center();
             dispatch(&mut es, &cursor(target));
             assert!(dispatch(&mut es, &mouse_press()));
-            let invocation = crate::widget::controls::take_control_invocation(&mut es)
+            let invocation = tilo_ui_base::widget::controls::take_control_invocation(&mut es)
                 .expect("canonical invocation");
             assert_eq!(
                 invocation.address,
                 tilo_actions::ActionAddress::new("catalog", "refresh")
             );
             assert!(matches!(
-                crate::widget::controls::control_action_bindings(&es).as_slice(),
-                [crate::widget::ControlBindingMetadata {
+                tilo_ui_base::widget::controls::control_action_bindings(&es).as_slice(),
+                [tilo_ui_base::widget::ControlBindingMetadata {
                     control_id,
-                    kind: crate::widget::ControlBindingKind::Action(address),
+                    kind: tilo_ui_base::widget::ControlBindingKind::Action(address),
                 }] if control_id == "catalog.empty.refresh"
                     && address == &tilo_actions::ActionAddress::new("catalog", "refresh")
             ));
@@ -267,7 +267,7 @@ tilo_test_env::scenario! {
         let audit = driver.native_app_audit();
         assert!(audit.is_certified(), "{audit:#?}");
         driver
-            .perform_named("weather.empty.add", &crate::a11y::Action::Activate)
+            .perform_named("weather.empty.add", &tilo_ui_base::a11y::Action::Activate)
             .expect("the action is addressable by its id");
         assert_eq!(opened.get(), 1, "the view handler ran once");
     }
@@ -275,7 +275,7 @@ tilo_test_env::scenario! {
 
     phase a_painted_state_is_addressed_as_the_controls_beside_it_are;
     {
-        use crate::a11y::{AccessNode, Role};
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
         let mut scene = Scene::new();
@@ -338,17 +338,17 @@ tilo_test_env::scenario! {
             .find(|child| child.description.as_deref() == Some("os error 2"))
             .and_then(|child| child.action_target.clone())
             .expect("the disclosure names its control");
-        let bindings = crate::widget::controls::control_action_bindings(&es);
+        let bindings = tilo_ui_base::widget::controls::control_action_bindings(&es);
         assert!(
             bindings.iter().any(|binding| binding.control_id == target
                 && matches!(
                     binding.kind,
-                    crate::widget::ControlBindingKind::SemanticAction(_)
+                    tilo_ui_base::widget::ControlBindingKind::SemanticAction(_)
                 )),
             "{bindings:?}"
         );
         assert!(
-            crate::widget::controls::control_action_bindings(
+            tilo_ui_base::widget::controls::control_action_bindings(
                 &EmptyState::new("Empty").with_details("why")
             )
             .iter()
@@ -404,9 +404,9 @@ tilo_test_env::scenario! {
 
 #[test]
 fn an_empty_state_in_a_workspace_that_never_synced_says_so_and_offers_nothing_of_the_apps() {
-    use crate::workspace_sync::{WorkspaceSync, WorkspaceSyncState};
-    let theme = crate::theme::Theme::dark();
-    let mut text = crate::text_render::TextRenderer::new();
+    use tilo_ui_base::{workspace_sync::WorkspaceSync, workspace_sync::WorkspaceSyncState};
+    let theme = tilo_ui_base::theme::Theme::dark();
+    let mut text = tilo_ui_base::text_render::TextRenderer::new();
     let mut scene = vello::Scene::new();
     let rect = vello::kurbo::Rect::new(0.0, 0.0, 500.0, 400.0);
     let content = EmptyStateContent {
@@ -431,42 +431,42 @@ fn an_empty_state_in_a_workspace_that_never_synced_says_so_and_offers_nothing_of
         })
     };
 
-    crate::workspace_sync::set(told(WorkspaceSyncState::Connecting));
-    let _ = crate::workspace_sync::take_spinner_damage();
+    tilo_ui_base::workspace_sync::set(told(WorkspaceSyncState::Connecting));
+    let _ = tilo_ui_base::workspace_sync::take_spinner_damage();
     assert!(
         paint(&mut scene).is_none(),
         "before the first sync the app's own empty state, and its action, wait"
     );
     assert!(
-        crate::workspace_sync::take_spinner_damage().is_some_and(|slot| {
+        tilo_ui_base::workspace_sync::take_spinner_damage().is_some_and(|slot| {
             rect.contains(slot.center()) && slot.area() < rect.area() / 4.0
         }),
         "the connecting state turns a spinner and damages its slot alone"
     );
 
-    crate::workspace_sync::set(told(WorkspaceSyncState::Unreachable));
+    tilo_ui_base::workspace_sync::set(told(WorkspaceSyncState::Unreachable));
     assert!(
         paint(&mut scene).is_some(),
         "with its host out of reach the person works here: the app's action stays"
     );
     assert!(
-        crate::workspace_sync::take_spinner_damage().is_none(),
+        tilo_ui_base::workspace_sync::take_spinner_damage().is_none(),
         "a host out of reach is no wait to spin through"
     );
 
-    crate::workspace_sync::set(told(WorkspaceSyncState::HostNeedsUpdate));
+    tilo_ui_base::workspace_sync::set(told(WorkspaceSyncState::HostNeedsUpdate));
     assert!(paint(&mut scene).is_none());
     assert!(
-        crate::workspace_sync::take_spinner_damage().is_none(),
+        tilo_ui_base::workspace_sync::take_spinner_damage().is_none(),
         "a host that has to update is no wait to spin through"
     );
 
-    crate::workspace_sync::set(told(WorkspaceSyncState::Synced));
+    tilo_ui_base::workspace_sync::set(told(WorkspaceSyncState::Synced));
     assert!(
         paint(&mut scene).is_some(),
         "once the workspace synced, its emptiness is the app's to say"
     );
-    crate::workspace_sync::set(None);
+    tilo_ui_base::workspace_sync::set(None);
     assert!(
         paint(&mut scene).is_some(),
         "a workspace with no sync state is the app's"
@@ -475,7 +475,7 @@ fn an_empty_state_in_a_workspace_that_never_synced_says_so_and_offers_nothing_of
 
 #[test]
 fn a_screen_reader_hears_what_the_screen_says_before_the_workspace_synced() {
-    use crate::workspace_sync::{WorkspaceSync, WorkspaceSyncState};
+    use tilo_ui_base::{workspace_sync::WorkspaceSync, workspace_sync::WorkspaceSyncState};
     let empty = EmptyState::new("No notes yet").with_action("New note");
     let told = |state| {
         Some(WorkspaceSync {
@@ -487,17 +487,22 @@ fn a_screen_reader_hears_what_the_screen_says_before_the_workspace_synced() {
         })
     };
 
-    crate::workspace_sync::set(told(WorkspaceSyncState::Connecting));
+    tilo_ui_base::workspace_sync::set(told(WorkspaceSyncState::Connecting));
     let waiting = Widget::accessibility(&empty).unwrap();
     assert_eq!(
         waiting.name.as_deref(),
-        Some(crate::workspace_sync::waiting().unwrap().title.as_str())
+        Some(
+            tilo_ui_base::workspace_sync::waiting()
+                .unwrap()
+                .title
+                .as_str()
+        )
     );
     assert!(waiting.name.as_deref().unwrap().contains("Lounge"));
     assert!(waiting.state.busy, "the connecting state is on its way");
     assert!(waiting.children.is_empty(), "the app's action waits too");
 
-    crate::workspace_sync::set(told(WorkspaceSyncState::Unreachable));
+    tilo_ui_base::workspace_sync::set(told(WorkspaceSyncState::Unreachable));
     let unreachable = Widget::accessibility(&empty).unwrap();
     assert!(unreachable.name.as_deref().unwrap().contains("Lounge"));
     assert!(!unreachable.state.busy, "nothing is on its way");
@@ -514,7 +519,7 @@ fn a_screen_reader_hears_what_the_screen_says_before_the_workspace_synced() {
         "the person works on what is here"
     );
 
-    crate::workspace_sync::set(told(WorkspaceSyncState::Synced));
+    tilo_ui_base::workspace_sync::set(told(WorkspaceSyncState::Synced));
     let empty_node = Widget::accessibility(&empty).unwrap();
     assert_eq!(empty_node.name.as_deref(), Some("No notes yet"));
     assert!(!empty_node.state.busy);
@@ -525,7 +530,7 @@ fn a_screen_reader_hears_what_the_screen_says_before_the_workspace_synced() {
             .and_then(|action| action.name.as_deref()),
         Some("New note")
     );
-    crate::workspace_sync::set(None);
+    tilo_ui_base::workspace_sync::set(None);
 }
 
 /// Open Details read in the order they were said, one line each, from one left edge; a command to
@@ -600,7 +605,7 @@ fn details_keep_their_lines_and_copy_the_command_they_name() {
         assert!(file_line.state.read_only);
         let target = file_line.children[0].action_target.clone().unwrap();
         assert!(
-            crate::widget::controls::control_action_bindings(&es)
+            tilo_ui_base::widget::controls::control_action_bindings(&es)
                 .iter()
                 .any(|binding| binding.control_id == target),
             "copying it is a control agents find"
@@ -608,8 +613,8 @@ fn details_keep_their_lines_and_copy_the_command_they_name() {
         assert!(Widget::perform_semantic_action(
             &mut es,
             &target,
-            &crate::a11y::Action::Activate,
-            &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+            &tilo_ui_base::a11y::Action::Activate,
+            &mut tilo_ui_base::widget::Edits::lend(&mut automerge::AutoCommit::new()),
             &automerge::ROOT,
         ));
         assert_eq!(

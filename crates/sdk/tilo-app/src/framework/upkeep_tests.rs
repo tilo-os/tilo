@@ -5,8 +5,8 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
 use ui_core::automerge::{AutoCommit, ROOT};
-use ui_core::widget::capability::{capability, capability_mut};
 
 use super::*;
 
@@ -61,7 +61,7 @@ tilo_test_env::scenario! {
         let counted = Rc::clone(&synced);
         let mut view = kept(Upkeep::new().syncing(move || counted.set(counted.get() + 1)));
         let doc = AutoCommit::new();
-        ui_core::component_inputs::proving(|| view.sync(&doc, &ROOT));
+        tilo_ui_base::component_inputs::proving(|| view.sync(&doc, &ROOT));
         assert_eq!(
             synced.get(),
             0,

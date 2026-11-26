@@ -1,11 +1,11 @@
 use super::flow::{Flow, flow_builders, flow_capabilities, flow_widget_methods};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
 use std::any::Any;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 /// Keep the small savings from coalescing adjacent row children without turning sparse
 /// animation damage into a broad horizontal strip.
@@ -17,7 +17,7 @@ fn can_merge_damage(a: vello::kurbo::Rect, b: vello::kurbo::Rect) -> bool {
         && a.union(b).width() * a.union(b).height() <= covered_area * MAX_DAMAGE_MERGE_OVERDRAW
 }
 
-#[crate::component::not_a_component(layout, "the language's `row`")]
+#[tilo_ui_base::component::not_a_component(layout, "the language's `row`")]
 pub struct Row {
     flow: Flow,
     /// When set, the row keeps all children on one line (no flex wrap) —
@@ -138,10 +138,10 @@ impl Row {
 }
 
 impl Widget for Row {
-    crate::provides!(
+    tilo_ui_base::provides!(
         #[cfg(feature = "model")]
-        dyn crate::widget::permission::PermissionGuarded,
-        dyn crate::presence::capability::PublishesPresence
+        dyn tilo_ui_base::widget::permission::PermissionGuarded,
+        dyn tilo_ui_base::presence::capability::PublishesPresence
     );
 
     flow_widget_methods!();
@@ -168,7 +168,7 @@ impl Widget for Row {
         if caption(child).is_some()
             || child
                 .accessibility()
-                .is_some_and(|node| node.role == crate::a11y::Role::StaticText)
+                .is_some_and(|node| node.role == tilo_ui_base::a11y::Role::StaticText)
         {
             return None;
         }
@@ -194,9 +194,9 @@ impl Widget for Row {
             .flow
             .rhythm_padding(theme)
             .unwrap_or((self.horizontal_padding, self.vertical_padding));
-        let min_height = self
-            .min_height
-            .map_or(0.0, |size| crate::num::f32_of_f64(size.height(theme)));
+        let min_height = self.min_height.map_or(0.0, |size| {
+            tilo_ui_base::num::f32_of_f64(size.height(theme))
+        });
         self.resolved = (gap, pad_x, pad_y, min_height);
 
         let style = Style {
@@ -236,12 +236,13 @@ impl Widget for Row {
                 },
             },
             box_sizing: taffy::BoxSizing::BorderBox,
-            padding: super::layout::insets_xy(pad_x, pad_y),
+            padding: tilo_ui_base::widget::layout::insets_xy(pad_x, pad_y),
             ..Default::default()
         };
         // A body row that fills what its parent's column leaves takes that width and no more
-        // (`super::layout::filling`), its children sharing it.
-        let style = super::layout::filling(style, if self.fill_height { 1.0 } else { 0.0 });
+        // (`tilo_ui_base::widget::layout::filling`), its children sharing it.
+        let style =
+            tilo_ui_base::widget::layout::filling(style, if self.fill_height { 1.0 } else { 0.0 });
         let node = taffy.parent_node(style, &self.flow.child_nodes);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
@@ -344,16 +345,16 @@ fn yield_full_width_children(taffy: &mut TaffyTree<()>, children: &[NodeId]) {
 
 /// The row's children are its slot: a component that holds a row takes the views it is given
 /// where they stand, and the row lays them out again.
-impl crate::component::PartViews for Row {
+impl tilo_ui_base::component::PartViews for Row {
     fn len(&self) -> usize {
         self.flow.children.len()
     }
 
-    fn view_mut(&mut self, index: usize) -> Option<&mut crate::widget::Element> {
+    fn view_mut(&mut self, index: usize) -> Option<&mut tilo_ui_base::widget::Element> {
         self.flow.children.get_mut(index)
     }
 
-    fn insert(&mut self, index: usize, view: crate::widget::Element) {
+    fn insert(&mut self, index: usize, view: tilo_ui_base::widget::Element) {
         let at = index.min(self.flow.children.len());
         self.flow.children.insert(at, view);
         self.flow.children_changed();
@@ -375,7 +376,7 @@ impl crate::component::PartViews for Row {
         }
     }
 
-    fn replace(&mut self, index: usize, view: crate::widget::Element) {
+    fn replace(&mut self, index: usize, view: tilo_ui_base::widget::Element) {
         if let Some(slot) = self.flow.children.get_mut(index) {
             *slot = view;
             self.flow.children_changed();
@@ -443,7 +444,8 @@ mod tests {
         // A label, a spacer and a full-width child (a nested row of buttons,
         // a fluid container) stay inside the row instead of overflowing it.
         {
-            use crate::widget::{Button, Container, Spacer};
+            use crate::{widget::Button, widget::Container};
+            use tilo_ui_base::widget::Spacer;
             let buttons = || {
                 Row::new()
                     .no_wrap()
@@ -527,7 +529,7 @@ mod tests {
         {
             use crate::widget::Button;
             let mut row = Row::new()
-                .with_rhythm(crate::tokens::Rhythm::Related)
+                .with_rhythm(tilo_ui_base::tokens::Rhythm::Related)
                 .align_start()
                 .push(Box::new(Button::new("up", "Move earlier")))
                 .push(Box::new(Button::new("down", "Move later")))

@@ -5,8 +5,8 @@ use std::cell::Cell;
 
 use tilo_rich_edit::{Block, BlockEditor};
 use tilo_ui::State;
-use tilo_ui::a11y::AccessNode;
 use tilo_ui::app::{App, AppSurface};
+use tilo_ui_base::a11y::AccessNode;
 use vello::Scene;
 use vello::kurbo::Rect;
 
@@ -30,7 +30,7 @@ impl AppSurface for Window {
 fn control_bounds(node: &AccessNode, target: &str) -> Option<Rect> {
     if node.action_target.as_deref() == Some(target) || node.semantic_key.as_deref() == Some(target)
     {
-        return node.bounds.map(tilo_ui::a11y::AccessBounds::to_rect);
+        return node.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect);
     }
     node.children
         .iter()

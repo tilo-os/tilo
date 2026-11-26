@@ -1,11 +1,11 @@
 //! [`HexGrid`] as a described component: a file's bytes, as a grid of hexadecimal pairs and
 //! the same bytes as text, with the cursor, the selection and a search's matches on it.
 
-use crate::component::{Component, Described, Event};
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 
 use super::{HexColumn, HexGrid};
 
-crate::component::choice!(HexColumn, "HexColumn", {
+tilo_ui_base::choice!(HexColumn, "HexColumn", {
     Hex => "hex",
     Ascii => "ascii",
 });
@@ -130,23 +130,25 @@ impl Described for HexGrid {
         let press = props.press;
         self.on_press = (props.enabled && !press.is_none()).then(|| {
             Box::new(move |at: usize, column: HexColumn, extend: bool| {
-                press.fire(Some(crate::component::Value::List(vec![
-                    crate::component::Value::Text(at.to_string()),
-                    crate::component::Value::Text(column.name().to_owned()),
-                    crate::component::Value::Text(if extend { "shift" } else { "" }.to_owned()),
+                press.fire(Some(tilo_ui_base::component::Value::List(vec![
+                    tilo_ui_base::component::Value::Text(at.to_string()),
+                    tilo_ui_base::component::Value::Text(column.name().to_owned()),
+                    tilo_ui_base::component::Value::Text(
+                        if extend { "shift" } else { "" }.to_owned(),
+                    ),
                 ])));
             }) as Box<dyn FnMut(usize, HexColumn, bool)>
         });
         let key = props.key;
         self.on_key = (!key.is_none()).then(|| {
             Box::new(move |pressed: String| {
-                key.fire(Some(crate::component::Value::Text(pressed)));
+                key.fire(Some(tilo_ui_base::component::Value::Text(pressed)));
             }) as Box<dyn FnMut(String)>
         });
         let wheel = props.wheel;
         self.on_wheel = (!wheel.is_none()).then(|| {
             Box::new(move |rows: i64| {
-                wheel.fire(Some(crate::component::Value::Int(rows)));
+                wheel.fire(Some(tilo_ui_base::component::Value::Int(rows)));
             }) as Box<dyn FnMut(i64)>
         });
         if changed {

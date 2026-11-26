@@ -477,7 +477,7 @@ fn a_part_the_system_draws_refuses_a_binding() {
 
 #[test]
 fn a_package_bound_to_the_part_reads_the_menu_and_closes_it_through_its_own_verb() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _home = TestHome::new().expect("a home of the test's own");
     let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
@@ -578,7 +578,7 @@ fn a_package_bound_to_the_part_reads_the_menu_and_closes_it_through_its_own_verb
 
 #[test]
 fn a_package_that_is_no_view_of_the_part_leaves_it_to_the_one_the_session_ships_with() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _home = TestHome::new().expect("a home of the test's own");
     let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
@@ -630,7 +630,7 @@ fn a_package_that_is_no_view_of_the_part_leaves_it_to_the_one_the_session_ships_
 
 #[test]
 fn a_package_bound_to_the_part_shows_the_menu_rows_and_choosing_one_runs_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _home = TestHome::new().expect("a home of the test's own");
     let root = crate::common::private_home();
     let socket = root.path().join("collab.sock");
@@ -719,7 +719,7 @@ fn a_package_bound_to_the_part_shows_the_menu_rows_and_choosing_one_runs_it() {
 #[test]
 fn the_window_menu_chord_draws_the_shells_view_and_the_keyboard_chooses() {
     let _home = TestHome::new().expect("a home of the test's own");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The store the session installs the shell from: the shipped view is the shell's window_menu.
     let _store = crate::common::app_store();
     assert!(

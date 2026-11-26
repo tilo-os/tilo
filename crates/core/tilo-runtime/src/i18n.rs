@@ -3,9 +3,9 @@
 //! person's locale, `en-US` where a translation lacks a message.
 
 #[cfg(target_os = "macos")]
-use ui::i18n::ArgValue;
+use tilo_ui_base::i18n::ArgValue;
 
-ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
+tilo_ui_base::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 
 /// The arguments of a message about `app` and `device`: each catalogue
 /// selects its own sentence on the device, since a spliced-in noun does not
@@ -65,7 +65,7 @@ mod tests {
     #[cfg(target_os = "macos")]
     #[test]
     fn german_names_each_device_with_its_own_article() {
-        let catalog = ui::i18n::EmbeddedCatalog::new(
+        let catalog = tilo_ui_base::i18n::EmbeddedCatalog::new(
             "de-DE",
             &[("de-DE", include_str!("../locales/de-DE.ftl"))],
         )

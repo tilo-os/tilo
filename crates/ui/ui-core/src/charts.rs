@@ -1,6 +1,6 @@
 #![doc = include_str!("../CHARTS.md")]
 
-pub use crate::chart_palette::ChartPalette;
+pub use tilo_ui_base::chart_palette::ChartPalette;
 
 pub use crate::widget::chart_legend as legend;
 pub use crate::widget::function_plane::{format_tick, nice_step, nice_ticks};

@@ -2,25 +2,25 @@
 //! chooser, screen-reader speech) resolve through the current process's
 //! services, so a process that records effects sees every one of them.
 
-use tilo_ui::a11y::{AccessNode, Role};
 use tilo_ui::clipboard::ClipboardTarget;
 use tilo_ui::portal::{PickRequest, PortalOutcome};
 use tilo_ui::process::{self, ProcessServices};
+use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 
 #[test]
 fn toolkit_entry_points_reach_the_recording_process() {
     let (services, recorder) = ProcessServices::recording();
     recorder.respond_to_pick(PortalOutcome::Opened("/tmp/picked.txt".into()));
     process::scoped(&services, || {
-        tilo_ui::text_selection::clipboard_copy("copied");
+        tilo_ui_base::text_selection::clipboard_copy("copied");
         assert_eq!(
-            tilo_ui::text_selection::clipboard_paste().as_deref(),
+            tilo_ui_base::text_selection::clipboard_paste().as_deref(),
             Some("copied")
         );
-        assert!(tilo_ui::platform::try_os_open("https://tilo.so").is_ok());
+        assert!(tilo_ui_base::platform::try_os_open("https://tilo.so").is_ok());
         let picked = PickRequest::open("Open", "Open").send().recv();
         assert_eq!(picked, Ok(PortalOutcome::Opened("/tmp/picked.txt".into())));
-        let mut reader = tilo_ui::screen_reader::ScreenReader::new();
+        let mut reader = tilo_ui_base::screen_reader::ScreenReader::new();
         reader.announce_focus(&AccessNode::new(Role::Button).with_name("Save"));
     });
     assert_eq!(

@@ -9,13 +9,18 @@ use vello::kurbo::{Affine, Point};
 use winit::event::{ElementState, Ime, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::{Key as WKey, ModifiersState, NamedKey};
 
-use crate::component::{Described as _, Event, Intent, Value};
-use crate::key_input::{Button, Held, Key, Keys, Named};
 use crate::terminal::{GridPos, Line, Modes, Placement, Screen, Session, SessionEvent};
 use crate::testing::Dispatch;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::{Terminal, TerminalProps, Widget};
+use crate::{widget::Terminal, widget::TerminalProps};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    component::Described as _, component::Event, component::Intent, component::Value,
+};
+use tilo_ui_base::{
+    key_input::Button, key_input::Held, key_input::Key, key_input::Keys, key_input::Named,
+};
 
 /// What a session was asked, and the grid it answers with.
 #[derive(Default)]
@@ -186,12 +191,12 @@ fn placed(widget: &mut Terminal) -> (TaffyTree<()>, NodeId) {
 /// Draw the grid once, so its cell geometry is measured as a frame measures it.
 fn paint(widget: &mut Terminal) -> Scene {
     let mut scene = Scene::new();
-    widget.draw(&mut crate::draw::DrawCtx::new(
+    widget.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         &Theme::dark(),
-        crate::presence::PresenceCtx::default().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::default().draw_env(),
     ));
     scene
 }
@@ -218,7 +223,7 @@ fn send_with(
 }
 
 fn key(key: WKey, state: ElementState) -> WindowEvent {
-    crate::synthetic_input::key_input(&key, state)
+    tilo_ui_base::synthetic_input::key_input(&key, state)
 }
 
 fn moved(x: f64, y: f64) -> WindowEvent {
@@ -269,7 +274,7 @@ tilo_test_env::scenario! {
         let mut widget = Terminal::new(fake.clone());
         widget.set_focus(true);
         let (tree, node) = placed(&mut widget);
-        assert!(send(&mut widget, &tree, node, &crate::synthetic_input::char_key("a")));
+        assert!(send(&mut widget, &tree, node, &tilo_ui_base::synthetic_input::char_key("a")));
         assert!(send(&mut widget, &tree, node, &key(WKey::Named(NamedKey::ArrowUp), ElementState::Pressed)));
         let state = fake.state();
         assert_eq!(state.keys[0].0, Key::Char('a'));
@@ -302,7 +307,7 @@ tilo_test_env::scenario! {
             &mut widget,
             &tree,
             node,
-            &crate::synthetic_input::char_key("c"),
+            &tilo_ui_base::synthetic_input::char_key("c"),
             ModifiersState::CONTROL | ModifiersState::SHIFT,
         );
         assert_eq!(fake.state().keys.len(), before, "Ctrl+Shift+C is a copy, not Ctrl+C");
@@ -310,7 +315,7 @@ tilo_test_env::scenario! {
 
     phase a_drag_selects_in_reading_order_and_a_finished_selection_reports_its_text;
     {
-        let intents = crate::Intents::default();
+        let intents = tilo_ui_base::Intents::default();
         let fake = std::sync::Arc::new(Fake::with_lines(&["hello world", "second line"]));
         let mut widget = Terminal::new(fake.clone());
         widget.update_events(
@@ -391,7 +396,7 @@ tilo_test_env::scenario! {
 
     phase the_grid_reports_the_title_the_marked_runs_and_the_shells_end;
     {
-        let intents = crate::Intents::default();
+        let intents = tilo_ui_base::Intents::default();
         let fake = std::sync::Arc::new(Fake::with_lines(&["$ "]));
         let mut widget = Terminal::new(fake.clone());
         widget.update_events(
@@ -427,7 +432,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(fake.state().texts, vec!["é".to_owned()]);
         let node = widget.accessibility().expect("a terminal is announced");
-        assert_eq!(node.role, crate::a11y::Role::Terminal);
+        assert_eq!(node.role, tilo_ui_base::a11y::Role::Terminal);
         assert_eq!(node.name.as_deref(), Some("Terminal, café"));
         assert!(widget.ime_content().is_some(), "the input method writes into the shell");
     }
@@ -444,7 +449,7 @@ tilo_test_env::scenario! {
         let (_tree, _node) = placed(&mut widget);
         paint(&mut widget);
         assert!(widget.screen().lines.is_empty());
-        assert_eq!(widget.accessibility().map(|node| node.role), Some(crate::a11y::Role::Terminal));
+        assert_eq!(widget.accessibility().map(|node| node.role), Some(tilo_ui_base::a11y::Role::Terminal));
     }
 
 
@@ -461,12 +466,12 @@ tilo_test_env::scenario! {
         let mut widget = Terminal::new(fake);
         let (_tree, _node) = placed(&mut widget);
         let mut scene = Scene::new();
-        widget.draw(&mut crate::draw::DrawCtx::new(
+        widget.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
             &Theme::light(),
-            crate::presence::PresenceCtx::default().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::default().draw_env(),
         ));
         assert!(!scene.encoding().is_empty(), "the light theme paints the grid");
     }

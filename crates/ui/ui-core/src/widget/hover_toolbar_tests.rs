@@ -1,5 +1,5 @@
-use crate::text_render::TextRenderer;
 use std::collections::HashMap;
+use tilo_ui_base::text_render::TextRenderer;
 use vello::Scene;
 use vello::kurbo::Affine;
 
@@ -31,12 +31,12 @@ fn drawn(bar: &mut HoverToolbar) {
     let mut text = TextRenderer::new();
     Widget::draw(
         bar,
-        &mut crate::draw::DrawCtx::new(
+        &mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
             &Theme::dark(),
-            crate::presence::PresenceCtx::default().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::default().draw_env(),
         ),
     );
     Widget::mark_drawn(bar);
@@ -61,19 +61,19 @@ fn message() -> Laid {
         crate::widget::Container::new()
             .with_no_padding()
             .with_width(560.0)
-            .with_child(Box::new(crate::widget::Spacer::fixed(64.0))),
+            .with_child(Box::new(tilo_ui_base::widget::Spacer::fixed(64.0))),
     );
     let mut bar = HoverToolbar::new(
         row,
         vec![
             Box::new(Button::icon_only(
                 "react",
-                crate::icons::Icon::ThumbsUp,
+                tilo_ui_base::icons::Icon::ThumbsUp,
                 "React",
             )),
             Box::new(Button::icon_only(
                 "reply",
-                crate::icons::Icon::Reply,
+                tilo_ui_base::icons::Icon::Reply,
                 "Reply",
             )),
         ],
@@ -88,16 +88,16 @@ tilo_test_env::scenario! {
 
     phase the_toolbar_shows_while_the_row_is_hovered;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut laid = message();
         assert!(!laid.bar.is_shown(), "hidden until the pointer comes");
         let row = Widget::get_rect(&laid.bar);
-        laid.send(&crate::synthetic_input::cursor_moved(
+        laid.send(&tilo_ui_base::synthetic_input::cursor_moved(
             row.center().x,
             row.center().y,
         ));
         assert!(laid.bar.is_shown());
-        laid.send(&crate::synthetic_input::cursor_moved(
+        laid.send(&tilo_ui_base::synthetic_input::cursor_moved(
             row.center().x,
             row.y1 + 40.0,
         ));
@@ -106,7 +106,7 @@ tilo_test_env::scenario! {
 
     phase focus_in_the_toolbar_shows_it_for_the_keyboard;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut laid = message();
         let mut focused = false;
         for child in Widget::children_mut(&mut laid.bar) {
@@ -145,7 +145,7 @@ fn place() -> Laid {
         content,
         vec![Box::new(Button::icon_only(
             "close",
-            crate::icons::Icon::X,
+            tilo_ui_base::icons::Icon::X,
             "Close",
         ))],
         44.0,
@@ -181,7 +181,7 @@ fn focus_named(widget: &mut dyn Widget, label: &str, done: &mut bool) {
 /// it, and so does focus in the handle's own controls, which Tab reaches.
 #[test]
 fn a_places_handle_stays_away_for_focus_in_its_content() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut laid = place();
     let mut focused = false;
     for child in Widget::children_mut(&mut laid.bar) {

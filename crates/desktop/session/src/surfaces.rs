@@ -36,11 +36,14 @@ use tilo_actions::remote::{
 };
 use tilo_compositor::Compositor;
 use tilo_session_core::surfaces::{Look, Published};
-use ui::collaboration::ExportedAction;
+use tilo_ui_base::collaboration::ExportedAction;
+use tilo_ui_base::host_operation::ResourceOperationStart;
+use tilo_ui_base::{
+    surface_services::ACTIONS_FD_ENV, surface_services::APP_ID_ENV, surface_services::SOCKET_ENV,
+    surface_services::WORKSPACE_ENV,
+};
 use ui::floating_surface::{FloatingSurfaceClientMessage, FloatingSurfaceHostMessage};
-use ui::host_operation::ResourceOperationStart;
 use ui::surface_peer::FRAMING;
-use ui::surface_services::{ACTIONS_FD_ENV, APP_ID_ENV, SOCKET_ENV, WORKSPACE_ENV};
 use ui::window_targets::{TargetAction, WindowControl, WindowTarget};
 
 /// Where on an output a surface app's window stands, lowest first.

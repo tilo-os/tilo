@@ -12,7 +12,7 @@ use vello::Scene;
 
 use super::Driver;
 use crate::composition::{Composed, Composition, Picture, css};
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 // ---- what a host that poses and compares frames keeps ----
 
@@ -25,11 +25,11 @@ pub(super) struct FrameRecords {
     /// The frames lift out the parts that move as a whole ([`Driver::lift_parts`]).
     lift_parts: bool,
     /// The damage parts of the last frame drawn.
-    parts: Option<crate::scene_parts::SectionParts>,
+    parts: Option<tilo_ui_base::scene_parts::SectionParts>,
     /// The parts lifted out of the last frame drawn, bottom first.
     lifted: Vec<crate::lift::Lifted>,
     /// The surfaces the last frame drew its blurred material over.
-    backdrops: std::sync::Arc<crate::part_paint::backdrop::BackdropFrame>,
+    backdrops: std::sync::Arc<tilo_ui_base::part_paint::backdrop::BackdropFrame>,
     /// The layout failure last reported to a host, once it was read: a host whose log is not
     /// `tracing`'s reads it ([`Driver::take_skip_report`]).
     reported_skip: Option<String>,
@@ -37,9 +37,9 @@ pub(super) struct FrameRecords {
 
 /// The recordings a frame keeps, begun before its draw and finished after it.
 pub(super) struct Recording {
-    parts: Option<crate::scene_parts::Recording>,
+    parts: Option<tilo_ui_base::scene_parts::Recording>,
     lift: Option<crate::lift::Recording>,
-    backdrops: crate::part_paint::backdrop::BackdropRecording,
+    backdrops: tilo_ui_base::part_paint::backdrop::BackdropRecording,
 }
 
 impl FrameRecords {
@@ -47,11 +47,13 @@ impl FrameRecords {
     /// lifted layers when they are lifted, and the surfaces drawn in blurred material always, since
     /// a host asks what lies under them every frame.
     pub(super) fn begin(&self, scene: &Scene) -> Recording {
-        let backdrops = crate::part_paint::backdrop::BackdropRecording::begin();
-        crate::part_paint::backdrop::layer_scene(scene, 0);
-        let parts = self.track_parts.then(crate::scene_parts::Recording::begin);
+        let backdrops = tilo_ui_base::part_paint::backdrop::BackdropRecording::begin();
+        tilo_ui_base::part_paint::backdrop::layer_scene(scene, 0);
+        let parts = self
+            .track_parts
+            .then(tilo_ui_base::scene_parts::Recording::begin);
         if parts.is_some() {
-            crate::scene_parts::track(scene);
+            tilo_ui_base::scene_parts::track(scene);
         }
         let lift = self
             .lift_parts
@@ -69,7 +71,9 @@ impl FrameRecords {
             .lift
             .map(crate::lift::Recording::finish)
             .unwrap_or_default();
-        let recorded = recording.parts.map(crate::scene_parts::Recording::finish);
+        let recorded = recording
+            .parts
+            .map(tilo_ui_base::scene_parts::Recording::finish);
         self.parts = recorded.as_ref().and_then(|recorded| recorded.of(scene));
         if let Some(recorded) = &recorded {
             for lifted in &mut self.lifted {
@@ -77,7 +81,7 @@ impl FrameRecords {
             }
         }
         self.backdrops = std::sync::Arc::new(
-            crate::part_paint::backdrop::BackdropFrame::from_single_scene(
+            tilo_ui_base::part_paint::backdrop::BackdropFrame::from_single_scene(
                 recording.backdrops.finish(),
             ),
         );
@@ -87,14 +91,14 @@ impl FrameRecords {
     /// them.
     pub(super) fn captured_backdrops(
         &self,
-    ) -> std::sync::Arc<crate::part_paint::backdrop::BackdropFrame> {
+    ) -> std::sync::Arc<tilo_ui_base::part_paint::backdrop::BackdropFrame> {
         std::sync::Arc::clone(&self.backdrops)
     }
 }
 
 impl Driver {
     /// Record the damage parts of the frames drawn from now on
-    /// ([`crate::scene_parts`]), for a host that compares each frame with the one it presented
+    /// ([`tilo_ui_base::scene_parts`]), for a host that compares each frame with the one it presented
     /// before.
     pub fn track_scene_parts(&mut self, track: bool) {
         self.records.track_parts = track;
@@ -115,7 +119,7 @@ impl Driver {
     /// The damage parts of the frame drawn last, when they were recorded
     /// ([`Self::track_scene_parts`]) and well nested.
     #[must_use]
-    pub fn scene_parts(&self) -> Option<&crate::scene_parts::SectionParts> {
+    pub fn scene_parts(&self) -> Option<&tilo_ui_base::scene_parts::SectionParts> {
         self.records.parts.as_ref()
     }
 
@@ -128,7 +132,7 @@ impl Driver {
     /// The backdrops the frame drawn last draws its blurred material over: what a compositor blurs
     /// and hands back.
     #[must_use]
-    pub fn backdrops(&self) -> &crate::part_paint::backdrop::BackdropFrame {
+    pub fn backdrops(&self) -> &tilo_ui_base::part_paint::backdrop::BackdropFrame {
         &self.records.backdrops
     }
 }
@@ -182,17 +186,18 @@ impl Driver {
             layout: None,
             paint_key: None,
             semantics: Some(
-                crate::a11y::AccessNode::new(crate::a11y::Role::Tooltip).with_name(text.to_owned()),
+                tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Tooltip)
+                    .with_name(text.to_owned()),
             ),
             children: Vec::new(),
         })
     }
 
     /// Which surface this tree is on the thread's motion clock: what moves for what it draws runs
-    /// on its behalf ([`crate::motion::on_surface`]).
+    /// on its behalf ([`tilo_ui_base::motion::on_surface`]).
     #[must_use]
-    pub fn motion_surface(&self) -> crate::motion::MotionSurface {
-        crate::motion::MotionSurface(self.app.motion_owner())
+    pub fn motion_surface(&self) -> tilo_ui_base::motion::MotionSurface {
+        tilo_ui_base::motion::MotionSurface(self.app.motion_owner())
     }
 
     /// Ask for the tree to be built again before it is next laid out: what a widget that reads
@@ -209,7 +214,7 @@ impl Driver {
     #[must_use]
     pub fn layout_measure_requesters(&self) -> Vec<String> {
         fn visit(widget: &dyn Widget, path: &mut Vec<String>, out: &mut Vec<String>) {
-            let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
+            let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(widget) else {
                 return;
             };
             if !widget.layout_needs_measure() {
@@ -385,12 +390,12 @@ fn index_widgets<'a>(
     path: String,
     out: &mut HashMap<usize, Vec<(String, &'a dyn Widget)>>,
 ) {
-    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
+    let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(widget) else {
         return;
     };
     let mut child_counts = HashMap::new();
     for (index, child) in widget.children().into_iter().enumerate() {
-        let (_, child_path, _) = crate::widget::widget_path(
+        let (_, child_path, _) = tilo_ui_base::widget::widget_path(
             child,
             &path,
             widget.child_path_name(index),
@@ -420,7 +425,7 @@ struct Walk<'a> {
     open: std::cell::RefCell<Vec<usize>>,
     /// What a widget's parent publishes for it in its own nodes, by the widget's address: a
     /// list's row with its place in the list, its level and its disclosure.
-    represented: std::cell::RefCell<HashMap<usize, crate::a11y::AccessNode>>,
+    represented: std::cell::RefCell<HashMap<usize, tilo_ui_base::a11y::AccessNode>>,
     /// The surfaces open over the window that its layout does not hold
     /// ([`Widget::overlay_surface`]), composed as layers of their own.
     lifted: std::cell::RefCell<Vec<Composed>>,
@@ -447,7 +452,7 @@ impl<'a> Walk<'a> {
     /// What `widget` publishes for each child it represents in its own nodes (`access`), kept
     /// for when that child is composed: the node at the path it hangs the child at, or the
     /// node standing where the child stands.
-    fn represent(&self, widget: &dyn Widget, access: &crate::a11y::AccessNode) {
+    fn represent(&self, widget: &dyn Widget, access: &tilo_ui_base::a11y::AccessNode) {
         let mut represented = self.represented.borrow_mut();
         for (index, child) in widget.children().into_iter().enumerate() {
             if !widget.accessibility_represents_child(index) {
@@ -499,7 +504,12 @@ impl<'a> Walk<'a> {
     /// and take it out of what the widget publishes (`owner`): it stands over the window, not in
     /// the widget's box. A press on one of its rows still reaches the widget that opened it, the
     /// one its path names before the `#`.
-    fn lift(&self, path: &str, surface: &dyn Widget, owner: Option<&mut crate::a11y::AccessNode>) {
+    fn lift(
+        &self,
+        path: &str,
+        surface: &dyn Widget,
+        owner: Option<&mut tilo_ui_base::a11y::AccessNode>,
+    ) {
         let Some(access) = surface.accessibility() else {
             return;
         };
@@ -514,7 +524,7 @@ impl<'a> Walk<'a> {
             surface.name(),
             [rect.x0, rect.y0, rect.width(), rect.height()],
         );
-        layer.semantics = Some(crate::a11y::with_synthetic_bounds(access, surface));
+        layer.semantics = Some(tilo_ui_base::a11y::with_synthetic_bounds(access, surface));
         layer.appears_from = surface.appears_from().map(|point| [point.x, point.y]);
         self.lifted.borrow_mut().push(layer);
     }
@@ -565,7 +575,7 @@ impl<'a> Walk<'a> {
         };
         let widget: &dyn Widget = *widget;
         self.placed.borrow_mut().insert(address(widget));
-        let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
+        let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(widget) else {
             return Composed::new(path.clone(), "ClosedComponent", [x, y, size.0, size.1]);
         };
         let rect = widget.get_rect();
@@ -577,7 +587,7 @@ impl<'a> Walk<'a> {
                 (!widget.accessibility_hidden())
                     .then(|| widget.accessibility())
                     .flatten()
-                    .map(|access| crate::a11y::with_synthetic_bounds(access, widget))
+                    .map(|access| tilo_ui_base::a11y::with_synthetic_bounds(access, widget))
             });
         if let Some(surface) = widget.overlay_surface() {
             self.lift(path, surface, semantics.as_mut());
@@ -671,7 +681,8 @@ impl Driver {
         let mut widgets = HashMap::new();
         let mut sibling_counts = HashMap::new();
         for root in self.app.presentation_roots() {
-            let (_, path, _) = crate::widget::widget_path(root, "", None, &mut sibling_counts);
+            let (_, path, _) =
+                tilo_ui_base::widget::widget_path(root, "", None, &mut sibling_counts);
             index_widgets(root, path, &mut widgets);
         }
         let walk = Walk {

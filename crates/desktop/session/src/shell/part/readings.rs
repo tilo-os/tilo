@@ -574,7 +574,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
             } => Ask {
                 // As a press: the session's own address, never the flattened reference, and one of
                 // the device's settings on this device.
-                resource: ui::settings_device::on_this_device(
+                resource: tilo_ui_base::settings_device::on_this_device(
                     &self
                         .link
                         .published_address(&target.id_string())
@@ -626,7 +626,7 @@ impl tilolang_tilo::runtime::delegate::Invoker for PlaceInvoker {
                 Ask {
                     // As a press: the session's own address, never the flattened reference, and one
                     // of the device's settings on this device.
-                    resource: ui::settings_device::on_this_device(
+                    resource: tilo_ui_base::settings_device::on_this_device(
                         &self
                             .link
                             .published_address(&target.id_string())

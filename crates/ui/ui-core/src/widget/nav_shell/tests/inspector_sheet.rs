@@ -32,17 +32,17 @@ fn grip(h: &Driver) -> Point {
 fn drag_grip_to(h: &mut Driver, y: f64) {
     let from = grip(h);
     let moved = |h: &mut Driver, y: f64| {
-        h.dispatch_to_root(&crate::synthetic_input::cursor_moved(from.x, y));
+        h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(from.x, y));
         h.relayout_at((W, H)).expect("layout");
     };
     moved(h, from.y);
-    h.dispatch_to_root(&crate::synthetic_input::mouse_press());
+    h.dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_press());
     let steps = 80;
     for step in 1..=steps {
         let t = f64::from(step) / f64::from(steps);
         moved(h, from.y + (y - from.y) * t);
     }
-    h.dispatch_to_root(&crate::synthetic_input::mouse_release());
+    h.dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_release());
     settle(h, W, H);
 }
 
@@ -68,7 +68,7 @@ tilo_test_env::scenario! {
     // document's needs the reading column and rises as a sheet.
     phase a_canvas_keeps_its_inspector_beside_it_where_a_document_takes_a_sheet;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         for (kind, placement) in [
             (ContentKind::Canvas, InspectorPlacement::Docked),
             (ContentKind::Document, InspectorPlacement::Sheet),
@@ -97,7 +97,7 @@ tilo_test_env::scenario! {
 
     phase a_narrow_inspector_is_a_sheet_at_half_height_with_the_content_live_above_it;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let (mut h, events) = sheet_open();
         let g = geometry(&h);
         assert_eq!(g.inspector, InspectorPlacement::Sheet);
@@ -132,7 +132,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn dragging_the_grip_moves_the_sheet_between_its_detents() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut h, _) = sheet_open();
     for (to, expected) in [
         (SheetDetent::Peek, SheetDetent::Peek),
@@ -176,10 +176,10 @@ fn grip_node(h: &Driver) -> (crate::accesskit::NodeId, crate::accesskit::Node) {
 
 #[test]
 fn the_keyboard_steps_the_sheet_between_its_detents() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut h, _) = sheet_open();
     let (grip, _) = grip_node(&h);
-    h.perform_a11y_action(grip, &crate::a11y::Action::Focus)
+    h.perform_a11y_action(grip, &tilo_ui_base::a11y::Action::Focus)
         .expect("the grip takes the keyboard");
     for (key, expected) in [
         ("ArrowDown", SheetDetent::Peek),
@@ -196,7 +196,7 @@ fn the_keyboard_steps_the_sheet_between_its_detents() {
 
 #[test]
 fn the_sheet_is_a_named_region_whose_grip_steps_its_detent() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut h, _) = sheet_open();
     let region = h
         .a11y_nodes()
@@ -211,13 +211,13 @@ fn the_sheet_is_a_named_region_whose_grip_steps_its_detent() {
     assert_eq!(node.value(), Some("Half height"));
     assert!(node.supports_action(crate::accesskit::Action::Increment));
     assert!(node.supports_action(crate::accesskit::Action::Decrement));
-    h.perform_a11y_action(grip, &crate::a11y::Action::Increment)
+    h.perform_a11y_action(grip, &tilo_ui_base::a11y::Action::Increment)
         .expect("the grip steps up");
     settle(&mut h, W, H);
     assert_eq!(detent(&h), Some(SheetDetent::Full));
     assert_eq!(grip_node(&h).1.value(), Some("Full height"));
     let (grip, _) = grip_node(&h);
-    h.perform_a11y_action(grip, &crate::a11y::Action::Decrement)
+    h.perform_a11y_action(grip, &tilo_ui_base::a11y::Action::Decrement)
         .expect("the grip steps down");
     settle(&mut h, W, H);
     assert_eq!(detent(&h), Some(SheetDetent::Half));
@@ -240,7 +240,7 @@ fn go_back(h: &mut Driver, input: BackInput) {
         }
         BackInput::Escape => h.key("Escape"),
         BackInput::Gesture => assert!(
-            h.nav_gesture(crate::gesture::NavDirection::Back),
+            h.nav_gesture(tilo_ui_base::gesture::NavDirection::Back),
             "the sheet takes the back gesture"
         ),
     }
@@ -249,7 +249,7 @@ fn go_back(h: &mut Driver, input: BackInput) {
 
 #[test]
 fn back_lowers_or_puts_the_sheet_away_before_it_goes_anywhere() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     for input in [BackInput::Bar, BackInput::Escape, BackInput::Gesture] {
         for (from, after) in [
             (SheetDetent::Full, Some(SheetDetent::Half)),
@@ -295,7 +295,7 @@ fn back_lowers_or_puts_the_sheet_away_before_it_goes_anywhere() {
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 #[test]
 fn the_sheet_stands_off_the_content_above_it_in_both_themes() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     for theme in [Theme::light(), Theme::dark()] {
         let shell = NavShell::new()
             .content(TestLeaf::fill("content").boxed().0)
@@ -314,7 +314,7 @@ fn the_sheet_stands_off_the_content_above_it_in_both_themes() {
                 damage_regions: &[],
                 scroll_copies: &[],
                 full_redraw: true,
-                backdrop: &crate::part_paint::backdrop::BackdropFrame::default(),
+                backdrop: &tilo_ui_base::part_paint::backdrop::BackdropFrame::default(),
             })
             .expect("the frame rasterizes");
         let px = canvas.pixels();

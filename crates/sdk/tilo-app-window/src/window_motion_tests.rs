@@ -5,8 +5,8 @@
 
 use super::*;
 use tilo_render_protocol::patch::{Patch, local};
+use tilo_ui_base::tokens::MotionSource;
 use ui::time::{Duration, Instant};
-use ui::tokens::MotionSource;
 use ui::widget::arrange::{Arranged, DrawnPart, FlexLayout};
 
 fn text(key: &str) -> UiNode {
@@ -48,7 +48,7 @@ fn shown(batch: &[ToUi]) -> (local::End, ui::headless::Driver) {
     let (mut app, end) = local::pair();
     let mut window = AppWindow::new(Box::new(end), Vec::new());
     send(&mut app, batch);
-    ui::motion::note_source(MotionSource::Pointer);
+    tilo_ui_base::motion::note_source(MotionSource::Pointer);
     window.receive();
     let mut harness = ui::headless::Driver::new(ui::State::new(), Box::new(window), (600, 800));
     harness.relayout();
@@ -63,8 +63,8 @@ fn change(
     source: MotionSource,
     patches: Vec<Patch>,
 ) -> Instant {
-    let _frame = ui::motion::testing::frozen();
-    ui::motion::note_source(source);
+    let _frame = tilo_ui_base::motion::testing::frozen();
+    tilo_ui_base::motion::note_source(source);
     send(
         app,
         &[ToUi::Patch {
@@ -79,12 +79,12 @@ fn change(
         .expect("the window")
         .receive();
     harness.relayout();
-    ui::motion::frame_now()
+    tilo_ui_base::motion::frame_now()
 }
 
 /// The list's parts as drawn at `at`, in order, then those fading out.
 fn drawn(harness: &ui::headless::Driver, at: Instant) -> Vec<DrawnPart> {
-    ui::widget::find_test_id(harness.root_widget(), "list")
+    tilo_ui_base::widget::find_test_id(harness.root_widget(), "list")
         .and_then(|list| list.as_any())
         .and_then(|any| any.downcast_ref::<Arranged<FlexLayout>>())
         .expect("the list is a stack")
@@ -177,10 +177,10 @@ fn a_change_by_hand_slides_what_stays_fades_in_what_arrives_and_fades_out_what_l
 #[test]
 fn a_window_resizing_moves_nothing_on_its_own() {
     let (_app, mut harness) = shown(&page(&["a", "b", "c"], None));
-    let _frame = ui::motion::testing::frozen();
-    ui::motion::note_source(MotionSource::Pointer);
+    let _frame = tilo_ui_base::motion::testing::frozen();
+    tilo_ui_base::motion::note_source(MotionSource::Pointer);
     harness.resize((900, 800)).expect("lays out");
-    let now = ui::motion::frame_now();
+    let now = tilo_ui_base::motion::frame_now();
     let resized = drawn(&harness, now);
     assert!(at_rest(&resized), "{resized:?}");
     assert!(

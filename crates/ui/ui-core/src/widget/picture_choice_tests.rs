@@ -1,7 +1,9 @@
 use super::*;
-use crate::synthetic_input::{cursor_moved, mouse_release, named_key};
 use crate::testing::dispatch;
 use automerge::AutoCommit;
+use tilo_ui_base::{
+    synthetic_input::cursor_moved, synthetic_input::mouse_release, synthetic_input::named_key,
+};
 
 fn sizes() -> Vec<PictureOption> {
     [
@@ -61,12 +63,12 @@ tilo_test_env::scenario! {
         let mut picker = laid_out(PictureChoice::new(sizes(), Some(0)), 720.0);
         let theme = Theme::light();
         let mut text = TextRenderer::new();
-        let presence = crate::presence::PresenceCtx::default();
-        picker.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+        let presence = tilo_ui_base::presence::PresenceCtx::default();
+        picker.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
         assert!(!picker.needs_animation_frame(), "the first look rests");
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         picker.set_selected(Some(2));
-        picker.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+        picker.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
         assert!(picker.needs_animation_frame(), "the edge slides rather than jumps");
     }
 
@@ -95,8 +97,8 @@ tilo_test_env::scenario! {
         assert!(Widget::perform_semantic_action(
             &mut picker,
             "text-size.0",
-            &crate::a11y::Action::Activate,
-            &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+            &tilo_ui_base::a11y::Action::Activate,
+            &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
             &automerge::ROOT,
         ));
         assert_eq!(picker.selected(), Some(0));
@@ -140,7 +142,7 @@ tilo_test_env::scenario! {
 
     phase a_choice_kept_in_view_state_follows_it_both_ways;
     {
-        let state = crate::LocalState::new("Default".to_owned());
+        let state = tilo_ui_base::LocalState::new("Default".to_owned());
         let choices = sizes()
             .into_iter()
             .map(|option| (option.label.clone(), option))

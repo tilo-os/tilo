@@ -11,16 +11,16 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
+use tilo_ui_base::{dnd::DRAG_START_THRESHOLD_PX, dnd::DragPayload};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::Rhythm;
 use crate::widget::arrange::{Align, Distribute, Grid, Row as FlexRow, Stack as FlexStack};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::Rhythm;
 
-use crate::component::PartViews;
-use crate::widget::DrawChild;
-use crate::widget::{Element, TaffyTreeExt, Widget};
+use tilo_ui_base::component::PartViews;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{widget::Element, widget::TaffyTreeExt, widget::Widget};
 
 /// Which way a run goes.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -30,7 +30,7 @@ pub enum RunAxis {
     Vertical,
 }
 
-crate::component::choice!(RunAxis, "Axis", { Horizontal => "horizontal", Vertical => "vertical" });
+tilo_ui_base::choice!(RunAxis, "Axis", { Horizontal => "horizontal", Vertical => "vertical" });
 
 impl RunAxis {
     fn along(self, point: Point) -> f64 {
@@ -55,21 +55,21 @@ pub enum RunGroup {
     Space,
 }
 
-crate::component::choice!(RunGroup, "RunGroup", {
+tilo_ui_base::choice!(RunGroup, "RunGroup", {
     Leading => "leading",
     Center => "center",
     Trailing => "trailing",
     Space => "space",
 });
 
-crate::component::choice!(crate::widget::arrange::Distribute, "Distribute", {
+tilo_ui_base::choice!(crate::widget::arrange::Distribute, "Distribute", {
     Start => "start",
     Center => "center",
     End => "end",
     Between => "between",
 });
 
-crate::component::choice!(crate::widget::arrange::Align, "Align", {
+tilo_ui_base::choice!(crate::widget::arrange::Align, "Align", {
     Start => "start",
     Center => "center",
     End => "end",
@@ -89,7 +89,7 @@ pub struct DragDrop {
 /// One item of a run.
 pub struct RunItem {
     pub key: String,
-    pub item: Option<crate::component::ResourceId>,
+    pub item: Option<tilo_ui_base::component::ResourceId>,
     pub label: String,
     pub view: Element,
     pub group: RunGroup,
@@ -107,7 +107,7 @@ impl std::fmt::Debug for RunItem {
 struct Keys {
     key: String,
     label: String,
-    item: Option<crate::component::ResourceId>,
+    item: Option<tilo_ui_base::component::ResourceId>,
     group: RunGroup,
 }
 
@@ -147,7 +147,7 @@ pub struct DragRun {
     drops: Vec<DragDrop>,
     reporter: Option<Box<dyn FnMut(&DragDrop)>>,
     activated: Option<Box<dyn FnMut(&str)>>,
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     editing: Option<usize>,
     dirty: bool,
 }
@@ -175,7 +175,7 @@ impl DragRun {
             drops: Vec::new(),
             reporter: None,
             activated: None,
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             editing: None,
             dirty: false,
         }
@@ -225,7 +225,7 @@ impl DragRun {
 
     /// Each item's key and the resource it stands for, when it is one.
     #[must_use]
-    pub fn item_ids(&self) -> Vec<(String, Option<crate::component::ResourceId>)> {
+    pub fn item_ids(&self) -> Vec<(String, Option<tilo_ui_base::component::ResourceId>)> {
         self.keys
             .iter()
             .map(|keys| (keys.key.clone(), keys.item.clone()))
@@ -529,7 +529,7 @@ impl DragRun {
                     let empty = held.is_empty() && !has_fixed;
                     groups.push((!held.is_empty()).then_some(held));
                     if empty {
-                        columns = columns.push(Box::new(crate::widget::Spacer::new()));
+                        columns = columns.push(Box::new(tilo_ui_base::widget::Spacer::new()));
                     } else {
                         columns = columns.push(row);
                     }
@@ -571,7 +571,7 @@ impl DragRun {
                                 .push_fit(view, crate::widget::arrange::Fit::fill(1.0))
                                 .push(Box::new(
                                     crate::widget::IconWidget::new(
-                                        crate::icons::Icon::GripVertical,
+                                        tilo_ui_base::icons::Icon::GripVertical,
                                     )
                                     .sized(crate::widget::IconSize::Small)
                                     .dim(),
@@ -912,13 +912,13 @@ pub const ITEM_PAYLOAD: &str = "drag-run-item";
 impl Widget for DragRun {
     fn update(
         &mut self,
-        _state: &crate::widget::AppModel,
-        _path: &crate::widget::ModelPath,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         self.report();
         if let Some(landed) = crate::widget::drag_bus::take(&self.id, self.extent()) {
             if let Some(landing) = self.target_at(landed.pointer, None)
-                && let crate::dnd::DragPayload::Custom { kind, blob } = landed.payload
+                && let tilo_ui_base::dnd::DragPayload::Custom { kind, blob } = landed.payload
                 && kind == ITEM_PAYLOAD
                 && let Ok(moved) = String::from_utf8(blob)
             {
@@ -979,7 +979,7 @@ impl Widget for DragRun {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -990,7 +990,7 @@ impl Widget for DragRun {
             let (raised, radius) = Self::list_ground(theme);
             let rect = self.get_rect();
             if rect.width() > 0.0 && rect.height() > 0.0 {
-                crate::surface::selectable_card(
+                tilo_ui_base::surface::selectable_card(
                     scene,
                     transform,
                     (rect, radius),
@@ -1019,7 +1019,7 @@ impl Widget for DragRun {
         self.lift.is_some()
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = ctx.logical(position);
@@ -1109,8 +1109,8 @@ impl Widget for DragRun {
             .is_none_or(|items| Widget::is_layout_dirty(&**items))
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         self.name
             .as_ref()
             .map(|name| AccessNode::new(Role::Group).with_optional_name(Some(name.clone())))
@@ -1151,7 +1151,7 @@ impl Widget for DragRun {
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.interaction = environment;
         if let Some(items) = self.items.as_mut() {
@@ -1178,8 +1178,8 @@ impl PartViews for DragRun {
     }
 
     fn remove(&mut self, _index: usize) {
-        self.put_item_view(Box::new(crate::widget::Spacer::token(
-            crate::tokens::SpacingStep::S0,
+        self.put_item_view(Box::new(tilo_ui_base::widget::Spacer::token(
+            tilo_ui_base::tokens::SpacingStep::S0,
         )));
     }
 
@@ -1193,7 +1193,8 @@ impl PartViews for DragRun {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::{Container, Spacer};
+    use crate::widget::Container;
+    use tilo_ui_base::widget::Spacer;
 
     fn item(key: &str, width: f32) -> RunItem {
         RunItem {
@@ -1329,8 +1330,8 @@ mod tests {
                 .into_iter()
                 .enumerate()
             {
-                let mut button =
-                    Button::icon_only(key, crate::icons::Icon::Bell, key).role(ButtonRole::Plain);
+                let mut button = Button::icon_only(key, tilo_ui_base::icons::Icon::Bell, key)
+                    .role(ButtonRole::Plain);
                 if index == 2 {
                     button = button.with_count(BadgeContent::Count(12), ChipStyle::default());
                 }
@@ -1345,7 +1346,8 @@ mod tests {
             let mut running = FlexRow::row().gap(Rhythm::Sibling);
             for key in ["chat", "notes"] {
                 running = running.push(Box::new(
-                    Button::icon_only(key, crate::icons::Icon::Bell, key).role(ButtonRole::Plain),
+                    Button::icon_only(key, tilo_ui_base::icons::Icon::Bell, key)
+                        .role(ButtonRole::Plain),
                 ));
             }
             Box::new(

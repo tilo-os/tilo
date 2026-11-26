@@ -3,10 +3,10 @@ struct OwnershipCapturePeer {
     inner: CapturePeer,
     ownership: Option<runtime_collab::committed_document::ConnectionSnapshot>,
 }
-impl crate::collaboration::PeerTransport for OwnershipCapturePeer {
+impl tilo_ui_base::collaboration::PeerTransport for OwnershipCapturePeer {
     fn connection_snapshot(
         &self,
-        _: &crate::collaboration::RouteSpec,
+        _: &tilo_ui_base::collaboration::RouteSpec,
     ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
         self.ownership.clone()
     }
@@ -14,22 +14,22 @@ impl crate::collaboration::PeerTransport for OwnershipCapturePeer {
         true
     }
     fn send(&mut self, request: CollabRequest) -> Result<(), String> {
-        crate::collaboration::PeerTransport::send(&mut self.inner, request)
+        tilo_ui_base::collaboration::PeerTransport::send(&mut self.inner, request)
     }
     fn poll(&mut self) -> Vec<CollabEvent> {
         Vec::new()
     }
     fn send_to_route(
         &mut self,
-        route: crate::collaboration::RouteSpec,
+        route: tilo_ui_base::collaboration::RouteSpec,
         request: CollabRequest,
     ) -> Result<(), String> {
-        crate::collaboration::PeerTransport::send_to_route(&mut self.inner, route, request)
+        tilo_ui_base::collaboration::PeerTransport::send_to_route(&mut self.inner, route, request)
     }
 }
-struct CapturePeer(Rc<RefCell<Vec<(crate::collaboration::RouteSpec, CollabRequest)>>>);
+struct CapturePeer(Rc<RefCell<Vec<(tilo_ui_base::collaboration::RouteSpec, CollabRequest)>>>);
 fn capture_ownership(
-    route: &crate::collaboration::RouteSpec,
+    route: &tilo_ui_base::collaboration::RouteSpec,
 ) -> runtime_collab::committed_document::ConnectionSnapshot {
     runtime_collab::committed_document::ConnectionSnapshot {
         root: [1; 32],
@@ -40,10 +40,10 @@ fn capture_ownership(
         document: route.document.clone().unwrap_or_default(),
     }
 }
-impl crate::collaboration::PeerTransport for CapturePeer {
+impl tilo_ui_base::collaboration::PeerTransport for CapturePeer {
     fn connection_snapshot(
         &self,
-        route: &crate::collaboration::RouteSpec,
+        route: &tilo_ui_base::collaboration::RouteSpec,
     ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
         Some(capture_ownership(route))
     }
@@ -58,7 +58,7 @@ impl crate::collaboration::PeerTransport for CapturePeer {
     }
     fn join_route(
         &mut self,
-        _: crate::collaboration::RouteSpec,
+        _: tilo_ui_base::collaboration::RouteSpec,
         _: crate::resource::ResourceType,
     ) -> Result<(), String> {
         Ok(())
@@ -68,7 +68,7 @@ impl crate::collaboration::PeerTransport for CapturePeer {
     }
     fn send_to_route(
         &mut self,
-        route: crate::collaboration::RouteSpec,
+        route: tilo_ui_base::collaboration::RouteSpec,
         request: CollabRequest,
     ) -> Result<(), String> {
         self.0.borrow_mut().push((route, request));
@@ -310,7 +310,7 @@ tilo_test_env::scenario! {
 /// person editing it.
 fn capturing_fixture() -> (
     ActionFixture,
-    Rc<RefCell<Vec<(crate::collaboration::RouteSpec, CollabRequest)>>>,
+    Rc<RefCell<Vec<(tilo_ui_base::collaboration::RouteSpec, CollabRequest)>>>,
 ) {
     let mut fixture = ActionFixture::broker();
     let sent = Rc::new(RefCell::new(Vec::new()));
@@ -333,7 +333,7 @@ fn capture_address(fixture: &mut ActionFixture) -> tilo_actions::ActionAddress {
 }
 
 fn capture_reports(
-    sent: &Rc<RefCell<Vec<(crate::collaboration::RouteSpec, CollabRequest)>>>,
+    sent: &Rc<RefCell<Vec<(tilo_ui_base::collaboration::RouteSpec, CollabRequest)>>>,
 ) -> Vec<(u64, runtime_collab::LocalDocumentActionReport)> {
     sent.borrow()
         .iter()
@@ -442,14 +442,14 @@ fn definitive_local_capture_failures_release_pins_and_editing_recovers() {
 }
 
 struct RecoveringCapturePeer {
-    sent: Rc<RefCell<Vec<(crate::collaboration::RouteSpec, CollabRequest)>>>,
+    sent: Rc<RefCell<Vec<(tilo_ui_base::collaboration::RouteSpec, CollabRequest)>>>,
     connected: Rc<std::cell::Cell<bool>>,
     reject_enqueue: Rc<std::cell::Cell<bool>>,
 }
-impl crate::collaboration::PeerTransport for RecoveringCapturePeer {
+impl tilo_ui_base::collaboration::PeerTransport for RecoveringCapturePeer {
     fn connection_snapshot(
         &self,
-        route: &crate::collaboration::RouteSpec,
+        route: &tilo_ui_base::collaboration::RouteSpec,
     ) -> Option<runtime_collab::committed_document::ConnectionSnapshot> {
         Some(capture_ownership(route))
     }
@@ -464,7 +464,7 @@ impl crate::collaboration::PeerTransport for RecoveringCapturePeer {
     }
     fn join_route(
         &mut self,
-        _: crate::collaboration::RouteSpec,
+        _: tilo_ui_base::collaboration::RouteSpec,
         _: crate::resource::ResourceType,
     ) -> Result<(), String> {
         Ok(())
@@ -474,7 +474,7 @@ impl crate::collaboration::PeerTransport for RecoveringCapturePeer {
     }
     fn send_to_route(
         &mut self,
-        route: crate::collaboration::RouteSpec,
+        route: tilo_ui_base::collaboration::RouteSpec,
         request: CollabRequest,
     ) -> Result<(), String> {
         self.sent.borrow_mut().push((route, request));
@@ -948,7 +948,10 @@ fn a_change_that_cannot_be_saved_says_so_and_can_be_retried() {
         });
     assert_eq!(
         fixture.app.document_sync_status().as_deref(),
-        Some(crate::i18n::I18nManager::lookup_plain("history-local-action-not-saved").as_str())
+        Some(
+            tilo_ui_base::i18n::I18nManager::lookup_plain("history-local-action-not-saved")
+                .as_str()
+        )
     );
     assert!(fixture.app.has_unsaved_changes_to_retry());
     // The header shows Retry beside the message: the window's own action.
@@ -956,7 +959,7 @@ fn a_change_that_cannot_be_saved_says_so_and_can_be_retried() {
     let retry = status.action.expect("with Retry beside it");
     assert_eq!(
         retry.label,
-        crate::i18n::I18nManager::lookup_plain("history-local-action-retry")
+        tilo_ui_base::i18n::I18nManager::lookup_plain("history-local-action-retry")
     );
     fixture
         .app
@@ -1020,7 +1023,8 @@ fn the_header_retry_button_runs_the_windows_retry() {
 /// edit lands at once.
 #[test]
 fn edits_on_a_connection_that_admits_no_reports_land_and_say_history_misses_them() {
-    let unrecorded = crate::i18n::I18nManager::lookup_plain("history-local-action-unrecorded");
+    let unrecorded =
+        tilo_ui_base::i18n::I18nManager::lookup_plain("history-local-action-unrecorded");
     let (mut fixture, sent) = capturing_fixture();
     let address = capture_address(&mut fixture);
     let heads = |fixture: &ActionFixture| {
@@ -1087,10 +1091,11 @@ fn a_local_report_follows_the_executed_child_owner_and_never_another_connection(
     fixture.app.collaboration.manager =
         CollaborationManager::with_peer_transport(CapturePeer(sent.clone()));
     fixture.app.local_author = fixture.bindings[0].author.clone();
-    fixture.app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
-        route: fixture.bindings[0].broker_route().unwrap(),
-        epoch: uuid::Uuid::new_v4(),
-    });
+    fixture.app.actions.bound_broker_route_for_test =
+        Some(tilo_ui_base::collaboration::AcceptedRoute {
+            route: fixture.bindings[0].broker_route().unwrap(),
+            epoch: uuid::Uuid::new_v4(),
+        });
     for binding in &fixture.bindings {
         fixture
             .app

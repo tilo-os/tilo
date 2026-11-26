@@ -27,15 +27,15 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
 use tilo_ui::State;
-use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
-use tilo_ui::widget::Widget;
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 
-use tilo_ui::tokens::TextRole;
 use tilo_ui::widget::{Column, Container, Divider, Row, Text};
-use tilo_ui::{
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{
     FontChoice, HangingPunctuation, NumericStyle, OpenTypeTag, OpticalSizing, ParagraphAlign,
 };
 
@@ -123,7 +123,7 @@ fn lay_out(case: Case) -> Laid {
     let state = State::new();
     widget.sync(&state.doc, &state.root);
 
-    let mut text_renderer = tilo_ui::font_catalog::fixture_renderer();
+    let mut text_renderer = tilo_ui_base::font_catalog::fixture_renderer();
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = widget.build_layout(&mut taffy, &theme, &mut node_map);
@@ -189,7 +189,7 @@ fn render(case: Case) -> Frame {
         height,
     } = lay_out(case);
     let mut scene = Scene::new();
-    widget.draw(&mut tilo_ui::draw::DrawCtx::new(
+    widget.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::scale(case.display_scale),
         &mut text_renderer,
@@ -278,7 +278,7 @@ fn record_evidence(case: Case, frame: &Frame) {
         "display_scale": case.display_scale,
         "text_scale": case.text_scale,
         "light": case.light,
-        "font_manifest_sha256": tilo_ui::font_catalog::catalog_manifest_sha256(),
+        "font_manifest_sha256": tilo_ui_base::font_catalog::catalog_manifest_sha256(),
         "font_scope": "controlled-product-and-fixtures",
         "font_locale": "en-US",
         "os": std::env::consts::OS,
@@ -297,7 +297,7 @@ fn record_evidence(case: Case, frame: &Frame) {
 
 #[test]
 fn multilingual_gallery_matches_scale_matrix() {
-    tilo_ui::i18n::I18nManager::init("en-US");
+    tilo_ui_base::i18n::I18nManager::init("en-US");
     let diagnostics =
         PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("typography-visual-regression");
     let update = std::env::var_os("UPDATE_TYPOGRAPHY_BASELINES").is_some();

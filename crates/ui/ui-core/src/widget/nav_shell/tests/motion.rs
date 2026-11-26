@@ -2,7 +2,7 @@
 //! slides, a key, an agent or a still theme lands at once.
 
 use super::*;
-use crate::tokens::MotionSource;
+use tilo_ui_base::tokens::MotionSource;
 
 fn still() -> Theme {
     let mut theme = Theme::dark();
@@ -55,14 +55,14 @@ fn a_push_slides_for_a_click_or_a_tap_and_lands_for_anything_else() {
         (MotionSource::Action, false),
     ] {
         let moving = slides_after_push(|shell| {
-            crate::motion::note_source(source);
+            tilo_ui_base::motion::note_source(source);
             shell.show(NavPane::Content);
         });
         assert_eq!(moving, slides, "a push after {source:?}");
     }
     assert!(
         !slides_after_push(|shell| {
-            crate::motion::note_source(MotionSource::Pointer);
+            tilo_ui_base::motion::note_source(MotionSource::Pointer);
             shell.show_from(NavPane::Content, MotionSource::Action);
         }),
         "an agent's open lands at once right after a click elsewhere"
@@ -103,8 +103,10 @@ fn reduced_motion_lands_the_sidebar_and_a_switched_layout_at_once() {
     let mut h = harness(shell, 1280, 700, still());
     settle(&mut h, 1280, 700);
     let point = geometry(&h).content_column.center();
-    h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
-    h.dispatch_to_root(&crate::synthetic_input::mouse_press());
+    h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(
+        point.x, point.y,
+    ));
+    h.dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_press());
     h.relayout_at((400, 700)).expect("narrow");
     let shell = h.root::<NavShell>();
     assert_eq!(

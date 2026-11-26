@@ -1,10 +1,10 @@
 //! `Section`: a titled group of content on the ground, separated from the next group by space,
 //! never boxed.
 
-use crate::widget::DrawChild;
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::widget::DrawChild;
 
 #[cfg(test)]
 use automerge::AutoCommit;
@@ -15,20 +15,25 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use super::composition_parts::Parts;
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::chrome::{RowJoin, SelectionState, paint_row_selection, row_bleed};
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
 use crate::pointer_replay::{PressAt, Release};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::widget::composition_parts::Parts;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use tilo_ui_base::{
+    chrome::RowJoin, chrome::SelectionState, chrome::paint_row_selection, chrome::row_bleed,
+};
 
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::list_row::RowStatus;
-use crate::widget::{
-    AvatarFace, Button, ButtonFace, ButtonRole, ControlSize, Element, Interaction, TaffyTreeExt,
-    Text, Tone, Widget,
+use crate::{
+    widget::Button, widget::ButtonFace, widget::ButtonRole, widget::ControlSize,
+    widget::Interaction, widget::Text,
+};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::{
+    widget::AvatarFace, widget::Element, widget::TaffyTreeExt, widget::Tone, widget::Widget,
 };
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -112,7 +117,7 @@ impl HeaderMetrics {
 /// tier.
 fn paint_count(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str) {
     let theme = ctx.theme;
-    crate::surface::card(
+    tilo_ui_base::surface::card(
         ctx.scene,
         ctx.transform,
         rect,
@@ -365,8 +370,12 @@ impl<'a> SectionHeaderFace<'a> {
         let style = theme.text(self.level.role());
         let spare = (width - self.trailing_width(text, theme, &m)).max(1.0);
         let title_h = f64::from(
-            text.measure_style(self.title, Some(crate::num::f32_of_f64(spare)), &style)
-                .1,
+            text.measure_style(
+                self.title,
+                Some(tilo_ui_base::num::f32_of_f64(spare)),
+                &style,
+            )
+            .1,
         );
         let line = f64::from(style.line_height_px());
         title_h.max(m.height(line))
@@ -422,7 +431,7 @@ impl<'a> SectionHeaderFace<'a> {
         let m = HeaderMetrics::new(theme);
         let style = theme.text(self.level.role());
         let spare = (rect.width() - self.trailing_width(ctx.text, theme, &m)).max(1.0);
-        let wrap = crate::num::f32_of_f64(spare);
+        let wrap = tilo_ui_base::num::f32_of_f64(spare);
         let (title_w, title_h) = ctx.text.measure_style(self.title, Some(wrap), &style);
         let first_line = f64::from(style.line_height_px());
         let header_h = m.height(first_line);
@@ -545,14 +554,14 @@ impl Widget for CountPill {
         };
         let (w, h) = metrics.count_size(text, &self.label);
         taffy::Size {
-            width: crate::num::f32_of_f64(w),
-            height: crate::num::f32_of_f64(h),
+            width: tilo_ui_base::num::f32_of_f64(w),
+            height: tilo_ui_base::num::f32_of_f64(h),
         }
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -618,9 +627,9 @@ impl Widget for Chevron {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -715,7 +724,11 @@ impl HeaderRow {
 }
 
 impl Widget for HeaderRow {
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let mut changed = false;
         for child in &mut self.parts.children {
             changed |= child.update(state, path);
@@ -723,7 +736,11 @@ impl Widget for HeaderRow {
         changed
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         for child in &mut self.parts.children {
             child.sync(state, path);
         }
@@ -828,7 +845,7 @@ impl Widget for HeaderRow {
                 },
                 min_size: Size {
                     width: auto(),
-                    height: length(crate::num::f32_of_f64(
+                    height: length(tilo_ui_base::num::f32_of_f64(
                         m.height(f64::from(theme.text(self.level.role()).line_height_px())),
                     )),
                 },
@@ -893,13 +910,18 @@ impl Widget for HeaderRow {
         node
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let held = self
             .parts
             .children
             .iter()
-            .any(|child| crate::widget::holds_pointer(child.as_ref()));
-        crate::widget::route_to_children(&mut self.parts.children, &self.parts.nodes, event, ctx);
+            .any(|child| tilo_ui_base::widget::holds_pointer(child.as_ref()));
+        tilo_ui_base::widget::route_to_children(
+            &mut self.parts.children,
+            &self.parts.nodes,
+            event,
+            ctx,
+        );
         if *ctx.handled || held {
             return;
         }
@@ -961,7 +983,7 @@ impl Widget for HeaderRow {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -991,7 +1013,7 @@ impl Widget for HeaderRow {
                 );
             }
         }
-        self.parts.draw(&mut crate::draw::DrawCtx::new(
+        self.parts.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -1023,12 +1045,12 @@ impl Widget for HeaderRow {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _root: &crate::widget::ModelPath,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _root: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         let Some(disclosure) = &mut self.disclosure else {
             return false;
         };
@@ -1083,11 +1105,11 @@ pub struct Section {
     /// The space laid out above each item: where a band on its way stands,
     /// and how far what follows it moves (`widget::Disclosing`).
     gaps: Vec<f64>,
-    ghosts: crate::widget::Ghosts,
-    motion: crate::tokens::EffectiveMotion,
-    feel: crate::motion::Feel,
+    ghosts: tilo_ui_base::widget::Ghosts,
+    motion: tilo_ui_base::tokens::EffectiveMotion,
+    feel: tilo_ui_base::motion::Feel,
     pointer: Option<Rc<Cell<bool>>>,
-    structure: crate::widget::StructureChange,
+    structure: tilo_ui_base::widget::StructureChange,
 }
 
 impl Section {
@@ -1101,23 +1123,23 @@ impl Section {
             labels: crate::widget::property_list::PropertyColumn::new(),
             choosers: crate::widget::dropdown::ChooserColumn::default(),
             gaps: Vec::new(),
-            ghosts: crate::widget::Ghosts::default(),
-            motion: crate::tokens::EffectiveMotion::default(),
-            feel: crate::motion::Feel::Standard,
+            ghosts: tilo_ui_base::widget::Ghosts::default(),
+            motion: tilo_ui_base::tokens::EffectiveMotion::default(),
+            feel: tilo_ui_base::motion::Feel::Standard,
             pointer: None,
-            structure: crate::widget::StructureChange::None,
+            structure: tilo_ui_base::widget::StructureChange::None,
         }
     }
 
     /// Play its content arriving and leaving at `feel` rather than the theme's pace.
     #[must_use]
-    pub fn with_feel(mut self, feel: crate::motion::Feel) -> Self {
+    pub fn with_feel(mut self, feel: tilo_ui_base::motion::Feel) -> Self {
         self.feel = feel;
         self
     }
 
     /// [`Self::with_feel`] on a section already built.
-    pub fn set_feel(&mut self, feel: crate::motion::Feel) {
+    pub fn set_feel(&mut self, feel: tilo_ui_base::motion::Feel) {
         self.feel = feel;
     }
 
@@ -1135,7 +1157,7 @@ impl Section {
     fn follower_shifts(&self) -> Option<Vec<f64>> {
         let gaps = &self.gaps;
         let shown = self.shown();
-        let shifts = crate::widget::follower_shifts(
+        let shifts = tilo_ui_base::widget::follower_shifts(
             self.parts.children.iter().take(shown).map(|child| &**child),
             |index| gaps.get(index).copied().unwrap_or(0.0),
         );
@@ -1280,7 +1302,11 @@ impl Section {
 }
 
 impl Widget for Section {
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let mut changed = false;
         for child in &mut self.parts.children {
             changed |= child.update(state, path);
@@ -1288,7 +1314,11 @@ impl Widget for Section {
         changed
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         for child in &mut self.parts.children {
             child.sync(state, path);
         }
@@ -1347,7 +1377,7 @@ impl Widget for Section {
         dirty
     }
 
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         let mut change = std::mem::take(&mut self.structure);
         for child in &mut self.parts.children {
             change = change.join(child.take_structure_change());
@@ -1435,7 +1465,7 @@ impl Widget for Section {
         self.parts.apply_layout(taffy, node, origin);
         let shown = self.shown();
         let gaps = &self.gaps;
-        crate::widget::place_bands(
+        tilo_ui_base::widget::place_bands(
             self.parts.children.iter_mut().take(shown),
             self.parts.rect,
             |index| gaps.get(index).copied().unwrap_or(0.0),
@@ -1453,7 +1483,7 @@ impl Widget for Section {
         );
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1482,18 +1512,20 @@ impl Widget for Section {
 
     fn needs_animation_frame(&self) -> bool {
         !self.ghosts.is_empty()
-            || crate::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
+                self.for_each_child(visit)
+            })
     }
 
     fn needs_redraw(&self) -> bool {
         !self.ghosts.is_empty()
-            || crate::widget::defaults::needs_redraw(&|visit| self.for_each_child(visit))
+            || tilo_ui_base::widget::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
-    fn disclosing(&self) -> Option<crate::widget::Disclosing> {
+    fn disclosing(&self) -> Option<tilo_ui_base::widget::Disclosing> {
         let shifts = self.follower_shifts()?;
         let gaps = &self.gaps;
-        Some(crate::widget::Disclosing::of_column(
+        Some(tilo_ui_base::widget::Disclosing::of_column(
             &shifts,
             self.parts
                 .children
@@ -1504,7 +1536,7 @@ impl Widget for Section {
         ))
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let Some(over) = &self.pointer {
             match event {
                 WindowEvent::CursorMoved { position, .. } => {
@@ -1517,7 +1549,7 @@ impl Widget for Section {
         let shown = self.shown();
         if let Some(shifts) = self.follower_shifts() {
             let shown = shown.min(self.parts.nodes.len());
-            crate::widget::route_to_shifted_children(
+            tilo_ui_base::widget::route_to_shifted_children(
                 &mut self.parts.children[..shown],
                 &self.parts.nodes[..shown],
                 Some(&shifts),
@@ -1529,7 +1561,7 @@ impl Widget for Section {
         let shown = shown
             .min(self.parts.nodes.len())
             .min(self.parts.children.len());
-        crate::widget::route_to_children(
+        tilo_ui_base::widget::route_to_children(
             &mut self.parts.children[..shown],
             &self.parts.nodes[..shown],
             event,
@@ -1760,7 +1792,7 @@ impl StatusLine {
         Self::with(RowStatus::Idle, text)
     }
 
-    pub fn presence(person: &crate::component::Person, text: impl Into<String>) -> Self {
+    pub fn presence(person: &tilo_ui_base::component::Person, text: impl Into<String>) -> Self {
         Self::with(RowStatus::Presence(person.hue), text)
     }
 
@@ -1784,7 +1816,7 @@ impl StatusLine {
 }
 
 impl Widget for StatusLine {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -1824,20 +1856,24 @@ impl Widget for StatusLine {
             _ => f32::INFINITY,
         });
         let spare = (f64::from(width) - self.dot - self.gap).max(1.0);
-        let (w, h) = text.measure_style(&self.text, Some(crate::num::f32_of_f64(spare)), style);
+        let (w, h) = text.measure_style(
+            &self.text,
+            Some(tilo_ui_base::num::f32_of_f64(spare)),
+            style,
+        );
         taffy::Size {
             width: if width.is_finite() {
                 width
             } else {
-                crate::num::f32_of_f64(f64::from(w) + self.dot + self.gap)
+                tilo_ui_base::num::f32_of_f64(f64::from(w) + self.dot + self.gap)
             },
             height: h,
         }
     }
 
-    crate::rect_geometry!(measured);
+    tilo_ui_base::rect_geometry!(measured);
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1864,16 +1900,16 @@ impl Widget for StatusLine {
             &style,
             theme.text_dim,
             Point::new(x, self.rect.y0),
-            Some(crate::num::f32_of_f64((self.rect.x1 - x).max(1.0))),
+            Some(tilo_ui_base::num::f32_of_f64((self.rect.x1 - x).max(1.0))),
         );
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -1932,7 +1968,7 @@ impl ObjectMetrics {
             caption: theme.text(TextRole::Caption),
             tight: f64::from(theme.tokens.spacing.rhythm.tight),
             gap: f64::from(theme.tokens.spacing.rhythm.sibling),
-            lead: crate::widget::AvatarSize::Large.side(theme),
+            lead: tilo_ui_base::widget::AvatarSize::Large.side(theme),
         }
     }
 }
@@ -2006,7 +2042,7 @@ impl ObjectHeader {
     }
 
     fn block(&self, text: &mut TextRenderer, m: &ObjectMetrics, width: f64) -> (f64, f64) {
-        let spare = crate::num::f32_of_f64((width - self.text_x(m)).max(1.0));
+        let spare = tilo_ui_base::num::f32_of_f64((width - self.text_x(m)).max(1.0));
         let title = f64::from(text.measure_style(&self.title, Some(spare), &m.title).1);
         let caption = self.caption.as_ref().map_or(0.0, |caption| {
             m.tight + f64::from(text.measure_style(caption, Some(spare), &m.caption).1)
@@ -2016,7 +2052,7 @@ impl ObjectHeader {
 }
 
 impl Widget for ObjectHeader {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -2057,13 +2093,13 @@ impl Widget for ObjectHeader {
         let lead = if self.lead.is_some() { m.lead } else { 0.0 };
         taffy::Size {
             width,
-            height: crate::num::f32_of_f64((title + caption).max(lead).ceil()),
+            height: tilo_ui_base::num::f32_of_f64((title + caption).max(lead).ceil()),
         }
     }
 
-    crate::rect_geometry!(measured);
+    tilo_ui_base::rect_geometry!(measured);
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2109,7 +2145,7 @@ impl Widget for ObjectHeader {
             None => {}
         }
         let x = rect.x0 + self.text_x(&m);
-        let spare = crate::num::f32_of_f64((rect.x1 - x).max(1.0));
+        let spare = tilo_ui_base::num::f32_of_f64((rect.x1 - x).max(1.0));
         ctx.text(
             &self.title,
             &m.title,
@@ -2128,7 +2164,7 @@ impl Widget for ObjectHeader {
         }
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 
     fn name(&self) -> &'static str {
         "ObjectHeader"

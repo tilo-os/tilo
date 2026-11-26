@@ -6,11 +6,14 @@ use vello::kurbo::{Point, Rect, Vec2};
 
 use super::emoji_row::{EmojiRow, ROW_SHARE};
 use super::{CAPTION_ROW_SHARE, MenuItem, SEPARATOR_HEIGHT, label_inset};
-use crate::icons::{AppImage, Icon, LUCIDE_DEFAULT_STROKE_PX, draw_app_image, draw_icon};
-use crate::paint::PaintCtx;
-use crate::tokens::TextRole;
 use crate::widget::floating_list::{FloatingMetrics, FloatingRow, RowState};
 use crate::widget::floating_surface;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{
+    icons::AppImage, icons::Icon, icons::LUCIDE_DEFAULT_STROKE_PX, icons::draw_app_image,
+    icons::draw_icon,
+};
 
 /// One row of a menu, in the order the menu shows it.
 #[derive(Clone)]
@@ -127,14 +130,14 @@ impl FloatingRow for MenuRow {
             }
             MenuItem::Emoji(emoji) => paint_emoji(ctx, row, &state, emoji),
             MenuItem::Separator => {
-                crate::surface::separator(
+                tilo_ui_base::surface::separator(
                     ctx.scene,
                     ctx.transform,
                     row.x0,
                     row.x1,
                     row.center().y,
                     inset,
-                    crate::chrome::panel_ground(ctx.theme),
+                    tilo_ui_base::chrome::panel_ground(ctx.theme),
                 );
             }
         }
@@ -160,7 +163,7 @@ fn paint_action(
     state: &RowState<'_, MenuColumns>,
     action: Action<'_>,
     label: &str,
-    sample: Option<&crate::text_render::FontChoice>,
+    sample: Option<&tilo_ui_base::text_render::FontChoice>,
     (trailing, trailing_width): (Option<&str>, f64),
     (content_x0, content_x1): (f64, f64),
 ) {
@@ -173,7 +176,7 @@ fn paint_action(
         submenu,
     } = action;
     let theme = ctx.theme;
-    let ground = crate::chrome::panel_ground(theme);
+    let ground = tilo_ui_base::chrome::panel_ground(theme);
     let colors = &theme.tokens.colors;
     // The row a press or Enter takes, and the row whose nested menu is open,
     // lift as every menu paints it (`floating_surface::armed_row`).
@@ -193,7 +196,10 @@ fn paint_action(
     });
     let ink = if !enabled {
         colors
-            .on_surface_at(ground, crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
+            .on_surface_at(
+                ground,
+                tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+            )
             .ink_dim
     } else if let Some(ink) = armed_ink {
         ink
@@ -201,7 +207,7 @@ fn paint_action(
         colors.ink_on_any(
             &[ground],
             colors.semantic.danger,
-            crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+            tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
         )
     } else {
         colors.text_primary
@@ -240,7 +246,7 @@ fn paint_action(
     };
     let shown = ctx.text.elide_to_width_style(
         label,
-        crate::num::f32_of_f64((content_x1 - trailing_width - label_x).max(1.0)),
+        tilo_ui_base::num::f32_of_f64((content_x1 - trailing_width - label_x).max(1.0)),
         &style,
     );
     let (_, label_height) = ctx.text.measure_style(&shown, None, &style);
@@ -272,7 +278,10 @@ fn paint_action(
             ink
         } else {
             colors
-                .on_surface_at(ground, crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
+                .on_surface_at(
+                    ground,
+                    tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+                )
                 .ink_dim
         };
         ctx.text.draw_style(
@@ -296,11 +305,14 @@ fn paint_caption(
     (content_x0, content_x1): (f64, f64),
 ) {
     let theme = ctx.theme;
-    let ground = crate::chrome::panel_ground(theme);
+    let ground = tilo_ui_base::chrome::panel_ground(theme);
     let ink = theme
         .tokens
         .colors
-        .on_surface_at(ground, crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
+        .on_surface_at(
+            ground,
+            tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+        )
         .ink_dim;
     let text_x = if state.columns.gutter {
         content_x0 + f64::from(theme.tokens.metrics.icon_sm) + f64::from(theme.tokens.spacing.s2)
@@ -310,7 +322,7 @@ fn paint_caption(
     let caption = theme.text(TextRole::Caption);
     let shown = ctx.text.elide_to_width_style(
         text,
-        crate::num::f32_of_f64((content_x1 - text_x).max(1.0)),
+        tilo_ui_base::num::f32_of_f64((content_x1 - text_x).max(1.0)),
         &caption,
     );
     let (_, height) = ctx.text.measure_style(&shown, None, &caption);

@@ -2,7 +2,7 @@
 //! selection, and Escape letting go of what was typed.
 
 use super::TextInput;
-use crate::widget::ActionEmitter;
+use tilo_ui_base::widget::ActionEmitter;
 
 impl TextInput {
     /// Run `callback` with the text when the person presses Enter: the
@@ -40,13 +40,13 @@ impl TextInput {
     /// the run someone chose (a message answered on just those words); a field being typed in
     /// keeps its selection private unless it is given one too.
     #[must_use]
-    pub fn with_selection_event(mut self, event: crate::component::Event) -> Self {
+    pub fn with_selection_event(mut self, event: tilo_ui_base::component::Event) -> Self {
         self.selection_event = Some(event);
         self
     }
 
     /// Tell `event` when Escape lets go of what is being typed: the field clears first.
-    pub fn set_cancel_event(&mut self, event: crate::component::Event) {
+    pub fn set_cancel_event(&mut self, event: tilo_ui_base::component::Event) {
         self.cancel_event = event;
     }
 
@@ -61,25 +61,25 @@ impl TextInput {
         true
     }
 
-    pub fn set_selection_event(&mut self, event: crate::component::Event) {
+    pub fn set_selection_event(&mut self, event: tilo_ui_base::component::Event) {
         self.selection_event = Some(event);
     }
 
     /// Tell `event` when the field's text goes from empty to non-empty, carrying what it holds
     /// now: the first change, which makes the item a list's entry names.
-    pub fn set_begin_event(&mut self, event: crate::component::Event) {
+    pub fn set_begin_event(&mut self, event: tilo_ui_base::component::Event) {
         self.begin_event = event;
     }
 
     /// Tell `event` whenever the field's text changes as the person types, carrying what it holds
     /// now: what acts on the words while they are being typed, as a window's search does.
-    pub fn set_changed_event(&mut self, event: crate::component::Event) {
+    pub fn set_changed_event(&mut self, event: tilo_ui_base::component::Event) {
         self.changed_event = event;
     }
 
     /// Tell `event` when the field loses the keyboard: an entry left empty is taken away by what
     /// listens, so no empty item is left behind.
-    pub fn set_blur_event(&mut self, event: crate::component::Event) {
+    pub fn set_blur_event(&mut self, event: tilo_ui_base::component::Event) {
         self.blur_event = event;
     }
 
@@ -92,9 +92,9 @@ impl TextInput {
             .selection_range_public()
             .map(|(start, end)| {
                 let (start, end) = (start.min(end), start.max(end));
-                crate::component::Value::Text(format!("{start}:{end}"))
+                tilo_ui_base::component::Value::Text(format!("{start}:{end}"))
             })
-            .unwrap_or_else(|| crate::component::Value::Text(String::new()));
+            .unwrap_or_else(|| tilo_ui_base::component::Value::Text(String::new()));
         event.fire(Some(value));
     }
 

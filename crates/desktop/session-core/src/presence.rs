@@ -9,9 +9,11 @@
 use collab_types::MemberId;
 use collab_types::presence::Shown;
 use tilo_live::presence::{KEEPALIVE_MS, Tile, tile};
-use ui::presence::{CursorChats, PeerCursor, PlacedPointer, PresenceCtx};
+use tilo_ui_base::tokens::EffectiveMotion;
+use tilo_ui_base::{
+    presence::CursorChats, presence::PeerCursor, presence::PlacedPointer, presence::PresenceCtx,
+};
 use ui::time::Instant;
-use ui::tokens::EffectiveMotion;
 
 use crate::layout::Busy;
 
@@ -409,7 +411,10 @@ mod tests {
             EffectiveMotion::default(),
         )
         .drawn;
-        assert_eq!(unnamed[0].label, ui::presence::unnamed_person_label());
+        assert_eq!(
+            unnamed[0].label,
+            tilo_ui_base::presence::unnamed_person_label()
+        );
     }
 
     /// A pointer is drawn where the tile it is over stands, under the name presence knows the

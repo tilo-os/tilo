@@ -2578,14 +2578,14 @@ impl Hosted {
         };
         let number = |field: &str| match runtime.read(at, field) {
             Ok(Value::Float(value)) => value,
-            Ok(Value::Int(value)) => ui_core::num::f64_of_i64(value),
+            Ok(Value::Int(value)) => tilo_ui_base::num::f64_of_i64(value),
             _ => 0.0,
         };
         let queue = match runtime.read(at, "queue") {
             Ok(Value::List(items)) => items.len(),
             _ => 0,
         };
-        let seconds = |value: f64| ui_core::num::i64_of_f64(value.max(0.0) * 1_000_000.0);
+        let seconds = |value: f64| tilo_ui_base::num::i64_of_f64(value.max(0.0) * 1_000_000.0);
         Some(runtime_portal::process_link::MediaView {
             id: at.id_string(),
             identity: self.bundle.meta.title.clone(),
@@ -3846,7 +3846,7 @@ impl Hosted {
             .manager()
             .try_send(CollabRequest::RemoteAction {
                 message,
-                press: ui_core::press::current(),
+                press: tilo_ui_base::press::current(),
             })
         {
             tracing::warn!(app = self.spec.app, %error, "a press did not reach the dispatch");
@@ -4526,7 +4526,7 @@ impl Hosted {
         let message = RemoteActionMessage::Invoke(request);
         if !self.connection.manager().send(CollabRequest::RemoteAction {
             message,
-            press: ui_core::press::current(),
+            press: tilo_ui_base::press::current(),
         }) {
             self.instance
                 .failed("The workspace could not be reached to run the check".to_owned());
@@ -4809,7 +4809,7 @@ impl Invoker for Apis {
                 .borrow_mut()
                 .try_send(CollabRequest::RemoteAction {
                     message,
-                    press: ui_core::press::current(),
+                    press: tilo_ui_base::press::current(),
                 })
             {
                 tracing::warn!(to = app, %error, "a child call did not reach the dispatch");

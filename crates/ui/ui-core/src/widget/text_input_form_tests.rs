@@ -7,14 +7,17 @@ use super::draw_to_populate;
 use super::drive;
 use super::layout_height;
 use super::mods;
-use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release, named_key};
+use tilo_ui_base::{
+    synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press,
+    synthetic_input::mouse_release, synthetic_input::named_key,
+};
 
 tilo_test_env::scenario! {
     fn a_field_keeps_its_selection_kind_and_row_as_it_is_typed_in;
 
     phase a_field_keeps_its_selection_caret_and_document_size;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let mut input = TextInput::local().with_initial_value("Ae\u{301}👋B");
             input.core.set_selection(8, 1);
@@ -106,7 +109,7 @@ tilo_test_env::scenario! {
 
     phase field_kinds_set_their_text_kind_while_typing;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         for (kind, text) in [
             (TextInputKind::Prose, TextKind::Prose),
             (TextInputKind::Search, TextKind::Prose),
@@ -130,7 +133,7 @@ tilo_test_env::scenario! {
 
     phase submit_accessory_and_span_highlighting;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
             let sink = seen.clone();
@@ -185,7 +188,7 @@ tilo_test_env::scenario! {
             let seen = std::rc::Rc::new(std::cell::RefCell::new(Vec::<bool>::new()));
             let sink = seen.clone();
             let mut ti = TextInput::local().with_trailing_accessory(
-                crate::icons::Icon::X,
+                tilo_ui_base::icons::Icon::X,
                 "Clear for every photo",
                 AccessoryAction::Toggle {
                     pressed: false,
@@ -197,7 +200,7 @@ tilo_test_env::scenario! {
             let node = Widget::accessibility(&ti).expect("field semantics");
             assert_eq!(node.children.len(), 1, "shown while the field is empty");
             let toggle = &node.children[0];
-            assert_eq!(toggle.role, crate::a11y::Role::ToggleButton);
+            assert_eq!(toggle.role, tilo_ui_base::a11y::Role::ToggleButton);
             assert_eq!(toggle.state.checked, Some(false));
             let target = toggle.action_target.clone().expect("agents can reach it");
 
@@ -218,8 +221,8 @@ tilo_test_env::scenario! {
             assert!(Widget::perform_semantic_action(
                 &mut ti,
                 &target,
-                &crate::a11y::Action::Activate,
-                &mut crate::widget::Edits::lend(&mut doc),
+                &tilo_ui_base::a11y::Action::Activate,
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &root,
             ));
             assert_eq!(seen.borrow().as_slice(), [true, false]);
@@ -236,7 +239,7 @@ tilo_test_env::scenario! {
             let mut ti = TextInput::local()
                 .with_initial_value("example.org")
                 .with_trailing_accessory(
-                    crate::icons::Icon::ArrowRight,
+                    tilo_ui_base::icons::Icon::ArrowRight,
                     "Go",
                     AccessoryAction::Submit,
                 )
@@ -251,7 +254,7 @@ tilo_test_env::scenario! {
             let node = Widget::accessibility(&ti).expect("field semantics");
             assert_eq!(node.children.len(), 1, "the go button shows while editing");
             assert_eq!(node.children[0].name.as_deref(), Some("Go"));
-            assert_eq!(node.children[0].role, crate::a11y::Role::Button);
+            assert_eq!(node.children[0].role, tilo_ui_base::a11y::Role::Button);
             assert!(
                 !node.children[0].state.disabled,
                 "with something to go with, the go button is ready"
@@ -286,8 +289,8 @@ tilo_test_env::scenario! {
                 !Widget::perform_semantic_action(
                     &mut ti,
                     &target,
-                    &crate::a11y::Action::Activate,
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &tilo_ui_base::a11y::Action::Activate,
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &root,
                 ),
                 "activating a go button with nothing to go with does nothing"
@@ -315,7 +318,7 @@ tilo_test_env::scenario! {
                 .with_secret(true)
                 .with_initial_value("sesame")
                 .with_trailing_accessory(
-                    crate::icons::Icon::ArrowRight,
+                    tilo_ui_base::icons::Icon::ArrowRight,
                     "Unlock",
                     AccessoryAction::Submit,
                 );
@@ -422,7 +425,7 @@ tilo_test_env::scenario! {
                 "delayed-paste"
             }
         }
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let clipboard = Arc::new(Delayed::default());
         let services = crate::process::ProcessServices::null().with_clipboard(clipboard.clone());
         let _host = crate::process::enter(&services);
@@ -499,7 +502,7 @@ tilo_test_env::scenario! {
 #[cfg(feature = "broker-transport")]
 #[test]
 fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     if !crate::testing::in_own_process(&crate::testing::test_path(
         module_path!(),
         "shared_personal_words_protect_autocorrection_and_clear_stale_spelling",
@@ -509,23 +512,24 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
     struct Restore;
     impl Drop for Restore {
         fn drop(&mut self) {
-            crate::local_identity::install_source(None);
+            tilo_ui_base::local_identity::install_source(None);
         }
     }
     let _guard = tilo_test_env::lock();
     let _restore = Restore;
-    crate::local_identity::install_source(Some(Arc::new(crate::local_identity::FixedIdentity(
-        crate::local_identity::LocalIdentity {
+    tilo_ui_base::local_identity::install_source(Some(Arc::new(
+        tilo_ui_base::local_identity::FixedIdentity(tilo_ui_base::local_identity::LocalIdentity {
             group_public_key: [1; 32],
             display_name: String::new(),
             avatar_color: [0; 3],
             device_public_key: None,
-        },
-    ))));
+        }),
+    )));
     let source: Arc<dyn settings_store::SettingsSource> = Arc::new(
         settings_store::HostDocument::new(serde_json::Map::new(), |_| Ok(())),
     );
-    let mut settings = crate::personal_dictionary::TestSettings::new(source, "so.tilo.notes");
+    let mut settings =
+        tilo_ui_base::personal_dictionary::TestSettings::new(source, "so.tilo.notes");
     let field = |text: &str| {
         TextInput::local()
             .with_autocorrect(true)
@@ -535,10 +539,10 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
     let mut input = field("teh");
     input.core.set_caret(input.text.len());
     assert!(input.autocorrection_candidate().is_some());
-    crate::personal_dictionary::edit(
+    tilo_ui_base::personal_dictionary::edit(
         0,
-        crate::personal_dictionary::Edit::Add(
-            crate::personal_dictionary::Word::new("teh", None).unwrap(),
+        tilo_ui_base::personal_dictionary::Edit::Add(
+            tilo_ui_base::personal_dictionary::Word::new("teh", None).unwrap(),
         ),
     )
     .unwrap();
@@ -547,13 +551,14 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
     assert_eq!(input.value(), "teh ");
     // An edit is a request the session answers: it refuses an ordinary app's reset, and the
     // words stay as they were.
-    crate::personal_dictionary::edit(1, crate::personal_dictionary::Edit::Reset).unwrap();
+    tilo_ui_base::personal_dictionary::edit(1, tilo_ui_base::personal_dictionary::Edit::Reset)
+        .unwrap();
     assert!(
         settings.flush().is_err(),
         "ordinary apps may add explicit words but cannot reset the dictionary"
     );
     assert!(
-        crate::personal_dictionary::snapshot()
+        tilo_ui_base::personal_dictionary::snapshot()
             .unwrap()
             .contains("teh", "en"),
         "a refused reset leaves the words alone"
@@ -566,10 +571,10 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
         "address ",
         "personal words never force ordinary replacements"
     );
-    crate::personal_dictionary::edit(
+    tilo_ui_base::personal_dictionary::edit(
         1,
-        crate::personal_dictionary::Edit::Add(
-            crate::personal_dictionary::Word::new("Élodie", Some("fr")).unwrap(),
+        tilo_ui_base::personal_dictionary::Edit::Add(
+            tilo_ui_base::personal_dictionary::Word::new("Élodie", Some("fr")).unwrap(),
         ),
     )
     .unwrap();
@@ -582,7 +587,9 @@ fn shared_personal_words_protect_autocorrection_and_clear_stale_spelling() {
     english.set_focus(true);
     english.refresh_personal_spelling();
     assert!(!english.personal_word("Élodie"));
-    crate::local_identity::install_source(Some(Arc::new(crate::local_identity::NoLocalIdentity)));
+    tilo_ui_base::local_identity::install_source(Some(Arc::new(
+        tilo_ui_base::local_identity::NoLocalIdentity,
+    )));
     french.refresh_personal_spelling();
     assert!(!french.personal_word("Élodie"));
     assert!(french.spell_dictionary.as_ref().unwrap().is_empty());
@@ -595,7 +602,7 @@ tilo_test_env::scenario! {
 
     phase a_burst_then_enter_keeps_every_character;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let submitted = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
         let sink = std::rc::Rc::clone(&submitted);
         let mut ti =

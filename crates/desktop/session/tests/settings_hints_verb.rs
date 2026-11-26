@@ -51,7 +51,7 @@ fn settings_session_on_daemon(root: &std::path::Path) -> tilo_session::Session {
 /// never counted shows forever.
 #[test]
 fn the_shells_hint_ask_reaches_the_section_on_its_daemon() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let mut session = settings_session_on_daemon(root.path());
     let read = crate::common::wait_for(
@@ -145,7 +145,7 @@ fn the_shells_hint_ask_reaches_the_section_on_its_daemon() {
 
 #[test]
 fn the_shells_hint_call_is_the_sections_own_verb() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let mut session = settings_session(root.path());
     let published = session

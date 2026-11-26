@@ -6,10 +6,10 @@ use taffy::TaffyTree;
 use vello::kurbo::Point;
 
 use super::*;
-use crate::theme::Theme;
-use crate::tokens::Rhythm;
-use crate::widget::Length;
-use crate::widget::{Spacer, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::Rhythm;
+use tilo_ui_base::widget::Length;
+use tilo_ui_base::{widget::Spacer, widget::Widget};
 
 fn solve(root: &mut dyn Widget, theme: &Theme, width: f32) {
     solve_in(root, theme, width, taffy::AvailableSpace::MaxContent);
@@ -19,12 +19,12 @@ fn solve_in(root: &mut dyn Widget, theme: &Theme, width: f32, height: taffy::Ava
     let mut tree = TaffyTree::new();
     let mut nodes: HashMap<taffy::NodeId, *mut dyn Widget> = HashMap::new();
     let node = root.build_layout(&mut tree, theme, &mut nodes);
-    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
-    let mut text = crate::font_catalog::fixture_renderer();
+    let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::new();
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
     // SAFETY: exact live, exclusively owned widget tree and matching maps.
     unsafe {
         bindings.rebuild(root, &tree, node, &nodes);
-        crate::widget::compute_widget_layout(
+        tilo_ui_base::widget::compute_widget_layout(
             &mut tree,
             node,
             taffy::Size {
@@ -40,7 +40,7 @@ fn solve_in(root: &mut dyn Widget, theme: &Theme, width: f32, height: taffy::Ava
     root.apply_layout(&tree, node, Point::ZERO);
 }
 
-fn boxed(size: f32) -> crate::widget::Element {
+fn boxed(size: f32) -> tilo_ui_base::widget::Element {
     Box::new(Spacer::fixed(size))
 }
 
@@ -107,7 +107,7 @@ tilo_test_env::scenario! {
     {
         let theme = Theme::dark();
         let item = |height: f32| {
-            Box::new(Stack::stack().fill_height().push(boxed(height))) as crate::widget::Element
+            Box::new(Stack::stack().fill_height().push(boxed(height))) as tilo_ui_base::widget::Element
         };
         let mut stretched = Grid::columns(2).push(item(20.0)).push(item(100.0));
         solve(&mut stretched, &theme, 600.0);
@@ -250,7 +250,7 @@ tilo_test_env::scenario! {
     // control stands in, its cell and the gap after it — so a document's body lands under the text
     // its heading's control leads to, whatever size the person's controls take.
     {
-        use crate::interaction::InteractionEnvironment;
+        use tilo_ui_base::interaction::InteractionEnvironment;
         let theme = Theme::dark();
         for environment in [
             InteractionEnvironment::POINTER,
@@ -325,7 +325,8 @@ tilo_test_env::scenario! {
 
     phase every_edge_lands_on_a_device_pixel_at_the_display_scale;
     {
-        use crate::widget::{Manual, Text};
+        use crate::widget::Text;
+        use tilo_ui_base::widget::Manual;
         use vello::kurbo::Rect;
         let content = Page::new().push(Box::new(
             Stack::stack()
@@ -487,12 +488,12 @@ tilo_test_env::scenario! {
     // wraps. No fact is squeezed below the words it holds: a label breaks between words, never
     // inside one, and a fact that does not fit the line moves down to the next whole.
     {
-        use crate::tokens::TextRole;
+        use tilo_ui_base::tokens::TextRole;
         use crate::widget::Text;
         use taffy::{AvailableSpace, Size};
 
         let theme = Theme::dark();
-        let mut renderer = crate::font_catalog::fixture_renderer();
+        let mut renderer = tilo_ui_base::font_catalog::fixture_renderer();
         let mut word = |words: &str| {
             let mut probe = Text::new(words).with_role(TextRole::Caption);
             probe.measure(
@@ -509,7 +510,7 @@ tilo_test_env::scenario! {
             .width
         };
         let caption = |words: &str| {
-            Box::new(Text::new(words).with_role(TextRole::Caption)) as crate::widget::Element
+            Box::new(Text::new(words).with_role(TextRole::Caption)) as tilo_ui_base::widget::Element
         };
         let facts: [(&str, &str); 3] = [("Created", "just now"), ("Edited", "just now"), ("4", "words")];
         let fact = |(label, value): (&str, &str)| {
@@ -518,7 +519,7 @@ tilo_test_env::scenario! {
                     .gap(Rhythm::Tight)
                     .push(caption(label))
                     .push(caption(value)),
-            ) as crate::widget::Element
+            ) as tilo_ui_base::widget::Element
         };
         let mut row = Row::row()
             .gap(Rhythm::Related)
@@ -583,7 +584,7 @@ tilo_test_env::scenario! {
         let theme = Theme::dark();
         let least = f64::from(TextInput::own_width_in(&theme));
         assert!(least > 0.0, "a field's own width is never 0");
-        let field = || TextInput::new(vec![crate::PathSegment::Field("name".into())]);
+        let field = || TextInput::new(vec![tilo_ui_base::PathSegment::Field("name".into())]);
         for width in [320.0, 390.0, 1280.0] {
             let mut row = Row::row()
                 .fill_width()
@@ -612,7 +613,7 @@ tilo_test_env::scenario! {
 
 const SUBJECT: &str = "aspect-subject";
 
-fn filling_view() -> crate::widget::Element {
+fn filling_view() -> tilo_ui_base::widget::Element {
     Box::new(
         Stack::stack()
             .fill_width()
@@ -623,7 +624,7 @@ fn filling_view() -> crate::widget::Element {
 }
 
 fn subject_rect(root: &dyn Widget) -> vello::kurbo::Rect {
-    crate::widget::find_test_id(root, SUBJECT)
+    tilo_ui_base::widget::find_test_id(root, SUBJECT)
         .expect("the view in the part is laid out")
         .get_rect()
 }
@@ -636,7 +637,7 @@ tilo_test_env::scenario! {
     phase layers_put_children_over_each_other_at_logical_positions;
     {
         let theme = Theme::dark();
-        let base = Box::new(Stack::stack().push(boxed(200.0))) as crate::widget::Element;
+        let base = Box::new(Stack::stack().push(boxed(200.0))) as tilo_ui_base::widget::Element;
         let mut layers = Layers::layers()
             .push(base)
             .push_at(boxed(20.0), At::BottomTrailing)
@@ -649,7 +650,7 @@ tilo_test_env::scenario! {
 
         let mut rtl = Layers::layers()
             .direction(Direction::Rtl)
-            .push(Box::new(Stack::stack().push(boxed(200.0))) as crate::widget::Element)
+            .push(Box::new(Stack::stack().push(boxed(200.0))) as tilo_ui_base::widget::Element)
             .push_at(boxed(20.0), At::TopLeading);
         solve(&mut rtl, &theme, 400.0);
         let host = rtl.get_rect();
@@ -695,7 +696,7 @@ tilo_test_env::scenario! {
     {
         let theme = Theme::dark();
         let rem = f64::from(rem_of(&theme));
-        let content = || Box::new(Stack::stack().push(boxed(10.0))) as crate::widget::Element;
+        let content = || Box::new(Stack::stack().push(boxed(10.0))) as tilo_ui_base::widget::Element;
         let mut page = Page::new().push(content());
         solve(&mut page, &theme, 1920.0);
         let r = rects(&page);
@@ -721,7 +722,7 @@ tilo_test_env::scenario! {
     phase a_filling_page_takes_the_panes_whole_width_and_starts_at_the_page_gutter;
     {
         let theme = Theme::dark();
-        let content = || Box::new(Stack::stack().push(boxed(10.0))) as crate::widget::Element;
+        let content = || Box::new(Stack::stack().push(boxed(10.0))) as tilo_ui_base::widget::Element;
         let mut plain = Page::full().push(content());
         let mut filling = Page::full().filling().push(content());
         solve(&mut plain, &theme, 864.0);
@@ -741,7 +742,7 @@ tilo_test_env::scenario! {
                 .tokens
                 .spacing
                 .rhythm
-                .get(crate::tokens::Rhythm::Group),
+                .get(tilo_ui_base::tokens::Rhythm::Group),
         );
         assert!(
             (surface.y0 - edge).abs() < 1.0,
@@ -811,7 +812,7 @@ tilo_test_env::scenario! {
                 436.0,
                 taffy::AvailableSpace::Definite(container_height),
             );
-            let content = crate::widget::find_test_id(&line, "page-row-content")
+            let content = tilo_ui_base::widget::find_test_id(&line, "page-row-content")
                 .expect("the row's content is laid out")
                 .get_rect();
             assert!(
@@ -844,7 +845,7 @@ tilo_test_env::scenario! {
                     .push(Box::new(column))
                     .push(Box::new(Spacer::fixed(36.0)));
                 Box::new(Page::full().row_after(Rhythm::Section).push(Box::new(line)))
-                    as crate::widget::Element
+                    as tilo_ui_base::widget::Element
             });
             let mut docked = Stack::stack()
                 .fill_width()
@@ -857,7 +858,7 @@ tilo_test_env::scenario! {
                 540.0,
                 taffy::AvailableSpace::Definite(504.0),
             );
-            let column = crate::widget::find_test_id(&docked, "msg0")
+            let column = tilo_ui_base::widget::find_test_id(&docked, "msg0")
                 .expect("the first message is laid out")
                 .get_rect();
             assert!(
@@ -886,7 +887,7 @@ tilo_test_env::scenario! {
                         .fill_width()
                         .with_id(format!("row{index}"))
                         .push(boxed(40.0)),
-                ) as crate::widget::Element
+                ) as tilo_ui_base::widget::Element
             });
             let docked = Stack::stack()
                 .fill_width()
@@ -903,7 +904,7 @@ tilo_test_env::scenario! {
                 540.0,
                 taffy::AvailableSpace::Definite(560.0),
             );
-            let row = crate::widget::find_test_id(&column, "row0")
+            let row = tilo_ui_base::widget::find_test_id(&column, "row0")
                 .expect("the first row is laid out")
                 .get_rect();
             assert!(

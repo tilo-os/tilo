@@ -3,7 +3,7 @@
 //! still waits for.
 
 use super::Driver;
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 impl Driver {
     /// Lay the app out at `viewport` under `theme` for a person using `input`, in one frame: the
@@ -15,9 +15,9 @@ impl Driver {
     pub fn relayout_for(
         &mut self,
         viewport: (u32, u32),
-        theme: crate::theme::Theme,
-        input: crate::interaction::InteractionEnvironment,
-    ) -> Result<(), crate::widget::WidgetLayoutError> {
+        theme: tilo_ui_base::theme::Theme,
+        input: tilo_ui_base::interaction::InteractionEnvironment,
+    ) -> Result<(), tilo_ui_base::widget::WidgetLayoutError> {
         self.app.set_interaction_environment(input);
         // A widget takes up the way it is reached when it is built.
         self.app.layout.request_rebuild();
@@ -38,7 +38,7 @@ impl Driver {
     #[must_use]
     pub fn pending_visual_work(&self) -> Vec<String> {
         fn visit(widget: &dyn Widget, path: &mut Vec<String>, out: &mut Vec<String>) {
-            let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
+            let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(widget) else {
                 return;
             };
             if !widget.has_pending_visual_work() {

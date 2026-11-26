@@ -16,7 +16,7 @@ use tilo_sort::CompactSort as _;
 use collab_types::presence::{PresenceHue, Shown};
 use collab_types::{Member, MemberId, PersonId};
 use tilo_desktop_model::{Layout, Present, Status, TabId, TileContent, Workspace};
-use ui::presence::{PresenceCtx, PresenceKey};
+use tilo_ui_base::{presence::PresenceCtx, presence::PresenceKey};
 
 use crate::presence::Place;
 
@@ -296,7 +296,7 @@ fn availability_of(member: &LiveMember) -> ui::Availability {
 
 /// The name a member goes by here, as their presence says it.
 fn member_name(member: &LiveMember) -> Option<&str> {
-    ui::presence::shown_name(&member.label)
+    tilo_ui_base::presence::shown_name(&member.label)
 }
 
 /// The row already listed for the agent at `device`: the same publisher, or the same person's
@@ -347,12 +347,12 @@ impl HereState {
         if let Some(own) = &self.own
             && let Some(user) = own.user.as_deref()
         {
-            ui::people_photos::alias(&own.publisher, user);
+            tilo_ui_base::people_photos::alias(&own.publisher, user);
         }
         // Each device wears its person's picture.
         for member in self.members.iter().flatten() {
             if let Some(user) = member.user.as_deref().filter(|user| !user.is_empty()) {
-                ui::people_photos::alias(&member.publisher, user);
+                tilo_ui_base::people_photos::alias(&member.publisher, user);
             }
         }
         let members = self.members.clone().unwrap_or_default();
@@ -624,7 +624,8 @@ impl HereState {
         let colors = self.colors();
         let mut names = HashMap::new();
         for member in self.members.iter().flatten().chain(self.own.as_ref()) {
-            let label = ui::presence::person_label(member_name(member).unwrap_or_default());
+            let label =
+                tilo_ui_base::presence::person_label(member_name(member).unwrap_or_default());
             names.insert(
                 member.publisher.clone(),
                 (label, color_in(&colors, &member.publisher)),
@@ -665,12 +666,12 @@ impl HereState {
             .chain(devices)
             .find(|member| member_name(member).is_some())
             .unwrap_or(first);
-        let label = ui::presence::person_label(member_name(named).unwrap_or_default());
+        let label = tilo_ui_base::presence::person_label(member_name(named).unwrap_or_default());
         let rgb = self
             .colors()
             .get(&named.publisher)
             .copied()
-            .unwrap_or_else(|| ui::presence::user_color(user));
+            .unwrap_or_else(|| tilo_ui_base::presence::user_color(user));
         Some((label, rgb))
     }
 
@@ -690,7 +691,9 @@ impl HereState {
                     .and_then(|user| self.person(user))
                     .unwrap_or_else(|| {
                         (
-                            ui::presence::person_label(member_name(member).unwrap_or_default()),
+                            tilo_ui_base::presence::person_label(
+                                member_name(member).unwrap_or_default(),
+                            ),
                             color_in(&colors, &member.publisher),
                         )
                     });
@@ -727,14 +730,14 @@ impl HereState {
 
     /// What colour everyone here is drawn in, by live publisher, this page included: the colour
     /// the member claims (a person's choice in their own card, as their shell publishes it), else
-    /// the one who they are gives them ([`ui::presence::member_color`]), keyed by the member — a
+    /// the one who they are gives them ([`tilo_ui_base::presence::member_color`]), keyed by the member — a
     /// person by their user root, so their other devices wear their colour, an agent by the
     /// member it is, never by the key its session speaks from. The rule every app paints the
     /// member by, so a face on the bar is the colour of their card, marks and caret in a window.
     ///
     /// A person's device is in the live layer before its certificate pairs it with its person.
     /// Until it does it has no entry here, so it is drawn neutral
-    /// ([`ui::presence::UNSETTLED_RGB`]) rather than in a colour keyed by its device that changes
+    /// ([`tilo_ui_base::presence::UNSETTLED_RGB`]) rather than in a colour keyed by its device that changes
     /// once its person is known.
     pub fn colors(&self) -> HashMap<String, (u8, u8, u8)> {
         self.members
@@ -752,8 +755,8 @@ impl HereState {
                 } else {
                     MemberId::person(self.user_of(&member.publisher)?)
                 };
-                let rgb = ui::presence::parse_hex_color(&member.colour)
-                    .unwrap_or_else(|| ui::presence::member_color(&id));
+                let rgb = tilo_ui_base::presence::parse_hex_color(&member.colour)
+                    .unwrap_or_else(|| tilo_ui_base::presence::member_color(&id));
                 Some((member.publisher.clone(), rgb))
             })
             .collect()
@@ -821,10 +824,10 @@ impl HereState {
                 member: member.member.clone(),
                 // A person goes by the name they gave, never their device's label; an agent
                 // that says no name goes by the program it works in.
-                label: ui::presence::person_label(
+                label: tilo_ui_base::presence::person_label(
                     std::iter::once(member.label.as_str())
                         .chain(agent.then_some(member.device.as_str()))
-                        .find_map(ui::presence::shown_name)
+                        .find_map(tilo_ui_base::presence::shown_name)
                         .unwrap_or_default(),
                 ),
                 devices: self.devices_of(&member.publisher),
@@ -857,7 +860,10 @@ impl HereState {
             if let Some(person) = self.user_of(&wave.id) {
                 presence.bounce(
                     MemberId::person(person),
-                    ui::tokens::EffectiveMotion::new(ui::tokens::Motion::default(), false),
+                    tilo_ui_base::tokens::EffectiveMotion::new(
+                        tilo_ui_base::tokens::Motion::default(),
+                        false,
+                    ),
                     now,
                 );
             }
@@ -913,10 +919,10 @@ fn color_in(colors: &HashMap<String, (u8, u8, u8)>, publisher: &str) -> (u8, u8,
     colors
         .get(publisher)
         .copied()
-        .unwrap_or(ui::presence::UNSETTLED_RGB)
+        .unwrap_or(tilo_ui_base::presence::UNSETTLED_RGB)
 }
 
-pub use ui::presence::unnamed_person_label;
+pub use tilo_ui_base::presence::unnamed_person_label;
 
 /// Name every person here and every device of theirs in `authors`, as
 /// presence shows them: what a folder file's version resolves through — the

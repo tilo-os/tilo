@@ -9,20 +9,23 @@ use vello::peniko::{Color, Fill};
 use super::{
     ListRowFace, RowGeometry, RowLeading, RowMark, RowMetrics, RowValue, SwipeAction, found_spans,
 };
-use crate::chrome::{RowJoin, SelectionState, paint_row_selection_joined};
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::colors::{NON_TEXT_MIN_CONTRAST, SMALL_TEXT_MIN_CONTRAST};
-use crate::widget::{BadgeFace, MediaArt, Tone};
+use crate::{widget::BadgeFace, widget::MediaArt};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Tone;
+use tilo_ui_base::{chrome::RowJoin, chrome::SelectionState, chrome::paint_row_selection_joined};
+use tilo_ui_base::{
+    tokens::colors::NON_TEXT_MIN_CONTRAST, tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+};
 
 /// Where a row's words stand ([`ListRowFace::text_frame`]).
 pub(super) struct TextFrame {
     pub(super) geo: RowGeometry,
     /// It shows lines under its title.
     pub(super) extra: bool,
-    pub(super) title_style: crate::text_render::TextStyle,
+    pub(super) title_style: tilo_ui_base::text_render::TextStyle,
     pub(super) title_line: f64,
     /// Where the title's words start, past the quiet word before them.
     pub(super) title_x: f64,
@@ -60,7 +63,7 @@ pub(crate) fn paint_code_badge(
         (f64::from(width) + 2.0 * pad, f64::from(height) + pad),
     );
     let raised = theme.tokens.colors.surfaces.raised;
-    crate::surface::card(
+    tilo_ui_base::surface::card(
         scene,
         transform,
         pill,
@@ -88,7 +91,7 @@ impl ListRowFace<'_> {
             ctx.scene.push_layer(
                 Fill::NonZero,
                 vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
+                tilo_ui_base::widget::DISABLED_ALPHA,
                 ctx.transform,
                 &frame,
             );
@@ -162,14 +165,14 @@ impl ListRowFace<'_> {
                     RowJoin::NONE
                 },
             );
-            let lift = crate::chrome::selection_tier_on(
+            let lift = tilo_ui_base::chrome::selection_tier_on(
                 theme,
                 SelectionState::new(lifted, hovered, false),
                 ground,
             )
             .fill;
             let under = if lifted || hovered {
-                crate::tokens::colors::composite(lift, ground)
+                tilo_ui_base::tokens::colors::composite(lift, ground)
             } else {
                 ground
             };
@@ -266,9 +269,11 @@ impl ListRowFace<'_> {
                 // past the row's trailing edge or under the name.
                 let cap = (right - geo.value_left).max(0.0);
                 if cap > 0.5 {
-                    let shown =
-                        ctx.text
-                            .elide_to_width_style(value, crate::num::f32_of_f64(cap), style);
+                    let shown = ctx.text.elide_to_width_style(
+                        value,
+                        tilo_ui_base::num::f32_of_f64(cap),
+                        style,
+                    );
                     let (w, h) = ctx.text.measure_style(&shown, None, style);
                     ctx.text(
                         &shown,
@@ -350,7 +355,7 @@ impl ListRowFace<'_> {
             x += w + m.tag_gap;
         }
         if let Some(subtitle) = self.subtitle {
-            let width = crate::num::f32_of_f64((geo.second_right - text_x).max(0.0));
+            let width = tilo_ui_base::num::f32_of_f64((geo.second_right - text_x).max(0.0));
             let line = ctx.text.elide_to_width_style(subtitle, width, &m.subtitle);
             ctx.text(
                 &line,
@@ -368,7 +373,7 @@ impl ListRowFace<'_> {
             } else {
                 geo.second_right
             };
-            let width = crate::num::f32_of_f64((right - text_x).max(0.0));
+            let width = tilo_ui_base::num::f32_of_f64((right - text_x).max(0.0));
             let kept = ctx.text.clamp_to_lines(
                 secondary,
                 &m.secondary,
@@ -380,7 +385,10 @@ impl ListRowFace<'_> {
                     line,
                     &m.secondary,
                     theme.text_dim,
-                    Point::new(text_x, y + crate::num::f64_of_usize(index) * secondary_line),
+                    Point::new(
+                        text_x,
+                        y + tilo_ui_base::num::f64_of_usize(index) * secondary_line,
+                    ),
                     None,
                 );
             }
@@ -406,7 +414,7 @@ impl ListRowFace<'_> {
                 y
             };
             let words = face.x1 + m.column_gap;
-            let width = crate::num::f32_of_f64((geo.second_right - words).max(0.0));
+            let width = tilo_ui_base::num::f32_of_f64((geo.second_right - words).max(0.0));
             let line = ctx
                 .text
                 .elide_to_width_style(change.said, width, &m.secondary);
@@ -417,7 +425,7 @@ impl ListRowFace<'_> {
                 Point::new(words, y),
                 None,
             );
-            crate::widget::avatar_face::AvatarFace::of(change.by).paint(ctx, face);
+            tilo_ui_base::widget::avatar_face::AvatarFace::of(change.by).paint(ctx, face);
         }
         if let Some(note) = self.note {
             let secondary_line = RowMetrics::line(ctx.text, &m.secondary);
@@ -431,7 +439,7 @@ impl ListRowFace<'_> {
             } else {
                 y
             };
-            let width = crate::num::f32_of_f64((geo.second_right - text_x).max(0.0));
+            let width = tilo_ui_base::num::f32_of_f64((geo.second_right - text_x).max(0.0));
             let line = ctx.text.elide_to_width_style(note, width, &m.secondary);
             ctx.text(
                 &line,
@@ -443,7 +451,7 @@ impl ListRowFace<'_> {
         }
 
         if self.separator && !self.selected && !self.next_selected {
-            crate::surface::separator(
+            tilo_ui_base::surface::separator(
                 ctx.scene,
                 ctx.transform,
                 text_x,
@@ -490,7 +498,7 @@ impl ListRowFace<'_> {
         );
         let drawn = lines.len().clamp(1, usize::from(self.title_lines));
         let unused = usize::from(self.title_lines).saturating_sub(drawn);
-        let block = self.text_block(text, m) - line * crate::num::f64_of_usize(unused);
+        let block = self.text_block(text, m) - line * tilo_ui_base::num::f64_of_usize(unused);
         let top = if self.card {
             self.card_content_top(row, m, text, theme)
         } else {
@@ -546,11 +554,11 @@ impl ListRowFace<'_> {
         span: (usize, usize),
         text: &mut TextRenderer,
         theme: &Theme,
-    ) -> (Vec<Rect>, crate::presence::LabeledCaret) {
+    ) -> (Vec<Rect>, tilo_ui_base::presence::LabeledCaret) {
         let m = self.metrics(theme);
         let geo = self.geometry(rect, &m, text, theme);
         let layout = self.title_layout(rect, &m, &geo, text, theme);
-        crate::presence::LabeledCaret::after_span(
+        tilo_ui_base::presence::LabeledCaret::after_span(
             text,
             (self.title, &layout.lines, &layout.style),
             (layout.x, layout.top, layout.line),
@@ -572,7 +580,7 @@ impl ListRowFace<'_> {
         let title_width = (geo.title_right - geo.text_x - self.prefix_width(text, m)).max(0.0);
         let tags_w = self.tags_width(text, theme, m);
         let accessories = tags_w.min(title_width / 2.0);
-        crate::num::f32_of_f64((title_width - accessories).max(0.0))
+        tilo_ui_base::num::f32_of_f64((title_width - accessories).max(0.0))
     }
 
     /// The width the row's quiet word before the title takes, with the gap after it: none for
@@ -613,9 +621,9 @@ impl ListRowFace<'_> {
                     ctx.scene.stroke(
                         &vello::kurbo::Stroke::new(1.0),
                         ctx.transform,
-                        crate::surface::edge_on(color),
+                        tilo_ui_base::surface::edge_on(color),
                         None,
-                        &crate::surface::edge_outline(swatch, radius),
+                        &tilo_ui_base::surface::edge_outline(swatch, radius),
                     );
                 }
             }
@@ -661,7 +669,7 @@ impl ListRowFace<'_> {
         };
         let side = slot.height().min(RowMetrics::avatar(theme, false));
         let face = Rect::from_center_size(Point::new(slot.x0 + side / 2.0, line_cy), (side, side));
-        crate::widget::AvatarFace::new(author.person, author.identity)
+        tilo_ui_base::widget::AvatarFace::new(author.person, author.identity)
             .image(author.image)
             .paint(ctx, face);
         let x = face.x1 + m.column_gap;
@@ -686,9 +694,11 @@ impl ListRowFace<'_> {
         let chip_w = chip.as_ref().map_or(0.0, |(.., width)| *width);
         let name_right = slot.x1 - chip_w - if chip.is_some() { m.tag_gap } else { 0.0 };
         let cap = (name_right - x).max(0.0);
-        let name =
-            ctx.text
-                .elide_to_width_style(author.person, crate::num::f32_of_f64(cap), &m.author);
+        let name = ctx.text.elide_to_width_style(
+            author.person,
+            tilo_ui_base::num::f32_of_f64(cap),
+            &m.author,
+        );
         let (_, height) = ctx.text.measure_style(&name, None, &m.author);
         ctx.text(
             &name,
@@ -757,7 +767,7 @@ impl ListRowFace<'_> {
         };
         let meta = ctx
             .text
-            .elide_to_width_style(meta, crate::num::f32_of_f64(cap), &m.meta);
+            .elide_to_width_style(meta, tilo_ui_base::num::f32_of_f64(cap), &m.meta);
         let (width, height) = ctx.text.measure_style(&meta, None, &m.meta);
         ctx.text(
             &meta,
@@ -854,7 +864,7 @@ impl ListRowFace<'_> {
                 ctx.scene.stroke(
                     &Stroke::new(1.0),
                     ctx.transform,
-                    crate::surface::edge_on(under),
+                    tilo_ui_base::surface::edge_on(under),
                     None,
                     &Circle::new(r.center(), r.width() / 2.0 - 0.5),
                 );
@@ -891,7 +901,7 @@ impl ListRowFace<'_> {
         ctx.scene
             .fill(Fill::NonZero, ctx.transform, fill, None, &revealed);
         let ink = if action.destructive {
-            crate::widget::avatar_face::initial_ink(fill, theme)
+            tilo_ui_base::widget::avatar_face::initial_ink(fill, theme)
         } else {
             theme.text_primary
         };
@@ -909,7 +919,7 @@ impl ListRowFace<'_> {
 
 /// Where a row's title stands ([`ListRowFace::title_layout`]).
 struct TitleLayout {
-    style: crate::text_render::TextStyle,
+    style: tilo_ui_base::text_render::TextStyle,
     /// One line's height.
     line: f64,
     lines: Vec<String>,

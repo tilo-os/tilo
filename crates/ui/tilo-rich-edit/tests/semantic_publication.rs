@@ -33,7 +33,7 @@ impl AppSurface for Region {
 /// worker with its own wake scope, as a hosted app runs, so a frame with no
 /// wake pending synchronizes nothing.
 fn long_document_app() -> (App, Region) {
-    tilo_ui::i18n::I18nManager::init("en-US");
+    tilo_ui_base::i18n::I18nManager::init("en-US");
     let scope = tilo_ui::wake::WakeScope::new();
     let _entry = scope.enter();
     let body = (0..48)
@@ -102,9 +102,9 @@ fn settled_with_first_block_focused() -> (App, Region) {
         .expect("the first block has bounds");
     let at = bounds.center();
     for event in [
-        tilo_ui::synthetic_input::cursor_moved(at.x, at.y),
-        tilo_ui::synthetic_input::mouse_press(),
-        tilo_ui::synthetic_input::mouse_release(),
+        tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y),
+        tilo_ui_base::synthetic_input::mouse_press(),
+        tilo_ui_base::synthetic_input::mouse_release(),
     ] {
         app.surface_input(&region, event, false);
     }
@@ -146,7 +146,7 @@ fn a_keystroke_publishes_its_block_on_its_own_frame() {
     let key = winit::keyboard::Key::Character("Z".into());
     app.surface_input(
         &region,
-        tilo_ui::synthetic_input::key_input(&key, ElementState::Pressed),
+        tilo_ui_base::synthetic_input::key_input(&key, ElementState::Pressed),
         false,
     );
     let delta = host_frame(&mut app, &region);
@@ -176,7 +176,7 @@ fn a_keystroke_publishes_its_block_on_its_own_frame() {
     // Released, and at rest again: nothing more to publish or walk.
     app.surface_input(
         &region,
-        tilo_ui::synthetic_input::key_input(&key, ElementState::Released),
+        tilo_ui_base::synthetic_input::key_input(&key, ElementState::Released),
         false,
     );
     host_frame(&mut app, &region);
@@ -198,13 +198,13 @@ fn a_scroll_publishes_the_bounds_it_moved_on_its_own_frame() {
         .expect("a block has bounds");
     app.surface_input(
         &region,
-        tilo_ui::synthetic_input::cursor_moved(300.0, 240.0),
+        tilo_ui_base::synthetic_input::cursor_moved(300.0, 240.0),
         false,
     );
     host_frame(&mut app, &region);
     assert!(app.surface_input(
         &region,
-        tilo_ui::synthetic_input::mouse_wheel(0.0, -2.0),
+        tilo_ui_base::synthetic_input::mouse_wheel(0.0, -2.0),
         false
     ));
     let delta = host_frame(&mut app, &region);
@@ -233,14 +233,14 @@ fn a_focus_move_publishes_on_its_own_frame() {
         second.bounds.expect("the second block has bounds").center(),
     );
     for event in [
-        tilo_ui::synthetic_input::cursor_moved(at.x, at.y),
-        tilo_ui::synthetic_input::mouse_press(),
-        tilo_ui::synthetic_input::mouse_release(),
+        tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y),
+        tilo_ui_base::synthetic_input::mouse_press(),
+        tilo_ui_base::synthetic_input::mouse_release(),
     ] {
         app.surface_input(&region, event, false);
     }
     let delta = host_frame(&mut app, &region);
-    let focused = |id: &tilo_ui::a11y::SemanticId| {
+    let focused = |id: &tilo_ui_base::a11y::SemanticId| {
         app.semantic_tree()
             .node(id)
             .is_some_and(|node| node.state.focused)

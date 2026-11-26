@@ -1,6 +1,6 @@
 use super::*;
-use crate::widget::TaffyTreeExt;
 use std::collections::HashMap;
+use tilo_ui_base::widget::TaffyTreeExt;
 
 struct DrawUpdatedDamage {
     damage: KurboRect,
@@ -17,7 +17,7 @@ impl Widget for DrawUpdatedDamage {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -35,7 +35,7 @@ impl Widget for DrawUpdatedDamage {
         self.damage
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 
     fn collect_damage(&self, regions: &mut Vec<KurboRect>) {
         regions.push(self.damage);
@@ -105,7 +105,7 @@ impl Widget for Styled {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
     }
 
     fn layout_needs_measure(&self) -> bool {
@@ -132,7 +132,7 @@ tilo_test_env::scenario! {
         };
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        widget.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark(), PresenceCtx::default().draw_env()));
+        widget.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &Theme::dark(), PresenceCtx::default().draw_env()));
 
         let mut regions = Vec::new();
         collect_submitted_widget_damage(&widget, &mut regions);
@@ -241,7 +241,7 @@ fn physical_window() -> KurboRect {
 /// into what the frame submits. `None` repaints the window.
 fn presence_frame(
     app: &mut App,
-    layer: &mut crate::presence::PresenceLayer,
+    layer: &mut tilo_ui_base::presence::PresenceLayer,
     widget: &[KurboRect],
 ) -> Option<Vec<KurboRect>> {
     let presence = draw_presence_layer(
@@ -280,15 +280,15 @@ fn assert_damage_covers_change(
         physical_window().width() as u32,
         physical_window().height() as u32,
     );
-    let mut renderer = crate::offscreen::OffscreenRenderer::new(width, height);
+    let mut renderer = tilo_ui_base::offscreen::OffscreenRenderer::new(width, height);
     let ground = theme.tokens.colors.surfaces.content;
     let before = renderer.render(shown, ground);
     let after = renderer.render(next, ground);
     let mut repaired = 0_usize;
     for y in 0..height {
         for x in 0..width {
-            let was = crate::offscreen::OffscreenRenderer::sample(&before, width, x, y);
-            let is = crate::offscreen::OffscreenRenderer::sample(&after, width, x, y);
+            let was = tilo_ui_base::offscreen::OffscreenRenderer::sample(&before, width, x, y);
+            let is = tilo_ui_base::offscreen::OffscreenRenderer::sample(&after, width, x, y);
             if was == is {
                 continue;
             }
@@ -307,9 +307,9 @@ fn assert_damage_covers_change(
 fn remote_cursor_move_damages_only_old_and_new_cursor() {
     for theme in [Theme::light(), Theme::dark(), Theme::high_contrast()] {
         let mut app = presence_app(&theme);
-        let mut layer = crate::presence::PresenceLayer::new();
+        let mut layer = tilo_ui_base::presence::PresenceLayer::new();
         app.presence_ctx.upsert_remote_cursor(
-            crate::permissions::MemberId::person("alice"),
+            tilo_ui_base::permissions::MemberId::person("alice"),
             [120.0, 150.0],
             Some("Alice"),
         );
@@ -331,7 +331,7 @@ fn remote_cursor_move_damages_only_old_and_new_cursor() {
         layer.presented();
 
         app.presence_ctx.upsert_remote_cursor(
-            crate::permissions::MemberId::person("alice"),
+            tilo_ui_base::permissions::MemberId::person("alice"),
             [220.0, 150.0],
             Some("Alice"),
         );
@@ -359,7 +359,7 @@ fn remote_cursor_move_damages_only_old_and_new_cursor() {
 
         // The peer's pointer leaves the window: where it was is erased.
         app.presence_ctx
-            .remove_remote_cursor(&crate::permissions::MemberId::person("alice"));
+            .remove_remote_cursor(&tilo_ui_base::permissions::MemberId::person("alice"));
         let left = presence_frame(&mut app, &mut layer, &[])
             .expect("a pointer leaving keeps to widget damage");
         let next = layer.scene().clone();
@@ -378,16 +378,16 @@ tilo_test_env::scenario! {
         let theme = Theme::dark();
         let alone = {
             let mut app = presence_app(&theme);
-            let mut layer = crate::presence::PresenceLayer::new();
+            let mut layer = tilo_ui_base::presence::PresenceLayer::new();
             assert_eq!(presence_frame(&mut app, &mut layer, &[]), None);
             layer.presented();
             presence_frame(&mut app, &mut layer, &[LOCAL_FIELD]).expect("no peer, no repaint")
         };
 
         let mut app = presence_app(&theme);
-        let mut layer = crate::presence::PresenceLayer::new();
+        let mut layer = tilo_ui_base::presence::PresenceLayer::new();
         app.presence_ctx
-            .upsert_remote_cursor(crate::permissions::MemberId::person("alice"), [300.0, 200.0], Some("Alice"));
+            .upsert_remote_cursor(tilo_ui_base::permissions::MemberId::person("alice"), [300.0, 200.0], Some("Alice"));
         assert_eq!(presence_frame(&mut app, &mut layer, &[]), None);
         layer.presented();
         // A local keystroke dirties one field; the peer is where she was.
@@ -403,21 +403,21 @@ tilo_test_env::scenario! {
     {
         let theme = Theme::light();
         let mut app = presence_app(&theme);
-        let mut layer = crate::presence::PresenceLayer::new();
-        let key = crate::presence::PresenceKey::widget(&[crate::presence::PathSegment::Field(
+        let mut layer = tilo_ui_base::presence::PresenceLayer::new();
+        let key = tilo_ui_base::presence::PresenceKey::widget(&[tilo_ui_base::presence::PathSegment::Field(
             "title".into(),
         )])
         .expect("a widget key");
         app.presence_ctx
-            .set_caret(&key.clone(), crate::permissions::MemberId::person("alice"), 3);
+            .set_caret(&key.clone(), tilo_ui_base::permissions::MemberId::person("alice"), 3);
         app.presence_ctx
-            .upsert_remote_cursor(crate::permissions::MemberId::person("alice"), [300.0, 200.0], Some("Alice"));
+            .upsert_remote_cursor(tilo_ui_base::permissions::MemberId::person("alice"), [300.0, 200.0], Some("Alice"));
         assert_eq!(presence_frame(&mut app, &mut layer, &[]), None);
         layer.presented();
 
         // Her pointer moving changes no widget: only the pointer repaints.
         app.presence_ctx
-            .upsert_remote_cursor(crate::permissions::MemberId::person("alice"), [310.0, 200.0], Some("Alice"));
+            .upsert_remote_cursor(tilo_ui_base::permissions::MemberId::person("alice"), [310.0, 200.0], Some("Alice"));
         let pointer = presence_frame(&mut app, &mut layer, &[])
             .expect("a pointer move beside a remote caret keeps to its marks");
         assert!(!pointer.is_empty());
@@ -429,7 +429,7 @@ tilo_test_env::scenario! {
         layer.presented();
 
         // Her caret moving changes what the field paints: repaint, once.
-        app.presence_ctx.set_caret(&key, crate::permissions::MemberId::person("alice"), 4);
+        app.presence_ctx.set_caret(&key, tilo_ui_base::permissions::MemberId::person("alice"), 4);
         assert_eq!(presence_frame(&mut app, &mut layer, &[]), None);
         layer.presented();
         assert_eq!(presence_frame(&mut app, &mut layer, &[]), Some(Vec::new()));

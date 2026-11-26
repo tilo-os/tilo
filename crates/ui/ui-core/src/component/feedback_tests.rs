@@ -7,20 +7,22 @@
     reason = "in a test these are the assertion"
 )]
 
-use super::testing::*;
-use super::*;
 use crate::testing::harness;
-use crate::widget::{
-    Badge, BadgeProps, Breadcrumb, BreadcrumbProps, DisclosureRow, DisclosureRowProps, StatGroup,
-    StatGroupProps, Toolbar, ToolbarProps, Widget,
+use crate::{
+    widget::Badge, widget::BadgeProps, widget::Breadcrumb, widget::BreadcrumbProps,
+    widget::DisclosureRow, widget::DisclosureRowProps, widget::StatGroup, widget::StatGroupProps,
+    widget::Toolbar, widget::ToolbarProps,
 };
+use crate::component_testing::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::widget::Widget;
 
 tilo_test_env::scenario! {
     fn the_feedback_components_read_their_parts_and_report_presses;
 
     phase a_stat_group_reads_its_tiles_and_a_pressed_tile_reports_itself;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let tile = |key: &str, label: &str, value: &str| {
             Node::new("StatTile", key, &queue)
                 .prop("label", text(label))
@@ -41,7 +43,7 @@ tilo_test_env::scenario! {
 
     phase a_stat_group_holds_only_stat_tiles;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut group = Node::new("StatGroup", "week", &queue).holding(
             "tiles",
             Node::new("Badge", "new", &queue).prop("count", Value::Int(3)),
@@ -55,7 +57,7 @@ tilo_test_env::scenario! {
 
     phase a_pressed_toolbar_command_reports_itself_and_its_parts_keep_their_order;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut bar = Node::new("Toolbar", "format", &queue)
             .holding(
                 "items",
@@ -86,7 +88,7 @@ tilo_test_env::scenario! {
 
     phase a_toolbar_refuses_a_component_it_does_not_hold;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut bar = Node::new("Toolbar", "format", &queue).holding(
             "items",
             Node::new("MenuItem", "x", &queue).prop("label", text("Rename")),
@@ -97,7 +99,7 @@ tilo_test_env::scenario! {
 
     phase a_pressed_place_of_a_path_reports_itself;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let segment = |key: &str, label: &str| {
             Node::new("BreadcrumbSegment", key, &queue)
                 .prop("label", text(label))
@@ -116,7 +118,7 @@ tilo_test_env::scenario! {
 
     phase a_disclosure_row_reports_its_toggle_and_opens_where_its_view_says_without_reporting;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let row = |expanded: Option<bool>| {
             let node = Node::new("DisclosureRow", "summary", &queue)
                 .prop("title", text("Rewrote the summary"))

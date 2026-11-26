@@ -6,11 +6,11 @@ use vello::kurbo::Point;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::{BlockEditor, BlockKind, CursorPlacement, DocumentPosition};
-use ui::platform::Shortcut;
-use ui::text_selection::word_boundaries;
+use tilo_ui_base::platform::Shortcut;
+use tilo_ui_base::text_selection::word_boundaries;
+use tilo_ui_base::{widget::EventCtx, widget::Widget};
 use ui::widget::context_menu::{ContextMenu, EditingCommand, MenuItem};
 use ui::widget::marks::Mark;
-use ui::widget::{EventCtx, Widget};
 
 const TEXT_MENU_TARGET: &str = "editor.text-menu:";
 
@@ -154,20 +154,20 @@ impl BlockEditor {
         &mut self,
         scene: &mut vello::Scene,
         transform: vello::kurbo::Affine,
-        text: &mut ui::text_render::TextRenderer,
-        theme: &ui::theme::Theme,
+        text: &mut tilo_ui_base::text_render::TextRenderer,
+        theme: &tilo_ui_base::theme::Theme,
     ) {
         if let Some(bounds) = self.popover_bounds.or(self.overlay_viewport) {
             self.text_menu.menu.set_viewport(Some(bounds));
         }
         Widget::draw_overlay(
             &mut self.text_menu.menu,
-            &mut tilo_ui::DrawCtx::new(
+            &mut tilo_ui_base::DrawCtx::new(
                 scene,
                 transform,
                 text,
                 theme,
-                ui::presence::PresenceCtx::empty().draw_env(),
+                tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
             ),
         );
     }
@@ -176,8 +176,8 @@ impl BlockEditor {
     /// an action an assistive technology runs as a click does. A host that
     /// publishes nodes of its own — an app painting its own chrome, with the
     /// editor embedded under it — adds this where the menu is drawn.
-    pub fn text_menu_access_node(&self) -> Option<ui::a11y::AccessNode> {
-        fn namespace_targets(node: &mut ui::a11y::AccessNode) {
+    pub fn text_menu_access_node(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        fn namespace_targets(node: &mut tilo_ui_base::a11y::AccessNode) {
             if let Some(target) = node.action_target.take() {
                 node.action_target = Some(format!("{TEXT_MENU_TARGET}{target}"));
             }
@@ -198,9 +198,9 @@ impl BlockEditor {
     pub(super) fn perform_text_menu_action(
         &mut self,
         target: &str,
-        action: &ui::a11y::Action,
-        state: &mut ui::widget::Edits<'_>,
-        path: &ui::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> Option<bool> {
         let target = target.strip_prefix(TEXT_MENU_TARGET)?;
         let handled = self
@@ -253,7 +253,7 @@ impl BlockEditor {
     }
 
     fn show_text_menu(&mut self, at: Point) {
-        let label = |key: &str| ui::i18n::widget_text(key);
+        let label = |key: &str| tilo_ui_base::i18n::widget_text(key);
         let selected = self.has_text_selection();
         let active = self.active_marks();
         let focused_kind = self
@@ -283,7 +283,7 @@ impl BlockEditor {
             if spelling.can_add {
                 rows.push((
                     MenuItem::action(
-                        ui::i18n::widget_format(
+                        tilo_ui_base::i18n::widget_format(
                             "text-menu-add-to-dictionary",
                             &[("word", word.clone().into())],
                         ),
@@ -293,7 +293,10 @@ impl BlockEditor {
                 ));
             }
             rows.push((
-                MenuItem::action(ui::i18n::widget_text("text-menu-ignore-spelling"), || {}),
+                MenuItem::action(
+                    tilo_ui_base::i18n::widget_text("text-menu-ignore-spelling"),
+                    || {},
+                ),
                 Some(TextMenuAction::IgnoreSpelling(word)),
             ));
             rows.push((MenuItem::separator(), None));

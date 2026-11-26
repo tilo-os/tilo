@@ -4,14 +4,16 @@
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Fill;
 
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
-use crate::theme::Theme;
-use crate::tokens::TextRole as Role;
-use crate::widget::{
-    Button, ButtonFace, ButtonRole, ControlSize, EmptyState, EmptyStateContent, ListRowFace,
-    RowLeading, SectionHeaderFace, Tone,
+use crate::{
+    widget::Button, widget::ButtonFace, widget::ButtonRole, widget::ControlSize,
+    widget::EmptyState, widget::EmptyStateContent, widget::ListRowFace, widget::RowLeading,
+    widget::SectionHeaderFace,
 };
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole as Role;
+use tilo_ui_base::widget::Tone;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NotificationListControl {
@@ -324,7 +326,7 @@ impl<'a> NotificationListView<'a> {
             None,
             &vello::kurbo::RoundedRect::from_rect(
                 band,
-                crate::chrome::ChromeRole::Control.radius(theme, band.height()),
+                tilo_ui_base::chrome::ChromeRole::Control.radius(theme, band.height()),
             ),
         );
         ctx.text.draw_style(
@@ -450,21 +452,21 @@ fn paint_row_controls(
             ctx.transform,
             Rect::from_center_size(rect.center(), (size, size)),
             theme.tokens.colors.text_dim,
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
     };
     paint(
         controls.dismiss,
         Icon::X,
         NotificationListControl::Dismiss(index),
-        &crate::i18n::widget_format("widget-dismiss", &[]),
+        &tilo_ui_base::i18n::widget_format("widget-dismiss", &[]),
     );
     if agent && let Some(agent) = controls.agent {
         paint(
             agent,
             Icon::Send,
             NotificationListControl::HandToAgent(index),
-            &crate::i18n::widget_format("widget-hand-to-agent", &[]),
+            &tilo_ui_base::i18n::widget_format("widget-hand-to-agent", &[]),
         );
     }
 }
@@ -498,7 +500,7 @@ mod tests {
 
     fn layout(view: NotificationListView<'_>) -> NotificationListLayout {
         let theme = Theme::dark();
-        let mut text = crate::text_render::TextRenderer::new();
+        let mut text = tilo_ui_base::text_render::TextRenderer::new();
         let mut scene = vello::Scene::new();
         let mut ctx = PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme);
         view.paint(&mut ctx, Rect::new(0.0, 0.0, 360.0, 600.0))

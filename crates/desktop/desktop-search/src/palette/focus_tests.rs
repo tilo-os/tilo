@@ -8,7 +8,7 @@ use super::*;
 fn a_focus_moving_off_the_card_leaves_the_search_open() {
     let mut search = DesktopSearch::new();
     search.open(super::tests::data());
-    ui::widget::Widget::set_focus(search.palette_mut(), false);
+    tilo_ui_base::widget::Widget::set_focus(search.palette_mut(), false);
     assert!(
         !search.observe(),
         "the search the chord opened ended with the keyboard's focus moving off its card"

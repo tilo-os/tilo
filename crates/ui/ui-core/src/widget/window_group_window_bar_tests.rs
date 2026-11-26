@@ -1,6 +1,7 @@
 use super::*;
-use crate::tokens::TextRole;
-use crate::widget::{AppKind, TaffyTreeExt};
+use crate::widget::AppKind;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::TaffyTreeExt;
 
 struct Page {
     rect: Rect,
@@ -16,9 +17,9 @@ impl Widget for Page {
         taffy.fill_leaf(node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -81,14 +82,14 @@ impl Widget for PageApp {
     fn get_rect(&self) -> Rect {
         self.0.get_rect()
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
-        self.0.draw(&mut crate::draw::DrawCtx::new(
+        self.0.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             tr,
@@ -132,12 +133,12 @@ fn lay_out(g: &mut WindowGroup, theme: &Theme) {
             height: taffy::AvailableSpace::Definite(f32_of_f64(H - TOP)),
         };
         let mut text = TextRenderer::new();
-        let mut bindings = crate::widget::bound_nodes::BoundNodeMap::default();
+        let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::default();
         // SAFETY: `map` describes the tree just built from `g`, which this
         // function holds exclusively.
         unsafe {
             bindings.rebuild(g, &taffy, node, &map);
-            crate::widget::layout::compute_widget_layout(
+            tilo_ui_base::widget::layout::compute_widget_layout(
                 &mut taffy, node, available, &map, &bindings, &mut text,
             )
             .unwrap();
@@ -179,7 +180,7 @@ fn pages(count: u64) -> WindowGroup {
 
 #[test]
 fn an_apps_parts_live_in_the_bar_and_the_content_starts_under_it() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let theme = Theme::dark().with_reduce_motion(true);
     for count in [1, 2] {
         let mut g = pages(count);
@@ -217,7 +218,7 @@ fn an_apps_parts_live_in_the_bar_and_the_content_starts_under_it() {
 /// says what the window is instead of being empty.
 #[test]
 fn a_window_whose_app_names_no_location_shows_its_own_name() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let theme = Theme::dark().with_reduce_motion(true);
     for count in [1, 2] {
         for label in [None, Some(String::new()), Some("   ".to_owned())] {
@@ -326,7 +327,11 @@ impl Widget for ShellApp {
         vec![&mut self.shell]
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         self.shell.update(state, path)
     }
 }
@@ -402,7 +407,7 @@ fn row_of(frame: &mut crate::app::driver::Driver) -> f64 {
 /// leaves the window its bar.
 #[test]
 fn a_header_row_that_holds_a_popover_is_the_window_bar() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut frame, _window) = shell_window(
         crate::widget::NavShell::new()
             .content(Box::new(crate::widget::Text::new("Body")))
@@ -479,7 +484,7 @@ fn a_header_row_that_holds_a_popover_is_the_window_bar() {
 
 #[test]
 fn a_row_that_holds_the_bar_keeps_the_windows_functions() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut frame, _window) = shell_window(
         crate::widget::NavShell::new()
             .content(Box::new(crate::widget::Text::new("Body")))
@@ -563,7 +568,7 @@ fn holding_row_shell() -> crate::widget::NavShell {
 }
 
 fn window_control_name(key: &str) -> String {
-    crate::i18n::I18nManager::lookup_plain(key)
+    tilo_ui_base::i18n::I18nManager::lookup_plain(key)
 }
 
 struct MenuApp {
@@ -598,7 +603,7 @@ impl crate::widget::app_widget::AppWidget for MenuApp {
     }
 }
 
-impl crate::widget::Decorator for MenuApp {
+impl tilo_ui_base::widget::Decorator for MenuApp {
     type Inner = crate::widget::Column;
 
     fn inner(&self) -> &Self::Inner {
@@ -609,7 +614,11 @@ impl crate::widget::Decorator for MenuApp {
         &mut self.content
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.heard
             .borrow_mut()
             .extend(crate::window_toolbar::take_events());
@@ -701,7 +710,7 @@ fn menu_row(frame: &mut crate::app::driver::Driver, label: &str) -> Rect {
 
 #[test]
 fn a_menu_in_the_bar_opens_on_one_click_and_stays_open() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut frame, window, toolbar, heard) = menu_window();
     let mut parts = crate::window_parts::WindowParts::default();
     frame_of(&mut frame, &mut parts, &window);
@@ -758,14 +767,14 @@ fn a_menu_in_the_bar_opens_on_one_click_and_stays_open() {
 
 #[test]
 fn a_press_on_a_menu_survives_the_app_declaring_its_parts_again() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut frame, window, toolbar, _heard) = menu_window();
     let mut parts = crate::window_parts::WindowParts::default();
     frame_of(&mut frame, &mut parts, &window);
     let sort = sort_button(&mut frame);
 
-    frame.send(&crate::synthetic_input::cursor_moved(sort.x, sort.y));
-    frame.send(&crate::synthetic_input::mouse_press());
+    frame.send(&tilo_ui_base::synthetic_input::cursor_moved(sort.x, sort.y));
+    frame.send(&tilo_ui_base::synthetic_input::mouse_press());
     // The app declares another command before the menu: the row packs its buttons from its
     // trailing end, so the sort menu keeps its place under the pointer and is no longer the
     // first of the row's actions.
@@ -774,7 +783,7 @@ fn a_press_on_a_menu_survives_the_app_declaring_its_parts_again() {
         crate::window_toolbar::ToolbarAction::new("archive", "archive", "Archive"),
     );
     frame_of(&mut frame, &mut parts, &window);
-    frame.send(&crate::synthetic_input::mouse_release());
+    frame.send(&tilo_ui_base::synthetic_input::mouse_release());
     frame_of(&mut frame, &mut parts, &window);
     let (open, labels) = menu(&mut frame);
     assert!(open, "the press ends on the command it began on");
@@ -806,7 +815,7 @@ fn overflow_button(frame: &mut crate::app::driver::Driver) -> Point {
 /// a row chosen there runs for it: never one dead row for the button.
 #[test]
 fn a_folded_leading_menu_lists_its_items_in_the_overflow_menu() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut declared = leading_menu_parts();
     declared.location = Some(crate::window_toolbar::ToolbarLocation {
         label: "tilo.coffee".into(),
@@ -861,7 +870,7 @@ fn focused_stop(frame: &crate::app::driver::Driver) -> Option<String> {
 fn ring_pixels(frame: &crate::app::driver::Driver, rect: Rect) -> usize {
     let ring = Theme::dark().border_focus;
     let wanted = [0, 1, 2]
-        .map(|channel| crate::num::i32_of_f64(f64::from(ring.components[channel]) * 255.0));
+        .map(|channel| tilo_ui_base::num::i32_of_f64(f64::from(ring.components[channel]) * 255.0));
     let width = u32_of(W);
     let rgba = frame.render_rgba();
     let area = rect.inflate(3.0, 3.0);
@@ -874,7 +883,7 @@ fn ring_pixels(frame: &crate::app::driver::Driver, rect: Rect) -> usize {
             )) {
                 continue;
             }
-            let at = crate::num::usize_of_f64(f64::from(y * width + x) * 4.0);
+            let at = tilo_ui_base::num::usize_of_f64(f64::from(y * width + x) * 4.0);
             let near = rgba.get(at..at + 3).is_some_and(|pixel: &[u8]| {
                 pixel
                     .iter()
@@ -889,7 +898,7 @@ fn ring_pixels(frame: &crate::app::driver::Driver, rect: Rect) -> usize {
 
 #[test]
 fn a_row_that_holds_the_bar_puts_the_furniture_in_the_windows_tab_order() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut frame, _window) = shell_window(holding_row_shell());
     let names = [
         crate::widget::tabs::new_tab_name(),

@@ -5,12 +5,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 
-use crate::component::{Component, Described, PartViews};
+use tilo_ui_base::{component::Component, component::Described, component::PartViews};
 
-use crate::theme::Theme;
-use crate::tokens::{ChromeMaterial, Rhythm, SurfaceRole};
-use crate::widget::DrawChild;
-use crate::widget::{Container, Decorator, Element, Widget};
+use crate::widget::Container;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{tokens::ChromeMaterial, tokens::Rhythm, tokens::SurfaceRole};
+use tilo_ui_base::{widget::Decorator, widget::Element, widget::Widget};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ChromeShape {
@@ -19,7 +20,7 @@ pub enum ChromeShape {
     Rounded,
 }
 
-crate::component::choice!(ChromeShape, "ChromeShape", {
+tilo_ui_base::choice!(ChromeShape, "ChromeShape", {
     Square => "square",
     Rounded => "rounded",
 });
@@ -33,7 +34,7 @@ pub enum ChromeEdge {
     Trailing,
 }
 
-crate::component::choice!(ChromeEdge, "ChromeEdge", {
+tilo_ui_base::choice!(ChromeEdge, "ChromeEdge", {
     Top => "top",
     Bottom => "bottom",
     Leading => "leading",
@@ -149,7 +150,7 @@ pub fn paint_bar_body(
     rect: Rect,
     theme: &Theme,
     ground: Color,
-    flush: crate::part_paint::Sides,
+    flush: tilo_ui_base::part_paint::Sides,
 ) {
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return;
@@ -158,21 +159,24 @@ pub fn paint_bar_body(
     // The sides that stand on the display's own edge are flush: the body
     // draws no rim, edge or hairline there, so no pixel of another colour
     // shows between it and the screen's edge.
-    crate::part_paint::backdrop::fill_role_flush(
+    tilo_ui_base::part_paint::backdrop::fill_role_flush(
         scene,
         transform,
         &body,
-        crate::tokens::SurfaceRole::Bar,
-        theme.finish(crate::tokens::SurfaceRole::Bar),
+        tilo_ui_base::tokens::SurfaceRole::Bar,
+        theme.finish(tilo_ui_base::tokens::SurfaceRole::Bar),
         theme,
         ground,
         flush,
     );
-    let (width, ink) = crate::surface::border(theme).unwrap_or_else(|| {
+    let (width, ink) = tilo_ui_base::surface::border(theme).unwrap_or_else(|| {
         (
             1.0,
-            if theme.finish(crate::tokens::SurfaceRole::Bar).hairline() {
-                crate::chrome::chrome_hairline(theme)
+            if theme
+                .finish(tilo_ui_base::tokens::SurfaceRole::Bar)
+                .hairline()
+            {
+                tilo_ui_base::chrome::chrome_hairline(theme)
             } else {
                 Color::TRANSPARENT
             },
@@ -186,8 +190,8 @@ pub fn paint_bar_body(
 }
 
 impl ChromeBody {
-    fn flush_sides(&self) -> crate::part_paint::Sides {
-        use crate::part_paint::Sides;
+    fn flush_sides(&self) -> tilo_ui_base::part_paint::Sides {
+        use tilo_ui_base::part_paint::Sides;
         if self.shape != ChromeShape::Square {
             return Sides::NONE;
         }
@@ -204,9 +208,9 @@ impl ChromeBody {
     /// [`shadow_bounds`] are the shadow's real extent, so the band never guesses a reach that
     /// clips a larger shadow or leaves a smaller one painting where it may not.
     fn open_side_reach(&self, rect: Rect, theme: &Theme) -> Rect {
-        let Some(bounds) = crate::surface::floating_lift(theme)
+        let Some(bounds) = tilo_ui_base::surface::floating_lift(theme)
             .iter()
-            .filter_map(|token| crate::surface::shadow_bounds(rect, token))
+            .filter_map(|token| tilo_ui_base::surface::shadow_bounds(rect, token))
             .reduce(|one, two| one.union(two))
         else {
             return Rect::new(rect.x0, rect.y1, rect.x1, rect.y1);
@@ -244,31 +248,31 @@ impl ChromeBody {
         if radius > 0.0 {
             // A rounded body floats over what it covers: its shadow falls outside it only,
             // so what shows through is not darkened.
-            crate::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
+            tilo_ui_base::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
         } else {
             // A square body stands on its screen edge: its shadow falls only past its open
             // side, onto what it covers (below a top bar, beside a side rail).
             let cast = self.open_side_reach(rect, theme);
             scene.push_clip_layer(vello::peniko::Fill::NonZero, transform, &cast);
-            crate::surface::floating_shadow(scene, transform, rect, 0.0, 1.0, theme);
+            tilo_ui_base::surface::floating_shadow(scene, transform, rect, 0.0, 1.0, theme);
             scene.pop_layer();
         }
         let finish = theme.chrome_material(self.material);
-        crate::part_paint::backdrop::fill_role_flush(
+        tilo_ui_base::part_paint::backdrop::fill_role_flush(
             scene,
             transform,
             &body,
             SurfaceRole::Bar,
             &finish,
             theme,
-            crate::chrome::panel_ground(theme),
+            tilo_ui_base::chrome::panel_ground(theme),
             self.flush_sides(),
         );
-        let (width, ink) = crate::surface::border(theme).unwrap_or_else(|| {
+        let (width, ink) = tilo_ui_base::surface::border(theme).unwrap_or_else(|| {
             (
                 1.0,
                 if finish.hairline() {
-                    crate::chrome::chrome_hairline(theme)
+                    tilo_ui_base::chrome::chrome_hairline(theme)
                 } else {
                     Color::TRANSPARENT
                 },
@@ -326,7 +330,7 @@ impl Decorator for ChromeBody {
         self.container.collect_damage(regions);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -342,7 +346,7 @@ impl Decorator for ChromeBody {
         self.container.take_structure_dirty()
     }
 
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         Widget::take_structure_change(&mut self.container)
     }
 
@@ -350,9 +354,9 @@ impl Decorator for ChromeBody {
         "Chrome"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.name.as_ref().map(|name| {
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
                 .with_optional_name(Some(name.clone()))
         })
     }

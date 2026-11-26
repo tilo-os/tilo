@@ -25,7 +25,7 @@ use tilo_session::{Options, Session, SessionConfig};
 use tilo_session_core::desktop::verbs::{CHROME_RESOURCE, DISPLAY_KIND, SEARCH_RESOURCE};
 use tilo_sheets::SheetState as _;
 use tilo_sheets::shortcut_guide::{Guide, Pair};
-use ui::input::{KeyLegend, KeyboardBinding, KeyboardModifier};
+use tilo_ui_base::{input::KeyLegend, input::KeyboardBinding, input::KeyboardModifier};
 
 const WIDTH: i32 = 1000;
 const HEIGHT: i32 = 700;
@@ -292,7 +292,7 @@ tilo_test_env::scenario! {
 
     phase f1_shows_the_guide_filled_with_the_chords_the_session_answers;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = one_display();
         assert!(!up(&session), "nothing is showing yet");
 
@@ -359,7 +359,7 @@ tilo_test_env::scenario! {
 
     phase escape_and_done_take_the_guide_down;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = one_display();
 
         tap(&mut session, KEY_F1);
@@ -375,7 +375,7 @@ tilo_test_env::scenario! {
 
     phase the_guide_shows_the_chord_the_person_rebound;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut config = SessionConfig::default();
         let mine = KeyChord::parse("Ctrl+Alt+J").expect("a chord");
         config
@@ -405,7 +405,7 @@ tilo_test_env::scenario! {
 
     phase the_guide_is_drawn_over_the_display_in_focus_and_leaves_it_clean;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = docked();
         assert_eq!(displays(&session).len(), 2, "the shell tells both apart");
         focus(&mut session, 1);
@@ -450,7 +450,7 @@ tilo_test_env::scenario! {
 
     phase the_desktop_help_chord_shows_the_same_guide;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = one_display();
 
         chord(&mut session, &[KEY_LEFT_META, KEY_LEFT_SHIFT, KEY_SLASH]);
@@ -479,7 +479,7 @@ fn done(session: &mut Session) {
                 .map(|(id, _)| (place, *id))
         })
         .expect("the guide shows its Done while it is up");
-    assert!(session.a11y_perform(place, node, &ui::a11y::Action::Activate));
+    assert!(session.a11y_perform(place, node, &tilo_ui_base::a11y::Action::Activate));
     session.step(Duration::from_millis(1)).expect("step");
 }
 
@@ -488,7 +488,7 @@ const MINE: &[u32] = &[KEY_LEFT_CTRL, KEY_LEFT_ALT, KEY_K];
 
 #[test]
 fn a_navigation_shortcut_takes_the_chord_pressed_for_it_in_the_guide() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _turn = take_turns();
     let mut session = one_display();
     let first = open_a_workspace(&mut session);
@@ -535,7 +535,7 @@ fn a_navigation_shortcut_takes_the_chord_pressed_for_it_in_the_guide() {
 
 #[test]
 fn a_chord_another_shortcut_holds_is_refused_by_its_name() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = one_display();
 
     tap(&mut session, KEY_F1);
@@ -575,7 +575,7 @@ fn a_chord_another_shortcut_holds_is_refused_by_its_name() {
 
 #[test]
 fn a_printable_key_alone_is_refused_for_what_it_would_break() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = one_display();
 
     tap(&mut session, KEY_F1);
@@ -603,7 +603,7 @@ fn a_printable_key_alone_is_refused_for_what_it_would_break() {
 
 #[test]
 fn a_changed_pair_goes_back_to_its_defaults_from_the_guide() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _turn = take_turns();
     let mut session = one_display();
     let first = open_a_workspace(&mut session);
@@ -639,7 +639,7 @@ fn a_changed_pair_goes_back_to_its_defaults_from_the_guide() {
 
 #[test]
 fn the_guide_holds_the_desktops_chords_back_while_it_is_up() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = one_display();
     let first = open_a_workspace(&mut session);
     let second = workspace(&session);

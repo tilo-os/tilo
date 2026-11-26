@@ -1,11 +1,14 @@
 //! [`Button`] as a described component.
 
-use crate::component::{Component, Described, Event, Person};
-use crate::icons::Icon;
 use crate::widget::{ButtonRole, ControlSize};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Person,
+};
 
 use super::Button;
-use crate::widget::{BadgeContent, ChipStyle, Tone};
+use crate::{widget::BadgeContent, widget::ChipStyle};
+use tilo_ui_base::widget::Tone;
 
 fn count_content(count: Option<i64>, dot: bool) -> Option<BadgeContent> {
     match count {
@@ -44,7 +47,7 @@ pub struct ButtonProps {
     /// The moment it can first be pressed, where a rule opens it after a wait: until then it
     /// stands dimmed with the time left on its face, and it opens by itself then. A view has no
     /// clock, so the button keeps it.
-    pub opens: Option<crate::component::Moment>,
+    pub opens: Option<tilo_ui_base::component::Moment>,
     /// Whether it is the answer the surface it stands in starts on: an ask that opens puts the
     /// keyboard here, so Enter gives this answer. A view marks the answer its surface opens on,
     /// and leaves it off for every other control beside it.
@@ -53,7 +56,7 @@ pub struct ButtonProps {
     pub description: Option<String>,
     /// What it says is news: a screen reader announces it when it appears or changes, without the
     /// person moving focus — `polite` waits for a pause, `assertive` speaks at once.
-    pub live: Option<crate::a11y::Politeness>,
+    pub live: Option<tilo_ui_base::a11y::Politeness>,
     /// The plain key that presses it while its window has the keyboard (and, on a row's action, while that
     /// row is selected), as the app declared it (`key: "e"`): the host answers it beside the pressed
     /// control's own event. A control of the view's own press shows it beside the label as the keyboard
@@ -201,7 +204,7 @@ impl Described for Button {
         if let Some(key) = shortcut_key.filter(|key| !key.trim().is_empty())
             && !matches!(&press, Event::Action(_))
         {
-            button = button.shortcut_hint(crate::platform::Shortcut::from(key.as_str()));
+            button = button.shortcut_hint(tilo_ui_base::platform::Shortcut::from(key.as_str()));
         }
         match press {
             Event::None => button,
@@ -235,7 +238,7 @@ impl Described for Button {
             .key
             .as_deref()
             .filter(|key| !key.trim().is_empty())
-            .map(crate::platform::Shortcut::from);
+            .map(tilo_ui_base::platform::Shortcut::from);
         let same_face = named
             && props.faces.len() == self.faces.len()
             && props

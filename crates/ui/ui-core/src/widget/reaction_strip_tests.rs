@@ -1,7 +1,7 @@
 use super::*;
-use crate::widget::Widget as _;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::widget::Widget as _;
 use vello::Scene;
 use vello::kurbo::Affine;
 use winit::keyboard::NamedKey;
@@ -30,19 +30,22 @@ fn lay_out_and_draw(widget: &mut ReactionStripWidget, width: f32, theme: &Theme)
         .expect("layout");
     widget.apply_layout(&taffy, node, Point::new(8.0, 8.0));
     let mut scene = Scene::new();
-    widget.draw(&mut crate::draw::DrawCtx::new(
+    widget.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut text,
         theme,
-        crate::presence::PresenceCtx::default().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::default().draw_env(),
     ));
 }
 
 fn click(widget: &mut ReactionStripWidget, at: Point) {
-    crate::testing::dispatch(widget, &crate::synthetic_input::cursor_moved(at.x, at.y));
-    crate::testing::dispatch(widget, &crate::synthetic_input::mouse_press());
-    crate::testing::dispatch(widget, &crate::synthetic_input::mouse_release());
+    crate::testing::dispatch(
+        widget,
+        &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y),
+    );
+    crate::testing::dispatch(widget, &tilo_ui_base::synthetic_input::mouse_press());
+    crate::testing::dispatch(widget, &tilo_ui_base::synthetic_input::mouse_release());
 }
 
 fn reactor(by: &str) -> Reactor {
@@ -273,7 +276,7 @@ tilo_test_env::scenario! {
             &mut text,
             &theme,
         );
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let arriving = strip.motion.get("🎉").expect("the new pill moves");
         assert!(arriving.presence.is_moving(now), "the new pill appears");
         assert!(
@@ -303,9 +306,9 @@ tilo_test_env::scenario! {
             &mut text,
             &reduced,
         );
-        let pose = crate::motion::Appear::pose(
+        let pose = tilo_ui_base::motion::Appear::pose(
             0.5,
-            crate::motion::Direction::Enter,
+            tilo_ui_base::motion::Direction::Enter,
             Rect::new(0.0, 0.0, 40.0, 20.0),
             Point::ZERO,
             reduced.motion(),
@@ -315,7 +318,7 @@ tilo_test_env::scenario! {
             Affine::IDENTITY,
             "reduced motion fades a pill in without scaling it"
         );
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         assert!(!strip.is_moving(), "and it all comes to rest");
     }
 
@@ -354,7 +357,7 @@ fn the_widget_toggles_your_reaction_from_a_click_and_the_keyboard() {
         ]
     );
     assert_eq!(
-        crate::emoji_catalogue::frequent()
+        tilo_ui_base::emoji_catalogue::frequent()
             .first()
             .map(String::as_str),
         Some("🎉"),
@@ -367,17 +370,17 @@ fn the_widget_toggles_your_reaction_from_a_click_and_the_keyboard() {
     assert!(widget.is_picking(), "the add button opens the picker");
     crate::testing::dispatch(
         &mut widget,
-        &crate::synthetic_input::named_key(NamedKey::Escape),
+        &tilo_ui_base::synthetic_input::named_key(NamedKey::Escape),
     );
     assert!(!widget.is_picking(), "Escape closes it without a pick");
     widget.set_focus(true);
     crate::testing::dispatch(
         &mut widget,
-        &crate::synthetic_input::named_key(NamedKey::Home),
+        &tilo_ui_base::synthetic_input::named_key(NamedKey::Home),
     );
     crate::testing::dispatch(
         &mut widget,
-        &crate::synthetic_input::named_key(NamedKey::Enter),
+        &tilo_ui_base::synthetic_input::named_key(NamedKey::Enter),
     );
     assert_eq!(
         widget.take_toggles(),
@@ -391,16 +394,16 @@ fn the_widget_toggles_your_reaction_from_a_click_and_the_keyboard() {
     assert_eq!(tip.as_deref(), Some("Bo reacted with party popper"));
 
     // The same add button opens the shared picker, and a pick reacts.
-    crate::emoji_catalogue::record_used("🌮");
+    tilo_ui_base::emoji_catalogue::record_used("🌮");
     click(&mut widget, add.center());
     assert!(widget.is_picking(), "the add button opens the picker");
     let mut scene = Scene::new();
-    widget.draw_overlay(&mut crate::draw::DrawCtx::new(
+    widget.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         &theme,
-        crate::presence::PresenceCtx::default().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::default().draw_env(),
     ));
     let tree = widget.accessibility().expect("a group");
     assert!(
@@ -409,7 +412,7 @@ fn the_widget_toggles_your_reaction_from_a_click_and_the_keyboard() {
     );
     crate::testing::dispatch(
         &mut widget,
-        &crate::synthetic_input::named_key(NamedKey::Enter),
+        &tilo_ui_base::synthetic_input::named_key(NamedKey::Enter),
     );
     assert!(!widget.is_picking(), "a pick closes it");
     assert_eq!(
@@ -429,13 +432,13 @@ fn the_widget_toggles_your_reaction_from_a_click_and_the_keyboard() {
 fn on_touch_a_pill_is_pressed_within_its_grown_target_and_its_face_stays_compact() {
     let theme = Theme::dark();
     let face_height = StripMetrics::of(&theme).height;
-    let side = f64::from(crate::interaction::InteractionEnvironment::TOUCH.minimum_target());
+    let side = f64::from(tilo_ui_base::interaction::InteractionEnvironment::TOUCH.minimum_target());
     assert!(face_height < side, "the face is compact: {face_height}");
     let mut widget = ReactionStripWidget::new(
         vec![group("👍", &["bo"])],
         Some(tilo_actions::MemberId::person("ada")),
     );
-    widget.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+    widget.set_interaction_environment(tilo_ui_base::interaction::InteractionEnvironment::TOUCH);
     lay_out_and_draw(&mut widget, 320.0, &theme);
     assert!(
         (widget.get_rect().height() - face_height).abs() < 0.5,

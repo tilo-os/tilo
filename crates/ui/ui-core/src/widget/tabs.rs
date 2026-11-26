@@ -1,23 +1,26 @@
 use crate::color_compat::ColorCompat;
-use crate::dnd::{DRAG_START_THRESHOLD_PX, DragPayload};
-use crate::draw::{DrawEnv, MemberFace};
-use crate::i18n::widget_text;
-use crate::icons;
-use crate::paint::PaintCtx;
-use crate::presence::PresenceKey;
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
-use crate::theme::Theme;
 use crate::time::{Duration, Instant};
-use crate::tokens::TextRole;
-use crate::tokens::colors::Colors;
 use crate::widget::AppKind;
-use crate::widget::ModelPath;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
-use crate::widget::hover_intent::{HoverIntent, Item as IntentItem, Sample as IntentSample};
 use crate::widget::window_header::HistoryControl;
 use std::collections::{HashMap, HashSet};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::icons;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::presence::PresenceKey;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::tokens::colors::Colors;
+use tilo_ui_base::widget::ModelPath;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{dnd::DRAG_START_THRESHOLD_PX, dnd::DragPayload};
+use tilo_ui_base::{draw::DrawEnv, draw::MemberFace};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
+use tilo_ui_base::{
+    widget::hover_intent::HoverIntent, widget::hover_intent::Item as IntentItem,
+    widget::hover_intent::Sample as IntentSample,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 #[cfg(test)]
@@ -25,7 +28,9 @@ use winit::event::MouseButton;
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::motion::{Direction, Disclose, ListChange, MotionSpec, Snap};
+use tilo_ui_base::{
+    motion::Direction, motion::Disclose, motion::ListChange, motion::MotionSpec, motion::Snap,
+};
 
 #[path = "tabs_bar_layout.rs"]
 mod bar_layout;
@@ -56,11 +61,11 @@ mod tips;
 mod title_menu;
 #[path = "tabs_toolbar_row.rs"]
 mod toolbar_row;
-use crate::tokens::{EffectiveMotion, MotionSource};
 pub(crate) use new_tab::{new_tab_control, new_tab_name, paint_new_tab};
 use pill_layout::{chip_rects, fit_pill_widths};
 pub use tabs_faces::TabFaceSpec;
 use tabs_faces::{FaceMetrics, PILL_MAX_FACES, PillFaces, paint_tab_face};
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 
 /// Drop-target indicator line width; thin enough not to compete with pill chrome.
 const HOVER_DROP_LINE_PX: f64 = 1.5;
@@ -117,9 +122,9 @@ const CLOSE_SCALE_END: f64 = 0.95;
 /// Terminal y-offset of the close curve; negative drifts upward.
 const CLOSE_Y_OFFSET_END: f64 = -20.0;
 
-/// Alias of [`crate::chrome::shell::SelectionTier`], so the tab strip, top bar, quick settings and
+/// Alias of [`tilo_ui_base::chrome::shell::SelectionTier`], so the tab strip, top bar, quick settings and
 /// strip ribbon express selection the same way.
-pub(crate) type PillAppearance = crate::chrome::shell::SelectionTier;
+pub(crate) type PillAppearance = tilo_ui_base::chrome::shell::SelectionTier;
 
 /// Composes two affine transforms.
 #[allow(
@@ -174,7 +179,7 @@ fn point_delta(a: Point, b: Point) -> vello::kurbo::Vec2 {
     a - b
 }
 
-/// A tab on `ground` in one state: [`crate::chrome::selector_tier`], whose
+/// A tab on `ground` in one state: [`tilo_ui_base::chrome::selector_tier`], whose
 /// tier table every selector shares.
 pub(crate) fn pill_appearance(
     theme: &Theme,
@@ -183,9 +188,9 @@ pub(crate) fn pill_appearance(
     is_hover: bool,
     is_pressed: bool,
 ) -> PillAppearance {
-    crate::chrome::selector_tier(
+    tilo_ui_base::chrome::selector_tier(
         theme,
-        crate::chrome::shell::SelectionState::new(is_active, is_hover, is_pressed),
+        tilo_ui_base::chrome::shell::SelectionState::new(is_active, is_hover, is_pressed),
         ground,
     )
 }
@@ -240,8 +245,8 @@ struct Resist {
 }
 
 /// How far a held tab follows a drag before it stops: the reach of the
-/// rubber band ([`crate::tokens::rubber_band`]), a section gap.
-const RESIST_REACH: f32 = crate::tokens::Spacing::BASE.s4;
+/// rubber band ([`tilo_ui_base::tokens::rubber_band`]), a section gap.
+const RESIST_REACH: f32 = tilo_ui_base::tokens::Spacing::BASE.s4;
 
 #[derive(Clone, Debug)]
 pub struct TabDescriptor {
@@ -301,7 +306,7 @@ pub enum TabMark {
 impl TabMark {
     /// What the mark says to someone who cannot see it, in the shell's language.
     fn description(self) -> String {
-        crate::i18n::I18nManager::lookup_plain(match self {
+        tilo_ui_base::i18n::I18nManager::lookup_plain(match self {
             Self::Busy => "tab-loading",
             Self::Playing => "tab-playing",
             Self::Muted => "tab-muted",
@@ -317,7 +322,7 @@ impl TabMark {
     clippy::struct_excessive_bools,
     reason = "independent interaction and animation flags are not one state machine"
 )]
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     shell,
     "tabs and window groups are the system's (AGENTS.md principle 3)"
 )]
@@ -476,13 +481,13 @@ pub struct TabBar {
     host_reduced_motion: bool,
     /// A shortcut or action is being laid out: chips and pills take their
     /// new places at once.
-    motion_source: crate::tokens::MotionSource,
+    motion_source: tilo_ui_base::tokens::MotionSource,
     /// `tokens.metrics.min_pointer_target`, cached from `build_layout`: a chip's target is derived
     /// from its glyph rect at hit-test time.
     min_pointer_target: f64,
     /// The pointer the bar is used with: a coarse one (a finger) takes a pill
     /// by a taller row's whole height ([`Self::tab_hit_rect`]).
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     /// Last theme fast-duration, for animation scheduling outside `draw`.
     drag_lift_duration: Duration,
     /// Window groups paint the lifted handle with the app preview in the floating pass, above strip
@@ -509,7 +514,7 @@ pub struct TabBar {
     history_action_pressed: bool,
     /// Each window control's hover tint, by control index: it comes at once and fades over the fast
     /// duration, so a sweeping pointer leaves no trail.
-    control_lifts: [crate::motion::Feedback; 3],
+    control_lifts: [tilo_ui_base::motion::Feedback; 3],
     /// What the window's maximize control does where the window stands: restore while maximized,
     /// snap back while floating.
     resize: super::window_controls::Resize,
@@ -681,11 +686,11 @@ impl TabBar {
             reveal_px: Vec::new(),
             reduce_motion: false,
             host_reduced_motion: false,
-            motion_source: crate::tokens::MotionSource::default(),
-            drag_lift_duration: crate::tokens::motion::Durations::default().fast(),
+            motion_source: tilo_ui_base::tokens::MotionSource::default(),
+            drag_lift_duration: tilo_ui_base::tokens::motion::Durations::default().fast(),
             drag_overlay_owned_by_parent: false,
-            min_pointer_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            min_pointer_target: f64::from(tilo_ui_base::tokens::Metrics::BASE.min_pointer_target),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             window_controls: false,
             search_control: None,
             controls: super::window_controls::WindowControls::default(),
@@ -696,9 +701,9 @@ impl TabBar {
             history_action_hover: false,
             history_action_pressed: false,
             control_lifts: [
-                crate::motion::Feedback::default(),
-                crate::motion::Feedback::default(),
-                crate::motion::Feedback::default(),
+                tilo_ui_base::motion::Feedback::default(),
+                tilo_ui_base::motion::Feedback::default(),
+                tilo_ui_base::motion::Feedback::default(),
             ],
             resize: super::window_controls::Resize::Maximize,
             tabbed,
@@ -917,7 +922,7 @@ impl TabBar {
     pub fn location_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         self.touch();
         self.toolbar_row.is_editing() && self.toolbar_row.field_event(event, ctx)
@@ -1080,7 +1085,7 @@ impl TabBar {
             active,
             toolbar.as_ref(),
             self.motion,
-            crate::motion::frame_now(),
+            tilo_ui_base::motion::frame_now(),
         );
     }
 
@@ -1207,7 +1212,7 @@ impl TabBar {
     fn busy_pose_at(&self, now: Instant) -> BusyPose {
         let turning = self.busy_since.keys().any(|id| self.busy_turns(*id, now));
         if turning {
-            BusyPose::Step(crate::animation::indicator_step(busy_epoch(), now))
+            BusyPose::Step(tilo_ui_base::animation::indicator_step(busy_epoch(), now))
         } else {
             BusyPose::Still
         }
@@ -1260,7 +1265,7 @@ impl TabBar {
 
     /// What starts the changes laid out next; see
     /// [`GroupRow::set_motion_source`](super::GroupRow::set_motion_source).
-    pub(crate) fn set_motion_source(&mut self, source: crate::tokens::MotionSource) {
+    pub(crate) fn set_motion_source(&mut self, source: tilo_ui_base::tokens::MotionSource) {
         self.touch();
         self.motion_source = source;
         if source.lands_at_once() {
@@ -1342,7 +1347,7 @@ impl TabBar {
                     &r.inflate(2.0, 2.0),
                 );
             }
-            crate::chrome::paint_selector(scene, pill_transform, &shape, &look, theme);
+            tilo_ui_base::chrome::paint_selector(scene, pill_transform, &shape, &look, theme);
             if faded {
                 scene.pop_layer();
             }
@@ -1636,7 +1641,7 @@ impl TabBar {
             let p0 = transform * Point::new(x0, r.y0);
             let p1 = transform * Point::new(x1, r.y1);
             let mist_rect = Rect::new(p0.x, p0.y, p1.x, p1.y);
-            crate::presence::render::paint_mist(
+            tilo_ui_base::presence::render::paint_mist(
                 scene,
                 theme.tokens.colors.presence.of_rgb(face.colour),
                 mist_rect,
@@ -1725,7 +1730,7 @@ impl TabBar {
         let metrics = self.face_metrics;
         let x0 = r.x1 - reserve - faces.width(metrics) + metrics.gap;
         let cy = r.center().y;
-        let ring = crate::tokens::colors::over(
+        let ring = tilo_ui_base::tokens::colors::over(
             self.ground(ctx.theme),
             pill.look.fill.with_alpha(1.0),
             pill.look.fill.components[3],
@@ -1733,7 +1738,8 @@ impl TabBar {
         let face_rect = |part: usize| {
             square_at(
                 Point::new(
-                    x0 + metrics.face / 2.0 + crate::num::f64_of_usize(part) * metrics.step(),
+                    x0 + metrics.face / 2.0
+                        + tilo_ui_base::num::f64_of_usize(part) * metrics.step(),
                     cy,
                 ),
                 metrics.face,
@@ -1775,7 +1781,7 @@ impl TabBar {
                 ctx.scene.pop_layer();
             }
         }
-        crate::widget::AvatarFace::paint_overflow(
+        tilo_ui_base::widget::AvatarFace::paint_overflow(
             ctx,
             face_rect(faces.faces),
             faces.overflow,
@@ -1996,7 +2002,7 @@ impl TabBar {
     ) {
         let r = c.pill_rect;
         let radius = f64::from(theme.tokens.radii.control);
-        crate::chrome::paint_selector(
+        tilo_ui_base::chrome::paint_selector(
             scene,
             transform,
             &RoundedRect::from_rect(r, radius),
@@ -2546,7 +2552,11 @@ impl TabBar {
     /// How far the selection has moved to the pill it is on, `0..=1` at `now`: `1.0` at rest,
     /// the last pill's selection still fading out at the start of a move.
     #[must_use]
-    fn selection_progress(&self, now: Instant, motion: crate::tokens::EffectiveMotion) -> f64 {
+    fn selection_progress(
+        &self,
+        now: Instant,
+        motion: tilo_ui_base::tokens::EffectiveMotion,
+    ) -> f64 {
         let Some((_, _, started)) = self.selection_move else {
             return 1.0;
         };
@@ -3309,10 +3319,10 @@ impl TabBar {
     /// holds over black and over white alike, so a bright wallpaper never washes it out.
     fn idle_ink(&self, theme: &Theme) -> vello::peniko::Color {
         let colors = &theme.tokens.colors;
-        if !(self.on_strip && crate::chrome::selector_finish(theme).translucent()) {
+        if !(self.on_strip && tilo_ui_base::chrome::selector_finish(theme).translucent()) {
             return colors.text_dim;
         }
-        let grounds = crate::tokens::SelectorFinish::frosted_extremes(
+        let grounds = tilo_ui_base::tokens::SelectorFinish::frosted_extremes(
             colors,
             self.ground(theme),
             colors.surfaces.material_opacity,
@@ -3320,13 +3330,13 @@ impl TabBar {
         colors.ink_on_any(
             &grounds,
             colors.text_dim,
-            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+            tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST,
         )
     }
 
     fn ground(&self, theme: &Theme) -> vello::peniko::Color {
         if self.on_strip {
-            crate::chrome::strip_ground(theme)
+            tilo_ui_base::chrome::strip_ground(theme)
         } else {
             theme.tokens.colors.surfaces.content
         }
@@ -3350,7 +3360,7 @@ impl TabBar {
         // The selection moving between pills: the new selector fades in while the old fades out,
         // and a still theme or reduced motion reads as done at once.
         if self.selection_move.is_some() {
-            let now = crate::motion::frame_now();
+            let now = tilo_ui_base::motion::frame_now();
             let progress = self.selection_progress(now, theme.motion());
             let (from, to, _) = self.selection_move.unwrap_or((0, 0, now));
             let id = self.tabs.get(idx).map(|t| t.id);
@@ -3455,7 +3465,7 @@ const WINDOW_BAR_LEAD_PX: f64 = super::window_controls::EDGE_INSET
     + (super::window_controls::CONTROL_PX - ICON_W) / 2.0
     - PILL_PAD_X;
 pub const TOOLBAR_ROW_HEIGHT: f64 = 40.0;
-const TOOLBAR_LEAD_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+const TOOLBAR_LEAD_GAP: f64 = tilo_ui_base::tokens::Spacing::BASE.s2 as f64;
 pub const NEW_TAB_CHIP_PX: f64 = TAB_BAR_HEIGHT - 2.0 * TAB_PILL_INSET_Y;
 
 const PILL_GAP: f64 = 6.0;
@@ -3674,9 +3684,9 @@ impl Widget for TabBar {
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.touch();
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if self.layout_curves_in_flight() {
-            crate::widget::note_layout_moved();
+            tilo_ui_base::widget::note_layout_moved();
         }
         if self.window_controls {
             let tabbed = self.tabs.len() > 1;
@@ -3858,14 +3868,14 @@ impl Widget for TabBar {
     /// A bar at rest whose own state, theme, placement and the people on
     /// its tabs are as when it was last drawn shows that drawing again
     /// (`TabBar::replays`); anything else draws it afresh.
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
-        self.paint_or_replay(&mut crate::draw::DrawCtx::new(
+        self.paint_or_replay(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             tr,
@@ -3874,7 +3884,7 @@ impl Widget for TabBar {
         ));
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.touch();
         // An open menu of the parts (the overflow's, the suggestions) takes
         // the pointer over it first, and a press off it closes it.
@@ -3959,7 +3969,7 @@ impl Widget for TabBar {
 
     /// The parts' menus (overflow, suggestions) float in the window's top
     /// layer, over the content.
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -3967,7 +3977,7 @@ impl Widget for TabBar {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.toolbar_row
-            .paint_popups(&mut crate::draw::DrawCtx::new(
+            .paint_popups(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -4024,8 +4034,8 @@ impl Widget for TabBar {
         out
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let active_idx = self.tabs.iter().position(|t| t.id == self.active_id);
         let value = active_idx
             .and_then(|i| self.tabs.get(i))
@@ -4077,7 +4087,7 @@ impl Widget for TabBar {
                     } else {
                         node.with_children(vec![
                             drawn(&self.close_rects, AccessNode::new(Role::Button))
-                                .with_name(crate::i18n::I18nManager::format(
+                                .with_name(tilo_ui_base::i18n::I18nManager::format(
                                     "tab-close-named",
                                     &[("title", t.title.clone().into())],
                                 ))
@@ -4097,7 +4107,7 @@ impl Widget for TabBar {
                 if chips {
                     node.children.push(
                         drawn(&self.search_rects, AccessNode::new(Role::Button))
-                            .with_name(crate::i18n::widget_format(
+                            .with_name(tilo_ui_base::i18n::widget_format(
                                 "tab-search-in",
                                 &[("title", t.title.clone().into())],
                             ))
@@ -4111,7 +4121,9 @@ impl Widget for TabBar {
                 if let Some(control) = self.history.get(&t.id).filter(|_| chips) {
                     node.children.push(
                         drawn(&self.history_rects, AccessNode::new(Role::ToggleButton))
-                            .with_name(crate::i18n::I18nManager::lookup_plain("history-mode-title"))
+                            .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain(
+                                "history-mode-title",
+                            ))
                             .with_action_target(format!("tab-history:{}", t.id))
                             .with_state(AccessState {
                                 focusable: true,
@@ -4125,7 +4137,7 @@ impl Widget for TabBar {
                         let mut node = node.with_description(mark.description());
                         node.children.push(
                             AccessNode::new(Role::ToggleButton)
-                                .with_name(crate::i18n::I18nManager::format(
+                                .with_name(tilo_ui_base::i18n::I18nManager::format(
                                     "tab-mute-named",
                                     &[("title", t.title.clone().into())],
                                 ))
@@ -4188,7 +4200,7 @@ impl Widget for TabBar {
             if let Some(control) = self.history.get(&self.active_id) {
                 let mut history = button(
                     Role::ToggleButton,
-                    crate::i18n::I18nManager::lookup_plain("history-mode-title"),
+                    tilo_ui_base::i18n::I18nManager::lookup_plain("history-mode-title"),
                     WINDOW_HISTORY_TARGET,
                     self.history_action,
                 );
@@ -4199,7 +4211,7 @@ impl Widget for TabBar {
             if collapses {
                 tab_children.push(button(
                     Role::Button,
-                    crate::i18n::I18nManager::lookup_plain(
+                    tilo_ui_base::i18n::I18nManager::lookup_plain(
                         super::window_controls::WindowControl::Minimize.name_key(self.resize),
                     ),
                     WINDOW_COLLAPSE_TARGET,
@@ -4208,7 +4220,7 @@ impl Widget for TabBar {
             }
             tab_children.push(button(
                 Role::Button,
-                crate::i18n::I18nManager::lookup_plain(
+                tilo_ui_base::i18n::I18nManager::lookup_plain(
                     super::window_controls::WindowControl::Maximize.name_key(self.resize),
                 ),
                 WINDOW_MAXIMIZE_TARGET,
@@ -4218,7 +4230,7 @@ impl Widget for TabBar {
             if closes {
                 tab_children.push(button(
                     Role::Button,
-                    crate::i18n::I18nManager::lookup_plain("host-window-close"),
+                    tilo_ui_base::i18n::I18nManager::lookup_plain("host-window-close"),
                     WINDOW_CLOSE_TARGET,
                     self.controls.close,
                 ));
@@ -4244,12 +4256,12 @@ impl Widget for TabBar {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         self.touch();
-        if !matches!(action, crate::a11y::Action::Activate) {
+        if !matches!(action, tilo_ui_base::a11y::Action::Activate) {
             return false;
         }
         if target == NEW_TAB_TARGET {
@@ -4323,7 +4335,7 @@ impl Widget for TabBar {
         else {
             return false;
         };
-        if !matches!(action, crate::a11y::Action::Activate)
+        if !matches!(action, tilo_ui_base::a11y::Action::Activate)
             || !self.tabs.iter().any(|tab| tab.id == id)
         {
             return false;
@@ -4362,7 +4374,7 @@ impl Widget for TabBar {
     }
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.touch();
         self.interaction = environment;
@@ -4390,13 +4402,13 @@ impl Widget for TabBar {
     /// the relayout this asks for starts the reveal.
     fn update(
         &mut self,
-        _state: &crate::widget::AppModel,
-        _path: &crate::widget::ModelPath,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         let before = self.hover_intent.open();
         self.settle_hover_intent();
         if self.layout_curves_in_flight() {
-            crate::widget::note_layout_moved();
+            tilo_ui_base::widget::note_layout_moved();
         }
         let changed = self.hover_intent.open() != before;
         if changed {
@@ -4408,7 +4420,7 @@ impl Widget for TabBar {
     /// The bar's curves while they run, and busy arcs while they turn
     /// (`TabBar::busy_needs_frame`).
     fn needs_animation_frame(&self) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.layout_curves_in_flight()
             || self.busy_needs_frame(now)
             || self.control_lifts.iter().any(|lift| lift.is_moving(now))
@@ -4575,7 +4587,7 @@ impl TabBar {
     /// freshly inserted or dimming if it's the drag source.
     fn draw_pills(
         &self,
-        ctx: &mut crate::draw::DrawCtx<'_>,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
         layout_t: Option<f64>,
         fade_window: Duration,
     ) {
@@ -4646,8 +4658,8 @@ impl TabBar {
                 transform.transform_rect_bbox(clip),
                 pill_transform.transform_rect_bbox(clip),
             ];
-            let key = crate::scene_parts::PartKey::new("ui.tab-pill", t.id);
-            crate::scene_parts::part(scene, key, bounds, |scene| {
+            let key = tilo_ui_base::scene_parts::PartKey::new("ui.tab-pill", t.id);
+            tilo_ui_base::scene_parts::part(scene, key, bounds, |scene| {
                 if pill_alpha_active {
                     scene.push_layer(
                         vello::peniko::Fill::NonZero,
@@ -4682,7 +4694,10 @@ impl TabBar {
         transform: Affine,
         theme: &Theme,
     ) -> Vec<Rect> {
-        if !self.keyboard_focus || self.toolbar_row.is_editing() || !crate::focus_visible::shown() {
+        if !self.keyboard_focus
+            || self.toolbar_row.is_editing()
+            || !tilo_ui_base::focus_visible::shown()
+        {
             return Vec::new();
         }
         let Some((idx, _)) = self
@@ -4857,14 +4872,14 @@ impl TabBar {
             accent
         } else {
             let alpha = DROP_LINE_MIN_ALPHA + (1.0 - DROP_LINE_MIN_ALPHA) * eased;
-            crate::paint::with_alpha_scaled(accent, alpha)
+            tilo_ui_base::paint::with_alpha_scaled(accent, alpha)
         };
         scene.fill(vello::peniko::Fill::NonZero, transform, ink, None, &line);
     }
 
     /// The dragged pill's cursor-following ghost, painted LAST so it composites over
     /// everything.
-    pub(crate) fn draw_drag_ghost(&self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub(crate) fn draw_drag_ghost(&self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -4897,7 +4912,7 @@ impl TabBar {
             transform,
             &clip,
         );
-        crate::surface::shadow(
+        tilo_ui_base::surface::shadow(
             scene,
             transform,
             ghost_rect,
@@ -4979,8 +4994,8 @@ impl TabBar {
         self.hover_new_tab = self.new_tab_rect.area() > 0.0 && self.new_tab_rect.contains(p);
         if let Some(resist) = self.resist.as_mut().filter(|r| r.released_at.is_none()) {
             let pull = |d: f64| {
-                let reach = f64::from(crate::tokens::rubber_band(
-                    crate::num::f32_of_f64(d.abs()),
+                let reach = f64::from(tilo_ui_base::tokens::rubber_band(
+                    tilo_ui_base::num::f32_of_f64(d.abs()),
                     RESIST_REACH,
                 ));
                 reach.copysign(d)
@@ -5504,7 +5519,7 @@ mod tests {
                 }
 
                 {
-                    let theme = crate::theme::Theme::dark(); // motion on
+                    let theme = tilo_ui_base::theme::Theme::dark(); // motion on
                     let mut b = four_tab_bar();
                     let width = 900.0;
                     lay_out_at_width_with(&mut b, width, &theme);
@@ -5550,7 +5565,7 @@ mod tests {
             }
 
             {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 // `bar()` builds tabs A/B/C with active_id = 1 ("A").
                 let b = bar();
                 let node = Widget::accessibility(&b).expect("tab bar is not presentational");
@@ -5582,16 +5597,16 @@ mod tests {
                 assert!(Widget::perform_semantic_action(
                     &mut b,
                     "tab-new",
-                    &crate::a11y::Action::Activate,
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &tilo_ui_base::a11y::Action::Activate,
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ));
                 assert!(b.take_new_tab().is_some());
                 assert!(Widget::perform_semantic_action(
                     &mut b,
                     "tab-close:2",
-                    &crate::a11y::Action::Activate,
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &tilo_ui_base::a11y::Action::Activate,
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ));
                 assert_eq!(b.take_close(), Some(2));
@@ -5636,8 +5651,8 @@ mod tests {
                 assert!(Widget::perform_semantic_action(
                     &mut b,
                     "tab:3",
-                    &crate::a11y::Action::Activate,
-                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                    &tilo_ui_base::a11y::Action::Activate,
+                    &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                     &automerge::ROOT,
                 ));
                 assert_eq!(b.active_id(), 3);
@@ -5645,8 +5660,8 @@ mod tests {
                 assert!(!Widget::perform_semantic_action(
                     &mut b,
                     "tab:999",
-                    &crate::a11y::Action::Activate,
-                    &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                    &tilo_ui_base::a11y::Action::Activate,
+                    &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                     &automerge::ROOT,
                 ));
             }
@@ -5702,7 +5717,7 @@ mod tests {
         phase pinned_tabs_lead_the_bar_and_never_close;
         {
             {
-                use crate::theme::Theme;
+                use tilo_ui_base::theme::Theme;
                 use std::collections::HashMap;
                 use taffy::Style;
                 use taffy::prelude::TaffyMaxContent;
@@ -5769,7 +5784,7 @@ mod tests {
             }
 
             {
-                use crate::theme::Theme;
+                use tilo_ui_base::theme::Theme;
                 use std::collections::HashMap;
                 use taffy::Style;
                 use taffy::prelude::TaffyMaxContent;
@@ -5894,9 +5909,9 @@ mod tests {
 
         phase a_strip_of_fixed_views_has_no_close_or_new_tab_and_marks_paint_and_hit;
         {
-            let theme = crate::theme::Theme {
+            let theme = tilo_ui_base::theme::Theme {
                 reduce_motion: true,
-                ..crate::theme::Theme::dark()
+                ..tilo_ui_base::theme::Theme::dark()
             };
             let mut fixed = bar().closable(false).without_new_tab();
             lay_out_at_width_with(&mut fixed, 600.0, &theme);
@@ -5943,7 +5958,7 @@ mod tests {
             assert_eq!(node.children[2].description.as_deref(), Some("Loading"));
             let mut scene = Scene::new();
             let mut tr = TextRenderer::new();
-            tabs.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, crate::presence::PresenceCtx::default().draw_env()));
+            tabs.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, tilo_ui_base::presence::PresenceCtx::default().draw_env()));
             assert!(!scene.encoding().draw_tags.is_empty());
         }
 
@@ -6062,7 +6077,7 @@ mod tests {
             }
 
             {
-                let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+                let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
                 let width = 900.0;
                 let mut with_max = four_tab_bar();
                 let mut without_max = four_tab_bar();
@@ -6141,7 +6156,7 @@ mod tests {
     /// the older layout tests) gives the bar unbounded width, which is precisely
     /// the case that cannot show an overflow.
     pub(super) fn lay_out_at_width(b: &mut TabBar, width: f64) {
-        lay_out_at_width_with(b, width, &crate::theme::Theme::dark());
+        lay_out_at_width_with(b, width, &tilo_ui_base::theme::Theme::dark());
     }
 
     /// Reduce-motion is the interesting theme: it's the production path that lands the reveal
@@ -6151,7 +6166,11 @@ mod tests {
         clippy::cast_possible_truncation,
         reason = "test fixture dimensions are small literal px values"
     )]
-    pub(super) fn lay_out_at_width_with(b: &mut TabBar, width: f64, theme: &crate::theme::Theme) {
+    pub(super) fn lay_out_at_width_with(
+        b: &mut TabBar,
+        width: f64,
+        theme: &tilo_ui_base::theme::Theme,
+    ) {
         use std::collections::HashMap;
         use taffy::{AvailableSpace, Style};
 
@@ -6184,7 +6203,7 @@ mod tests {
 
     /// Aims at the pill's leading third so the cursor never lands on a chip,
     /// then lays out once the hover dwell has run.
-    fn hover_pill(b: &mut TabBar, idx: usize, width: f64, theme: &crate::theme::Theme) {
+    fn hover_pill(b: &mut TabBar, idx: usize, width: f64, theme: &tilo_ui_base::theme::Theme) {
         let r = b.tab_rects()[idx];
         let p = Point::new(r.x0 + r.width() * 0.25, r.center().y);
         let mut handled = false;
@@ -6231,7 +6250,11 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
             std::collections::HashMap::new();
-        let node = b.build_layout(&mut taffy, &crate::theme::Theme::dark(), &mut node_map);
+        let node = b.build_layout(
+            &mut taffy,
+            &tilo_ui_base::theme::Theme::dark(),
+            &mut node_map,
+        );
         (taffy, node)
     }
 
@@ -6273,11 +6296,13 @@ mod tests {
 
     pub(super) fn send_key(b: &mut TabBar, key: Key, text: Option<&str>) -> bool {
         let (taffy, node) = built_layout(b);
-        let event = crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-            key,
-            text.map(Into::into),
-            ElementState::Pressed,
-        ));
+        let event = tilo_ui_base::synthetic_input::keyboard_input(
+            tilo_ui_base::synthetic_input::key_event(
+                key,
+                text.map(Into::into),
+                ElementState::Pressed,
+            ),
+        );
         Dispatch::new().layout(&taffy, node).send(b, &event).handled
     }
 
@@ -6288,8 +6313,8 @@ mod tests {
 
         phase the_bar_edits_an_apps_location_and_commits_it_to_that_tab;
         {
-            let _settled = crate::motion::testing::settled();
-            let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+            let _settled = tilo_ui_base::motion::testing::settled();
+            let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
             let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
             b.set_window_controls(true);
             assert!(b.set_toolbar(1, Some(browser_parts())));
@@ -6367,8 +6392,8 @@ mod tests {
         // A window on a canvas is carried by its bar from anywhere that is not a control: its
         // title and location are not controls, its buttons are.
         {
-            let _settled = crate::motion::testing::settled();
-            let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+            let _settled = tilo_ui_base::motion::testing::settled();
+            let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
             let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
             b.set_window_controls(true);
             b.set_toolbar(1, Some(crowded_parts()));
@@ -6430,8 +6455,8 @@ mod tests {
         // would be squeezed; the rest are in the overflow button's menu, which
         // runs them, and every button names its outcome in a tooltip.
         {
-            let _settled = crate::motion::testing::settled();
-            let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+            let _settled = tilo_ui_base::motion::testing::settled();
+            let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
             let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
             b.set_window_controls(true);
             b.set_toolbar(1, Some(crowded_parts()));
@@ -6447,7 +6472,7 @@ mod tests {
             );
             assert!(more.x1 <= b.window_controls().maximize.x0);
 
-            let lookup = crate::i18n::I18nManager::lookup_plain;
+            let lookup = tilo_ui_base::i18n::I18nManager::lookup_plain;
             let tip = |b: &TabBar, r: Rect| b.tooltip_target_at(r.center()).map(|(_, t)| t);
             assert_eq!(tip(&b, actions[0]), Some("Reload".to_owned()));
             assert_eq!(tip(&b, more), Some(lookup("window-toolbar-more")));
@@ -6494,8 +6519,8 @@ mod tests {
         // it; a click past them edits the whole path.
         {
             use crate::window_toolbar::LocationSegment;
-            let _settled = crate::motion::testing::settled();
-            let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+            let _settled = tilo_ui_base::motion::testing::settled();
+            let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
             let mut parts = browser_parts();
             if let Some(location) = parts.location.as_mut() {
                 location.label = "Downloads".into();
@@ -6517,7 +6542,7 @@ mod tests {
             lay_out_at_width_with(&mut b, 900.0, &theme);
             let mut scene = Scene::new();
             let mut tr = TextRenderer::new();
-            b.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, crate::presence::PresenceCtx::default().draw_env()));
+            b.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, tilo_ui_base::presence::PresenceCtx::default().draw_env()));
             let location = b.location_rect();
             let home = (0..900_u32)
                 .map(|x| Point::new(f64::from(x), location.center().y))
@@ -6553,8 +6578,8 @@ mod tests {
         // arrows choose one and Enter commits its value.
         {
             use crate::window_toolbar::{LocationSuggestion, ToolbarEvent};
-            let _settled = crate::motion::testing::settled();
-            let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+            let _settled = tilo_ui_base::motion::testing::settled();
+            let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
             let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "DuckDuckGo")], 1);
             b.set_window_controls(true);
             b.set_toolbar(1, Some(browser_parts()));
@@ -6630,8 +6655,8 @@ mod tests {
         // A window with a single tab still offers the button that opens another
         // application: its title is a place to start work, not the end of it.
         {
-            let _settled = crate::motion::testing::settled();
-            let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+            let _settled = tilo_ui_base::motion::testing::settled();
+            let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
             let mut solo = TabBar::new("g1", vec![TabDescriptor::new(1, "Chat")], 1);
             solo.set_window_controls(true);
             lay_out_at_width_with(&mut solo, 900.0, &theme);
@@ -6754,7 +6779,7 @@ mod tests {
         let r = b.tab_rects()[1];
         let t0 = crate::time::now();
         sample_at(&mut b, t0, 0, Point::new(r.x0 + 12.0, r.center().y), theme);
-        let dwell = u64::try_from(crate::widget::hover_intent::DWELL.as_millis()).unwrap();
+        let dwell = u64::try_from(tilo_ui_base::widget::hover_intent::DWELL.as_millis()).unwrap();
         layout_at(&mut b, t0, dwell, theme);
         assert!(chips_open(&b, 1), "resting on the pill opens it");
         (b, t0 + Duration::from_millis(dwell))
@@ -6769,7 +6794,7 @@ mod tests {
         // Resting on a pill opens it after a short dwell counted from when the pointer entered;
         // slow motion inside the pill does not restart it.
         {
-            use crate::widget::hover_intent::DWELL;
+            use tilo_ui_base::widget::hover_intent::DWELL;
             assert!(DWELL < Duration::from_millis(200), "shorter than before");
             let dwell = u64::try_from(DWELL.as_millis()).unwrap();
             let theme = Theme::dark().with_reduce_motion(true);
@@ -6802,7 +6827,7 @@ mod tests {
                 "the dwell counts from entry, not the last sample"
             );
             assert!(b.tab_rects()[1].width() > idle + 1.0);
-            let quiet = t0 + Duration::from_millis(dwell) + crate::widget::hover_intent::SETTLE;
+            let quiet = t0 + Duration::from_millis(dwell) + tilo_ui_base::widget::hover_intent::SETTLE;
             assert_eq!(
                 b.hover_intent.deadline(quiet),
                 None,
@@ -6960,7 +6985,7 @@ mod tests {
         // away closes the pill at once, and stopping short releases it once the
         // hold lapses, handing over to whatever is under the pointer.
         {
-            use crate::widget::hover_intent::{AIM_HOLD, DWELL};
+            use tilo_ui_base::{widget::hover_intent::AIM_HOLD, widget::hover_intent::DWELL};
             let theme = Theme::dark().with_reduce_motion(true);
             // Turning away: back to the left, onto pill 0.
             {
@@ -7006,7 +7031,7 @@ mod tests {
         phase crossing_the_close_button_at_speed_toward_the_chips_expands_the_pill;
         // Passing over the × is not hovering it.
         {
-            use crate::widget::hover_intent::DWELL;
+            use tilo_ui_base::widget::hover_intent::DWELL;
             let theme = Theme::dark().with_reduce_motion(true);
             let mut b = four_tab_bar();
             lay_out_at_width_with(&mut b, 900.0, &theme);
@@ -7045,7 +7070,7 @@ mod tests {
         phase stopping_on_the_title_short_of_the_close_button_opens_after_the_aim_hold;
         // Seeing more takes a pause on the pill's body.
         {
-            use crate::widget::hover_intent::{AIM_HOLD, DWELL};
+            use tilo_ui_base::{widget::hover_intent::AIM_HOLD, widget::hover_intent::DWELL};
             let theme = Theme::dark().with_reduce_motion(true);
             let mut b = four_tab_bar();
             lay_out_at_width_with(&mut b, 900.0, &theme);
@@ -7079,7 +7104,7 @@ mod tests {
             let t0 = crate::time::now();
             let start = Point::new(r.x0 + 12.0, r.center().y);
             sample_at(&mut b, t0, 0, start, &theme);
-            let dwell = u64::try_from(crate::widget::hover_intent::DWELL.as_millis()).unwrap();
+            let dwell = u64::try_from(tilo_ui_base::widget::hover_intent::DWELL.as_millis()).unwrap();
             layout_at(&mut b, t0, dwell, &theme);
             assert!(chips_open(&b, 1), "resting on pill 1's body opens it");
             let target = b.close_hit_rect(2).expect("the active pill shows its ×");
@@ -7105,7 +7130,7 @@ mod tests {
         // the bar's edge.
         phase squeezed_titles_stay_prefixes_that_tell_windows_apart;
         {
-            let theme = crate::theme::Theme::dark();
+            let theme = tilo_ui_base::theme::Theme::dark();
             let mut tr = TextRenderer::new();
             let mut docs = TabBar::new(
                 "docs",
@@ -7160,12 +7185,12 @@ mod tests {
                 .expect("the bar is not presentational")
                 .children
                 .into_iter()
-                .filter(|child| child.role == crate::a11y::Role::Tab)
+                .filter(|child| child.role == tilo_ui_base::a11y::Role::Tab)
                 .filter_map(|child| child.name)
                 .collect();
             assert_eq!(names, labels, "a reader hears what the strip reads");
 
-            let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+            let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
             for width in [1200.0, 700.0, 420.0, 320.0] {
                 let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Chat")], 1);
                 b.set_window_controls(true);
@@ -7193,7 +7218,7 @@ mod tests {
         // neither ever closes the window.
         phase a_press_on_a_chip_does_what_that_chip_shows;
         {
-            let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+            let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
             let mut b = TabBar::new(
                 "g1",
                 vec![TabDescriptor::new(1, "Notes"), TabDescriptor::new(2, "Files")],

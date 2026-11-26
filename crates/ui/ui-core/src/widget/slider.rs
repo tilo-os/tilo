@@ -1,17 +1,17 @@
 #[cfg(feature = "model")]
-use crate::permissions::PermissionScope;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::permissions::PermissionScope;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 #[path = "slider_component.rs"]
 mod component;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
-use crate::widget::binding::{BoxedBinding, Pulled};
-use crate::widget::{ActionEmitter, ControlBindingMetadata};
-use crate::widget::{AppModel, ModelPath};
 pub use component::SliderProps;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingMetadata};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
@@ -141,7 +141,7 @@ pub struct Slider {
     /// finely.
     fine_from: Option<(f64, f64)>,
     action: Option<ActionEmitter<f64>>,
-    refused_press: crate::widget::action_emitter::RefusedPress,
+    refused_press: tilo_ui_base::widget::action_emitter::RefusedPress,
     presence_path: Vec<PathSegment>,
     #[cfg(feature = "model")]
     permission_scope: Option<PermissionScope>,
@@ -158,7 +158,7 @@ pub struct Slider {
     accessible_name: Option<String>,
     /// `accessible_name` is already resolved text, spoken as given.
     name_resolved: bool,
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     layout_target: Option<f32>,
     /// Show the value in words beside the track ([`Self::shows_value`]).
     shows_value: bool,
@@ -175,16 +175,16 @@ pub struct Slider {
     touch: SliderTouch,
     /// Where the thumb is drawn, as a share of the range: on the value,
     /// except while it glides to where the track was pressed.
-    thumb: crate::motion::Thumb,
+    thumb: tilo_ui_base::motion::Thumb,
     thumb_placed: bool,
     /// Where the press that sent the thumb gliding was, and what pressed
     /// (the pointer or a finger): the glide gives way to the hand once it
     /// moves past its slop from there.
-    glide_from: Option<(Point, crate::tokens::MotionSource)>,
+    glide_from: Option<(Point, tilo_ui_base::tokens::MotionSource)>,
     /// A view that builds the slider anew on each change: the one built in
     /// its place goes on from its thumb (`motion::keep`).
-    hand_on: crate::motion::HandOn<KeptThumb>,
-    motion: Option<crate::tokens::EffectiveMotion>,
+    hand_on: tilo_ui_base::motion::HandOn<KeptThumb>,
+    motion: Option<tilo_ui_base::tokens::EffectiveMotion>,
     /// How far the hand moves from a press before the drag is the hand's,
     /// the theme's click slop as last laid out: a thumb gliding to the
     /// press gives way to it there.
@@ -221,13 +221,13 @@ impl Slider {
             step: None,
             stops: Vec::new(),
             value_text: None,
-            binding: Some(crate::doc_source::number_key(on_change_path)),
+            binding: Some(tilo_ui_base::doc_source::number_key(on_change_path)),
             on_change: None,
             settles: false,
             drag_from: None,
             fine_from: None,
             action: None,
-            refused_press: crate::widget::action_emitter::RefusedPress::default(),
+            refused_press: tilo_ui_base::widget::action_emitter::RefusedPress::default(),
             presence_path: Vec::new(),
             #[cfg(feature = "model")]
             permission_scope: None,
@@ -236,7 +236,7 @@ impl Slider {
             id_override: None,
             accessible_name: None,
             name_resolved: false,
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             layout_target: None,
             shows_value: false,
             value_area: 0.0,
@@ -244,12 +244,12 @@ impl Slider {
             reads_out: false,
             readout_drawn: false,
             readout_reach: (0.0, vello::kurbo::Insets::ZERO),
-            thumb: crate::motion::Thumb::default(),
+            thumb: tilo_ui_base::motion::Thumb::default(),
             thumb_placed: false,
             glide_from: None,
-            hand_on: crate::motion::HandOn::default(),
+            hand_on: tilo_ui_base::motion::HandOn::default(),
             motion: None,
-            slop: f64::from(crate::tokens::Metrics::BASE.click_slop),
+            slop: f64::from(tilo_ui_base::tokens::Metrics::BASE.click_slop),
             painted: None,
             drawing: None,
         }
@@ -280,7 +280,7 @@ impl Slider {
     fn painted_now(&self) -> Painted {
         (
             self.fraction().to_bits(),
-            self.thumb.get(crate::motion::frame_now()).to_bits(),
+            self.thumb.get(tilo_ui_base::motion::frame_now()).to_bits(),
             self.is_hovered,
             self.is_dragging,
             self.is_focused,
@@ -288,16 +288,19 @@ impl Slider {
         )
     }
 
-    fn effective_motion(&self) -> crate::tokens::EffectiveMotion {
+    fn effective_motion(&self) -> tilo_ui_base::tokens::EffectiveMotion {
         self.motion.unwrap_or_else(|| {
-            crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), false)
+            tilo_ui_base::tokens::EffectiveMotion::new(
+                tilo_ui_base::tokens::Motion::default(),
+                false,
+            )
         })
     }
 
     /// Put the thumb on the value: a press away from it glides there
     /// (`source` is the pointer or a finger), a press on it or a drag
     /// holds it under the hand.
-    fn place_thumb(&mut self, glide: Option<crate::tokens::MotionSource>) {
+    fn place_thumb(&mut self, glide: Option<tilo_ui_base::tokens::MotionSource>) {
         let to = self.fraction();
         if !self.thumb_placed {
             return;
@@ -306,15 +309,15 @@ impl Slider {
             Some(source) => {
                 let motion = self.effective_motion();
                 self.thumb
-                    .go(to, motion, source, crate::motion::frame_now());
+                    .go(to, motion, source, tilo_ui_base::motion::frame_now());
             }
             None => self.thumb.track(to),
         }
     }
 
     /// Create a normalized slider bound to typed process-local state.
-    pub fn from_state(state: &crate::LocalState<f64>) -> Self {
-        let (value, binding) = super::binding::local(state);
+    pub fn from_state(state: &tilo_ui_base::LocalState<f64>) -> Self {
+        let (value, binding) = tilo_ui_base::widget::binding::local(state);
         let mut slider = Self::new("slider", "");
         slider.value = value;
         slider.binding = Some(binding);
@@ -419,10 +422,11 @@ impl Slider {
             return nearest;
         }
         match self.step {
-            Some(step) => {
-                crate::num::snap_decimal(min + ((value - min) / step).round() * step, &[min, step])
-                    .clamp(min, max)
-            }
+            Some(step) => tilo_ui_base::num::snap_decimal(
+                min + ((value - min) / step).round() * step,
+                &[min, step],
+            )
+            .clamp(min, max),
             None => value,
         }
     }
@@ -628,8 +632,8 @@ impl Slider {
     fn press_at(
         &mut self,
         point: Point,
-        source: crate::tokens::MotionSource,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        source: tilo_ui_base::tokens::MotionSource,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.last_cursor = point;
         self.is_dragging = true;
@@ -642,7 +646,7 @@ impl Slider {
         let track = self.track_rect();
         let thumb_x = track.x0
             + TRACK_PADDING
-            + self.thumb.get(crate::motion::frame_now())
+            + self.thumb.get(tilo_ui_base::motion::frame_now())
                 * (track.width() - TRACK_PADDING * 2.0).max(0.0);
         let away = (point.x - thumb_x).abs() > KNOB_RADIUS;
         self.glide_from = away.then_some((point, source));
@@ -651,7 +655,7 @@ impl Slider {
 
     /// The held slider follows `point`; `fine` moves it a tenth as fast
     /// from where fine placement began.
-    fn drag_to(&mut self, point: Point, fine: bool, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn drag_to(&mut self, point: Point, fine: bool, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if !self.is_dragging {
             return;
         }
@@ -678,7 +682,7 @@ impl Slider {
         self.place_thumb(self.glide_from.map(|(_, source)| source));
     }
 
-    fn release(&mut self, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn release(&mut self, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.is_dragging = false;
         self.fine_from = None;
         self.glide_from = None;
@@ -750,14 +754,16 @@ impl Slider {
         if let Some(action) = &mut self.action {
             if !(self.settles && self.is_dragging) {
                 let input = if !self.is_dragging {
-                    crate::widget::input_provenance::Input::Discrete
+                    tilo_ui_base::widget::input_provenance::Input::Discrete
                 } else if std::mem::replace(&mut self.gesture, true) {
-                    crate::widget::input_provenance::Input::Continuing
+                    tilo_ui_base::widget::input_provenance::Input::Continuing
                 } else {
-                    crate::widget::input_provenance::Input::Starting
+                    tilo_ui_base::widget::input_provenance::Input::Starting
                 };
                 let value = self.value;
-                let _ = crate::widget::input_provenance::with_input(input, || action.emit(value));
+                let _ = tilo_ui_base::widget::input_provenance::with_input(input, || {
+                    action.emit(value)
+                });
             } else if let Some(binding) = self
                 .binding
                 .as_mut()
@@ -936,14 +942,17 @@ impl Slider {
             for (r, col) in [
                 (
                     knob_radius + 4.0,
-                    crate::tokens::colors::Colors::hairline_on(
+                    tilo_ui_base::tokens::colors::Colors::hairline_on(
                         unfilled,
-                        crate::chrome::HAIRLINE_ALPHA,
+                        tilo_ui_base::chrome::HAIRLINE_ALPHA,
                     ),
                 ),
                 (
                     knob_radius + 2.0,
-                    crate::tokens::colors::Colors::hairline_on(unfilled, crate::chrome::GLOW_ALPHA),
+                    tilo_ui_base::tokens::colors::Colors::hairline_on(
+                        unfilled,
+                        tilo_ui_base::chrome::GLOW_ALPHA,
+                    ),
                 ),
             ] {
                 scene.stroke(
@@ -1080,7 +1089,7 @@ fn thumb_colors(
     unfilled: vello::peniko::Color,
 ) -> (vello::peniko::Color, vello::peniko::Color) {
     let colors = &theme.tokens.colors;
-    let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+    let floor = tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST;
     if crate::widget::toggle::light_material(colors) {
         let ring = crate::widget::toggle::ink_across(&[unfilled], colors.text_tertiary, floor);
         (colors.surfaces.overlay, ring)
@@ -1091,13 +1100,13 @@ fn thumb_colors(
 }
 
 impl Widget for Slider {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::controls::ActionControls,
         #[cfg(feature = "model")]
-        dyn crate::widget::permission::PermissionGuarded,
-        dyn crate::presence::capability::PublishesPresence
+        dyn tilo_ui_base::widget::permission::PermissionGuarded,
+        dyn tilo_ui_base::presence::capability::PublishesPresence
     );
 
     /// A slider repaints when what it paints changed since the frame on screen: its value, its
@@ -1117,12 +1126,12 @@ impl Widget for Slider {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.thumb.is_moving(crate::motion::frame_now())
+        self.thumb.is_moving(tilo_ui_base::motion::frame_now())
     }
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.interaction = environment;
         self.is_hovered &= environment.supports_hover();
@@ -1189,7 +1198,7 @@ impl Widget for Slider {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if let Some((kept, _)) = self.hand_on.place(self.rect) {
             self.take_up(kept);
         }
@@ -1199,7 +1208,7 @@ impl Widget for Slider {
         self.rect
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1207,7 +1216,7 @@ impl Widget for Slider {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.shows_value {
-            let style = theme.text(crate::tokens::TextRole::Body).numeric();
+            let style = theme.text(tilo_ui_base::tokens::TextRole::Body).numeric();
             // The area fits the widest value the slider shows, so the track
             // does not shift as the value changes.
             let widest = [
@@ -1256,7 +1265,7 @@ impl Widget for Slider {
             self.thumb.snap(value);
             self.thumb_placed = true;
         }
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.drawing = Some(self.painted_now());
         let shown = crate::widget::shown::interaction(crate::widget::Interaction {
             hovered: self.is_hovered,
@@ -1276,13 +1285,19 @@ impl Widget for Slider {
             let fractions: Vec<f64> = self.stops.iter().map(|stop| (stop - min) / span).collect();
             paint_stops(scene, transform, theme, &face, &fractions);
         }
-        crate::widget::draw_over(
+        tilo_ui_base::widget::draw_over(
             self,
-            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1307,7 +1322,7 @@ impl Widget for Slider {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if !self.effectively_enabled() {
             self.touch.cancel();
             if self.enabled
@@ -1345,7 +1360,11 @@ impl Widget for Slider {
                 if *element_state == ElementState::Pressed
                     && self.hit_band().contains(self.last_cursor)
                 {
-                    self.press_at(self.last_cursor, crate::tokens::MotionSource::Pointer, ctx);
+                    self.press_at(
+                        self.last_cursor,
+                        tilo_ui_base::tokens::MotionSource::Pointer,
+                        ctx,
+                    );
                 } else if *element_state == ElementState::Released
                     && self.is_dragging
                     && !self.touch.is_active()
@@ -1360,7 +1379,7 @@ impl Widget for Slider {
                     .step(touch, ctx.scale_factor, |point| band.contains(point))
                 {
                     SliderTouchStep::Press(point) => {
-                        self.press_at(point, crate::tokens::MotionSource::Gesture, ctx);
+                        self.press_at(point, tilo_ui_base::tokens::MotionSource::Gesture, ctx);
                     }
                     SliderTouchStep::Move(point) => {
                         self.drag_to(point, false, ctx);
@@ -1418,14 +1437,14 @@ impl Widget for Slider {
         self.effectively_enabled()
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         // A `0..1` slider speaks a percentage ("50 percent"); a ranged one
         // its value, or the app's own words for it (`value_text`).
         let name = self
             .accessible_name
             .as_deref()
-            .and_then(|name| crate::i18n::spoken_name(name, self.name_resolved));
+            .and_then(|name| tilo_ui_base::i18n::spoken_name(name, self.name_resolved));
         let mut node = AccessNode::new(Role::Slider)
             .with_semantic_key(self.identity().unwrap_or("slider"))
             .with_optional_name(name)
@@ -1448,12 +1467,12 @@ impl Widget for Slider {
     /// percentage).
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         if !self.effectively_enabled() {
             return false;
         }
@@ -1494,24 +1513,24 @@ impl Widget for Slider {
     }
 }
 
-impl crate::presence::capability::PublishesPresence for Slider {
+impl tilo_ui_base::presence::capability::PublishesPresence for Slider {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
     }
 }
 
 #[cfg(feature = "model")]
-impl crate::widget::permission::PermissionGuarded for Slider {
+impl tilo_ui_base::widget::permission::PermissionGuarded for Slider {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }
 }
 
-impl crate::widget::controls::ActionControls for Slider {
-    crate::widget::controls::optional_emitter_controls!();
+impl tilo_ui_base::widget::controls::ActionControls for Slider {
+    tilo_ui_base::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let id = self.test_id().unwrap_or("slider");
-        crate::widget::controls::value_control_bindings(
+        tilo_ui_base::widget::controls::value_control_bindings(
             id,
             self.action.as_ref(),
             self.binding.as_ref().and_then(|b| b.document_key()),
@@ -1521,9 +1540,9 @@ impl crate::widget::controls::ActionControls for Slider {
 
 #[derive(Default)]
 struct KeptThumb {
-    thumb: crate::motion::Thumb,
+    thumb: tilo_ui_base::motion::Thumb,
     placed: bool,
-    glide_from: Option<(Point, crate::tokens::MotionSource)>,
+    glide_from: Option<(Point, tilo_ui_base::tokens::MotionSource)>,
     /// The hand holding the slider, when the view rebuilt it mid-drag (it
     /// does on every value a drag passes): the successor goes on with it.
     held: Option<HeldDrag>,
@@ -1596,11 +1615,11 @@ mod tests {
         s
     }
 
-    use crate::synthetic_input::cursor_moved;
+    use tilo_ui_base::synthetic_input::cursor_moved;
 
-    use crate::synthetic_input::mouse_press;
+    use tilo_ui_base::synthetic_input::mouse_press;
 
-    use crate::synthetic_input::mouse_release;
+    use tilo_ui_base::synthetic_input::mouse_release;
 
     tilo_test_env::scenario! {
         /// What the pointer, a finger and the keys do to a slider's value.
@@ -1743,7 +1762,7 @@ mod tests {
 
         phase fine_drag_uses_the_configured_range_and_step;
         {
-            let state = crate::LocalState::new(50.0);
+            let state = tilo_ui_base::LocalState::new(50.0);
             let mut slider = Slider::from_state(&state).range(20.0, 120.0).step(0.5);
             slider.rect = Rect::new(0.0, 0.0, 200.0, 30.0);
             dispatch(&mut slider, &cursor_moved(60.0, 15.0));
@@ -1773,10 +1792,10 @@ mod tests {
 
         phase decimal_steps_land_on_the_grid_they_name;
         {
-            let state = crate::LocalState::new(0.0);
+            let state = tilo_ui_base::LocalState::new(0.0);
             let mut slider = Slider::from_state(&state).step(0.1);
             slider.set_focus(true);
-            let right = crate::synthetic_input::named_key(NamedKey::ArrowRight);
+            let right = tilo_ui_base::synthetic_input::named_key(NamedKey::ArrowRight);
             for _ in 0..3 {
                 dispatch(&mut slider, &right);
             }
@@ -1789,24 +1808,24 @@ mod tests {
 
         phase keyboard_steps_and_endpoints_preserve_small_changes;
         {
-            let state = crate::LocalState::new(0.5);
+            let state = tilo_ui_base::LocalState::new(0.5);
             let mut slider = Slider::from_state(&state).step(0.0001);
             slider.set_focus(true);
             dispatch(
                 &mut slider,
-                &crate::synthetic_input::named_key(NamedKey::ArrowRight),
+                &tilo_ui_base::synthetic_input::named_key(NamedKey::ArrowRight),
             );
             assert_eq!(state.get(), 0.5001);
             slider.set_value(0.9999);
             dispatch(
                 &mut slider,
-                &crate::synthetic_input::named_key(NamedKey::End),
+                &tilo_ui_base::synthetic_input::named_key(NamedKey::End),
             );
             assert_eq!(state.get(), 1.0);
             slider.set_value(0.0001);
             dispatch(
                 &mut slider,
-                &crate::synthetic_input::named_key(NamedKey::Home),
+                &tilo_ui_base::synthetic_input::named_key(NamedKey::Home),
             );
             assert_eq!(state.get(), 0.0);
         }
@@ -1829,7 +1848,7 @@ mod tests {
             let doc = AutoCommit::new();
             let key = |slider: &mut Slider, named: winit::keyboard::NamedKey| {
                 let ev =
-                    crate::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
+                    tilo_ui_base::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
                 slider.handle_key(&ev, &doc, &automerge::ROOT)
             };
             assert!(key(&mut slider, NamedKey::ArrowRight));
@@ -1869,7 +1888,7 @@ mod tests {
             let doc = AutoCommit::new();
             let key = |slider: &mut Slider, named: winit::keyboard::NamedKey| {
                 let ev =
-                    crate::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
+                    tilo_ui_base::synthetic_input::key_event(Key::Named(named), None, ElementState::Pressed);
                 slider.handle_key(&ev, &doc, &automerge::ROOT)
             };
             assert!(key(&mut slider, NamedKey::ArrowRight));
@@ -1896,14 +1915,14 @@ mod tests {
             dispatch(&mut s, &mouse_press());
             assert!(s.is_held(), "the press holds the knob");
             let held_from = s.drag_from;
-            let bound = crate::component::Bound::<f64>::default();
+            let bound = tilo_ui_base::component::Bound::<f64>::default();
             bound.state.set(0.2);
             let props = crate::widget::SliderProps {
                 value: bound,
                 ..Default::default()
             };
             assert!(
-                <Slider as crate::component::Described>::set_props(&mut s, props),
+                <Slider as tilo_ui_base::component::Described>::set_props(&mut s, props),
                 "a value set elsewhere is taken where it stands"
             );
             assert_eq!(s.value, 0.2, "the value the view holds shows");
@@ -1945,9 +1964,9 @@ mod tests {
             }
 
             {
-                use crate::a11y::Action;
+                use tilo_ui_base::a11y::Action;
 
-                let state = crate::LocalState::new(0.25);
+                let state = tilo_ui_base::LocalState::new(0.25);
                 let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
                 let captured = std::rc::Rc::clone(&changes);
                 let mut first = Slider::from_state(&state)
@@ -1966,7 +1985,7 @@ mod tests {
                     &mut first,
                     &Action::Increment,
                     &[],
-                    &mut crate::widget::Edits::lend(&mut document),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut document),
                     &automerge::ROOT,
                 ));
                 assert_eq!(state.get(), 0.55);
@@ -1994,7 +2013,7 @@ mod tests {
         phase slider_accessibility_reports_and_routes_value_actions;
         {
             {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 // Default value is 0.5 → "50%".
                 let s = Slider::new("any", "value");
                 let node = Widget::accessibility(&s).unwrap();
@@ -2024,7 +2043,7 @@ mod tests {
             }
 
             {
-                use crate::a11y::Action;
+                use tilo_ui_base::a11y::Action;
                 let mut doc = AutoCommit::new();
                 let root = automerge::ROOT;
                 let mut s = Slider::new("any", "value"); // default 0.5
@@ -2033,7 +2052,7 @@ mod tests {
                     &mut s,
                     &Action::Increment,
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &root
                 ));
                 assert!((s.value - 0.55).abs() < 1e-9, "increment steps +5%");
@@ -2041,7 +2060,7 @@ mod tests {
                     &mut s,
                     &Action::Decrement,
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &root
                 ));
                 assert!((s.value - 0.50).abs() < 1e-9, "decrement steps -5%");
@@ -2051,7 +2070,7 @@ mod tests {
                     &mut s,
                     &Action::SetValue("80%".into()),
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &root
                 ));
                 assert!((s.value - 0.80).abs() < 1e-9);
@@ -2061,14 +2080,14 @@ mod tests {
                     &mut s,
                     &Action::SetValue("0.2".into()),
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &root
                 ));
                 assert!((s.value - 0.20).abs() < 1e-9);
             }
 
             {
-                use crate::a11y::Action;
+                use tilo_ui_base::a11y::Action;
                 let mut doc = AutoCommit::new();
                 let root = automerge::ROOT;
                 let mut s = Slider::new("any", "value").with_enabled(false);
@@ -2077,7 +2096,7 @@ mod tests {
                     &mut s,
                     &Action::Increment,
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &root
                 ));
                 assert_eq!(s.value, before, "a disabled slider must not change value");
@@ -2085,9 +2104,9 @@ mod tests {
 
             {
                 let mut slider = slider_at(0.0, 0.0, 200.0, 30.0)
-                    .on_action(crate::widget::test_number_action_binding())
+                    .on_action(tilo_ui_base::widget::test_number_action_binding())
                     .commits_on_release();
-                crate::widget::controls::refresh_control_action_availability(
+                tilo_ui_base::widget::controls::refresh_control_action_availability(
                     &mut slider,
                     &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                         "test:control",
@@ -2099,15 +2118,15 @@ mod tests {
                 dispatch(&mut slider, &cursor_moved(100.0, 15.0));
                 dispatch(&mut slider, &cursor_moved(150.0, 15.0));
                 assert!(
-                    crate::widget::controls::take_control_invocation(&mut slider).is_none(),
+                    tilo_ui_base::widget::controls::take_control_invocation(&mut slider).is_none(),
                     "nothing is invoked while the drag goes on"
                 );
                 dispatch(&mut slider, &mouse_release());
-                let invoked = crate::widget::controls::take_control_invocation(&mut slider)
+                let invoked = tilo_ui_base::widget::controls::take_control_invocation(&mut slider)
                     .expect("letting go invokes the action");
                 let value = invoked.arguments["value"].as_f64().unwrap();
                 assert!((value - slider.value).abs() < 1e-9);
-                assert!(crate::widget::controls::take_control_invocation(&mut slider).is_none());
+                assert!(tilo_ui_base::widget::controls::take_control_invocation(&mut slider).is_none());
             }
 
             {
@@ -2132,12 +2151,12 @@ mod tests {
             }
 
             {
-                let state = crate::LocalState::new(0.0);
+                let state = tilo_ui_base::LocalState::new(0.0);
                 let mut slider = Slider::from_state(&state)
-                    .on_action(crate::widget::test_number_action_binding())
+                    .on_action(tilo_ui_base::widget::test_number_action_binding())
                     .commits_on_release();
                 slider.rect = Rect::new(0.0, 0.0, 200.0, 30.0);
-                crate::widget::controls::refresh_control_action_availability(
+                tilo_ui_base::widget::controls::refresh_control_action_availability(
                     &mut slider,
                     &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                         "test:control",
@@ -2151,22 +2170,22 @@ mod tests {
                     (state.with(|value| *value) - slider.value).abs() < 1e-9,
                     "the local state follows the drag"
                 );
-                assert!(crate::widget::controls::take_control_invocation(&mut slider).is_none());
+                assert!(tilo_ui_base::widget::controls::take_control_invocation(&mut slider).is_none());
                 dispatch(&mut slider, &mouse_release());
-                assert!(crate::widget::controls::take_control_invocation(&mut slider).is_some());
+                assert!(tilo_ui_base::widget::controls::take_control_invocation(&mut slider).is_some());
             }
 
             {
                 let mut slider = Slider::new("native", "legacy")
                     .on_change(|_| panic!("the callback gives way to the bound action"))
-                    .on_action(crate::widget::test_number_action_binding());
+                    .on_action(tilo_ui_base::widget::test_number_action_binding());
                 let mut doc = AutoCommit::new();
-                crate::widget::controls::refresh_control_action_availability(
+                tilo_ui_base::widget::controls::refresh_control_action_availability(
                     &mut slider,
                     &std::collections::HashSet::new(),
                 );
                 assert!(!Widget::is_enabled(&slider));
-                crate::widget::controls::refresh_control_action_availability(
+                tilo_ui_base::widget::controls::refresh_control_action_availability(
                     &mut slider,
                     &std::collections::HashSet::from([tilo_actions::ActionAddress::new(
                         "test:control",
@@ -2176,14 +2195,14 @@ mod tests {
                 assert!(Widget::is_enabled(&slider));
                 assert!(Widget::perform_action(
                     &mut slider,
-                    &crate::a11y::Action::SetValue("80%".into()),
+                    &tilo_ui_base::a11y::Action::SetValue("80%".into()),
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ));
                 assert!(doc.get(&automerge::ROOT, "legacy").unwrap().is_none());
                 assert_eq!(
-                    crate::widget::controls::take_control_invocation(&mut slider)
+                    tilo_ui_base::widget::controls::take_control_invocation(&mut slider)
                         .unwrap()
                         .arguments["value"],
                     0.8
@@ -2192,12 +2211,12 @@ mod tests {
         }
     }
     fn present(s: &mut Slider, theme: &Theme) {
-        s.draw(&mut crate::draw::DrawCtx::new(
+        s.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut Scene::new(),
             Affine::IDENTITY,
             &mut TextRenderer::new(),
             theme,
-            crate::presence::PresenceCtx::empty().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
         ));
         s.mark_drawn();
     }
@@ -2213,7 +2232,7 @@ mod tests {
         with_monotonic_time(t0, || present(&mut s, &theme));
         assert!(!s.needs_animation_frame() && !s.needs_redraw(), "at rest");
         with_monotonic_time(t0, || {
-            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
             dispatch(&mut s, &cursor_moved(180.0, 15.0));
             dispatch(&mut s, &mouse_press());
             assert!((s.value - 0.9).abs() < 1e-9, "the value is set at once");
@@ -2241,7 +2260,7 @@ mod tests {
             assert!(!s.needs_redraw(), "settled: no repaint");
         });
         with_monotonic_time(ms(t0, 1_000), || {
-            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
             dispatch(&mut s, &cursor_moved(64.0, 15.0));
             dispatch(&mut s, &mouse_press());
             assert!(!s.needs_animation_frame());
@@ -2259,8 +2278,11 @@ mod tests {
         with_monotonic_time(t0, || {
             present(&mut s, &theme);
             Widget::set_focus(&mut s, true);
-            crate::motion::note_source(crate::tokens::MotionSource::Keyboard);
-            dispatch(&mut s, &crate::synthetic_input::named_key(NamedKey::End));
+            tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Keyboard);
+            dispatch(
+                &mut s,
+                &tilo_ui_base::synthetic_input::named_key(NamedKey::End),
+            );
             assert_eq!(s.value, 1.0);
             present(&mut s, &theme);
             assert_eq!(s.thumb.get(t0), 1.0, "a key lands");
@@ -2270,7 +2292,7 @@ mod tests {
         let mut s = slider_at(0.0, 0.0, 200.0, 30.0);
         with_monotonic_time(t0, || {
             present(&mut s, &calm);
-            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
             dispatch(&mut s, &cursor_moved(20.0, 15.0));
             dispatch(&mut s, &mouse_press());
             present(&mut s, &calm);
@@ -2285,17 +2307,19 @@ mod tests {
     #[test]
     fn a_drag_goes_on_through_a_view_that_rebuilds_on_every_value() {
         use super::Slider;
-        use crate::widget::Widget;
         use std::cell::Cell;
         use std::rc::Rc;
+        use tilo_ui_base::widget::Widget;
         use winit::event::TouchPhase::{Ended, Moved, Started};
 
         fn built(level: &Rc<Cell<f64>>, rebuilt: &Rc<Cell<bool>>) -> Slider {
             let (level, rebuilt) = (Rc::clone(level), Rc::clone(rebuilt));
-            Slider::from_state(&crate::LocalState::new(level.get())).on_change(move |value| {
-                level.set(value);
-                rebuilt.set(true);
-            })
+            Slider::from_state(&tilo_ui_base::LocalState::new(level.get())).on_change(
+                move |value| {
+                    level.set(value);
+                    rebuilt.set(true);
+                },
+            )
         }
         fn view(
             d: &mut crate::app::driver::Driver,
@@ -2317,7 +2341,7 @@ mod tests {
                 s.value
             );
             assert!((level - expected).abs() < 1e-9, "the model follows");
-            let now = crate::motion::frame_now();
+            let now = tilo_ui_base::motion::frame_now();
             assert!(
                 (s.thumb.get(now) - s.fraction()).abs() < 1e-9,
                 "at {x}: the thumb is under the hand"
@@ -2325,7 +2349,7 @@ mod tests {
             assert!(!s.thumb.is_moving(now), "nothing runs under the hand");
         }
 
-        let theme = crate::theme::Theme::dark();
+        let theme = tilo_ui_base::theme::Theme::dark();
         for finger in [false, true] {
             let level = Rc::new(Cell::new(0.2));
             let rebuilt = Rc::new(Cell::new(false));
@@ -2344,8 +2368,8 @@ mod tests {
             if finger {
                 d.touch(4, Started, thumb, y);
             } else {
-                d.send(&crate::synthetic_input::cursor_moved(thumb, y));
-                d.send(&crate::synthetic_input::mouse_press());
+                d.send(&tilo_ui_base::synthetic_input::cursor_moved(thumb, y));
+                d.send(&tilo_ui_base::synthetic_input::mouse_press());
             }
             view(&mut d, &level, &rebuilt);
             let mut x = thumb;
@@ -2354,7 +2378,7 @@ mod tests {
                 if finger {
                     d.touch(4, Moved, x, y + 3.0);
                 } else {
-                    d.send(&crate::synthetic_input::cursor_moved(x, y + 3.0));
+                    d.send(&tilo_ui_base::synthetic_input::cursor_moved(x, y + 3.0));
                 }
                 assert!(rebuilt.get(), "every value rebuilds the view");
                 view(&mut d, &level, &rebuilt);
@@ -2364,11 +2388,11 @@ mod tests {
             if finger {
                 d.touch(4, Ended, x, y + 3.0);
             } else {
-                d.send(&crate::synthetic_input::mouse_release());
+                d.send(&tilo_ui_base::synthetic_input::mouse_release());
             }
             view(&mut d, &level, &rebuilt);
             let s = d.root::<Slider>();
-            let now = crate::motion::frame_now();
+            let now = tilo_ui_base::motion::frame_now();
             assert!(!s.is_held() && !Widget::wants_pointer_capture(s), "let go");
             assert_eq!(s.value, left_at, "the release keeps the value");
             assert!(

@@ -7,15 +7,17 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Fill;
 
-use crate::input::{InputBinding, KeyboardBinding};
-use crate::interaction::{ControllerFamily, InteractionEnvironment, KeyboardFamily};
-use crate::paint::PaintCtx;
-use crate::platform::PlatformConventions;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::platform::PlatformConventions;
+use tilo_ui_base::{input::InputBinding, input::KeyboardBinding};
+use tilo_ui_base::{
+    interaction::ControllerFamily, interaction::InteractionEnvironment, interaction::KeyboardFamily,
+};
 
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::{TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[path = "input_hint_component.rs"]
 mod component;
@@ -425,12 +427,12 @@ fn tokens_for(binding: &InputBinding, conventions: LegendConventions) -> Vec<(St
         InputBinding::Controller(binding) => binding
             .buttons
             .iter()
-            .filter(|button| **button == crate::input::ControllerButton::Guide)
+            .filter(|button| **button == tilo_ui_base::input::ControllerButton::Guide)
             .chain(
                 binding
                     .buttons
                     .iter()
-                    .filter(|button| **button != crate::input::ControllerButton::Guide),
+                    .filter(|button| **button != tilo_ui_base::input::ControllerButton::Guide),
             )
             .map(|button| (button.label(family).to_owned(), HintShape::RoundButton))
             .collect(),
@@ -472,7 +474,7 @@ fn paint_token(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str, shape: HintShape
         HintShape::Gesture => 11.0,
         HintShape::Keycap => 5.0,
     };
-    crate::surface::card(ctx.scene, ctx.transform, rect, radius, colors.lift(1.0));
+    tilo_ui_base::surface::card(ctx.scene, ctx.transform, rect, radius, colors.lift(1.0));
     let style = token_text_style(theme);
     let (tw, th) = ctx.text.measure_style(label, None, &style);
     ctx.text(
@@ -492,12 +494,12 @@ fn token_text_style(theme: &Theme) -> TextStyle {
 }
 
 impl Widget for InputHint {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn set_platform_conventions(&mut self, conventions: PlatformConventions) {
         self.platform = conventions;
         self.environment.keyboard_family =
-            if conventions.platform() == crate::platform::Platform::MacOs {
+            if conventions.platform() == tilo_ui_base::platform::Platform::MacOs {
                 KeyboardFamily::Apple
             } else {
                 KeyboardFamily::Pc
@@ -521,19 +523,20 @@ impl Widget for InputHint {
             .iter()
             .map(|(label, shape)| match shape {
                 HintShape::RoundButton => {
-                    (crate::num::f64_of_usize(label.chars().count()) * 7.0 + CAP_PAD_X).max(height)
+                    (tilo_ui_base::num::f64_of_usize(label.chars().count()) * 7.0 + CAP_PAD_X)
+                        .max(height)
                 }
                 HintShape::Keycap | HintShape::Gesture => {
-                    (crate::num::f64_of_usize(label.chars().count()) * 7.0 + CAP_PAD_X * 2.0)
+                    (tilo_ui_base::num::f64_of_usize(label.chars().count()) * 7.0 + CAP_PAD_X * 2.0)
                         .max(MIN_CAP_WIDTH)
                 }
             })
             .sum::<f64>()
-            + CAP_GAP * crate::num::f64_of_usize(self.tokens().len().saturating_sub(1));
+            + CAP_GAP * tilo_ui_base::num::f64_of_usize(self.tokens().len().saturating_sub(1));
         let style = Style {
             size: Size::from_lengths(
-                crate::num::f32_of_f64(approximate),
-                crate::num::f32_of_f64(f64::from(theme.tokens.spacing.s6).max(height)),
+                tilo_ui_base::num::f32_of_f64(approximate),
+                tilo_ui_base::num::f32_of_f64(f64::from(theme.tokens.spacing.s6).max(height)),
             ),
             // Fixed target: never the item that gives in an overflowing row.
             flex_shrink: 0.0,
@@ -549,13 +552,13 @@ impl Widget for InputHint {
         text_renderer: &mut TextRenderer,
     ) -> Size<f32> {
         Size {
-            width: crate::num::f32_of_f64(Self::measure_width(
+            width: tilo_ui_base::num::f32_of_f64(Self::measure_width(
                 &self.binding,
                 self.conventions(),
                 text_renderer,
                 &self.layout_theme,
             )),
-            height: crate::num::f32_of_f64(token_height(&self.layout_theme)),
+            height: tilo_ui_base::num::f32_of_f64(token_height(&self.layout_theme)),
         }
     }
 
@@ -570,7 +573,7 @@ impl Widget for InputHint {
         let Ok(current) = tree.style(node) else {
             return;
         };
-        let wanted = Dimension::length(crate::num::f32_of_f64(width));
+        let wanted = Dimension::length(tilo_ui_base::num::f32_of_f64(width));
         if current.size.width == wanted {
             return;
         }
@@ -579,9 +582,9 @@ impl Widget for InputHint {
         let _ = tree.set_style(node, style);
     }
 
-    crate::rect_geometry!(measured);
+    tilo_ui_base::rect_geometry!(measured);
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -599,15 +602,15 @@ impl Widget for InputHint {
         );
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 
     fn name(&self) -> &'static str {
         "InputHint"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::StaticText)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::StaticText)
                 .with_value(self.accessible_label()),
         )
     }
@@ -616,9 +619,12 @@ impl Widget for InputHint {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::input::{ControllerBinding, ControllerButton, KeyLegend, KeyboardModifier};
-    use crate::platform::Platform;
     use taffy::prelude::TaffyMaxContent;
+    use tilo_ui_base::platform::Platform;
+    use tilo_ui_base::{
+        input::ControllerBinding, input::ControllerButton, input::KeyLegend,
+        input::KeyboardModifier,
+    };
 
     #[test]
     fn input_hint_scales_layout_and_names_platform_legends() {
@@ -637,7 +643,7 @@ mod tests {
                 Size::MAX_CONTENT,
                 &mut text,
             );
-            assert!(measured.height > crate::num::f32_of_f64(HEIGHT));
+            assert!(measured.height > tilo_ui_base::num::f32_of_f64(HEIGHT));
             assert_eq!(hint.layout_theme.text_scale, 2.0);
         }
 

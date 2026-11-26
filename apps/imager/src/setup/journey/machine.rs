@@ -9,7 +9,7 @@
 use std::path::{Path, PathBuf};
 
 use install_profile_model::plan::{self, DiskRule, Network, Plan};
-use ui::InvocationCall;
+use tilo_ui_base::InvocationCall;
 use ui::tilo_actions::remote::InvokeArgument;
 use ui::tilo_actions::remote::machines;
 
@@ -386,7 +386,7 @@ pub(super) fn publish(created: &Created, installer_url: &str) -> InvocationCall 
         created.token_file.display().to_string().into(),
     );
     arguments.insert("installer_url".into(), installer_url.into());
-    ui::RemoteActions::current().invoke(
+    tilo_ui_base::RemoteActions::current().invoke(
         machines::target(machines::PLAN),
         InvokeArgument::Json(arguments),
         None,
@@ -396,7 +396,7 @@ pub(super) fn publish(created: &Created, installer_url: &str) -> InvocationCall 
 /// The computers this person planned and has not installed, asked of the
 /// session that holds their Servers workspace: the request the window follows.
 pub(super) fn waiting() -> InvocationCall {
-    ui::RemoteActions::current().invoke(
+    tilo_ui_base::RemoteActions::current().invoke(
         machines::target(machines::LIST),
         InvokeArgument::None,
         None,
@@ -456,9 +456,9 @@ pub(super) fn listed(
 /// it failed. `None` while it is still on its way.
 pub(super) fn answered(call: &InvocationCall) -> Option<Result<serde_json::Value, String>> {
     match call.get() {
-        ui::Arrival::Pending { .. } => None,
-        ui::Arrival::Failed(error) => Some(Err(error.to_string())),
-        ui::Arrival::Ready(update) => Some(match update {
+        tilo_ui_base::Arrival::Pending { .. } => None,
+        tilo_ui_base::Arrival::Failed(error) => Some(Err(error.to_string())),
+        tilo_ui_base::Arrival::Ready(update) => Some(match update {
             ui::tilo_actions::InvocationUpdate::Succeeded { output, .. } => {
                 Ok(output.value.unwrap_or(serde_json::Value::Null))
             }
@@ -486,7 +486,7 @@ pub(super) fn questions(plan: &Plan, drives: &[plan::Drive]) -> Vec<Question> {
             "disk" if drives.is_empty() => crate::setup::strings::t("installer-plan-answer-disk"),
             "disk" => match plan::choose(&plan.disk, drives) {
                 plan::Choice::Drive(drive) => {
-                    let size = ui::format::size(drive.bytes);
+                    let size = tilo_ui_base::format::size(drive.bytes);
                     crate::setup::strings::t_args(
                         "installer-plan-answer-disk-drive",
                         &[
@@ -520,7 +520,7 @@ pub(super) fn disk_answer(plan: &Plan, drives: &[plan::Drive]) -> Option<String>
     }
     Some(match plan::choose(&plan.disk, drives) {
         plan::Choice::Drive(drive) => {
-            let size = ui::format::size(drive.bytes);
+            let size = tilo_ui_base::format::size(drive.bytes);
             crate::setup::strings::t_args(
                 "installer-plan-answer-disk-drive",
                 &[

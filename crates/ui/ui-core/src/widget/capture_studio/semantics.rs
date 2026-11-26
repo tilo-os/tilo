@@ -7,7 +7,9 @@ use super::{
     CaptureStudio, OUTPUTS, OptionChoice, PipLayout, ScreenshotSendTarget, TARGETS,
     receipt::ReceiptAction,
 };
-use crate::a11y::{AccessNode, AccessState, Action, Politeness, Role};
+use tilo_ui_base::{
+    a11y::AccessNode, a11y::AccessState, a11y::Action, a11y::Politeness, a11y::Role,
+};
 use vello::kurbo::Rect;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

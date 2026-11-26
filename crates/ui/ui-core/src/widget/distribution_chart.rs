@@ -10,15 +10,15 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use crate::chart_palette::ChartPalette;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::cartesian_plot::{AxisLabelFormat, format_axis_tick};
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks, ValueAxis};
+use tilo_ui_base::chart_palette::ChartPalette;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
 #[derive(Clone, Debug)]
 pub struct DistributionSeries {
@@ -67,7 +67,7 @@ impl DistributionSeries {
 
     fn color_in(&self, theme: &Theme) -> Color {
         self.palette.map_or(self.color, |index| {
-            crate::chart_palette::ChartPalette::from_theme(theme).categorical(index)
+            tilo_ui_base::chart_palette::ChartPalette::from_theme(theme).categorical(index)
         })
     }
 
@@ -296,11 +296,11 @@ impl DistributionMarks {
             format_axis_tick(value, step, AxisLabelFormat::Compact)
         });
         let margins = Margins::header(theme, &self.frame.title, 0).value_axis(theme, widest);
-        let slot = crate::num::f32_of_f64(
+        let slot = tilo_ui_base::num::f32_of_f64(
             margins
                 .inside(Rect::new(0.0, 0.0, width.max(0.0), 0.0))
                 .width()
-                / crate::num::f64_of_usize(self.series.len().max(1)),
+                / tilo_ui_base::num::f64_of_usize(self.series.len().max(1)),
         );
         let lines = (0..self.series.len())
             .map(|index| self.name_lines(tr, theme, index, slot))
@@ -316,7 +316,7 @@ impl DistributionMarks {
         };
         let style = theme.text(TextRole::Caption);
         let (_, height) = tr.measure_style(&series.label, Some(slot), &style);
-        let lines = crate::num::usize_of_f64(
+        let lines = tilo_ui_base::num::usize_of_f64(
             (f64::from(height) / crate::widget::plot::caption_line(theme)).round(),
         );
         lines.max(1)
@@ -327,7 +327,7 @@ impl DistributionMarks {
     /// when the box is shorter than the room its names asked for.
     fn name_box(&self, tr: &mut TextRenderer, theme: &Theme, index: usize) -> Option<(Rect, f32)> {
         let series = self.series.get(index)?;
-        let wrap = crate::num::f32_of_f64(self.slot_width().max(0.0));
+        let wrap = tilo_ui_base::num::f32_of_f64(self.slot_width().max(0.0));
         let (width, height) =
             tr.measure_style(&series.label, Some(wrap), &theme.text(TextRole::Caption));
         let (width, height) = (f64::from(width), f64::from(height));
@@ -486,7 +486,7 @@ impl PlotMarks for DistributionMarks {
     /// wrap to at `width` adds its own room, so wrapping never eats into the marks.
     fn natural_height(&self, tr: &mut TextRenderer, theme: &Theme, width: f64) -> f64 {
         let (_, lines) = self.margins_at(tr, theme, width);
-        let extra = crate::num::f64_of_usize(lines.saturating_sub(1))
+        let extra = tilo_ui_base::num::f64_of_usize(lines.saturating_sub(1))
             * (crate::widget::plot::caption_line(theme) + f64::from(theme.tokens.spacing.s1));
         NATURAL_HEIGHT + extra
     }
@@ -697,7 +697,7 @@ pub use distribution_chart_component::{
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::Widget as _;
+    use tilo_ui_base::widget::Widget as _;
 
     #[test]
     fn distribution_summary_interpolates_quartiles_or_is_absent() {
@@ -748,7 +748,7 @@ mod tests {
                 (rect.width() - f64::from(width)).abs() < 1.0,
                 "the chart takes the width it is given: {rect:?} at {width}"
             );
-            let names = crate::text_render::with_layout_renderer(&theme, |tr| {
+            let names = tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| {
                 (0..chart.marks.series.len())
                     .filter_map(|index| chart.marks.name_box(tr, &theme, index))
                     .map(|(name, _)| name)

@@ -14,7 +14,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         output.join("component_registry.rs"),
         tilo_component_scan::registry_source(
             &scan,
-            "::tilo_ui",
+            "::tilo_ui_base",
             tilo_component_scan::Exports::Root,
         ),
     )?;

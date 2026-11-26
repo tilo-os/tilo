@@ -110,8 +110,10 @@ impl App {
             -> Result<crate::application::AppComponent, crate::launch::LaunchError>,
         launched: bool,
     ) -> Result<Self, crate::launch::LaunchError> {
-        use crate::collaboration::native_initial::{self, NativeConstruction};
         use crate::launch::{LaunchError, LaunchRecovery};
+        use tilo_ui_base::{
+            collaboration::native_initial, collaboration::native_initial::NativeConstruction,
+        };
         let scope = crate::wake::WakeScope::new();
         let _entry = scope.enter();
         let construction = NativeConstruction::enter_component(collaboration, scope)
@@ -175,14 +177,14 @@ impl App {
         self.presence.broadcast_sink = None;
     }
 
-    pub fn set_pointer_space(&mut self, space: crate::presence::PointerSpace) {
+    pub fn set_pointer_space(&mut self, space: tilo_ui_base::presence::PointerSpace) {
         self.presence.pointer_space = Some(space);
     }
 
     fn local_pointer_key(&self) -> PresenceKey {
         match self.presence.pointer_space.clone() {
             Some(space) => PresenceKey::Pointer { space },
-            None => crate::presence::local_surface_pointer(),
+            None => tilo_ui_base::presence::local_surface_pointer(),
         }
     }
 
@@ -202,7 +204,7 @@ impl App {
                 connected = self.collaboration.manager.is_connected(),
                 "publishing collaboration presence"
             );
-            self.broadcast_presence(k, crate::collaboration::PresencePayload::Arrived);
+            self.broadcast_presence(k, tilo_ui_base::collaboration::PresencePayload::Arrived);
         }
     }
 
@@ -218,7 +220,7 @@ impl App {
         &mut self.presence_ctx
     }
 
-    pub fn followed_peer(&self) -> Option<&crate::permissions::MemberId> {
+    pub fn followed_peer(&self) -> Option<&tilo_ui_base::permissions::MemberId> {
         self.presence.followed_peer.as_ref()
     }
 
@@ -271,8 +273,8 @@ impl App {
     /// so callers only specify what changed.
     pub fn broadcast_presence(
         &mut self,
-        key: crate::presence::PresenceKey,
-        payload: crate::collaboration::PresencePayload,
+        key: tilo_ui_base::presence::PresenceKey,
+        payload: tilo_ui_base::collaboration::PresencePayload,
     ) {
         let _entry = self.enter_wake_scope();
         // Fan out to the optional out-of-band sink first (the shell's Iroh
@@ -294,10 +296,13 @@ impl App {
     /// single widget and disappearing as the member navigates.
     pub fn broadcast_status(
         &mut self,
-        workspace: crate::presence::PresenceKey,
+        workspace: tilo_ui_base::presence::PresenceKey,
         status: Option<&collab_types::presence::LiveStatus>,
     ) -> bool {
-        if !matches!(workspace, crate::presence::PresenceKey::Workspace { .. }) {
+        if !matches!(
+            workspace,
+            tilo_ui_base::presence::PresenceKey::Workspace { .. }
+        ) {
             return false;
         }
         let (text, automatic) = status.map_or_else(
@@ -314,7 +319,7 @@ impl App {
         );
         self.broadcast_presence(
             workspace,
-            crate::collaboration::PresencePayload::Status { text, automatic },
+            tilo_ui_base::collaboration::PresencePayload::Status { text, automatic },
         );
         true
     }
@@ -324,7 +329,7 @@ impl App {
     /// the only condition under which a sender may advance its frontier.
     fn note_document_send(
         &mut self,
-        result: &Result<(), crate::collaboration::CollabSendError>,
+        result: &Result<(), tilo_ui_base::collaboration::CollabSendError>,
     ) -> bool {
         if let Some(status) = document_routes::outbound_failure(result)
             && self.document_routes.outbound != status
@@ -381,12 +386,12 @@ impl App {
     pub fn focus_presence(
         &self,
     ) -> Option<(
-        crate::presence::PresenceKey,
-        crate::collaboration::PresencePayload,
+        tilo_ui_base::presence::PresenceKey,
+        tilo_ui_base::collaboration::PresencePayload,
     )> {
         self.focused_node.and_then(|id| {
             self.inspect_node(id, |widget| {
-                crate::presence::capability::presence_payload(widget)
+                tilo_ui_base::presence::capability::presence_payload(widget)
             })
             .ok()
             .flatten()
@@ -394,7 +399,7 @@ impl App {
     }
 
     fn broadcast_focus_presence(&mut self) {
-        use crate::collaboration::PresencePayload;
+        use tilo_ui_base::collaboration::PresencePayload;
         let current = self.focus_presence();
         if current != self.presence.last_focus {
             // When the caret advances forward under the same scope, publish
@@ -430,13 +435,14 @@ impl App {
     fn broadcast_composing_presence(&mut self) {
         let focused = self.focused_node.and_then(|id| {
             self.inspect_node(id, |widget| {
-                crate::presence::capability::composing_draft(widget)
+                tilo_ui_base::presence::capability::composing_draft(widget)
             })
             .ok()
             .flatten()
         });
-        let draft = focused
-            .or_else(|| crate::presence::capability::composing_draft(self.root_widget.as_ref()));
+        let draft = focused.or_else(|| {
+            tilo_ui_base::presence::capability::composing_draft(self.root_widget.as_ref())
+        });
         if let Some((key, payload)) = self.presence.composing.look(draft, crate::time::now()) {
             self.broadcast_presence(key, payload);
         }
@@ -445,7 +451,8 @@ impl App {
     /// Unlike focus presence, this is polled on the root regardless of
     /// focus.
     fn broadcast_location_presence(&mut self) {
-        let current = crate::presence::capability::presence_payload(self.root_widget.as_ref());
+        let current =
+            tilo_ui_base::presence::capability::presence_payload(self.root_widget.as_ref());
         if current != self.presence.last_location {
             if let Some((key, payload)) = current.clone() {
                 self.broadcast_presence(key, payload);
@@ -456,7 +463,7 @@ impl App {
 
     /// The subset has no `PresencePayload` variant of its own — it rides the
     /// existing presence frame inside a
-    /// [`PresenceKey::view`](crate::presence::PresenceKey::view) key with an
+    /// [`PresenceKey::view`](tilo_ui_base::presence::PresenceKey::view) key with an
     /// inert paired payload; the receiver recognises the key and decodes the
     /// subset instead.
     fn broadcast_view_presence(&mut self) {
@@ -469,11 +476,11 @@ impl App {
             return;
         }
         self.broadcast_presence(
-            crate::presence::PresenceKey::view(&subset),
+            tilo_ui_base::presence::PresenceKey::view(&subset),
             // Inert: the receiver dispatches on the key before inspecting
             // the payload; `Arrived` because the SDK transport relays it
             // with the routing key intact.
-            crate::collaboration::PresencePayload::Arrived,
+            tilo_ui_base::collaboration::PresencePayload::Arrived,
         );
         self.presence.last_view = Some(subset);
     }
@@ -481,7 +488,7 @@ impl App {
     /// Following a peer who hasn't published a View yet latches the intent
     /// without moving anything; the viewport snaps to them once their first
     /// View arrives.
-    pub fn follow(&mut self, peer: crate::permissions::MemberId) {
+    pub fn follow(&mut self, peer: tilo_ui_base::permissions::MemberId) {
         let _entry = self.enter_wake_scope();
         self.presence.followed_peer = Some(peer);
         self.apply_follow();
@@ -536,18 +543,18 @@ impl App {
         let collaboration = &mut self.collaboration;
         collaboration
             .held_requests
-            .extend(crate::widget::take_collab_requests(
+            .extend(tilo_ui_base::widget::take_collab_requests(
                 self.root_widget.as_mut(),
             ));
         let connecting = matches!(
             collaboration.manager.state(),
-            crate::collaboration::CollaborationState::Connecting
+            tilo_ui_base::collaboration::CollaborationState::Connecting
         );
         let mut held = std::collections::VecDeque::new();
         for request in collaboration.held_requests.drain(..) {
             let action = matches!(
                 request,
-                crate::collaboration::CollabRequest::RemoteAction { .. }
+                tilo_ui_base::collaboration::CollabRequest::RemoteAction { .. }
             );
             if action && connecting {
                 held.push_back(request);
@@ -655,8 +662,8 @@ impl App {
     /// and later becomes ready or offline; a frame is scheduled at each
     /// change.
     ///
-    /// [`CollaborationState::Connecting`]: crate::collaboration::CollaborationState::Connecting
-    pub fn collaboration_state(&self) -> crate::collaboration::CollaborationState {
+    /// [`CollaborationState::Connecting`]: tilo_ui_base::collaboration::CollaborationState::Connecting
+    pub fn collaboration_state(&self) -> tilo_ui_base::collaboration::CollaborationState {
         self.collaboration.manager.state()
     }
 
@@ -673,7 +680,7 @@ impl App {
     /// welcome arrives) or was removed, nothing is read or written and the
     /// app says so instead of showing stale or undecryptable content. `None`
     /// until the route reports.
-    pub fn key_access(&self) -> Option<crate::collaboration::KeyAccessState> {
+    pub fn key_access(&self) -> Option<tilo_ui_base::collaboration::KeyAccessState> {
         self.collaboration.key_access
     }
 
@@ -747,18 +754,18 @@ impl App {
 
     /// The content links `route`'s record has its content on in this process: the
     /// record's own, and each window's showing it
-    /// ([`ContentLink::on_route`](crate::collaboration::document_content::ContentLink::on_route)).
+    /// ([`ContentLink::on_route`](tilo_ui_base::collaboration::document_content::ContentLink::on_route)).
     fn links_on_route(
-        route: &crate::collaboration::RouteSpec,
-    ) -> Vec<std::sync::Arc<crate::collaboration::document_content::ContentLink>> {
-        crate::collaboration::document_content::ContentLink::on_route(route)
+        route: &tilo_ui_base::collaboration::RouteSpec,
+    ) -> Vec<std::sync::Arc<tilo_ui_base::collaboration::document_content::ContentLink>> {
+        tilo_ui_base::collaboration::document_content::ContentLink::on_route(route)
     }
 
     /// Send what the window's record content store queued on the record's
     /// route: content it lacks, and content it stored for the record's
-    /// other readers. See [`crate::collaboration::document_content`].
+    /// other readers. See [`tilo_ui_base::collaboration::document_content`].
     fn pump_document_content(&mut self) {
-        use crate::collaboration::document_content::ContentLink;
+        use tilo_ui_base::collaboration::document_content::ContentLink;
         if !self.collaboration.manager.is_connected() {
             return;
         }
@@ -795,8 +802,8 @@ impl App {
     /// for a record that is not the window's.
     fn send_link_requests(
         &mut self,
-        route: Option<&crate::collaboration::RouteSpec>,
-        link: &crate::collaboration::document_content::ContentLink,
+        route: Option<&tilo_ui_base::collaboration::RouteSpec>,
+        link: &tilo_ui_base::collaboration::document_content::ContentLink,
     ) {
         let mut send = |request: CollabRequest| match route {
             Some(route) => self
@@ -817,7 +824,7 @@ impl App {
                 hash: hash.clone(),
                 bytes: bytes.clone(),
             }) {
-                Ok(()) | Err(crate::collaboration::CollabSendError::TooLarge { .. }) => {}
+                Ok(()) | Err(tilo_ui_base::collaboration::CollabSendError::TooLarge { .. }) => {}
                 Err(_) => link.retry_offer(hash, bytes),
             }
         }
@@ -932,7 +939,7 @@ impl App {
 
     fn apply_document_collab_event(
         &mut self,
-        route: &crate::collaboration::RouteSpec,
+        route: &tilo_ui_base::collaboration::RouteSpec,
         mutation: collab_types::DocumentMutation,
     ) {
         tracing::debug!(
@@ -1091,10 +1098,12 @@ impl App {
         if self
             .collaboration
             .manager
-            .try_send(crate::collaboration::CollabRequest::ResourceCommand {
-                request_id,
-                command,
-            })
+            .try_send(
+                tilo_ui_base::collaboration::CollabRequest::ResourceCommand {
+                    request_id,
+                    command,
+                },
+            )
             .is_ok()
         {
             self.collaboration.members_request = Some(request_id);
@@ -1126,7 +1135,7 @@ impl App {
     /// Take the workspace's members' resource as its governance answers it, a complete list each
     /// time: each with the name, role, join time and picture the workspace keeps.
     pub(crate) fn apply_members_answer(&mut self, content: &serde_json::Value) {
-        let members = crate::collaboration::Member::roster_of(content, &self.local_author);
+        let members = tilo_ui_base::collaboration::Member::roster_of(content, &self.local_author);
         self.apply_collab_context(members);
     }
 
@@ -1140,7 +1149,7 @@ impl App {
     /// a locally-derived id is recognised in a workspace-keyed roster) and the
     /// host-assigned name; it never enters the roster itself. The records this window runs read
     /// every member by the name the list gives them ([`tilo_resource::members`]).
-    fn apply_collab_context(&mut self, members: Vec<crate::collaboration::Member>) {
+    fn apply_collab_context(&mut self, members: Vec<tilo_ui_base::collaboration::Member>) {
         tilo_resource::members::know(
             members
                 .iter()
@@ -1195,7 +1204,7 @@ impl App {
         }
     }
 
-    pub fn local_author(&self) -> &crate::permissions::MemberId {
+    pub fn local_author(&self) -> &tilo_ui_base::permissions::MemberId {
         &self.local_author
     }
 }

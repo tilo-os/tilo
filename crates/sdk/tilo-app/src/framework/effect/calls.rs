@@ -6,7 +6,7 @@ use std::sync::mpsc::TryRecvError;
 use tilo_actions::remote::ActionCallError;
 use tilo_actions::{ActionOutput, InvocationUpdate};
 use tilo_resource::Resource;
-use ui_core::Arrival;
+use tilo_ui_base::Arrival;
 
 use super::{EffectAnswer, EffectCx, Effected};
 
@@ -48,7 +48,7 @@ impl<R: Resource, H: 'static> EffectCx<R, H> {
     /// `then` with that outcome on the UI thread.
     fn wait_answer<A: 'static, T: Send + 'static>(
         &mut self,
-        answer: Result<ui_core::Arriving<A, ActionCallError>, String>,
+        answer: Result<tilo_ui_base::Arriving<A, ActionCallError>, String>,
         settled: impl Fn(&Arrival<A, ActionCallError>) -> Option<Result<T, String>> + 'static,
         then: impl FnOnce(&mut H, Result<T, String>, &mut Self) -> EffectAnswer + 'static,
     ) -> Effected {

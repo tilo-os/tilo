@@ -8,16 +8,19 @@
 //! [`ViewCx::upkeep`](super::ViewCx::upkeep) around what it lays out, so it
 //! never needs a widget of its own to do it.
 
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
 use ui_core::application_view::{
     ApplicationFocusRestore, ApplicationLocalView, ApplicationViewState,
 };
-use ui_core::collaboration::{CollabEvent, CollabRequest};
 
-use ui_core::theme::AppearanceIntent;
+use tilo_ui_base::theme::AppearanceIntent;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{
+    widget::AppModel, widget::Collaborative, widget::Decorator, widget::Element, widget::ModelPath,
+    widget::Widget,
+};
 use ui_core::time::Instant;
 use ui_core::view::ThawError;
-use ui_core::widget::DrawChild;
-use ui_core::widget::{AppModel, Collaborative, Decorator, Element, ModelPath, Widget};
 
 type Hook = Box<dyn FnMut()>;
 type Ask = Box<dyn Fn() -> bool>;
@@ -164,7 +167,7 @@ impl Decorator for Kept {
         self.content.as_mut()
     }
 
-    fn provide<'a>(&'a self, request: &mut ui_core::widget::capability::Request<'a, '_>) {
+    fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
         if self.upkeep.view.is_some() && request.wants::<dyn ApplicationViewState>() {
             request.provide::<dyn ApplicationViewState>(self);
             return;
@@ -174,7 +177,7 @@ impl Decorator for Kept {
 
     fn provide_mut<'a>(
         &'a mut self,
-        request: &mut ui_core::widget::capability::RequestMut<'a, '_>,
+        request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
     ) {
         if self.upkeep.collaboration.is_some() && request.wants::<dyn Collaborative>() {
             request.provide::<dyn Collaborative>(self);
@@ -202,7 +205,7 @@ impl Decorator for Kept {
     }
 
     // It adds no structure of its own: what the content changed is all.
-    fn take_structure_change(&mut self) -> ui_core::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         self.content.take_structure_change()
     }
 
@@ -210,7 +213,7 @@ impl Decorator for Kept {
         // A proof that the sync owes nothing runs the tree's sync alone: the
         // work this window takes in is what the frame runs beside it, and
         // taking it in again would change the tree the proof measures.
-        if !ui_core::component_inputs::is_proving()
+        if !tilo_ui_base::component_inputs::is_proving()
             && let Some(sync) = self.upkeep.sync.as_mut()
         {
             sync();
@@ -218,7 +221,7 @@ impl Decorator for Kept {
         self.content.sync(state, path);
     }
 
-    fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,

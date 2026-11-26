@@ -65,11 +65,11 @@ impl App {
         // thread: a window showing the next document never waits on the disk.
         self.close_components();
         self.retirement = retirement;
-        let control_domain = crate::control_domain::ControlDomain::outer();
-        crate::widget::controls::attach_controls(
+        let control_domain = tilo_ui_base::control_domain::ControlDomain::outer();
+        tilo_ui_base::widget::controls::attach_controls(
             root.as_mut(),
             &control_domain,
-            crate::control_domain::DomainAttachment::Initial,
+            tilo_ui_base::control_domain::DomainAttachment::Initial,
         );
         control_domain.finish_initial_installation();
         self.control_domain = control_domain;
@@ -99,7 +99,7 @@ impl App {
             self.collaboration.manager = manager.for_reopened(&checkout);
         }
         if let Some(scope) = self.presence.broadcast_scope.clone() {
-            self.broadcast_presence(scope, crate::collaboration::PresencePayload::Arrived);
+            self.broadcast_presence(scope, tilo_ui_base::collaboration::PresencePayload::Arrived);
         }
         true
     }

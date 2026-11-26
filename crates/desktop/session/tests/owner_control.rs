@@ -164,7 +164,7 @@ fn session(root: &Path) -> Session {
 /// development session's socket answers.
 #[test]
 fn the_owner_socket_serves_the_action_model_and_the_state_it_shows() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let owner = root.path().join("admin-control.sock");
     let dev = root.path().join("test-control.sock");
@@ -279,7 +279,7 @@ fn the_owner_socket_serves_the_action_model_and_the_state_it_shows() {
 /// covers — while the development socket, which drives the seat, still sees the shell.
 #[test]
 fn a_locked_session_invokes_nothing_through_the_owner_socket() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _lock = lock_environment();
     let root = crate::common::private_home();
     let owner = root.path().join("admin-control.sock");
@@ -418,7 +418,7 @@ fn unlock_through_the_development_socket(
 /// does not exist.
 #[test]
 fn the_owner_socket_runs_an_advertised_desktop_shortcut() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let owner = root.path().join("admin-control.sock");
     let mut session = session(root.path());

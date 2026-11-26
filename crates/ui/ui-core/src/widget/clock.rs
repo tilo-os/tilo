@@ -10,26 +10,27 @@ use std::cell::Cell;
 
 use jiff::civil::Date;
 
-use crate::component::{Component, Described};
-use crate::i18n::{ArgValue, widget_format};
 use crate::time::{Duration, Instant};
-use crate::tokens::TextRole;
-use crate::widget::{AppModel, Column, Decorator, ModelPath, Text, Widget};
+use crate::{widget::Column, widget::Text};
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{component::Component, component::Described};
+use tilo_ui_base::{i18n::ArgValue, i18n::widget_format};
+use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::ModelPath, widget::Widget};
 
 /// Seconds in a minute, as a reading's minute is counted.
 const MINUTE: i64 = 60;
 
 /// The zone `name` names, or the person's own when it names none or one this device does not
 /// know.
-fn zone(name: Option<&str>) -> Option<crate::clock::Zone> {
+fn zone(name: Option<&str>) -> Option<tilo_ui_base::clock::Zone> {
     match name.filter(|name| !name.is_empty()) {
-        Some(name) => crate::clock::Zone::named(name),
-        None => Some(crate::clock::Zone::here()),
+        Some(name) => tilo_ui_base::clock::Zone::named(name),
+        None => Some(tilo_ui_base::clock::Zone::here()),
     }
 }
 
 /// The wall clock `at` names in `zone`.
-fn local_in(zone: &crate::clock::Zone, at: i64) -> Option<jiff::Zoned> {
+fn local_in(zone: &tilo_ui_base::clock::Zone, at: i64) -> Option<jiff::Zoned> {
     jiff::Timestamp::from_second(at).ok().map(|at| zone.at(at))
 }
 
@@ -52,12 +53,12 @@ pub struct ClockReading {
 /// What the clock in `zone_name` reads at `now`: `None` for a zone this device does not know.
 #[must_use]
 pub fn reading(zone_name: Option<&str>, now: i64) -> Option<ClockReading> {
-    let here = crate::clock::Zone::here();
+    let here = tilo_ui_base::clock::Zone::here();
     let there = zone(zone_name)?;
     let today = local_in(&here, now)?;
     let moment = local_in(&there, now)?;
     Some(ClockReading {
-        time: crate::clock::time_of_day(moment.time()),
+        time: tilo_ui_base::clock::time_of_day(moment.time()),
         day: day_text(moment.date(), today.date()),
         offset: offset_text(&moment, &today),
     })
@@ -71,7 +72,7 @@ fn day_text(there: Date, today: Date) -> String {
     if today.tomorrow().ok() == Some(there) {
         return widget_format("clock-tomorrow", &[]);
     }
-    crate::format::Formats::current().day_heading_short(there)
+    tilo_ui_base::format::Formats::current().day_heading_short(there)
 }
 
 /// How far the clock of `there` stands from `here`'s, in whole hours and minutes.

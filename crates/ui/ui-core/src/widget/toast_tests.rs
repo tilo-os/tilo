@@ -196,10 +196,10 @@ tilo_test_env::scenario! {
             .closable(false)
             .actions(
                 "Not now",
-                crate::icons::Icon::X,
+                tilo_ui_base::icons::Icon::X,
                 false,
                 "Keep with passkey",
-                crate::icons::Icon::Check,
+                tilo_ui_base::icons::Icon::Check,
                 false,
             );
         let width = 360.0;
@@ -394,8 +394,8 @@ tilo_test_env::scenario! {
         let card = ToastCard::new("Claude Code finished: 8 changes", ToastKind::Info)
             .agent("Claude Code", "publisher-1");
         let face = agent_or_person_face(&card, "Claude Code", "publisher-1");
-        let expected = crate::widget::AvatarFace::new("Claude Code", "publisher-1")
-            .hue(crate::tokens::colors::PresenceHue::Orange)
+        let expected = tilo_ui_base::widget::AvatarFace::new("Claude Code", "publisher-1")
+            .hue(tilo_ui_base::tokens::colors::PresenceHue::Orange)
             .agent();
         assert_eq!(format!("{face:?}"), format!("{expected:?}"));
 
@@ -404,7 +404,7 @@ tilo_test_env::scenario! {
         let face = agent_or_person_face(&person, "Ada", "ada");
         assert_eq!(
             format!("{face:?}"),
-            format!("{:?}", crate::widget::AvatarFace::new("Ada", "ada"))
+            format!("{:?}", tilo_ui_base::widget::AvatarFace::new("Ada", "ada"))
         );
         let card = ToastCard::new("Claude Code finished: 8 changes", ToastKind::Info)
             .body("Launch notes")
@@ -427,7 +427,7 @@ tilo_test_env::scenario! {
 
     phase a_card_action_stands_off_the_card_in_dark;
     {
-        use crate::a11y::relative_luminance;
+        use tilo_ui_base::a11y::relative_luminance;
         for theme in [Theme::dark(), Theme::light()] {
             let colors = &theme.tokens.colors;
             let window = (relative_luminance(colors.surfaces.raised)
@@ -450,7 +450,7 @@ tilo_test_env::scenario! {
 /// it there hands the host the action as a pointer press does.
 #[test]
 fn a_notices_button_is_named_and_pressed_by_assistive_technology() {
-    use crate::widget::Widget as _;
+    use tilo_ui_base::widget::Widget as _;
     let notice = std::rc::Rc::new(std::cell::RefCell::new(Transient::new()));
     let pressed = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
     let mut layer = NoticeLayer::new(std::rc::Rc::clone(&notice), {
@@ -472,9 +472,9 @@ fn a_notices_button_is_named_and_pressed_by_assistive_technology() {
     let mut doc = automerge::AutoCommit::new();
     let key = undo.key.expect("the button keeps its identity");
     assert!(layer.perform_action(
-        &crate::a11y::Action::Activate,
+        &tilo_ui_base::a11y::Action::Activate,
         &[key],
-        &mut crate::widget::Edits::lend(&mut doc),
+        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
     assert_eq!(*pressed.borrow(), ["reopen"]);

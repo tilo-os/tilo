@@ -1,12 +1,13 @@
 //! [`IconWidget`] as a described component.
 
-use crate::component::{Component, Described};
-use crate::icons::Icon;
-use crate::widget::{IconSize, Tone};
+use crate::widget::IconSize;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::widget::Tone;
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::IconWidget;
 
-crate::component::choice!(IconSize, "IconSize", {
+tilo_ui_base::choice!(IconSize, "IconSize", {
     Small => "small",
     Regular => "regular",
     Large => "large",

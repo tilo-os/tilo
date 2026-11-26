@@ -7,10 +7,11 @@ use std::collections::HashMap;
 use automerge::ObjId;
 use taffy::TaffyTree;
 #[cfg(test)]
-use ui::a11y::AccessNode;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::{ModalDialog, Widget};
+use tilo_ui_base::a11y::AccessNode;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
+use ui::widget::ModalDialog;
 use vello::kurbo::Rect;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
@@ -19,11 +20,11 @@ const WIDTH_FRACTION: f64 = 0.62;
 const COMPACT_WIDTH_FRACTION: f64 = 0.9;
 
 fn profile_preview(text: &str) -> ui::widget::Text {
-    ui::widget::Text::new(text).with_role(ui::TextRole::Code)
+    ui::widget::Text::new(text).with_role(tilo_ui_base::TextRole::Code)
 }
 
 fn profile_body(text: &str) -> ui::widget::Column {
-    use ui::TextRole;
+    use tilo_ui_base::TextRole;
     use ui::widget::Text;
     ui::widget::Column::new()
         .with_no_padding()
@@ -49,8 +50,9 @@ pub(crate) struct ExportDialog {
 impl ExportDialog {
     pub(crate) fn new() -> Self {
         Self {
-            dialog: ModalDialog::new(TITLE, profile_body(""))
-                .with_max_width(f64::from(ui::tokens::Metrics::BASE.reading_measure)),
+            dialog: ModalDialog::new(TITLE, profile_body("")).with_max_width(f64::from(
+                tilo_ui_base::tokens::Metrics::BASE.reading_measure,
+            )),
             text: String::new(),
         }
     }
@@ -97,24 +99,24 @@ impl ExportDialog {
             width: taffy::AvailableSpace::Definite(viewport.width() as f32),
             height: taffy::AvailableSpace::Definite(viewport.height() as f32),
         };
-        let _ = ui::widget::solve_layout(&mut tree, node, size);
+        let _ = tilo_ui_base::widget::solve_layout(&mut tree, node, size);
         if self
             .dialog
             .adjust_layout_style(&mut tree, node, text_renderer)
         {
-            let _ = ui::widget::solve_layout(&mut tree, node, size);
+            let _ = tilo_ui_base::widget::solve_layout(&mut tree, node, size);
         }
         self.dialog.apply_layout(&tree, node, viewport.origin());
     }
 
-    pub(crate) fn draw_detached(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+    pub(crate) fn draw_detached(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.dialog.draw_overlay(&mut ui::DrawCtx::new(
+        self.dialog.draw_overlay(&mut tilo_ui_base::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -128,7 +130,7 @@ impl ExportDialog {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        state: &mut ui::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         if !self.is_open() {
@@ -180,17 +182,17 @@ mod tests {
     use winit::keyboard::{Key, NamedKey};
 
     fn escape_event() -> WindowEvent {
-        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
             Key::Named(NamedKey::Escape),
             None,
             ElementState::Pressed,
         ))
     }
 
-    use ui::synthetic_input::mouse_press;
+    use tilo_ui_base::synthetic_input::mouse_press;
 
     fn cursor_move() -> WindowEvent {
-        ui::synthetic_input::cursor_moved(12.0, 16.0)
+        tilo_ui_base::synthetic_input::cursor_moved(12.0, 16.0)
     }
 
     #[test]
@@ -209,8 +211,12 @@ mod tests {
         for (viewport, theme) in cases {
             dialog.layout_in(viewport, &theme, &mut TextRenderer::new());
             assert_eq!(dialog.dialog_rect(), viewport);
-            let update =
-                ui::accesskit_bridge::build_tree_update(&dialog.dialog, &HashMap::new(), None, 1.0);
+            let update = tilo_ui_base::accesskit_bridge::build_tree_update(
+                &dialog.dialog,
+                &HashMap::new(),
+                None,
+                1.0,
+            );
             let modal = update
                 .nodes
                 .iter()
@@ -255,9 +261,9 @@ mod tests {
                 Rect::new(20.0, 40.0, 410.0, 884.0),
             ] {
                 dialog.layout_in(viewport, &theme, &mut text);
-                let presence = ui::presence::PresenceCtx::default();
+                let presence = tilo_ui_base::presence::PresenceCtx::default();
                 let previous = presence.push_viewport(viewport);
-                dialog.draw_detached(&mut ui::DrawCtx::new(
+                dialog.draw_detached(&mut tilo_ui_base::DrawCtx::new(
                     &mut vello::Scene::new(),
                     vello::kurbo::Affine::IDENTITY,
                     &mut text,
@@ -294,7 +300,7 @@ mod tests {
                 &cursor_move(),
                 1.0,
                 Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(
@@ -305,7 +311,7 @@ mod tests {
                 &escape_event(),
                 1.0,
                 Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(!dialog.is_open());
@@ -315,7 +321,7 @@ mod tests {
                 &mouse_press(),
                 1.0,
                 Modifiers::default(),
-                &mut ui::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert!(!dialog.is_open());
@@ -323,7 +329,7 @@ mod tests {
 
         {
             let preview = profile_preview("[install]\nhostname = tilo");
-            assert_eq!(preview.role(), ui::TextRole::Code);
+            assert_eq!(preview.role(), tilo_ui_base::TextRole::Code);
             let body = profile_body("[install]\nhostname = tilo");
             let children = body.children();
             assert_eq!(
@@ -339,7 +345,7 @@ mod tests {
             let mut dialog = ExportDialog::new();
             dialog.show("[install]\nhostname = tilo".into());
             let modal = dialog.accessibility().expect("dialog accessibility");
-            assert_eq!(modal.role, ui::a11y::Role::Dialog);
+            assert_eq!(modal.role, tilo_ui_base::a11y::Role::Dialog);
             assert!(modal.state.modal);
             assert!(!modal.state.hidden);
             assert_eq!(modal.value.as_deref(), Some("[install]\nhostname = tilo"));

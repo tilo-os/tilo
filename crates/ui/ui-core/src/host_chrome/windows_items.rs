@@ -7,8 +7,8 @@ use tilo_actions::{ActionAddress, ControlInvocation};
 
 use super::model::{CommandGroup, HostCommand};
 use crate::history_mode::api::HISTORY_RESOURCE;
-use crate::platform::PlatformConventions;
 use crate::widget::search_request::SEARCH_RESOURCE;
+use tilo_ui_base::platform::PlatformConventions;
 
 /// The launch option a Jump List task passes its invocation in.
 pub(crate) const LAUNCH_OPTION: &str = "--host-command";
@@ -112,7 +112,7 @@ fn quote(value: &str) -> String {
 mod tests {
     use super::{decode, jump_tasks, menu_text, quote};
     use crate::host_chrome::model::CommandGroup;
-    use crate::platform::{Platform, PlatformConventions};
+    use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
 
     fn commands() -> Vec<crate::host_chrome::model::HostCommand> {
         let mut app = crate::app::framework_history_tests::native_chrome_app();

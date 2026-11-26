@@ -6,8 +6,8 @@
 
 use super::*;
 use crate::testing::dispatch;
-use crate::theme::Theme;
 use crate::widget::{Button, Checkbox};
+use tilo_ui_base::theme::Theme;
 
 fn rest() -> Interaction {
     Interaction::default()
@@ -55,13 +55,13 @@ tilo_test_env::scenario! {
                 .unwrap();
             widget.apply_layout(&taffy, node, vello::kurbo::Point::ZERO);
             let mut scene = vello::Scene::new();
-            crate::widget::DrawChild::draw_child(
+            tilo_ui_base::widget::DrawChild::draw_child(
                 widget,
                 &mut scene,
                 vello::kurbo::Affine::IDENTITY,
-                &mut crate::text_render::TextRenderer::new(),
+                &mut tilo_ui_base::text_render::TextRenderer::new(),
                 &theme,
-                &crate::draw::DrawEnv::default(),
+                &tilo_ui_base::draw::DrawEnv::default(),
             );
             scene.encoding().draw_data.clone()
         };
@@ -87,11 +87,11 @@ tilo_test_env::scenario! {
         assert!(Widget::accessibility_hidden(&shown));
         assert!(!dispatch(
             &mut shown,
-            &crate::synthetic_input::mouse_press()
+            &tilo_ui_base::synthetic_input::mouse_press()
         ));
         assert!(!dispatch(
             &mut shown,
-            &crate::synthetic_input::named_key(winit::keyboard::NamedKey::Space)
+            &tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::Space)
         ));
     }
 }

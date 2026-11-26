@@ -1,6 +1,9 @@
 //! [`DateField`] as a described component.
 
-use crate::component::{Bound, Component, Described, Event, PartViews};
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+    component::PartViews,
+};
 
 use super::DateField;
 
@@ -10,7 +13,7 @@ use super::DateField;
 #[component(name = "DateField", role = "ComboBox", label = "label")]
 pub struct DateFieldProps {
     /// The day, as the moment a component binds (its ISO text), and where a picked day goes.
-    #[component(bind(ty = crate::component::Moment))]
+    #[component(bind(ty = tilo_ui_base::component::Moment))]
     pub value: Bound<String>,
     /// The time of day the day is due at, when its type pairs one with it (`9:00`): what the chip says
     /// after the day.
@@ -24,9 +27,9 @@ pub struct DateFieldProps {
     pub compact: bool,
     /// The control that picks the time of day the day is due at: `ui.TimeField(bind: t.at)`.
     #[component(part)]
-    pub time: Vec<crate::widget::Element>,
+    pub time: Vec<tilo_ui_base::widget::Element>,
     /// A day was picked, or the date was cleared: carries the moment, or nothing for a cleared one.
-    #[component(event(value = crate::component::Moment))]
+    #[component(event(value = tilo_ui_base::component::Moment))]
     pub change: Event,
 }
 
@@ -70,7 +73,7 @@ impl Described for DateField {
         )
         .on_change(move |day| {
             let moment = super::with_day(&held.get(), day);
-            shown.edited(crate::component::Value::Text(moment));
+            shown.edited(tilo_ui_base::component::Value::Text(moment));
         })
     }
 

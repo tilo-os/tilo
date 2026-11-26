@@ -175,7 +175,9 @@ pub enum SessionEvent {
 /// A host implements it over the engine it holds, so the toolkit draws a grid and sends keys
 /// without knowing what runs the shell. The handle is shared and may be polled from the frame
 /// that draws it.
-pub use crate::key_input::{Button, Held, Key, Keys, Named};
+pub use tilo_ui_base::{
+    key_input::Button, key_input::Held, key_input::Key, key_input::Keys, key_input::Named,
+};
 
 pub trait Session: Keys {
     /// The grid as it stands now, as the host last converted it: a handle, so a frame that did
@@ -307,7 +309,7 @@ pub struct Palette {
 impl Palette {
     /// A palette from the theme's own terminal colours.
     #[must_use]
-    pub fn from_theme(theme: &crate::theme::Theme) -> Self {
+    pub fn from_theme(theme: &tilo_ui_base::theme::Theme) -> Self {
         let named = &theme.tokens.terminal_palette;
         Self {
             foreground: named.fg_default,

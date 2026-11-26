@@ -1,7 +1,7 @@
 //! [`SankeyChart`] as a described component: nodes in stages, and the weighted links between them.
 
-use crate::component::{Component, Described};
 use crate::widget::{ChartLink, ChartNode};
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::SankeyChart;
 

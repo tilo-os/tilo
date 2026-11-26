@@ -62,18 +62,18 @@ fn owned_resources_at<W: Widget + ?Sized>(
     resources: &mut Vec<ResourceSpec>,
 ) {
     let presence = crate::invocation_scope::current_presence();
-    let mut local = crate::widget::resources::resources_for(widget, presence.as_ref(), doc);
+    let mut local = tilo_ui_base::widget::resources::resources_for(widget, presence.as_ref(), doc);
     if owner == Some(false) {
         local = local
             .into_iter()
-            .map(crate::widget::resources::outside_document)
+            .map(tilo_ui_base::widget::resources::outside_document)
             .collect();
     }
     let eager_claim = address.is_some_and(|address| claims(&local, address) != 0);
     resources.extend(local);
     if let Some(address) = address
         && !eager_claim
-        && let Some(resource) = crate::widget::resources::resource_for(
+        && let Some(resource) = tilo_ui_base::widget::resources::resource_for(
             widget,
             presence.as_ref(),
             doc,
@@ -81,13 +81,13 @@ fn owned_resources_at<W: Widget + ?Sized>(
         )
     {
         resources.push(if owner == Some(false) {
-            crate::widget::resources::resolved_outside_document(resource)
+            tilo_ui_base::widget::resources::resolved_outside_document(resource)
         } else {
             resource
         });
     }
     widget.for_each_child(&mut |child| {
-        if !crate::widget::component_walk::has_separate_document_owner(child) {
+        if !tilo_ui_base::widget::component_walk::has_separate_document_owner(child) {
             owned_resources_at(child, owner.map(|_| false), doc, address, resources);
         }
     });
@@ -106,7 +106,7 @@ pub(crate) fn resolve_on_demand(
     binding
         .read_document(doc, |doc, _| {
             root.for_each_child(&mut |child| {
-                if !crate::widget::component_walk::has_separate_document_owner(child) {
+                if !tilo_ui_base::widget::component_walk::has_separate_document_owner(child) {
                     component_resources(child, doc, Some(address), &mut resources);
                 }
             });
@@ -151,11 +151,13 @@ fn provider_at<W: Widget + ?Sized>(
             if owner {
                 resource
             } else {
-                crate::widget::resources::resolved_outside_document(resource)
+                tilo_ui_base::widget::resources::resolved_outside_document(resource)
             }
         });
     widget.for_each_child(&mut |child| {
-        if found.is_none() && !crate::widget::component_walk::has_separate_document_owner(child) {
+        if found.is_none()
+            && !tilo_ui_base::widget::component_walk::has_separate_document_owner(child)
+        {
             found = provider_at(child, false, binding, address);
         }
     });
@@ -176,7 +178,7 @@ impl ResourceReadRequest<'_> {
                     .read_document(&AutoCommit::new(), |doc, _| {
                         let mut resources = Vec::new();
                         root.for_each_child(&mut |child| {
-                            if !crate::widget::component_walk::has_separate_document_owner(child) {
+                            if !tilo_ui_base::widget::component_walk::has_separate_document_owner(child) {
                                 component_resources(child, doc, self.address, &mut resources);
                             }
                         });
@@ -184,7 +186,7 @@ impl ResourceReadRequest<'_> {
                             && claims(&resources, address) == 0
                         {
                             root.for_each_child(&mut |child| {
-                                if !crate::widget::component_walk::has_separate_document_owner(
+                                if !tilo_ui_base::widget::component_walk::has_separate_document_owner(
                                     child,
                                 ) && let Some(resource) = provider(child, &binding, address)
                                 {
@@ -201,7 +203,7 @@ impl ResourceReadRequest<'_> {
                     interactive: !self.hidden,
                 });
             }
-        } else if crate::widget::component_walk::has_separate_document_owner(root) {
+        } else if tilo_ui_base::widget::component_walk::has_separate_document_owner(root) {
             return Err(refused(
                 "resource_unavailable",
                 "Separate document ownership is unavailable",
@@ -259,7 +261,7 @@ pub(crate) fn select_local_target(
     address: &ActionAddress,
 ) -> Result<LocalResourceTarget, ApiError> {
     let mut resources = Vec::new();
-    if !crate::widget::component_walk::has_separate_document_owner(root) {
+    if !tilo_ui_base::widget::component_walk::has_separate_document_owner(root) {
         owned_resources(root, doc, Some(address), &mut resources);
     }
     let mut count = claims(&resources, address);
@@ -273,7 +275,7 @@ pub(crate) fn select_local_target(
             // Hidden claims still count: they can never donate fallback.
             let binding = snapshot.owner;
             target = LocalResourceTarget::Component(BoundActionTarget {
-                input: crate::widget::input_provenance::Input::Discrete,
+                input: tilo_ui_base::widget::input_provenance::Input::Discrete,
                 address: BoundActionAddress {
                     instance_id: binding.instance_id,
                     address: address.clone(),

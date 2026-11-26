@@ -3,11 +3,9 @@ use crate::framework::{ResourceApp, ViewCx, testing::HeadlessApp};
 use crate::prelude::*;
 use serde_json::{Map, Value, json};
 use tilo_resource::{Doc, ModelError};
+use tilo_ui_base::widget::Element;
 use ui_core::automerge::{ROOT, ReadDoc, transaction::Transactable};
-use ui_core::{
-    headless::{Action, Invocation},
-    widget::Element,
-};
+use ui_core::{headless::Action, headless::Invocation};
 
 struct Document;
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

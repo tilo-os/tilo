@@ -346,7 +346,7 @@ fn the_notes_body_written_in_a_place_is_the_body_the_notes_app_reads() {
 /// fields in its controls: drawn, not only built.
 #[test]
 fn a_placed_note_is_laid_out_on_the_framed_canvas_as_its_editor() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut service, _) = notebook();
     let note = note(&mut service, "Groceries");
     let (mut part, link) = super::tests_support::part_as(reading_with_windows(), None);
@@ -704,7 +704,7 @@ fn row_once_loaded(
 /// reading the session publishes.
 #[test]
 fn a_chat_place_waits_for_the_tasks_package_then_ticks_the_task_made_from_its_message_done() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let room = room();
     // What the message's reading says was made from it: the task, as its own app keeps it.
     let reading = room

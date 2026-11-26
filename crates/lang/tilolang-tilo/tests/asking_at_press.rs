@@ -183,7 +183,7 @@ mod focus {
     /// The shell staged as its scenario `scenario`, its desktop in a window that takes the
     /// keyboard as it opens.
     fn staged(scenario: &str) -> StagedWindow {
-        let mut theme = ui::Theme::dark();
+        let mut theme = tilo_ui_base::Theme::dark();
         theme.reduce_motion = true;
         StagedWindow::staged(scenario, (1280, 800), theme)
     }

@@ -34,11 +34,11 @@
 //! prompt.reject("Wrong password");
 //! ```
 
-use crate::i18n::{widget_format, widget_text};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -48,22 +48,25 @@ use winit::event::{ElementState, KeyEvent, MouseButton, TouchPhase, WindowEvent}
 use winit::keyboard::{Key, NamedKey};
 use zeroize::Zeroizing;
 
-use crate::a11y::{AccessNode, AccessState, Politeness, Role};
-use crate::caps_lock::CapsLockEstimate;
-use crate::icons::Icon;
-use crate::interaction::{InputModality, InteractionEnvironment, PointerPrecision};
 use crate::passcode_keyboard::{PasscodeInput, PasscodeKey, PasscodeKeyboard};
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::DrawChild;
 use crate::widget::control_size::ControlSize;
 use crate::widget::modal_dialog::{self, ModalAction, ModalLayout, ModalSpec};
-use crate::widget::{
-    Button, ButtonFace, ButtonRole, EventCtx, ModalDialog, ModelPath, TaffyTreeExt, TextInput,
-    TextInputKind, Widget,
+use crate::{
+    widget::Button, widget::ButtonFace, widget::ButtonRole, widget::ModalDialog, widget::TextInput,
+    widget::TextInputKind,
 };
+use tilo_ui_base::caps_lock::CapsLockEstimate;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Politeness, a11y::Role};
+use tilo_ui_base::{
+    interaction::InputModality, interaction::InteractionEnvironment, interaction::PointerPrecision,
+};
+use tilo_ui_base::{widget::EventCtx, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
 
 const NOTICE_MAX_LINES: usize = 3;
 
@@ -325,7 +328,7 @@ pub struct PromptLayout {
     clippy::struct_excessive_bools,
     reason = "independent focus, touch and echo flags, not a state machine"
 )]
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     system,
     "only the system asks for a secret; an app must not be able to forge the prompt"
 )]
@@ -1208,9 +1211,13 @@ impl SecretPrompt {
             0.0
         } else {
             let style = theme.text(TextRole::Body);
-            let lines =
-                text.clamp_to_lines(&self.resource, &style, crate::num::f32_of_f64(width), 3);
-            Self::line_height(theme, TextRole::Body) * crate::num::f64_of_usize(lines.len())
+            let lines = text.clamp_to_lines(
+                &self.resource,
+                &style,
+                tilo_ui_base::num::f32_of_f64(width),
+                3,
+            );
+            Self::line_height(theme, TextRole::Body) * tilo_ui_base::num::f64_of_usize(lines.len())
         };
         let notice = self.notice_line().map(|(line, _)| line);
         self.notice_lines = match &notice {
@@ -1218,7 +1225,7 @@ impl SecretPrompt {
                 .clamp_to_lines(
                     line,
                     &theme.text(TextRole::Caption),
-                    crate::num::f32_of_f64(width),
+                    tilo_ui_base::num::f32_of_f64(width),
                     NOTICE_MAX_LINES,
                 )
                 .len()
@@ -1260,10 +1267,10 @@ impl SecretPrompt {
         if self.shows_choices() {
             choice_label = Some(Rect::new(rect.x0, y, rect.x1, y + label_h));
             y += label_h + f64::from(spacing.s1);
-            let count = crate::num::f64_of_usize(self.choices.len());
+            let count = tilo_ui_base::num::f64_of_usize(self.choices.len());
             let w = ((rect.width() - gap * (count - 1.0)) / count).max(0.0);
             for index in 0..self.choices.len() {
-                let x0 = rect.x0 + crate::num::f64_of_usize(index) * (w + gap);
+                let x0 = rect.x0 + tilo_ui_base::num::f64_of_usize(index) * (w + gap);
                 choices.push(Rect::new(x0, y, x0 + w, y + field_h));
             }
             y += field_h + f64::from(spacing.s3);
@@ -1281,7 +1288,7 @@ impl SecretPrompt {
         }
         y += f64::from(spacing.s1);
         let caption_h = Self::line_height(theme, TextRole::Caption)
-            * crate::num::f64_of_usize(self.notice_lines.max(1));
+            * tilo_ui_base::num::f64_of_usize(self.notice_lines.max(1));
         let notice = Rect::new(rect.x0, y, rect.x1, y + caption_h);
         y = notice.y1;
         let option = self.option.as_ref().map(|_| {
@@ -1879,7 +1886,13 @@ impl SecretPrompt {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.paint_at(scene, transform, text, theme, crate::motion::frame_now());
+        self.paint_at(
+            scene,
+            transform,
+            text,
+            theme,
+            tilo_ui_base::motion::frame_now(),
+        );
     }
 
     /// Paint the prompt with its answer at `now`: a host that draws outside
@@ -1895,7 +1908,7 @@ impl SecretPrompt {
     ) {
         self.answer.observe(self.notice_line(), now, theme.motion());
         if let Some(until) = self.answer.deadline() {
-            crate::motion::want_frames_until(until);
+            tilo_ui_base::motion::want_frames_until(until);
         }
         let answer = self.answer.paint(now);
         self.painted = Some(self.chrome());
@@ -1906,7 +1919,7 @@ impl SecretPrompt {
                 let spec = self.modal_spec(&actions, modal.body.height());
                 modal_dialog::paint_backdrop(scene, transform, text, &theme, &modal, &spec);
             }
-            let on_sheet = theme.on_ground(crate::chrome::panel_ground(&theme));
+            let on_sheet = theme.on_ground(tilo_ui_base::chrome::panel_ground(&theme));
             self.paint_body(scene, transform, text, &on_sheet, &answer);
             let actions = self.modal_actions();
             let spec = self.modal_spec(&actions, modal.body.height());
@@ -1924,15 +1937,15 @@ impl SecretPrompt {
         let ink = colors.ink_on_any(
             &[colors.surfaces.raised, colors.surfaces.content],
             colors.semantic.info,
-            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST,
         );
-        let radius = crate::chrome::ChromeRole::Control.radius(theme, rect.height());
+        let radius = tilo_ui_base::chrome::ChromeRole::Control.radius(theme, rect.height());
         scene.stroke(
             &vello::kurbo::Stroke::new(1.5),
             transform,
             ink,
             None,
-            &crate::surface::edge_outline(rect, radius),
+            &tilo_ui_base::surface::edge_outline(rect, radius),
         );
     }
 
@@ -1962,7 +1975,7 @@ impl SecretPrompt {
         for shown in text.clamp_to_lines(
             line,
             &style,
-            crate::num::f32_of_f64(rect.width().max(1.0)),
+            tilo_ui_base::num::f32_of_f64(rect.width().max(1.0)),
             NOTICE_MAX_LINES,
         ) {
             text.draw_style(
@@ -1992,7 +2005,7 @@ impl SecretPrompt {
         };
         if let Some(rect) = self.layout.resource {
             let style = theme.text(TextRole::Body);
-            let width = crate::num::f32_of_f64(rect.width().max(1.0));
+            let width = tilo_ui_base::num::f32_of_f64(rect.width().max(1.0));
             let lines = text.clamp_to_lines(&self.resource, &style, width, 3);
             let line_h = Self::line_height(theme, TextRole::Body);
             let mut y = rect.y0;
@@ -2015,7 +2028,7 @@ impl SecretPrompt {
                 &self.choice_label,
                 ink,
                 transform.pre_translate(Vec2::new(label.x0, label.y0)),
-                Some(crate::num::f32_of_f64(label.width().max(1.0))),
+                Some(tilo_ui_base::num::f32_of_f64(label.width().max(1.0))),
                 &label_style,
             );
         }
@@ -2031,7 +2044,7 @@ impl SecretPrompt {
         for (field, label) in self.fields.iter_mut().zip(&self.layout.labels) {
             let shown = text.elide_to_width_style(
                 &field.label,
-                crate::num::f32_of_f64(label.width().max(1.0)),
+                tilo_ui_base::num::f32_of_f64(label.width().max(1.0)),
                 &label_style,
             );
             text.draw_style(
@@ -2084,7 +2097,7 @@ impl SecretPrompt {
             let x = check.x1 + Self::gap(theme);
             let shown = text.elide_to_width_style(
                 label,
-                crate::num::f32_of_f64((rect.x1 - x).max(1.0)),
+                tilo_ui_base::num::f32_of_f64((rect.x1 - x).max(1.0)),
                 &style,
             );
             let line = Self::line_height(theme, TextRole::Body);
@@ -2313,12 +2326,12 @@ impl SecretPrompt {
     /// part at `key_path` (empty for the prompt itself).
     pub fn perform_access_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         let Some((&key, rest)) = key_path.split_first() else {
             return false;
         };
@@ -2408,11 +2421,11 @@ impl SecretPrompt {
         let children = self.access_children();
         let child = children.get(*index)?;
         match rest {
-            [] => child.bounds.map(crate::a11y::AccessBounds::to_rect),
+            [] => child.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect),
             [0] => child
                 .children
                 .first()
-                .and_then(|reveal| reveal.bounds.map(crate::a11y::AccessBounds::to_rect)),
+                .and_then(|reveal| reveal.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect)),
             _ => None,
         }
     }
@@ -2510,15 +2523,15 @@ impl Widget for SecretPrompt {
         let height = self.measure_body(f64::from(width), text_renderer, &theme);
         taffy::Size {
             width,
-            height: crate::num::f32_of_f64(height),
+            height: tilo_ui_base::num::f32_of_f64(height),
         }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
+        self.apply_layout_external(tilo_ui_base::widget::layout_rect(taffy, node, origin));
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2591,7 +2604,7 @@ impl Widget for SecretPrompt {
         self.focused_input().and_then(Widget::ime_cursor_rect)
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         self.focused_input().and_then(Widget::ime_content)
     }
 
@@ -2641,14 +2654,14 @@ impl Widget for SecretPrompt {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if key_path.is_empty() {
             return match action {
-                crate::a11y::Action::Focus => {
+                tilo_ui_base::a11y::Action::Focus => {
                     Widget::set_focus(self, true);
                     true
                 }

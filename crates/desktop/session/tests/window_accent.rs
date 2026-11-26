@@ -110,7 +110,7 @@ fn set_field_of(session: &mut Session, section: &str, field: &str, value: &Value
 #[test]
 fn the_window_in_fronts_edge_follows_the_accent_the_person_picks() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let notes = open(&mut session, "so.tilo.notes");
     for _ in 0..40 {
@@ -119,7 +119,7 @@ fn the_window_in_fronts_edge_follows_the_accent_the_person_picks() {
 
     // With no accent picked, the theme's own is the person's colour, as Settings shows it and every
     // app draws it: the shell's ring is that colour too, never a default of its own.
-    let own = ui::tokens::PresenceHue::Olive;
+    let own = tilo_ui_base::tokens::PresenceHue::Olive;
     set_field_of(&mut session, IDENTITY, "colour", &json!(own.id()));
     for _ in 0..40 {
         step(&mut session);

@@ -31,7 +31,7 @@ impl App {
     fn resource_cache_key(&self) -> ResourceCacheKey {
         ResourceCacheKey {
             mutation_generation: self.actions.resource_generation.get(),
-            locale: crate::i18n::I18nManager::revision(),
+            locale: tilo_ui_base::i18n::I18nManager::revision(),
         }
     }
 
@@ -115,7 +115,8 @@ impl App {
         complete.extend(semantics.action_resources());
         trace.finish(CacheResult::NotApplicable);
         let trace = self.trace_resource_stage(Stage::SurfaceValidation);
-        let mut operation_handlers = crate::widget::resource_operation_handlers(&*self.root_widget);
+        let mut operation_handlers =
+            tilo_ui_base::widget::resource_operation_handlers(&*self.root_widget);
         operation_handlers.insert(crate::a11y_tree::SEMANTIC_OPERATION_TYPE.to_string());
         let violations = tilo_actions::validate_surface(
             &complete,
@@ -377,7 +378,7 @@ impl App {
         self.refresh_semantic_tree();
         let bindings = self
             .with_native_presentation(|root, _, _, _, _| {
-                crate::widget::controls::control_action_bindings(root)
+                tilo_ui_base::widget::controls::control_action_bindings(root)
             })
             .unwrap_or_default();
         crate::action_locus::action_ui_routes(&self.accessibility.semantic_tree, &bindings, address)
@@ -396,14 +397,14 @@ impl App {
     ) -> Vec<ControlBindingCoverage> {
         self.control_binding_coverage_for(
             resources,
-            crate::widget::controls::control_action_bindings(self.root_widget.as_ref()),
+            tilo_ui_base::widget::controls::control_action_bindings(self.root_widget.as_ref()),
         )
     }
 
     fn control_binding_coverage_for(
         &self,
         resources: &[tilo_actions::ResourceSpec],
-        bindings: Vec<crate::widget::ControlBindingMetadata>,
+        bindings: Vec<tilo_ui_base::widget::ControlBindingMetadata>,
     ) -> Vec<ControlBindingCoverage> {
         // Shared chrome invokes APIs served by this host, rather than by
         // the app's resource provider. Audit those exact declarations too.
@@ -417,7 +418,7 @@ impl App {
             .into_iter()
             .map(|binding| {
                 let status = match &binding.kind {
-                    crate::widget::ControlBindingKind::Action(address) => {
+                    tilo_ui_base::widget::ControlBindingKind::Action(address) => {
                         if tilo_actions::api::resolve(resources, address).is_none()
                             && tilo_actions::api::resolve(&host_resources, address).is_none()
                         {
@@ -428,10 +429,10 @@ impl App {
                             ControlBindingStatus::Resolved
                         }
                     }
-                    crate::widget::ControlBindingKind::CollaborativeDocument(_) => {
+                    tilo_ui_base::widget::ControlBindingKind::CollaborativeDocument(_) => {
                         ControlBindingStatus::CollaborativeDocument
                     }
-                    crate::widget::ControlBindingKind::SemanticAction(_) => {
+                    tilo_ui_base::widget::ControlBindingKind::SemanticAction(_) => {
                         ControlBindingStatus::SemanticAction
                     }
                 };
@@ -451,14 +452,14 @@ impl App {
             serde_json::from_slice(&encoded.payload).map_err(|error| error.to_string())?;
         self.refresh_semantic_tree();
         self.invoke_semantic_action(
-            &crate::a11y::SemanticId(operation.node),
+            &tilo_ui_base::a11y::SemanticId(operation.node),
             &operation.action,
             operation.value.as_deref(),
         )
     }
 
     #[cfg(feature = "model")]
-    fn bound_broker_route(&self) -> Option<&crate::collaboration::AcceptedRoute> {
+    fn bound_broker_route(&self) -> Option<&tilo_ui_base::collaboration::AcceptedRoute> {
         #[cfg(test)]
         if let Some(route) = &self.actions.bound_broker_route_for_test {
             return Some(route);
@@ -474,7 +475,7 @@ impl App {
         {
             return observation.route().app_id.clone();
         }
-        crate::collaboration::local_app_id()
+        tilo_ui_base::collaboration::local_app_id()
     }
     #[cfg(feature = "model")]
     fn require_bound_broker_route(
@@ -600,7 +601,8 @@ impl App {
                 }
             }
         }
-        if crate::widget::undo_access::local_undo_status(self.root_widget.as_ref()).is_some() {
+        if tilo_ui_base::widget::undo_access::local_undo_status(self.root_widget.as_ref()).is_some()
+        {
             let address = tilo_actions::ActionAddress::new("tilo.host:edit", "undo");
             if let Some(edit) = self.edit_resource_for(&address) {
                 resources.push(edit);
@@ -611,9 +613,11 @@ impl App {
         // only its own controls. The app's actions join the resource that already stands for it —
         // one it has not reached is offered on its own — so an app with no window offers its
         // commands and its records as a window of it does.
-        for resource in
-            crate::widget::resources::resources_for(&*self.root_widget, None, &self.state.doc)
-        {
+        for resource in tilo_ui_base::widget::resources::resources_for(
+            &*self.root_widget,
+            None,
+            &self.state.doc,
+        ) {
             let stands_for = resources.iter().position(|have| {
                 have.semantic_identity.as_ref().is_some_and(|identity| {
                     identity.kind == resource.kind && identity.key == resource.id.as_str()
@@ -727,7 +731,7 @@ impl App {
             .push_back(HeldOwnInvocation {
                 request,
                 since: crate::time::now(),
-                press: crate::press::current(),
+                press: tilo_ui_base::press::current(),
             });
         self.publish_action_surface();
         // Still waiting, and the first to wait: a route that never opens brings
@@ -809,7 +813,7 @@ impl App {
         let why = match (failed, waited) {
             (Some(failure), _) => failure,
             (None, Some(waited)) if waited >= Self::HELD_OWN_INVOCATION_WAIT => {
-                crate::i18n::I18nManager::lookup_plain("action-own-route-not-open")
+                tilo_ui_base::i18n::I18nManager::lookup_plain("action-own-route-not-open")
             }
             _ => return None,
         };
@@ -848,7 +852,7 @@ impl App {
                         invocation,
                         error: tilo_actions::ActionFailure {
                             code: "action_document_replaced".into(),
-                            message: crate::i18n::I18nManager::lookup_plain(
+                            message: tilo_ui_base::i18n::I18nManager::lookup_plain(
                                 "action-document-replaced",
                             ),
                             details: None,
@@ -939,8 +943,10 @@ impl App {
                 .ambient_context(ambient_context),
         );
         drop(invoker_scope);
-        let continuation = if matches!(result, Ok(crate::widget::ResourceOperationStart::Accepted))
-        {
+        let continuation = if matches!(
+            result,
+            Ok(tilo_ui_base::widget::ResourceOperationStart::Accepted)
+        ) {
             None
         } else {
             // What the effect submitted is applied for its invoker before
@@ -949,10 +955,10 @@ impl App {
             self.actions.acting_for.remove(&invocation)
         };
         let update = match result {
-            Ok(crate::widget::ResourceOperationStart::Completed(output)) => {
+            Ok(tilo_ui_base::widget::ResourceOperationStart::Completed(output)) => {
                 tilo_actions::InvocationUpdate::Succeeded { invocation, output }
             }
-            Ok(crate::widget::ResourceOperationStart::Accepted) => {
+            Ok(tilo_ui_base::widget::ResourceOperationStart::Accepted) => {
                 self.actions.directed_invocations.insert(
                     invocation,
                     DirectedInvocation {
@@ -1059,7 +1065,7 @@ impl App {
 
     #[cfg(feature = "model")]
     /// The canonical route the app's primary document currently syncs on.
-    fn primary_document_route(&self) -> Option<crate::collaboration::RouteSpec> {
+    fn primary_document_route(&self) -> Option<tilo_ui_base::collaboration::RouteSpec> {
         self.collaboration
             .manager
             .primary_route()
@@ -1082,8 +1088,8 @@ impl App {
     pub(super) fn invoke_bound_history(
         &mut self,
         binding: &crate::bound_dispatch::CallbackBinding,
-        request: crate::widget::undo_access::UndoRequest,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+        request: tilo_ui_base::widget::undo_access::UndoRequest,
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.require_bound_broker_route(binding)?;
         let snapshots = crate::bound_dispatch::discover_cached_bound_resources(
             self.root_widget.as_ref(),
@@ -1116,7 +1122,7 @@ impl App {
         address: &tilo_actions::ActionAddress,
         typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let mut made = None;
         let started = Self::dispatch_broker_request(
             &mut self.actions.next_broker_request_id,
@@ -1143,7 +1149,7 @@ impl App {
         typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
         send: impl FnOnce(u64, tilo_actions::remote::InvokeRequest),
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         if !connected {
             return Err(tilo_actions::ApiError::Unavailable {
                 code: "authoritative_host_unavailable".into(),
@@ -1184,7 +1190,7 @@ impl App {
                 signed: None,
             },
         );
-        Ok(crate::widget::ResourceOperationStart::Accepted)
+        Ok(tilo_ui_base::widget::ResourceOperationStart::Accepted)
     }
 
     #[cfg(feature = "model")]
@@ -1224,7 +1230,7 @@ impl App {
         typed_arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         resource: &tilo_actions::ResourceSpec,
         spec: &tilo_actions::ActionSpec,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let ResourceInvocation {
             address,
             actor,
@@ -1328,7 +1334,7 @@ impl App {
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
         invocation: &ResourceInvocation<'_>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invoke_bound_target_with_broker(target, invocation, None)
     }
 
@@ -1375,7 +1381,7 @@ impl App {
         arguments: Option<&serde_json::Map<String, serde_json::Value>>,
         argument: Option<&str>,
         broker_delivery: Option<&mut dyn FnMut(CollabRequest)>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.require_bound_broker_route(&target.binding)?;
         let alias = self
             .actions
@@ -1396,7 +1402,7 @@ impl App {
                     broker_requests.insert(BrokerReply::Receipt(request.invocation), request_id);
                     send(CollabRequest::RemoteAction {
                         message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
-                        press: crate::press::current(),
+                        press: tilo_ui_base::press::current(),
                     });
                 },
             );
@@ -1416,7 +1422,7 @@ impl App {
         &mut self,
         address: &crate::bound_dispatch::BoundActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let translated = self
             .actions
             .bound_publication
@@ -1483,7 +1489,10 @@ impl App {
             Err(error) => Err(error.into_api()),
             Ok(started) => Ok(started),
         }?;
-        if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
+        if matches!(
+            started,
+            tilo_ui_base::widget::ResourceOperationStart::Accepted
+        ) {
             self.actions.bound_invocations.insert(invocation, target);
         }
         Ok(started)
@@ -1496,7 +1505,7 @@ impl App {
         target: &crate::bound_dispatch::BoundActionTarget,
         request: &ResourceInvocation<'_>,
         broker_delivery: Option<&mut dyn FnMut(CollabRequest)>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let ResourceInvocation {
             actor,
             argument,
@@ -1592,7 +1601,10 @@ impl App {
         self.layout.layout_dirty = true;
         self.invalidate_widget_resource_cache();
         let started = started?;
-        if matches!(started, crate::widget::ResourceOperationStart::Accepted) {
+        if matches!(
+            started,
+            tilo_ui_base::widget::ResourceOperationStart::Accepted
+        ) {
             self.actions.bound_invocations.insert(id, target.clone());
             if invocation.is_none() {
                 self.actions
@@ -1612,7 +1624,7 @@ impl App {
         &mut self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let actor = tilo_actions::Actor::Member(self.local_author.clone());
         self.invoke_local_resource_action_as(&actor, address, arguments)
     }
@@ -1626,7 +1638,7 @@ impl App {
         actor: &tilo_actions::Actor,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let capture = self.begin_local_input_capture();
         let result = self.invoke_local_resource_action_captured(actor, address, arguments);
         drop(capture);
@@ -1640,7 +1652,7 @@ impl App {
         actor: &tilo_actions::Actor,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let _entry = self.enter_wake_scope();
         let argument = format!(
             "{}{}",
@@ -1674,7 +1686,7 @@ impl App {
         request: &ResourceInvocation<'_>,
         broker_delivery: Option<&mut dyn FnMut(CollabRequest)>,
         arguments: Option<serde_json::Map<String, serde_json::Value>>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.route_bound_invocation_to_broker(
             target,
             arguments.as_ref(),
@@ -1687,7 +1699,7 @@ impl App {
     pub(super) fn invoke_resource_action(
         &mut self,
         request: ResourceInvocation<'_>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let _ = crate::widget::take_presses();
         let started = (|| {
             use crate::bound_dispatch::local_target::{LocalResourceTarget, select_local_target};
@@ -1724,7 +1736,7 @@ impl App {
     fn invoke_unbound_resource_action(
         &mut self,
         request: &ResourceInvocation<'_>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let ResourceInvocation {
             address,
             actor,
@@ -1783,7 +1795,8 @@ impl App {
                 resources.push(resource);
             }
         }
-        if crate::widget::undo_access::local_undo_status(self.root_widget.as_ref()).is_some() {
+        if tilo_ui_base::widget::undo_access::local_undo_status(self.root_widget.as_ref()).is_some()
+        {
             resources.extend(self.edit_resource_for(address));
         }
         #[cfg(feature = "native")]
@@ -1811,7 +1824,11 @@ impl App {
         if actor.member_id() == Some(&self.local_author) {
             match crate::bound_dispatch::admit_local_action(
                 &self.permission_ctx,
-                (&crate::collaboration::local_app_id(), resource, resolved),
+                (
+                    &tilo_ui_base::collaboration::local_app_id(),
+                    resource,
+                    resolved,
+                ),
                 typed_arguments.as_ref(),
                 argument,
             ) {
@@ -1940,7 +1957,7 @@ impl App {
             if encoded.type_id == crate::host_chrome::zoom::ZOOM_OPERATION {
                 self.execute_zoom_operation(&encoded)
                     .map_err(tilo_actions::ApiError::Failed)?;
-                return Ok(crate::widget::ResourceOperationStart::Completed(
+                return Ok(tilo_ui_base::widget::ResourceOperationStart::Completed(
                     tilo_actions::ActionOutput::default(),
                 ));
             }
@@ -2007,7 +2024,7 @@ impl App {
                             },
                         });
                 }
-                return Ok(crate::widget::ResourceOperationStart::Completed(
+                return Ok(tilo_ui_base::widget::ResourceOperationStart::Completed(
                     tilo_actions::ActionOutput::default(),
                 ));
             }
@@ -2071,21 +2088,26 @@ impl App {
                 }
             };
             if invocation.is_none()
-                && matches!(started, crate::widget::ResourceOperationStart::Accepted)
+                && matches!(
+                    started,
+                    tilo_ui_base::widget::ResourceOperationStart::Accepted
+                )
             {
                 self.actions
                     .local_invocations
                     .insert(operation_invocation, (address.clone(), kind));
             }
-            if matches!(started, crate::widget::ResourceOperationStart::Accepted)
-                || kind == tilo_actions::OperationKind::View
+            if matches!(
+                started,
+                tilo_ui_base::widget::ResourceOperationStart::Accepted
+            ) || kind == tilo_actions::OperationKind::View
             {
                 // Queued work and completed navigation apply their private
                 // presentation state in `sync`, even when the invocation
                 // changed no document and no input event follows it.
                 self.needs_sync = true;
             }
-            if let crate::widget::ResourceOperationStart::Completed(output) = &started
+            if let tilo_ui_base::widget::ResourceOperationStart::Completed(output) = &started
                 && kind == tilo_actions::OperationKind::Effect
                 && invocation.is_none()
             {
@@ -2206,7 +2228,7 @@ impl App {
     fn invoke_hosted(
         &mut self,
         hosted: crate::bound_dispatch::HostedInvocation,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         if !self.collaboration.manager.is_connected() {
             return Err(tilo_actions::ApiError::Unavailable {
                 code: "authoritative_host_unavailable".into(),
@@ -2243,9 +2265,9 @@ impl App {
             .manager
             .send(CollabRequest::RemoteAction {
                 message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
-                press: crate::press::current(),
+                press: tilo_ui_base::press::current(),
             });
-        Ok(crate::widget::ResourceOperationStart::Accepted)
+        Ok(tilo_ui_base::widget::ResourceOperationStart::Accepted)
     }
 
     #[cfg(feature = "model")]
@@ -2368,7 +2390,7 @@ impl App {
                     pending.cancellation_requested,
                 )
             } else {
-                Ok(crate::widget::poll_resource_operation(
+                Ok(tilo_ui_base::widget::poll_resource_operation(
                     &mut *self.root_widget,
                     invocation,
                     pending.cancellation_requested,
@@ -2463,7 +2485,7 @@ impl App {
                     false,
                 )
             } else {
-                Ok(crate::widget::poll_resource_operation(
+                Ok(tilo_ui_base::widget::poll_resource_operation(
                     &mut *self.root_widget,
                     invocation,
                     false,
@@ -2863,7 +2885,7 @@ impl App {
         resource: tilo_actions::ResourceSpec,
     ) -> Option<tilo_actions::ResourceSpec> {
         self.permission_ctx
-            .permitted_resource(&crate::collaboration::local_app_id(), resource)
+            .permitted_resource(&tilo_ui_base::collaboration::local_app_id(), resource)
     }
 
     #[cfg(feature = "model")]
@@ -2988,7 +3010,7 @@ impl App {
                     event,
                     scale,
                     self.input.modifiers,
-                    &mut crate::widget::Edits::lend(&mut self.state.doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
                     &self.state.root,
                 )
             });
@@ -3011,7 +3033,7 @@ impl App {
         let consumed = palette.handle_key(
             event,
             &self.input.modifiers,
-            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
             &root,
         );
         self.finish_action_palette_input(consumed)
@@ -3087,7 +3109,7 @@ impl App {
                 crate::search::capability::activate_search_result(
                     self.root_widget.as_mut(),
                     &action_id,
-                    &mut crate::widget::Edits::lend(&mut self.state.doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
                     &root,
                 );
                 if self.state.doc.get_heads() != nav_before {
@@ -3165,7 +3187,7 @@ fn collect_named_actions(
 /// A native window's session API ([`crate::session_api`]): the workspace
 /// broker its collaboration connection reaches.
 pub(super) struct BrokerApi<'a> {
-    manager: &'a mut crate::collaboration::CollaborationManager,
+    manager: &'a mut tilo_ui_base::collaboration::CollaborationManager,
     broker_requests: &'a mut std::collections::HashMap<BrokerReply, u64>,
     next_broker_request_id: &'a mut Option<u64>,
     pending_application_launches:
@@ -3207,7 +3229,7 @@ impl crate::session_api::SessionApi for BrokerApi<'_> {
         operation: tilo_actions::InvocationId,
         admitted: bool,
         request: tilo_actions::remote::InvokeRequest,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         if !self.manager.is_connected() {
             return Err(tilo_actions::ApiError::Unavailable {
                 code: "authoritative_host_unavailable".into(),
@@ -3226,9 +3248,9 @@ impl crate::session_api::SessionApi for BrokerApi<'_> {
             .insert(BrokerReply::Receipt(request.invocation), request_id);
         self.manager.send(CollabRequest::RemoteAction {
             message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
-            press: crate::press::current(),
+            press: tilo_ui_base::press::current(),
         });
-        Ok(crate::widget::ResourceOperationStart::Accepted)
+        Ok(tilo_ui_base::widget::ResourceOperationStart::Accepted)
     }
 }
 
@@ -3299,7 +3321,7 @@ impl App {
         &mut self,
         target: &crate::bound_dispatch::BoundActionTarget,
         request: &ResourceInvocation<'_>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invoke_bound_target_with_broker(target, request, None)
     }
 
@@ -3307,7 +3329,7 @@ impl App {
     pub(crate) fn invoke_outer_control(
         &mut self,
         request: &ResourceInvocation<'_>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invoke_unbound_resource_action(request)
     }
 
@@ -3316,7 +3338,7 @@ impl App {
         &mut self,
         address: &tilo_actions::ActionAddress,
         argument: Option<&str>,
-    ) -> Option<Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>> {
+    ) -> Option<Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError>> {
         self.invoke_history_address_local(address, argument)
     }
 
@@ -3324,7 +3346,7 @@ impl App {
     pub(crate) fn invoke_chosen_address(
         &mut self,
         request: &ResourceInvocation<'_>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invoke_resource_action(*request)
     }
 
@@ -3369,7 +3391,7 @@ impl App {
 /// window without Tilo's model follows no shared permissions, so it never moves.
 fn shared_permissions_revision() -> u64 {
     #[cfg(feature = "model")]
-    let revision = crate::permissions::shared_revision();
+    let revision = tilo_ui_base::permissions::shared_revision();
     #[cfg(not(feature = "model"))]
     let revision = 0;
     revision

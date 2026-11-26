@@ -28,8 +28,8 @@ fn hosted_pump_timing() -> bool {
 /// value is identical.
 #[derive(PartialEq, Eq)]
 struct HostedAuthorityObservation {
-    app: crate::permissions::DirectoryPermissionObservation,
-    owner: Option<crate::permissions::DirectoryPermissionObservation>,
+    app: tilo_ui_base::permissions::DirectoryPermissionObservation,
+    owner: Option<tilo_ui_base::permissions::DirectoryPermissionObservation>,
 }
 
 #[cfg(feature = "model")]
@@ -41,7 +41,7 @@ pub(super) struct PublicationStamp {
     resource_generation: u64,
     permission_generation: u64,
     registry_generation: u64,
-    route: Option<crate::collaboration::AcceptedRoute>,
+    route: Option<tilo_ui_base::collaboration::AcceptedRoute>,
     revision: String,
 }
 
@@ -239,7 +239,7 @@ impl super::App {
         }
         #[cfg(feature = "model")]
         if let Some(started) = started {
-            crate::diag!(
+            tilo_ui_base::diag!(
                 "[hosted-pump] app={} late_us={:?} us={} updated={} synced={} published={} inbound={inbound} wakes={wakes:?} authority={authority_changed} in_flight={in_flight} deadline={deadline_due} invocations={invocations}",
                 self.publication_app_id(),
                 next_deadline.map(|deadline| crate::time::now()
@@ -364,9 +364,10 @@ impl super::App {
         // What this update moved, not what a widget updated outside an app
         // noted before it: that stays noted for its own host (an app hosted
         // in a tile updates in the middle of its host's update).
-        let outer = crate::widget::take_layout_moved();
-        let update =
-            || crate::presence::frame::lend(presence, || root.update(&state.doc, &state.root));
+        let outer = tilo_ui_base::widget::take_layout_moved();
+        let update = || {
+            tilo_ui_base::presence::frame::lend(presence, || root.update(&state.doc, &state.root))
+        };
         #[cfg(feature = "model")]
         let updated = presence.with_permissions(self.permission_ctx.clone(), update);
         #[cfg(not(feature = "model"))]
@@ -376,9 +377,9 @@ impl super::App {
         };
         // An animation moved what its widget lays out: the window is laid
         // out again. Any other animation frame is only drawn.
-        self.layout.layout_dirty |= crate::widget::take_layout_moved();
+        self.layout.layout_dirty |= tilo_ui_base::widget::take_layout_moved();
         if outer {
-            crate::widget::note_layout_moved();
+            tilo_ui_base::widget::note_layout_moved();
         }
         // A part built for what arrived (a query's answer) is a new tree
         // though no model state moved: what it declares is read from it
@@ -404,18 +405,18 @@ impl super::App {
         // What the widgets took up since the last frame (an edit a child
         // made on its own) is written before the document is read again.
         self.root_widget.settle(
-            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
             &self.state.root,
         );
         self.root_widget.sync(&self.state.doc, &self.state.root);
         // A sync reads the document only. What it took up is written now,
         // through actions, and shown in this same frame.
-        let before = crate::doc::settle_mark(&self.state.doc);
+        let before = tilo_ui_base::doc::settle_mark(&self.state.doc);
         self.root_widget.settle(
-            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
             &self.state.root,
         );
-        let settled = crate::doc::settle_mark(&self.state.doc) != before;
+        let settled = tilo_ui_base::doc::settle_mark(&self.state.doc) != before;
         // Declaring window-bar slots (or ceasing to) moves the app's
         // History between a band of its own and the bar.
         if self.floating.window_bar.note_parts_declared() {
@@ -448,8 +449,9 @@ impl super::App {
         // and a window still opening runs none of it either.
         #[cfg(feature = "model")]
         let submitted = {
-            let queued =
-                crate::widget::controls::has_pending_control_invocation(self.root_widget.as_ref());
+            let queued = tilo_ui_base::widget::controls::has_pending_control_invocation(
+                self.root_widget.as_ref(),
+            );
             let held = self.input.opening || self.input.passive_input;
             !held && (settled || queued) && self.dispatch_control_invocations() != 0
         };
@@ -577,7 +579,7 @@ impl super::App {
         // existing scoped publication barrier still checks terminal success.
         #[cfg(all(feature = "native", feature = "model"))]
         if let Err(error) = self.autosave_tick() {
-            crate::diag!("[app] component autosave tick refused: {error:?}");
+            tilo_ui_base::diag!("[app] component autosave tick refused: {error:?}");
         }
         IdleModelProgress { changed }
     }

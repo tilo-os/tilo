@@ -38,7 +38,7 @@ tilo_test_env::scenario! {
 
         // A search field 20 px in and 40 px down, 200 by 30.
         let field = TextField {
-            purpose: crate::ime::InputPurpose::Search,
+            purpose: tilo_ui_base::ime::InputPurpose::Search,
             multiline: false,
             bounds: Some(Rect::new(20.0, 40.0, 220.0, 70.0)),
             composition: None,
@@ -47,7 +47,7 @@ tilo_test_env::scenario! {
         assert!(!view.ime_refuses_ordinary_commits());
         assert_eq!(
             view.ime_content().map(|content| content.purpose),
-            Some(crate::ime::InputPurpose::Search)
+            Some(tilo_ui_base::ime::InputPurpose::Search)
         );
         assert_eq!(view.ime_edit_fingerprint(&[7; 32]), None);
         assert_eq!(
@@ -150,7 +150,7 @@ tilo_test_env::scenario! {
 
         // A password field never reaches the input method.
         engine.set_text_field(Some(TextField {
-            purpose: crate::ime::InputPurpose::Password,
+            purpose: tilo_ui_base::ime::InputPurpose::Password,
             ..field
         }));
         assert_eq!(view.ime_content(), None);

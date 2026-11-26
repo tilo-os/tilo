@@ -8,7 +8,7 @@ use automerge::AutoCommit;
 
 use super::tests::{PagedList, ProbeRow, lay_out};
 use super::*;
-use crate::widget::SkeletonShape;
+use tilo_ui_base::widget::SkeletonShape;
 
 struct RemoteRows {
     ready: Rc<Cell<bool>>,
@@ -34,7 +34,7 @@ impl ListModel for RemoteRows {
         match index {
             0 if self.ready.get() => Arrival::Ready(()),
             0 => Arrival::Pending {
-                from: crate::arriving::Source::Remote,
+                from: tilo_ui_base::arriving::Source::Remote,
             },
             _ => Arrival::Failed("offline"),
         }
@@ -54,7 +54,7 @@ tilo_test_env::scenario! {
 
     phase a_pending_row_keeps_its_slot_and_the_list_paints_its_placeholder;
     {
-        use crate::arriving::{GRACE, MIN_SHOWN, Step};
+        use tilo_ui_base::{arriving::GRACE, arriving::MIN_SHOWN, arriving::Step};
         use crate::time::testing::with_monotonic_time;
         let t0 = crate::time::now();
         let ready = Rc::new(Cell::new(false));
@@ -99,7 +99,7 @@ tilo_test_env::scenario! {
             list.arrivals
                 .face(
                     &ListKey::new(0u64),
-                    SkeletonShape::Row(crate::widget::RowShape::TITLE),
+                    SkeletonShape::Row(tilo_ui_base::widget::RowShape::TITLE),
                     skeleton
                 )
                 .map(|face| face.step()),
@@ -189,8 +189,8 @@ tilo_test_env::scenario! {
             assert!(!Widget::perform_semantic_action(
                 &mut list,
                 "key:0",
-                &crate::a11y::Action::Activate,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &tilo_ui_base::a11y::Action::Activate,
+                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert!(Widget::needs_animation_frame(&list));
@@ -216,8 +216,8 @@ tilo_test_env::scenario! {
             assert!(Widget::perform_semantic_action(
                 &mut list,
                 "key:0",
-                &crate::a11y::Action::Activate,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &tilo_ui_base::a11y::Action::Activate,
+                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
 
@@ -257,7 +257,7 @@ tilo_test_env::scenario! {
         let _ = lay_out(&mut list, 300.0);
 
         let semantics = Widget::accessibility(&list).expect("list semantics");
-        let loading = crate::i18n::widget_text("arriving-loading");
+        let loading = tilo_ui_base::i18n::widget_text("arriving-loading");
         assert!(
             semantics.children[0].state.busy,
             "the first row is still on its way"

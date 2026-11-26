@@ -7,7 +7,7 @@
 //! compositor's text input, and says where the focused field's caret stands so the card opens
 //! against it.
 //! How often each emoji was used is the toolkit's own, kept in the person's settings resource
-//! ([`ui::emoji_catalogue`]): the card counts a pick as it is made, and a field that keeps its
+//! ([`tilo_ui_base::emoji_catalogue`]): the card counts a pick as it is made, and a field that keeps its
 //! content secret takes that count back. It is the person's, so every device of theirs opens the
 //! picker with the emoji they use most, not with what one machine happened to see.
 
@@ -42,8 +42,8 @@ pub(crate) struct Emoji {
 /// reads and writes, in place of a file on one machine.
 struct PersonUses;
 
-impl ui::emoji_catalogue::UsesStore for PersonUses {
-    fn load(&self) -> Vec<ui::emoji_catalogue::Used> {
+impl tilo_ui_base::emoji_catalogue::UsesStore for PersonUses {
+    fn load(&self) -> Vec<tilo_ui_base::emoji_catalogue::Used> {
         settings_store::source()
             .and_then(|source| settings_store::emoji::used(&source.load()))
             .and_then(|used| {
@@ -56,7 +56,7 @@ impl ui::emoji_catalogue::UsesStore for PersonUses {
             .unwrap_or_default()
     }
 
-    fn save(&self, used: &[ui::emoji_catalogue::Used]) {
+    fn save(&self, used: &[tilo_ui_base::emoji_catalogue::Used]) {
         let Ok(used) = serde_json::to_string(used) else {
             return;
         };
@@ -72,7 +72,7 @@ impl ui::emoji_catalogue::UsesStore for PersonUses {
 impl Emoji {
     /// Mount the card's session half, keeping the emoji's counts in the person's settings.
     pub(crate) fn mount() -> Self {
-        ui::emoji_catalogue::keep_uses_in(Box::new(PersonUses));
+        tilo_ui_base::emoji_catalogue::keep_uses_in(Box::new(PersonUses));
         Self {
             link: EmojiLink::default(),
             pending: RefCell::new(None),
@@ -109,7 +109,7 @@ impl Emoji {
         };
         if let Some(sensitive) = compositor.insert_active_text(&pending.text) {
             if sensitive {
-                ui::emoji_catalogue::forget_used(&pending.text);
+                tilo_ui_base::emoji_catalogue::forget_used(&pending.text);
             }
         } else if now < pending.deadline {
             *self.pending.borrow_mut() = Some(pending);
@@ -161,7 +161,7 @@ impl Emoji {
 mod tests {
     use super::*;
     use settings_store::SettingsSource as _;
-    use ui::emoji_catalogue::Used;
+    use tilo_ui_base::emoji_catalogue::Used;
 
     fn used(emoji: &str, uses: u32) -> Used {
         Used {
@@ -185,14 +185,14 @@ mod tests {
         let _scoped =
             settings_store::scoped_source(Some(std::sync::Arc::clone(&source)
                 as std::sync::Arc<dyn settings_store::SettingsSource>));
-        ui::emoji_catalogue::keep_uses_in(Box::new(PersonUses));
+        tilo_ui_base::emoji_catalogue::keep_uses_in(Box::new(PersonUses));
         assert_eq!(
-            ui::emoji_catalogue::frequent(),
+            tilo_ui_base::emoji_catalogue::frequent(),
             ["🎉"],
             "the picker reads the settings, not this device's own counts"
         );
 
-        ui::emoji_catalogue::record_used("🚀");
+        tilo_ui_base::emoji_catalogue::record_used("🚀");
         let kept: Vec<Used> = serde_json::from_str(
             &settings_store::emoji::used(&source.load()).expect("the pick is in the settings"),
         )
@@ -203,7 +203,7 @@ mod tests {
             "a pick is counted in the person's settings, most recently used first"
         );
         assert_eq!(
-            ui::emoji_catalogue::frequent(),
+            tilo_ui_base::emoji_catalogue::frequent(),
             ["🎉", "🚀"],
             "the emoji used most leads"
         );

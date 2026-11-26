@@ -1,9 +1,9 @@
 use super::*;
-use crate::component::{Fired, Intent};
+use tilo_ui_base::{component::Fired, component::Intent};
 
 fn person(id: &str, name: &str) -> Person {
     Person {
-        hue: crate::tokens::PresenceHue::of_identity(id),
+        hue: tilo_ui_base::tokens::PresenceHue::of_identity(id),
         identity: tilo_actions::MemberId::person(id).into(),
         name: name.into(),
         picture: None,
@@ -12,8 +12,8 @@ fn person(id: &str, name: &str) -> Person {
 
 #[test]
 fn a_described_strip_reports_the_emoji_its_pill_toggles() {
-    let _settled = crate::motion::testing::settled();
-    let toggles: crate::Intents<Fired> = crate::Intents::default();
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let toggles: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
     let strip = ReactionStripWidget::from_props(
         "reactions",
         ReactionsProps {
@@ -64,8 +64,8 @@ fn reactions_given_elsewhere_read_by_their_emoji_and_the_name_they_were_given_un
 
 #[test]
 fn a_strip_of_the_map_form_shows_each_emoji_in_key_order_with_who_reacted() {
-    let _settled = crate::motion::testing::settled();
-    let toggles: crate::Intents<Fired> = crate::Intents::default();
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let toggles: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
     let reactions = BTreeMap::from([
         (
             "👍".to_owned(),
@@ -104,8 +104,8 @@ fn a_strip_of_the_map_form_shows_each_emoji_in_key_order_with_who_reacted() {
 
 #[test]
 fn the_emoji_picker_button_opens_the_picker_and_reports_a_pick() {
-    let _settled = crate::motion::testing::settled();
-    let picks: crate::Intents<Fired> = crate::Intents::default();
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let picks: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
     let button = EmojiPickerButton::from_props(
         "react",
         EmojiPickerProps {
@@ -132,14 +132,14 @@ fn the_emoji_picker_button_opens_the_picker_and_reports_a_pick() {
 /// at a glance, not only in the tooltip.
 #[test]
 fn a_pill_shows_the_face_of_each_person_who_reacted_in_their_colour() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let theme = Theme::light();
     let wearing = |slot: usize| Person {
-        hue: crate::tokens::PresenceHue::from_slot(slot),
+        hue: tilo_ui_base::tokens::PresenceHue::from_slot(slot),
         ..person("u_mia", "Mia")
     };
     // How many pixels of the strip `who` reacting draws in `colour`.
-    let painted = |who: Person, colour: crate::tokens::PresenceHue| {
+    let painted = |who: Person, colour: tilo_ui_base::tokens::PresenceHue| {
         let strip = ReactionStripWidget::from_props(
             "reactions",
             ReactionsProps {
@@ -170,8 +170,8 @@ fn a_pill_shows_the_face_of_each_person_who_reacted_in_their_colour() {
             .count()
     };
     let (blue, orange) = (
-        crate::tokens::PresenceHue::from_slot(8),
-        crate::tokens::PresenceHue::from_slot(1),
+        tilo_ui_base::tokens::PresenceHue::from_slot(8),
+        tilo_ui_base::tokens::PresenceHue::from_slot(1),
     );
     let mia_in_blue = painted(wearing(8), blue);
     assert!(
@@ -192,8 +192,8 @@ fn a_pill_shows_the_face_of_each_person_who_reacted_in_their_colour() {
 /// says whose it is: the person the view gave it, for the view to open their card.
 #[test]
 fn choosing_a_face_on_a_described_strip_reports_who_reacted() {
-    let _settled = crate::motion::testing::settled();
-    let chosen: crate::Intents<Fired> = crate::Intents::default();
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let chosen: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
     let strip = ReactionStripWidget::from_props(
         "reactions",
         ReactionsProps {

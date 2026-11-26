@@ -1,4 +1,4 @@
-//! Procedural macros for `tilo-ui`. See `tilo_ui::component` for the API; this crate only
+//! Procedural macros for `tilo-ui`. See `tilo_ui_base::component` for the API; this crate only
 //! generates calls into it.
 
 use proc_macro::TokenStream;
@@ -9,7 +9,7 @@ use syn::{
     Attribute, Data, DeriveInput, Expr, ExprLit, Fields, Lit, LitStr, Meta, parse_macro_input,
 };
 
-/// Derive `tilo_ui::component::Component` for a widget's props: the struct an instance of the
+/// Derive `tilo_ui_base::component::Component` for a widget's props: the struct an instance of the
 /// widget is made from. The widget's component description is generated from it, so the
 /// description cannot drift from the widget.
 ///
@@ -387,7 +387,7 @@ fn expand(input: &DeriveInput) -> syn::Result<Tokens> {
     };
     let (head, name, role, doc) = described(input)?;
     let ident = &input.ident;
-    let k = quote!(::tilo_ui::component);
+    let k = quote!(::tilo_ui_base::component);
     let mut out = Generated::default();
     for field in &fields.named {
         out.field(field, &k, &name)?;

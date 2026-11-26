@@ -149,7 +149,7 @@ pub(crate) struct Presses {
 pub(crate) struct ControllerKeys {
     /// The controller the person last drove the desktop with, which a press of their own replaces:
     /// the guide then leads with the keyboard.
-    pub(crate) last: Rc<Cell<Option<ui::ControllerFamily>>>,
+    pub(crate) last: Rc<Cell<Option<tilo_ui_base::ControllerFamily>>>,
     /// Whether the keys being routed are a controller's own, for its presses rather than
     /// the person's fingers on a keyboard.
     pub(crate) own: Rc<Cell<bool>>,
@@ -360,7 +360,7 @@ pub(crate) struct SessionKeys {
     held: RefCell<BTreeMap<u32, String>>,
     /// The controller the person last drove the desktop with, which a press of their own replaces:
     /// the guide then leads with the keyboard.
-    controller: Rc<Cell<Option<ui::ControllerFamily>>>,
+    controller: Rc<Cell<Option<tilo_ui_base::ControllerFamily>>>,
     /// Whether the keys being routed are a controller's own, for its presses rather than
     /// the person's fingers on a keyboard.
     controller_keys: Rc<Cell<bool>>,

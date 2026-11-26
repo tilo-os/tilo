@@ -3,7 +3,7 @@
 //! or off here, by the card's toggles or the screen reader chord, is kept
 //! for the next login screen (see [`crate::comforts`]).
 
-use ui::a11y::AccessibilityRequest;
+use tilo_ui_base::a11y::AccessibilityRequest;
 
 use super::GreeterApp;
 
@@ -57,7 +57,7 @@ mod tests {
     use std::io::BufRead;
 
     use automerge::AutoCommit;
-    use ui::widget::Widget;
+    use tilo_ui_base::widget::Widget;
 
     use super::super::tests::one_session;
     use super::*;
@@ -74,7 +74,7 @@ mod tests {
         app.sync(&doc, &root);
         app.on_external_event(
             &crate::comforts::chord_payload(true),
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &root,
         );
         assert!(app.screen_reader, "the toggle shows the reader as on");

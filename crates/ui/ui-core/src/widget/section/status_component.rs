@@ -1,12 +1,12 @@
 //! [`StatusLine`] and [`ObjectHeader`] as described components.
 
-use crate::component::{Component, Described, Person};
-use crate::icons::Icon;
 use crate::widget::list_row::RowStatus;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{component::Component, component::Described, component::Person};
 
 use super::{ObjectHeader, ObjectLead, StatusLine};
 
-crate::component::choice!(RowStatus, "RowStatus", {
+tilo_ui_base::choice!(RowStatus, "RowStatus", {
     Active => "active",
     Warning => "warning",
     Error => "error",

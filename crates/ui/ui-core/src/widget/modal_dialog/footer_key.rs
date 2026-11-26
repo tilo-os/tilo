@@ -1,10 +1,10 @@
 //! A footer action's focus node: its place in the window's keyboard focus order and its
 //! button in the accessibility tree.
 
-use crate::i18n::widget_text;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::i18n::widget_text;
 
 use super::{
     DialogAction, ModelPath, NodeId, Rect, Slot, Style, TaffyTree, TaffyTreeExt, Theme, Widget,
@@ -66,8 +66,8 @@ impl Widget for FooterKey {
         "ModalAction"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         // The secondary answer (Cancel, Keep) grants nothing; the others grant or confirm, and
         // that consent stays the person's.
         let mut state = AccessState::new()
@@ -86,12 +86,12 @@ impl Widget for FooterKey {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _: &mut crate::widget::Edits<'_>,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &ModelPath,
     ) -> bool {
-        if !self.enabled || !matches!(action, crate::a11y::Action::Activate) {
+        if !self.enabled || !matches!(action, tilo_ui_base::a11y::Action::Activate) {
             return false;
         }
         let Some(run) = &self.run else { return false };
@@ -102,8 +102,8 @@ impl Widget for FooterKey {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         target == self.action_target && self.perform_action(action, &[], state, path)

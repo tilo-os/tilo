@@ -1,0 +1,329 @@
+//! Focused widget IME intent shared by native windows and browser input bridges.
+pub use tilo_webview::{InputPurpose, edit_fingerprint};
+
+/// Scope a private field stamp to its editable subtarget inside one widget.
+pub fn scoped_fingerprint(scope: &[u8], field: [u8; 32], key: &[u8; 32]) -> [u8; 32] {
+    let mut hash = blake3::Hasher::new_keyed(key);
+    hash.update(b"tilo.ime.subtarget.v1");
+    hash.update(&field);
+    hash.update(scope);
+    *hash.finalize().as_bytes()
+}
+
+/// Which letters an input method capitalises on its own.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub enum Capitalization {
+    /// Its own default.
+    #[default]
+    None,
+    /// The first letter of each sentence.
+    Sentences,
+    /// The first letter of each word.
+    Words,
+}
+
+/// How an input method may help in a field.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct InputHints {
+    /// Suggest completions of the word being typed.
+    pub completion: bool,
+    /// Suggest corrections of misspelt words.
+    pub spellcheck: bool,
+    pub capitalization: Capitalization,
+    /// Prefer lower-case letters.
+    pub lowercase: bool,
+    /// Line breaks are text.
+    pub multiline: bool,
+    /// Do not show what is typed, in the keyboard either.
+    pub hidden: bool,
+    /// Learn nothing from what is typed and suggest nothing from it.
+    pub sensitive: bool,
+    /// The field brings its own on-screen keys, such as a calculator's keypad: a soft keyboard would
+    /// only cover them, so none is raised.
+    pub own_keys: bool,
+}
+
+/// A field's purpose and hints, as the toolkit tells an input method.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct InputContent {
+    pub purpose: InputPurpose,
+    pub hints: InputHints,
+}
+
+/// Wire values of `zwp_text_input_v3`'s `content_purpose` and `content_hint`.
+mod wire {
+    pub const NORMAL: u32 = 0;
+    pub const DIGITS: u32 = 2;
+    pub const NUMBER: u32 = 3;
+    pub const PHONE: u32 = 4;
+    pub const URL: u32 = 5;
+    pub const EMAIL: u32 = 6;
+    pub const NAME: u32 = 7;
+    pub const PASSWORD: u32 = 8;
+    pub const PIN: u32 = 9;
+    pub const DATE: u32 = 10;
+    pub const TIME: u32 = 11;
+    pub const TERMINAL: u32 = 13;
+
+    pub const COMPLETION: u32 = 0x1;
+    pub const SPELLCHECK: u32 = 0x2;
+    pub const AUTO_CAPITALIZATION: u32 = 0x4;
+    pub const LOWERCASE: u32 = 0x8;
+    pub const TITLECASE: u32 = 0x20;
+    pub const HIDDEN_TEXT: u32 = 0x40;
+    pub const SENSITIVE_DATA: u32 = 0x80;
+    pub const MULTILINE: u32 = 0x200;
+}
+
+impl InputContent {
+    /// Free text, with the input method's defaults.
+    pub const TEXT: Self = Self::of(InputPurpose::Text);
+    pub const TERMINAL: Self = Self::of(InputPurpose::Terminal);
+    /// A password: hidden, and nothing learned from it.
+    pub const PASSWORD: Self = Self::of(InputPurpose::Password).secret();
+
+    #[must_use]
+    pub const fn of(purpose: InputPurpose) -> Self {
+        Self {
+            purpose,
+            hints: InputHints {
+                completion: false,
+                spellcheck: false,
+                capitalization: Capitalization::None,
+                lowercase: false,
+                multiline: false,
+                hidden: false,
+                sensitive: false,
+                own_keys: false,
+            },
+        }
+    }
+
+    /// The same content, hidden and sensitive: nothing typed is shown, learned or suggested.
+    #[must_use]
+    pub const fn secret(mut self) -> Self {
+        self.hints.hidden = true;
+        self.hints.sensitive = true;
+        self
+    }
+
+    /// Whether the input method must neither show nor learn what is typed.
+    #[must_use]
+    pub const fn own_keys(mut self) -> Self {
+        self.hints.own_keys = true;
+        self
+    }
+
+    #[must_use]
+    pub const fn is_secret(self) -> bool {
+        self.hints.hidden || self.hints.sensitive || matches!(self.purpose, InputPurpose::Password)
+    }
+
+    /// The `zwp_text_input_v3` content hint bits and purpose for this content.
+    #[must_use]
+    pub const fn wayland(self) -> (u32, u32) {
+        let purpose = match self.purpose {
+            InputPurpose::Text | InputPurpose::Search => wire::NORMAL,
+            InputPurpose::Name => wire::NAME,
+            InputPurpose::Email => wire::EMAIL,
+            InputPurpose::Url => wire::URL,
+            InputPurpose::Number | InputPurpose::Decimal => wire::NUMBER,
+            InputPurpose::Phone => wire::PHONE,
+            InputPurpose::Pin => wire::PIN,
+            InputPurpose::OneTimeCode => wire::DIGITS,
+            InputPurpose::Password => wire::PASSWORD,
+            InputPurpose::Date => wire::DATE,
+            InputPurpose::Time => wire::TIME,
+            InputPurpose::Terminal => wire::TERMINAL,
+        };
+        let h = self.hints;
+        let mut hint = 0;
+        if h.completion {
+            hint |= wire::COMPLETION;
+        }
+        if h.spellcheck {
+            hint |= wire::SPELLCHECK;
+        }
+        hint |= match h.capitalization {
+            Capitalization::None => 0,
+            Capitalization::Sentences => wire::AUTO_CAPITALIZATION,
+            Capitalization::Words => wire::TITLECASE,
+        };
+        if h.lowercase {
+            hint |= wire::LOWERCASE;
+        }
+        if h.multiline {
+            hint |= wire::MULTILINE;
+        }
+        if h.hidden {
+            hint |= wire::HIDDEN_TEXT;
+        }
+        if h.sensitive {
+            hint |= wire::SENSITIVE_DATA;
+        }
+        (hint, purpose)
+    }
+
+    /// The nearest of winit's own purposes, for a platform that takes no more than that.
+    #[must_use]
+    pub const fn winit_purpose(self) -> winit::window::ImePurpose {
+        if self.is_secret() {
+            winit::window::ImePurpose::Password
+        } else if matches!(self.purpose, InputPurpose::Terminal) {
+            winit::window::ImePurpose::Terminal
+        } else {
+            winit::window::ImePurpose::Normal
+        }
+    }
+}
+
+/// What a browser's text control is told about a field: the attributes a web runner sets on the editor
+/// it focuses for the field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct HtmlInputHints {
+    pub inputmode: &'static str,
+    pub enterkeyhint: &'static str,
+    pub autocapitalize: &'static str,
+    pub autocomplete: &'static str,
+    pub spellcheck: bool,
+}
+
+impl InputContent {
+    /// The browser attributes for this content. Free text keeps what a web runner's editor always had:
+    /// no capitalisation, autofill or spellchecking of the browser's own, which the toolkit does
+    /// itself.
+    #[must_use]
+    pub const fn html(self) -> HtmlInputHints {
+        let inputmode = match self.purpose {
+            _ if self.hints.own_keys => "none",
+            InputPurpose::Search => "search",
+            InputPurpose::Email => "email",
+            InputPurpose::Url => "url",
+            InputPurpose::Number | InputPurpose::Decimal => "decimal",
+            InputPurpose::Phone => "tel",
+            InputPurpose::Pin | InputPurpose::OneTimeCode => "numeric",
+            InputPurpose::Text
+            | InputPurpose::Name
+            | InputPurpose::Password
+            | InputPurpose::Date
+            | InputPurpose::Time
+            | InputPurpose::Terminal => "text",
+        };
+        let secret = self.is_secret();
+        let autocapitalize = match self.hints.capitalization {
+            _ if secret || self.hints.lowercase => "off",
+            Capitalization::None => "off",
+            Capitalization::Sentences => "sentences",
+            Capitalization::Words => "words",
+        };
+        // Autofill offers only what a field of this purpose holds, and
+        // never anything for a secret it could leak into.
+        let autocomplete = match self.purpose {
+            _ if secret => "off",
+            InputPurpose::Name => "name",
+            InputPurpose::Email => "email",
+            InputPurpose::Url => "url",
+            InputPurpose::Phone => "tel",
+            InputPurpose::OneTimeCode => "one-time-code",
+            _ => "off",
+        };
+        HtmlInputHints {
+            inputmode,
+            enterkeyhint: if matches!(self.purpose, InputPurpose::Search) {
+                "search"
+            } else {
+                ""
+            },
+            autocapitalize,
+            autocomplete,
+            spellcheck: self.hints.spellcheck && !secret,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ImeWindowState {
+    /// What the field holds and how the input method may help in it, including whether it takes line
+    /// feeds.
+    pub content: InputContent,
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl ImeWindowState {
+    pub fn from_widget(widget: &dyn crate::Widget) -> Option<Self> {
+        let mut content = widget.ime_content()?;
+        let rect = widget.ime_cursor_rect()?;
+        // Line feeds are text only where text is: never in a secret or a
+        // terminal.
+        content.hints.multiline |= !content.is_secret()
+            && content.purpose != InputPurpose::Terminal
+            && widget.ime_multiline();
+        Some(Self::from_rect(content, rect))
+    }
+
+    #[must_use]
+    pub fn from_rect(content: InputContent, rect: vello::kurbo::Rect) -> Self {
+        let bounded = |v: f64| {
+            if v.is_finite() {
+                #[allow(
+                    clippy::cast_possible_truncation,
+                    clippy::cast_sign_loss,
+                    reason = "value is clamped to [0.0, u32::MAX] on the line above, so the cast is exact"
+                )]
+                {
+                    v.max(0.0).min(f64::from(u32::MAX)).round() as u32
+                }
+            } else {
+                0
+            }
+        };
+        ImeWindowState {
+            content,
+            x: bounded(rect.x0),
+            y: bounded(rect.y0),
+            width: bounded(rect.width()).max(1),
+            height: bounded(rect.height()).max(1),
+        }
+    }
+}
+
+/// What an input method may read of the focused field: its text around the selection, for suggestions,
+/// autocorrection and word deletion.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ImeSurroundingText {
+    pub text: String,
+    /// Byte offsets into `text`.
+    pub anchor: usize,
+    pub focus: usize,
+}
+
+impl ImeSurroundingText {
+    /// Bytes of context kept on each side of the selection.
+    pub const CONTEXT: usize = 2048;
+
+    pub fn from_widget(widget: &dyn crate::Widget) -> Option<Self> {
+        let node = widget.accessibility()?;
+        if node.state.protected {
+            return None;
+        }
+        let selection = node.text_selection?;
+        Self::around(&node.value?, selection.anchor, selection.focus)
+    }
+
+    /// The selection within `text`, with up to [`Self::CONTEXT`] bytes on each side.
+    pub fn around(text: &str, anchor: usize, focus: usize) -> Option<Self> {
+        if !text.is_char_boundary(anchor) || !text.is_char_boundary(focus) {
+            return None;
+        }
+        let start = text.ceil_char_boundary(anchor.min(focus).saturating_sub(Self::CONTEXT));
+        let end = text.floor_char_boundary(anchor.max(focus).saturating_add(Self::CONTEXT));
+        Some(Self {
+            text: text.get(start..end)?.to_owned(),
+            anchor: anchor - start,
+            focus: focus - start,
+        })
+    }
+}

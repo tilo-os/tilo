@@ -6,12 +6,12 @@ use std::collections::HashMap;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::Rect;
 
-use crate::paint::PaintCtx;
+use tilo_ui_base::paint::PaintCtx;
 
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::{TaffyTreeExt, Tone, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Tone, widget::Widget};
 
 #[path = "text_stack_component.rs"]
 mod component;
@@ -90,7 +90,7 @@ impl<'a> TextLineFace<'a> {
         if self.text.is_empty() || rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
-        let spare = crate::num::f32_of_f64(rect.width());
+        let spare = tilo_ui_base::num::f32_of_f64(rect.width());
         let shown = ctx.text.elide_to_width_style(self.text, spare, &style);
         let (w, h) = ctx.text.measure_style(&shown, None, &style);
         let x = match self.align {
@@ -132,7 +132,7 @@ impl<'a> TextBlockFace<'a> {
         f64::from(
             text.measure_style(
                 self.text,
-                Some(crate::num::f32_of_f64(width.max(0.0))),
+                Some(tilo_ui_base::num::f32_of_f64(width.max(0.0))),
                 self.style,
             )
             .1,
@@ -148,7 +148,7 @@ impl<'a> TextBlockFace<'a> {
             self.text,
             ink,
             ctx.transform.pre_translate((rect.x0, rect.y0).into()),
-            Some(crate::num::f32_of_f64(rect.width())),
+            Some(tilo_ui_base::num::f32_of_f64(rect.width())),
             self.style,
         );
     }
@@ -304,7 +304,7 @@ impl<'a> TextStackFace<'a> {
         let colors = &theme.tokens.colors;
         let height = self.height(ctx.text, theme);
         let mut y = rect.y0 + (rect.height() - height) / 2.0;
-        let width = crate::num::f32_of_f64(rect.width().max(0.0));
+        let width = tilo_ui_base::num::f32_of_f64(rect.width().max(0.0));
         let line = |ctx: &mut PaintCtx<'_>, s: &str, style: &TextStyle, ink, y: f64| {
             let shown = ctx.text.elide_to_width_style(s, width, style);
             let h = f64::from(ctx.text.measure_style("Ag", None, style).1);
@@ -433,7 +433,7 @@ impl TextStack {
 }
 
 impl Widget for TextStack {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -466,7 +466,7 @@ impl Widget for TextStack {
     ) -> Size<f32> {
         let theme = &self.layout_theme;
         let face = self.face();
-        let natural = crate::num::f32_of_f64(face.natural_width(text, theme));
+        let natural = tilo_ui_base::num::f32_of_f64(face.natural_width(text, theme));
         let width = match available.width {
             taffy::AvailableSpace::Definite(w) => natural.min(w),
             _ => natural,
@@ -475,13 +475,13 @@ impl Widget for TextStack {
             width: known.width.unwrap_or(width),
             height: known
                 .height
-                .unwrap_or(crate::num::f32_of_f64(face.height(text, theme))),
+                .unwrap_or(tilo_ui_base::num::f32_of_f64(face.height(text, theme))),
         }
     }
 
-    crate::rect_geometry!(measured);
+    tilo_ui_base::rect_geometry!(measured);
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -495,14 +495,14 @@ impl Widget for TextStack {
         );
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 
     fn name(&self) -> &'static str {
         "TextStack"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         if self.naming_its_control {
             return None;
         }

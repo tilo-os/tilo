@@ -1,11 +1,14 @@
 //! [`Autocomplete`] as a described component.
 
-use crate::component::{Bound, Component, Described, Event, Person};
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+    component::Person,
+};
 
 use super::{Autocomplete, RowRole, Suggestion};
 use crate::widget::TextInput;
 
-crate::component::part_type!(SuggestionProps);
+tilo_ui_base::part_type!(SuggestionProps);
 
 /// A field that suggests completions under it as it is typed into: a search over a site's catalogue, a
 /// mention, a command.
@@ -109,7 +112,7 @@ pub struct SuggestionProps {
     /// A dim line under the label: a page's address under its title.
     pub subtitle: Option<String>,
     /// A glyph before it.
-    pub icon: Option<crate::icons::Icon>,
+    pub icon: Option<tilo_ui_base::icons::Icon>,
     /// The person it names, shown as their avatar.
     pub who: Option<Person>,
     /// Its value can be stepped in place (a level, a volume): Left and Right on the selected

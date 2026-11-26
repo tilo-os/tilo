@@ -20,8 +20,8 @@ use tilo_sheets::display_confirm::ConfirmState;
 use tilo_sheets::invite::InviteState;
 use tilo_sheets::shortcut_guide::GuideState;
 use tilo_sheets::workspace_settings::WorkspaceSettingsState;
+use tilo_ui_base::host_operation::ResourceOperationStart;
 use ui::application::{ApplicationDefinition, ComponentRunnerInputs, prepare_private_surface};
-use ui::host_operation::ResourceOperationStart;
 use ui::vello::kurbo::Rect;
 
 use crate::Session;
@@ -54,18 +54,18 @@ std::thread_local! {
 
 /// A sheet as the person's appearance reaches it.
 trait Themed {
-    fn set_theme(&mut self, theme: ui::Theme);
+    fn set_theme(&mut self, theme: tilo_ui_base::Theme);
 }
 
 impl<S: SheetState> Themed for Sheet<S> {
-    fn set_theme(&mut self, theme: ui::Theme) {
+    fn set_theme(&mut self, theme: tilo_ui_base::Theme) {
         self.host.set_theme(theme);
     }
 }
 
 /// Draw every mounted sheet in `theme`: the person changed their appearance, and a sheet comes up
 /// in it as the shell around it does.
-pub(crate) fn set_theme(theme: &ui::Theme) {
+pub(crate) fn set_theme(theme: &tilo_ui_base::Theme) {
     MOUNTED.with_borrow_mut(|mounted| {
         mounted.retain(|sheet| {
             sheet.upgrade().is_some_and(|sheet| {
@@ -309,7 +309,11 @@ impl<S: SheetState> Published for Sheet<S> {
         Published::a11y_name(&self.host)
     }
 
-    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+    fn a11y_action(
+        &mut self,
+        target: ui::accesskit::NodeId,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         self.drawn() && Published::a11y_action(&mut self.host, target, action)
     }
 

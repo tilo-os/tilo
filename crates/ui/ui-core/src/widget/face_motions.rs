@@ -4,12 +4,12 @@
 
 use super::checkbox::{CheckGlyph, CheckMotion, CheckPose};
 use super::toggle::{SwitchMotion, SwitchPose};
-use crate::motion::Presence;
 use crate::time::Instant;
-use crate::tokens::{EffectiveMotion, MotionSource};
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
+use tilo_ui_base::motion::Presence;
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 
 /// The motions of a host's painted switches and checkboxes, by key.
 #[derive(Debug, Default)]
@@ -30,7 +30,7 @@ impl FaceMotions {
     /// How to draw the switch `key` showing `on` this frame.
     #[track_caller]
     pub fn switch(&self, key: impl Hash, on: bool, motion: EffectiveMotion) -> SwitchPose {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let mut switches = self.switches.borrow_mut();
         let switch = switches.entry(key_of(key)).or_default();
         switch.follow_input(on, motion, now);
@@ -50,7 +50,7 @@ impl FaceMotions {
         glyph: CheckGlyph,
         motion: EffectiveMotion,
     ) -> CheckPose {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let mut checks = self.checks.borrow_mut();
         let check = checks.entry(key_of(key)).or_default();
         check.follow_input(marked, glyph, motion, now);
@@ -66,13 +66,13 @@ impl FaceMotions {
     /// eases its tint in on the theme's control motion rather than switching it on in one frame.
     #[track_caller]
     pub fn hover(&self, key: impl Hash, hovered: bool, motion: EffectiveMotion) -> f32 {
-        let now = crate::motion::frame_now();
-        let source = crate::motion::recent_input(now).unwrap_or(MotionSource::Pointer);
+        let now = tilo_ui_base::motion::frame_now();
+        let source = tilo_ui_base::motion::recent_input(now).unwrap_or(MotionSource::Pointer);
         let mut hovers = self.hovers.borrow_mut();
         let presence = hovers.entry(key_of(key)).or_insert_with(Presence::closed);
         presence.show(
             hovered,
-            crate::motion::ControlChange::SHOW,
+            tilo_ui_base::motion::ControlChange::SHOW,
             motion,
             source,
             now,
@@ -81,7 +81,7 @@ impl FaceMotions {
         let moving = presence.is_moving(now);
         drop(hovers);
         self.painted(moving, now);
-        crate::num::f32_of_f64(level)
+        tilo_ui_base::num::f32_of_f64(level)
     }
 
     fn painted(&self, moving: bool, now: Instant) {
@@ -124,7 +124,7 @@ impl FaceMotions {
 mod tests {
     use super::*;
     use crate::time::testing::with_monotonic_time;
-    use crate::tokens::{Motion, MotionSource};
+    use tilo_ui_base::{tokens::Motion, tokens::MotionSource};
 
     #[test]
     fn a_painted_switch_and_box_move_on_a_click_land_on_a_key_and_then_rest() {
@@ -142,7 +142,7 @@ mod tests {
                 CheckPose::at_rest(false, CheckGlyph::Check)
             );
             assert!(!faces.is_moving(t0), "first seen: at rest, no frames");
-            crate::motion::note_source(MotionSource::Pointer);
+            tilo_ui_base::motion::note_source(MotionSource::Pointer);
             faces.switch("wifi", true, motion);
             faces.check("done", true, CheckGlyph::Check, motion);
         });
@@ -156,7 +156,7 @@ mod tests {
             assert!(check.level > 0.0 && check.level < 1.0);
             assert!(faces.is_moving(at(40)));
             assert!(
-                crate::motion::frames_wanted(at(40)),
+                tilo_ui_base::motion::frames_wanted(at(40)),
                 "a moving control asks the motion clock for its frames"
             );
         });
@@ -172,7 +172,7 @@ mod tests {
                 !faces.needs_redraw(at(1_000)),
                 "painted at rest: nothing more to paint"
             );
-            crate::motion::note_source(MotionSource::Keyboard);
+            tilo_ui_base::motion::note_source(MotionSource::Keyboard);
             assert_eq!(
                 faces.switch("wifi", false, motion),
                 SwitchPose::at_rest(false)
@@ -189,7 +189,7 @@ mod tests {
         let at = |ms: u64| t0 + crate::time::Duration::from_millis(ms);
         with_monotonic_time(t0, || {
             assert_eq!(faces.hover("row", false, motion), 0.0, "at rest, no tint");
-            crate::motion::note_source(MotionSource::Pointer);
+            tilo_ui_base::motion::note_source(MotionSource::Pointer);
             assert_eq!(
                 faces.hover("row", true, motion),
                 0.0,
@@ -200,7 +200,7 @@ mod tests {
             let level = faces.hover("row", true, motion);
             assert!(level > 0.0 && level < 1.0, "part way in: {level}");
             assert!(
-                crate::motion::frames_wanted(at(30)),
+                tilo_ui_base::motion::frames_wanted(at(30)),
                 "a hover on its way asks the motion clock for its frames"
             );
         });

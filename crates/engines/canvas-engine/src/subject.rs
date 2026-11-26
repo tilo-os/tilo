@@ -13,10 +13,10 @@
     reason = "kurbo's float geometry and pixel sizes bounded by the render's"
 )]
 
-use tilo_ui::num::usize_of_f64;
+use tilo_ui_base::num::usize_of_f64;
 
-use tilo_ui::TextRenderer;
 use tilo_ui::vello::kurbo::{Affine, Point};
+use tilo_ui_base::TextRenderer;
 
 use crate::model::{Artwork, Matte};
 use crate::region::{Coverage, Op, Region};

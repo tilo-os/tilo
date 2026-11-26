@@ -2,15 +2,15 @@
 
 use super::*;
 use crate::headless::InspectionNode;
-use crate::interaction::InteractionEnvironment;
 use crate::widget::Button;
+use tilo_ui_base::interaction::InteractionEnvironment;
 
 fn actions() -> Vec<Element> {
     (0..6)
         .map(|i| {
             Box::new(Button::icon_only(
                 &format!("act-{i}"),
-                crate::icons::Icon::Star,
+                tilo_ui_base::icons::Icon::Star,
                 "Act",
             )) as Element
         })
@@ -49,7 +49,7 @@ tilo_test_env::scenario! {
         settle(&mut harness, 1024, 768);
         let discard = Box::new(Button::icon_only(
             "discard",
-            crate::icons::Icon::Trash,
+            tilo_ui_base::icons::Icon::Trash,
             "Discard",
         )) as Element;
         harness
@@ -68,7 +68,7 @@ tilo_test_env::scenario! {
     phase a_pushed_phone_screen_shows_only_its_way_back;
     {
         let theme = Theme::light();
-        let gutter = crate::chrome::column_gutter(&theme);
+        let gutter = tilo_ui_base::chrome::column_gutter(&theme);
         let page = || {
             let can = SharedRc::new(Cell::new(false));
             let read = SharedRc::clone(&can);

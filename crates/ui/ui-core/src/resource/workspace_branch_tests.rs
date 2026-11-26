@@ -34,7 +34,7 @@ tilo_test_env::scenario! {
             WorkspaceResources::in_workspace(
                 ResourceOwners::in_memory(),
                 workspace.into(),
-                crate::MemberId::person("ada"),
+                tilo_ui_base::MemberId::person("ada"),
             )
         };
         let emoji = |doc: &AutoCommit| {

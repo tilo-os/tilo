@@ -3,7 +3,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
-use crate::widget::{Column, Decorator, TextInput};
+use crate::{widget::Column, widget::TextInput};
+use tilo_ui_base::widget::Decorator;
 use tilo_webview::text_input::Resolver;
 
 #[derive(Default)]

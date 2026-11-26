@@ -81,7 +81,7 @@ impl Tone {
     /// The ink an activity of this tone reads in, wherever it is drawn: the bar's pill and the card's
     /// glyph say the same thing about it.
     #[must_use]
-    pub fn ink(self, theme: &crate::theme::Theme) -> vello::peniko::Color {
+    pub fn ink(self, theme: &tilo_ui_base::theme::Theme) -> vello::peniko::Color {
         let colors = &theme.tokens.colors;
         match self {
             Self::Neutral => colors.text_primary,

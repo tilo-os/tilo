@@ -183,10 +183,10 @@ impl Surface {
         let full_redraw =
             frame.full || !self.target_valid || !backdrop.is_empty() || self.had_backdrop;
         let damage_rects: Vec<Rect> = frame.damage.iter().map(|rect| kurbo_rect(*rect)).collect();
-        let scroll_copies: Vec<ui::scroll_copy::DeviceCopy> = frame
+        let scroll_copies: Vec<tilo_ui_base::scroll_copy::DeviceCopy> = frame
             .scroll_copies
             .iter()
-            .map(|copy| ui::scroll_copy::DeviceCopy {
+            .map(|copy| tilo_ui_base::scroll_copy::DeviceCopy {
                 x: copy.x,
                 y: copy.y,
                 width: copy.width,
@@ -206,7 +206,7 @@ impl Surface {
         let scene = compose(layers, order, (width, height), composed);
         // Without a device the blur behind a floating surface cannot be drawn:
         // the surface shows over what is under it, unblurred.
-        let unblurred = ui::part_paint::backdrop::BackdropFrame::default();
+        let unblurred = tilo_ui_base::part_paint::backdrop::BackdropFrame::default();
         let content = FrameContent {
             scene,
             width,
@@ -572,26 +572,26 @@ fn copy_swizzled(
 fn backdrop_frame(
     frame: &mut Frame,
     resources: &dyn Resources,
-) -> Result<ui::part_paint::backdrop::BackdropFrame, WireError> {
+) -> Result<tilo_ui_base::part_paint::backdrop::BackdropFrame, WireError> {
     let regions = std::mem::take(&mut frame.backdrops)
         .into_iter()
         .map(|backdrop| {
             let image = resources
                 .image(ImageId(backdrop.image.0))
                 .ok_or(WireError::UnknownResource("a backdrop image"))?;
-            Ok(ui::part_paint::backdrop::BackdropRegion {
+            Ok(tilo_ui_base::part_paint::backdrop::BackdropRegion {
                 image,
                 rect: kurbo_rect(backdrop.rect),
                 blur_px: f64::from(backdrop.blur_px),
                 sampling: if backdrop.sampling == 1 {
-                    ui::part_paint::backdrop::Sampling::Blocky
+                    tilo_ui_base::part_paint::backdrop::Sampling::Blocky
                 } else {
-                    ui::part_paint::backdrop::Sampling::Smooth
+                    tilo_ui_base::part_paint::backdrop::Sampling::Smooth
                 },
                 cell_px: f64::from(backdrop.cell_px),
                 refraction: {
                     let [strength, band, radius, dispersion] = backdrop.refraction.map(f64::from);
-                    ui::part_paint::backdrop::Refraction {
+                    tilo_ui_base::part_paint::backdrop::Refraction {
                         strength,
                         band,
                         radius,
@@ -600,7 +600,7 @@ fn backdrop_frame(
                 },
                 legible: {
                     let [dark, light, ground] = backdrop.legible.map(f64::from);
-                    ui::part_paint::backdrop::Legible {
+                    tilo_ui_base::part_paint::backdrop::Legible {
                         dark,
                         light,
                         ground,
@@ -610,12 +610,14 @@ fn backdrop_frame(
                 ground: Color::new(backdrop.ground),
                 // Checked against the stage contract before the service compiles it
                 // (`BackdropBlur`): a client's frame carries what it likes.
-                stage: backdrop.stage.map(|stage| ui::part_paint::backdrop::Stage {
-                    wgsl: stage.wgsl.into(),
-                    uniforms: stage.uniforms,
-                }),
+                stage: backdrop
+                    .stage
+                    .map(|stage| tilo_ui_base::part_paint::backdrop::Stage {
+                        wgsl: stage.wgsl.into(),
+                        uniforms: stage.uniforms,
+                    }),
             })
         })
         .collect::<Result<_, WireError>>()?;
-    Ok(ui::part_paint::backdrop::BackdropFrame { regions })
+    Ok(tilo_ui_base::part_paint::backdrop::BackdropFrame { regions })
 }

@@ -1,20 +1,20 @@
 //! `PageSidebar` — a shared, reorderable page/slide preview rail: the PDF reader's page rail
 //! and the presentation editor's slide rail both drive this one widget.
 
-use crate::num::f64_of_usize;
 use std::collections::HashMap;
+use tilo_ui_base::num::f64_of_usize;
 
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
 use crate::widget::drag::{DragController, ListMetrics};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 
 /// Something the host should do to its page/slide model in response to a
 /// sidebar interaction. The ordering-changing variants flag that a save is needed.
@@ -122,7 +122,7 @@ impl RailMetrics {
         menu_sep_h: MENU_SEP_H,
         menu_pad: MENU_PAD,
         menu_row_inset: MENU_ROW_INSET,
-        natural_width: crate::tokens::Metrics::BASE.page_rail_width as f64,
+        natural_width: tilo_ui_base::tokens::Metrics::BASE.page_rail_width as f64,
     };
 
     /// The same geometry read from the theme's tokens. The add button is a
@@ -173,7 +173,7 @@ fn shifted(rect: Rect, dy: f64) -> Rect {
     rect + Vec2::new(0.0, dy)
 }
 
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "the rail `ui.PageSidebar` is built from, its pages reporting the view's events"
 )]
@@ -640,7 +640,7 @@ impl PageSidebar {
 
     /// Whether a finger held at `p` picks up a page to move it: on a page,
     /// in a rail that reorders, with no menu open
-    /// ([`crate::interaction::TouchClaim::HoldDrag`]).
+    /// ([`tilo_ui_base::interaction::TouchClaim::HoldDrag`]).
     pub fn lifts_by_hold(&self, p: Point) -> bool {
         !self.read_only && self.menu.is_none() && self.thumb_at(p).is_some()
     }
@@ -727,14 +727,14 @@ impl PageSidebar {
     {
         let region_theme;
         let theme = if self.draw_panel {
-            crate::surface::region(
+            tilo_ui_base::surface::region(
                 scene,
                 base,
                 self.rect,
-                crate::surface::Region::Sidebar,
+                tilo_ui_base::surface::Region::Sidebar,
                 theme,
             );
-            region_theme = theme.in_region(crate::surface::Region::Sidebar);
+            region_theme = theme.in_region(tilo_ui_base::surface::Region::Sidebar);
             &region_theme
         } else {
             theme
@@ -743,7 +743,7 @@ impl PageSidebar {
 
         if self.draw_panel {
             let header = if self.header.is_empty() {
-                crate::i18n::widget_format("page-sidebar-title", &[])
+                tilo_ui_base::i18n::widget_format("page-sidebar-title", &[])
             } else {
                 self.header.clone()
             };
@@ -808,7 +808,13 @@ impl PageSidebar {
             // dragged-object shadow, shaped to its own corners (HIG §9.3),
             // rather than a black wash nudged down four pixels.
             let radius = f64::from(theme.tokens.radii.control);
-            crate::surface::shadow(scene, base, ghost, radius, &theme.tokens.elevation.floating);
+            tilo_ui_base::surface::shadow(
+                scene,
+                base,
+                ghost,
+                radius,
+                &theme.tokens.elevation.floating,
+            );
             thumb(scene, tr, base, from, ghost);
             scene.stroke(
                 &Stroke::new(2.0),
@@ -905,11 +911,11 @@ impl PageSidebar {
                 rect.x1 + inset,
                 rect.y1 + inset,
             );
-            crate::chrome::paint_row_selection(
+            tilo_ui_base::chrome::paint_row_selection(
                 scene,
                 base,
                 plate,
-                crate::chrome::SelectionState::active(true),
+                tilo_ui_base::chrome::SelectionState::active(true),
                 c.surfaces.content,
                 theme,
             );
@@ -920,9 +926,9 @@ impl PageSidebar {
         scene.stroke(
             &Stroke::new(1.0),
             base,
-            crate::tokens::colors::Colors::hairline_on(c.surfaces.content, PAGE_EDGE_ALPHA),
+            tilo_ui_base::tokens::colors::Colors::hairline_on(c.surfaces.content, PAGE_EDGE_ALPHA),
             None,
-            &crate::surface::edge_outline(rect, radius),
+            &tilo_ui_base::surface::edge_outline(rect, radius),
         );
         if self.marked.contains(&i) {
             let d = f64::from(theme.tokens.spacing.s2);
@@ -986,12 +992,12 @@ impl PageSidebar {
         } else {
             c.surfaces.raised
         };
-        crate::surface::card(scene, base, r, f64::from(theme.tokens.radii.control), bg);
+        tilo_ui_base::surface::card(scene, base, r, f64::from(theme.tokens.radii.control), bg);
         let icon = self.add_icon_rect;
         if icon.is_zero_area() {
             return;
         }
-        crate::icons::Icon::Plus.draw(scene, base, icon, c.text_primary);
+        tilo_ui_base::icons::Icon::Plus.draw(scene, base, icon, c.text_primary);
         let label = self.add_label_rect;
         if label.is_zero_area() {
             return;
@@ -1022,7 +1028,7 @@ impl PageSidebar {
         let icon = f64::from(theme.tokens.metrics.icon_sm);
         let gap = f64::from(theme.tokens.metrics.icon_label_gap);
         let inset = f64::from(theme.tokens.spacing.s2);
-        let (tw, th) = crate::text_render::with_layout_renderer(&theme, |tr| {
+        let (tw, th) = tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| {
             let style = label_style(&theme).with_weight(TextWeight::Semibold);
             tr.measure_style(&self.add_label, None, &style)
         });
@@ -1049,7 +1055,7 @@ impl PageSidebar {
         let c = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.control);
         let rr = RoundedRect::from_rect(menu.rect, radius);
-        crate::surface::shadow(
+        tilo_ui_base::surface::shadow(
             scene,
             base,
             menu.rect,
@@ -1061,23 +1067,23 @@ impl PageSidebar {
         scene.fill(
             Fill::NonZero,
             base,
-            crate::chrome::panel_ground(theme),
+            tilo_ui_base::chrome::panel_ground(theme),
             None,
             &rr,
         );
         scene.stroke(
             &Stroke::new(1.0),
             base,
-            crate::chrome::panel_border(theme),
+            tilo_ui_base::chrome::panel_border(theme),
             None,
-            &crate::surface::edge_outline(menu.rect, radius),
+            &tilo_ui_base::surface::edge_outline(menu.rect, radius),
         );
         let style = label_style(theme);
         for (idx, (act, row)) in menu.items.iter().enumerate() {
             if menu.hover == Some(idx) {
-                let tier = crate::chrome::selection_tier(
+                let tier = tilo_ui_base::chrome::selection_tier(
                     theme,
-                    crate::chrome::SelectionState::new(false, true, false),
+                    tilo_ui_base::chrome::SelectionState::new(false, true, false),
                 );
                 scene.fill(
                     Fill::NonZero,
@@ -1120,11 +1126,11 @@ impl Widget for PageSidebar {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
         "PageSidebar"
@@ -1136,8 +1142,8 @@ impl Widget for PageSidebar {
         (self.show_add && self.add_icon_only && self.add_rect.contains(point))
             .then(|| (self.add_rect, self.add_label.clone()))
     }
-    fn tooltip_side(&self) -> crate::widget::TooltipSide {
-        crate::widget::TooltipSide::Beside
+    fn tooltip_side(&self) -> tilo_ui_base::widget::TooltipSide {
+        tilo_ui_base::widget::TooltipSide::Beside
     }
     fn test_id(&self) -> Option<&str> {
         Some("page_sidebar")
@@ -1174,15 +1180,15 @@ mod tests {
         );
         let named = PageSidebar::new(792.0 / 612.0).with_header("Slides");
         assert_eq!(named.header, "Slides");
-        crate::i18n::I18nManager::register_widget_messages();
-        crate::i18n::I18nManager::set_locale("de-DE");
+        tilo_ui_base::i18n::I18nManager::register_widget_messages();
+        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
         assert_eq!(
-            crate::i18n::widget_format("page-sidebar-title", &[]),
+            tilo_ui_base::i18n::widget_format("page-sidebar-title", &[]),
             "Seiten"
         );
-        crate::i18n::I18nManager::set_locale("en-US");
+        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
         assert_eq!(
-            crate::i18n::widget_format("page-sidebar-title", &[]),
+            tilo_ui_base::i18n::widget_format("page-sidebar-title", &[]),
             "Pages"
         );
     }

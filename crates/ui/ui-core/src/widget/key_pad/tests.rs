@@ -11,9 +11,9 @@ use winit::event::TouchPhase;
 
 use super::{LONG_PRESS, PadKey, PadSize, PadTone};
 
-use crate::a11y::Role;
-use crate::theme::Theme;
-use crate::widget::Widget;
+use tilo_ui_base::a11y::Role;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 
 /// What a keypad reported: presses by key with where the finger was, holds with the form chosen,
 /// swipe paths, and caret steps.

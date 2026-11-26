@@ -8,10 +8,10 @@ use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::richtext::RichTextLayout;
-use crate::text_edit::{Edit, EditCore};
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
+use tilo_ui_base::richtext::RichTextLayout;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{text_edit::Edit, text_edit::EditCore};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 
 /// A name is one line: control characters never enter it.
 fn name_char(character: char) -> bool {
@@ -124,7 +124,12 @@ impl NameField {
     /// Private equality for a deferred input into this shared name control.
     pub fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         (!self.core.has_preedit()).then(|| {
-            crate::ime::edit_fingerprint(&self.buffer, self.core.anchor(), self.core.caret(), key)
+            tilo_ui_base::ime::edit_fingerprint(
+                &self.buffer,
+                self.core.anchor(),
+                self.core.caret(),
+                key,
+            )
         })
     }
 
@@ -272,7 +277,7 @@ impl NameField {
     fn draw_chrome(
         scene: &mut Scene,
         transform: Affine,
-        colors: &crate::tokens::colors::Colors,
+        colors: &tilo_ui_base::tokens::colors::Colors,
         shape: &RoundedRect,
     ) {
         scene.fill(
@@ -334,7 +339,7 @@ impl NameField {
     fn draw_caret_line(
         scene: &mut Scene,
         transform: Affine,
-        colors: &crate::tokens::colors::Colors,
+        colors: &tilo_ui_base::tokens::colors::Colors,
         caret: Rect,
     ) {
         scene.stroke(
@@ -403,12 +408,12 @@ mod tests {
             &mut renderer,
             &Theme::dark(),
             rect,
-            &Theme::dark().text(crate::tokens::TextRole::Body),
+            &Theme::dark().text(tilo_ui_base::tokens::TextRole::Body),
         );
     }
 
     fn key(k: Key) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+        tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
             k,
             None,
             ElementState::Pressed,
@@ -599,9 +604,9 @@ mod tests {
 
     #[test]
     fn unchanged_browser_name_reshapes_after_font_generation_changes() {
-        let root = crate::font_catalog::checkout_root();
-        let fonts = crate::font_catalog::FontCatalog::product("", "en-US")
-            .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
+        let root = tilo_ui_base::font_catalog::checkout_root();
+        let fonts = tilo_ui_base::font_catalog::FontCatalog::product("", "en-US")
+            .load_browser_startup_bytes(tilo_ui_base::font_catalog::test_font_files(&root))
             .unwrap();
         let mut renderer = TextRenderer::with_browser_font_system(fonts);
         let field = NameField::new("مَرْحَبًا");
@@ -620,7 +625,7 @@ mod tests {
             .install_browser_font(
                 "NotoSansArabic[wght].ttf",
                 std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
-                &crate::font_catalog::test_sha256(
+                &tilo_ui_base::font_catalog::test_sha256(
                     &std::fs::read(root.join("NotoSansArabic[wght].ttf")).unwrap(),
                 ),
             )

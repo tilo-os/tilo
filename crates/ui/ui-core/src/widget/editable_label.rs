@@ -1,22 +1,23 @@
 //! An inline-editable label: reads as static text until the caller puts it into edit mode,
 //! then becomes a real [`TextInput`].
 
-use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::text_render::{FontChoice, TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::widget::DrawChild;
-use crate::widget::TaffyTreeExt;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{text_render::FontChoice, text_render::TextRenderer, text_render::TextStyle};
 #[path = "editable_label_component.rs"]
 mod component;
-use crate::widget::{TextInput, TextInputKind, Widget};
+use crate::{widget::TextInput, widget::TextInputKind};
 pub use component::EditableLabelProps;
+use tilo_ui_base::widget::Widget;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EditOutcome {
@@ -36,7 +37,7 @@ pub struct EditableLabel {
     editing: bool,
     /// An explicit family; otherwise the role's.
     family: Option<FontChoice>,
-    role: crate::tokens::TextRole,
+    role: tilo_ui_base::tokens::TextRole,
     style: TextStyle,
     /// The smallest target a pointer is given here: a finger's on a touchscreen.
     target: f32,
@@ -44,18 +45,18 @@ pub struct EditableLabel {
     rect: Rect,
     last_pointer: Point,
     outcome: EditOutcome,
-    action: Option<crate::widget::ActionEmitter<String>>,
+    action: Option<tilo_ui_base::widget::ActionEmitter<String>>,
     renames: bool,
     last_press: Option<crate::time::Instant>,
     grow: bool,
     edits_on_click: bool,
     placeholder: Option<String>,
-    edit_request: Option<crate::LocalState<bool>>,
+    edit_request: Option<tilo_ui_base::LocalState<bool>>,
     /// The text and style the last `measure` sized; the label needs measuring
     /// again only when either changed.
     measured: Option<(String, TextStyle)>,
     blank_clears: bool,
-    edits: Option<crate::component::Bound<String>>,
+    edits: Option<tilo_ui_base::component::Bound<String>>,
     seen: u64,
     /// A new item's name, typed where the item will stand ([`Self::naming`]): the proposed name
     /// is given as it stands, and a blank one lets the item be.
@@ -77,8 +78,9 @@ impl EditableLabel {
             input: TextInput::local().with_kind(TextInputKind::Name),
             editing: false,
             family: None,
-            role: crate::tokens::TextRole::Body,
-            style: crate::tokens::typography::stock().style(crate::tokens::TextRole::Body),
+            role: tilo_ui_base::tokens::TextRole::Body,
+            style: tilo_ui_base::tokens::typography::stock()
+                .style(tilo_ui_base::tokens::TextRole::Body),
             idle_color: None,
             rect: Rect::ZERO,
             last_pointer: Point::ZERO,
@@ -91,7 +93,7 @@ impl EditableLabel {
             placeholder: None,
             edit_request: None,
             measured: None,
-            target: crate::tokens::Metrics::default().min_pointer_target,
+            target: tilo_ui_base::tokens::Metrics::default().min_pointer_target,
             blank_clears: false,
             edits: None,
             seen: 0,
@@ -105,7 +107,7 @@ impl EditableLabel {
     /// view is built again. Enter, or leaving the field, gives the name, the proposed one too,
     /// to [`Self::on_action`]; Escape or a blank name lets the item be ([`Self::on_cancel`]).
     #[must_use]
-    pub fn naming(draft: &crate::LocalState<String>) -> Self {
+    pub fn naming(draft: &tilo_ui_base::LocalState<String>) -> Self {
         let mut label = Self::new("");
         label.input = TextInput::from_state(draft).with_kind(TextInputKind::Name);
         label.input.set_focus(true);
@@ -134,7 +136,7 @@ impl EditableLabel {
     /// does (the person's edits, never a name the view gave), and show a name it takes from
     /// elsewhere.
     #[must_use]
-    pub fn on_edit(mut self, edits: crate::component::Bound<String>) -> Self {
+    pub fn on_edit(mut self, edits: tilo_ui_base::component::Bound<String>) -> Self {
         self.seen = edits.state.revision();
         self.edits = Some(edits);
         self
@@ -161,7 +163,7 @@ impl EditableLabel {
 
     /// What it is set in.
     #[must_use]
-    pub fn text_role(&self) -> crate::tokens::TextRole {
+    pub fn text_role(&self) -> tilo_ui_base::tokens::TextRole {
         self.role
     }
 
@@ -197,7 +199,7 @@ impl EditableLabel {
     /// Begin an edit when `request` is set, as a rename offered elsewhere (a context menu)
     /// asks; the label clears it once the edit is open.
     #[must_use]
-    pub fn begins_editing_on(mut self, request: &crate::LocalState<bool>) -> Self {
+    pub fn begins_editing_on(mut self, request: &tilo_ui_base::LocalState<bool>) -> Self {
         self.edit_request = Some(request.clone());
         self
     }
@@ -206,7 +208,7 @@ impl EditableLabel {
     /// rename is the app's own action.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<String>) -> Self {
-        self.action = Some(crate::widget::ActionEmitter::new(binding));
+        self.action = Some(tilo_ui_base::widget::ActionEmitter::new(binding));
         self
     }
 
@@ -257,19 +259,19 @@ impl EditableLabel {
         self
     }
 
-    /// Set the label in `role` (default [`crate::tokens::TextRole::Body`]), idle and while
+    /// Set the label in `role` (default [`tilo_ui_base::tokens::TextRole::Body`]), idle and while
     /// editing.
     #[must_use]
-    pub fn with_text_role(mut self, role: crate::tokens::TextRole) -> Self {
+    pub fn with_text_role(mut self, role: tilo_ui_base::tokens::TextRole) -> Self {
         self.set_text_role(role);
         self
     }
 
     /// Change the label's role; see [`Self::with_text_role`].
-    pub fn set_text_role(&mut self, role: crate::tokens::TextRole) {
+    pub fn set_text_role(&mut self, role: tilo_ui_base::tokens::TextRole) {
         self.dirty = true;
         self.role = role;
-        self.style = crate::tokens::typography::stock().style(role);
+        self.style = tilo_ui_base::tokens::typography::stock().style(role);
         self.input.set_text_role(role);
     }
 
@@ -405,7 +407,7 @@ impl EditableLabel {
             let _ = action.emit(self.value.clone());
         }
         if changed && let Some(edits) = &self.edits {
-            edits.edited(crate::component::Value::Text(self.value.clone()));
+            edits.edited(tilo_ui_base::component::Value::Text(self.value.clone()));
         }
     }
 
@@ -433,7 +435,11 @@ impl EditableLabel {
         self.input.apply_layout_external(rect);
     }
 
-    fn begin_on_press(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn begin_on_press(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
         if !(self.renames || self.edits_on_click)
             || !matches!(
                 event,
@@ -455,7 +461,7 @@ impl EditableLabel {
         }
         let now = crate::time::now();
         let second = self.last_press.is_some_and(|at| {
-            now.saturating_duration_since(at) < crate::gesture::multi_click_interval()
+            now.saturating_duration_since(at) < tilo_ui_base::gesture::multi_click_interval()
         });
         self.last_press = if second { None } else { Some(now) };
         if second {
@@ -473,9 +479,9 @@ impl EditableLabel {
 }
 
 impl Widget for EditableLabel {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls);
 
     fn own_page_title(&self) -> Option<String> {
         (self.role.heading_level() == Some(1))
@@ -525,7 +531,7 @@ impl Widget for EditableLabel {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.input.apply_layout_external(self.rect);
     }
 
@@ -537,7 +543,7 @@ impl Widget for EditableLabel {
                 .is_none_or(|(text, style)| text != self.shown_text() || *style != self.style)
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -584,7 +590,7 @@ impl Widget for EditableLabel {
         );
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_pointer = ctx.logical(position);
@@ -647,11 +653,11 @@ impl Widget for EditableLabel {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -711,7 +717,7 @@ impl Widget for EditableLabel {
         self.input.ime_edit_fingerprint(key)
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         Widget::ime_content(&self.input)
     }
 
@@ -719,8 +725,8 @@ impl Widget for EditableLabel {
         self.editing && self.input.is_dragging()
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let mut node = if self.editing {
             self.input.accessibility()?
         } else {
@@ -743,8 +749,8 @@ impl Widget for EditableLabel {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.semantic_target.as_deref() == Some(target)
@@ -753,13 +759,13 @@ impl Widget for EditableLabel {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
-        let (state, path) = crate::doc::document(state, path);
+        use tilo_ui_base::a11y::Action;
+        let (state, path) = tilo_ui_base::doc::document(state, path);
 
         if matches!(action, Action::Focus | Action::Activate) {
             if !self.editing {
@@ -777,9 +783,9 @@ impl Widget for EditableLabel {
     }
 }
 
-impl crate::widget::controls::ActionControls for EditableLabel {
-    crate::widget::controls::optional_emitter_controls!();
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+impl tilo_ui_base::widget::controls::ActionControls for EditableLabel {
+    tilo_ui_base::optional_emitter_controls!();
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         let Some(action) = &self.action else {
             return Vec::new();
         };
@@ -795,9 +801,9 @@ impl crate::widget::controls::ActionControls for EditableLabel {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
     use crate::testing::Dispatch;
     use automerge::AutoCommit;
+    use tilo_ui_base::presence::PresenceCtx;
     use vello::Scene;
     use winit::event::Modifiers;
 
@@ -805,13 +811,13 @@ mod tests {
         Dispatch::new().doc(doc).modifiers(m).send(el, ev).handled
     }
 
-    use crate::synthetic_input::char_key;
+    use tilo_ui_base::synthetic_input::char_key;
 
-    use crate::synthetic_input::named_key;
+    use tilo_ui_base::synthetic_input::named_key;
 
-    use crate::synthetic_input::cursor_moved;
+    use tilo_ui_base::synthetic_input::cursor_moved;
 
-    use crate::synthetic_input::mouse_press;
+    use tilo_ui_base::synthetic_input::mouse_press;
 
     fn no_mods() -> Modifiers {
         Modifiers::default()
@@ -946,18 +952,18 @@ mod tests {
                 let mut label = EditableLabel::new("Draft title");
                 label.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 50.0));
                 label.begin_edit();
-                let before = crate::widget::undo_points::get_state(&label.input);
-                let mut renderer = crate::TextRenderer::new();
+                let before = tilo_ui_base::widget::undo_points::get_state(&label.input);
+                let mut renderer = tilo_ui_base::TextRenderer::new();
                 let mut draw = |label: &mut EditableLabel| {
                     let mut scene = Scene::new();
-                    label.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark(), PresenceCtx::empty().draw_env()));
+                    label.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark(), PresenceCtx::empty().draw_env()));
                     scene.encoding().draw_tags.len()
                 };
                 let visible = draw(&mut label);
                 label.suppress_caret_paint(true);
                 assert_eq!(draw(&mut label).saturating_add(1), visible);
                 assert!(label.is_editing());
-                assert_eq!(crate::widget::undo_points::get_state(&label.input), before);
+                assert_eq!(tilo_ui_base::widget::undo_points::get_state(&label.input), before);
                 assert_eq!(label.current_text(), "Draft title");
                 label.suppress_caret_paint(false);
                 assert_eq!(draw(&mut label), visible);
@@ -994,10 +1000,10 @@ mod tests {
         {
             let theme = Theme::dark().with_text_scale(2.0);
             let mut label =
-                EditableLabel::new("Groceries").with_text_role(crate::tokens::TextRole::Title);
+                EditableLabel::new("Groceries").with_text_role(tilo_ui_base::tokens::TextRole::Title);
             let mut tree = TaffyTree::new();
             let node = label.build_layout(&mut tree, &theme, &mut HashMap::new());
-            let style = theme.text(crate::tokens::TextRole::Title);
+            let style = theme.text(tilo_ui_base::tokens::TextRole::Title);
             assert_eq!(label.style, style, "weight, size and leading of the role");
             let height = tree.style(node).unwrap().size.height;
             assert_eq!(
@@ -1061,7 +1067,7 @@ mod tests {
 
         phase a_name_set_elsewhere_shows_unless_the_person_is_typing_one;
         {
-            let bound = crate::component::Bound::<String>::default();
+            let bound = tilo_ui_base::component::Bound::<String>::default();
             let mut label = EditableLabel::new("Old").on_edit(bound.clone());
             bound.state.set("New".to_owned());
             label.sync(&(), &());
@@ -1070,7 +1076,7 @@ mod tests {
 
         phase a_change_of_props_does_not_end_the_edit;
         {
-            let bound = crate::component::Bound::<String>::default();
+            let bound = tilo_ui_base::component::Bound::<String>::default();
             let mut label = EditableLabel::new("Old").on_edit(bound.clone());
             label.begin_edit();
             let props = || crate::widget::EditableLabelProps {
@@ -1079,7 +1085,7 @@ mod tests {
             };
             bound.state.set("New".to_owned());
             assert!(
-                <EditableLabel as crate::component::Described>::set_props(&mut label, props()),
+                <EditableLabel as tilo_ui_base::component::Described>::set_props(&mut label, props()),
                 "a name set elsewhere is taken where it stands"
             );
             assert!(

@@ -13,10 +13,10 @@ pub struct PaintedActionMarker {
 
 /// Paint semantic activity against this frame's exact action bindings.
 pub(crate) fn draw_action_presence(
-    paint: &mut crate::paint::PaintCtx<'_>,
-    presence: &mut crate::presence::PresenceCtx,
+    paint: &mut tilo_ui_base::paint::PaintCtx<'_>,
+    presence: &mut tilo_ui_base::presence::PresenceCtx,
     tree: &crate::a11y_tree::SemanticTree,
-    bindings: &[crate::widget::ControlBindingMetadata],
+    bindings: &[tilo_ui_base::widget::ControlBindingMetadata],
     text_loci: &[(tilo_actions::InvocationId, vello::kurbo::Rect)],
     viewport: vello::kurbo::Rect,
     (surface, label_of): (&str, &dyn Fn(&str) -> Option<String>),
@@ -28,7 +28,7 @@ pub(crate) fn draw_action_presence(
     for interaction in presence.visible_interactions(now) {
         // Words written under an item that no view here shows in place (a comment added to an
         // issue, seen in the list; a note made while another is open) stand on the item's row.
-        let under = crate::presence::written_under(&interaction)
+        let under = tilo_ui_base::presence::written_under(&interaction)
             .filter(|_| !presence.placed(interaction.invocation));
         let Some(bounds) = text_loci
             .iter()
@@ -60,7 +60,7 @@ pub(crate) fn draw_action_presence(
         // outline strength or stronger, never a second layer over the control's words.
         let fill = presence
             .agent_locus_tint(&interaction, now, paint.theme)
-            .unwrap_or(crate::presence::render::OUTLINE_FILL);
+            .unwrap_or(tilo_ui_base::presence::render::OUTLINE_FILL);
         presence.draw_peer_outline_filled(
             paint.scene,
             paint.theme,
@@ -70,7 +70,7 @@ pub(crate) fn draw_action_presence(
             f64::from(paint.theme.tokens.radii.detail),
             fill,
         );
-        let place = crate::presence::MarkerPlace {
+        let place = tilo_ui_base::presence::MarkerPlace {
             locus: bounds,
             control,
             ink: occupied.clone(),
@@ -114,7 +114,7 @@ fn occupied(
         .filter(|node| {
             worded(node.name.as_deref())
                 || worded(node.value.as_deref())
-                || crate::a11y::activation_role(node.role)
+                || tilo_ui_base::a11y::activation_role(node.role)
         })
         .filter_map(|node| node.bounds)
         .map(|bounds| bounds.intersect(viewport))
@@ -128,7 +128,7 @@ pub struct ActionUiRoute {
     pub address: tilo_actions::ActionAddress,
     pub control_id: String,
     /// Root-to-control semantic path.
-    pub path: Vec<crate::a11y::SemanticId>,
+    pub path: Vec<tilo_ui_base::a11y::SemanticId>,
     pub bounds: Option<vello::kurbo::Rect>,
     pub focused: bool,
     pub disabled: bool,
@@ -136,7 +136,7 @@ pub struct ActionUiRoute {
 
 pub(crate) fn action_ui_routes(
     tree: &crate::a11y_tree::SemanticTree,
-    bindings: &[crate::widget::ControlBindingMetadata],
+    bindings: &[tilo_ui_base::widget::ControlBindingMetadata],
     address: &tilo_actions::ActionAddress,
 ) -> Vec<ActionUiRoute> {
     let mut routes = Vec::new();
@@ -163,18 +163,18 @@ pub(crate) fn action_ui_routes(
 }
 
 type ActionRouteVisitor<'tree, 'visitor> = dyn FnMut(
-        &crate::widget::ControlBindingMetadata,
-        &[crate::a11y::SemanticId],
+        &tilo_ui_base::widget::ControlBindingMetadata,
+        &[tilo_ui_base::a11y::SemanticId],
         &'tree crate::a11y_tree::SemanticNode,
     ) + 'visitor;
 
 fn visit_action_ui_routes<'tree>(
     tree: &'tree crate::a11y_tree::SemanticTree,
-    bindings: &[crate::widget::ControlBindingMetadata],
+    bindings: &[tilo_ui_base::widget::ControlBindingMetadata],
     address: &tilo_actions::ActionAddress,
     visit: &mut ActionRouteVisitor<'tree, '_>,
 ) {
-    let mut unique: Vec<&crate::widget::ControlBindingMetadata> =
+    let mut unique: Vec<&tilo_ui_base::widget::ControlBindingMetadata> =
         Vec::with_capacity(bindings.len());
     for binding in bindings {
         if !unique.contains(&binding) {
@@ -200,13 +200,13 @@ fn visit_action_ui_routes<'tree>(
             let Some(semantic_id) = path.last() else {
                 continue;
             };
-            let encoded_node_id = crate::uri::encode_component(semantic_id.as_str());
+            let encoded_node_id = tilo_ui_base::uri::encode_component(semantic_id.as_str());
             let semantic_address = address.resource == format!("ui:{encoded_node_id}")
                 && tree.action(semantic_id, &address.action).is_some();
             let matches_address = semantic_address
                 || matches!(
                     &binding.kind,
-                    crate::widget::ControlBindingKind::Action(candidate)
+                    tilo_ui_base::widget::ControlBindingKind::Action(candidate)
                         if candidate.action == address.action
                             && tilo_actions::logical_resource_id(&candidate.resource)
                                 == address.resource
@@ -231,7 +231,7 @@ fn interaction_address(
     )
 }
 
-fn resource_of(id: &crate::a11y::SemanticId) -> std::borrow::Cow<'_, str> {
+fn resource_of(id: &tilo_ui_base::a11y::SemanticId) -> std::borrow::Cow<'_, str> {
     let id = crate::a11y_tree::component_resource(id)
         .or_else(|| id.as_str().strip_prefix("r:"))
         .unwrap_or(id.as_str());
@@ -243,7 +243,7 @@ fn resource_of(id: &crate::a11y::SemanticId) -> std::borrow::Cow<'_, str> {
 /// resolver remain app-level activity rather than guessed rectangles.
 pub(crate) fn interaction_bounds(
     tree: &crate::a11y_tree::SemanticTree,
-    bindings: &[crate::widget::ControlBindingMetadata],
+    bindings: &[tilo_ui_base::widget::ControlBindingMetadata],
     interaction: &tilo_actions::SemanticInteraction,
 ) -> Option<vello::kurbo::Rect> {
     if let tilo_actions::InteractionAnchor::ListItems { ids } = &interaction.anchor {
@@ -257,14 +257,14 @@ pub(crate) fn interaction_bounds(
     // keeps is not the alias the invocation has, so the record is what the
     // node is found by.
     let canonical_id = if let Some(encoded) = address.resource.strip_prefix("ui:") {
-        crate::a11y::SemanticId(
+        tilo_ui_base::a11y::SemanticId(
             percent_encoding::percent_decode_str(encoded)
                 .decode_utf8()
                 .ok()?
                 .into_owned(),
         )
     } else {
-        crate::a11y::SemanticId(format!("r:{}", address.resource))
+        tilo_ui_base::a11y::SemanticId(format!("r:{}", address.resource))
     };
     let stands_for_resource = |node: &crate::a11y_tree::SemanticNode| {
         node.action(&address.action).is_some()
@@ -294,7 +294,7 @@ pub(crate) fn interaction_bounds(
                 .path
                 .last()
                 .and_then(|target| tree.node(target))
-                .is_some_and(|node| crate::a11y::activation_role(node.role));
+                .is_some_and(|node| tilo_ui_base::a11y::activation_role(node.role));
             Some((route.bounds?, presses))
         })
         .filter(|(bounds, _)| {
@@ -317,7 +317,7 @@ pub(crate) fn interaction_bounds(
 /// synthetic child a widget publishes (a terminal's prompt line) belongs to the widget above it.
 pub(crate) fn interaction_node<'tree>(
     tree: &'tree crate::a11y_tree::SemanticTree,
-    bindings: &[crate::widget::ControlBindingMetadata],
+    bindings: &[tilo_ui_base::widget::ControlBindingMetadata],
     interaction: &tilo_actions::SemanticInteraction,
 ) -> Option<&'tree crate::a11y_tree::SemanticNode> {
     let bounds = interaction_bounds(tree, bindings, interaction)?;
@@ -353,7 +353,7 @@ pub(crate) fn interaction_node<'tree>(
 
 fn control_bounds(
     tree: &crate::a11y_tree::SemanticTree,
-    bindings: &[crate::widget::ControlBindingMetadata],
+    bindings: &[tilo_ui_base::widget::ControlBindingMetadata],
     interaction: &tilo_actions::SemanticInteraction,
     locus: vello::kurbo::Rect,
 ) -> Option<vello::kurbo::Rect> {
@@ -378,9 +378,9 @@ fn locus_toggle(
         .filter(|node| {
             matches!(
                 node.role,
-                crate::a11y::Role::Checkbox
-                    | crate::a11y::Role::Switch
-                    | crate::a11y::Role::RadioButton
+                tilo_ui_base::a11y::Role::Checkbox
+                    | tilo_ui_base::a11y::Role::Switch
+                    | tilo_ui_base::a11y::Role::RadioButton
             )
         })
         .filter_map(|node| node.bounds)
@@ -429,10 +429,13 @@ fn item_bounds(
 /// Exact resource geometry after the host has translated a checked publication.
 pub(crate) fn resource_bounds(
     tree: &crate::a11y_tree::SemanticTree,
-    bindings: &[crate::widget::ControlBindingMetadata],
+    bindings: &[tilo_ui_base::widget::ControlBindingMetadata],
     address: &tilo_actions::ActionAddress,
 ) -> Option<(vello::kurbo::Rect, u64)> {
-    let resource = tree.node(&crate::a11y::SemanticId(format!("r:{}", address.resource)))?;
+    let resource = tree.node(&tilo_ui_base::a11y::SemanticId(format!(
+        "r:{}",
+        address.resource
+    )))?;
     if !resource.durable_identity || resource.action(&address.action).is_none() {
         return None;
     }

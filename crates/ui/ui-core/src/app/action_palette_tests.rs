@@ -1,12 +1,13 @@
 use super::*;
-use crate::widget::TaffyTreeExt;
-use crate::widget::{AppModel, ModelPath};
-use crate::widget::{Button, Widget};
+use crate::widget::Button;
 use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ROOT, ReadDoc, ScalarValue};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use tilo_actions::{Action, ActionError, ActionSpec, Doc, ResourceSpec};
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use winit::event::{ElementState, KeyEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
 
@@ -36,8 +37,8 @@ impl crate::search::SearchProvider for PeopleProvider {
         ["Ada Lovelace", "Grace Hopper"]
             .into_iter()
             .filter(|n| {
-                crate::text_match::fold_search_text(n)
-                    .contains(&crate::text_match::fold_search_text(query))
+                tilo_ui_base::text_match::fold_search_text(n)
+                    .contains(&tilo_ui_base::text_match::fold_search_text(query))
             })
             .map(|n| crate::search::SearchResult::new("People", n, n.to_string()))
             .collect()
@@ -74,8 +75,8 @@ impl crate::search::SearchProvider for LazyProvider {
 /// People provider.
 struct Publisher;
 impl Widget for Publisher {
-    crate::provides!(
-        dyn crate::widget::resources::PublishesResources,
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource
     );
 
@@ -99,17 +100,17 @@ impl crate::search::capability::SearchSource for Publisher {
     fn activate_search_result(
         &mut self,
         action_id: &str,
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         p: &ModelPath,
     ) {
-        let (doc, _) = crate::doc::document(doc, p);
+        let (doc, _) = tilo_ui_base::doc::document(doc, p);
         doc.document_mut()
             .put(&ROOT, "navigated", ScalarValue::Str(action_id.into()))
             .unwrap();
     }
 }
 
-impl crate::widget::resources::PublishesResources for Publisher {
+impl tilo_ui_base::widget::resources::PublishesResources for Publisher {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         vec![
             ResourceSpec::new("test.obj:1", "test.obj", "Widget Object").with_action(
@@ -147,9 +148,9 @@ impl crate::widget::resources::PublishesResources for Publisher {
 struct Viewer(std::rc::Rc<std::cell::Cell<usize>>);
 
 impl Widget for Viewer {
-    crate::provides!(
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     fn build_layout(
@@ -165,25 +166,27 @@ impl Widget for Viewer {
     }
 }
 
-impl crate::widget::ResourceOperations for Viewer {
+impl tilo_ui_base::widget::ResourceOperations for Viewer {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[PEEK]
     }
 
     fn start_operation(
         &mut self,
-        _op: &crate::widget::ResourceOperation<'_>,
-        _: &mut crate::widget::Edits<'_>,
+        _op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         self.0.set(self.0.get() + 1);
-        Ok(Some(crate::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(
+            tilo_ui_base::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
 }
 
-impl crate::widget::resources::PublishesResources for Viewer {
+impl tilo_ui_base::widget::resources::PublishesResources for Viewer {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         vec![
             ResourceSpec::new("test.view:1", "test.view", "Viewable").with_action(
@@ -218,7 +221,7 @@ pub(super) fn synth_enter() -> WindowEvent {
         None,
         Key::Named(NamedKey::Enter),
     );
-    crate::synthetic_input::keyboard_input(event)
+    tilo_ui_base::synthetic_input::keyboard_input(event)
 }
 
 #[test]
@@ -369,9 +372,9 @@ fn native_directional_keys_reach_the_focused_control_before_host_navigation() {
     );
     assert_eq!(app.focused_node, Some(editor));
     assert_eq!(
-        app.inspect_node(editor, |widget| crate::widget::undo_points::get_state(
-            widget
-        ))
+        app.inspect_node(editor, |widget| {
+            tilo_ui_base::widget::undo_points::get_state(widget)
+        })
         .unwrap(),
         Some("0:b:1".into()),
         "Shift+Left extends the editor selection instead of moving host focus"
@@ -407,8 +410,8 @@ tilo_test_env::scenario! {
             assert_eq!(app.collect_local_resources().len(), 1);
             app.actions.permission_generation.set(u64::MAX);
 
-            app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
-                &crate::permissions::MemberId::person("restricted"),
+            app.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::stranger(
+                &tilo_ui_base::permissions::MemberId::person("restricted"),
             ));
 
             assert_eq!(app.actions.permission_generation.get(), u64::MAX);
@@ -421,8 +424,8 @@ tilo_test_env::scenario! {
         {
             let mut app = App::new_with_controlled_inputs(State::new(), Box::new(Publisher));
             app.action_registry_mut().register::<Flip>(FLIP_TYPE);
-            app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
-                &crate::permissions::MemberId::person("restricted"),
+            app.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::stranger(
+                &tilo_ui_base::permissions::MemberId::person("restricted"),
             ));
             app.open_action_palette();
             app.actions
@@ -695,7 +698,7 @@ tilo_test_env::scenario! {
     phase host_commands_present_host_services_and_enter_the_palette_api;
     {
         use crate::host_chrome::model::{CommandGroup, HostCommand};
-        use crate::platform::HostShortcut;
+        use tilo_ui_base::platform::HostShortcut;
         let find = |commands: &[HostCommand], group: CommandGroup, action: &str| {
             commands
                 .iter()
@@ -744,7 +747,10 @@ tilo_test_env::scenario! {
 
 #[test]
 fn native_history_discovery_tracks_the_same_focused_local_undo_api() {
-    use crate::widget::undo_access::{LocalUndo, LocalUndoStatus, UndoRequest, UndoStatus};
+    use tilo_ui_base::{
+        widget::undo_access::LocalUndo, widget::undo_access::LocalUndoStatus,
+        widget::undo_access::UndoRequest, widget::undo_access::UndoStatus,
+    };
     struct Native {
         history: std::rc::Rc<std::cell::RefCell<Option<LocalUndoStatus>>>,
         calls: std::rc::Rc<std::cell::RefCell<Vec<UndoRequest>>>,
@@ -762,21 +768,26 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_api() {
         }
     }
     impl Widget for Native {
-        crate::provides!(dyn LocalUndo, dyn crate::widget::ResourceOperations);
-        fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
+        tilo_ui_base::provides!(dyn LocalUndo, dyn tilo_ui_base::widget::ResourceOperations);
+        fn sync(
+            &mut self,
+            _: &tilo_ui_base::widget::AppModel,
+            _: &tilo_ui_base::widget::ModelPath,
+        ) {
+        }
         fn name(&self) -> &str {
             "Native history fixture"
         }
         crate::testing::inert_widget_methods!(leaf_layout);
     }
 
-    impl crate::widget::ResourceOperations for Native {
+    impl tilo_ui_base::widget::ResourceOperations for Native {
         fn start_operation(
             &mut self,
-            operation: &crate::widget::ResourceOperation<'_>,
-            _: &mut crate::widget::Edits<'_>,
+            operation: &tilo_ui_base::widget::ResourceOperation<'_>,
+            _: &mut tilo_ui_base::widget::Edits<'_>,
             _: &automerge::ObjId,
-        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
             let request = operation.request();
             if request.type_id != crate::host_chrome::edit::EDIT_OPERATION {
                 return Ok(None);
@@ -784,7 +795,7 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_api() {
             self.calls
                 .borrow_mut()
                 .push(serde_json::from_slice(request.payload).unwrap());
-            Ok(Some(crate::widget::ResourceOperationStart::Accepted))
+            Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Accepted))
         }
     }
     let history = std::rc::Rc::new(std::cell::RefCell::new(Some(LocalUndoStatus::Ready(
@@ -864,7 +875,7 @@ fn native_history_discovery_tracks_the_same_focused_local_undo_api() {
                 .invocation(Some(invocation))
         )
         .unwrap(),
-        crate::widget::ResourceOperationStart::Accepted,
+        tilo_ui_base::widget::ResourceOperationStart::Accepted,
         "published Edit must enter the actual native operation lifecycle"
     );
     assert_eq!(

@@ -17,8 +17,10 @@ use winit::event_loop::EventLoopProxy;
 
 use super::{TextInputOp, named_key};
 use crate::app::{ImeWindowState, UserEvent};
-use crate::ime::{Capitalization, ImeSurroundingText, InputContent, InputPurpose};
 use tilo_lock::MutexRecover as _;
+use tilo_ui_base::{
+    ime::Capitalization, ime::ImeSurroundingText, ime::InputContent, ime::InputPurpose,
+};
 
 const CLASS: &str = "so.tilo.android.TiloTextInput";
 const MAX_DELETE: u32 = 4096;
@@ -43,12 +45,12 @@ pub(in crate::app) fn install(proxy: EventLoopProxy<UserEvent>) -> bool {
             }
             Ok(None) => {
                 tracing::info!(
-                    target: "tilo_ui::ime",
+                    target: "tilo_ui_base::ime",
                     "activity has no TiloTextInput; soft keyboards cannot type"
                 );
             }
             Err(error) => {
-                tracing::warn!(target: "tilo_ui::ime", %error, "TiloTextInput bridge failed");
+                tracing::warn!(target: "tilo_ui_base::ime", %error, "TiloTextInput bridge failed");
             }
         }
     }
@@ -235,7 +237,7 @@ fn with_env(
     let class: &JClass<'_> = java.class.as_obj().into();
     if let Err(error) = env.with_local_frame(8, |env| body(env, class)) {
         clear_exception(&env);
-        tracing::warn!(target: "tilo_ui::ime", %error, name, "TiloTextInput call failed");
+        tracing::warn!(target: "tilo_ui_base::ime", %error, name, "TiloTextInput call failed");
     }
 }
 

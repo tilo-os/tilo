@@ -105,7 +105,7 @@ fn asked_for_box(app: &mut Window, session: &mut Session) -> Option<(Vec<Recipie
 #[test]
 fn the_send_key_asks_the_window_in_front_to_open_its_box() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _launches, mut app, mut app_process, _window) = session_with_a_window();
 
     press_send_key(&mut session);
@@ -147,7 +147,7 @@ fn tab_apps(session: &Session) -> Vec<String> {
 #[test]
 fn the_send_key_over_an_empty_shell_opens_chat() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = crate::common::headless(Options {
         collab: false,
         lists: tilo_session::Lists::fixed(tilo_session::AppLists {
@@ -201,7 +201,7 @@ fn press_report_key(session: &mut Session) {
 #[test]
 fn a_report_asks_the_window_in_front_for_its_box_at_the_destination() {
     let _home = told_where_reports_go();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _launches, mut app, mut app_process, _window) = session_with_a_window();
 
     press_report_key(&mut session);
@@ -234,7 +234,7 @@ fn a_report_asks_the_window_in_front_for_its_box_at_the_destination() {
 #[test]
 fn a_computer_told_nowhere_points_and_says_so_in_the_box() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, _launches, mut app, mut app_process, _window) = session_with_a_window();
 
     press_report_key(&mut session);
@@ -375,7 +375,7 @@ fn session_with_two_windows_of_one_app() -> (
 #[test]
 fn the_report_chord_asks_the_window_in_front_of_two_of_one_app() {
     let _home = told_where_reports_go();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (
         mut session,
         mut behind,
@@ -417,7 +417,7 @@ fn the_report_chord_asks_the_window_in_front_of_two_of_one_app() {
 #[test]
 fn the_window_the_picker_names_is_asked_for_the_report_about_it() {
     let _home = told_where_reports_go();
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (
         mut session,
         mut behind,

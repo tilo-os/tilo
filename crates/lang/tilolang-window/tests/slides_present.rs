@@ -28,11 +28,11 @@ fn open() -> Window {
         APP,
         &support::packages_of("slides"),
         WINDOW,
-        ui::Theme::light(),
+        tilo_ui_base::Theme::light(),
     );
     window
         .harness
-        .set_theme(ui::Theme::light().with_reduce_motion(false));
+        .set_theme(tilo_ui_base::Theme::light().with_reduce_motion(false));
     settle(&mut window);
     window
 }
@@ -42,7 +42,7 @@ fn press(window: &mut Window, name: &str) {
     let node = accessible(window)
         .into_iter()
         .find(|node| {
-            node.role == ui::a11y::Role::Button
+            node.role == tilo_ui_base::a11y::Role::Button
                 && node.name.as_deref() == Some(name)
                 && node.bounds.is_some()
         })
@@ -66,7 +66,7 @@ fn press(window: &mut Window, name: &str) {
 /// How many pages the cross-fading stage lays out beside each other, while one is swapping:
 /// `Some(2)` mid-swap, `Some(1)` for a swap that has landed but not yet been let go, `None`
 /// when the stage stands on one slide.
-fn pages_in_the_stage(widget: &dyn ui::widget::Widget) -> Option<usize> {
+fn pages_in_the_stage(widget: &dyn tilo_ui_base::widget::Widget) -> Option<usize> {
     if let Some(swapped) = widget
         .as_any()
         .and_then(|any| any.downcast_ref::<ui::widget::Swapped>())
@@ -93,7 +93,7 @@ fn a_slide_change_while_presenting_cross_fades_between_the_two_pages() {
     press(&mut window, "Add slide");
     press(&mut window, "Present");
     assert!(
-        ui::widget::find_test_id(window.harness.root_widget(), "Presentation").is_some(),
+        tilo_ui_base::widget::find_test_id(window.harness.root_widget(), "Presentation").is_some(),
         "the presentation's stage is shown"
     );
     assert_eq!(
@@ -120,7 +120,7 @@ fn a_slide_change_while_presenting_cross_fades_between_the_two_pages() {
         "the swap has landed"
     );
     assert!(
-        ui::widget::find_test_id(window.harness.root_widget(), "Presentation").is_some(),
+        tilo_ui_base::widget::find_test_id(window.harness.root_widget(), "Presentation").is_some(),
         "the stage stands on the slide that came"
     );
 }

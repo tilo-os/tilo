@@ -71,7 +71,7 @@ fn named_by_id(session: &tilo_session::Session, id: &str) -> Option<String> {
 
 /// Sets the desktop's language for everything resolved from here on.
 fn speak(locale: &str) {
-    ui::i18n::I18nManager::set_locale(locale);
+    tilo_ui_base::i18n::I18nManager::set_locale(locale);
 }
 
 #[test]

@@ -2,7 +2,7 @@
 //! as what it holds.
 
 use super::TextInput;
-use crate::text_render::TextRenderer;
+use tilo_ui_base::text_render::TextRenderer;
 
 impl TextInput {
     /// A caret on a surface rather than a field in a form: it draws no well and no

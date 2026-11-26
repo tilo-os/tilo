@@ -1,7 +1,9 @@
 //! [`DragSource`](super::DragSource) as a described component.
 
-use crate::component::{Component, Described, Event, PartViews};
-use crate::widget::Element;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PartViews,
+};
 
 use super::DragSource;
 
@@ -46,8 +48,11 @@ impl Described for DragSource {
             content,
             ..
         } = props;
-        let empty =
-            || Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0)) as Element;
+        let empty = || {
+            Box::new(tilo_ui_base::widget::Spacer::token(
+                tilo_ui_base::tokens::SpacingStep::S0,
+            )) as Element
+        };
         Self::new(
             key,
             content.unwrap_or_else(empty),

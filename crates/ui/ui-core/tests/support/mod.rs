@@ -19,9 +19,9 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 
 use tilo_ui::App;
-use tilo_ui::collaboration::{CollabEvent, CollabRequest};
 use tilo_ui::state::State;
 use tilo_ui::widget::{Column, Text};
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
 
 type PeerInboxes = HashMap<String, VecDeque<CollabEvent>>;
 
@@ -134,17 +134,17 @@ pub fn pump(relay: &mut MemoryRelay) {
             }
             CollabRequest::Document { mutation, .. } => {
                 let event = CollabEvent::Document {
-                    route: tilo_ui::collaboration::RouteSpec::cluster(uuid::Uuid::nil()),
+                    route: tilo_ui_base::collaboration::RouteSpec::cluster(uuid::Uuid::nil()),
                     mutation,
                 };
                 broadcast_to_others(&mut inboxes, &peer_ids, &from, &event);
             }
             CollabRequest::Say { key, payload } => {
                 if let Ok(Some(payload)) =
-                    tilo_ui::collaboration::PresencePayload::from_live(payload)
+                    tilo_ui_base::collaboration::PresencePayload::from_live(payload)
                 {
                     let event = CollabEvent::RemotePresenceUpdate {
-                        member: tilo_ui::permissions::MemberId::person(from.clone()),
+                        member: tilo_ui_base::permissions::MemberId::person(from.clone()),
                         key,
                         payload,
                     };

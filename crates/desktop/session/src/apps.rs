@@ -724,8 +724,8 @@ impl Apps {
     /// instance it starts writes its dates and clocks in, and the language its windows read.
     fn person_locale() -> runtime_portal::process_link::Locale {
         runtime_portal::process_link::Locale {
-            formats: ui::format::region::current(),
-            language: ui::i18n::preferred_language().unwrap_or_default(),
+            formats: tilo_ui_base::format::region::current(),
+            language: tilo_ui_base::i18n::preferred_language().unwrap_or_default(),
         }
     }
 
@@ -2778,7 +2778,7 @@ impl Apps {
                 shell.as_ref(),
                 workspace,
                 &person,
-                Path::new(&ui::uri::decode(path)),
+                Path::new(&tilo_ui_base::uri::decode(path)),
             )
             .into_iter()
             .next(),

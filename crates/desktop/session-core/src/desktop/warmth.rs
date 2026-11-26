@@ -11,9 +11,9 @@ use std::time::{Duration, Instant};
 
 use tilo_desktop_model::Layout;
 use tilo_desktop_model::ids::WorkspaceId;
-use ui::Theme;
-use ui::WindowAppearance;
-use ui::tokens::PresenceHue;
+use tilo_ui_base::Theme;
+use tilo_ui_base::WindowAppearance;
+use tilo_ui_base::tokens::PresenceHue;
 
 /// How often every workspace's temperature is looked at again while the active workspace stays put,
 /// so a new wallpaper retints its workspace.

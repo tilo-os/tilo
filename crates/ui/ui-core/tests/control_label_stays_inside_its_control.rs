@@ -10,8 +10,8 @@
 //! can hand it, the label either stands inside the button or is not painted at
 //! all (the button shows its glyph alone and carries the words as its name).
 
-use tilo_ui::theme::Theme;
 use tilo_ui::widget::PageSidebar;
+use tilo_ui_base::theme::Theme;
 
 /// Labels as apps hand the rail: the PDF reader's import affordance in both
 /// languages, a slide rail's new slide, and a longer one than either.
@@ -44,7 +44,7 @@ tilo_test_env::scenario! {
                     let rect = vello::kurbo::Rect::new(0.0, 0.0, width, 640.0);
                     rail.begin_frame_with_theme(&theme, rect, 3, 0);
                     let mut scene = vello::Scene::new();
-                    let mut text = tilo_ui::TextRenderer::new();
+                    let mut text = tilo_ui_base::TextRenderer::new();
                     rail.render(
                         &mut scene,
                         vello::kurbo::Affine::IDENTITY,
@@ -87,7 +87,7 @@ tilo_test_env::scenario! {
             0,
         );
         let mut scene = vello::Scene::new();
-        let mut text = tilo_ui::TextRenderer::new();
+        let mut text = tilo_ui_base::TextRenderer::new();
         rail.render(
             &mut scene,
             vello::kurbo::Affine::IDENTITY,

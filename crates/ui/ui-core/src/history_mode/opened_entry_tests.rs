@@ -19,13 +19,13 @@ impl crate::history_mode::capability::PresentsHistoryEntries for Opens {
 }
 
 impl Widget for Opens {
-    crate::provides!(dyn crate::history_mode::capability::PresentsHistoryEntries);
+    tilo_ui_base::provides!(dyn crate::history_mode::capability::PresentsHistoryEntries);
     crate::testing::inert_widget_methods!(name = "opens history entries");
 
     fn build_layout(
         &mut self,
         tree: &mut taffy::TaffyTree<()>,
-        _theme: &crate::Theme,
+        _theme: &tilo_ui_base::Theme,
         _nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         tree.new_leaf(taffy::Style::default()).unwrap()

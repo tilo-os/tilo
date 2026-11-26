@@ -9,15 +9,18 @@ use tilo_ui_graph::rich::{Attr, Block, Embed, InlineView, RichText};
 use winit::event::WindowEvent;
 
 use crate::rich_text_line::RichTextLine;
-use ui::component::{Bound, Component, Described, Event, Person, Value};
-use ui::permissions::MemberId;
-use ui::presence::PresenceCtx;
-use ui::theme::Theme;
-use ui::widget::DrawChild;
+use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+    component::Person, component::Value,
+};
+use tilo_ui_base::{widget::Decorator, widget::EventCtx, widget::Widget};
 use ui::widget::completion::{CompletionSource, Tier};
 use ui::widget::marks::{Mark, MarkSpan};
 use ui::widget::mention_picker::{self, MentionCandidate};
-use ui::widget::{Decorator, EventCtx, Widget};
 
 /// A field that types rich text, bound to what it edits: a reference a completion picks is
 /// written as a reference, which each reader renders as an inline view of what it names.
@@ -88,7 +91,7 @@ struct DrawerPeople {
     speakers: Vec<Person>,
     members: Vec<Person>,
     /// Who each is and their colour, in order, as the source was built with; `None` until built.
-    built: Option<Vec<(MemberId, ui::tokens::PresenceHue)>>,
+    built: Option<Vec<(MemberId, tilo_ui_base::tokens::PresenceHue)>>,
 }
 
 impl DrawerPeople {
@@ -149,9 +152,12 @@ impl DrawerPeople {
             '@',
             vec![
                 Tier::new(speakers)
-                    .with_header(ui::i18n::widget_text("completion-in-conversation"))
+                    .with_header(tilo_ui_base::i18n::widget_text(
+                        "completion-in-conversation",
+                    ))
                     .with_limit(SPEAKERS),
-                Tier::new(members).with_header(ui::i18n::widget_text("completion-members")),
+                Tier::new(members)
+                    .with_header(tilo_ui_base::i18n::widget_text("completion-members")),
             ],
         ))
     }
@@ -506,7 +512,7 @@ impl Decorator for RichInput {
         self.settle();
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -526,7 +532,7 @@ impl Decorator for RichInput {
         self.line.draw_child(scene, transform, text, theme, &env);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -535,7 +541,7 @@ impl Decorator for RichInput {
         let (scene, transform, text, theme, mut env) = ctx.parts();
         self.line
             .inner_mut()
-            .draw_overlay(&mut tilo_ui::DrawCtx::new(
+            .draw_overlay(&mut tilo_ui_base::DrawCtx::new(
                 scene,
                 transform,
                 text,

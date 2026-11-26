@@ -9,8 +9,8 @@ use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
-use ui::widget::TaffyTreeExt;
-use ui::widget::{AppModel, ModelPath};
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use taffy::{AlignItems, Display, FlexDirection, JustifyContent, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
@@ -18,15 +18,16 @@ use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
 
-use ui::a11y::Politeness;
-use ui::i18n::ArgValue;
+use tilo_ui_base::a11y::Politeness;
+use tilo_ui_base::i18n::ArgValue;
 
-use ui::theme::Theme;
-use ui::tokens::Rhythm;
-use ui::tokens::typography::TextRole;
-use ui::widget::{
-    DrawChild as _, Dropdown, ListRow, Property, PropertyList, Row, Spacer, Spinner, Stepper, Text,
-    TextInput, Widget,
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::Rhythm;
+use tilo_ui_base::tokens::typography::TextRole;
+use tilo_ui_base::{widget::DrawChild as _, widget::Spacer, widget::Widget};
+use ui::{
+    widget::Dropdown, widget::ListRow, widget::Property, widget::PropertyList, widget::Row,
+    widget::Spinner, widget::Stepper, widget::Text, widget::TextInput,
 };
 
 use install_profile_model::{
@@ -83,7 +84,9 @@ fn storage_text(key: &str) -> String {
         key,
         &[(
             "minimum",
-            ui::i18n::ArgValue::Text(ui::format::memory(imager_backend::MIN_TARGET_BYTES)),
+            tilo_ui_base::i18n::ArgValue::Text(tilo_ui_base::format::memory(
+                imager_backend::MIN_TARGET_BYTES,
+            )),
         )],
     )
 }
@@ -455,7 +458,7 @@ pub struct InstallerApp {
     selected_disk: Option<usize>,
     selected_guided_extent: Option<usize>,
     alongside_capacity: Option<(Disk, GuidedAlongsidePlan, u64)>,
-    capacity_gib: ui::LocalState<f64>,
+    capacity_gib: tilo_ui_base::LocalState<f64>,
     capacity_seen: Cell<f64>,
     install_method: InstallMethod,
     disk_method_choices: HashMap<DiskMethodIdentity, InstallMethod>,
@@ -482,16 +485,16 @@ pub struct InstallerApp {
     status_lines: Vec<String>,
     recovery_key: Option<String>,
     recovery_key_copied: bool,
-    recovery_key_copy: ui::CopyWatch,
+    recovery_key_copy: tilo_ui_base::CopyWatch,
     recovery_key_saved: bool,
-    username: ui::LocalState<String>,
-    full_name: ui::LocalState<String>,
+    username: tilo_ui_base::LocalState<String>,
+    full_name: tilo_ui_base::LocalState<String>,
     /// Secrets never enter the document: deleting CRDT text leaves the old bytes behind.
     password: Arc<Mutex<String>>,
     password_confirmation: Arc<Mutex<String>>,
     disk_password: Arc<Mutex<String>>,
     wifi_password: Arc<Mutex<String>>,
-    hostname: ui::LocalState<String>,
+    hostname: tilo_ui_base::LocalState<String>,
     purpose: String,
     /// The plan's unlock choice (`owner-device`, `tpm` or `passphrase`);
     /// empty when no plan decided it, which leaves the image's default.
@@ -503,10 +506,10 @@ pub struct InstallerApp {
     /// A complete plan stands in for the person's confirmation.
     install_plan: bool,
     device_label: String,
-    locale: ui::LocalState<String>,
-    timezone: ui::LocalState<String>,
-    keymap: ui::LocalState<String>,
-    erase_confirmation: ui::LocalState<String>,
+    locale: tilo_ui_base::LocalState<String>,
+    timezone: tilo_ui_base::LocalState<String>,
+    keymap: tilo_ui_base::LocalState<String>,
+    erase_confirmation: tilo_ui_base::LocalState<String>,
     erase_confirmation_seen: String,
     timezones: Vec<String>,
     tz_open_for_shot: bool,
@@ -635,7 +638,7 @@ impl InstallerApp {
             selected_disk: None,
             selected_guided_extent: None,
             alongside_capacity: None,
-            capacity_gib: ui::LocalState::new(0.0),
+            capacity_gib: tilo_ui_base::LocalState::new(0.0),
             capacity_seen: Cell::new(0.0),
             install_method: InstallMethod::Erase,
             disk_method_choices: HashMap::new(),
@@ -662,24 +665,24 @@ impl InstallerApp {
             status_lines: Vec::new(),
             recovery_key: None,
             recovery_key_copied: false,
-            recovery_key_copy: ui::CopyWatch::default(),
+            recovery_key_copy: tilo_ui_base::CopyWatch::default(),
             recovery_key_saved: false,
-            username: ui::LocalState::new(String::new()),
-            full_name: ui::LocalState::new(String::new()),
+            username: tilo_ui_base::LocalState::new(String::new()),
+            full_name: tilo_ui_base::LocalState::new(String::new()),
             password: Arc::new(Mutex::new(String::new())),
             password_confirmation: Arc::new(Mutex::new(String::new())),
             disk_password: Arc::new(Mutex::new(String::new())),
             wifi_password: Arc::new(Mutex::new(String::new())),
-            hostname: ui::LocalState::new(DEFAULT_HOSTNAME.to_string()),
-            locale: ui::LocalState::new("en_US.UTF-8".to_string()),
-            timezone: ui::LocalState::new(DEFAULT_TIMEZONE.to_string()),
+            hostname: tilo_ui_base::LocalState::new(DEFAULT_HOSTNAME.to_string()),
+            locale: tilo_ui_base::LocalState::new("en_US.UTF-8".to_string()),
+            timezone: tilo_ui_base::LocalState::new(DEFAULT_TIMEZONE.to_string()),
             purpose: install_profile_model::default_purpose(),
             unlock: String::new(),
             network_static: None,
             install_plan: false,
             device_label: String::new(),
-            keymap: ui::LocalState::new(DEFAULT_KEYMAP_NAME.to_string()),
-            erase_confirmation: ui::LocalState::new(String::new()),
+            keymap: tilo_ui_base::LocalState::new(DEFAULT_KEYMAP_NAME.to_string()),
+            erase_confirmation: tilo_ui_base::LocalState::new(String::new()),
             erase_confirmation_seen: String::new(),
             timezones: default_timezones(),
             tz_open_for_shot: false,
@@ -769,7 +772,7 @@ impl InstallerApp {
             ));
         }
         SERVER_PURPOSE.clone_into(&mut self.purpose);
-        self.hostname = ui::LocalState::new(plan.name.clone());
+        self.hostname = tilo_ui_base::LocalState::new(plan.name.clone());
         self.unlock.clone_from(&plan.unlock);
         self.network_static = (plan.network.addressing == "static").then(|| {
             (
@@ -1568,7 +1571,10 @@ impl InstallerApp {
                     PREFLIGHT_FAIL_PREFIX,
                     CATALOG.t_args(
                         "imager-installer-preflight-failed",
-                        &[("detail", ui::i18n::ArgValue::Text(error.to_string()))],
+                        &[(
+                            "detail",
+                            tilo_ui_base::i18n::ArgValue::Text(error.to_string()),
+                        )],
                     ),
                 ),
             };
@@ -1710,7 +1716,7 @@ impl InstallerApp {
         }];
         self.recovery_key = None;
         self.recovery_key_copied = false;
-        self.recovery_key_copy = ui::CopyWatch::default();
+        self.recovery_key_copy = tilo_ui_base::CopyWatch::default();
         self.recovery_key_saved = false;
         self.dirty_structure = true;
         self.focus_reset = true;
@@ -1782,9 +1788,9 @@ impl InstallerApp {
         // session's clipboard after handing off to the installed system. If
         // the person copied something else since, preserve their newer value.
         if let Some(key) = &self.recovery_key
-            && ui::clipboard_paste().as_deref() == Some(key.as_str())
+            && tilo_ui_base::clipboard_paste().as_deref() == Some(key.as_str())
         {
-            ui::clipboard_copy("");
+            tilo_ui_base::clipboard_copy("");
         }
         if matches!(self.backend.run_power(action), Ok(true)) {
             true
@@ -1823,7 +1829,7 @@ impl InstallerApp {
         if prev_step(step).is_some() {
             row = row.push(Box::new(
                 ActionButton::new("installer-preview-back", self.back_control())
-                    .with_icon(ui::icons::Icon::ChevronLeft)
+                    .with_icon(tilo_ui_base::icons::Icon::ChevronLeft)
                     .with_test_id("installer.back")
                     .large(),
             ));
@@ -1957,7 +1963,7 @@ impl InstallerApp {
             let operation = match &self.network.phase {
                 NetworkPhase::Connecting(ssid) => CATALOG.t_args(
                     "imager-installer-connecting",
-                    &[("network", ui::i18n::ArgValue::Text(ssid.clone()))],
+                    &[("network", tilo_ui_base::i18n::ArgValue::Text(ssid.clone()))],
                 ),
                 _ => CATALOG.t("imager-installer-checking-networks"),
             };
@@ -2077,9 +2083,9 @@ impl InstallerApp {
                 let id = format!("wifi_network_{i}");
                 let row = ListRow::new(id.as_str(), network.ssid.as_str())
                     .icon(if network.secure {
-                        ui::icons::Icon::Lock
+                        tilo_ui_base::icons::Icon::Lock
                     } else {
-                        ui::icons::Icon::Wifi
+                        tilo_ui_base::icons::Icon::Wifi
                     })
                     .secondary(state)
                     .signal(ui::widget::SignalLevel::from_bars(network.signal))
@@ -2270,7 +2276,7 @@ impl InstallerApp {
         if self.capacity_effect().is_none() {
             return;
         }
-        let gib = ui::num::f64_of_u64(plan.free_size_bytes / (1 << 30));
+        let gib = tilo_ui_base::num::f64_of_u64(plan.free_size_bytes / (1 << 30));
         self.capacity_gib.set(gib);
         self.capacity_seen.set(gib);
         children.push(Box::new(Text::new(&crate::setup::strings::t(
@@ -2279,8 +2285,8 @@ impl InstallerApp {
         children.push(Box::new(
             ui::widget::NumberInput::from_state(&self.capacity_gib)
                 .with_range(
-                    ui::num::f64_of_u64(imager_backend::MIN_TARGET_BYTES >> 30),
-                    ui::num::f64_of_u64(full.free_size_bytes / (1 << 30)),
+                    tilo_ui_base::num::f64_of_u64(imager_backend::MIN_TARGET_BYTES >> 30),
+                    tilo_ui_base::num::f64_of_u64(full.free_size_bytes / (1 << 30)),
                 )
                 .with_step(1.0)
                 .with_suffix("GiB")
@@ -2296,8 +2302,11 @@ impl InstallerApp {
         crate::setup::strings::t_args(
             "installer-storage-allocation-summary",
             &[
-                ("capacity", ui::format::memory(plan.free_size_bytes).into()),
-                ("remaining", ui::format::memory(remaining).into()),
+                (
+                    "capacity",
+                    tilo_ui_base::format::memory(plan.free_size_bytes).into(),
+                ),
+                ("remaining", tilo_ui_base::format::memory(remaining).into()),
                 ("details", Self::alongside_capacity_summary(plan).into()),
             ],
         )
@@ -2307,8 +2316,14 @@ impl InstallerApp {
         crate::setup::strings::t_args(
             "installer-storage-alongside-capacity",
             &[
-                ("root", ui::format::memory(plan.root_size_bytes).into()),
-                ("total", ui::format::memory(plan.free_size_bytes).into()),
+                (
+                    "root",
+                    tilo_ui_base::format::memory(plan.root_size_bytes).into(),
+                ),
+                (
+                    "total",
+                    tilo_ui_base::format::memory(plan.free_size_bytes).into(),
+                ),
             ],
         )
     }
@@ -2372,9 +2387,9 @@ impl InstallerApp {
         }
         format!(
             "No safe alongside space was found. Back up your files and use the existing OS's supported partitioning tools to leave at least {} contiguous unallocated, or prepare an empty Linux root and {} boot plus {} EFI partition, then refresh disks. Tilo will not resize existing partitions or switch to Erase automatically.",
-            ui::format::memory(imager_backend::MIN_TARGET_BYTES),
-            ui::format::memory(imager_backend::BOOT_BYTES),
-            ui::format::memory(imager_backend::MIN_ALONGSIDE_ESP_BYTES),
+            tilo_ui_base::format::memory(imager_backend::MIN_TARGET_BYTES),
+            tilo_ui_base::format::memory(imager_backend::BOOT_BYTES),
+            tilo_ui_base::format::memory(imager_backend::MIN_ALONGSIDE_ESP_BYTES),
         )
     }
 
@@ -2389,8 +2404,8 @@ impl InstallerApp {
                 .with_role(TextRole::Body),
         ));
         for (index, plan) in plans.iter().enumerate() {
-            let start = ui::format::memory(plan.free_start_bytes);
-            let size = ui::format::memory(plan.free_size_bytes);
+            let start = tilo_ui_base::format::memory(plan.free_start_bytes);
+            let size = tilo_ui_base::format::memory(plan.free_size_bytes);
             let key = if self.selected_guided_extent == Some(index) {
                 "installer-region-selected"
             } else {
@@ -2691,20 +2706,20 @@ impl InstallerApp {
         let dim = theme.text_dim;
         children.push(Box::new(Spacer::fixed(theme.tokens.spacing.s6)));
         children.push(centered_media_control(Box::new(
-            ui::widget::IconWidget::new(ui::icons::Icon::Film)
+            ui::widget::IconWidget::new(tilo_ui_base::icons::Icon::Film)
                 .sized(ui::widget::IconSize::Large)
                 .accent(),
         )));
         children.push(Box::new(
             Text::new(&crate::setup::strings::t("installer-media-title"))
                 .with_role(TextRole::LargeTitle)
-                .with_align(ui::ParagraphAlign::Center),
+                .with_align(tilo_ui_base::ParagraphAlign::Center),
         ));
         children.push(Box::new(
             Text::new(&crate::setup::strings::t("installer-media-note"))
                 .with_role(TextRole::Caption)
                 .with_color(dim)
-                .with_align(ui::ParagraphAlign::Center),
+                .with_align(tilo_ui_base::ParagraphAlign::Center),
         ));
         let children = actions;
         if self.codecs {
@@ -2714,7 +2729,7 @@ impl InstallerApp {
                     .no_wrap()
                     .with_gap(theme.tokens.spacing.s2)
                     .push(Box::new(
-                        ui::widget::IconWidget::new(ui::icons::Icon::Check)
+                        ui::widget::IconWidget::new(tilo_ui_base::icons::Icon::Check)
                             .with_color(theme.status_success),
                     ))
                     .push(Box::new(
@@ -3051,7 +3066,7 @@ impl InstallerApp {
         } else {
             CATALOG.t_args(
                 "imager-installer-erase",
-                &[("device", ui::i18n::ArgValue::Text(dev.clone()))],
+                &[("device", tilo_ui_base::i18n::ArgValue::Text(dev.clone()))],
             )
         };
         children.push(Box::new(
@@ -3114,7 +3129,7 @@ impl InstallerApp {
                             "imager-installer-complete-host",
                             &[(
                                 "host",
-                                ui::i18n::ArgValue::Text(host.display_name().to_owned()),
+                                tilo_ui_base::i18n::ArgValue::Text(host.display_name().to_owned()),
                             )],
                         )
                     },
@@ -3204,10 +3219,10 @@ impl InstallerApp {
         children.push(Box::new(
             Text::new(key)
                 .with_role(TextRole::Code)
-                .with_wrap_mode(ui::TextWrapMode::WordOrGlyph)
+                .with_wrap_mode(tilo_ui_base::TextWrapMode::WordOrGlyph)
                 .with_id("recovery_key"),
         ));
-        if ui::clipboard_available() {
+        if tilo_ui_base::clipboard_available() {
             children.push(Box::new(
                 ActionButton::new(
                     if self.recovery_key_copied {
@@ -3277,7 +3292,7 @@ fn take_secret(buffer: &Arc<Mutex<String>>) -> Zeroizing<String> {
     Zeroizing::new(value)
 }
 
-fn local_text(state: &ui::LocalState<String>) -> String {
+fn local_text(state: &tilo_ui_base::LocalState<String>) -> String {
     state.with(Clone::clone)
 }
 
@@ -3466,7 +3481,7 @@ impl InstallerApp {
             if !key.trim().is_empty() {
                 self.recovery_key = Some(key.trim().to_string());
                 self.recovery_key_copied = false;
-                self.recovery_key_copy = ui::CopyWatch::default();
+                self.recovery_key_copy = tilo_ui_base::CopyWatch::default();
                 self.recovery_key_saved = false;
                 self.dirty_structure = true;
             }
@@ -3598,7 +3613,7 @@ impl Widget for InstallerApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if let Some(c) = self.composed.element_mut()
             && let Ok(children) = taffy.children(node)
             && let Some(&card_node) = children.first()
@@ -3607,7 +3622,7 @@ impl Widget for InstallerApp {
         }
     }
 
-    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -3619,7 +3634,7 @@ impl Widget for InstallerApp {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         if let Some(c) = self.composed.element_mut()
             && let Ok(children) = ctx.taffy.children(ctx.node_id)
@@ -3699,11 +3714,11 @@ impl Widget for InstallerApp {
     }
 
     fn needs_redraw(&self) -> bool {
-        ui::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        ui::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {

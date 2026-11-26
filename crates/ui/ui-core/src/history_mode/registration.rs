@@ -1,7 +1,7 @@
 //! Explicit ownership and presentation registration for managed roots.
 use super::{HistoryResource, preview::PreviewFactory};
-use crate::widget::Widget;
 use automerge::transaction::Transactable as _;
+use tilo_ui_base::widget::Widget;
 
 pub struct ManagedRoot {
     pub(crate) widget: Box<dyn Widget>,
@@ -153,7 +153,7 @@ pub struct HistoryRegistration {
         std::collections::HashMap<&'static str, std::rc::Rc<dyn super::HistoricalAssetSource>>,
     /// The change History opens at when the window starts, as a window replaying a recording opens at
     /// its first step.
-    pub(crate) opening_at: Option<crate::HistoryEntryId>,
+    pub(crate) opening_at: Option<tilo_ui_base::HistoryEntryId>,
 }
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum HistoryRegistrationError {
@@ -322,7 +322,7 @@ impl HistoryRegistration {
             root: &dyn Widget,
             actual: &mut Vec<super::HistoryOwner>,
         ) -> Result<(), HistoryRegistrationError> {
-            if crate::widget::component_walk::has_separate_document_owner(root) {
+            if tilo_ui_base::widget::component_walk::has_separate_document_owner(root) {
                 let owner = crate::bound_dispatch::history_owner(root)
                     .ok_or(HistoryRegistrationError::UnsupportedOwner)?;
                 owner.validate()?;

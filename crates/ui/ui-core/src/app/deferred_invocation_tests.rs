@@ -63,9 +63,9 @@ tilo_test_env::scenario! {
             State::new(),
             managed(Box::new(widget)),
             (900, 650),
-            crate::Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::MemberId::person("fixture"),
+            tilo_ui_base::Theme::dark(),
+            tilo_ui_base::font_catalog::fixture_renderer(),
+            tilo_ui_base::permissions::MemberId::person("fixture"),
         )
         .unwrap();
         // The press asks the workspace, which keeps it until the person answers.
@@ -75,7 +75,7 @@ tilo_test_env::scenario! {
         }
         assert_eq!(calls.load(Ordering::SeqCst), 0, "construction is inert");
         driver
-            .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
+            .perform_semantic_named("ordinary-emitter", None, &tilo_ui_base::a11y::Action::Activate)
             .unwrap();
         assert!(driver.asking().is_some(), "the press waits for the person");
         assert_eq!(calls.load(Ordering::SeqCst), 0, "nothing is built while it waits");
@@ -93,14 +93,14 @@ tilo_test_env::scenario! {
             State::new(),
             managed(Box::new(widget)),
             (900, 650),
-            crate::Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::MemberId::person("fixture"),
+            tilo_ui_base::Theme::dark(),
+            tilo_ui_base::font_catalog::fixture_renderer(),
+            tilo_ui_base::permissions::MemberId::person("fixture"),
         )
         .unwrap();
         driver.connect_peer();
         driver
-            .perform_semantic_named("ordinary-emitter", None, &crate::a11y::Action::Activate)
+            .perform_semantic_named("ordinary-emitter", None, &tilo_ui_base::a11y::Action::Activate)
             .unwrap();
         assert!(driver.decline_asked().is_some(), "the person declines");
         assert!(driver.asking().is_none());
@@ -125,7 +125,7 @@ tilo_test_env::scenario! {
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(
             app.invoke_semantic_action(
-                &crate::a11y::SemanticId("r:ordinary:fixture".into()),
+                &tilo_ui_base::a11y::SemanticId("r:ordinary:fixture".into()),
                 "run",
                 None
             )
@@ -153,7 +153,7 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
     let (root, guard) = owned(widget);
     let binding = &guard.binding;
     let target = crate::bound_dispatch::BoundActionTarget {
-        input: crate::widget::input_provenance::Input::Discrete,
+        input: tilo_ui_base::widget::input_provenance::Input::Discrete,
         binding: binding.clone(),
         address: crate::bound_dispatch::BoundActionAddress {
             instance_id: binding.instance_id,
@@ -198,7 +198,7 @@ fn check_deferred_bound_view_actor(foreign: bool, typed_empty: bool) {
     } else {
         assert!(matches!(
             result,
-            Ok(crate::widget::ResourceOperationStart::Completed(_))
+            Ok(tilo_ui_base::widget::ResourceOperationStart::Completed(_))
         ));
         assert_eq!(calls.load(Ordering::SeqCst), 1, "one local owner mint");
         assert_eq!(

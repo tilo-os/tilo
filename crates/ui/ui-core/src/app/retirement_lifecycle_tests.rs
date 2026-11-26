@@ -65,7 +65,7 @@ struct Root {
     observed: Rc<Observations>,
 }
 impl Widget for Root {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls);
 
     crate::testing::delegate_widget_methods!(
         inner: sync,
@@ -81,11 +81,11 @@ impl Widget for Root {
     }
 }
 
-impl crate::widget::controls::ActionControls for Root {
+impl tilo_ui_base::widget::controls::ActionControls for Root {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         let index = self.observed.installs.get();
         self.observed.installs.set(index + 1);
@@ -93,7 +93,7 @@ impl crate::widget::controls::ActionControls for Root {
             self.observed.panic_install.get() != Some(index),
             "control installation probe"
         );
-        crate::widget::controls::attach_controls(&mut self.inner, domain, attachment);
+        tilo_ui_base::widget::controls::attach_controls(&mut self.inner, domain, attachment);
     }
 }
 crate::testing::test_app_widget!(

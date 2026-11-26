@@ -127,7 +127,7 @@ fn session(root: &std::path::Path, slow: &Slow, started: &Arc<AtomicBool>) -> (S
 /// here would have lasted [`SLOW_FOR`]; the test fails that, naming the freeze.
 #[test]
 fn a_find_answers_while_the_loop_keeps_running() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let started = Arc::new(AtomicBool::new(false));
     let ended = Arc::new(AtomicBool::new(false));

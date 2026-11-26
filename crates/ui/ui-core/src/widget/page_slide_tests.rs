@@ -3,10 +3,10 @@
 
 use super::*;
 use crate::app::driver::Driver;
-use crate::component::Described;
 use crate::state::State;
 use crate::time::testing::with_monotonic_time;
 use crate::widget::{Column, Text};
+use tilo_ui_base::component::Described;
 
 fn rooted(column: Column) -> Driver {
     let mut d = Driver::for_root(State::new(), column, (640, 400), Theme::dark());
@@ -26,7 +26,7 @@ fn show(d: &mut Driver, level: usize) {
 }
 
 fn leaving(d: &Driver) -> bool {
-    crate::widget::Widget::children(d.root::<Column>())
+    tilo_ui_base::widget::Widget::children(d.root::<Column>())
         .first()
         .and_then(|child| child.as_any())
         .and_then(|any| any.downcast_ref::<PageSlide>())
@@ -42,7 +42,7 @@ fn a_page_put_in_anothers_place_arrives_on_the_motion_and_the_old_one_leaves() {
         !d.root_widget().needs_animation_frame(),
         "the first page rests: nothing moves on first paint"
     );
-    let frozen = crate::motion::pin_frame();
+    let frozen = tilo_ui_base::motion::pin_frame();
     show(&mut d, 1);
     assert!(
         d.root_widget().needs_animation_frame(),
@@ -127,7 +127,7 @@ fn a_described_slide_takes_its_page_and_level_and_a_deeper_page_leaves() {
         !d.root_widget().needs_animation_frame(),
         "the first page rests"
     );
-    let frozen = crate::motion::pin_frame();
+    let frozen = tilo_ui_base::motion::pin_frame();
     show_props(&mut d, props(1, "Second"));
     assert!(
         d.root_widget().needs_animation_frame(),

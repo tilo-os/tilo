@@ -6,10 +6,10 @@
 //! found, the list a box that sends a message reads too. Who is working where
 //! with nothing typed is [`super::happening`]'s.
 
+use tilo_ui_base::text_match::FieldWeight;
 use ui::floating_surface::{Recipient, RecipientKind};
 use ui::search::system::{ResourceKind, rank_fields};
 use ui::search::{CommandRow, RowFace, SearchRow};
-use ui::text_match::FieldWeight;
 
 use crate::model::{Hit, InvokeTarget, Source, Target};
 

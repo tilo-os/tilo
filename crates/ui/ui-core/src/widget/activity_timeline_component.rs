@@ -4,14 +4,18 @@
 
 use std::collections::HashMap;
 
-use crate::component::{Component, Described, Event, Moment, Person, ResourceId, Value};
 use crate::time::{Duration, UNIX_EPOCH};
+use crate::widget::ActivityTimeline;
 use crate::widget::history::{
     AuthorRelation, EntryKind, HistoryAuthor, HistoryEntry, HistoryEntryId,
 };
-use crate::widget::{ActivityTimeline, ArtifactKind, Widget};
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Moment,
+    component::Person, component::ResourceId, component::Value,
+};
+use tilo_ui_base::{widget::ArtifactKind, widget::Widget};
 
-crate::component::choice!(crate::widget::EntryKind, "EntryKind", {
+tilo_ui_base::choice!(crate::widget::EntryKind, "EntryKind", {
     Text => "text",
     Move => "move",
     Details => "details",
@@ -33,7 +37,7 @@ pub enum ActivityArtifact {
     ChatLog,
 }
 
-crate::component::choice!(ActivityArtifact, "ActivityArtifact", {
+tilo_ui_base::choice!(ActivityArtifact, "ActivityArtifact", {
     Note => "note",
     File => "file",
     Cluster => "cluster",
@@ -67,7 +71,7 @@ pub struct ActivityEntryProps {
     pub artifact: Option<ActivityArtifact>,
 }
 
-crate::component::part_type!(ActivityEntryProps);
+tilo_ui_base::part_type!(ActivityEntryProps);
 
 /// The history of a document, grouped: runs of typing fold into one band that opens to its changes,
 /// each day's changes sit under the day's heading, and a change's menu offers reverting it.
@@ -144,7 +148,7 @@ fn entry_of(props: &ActivityEntryProps) -> HistoryEntry {
                 .member_id()
                 .is_some_and(tilo_actions::MemberId::is_person);
             HistoryAuthor::new(author.name.clone(), 0.0, short)
-                .with_rgb(crate::presence::identity_rgb(author.hue))
+                .with_rgb(tilo_ui_base::presence::identity_rgb(author.hue))
                 .with_relation(if person {
                     AuthorRelation::Person
                 } else {
@@ -295,7 +299,7 @@ impl Described for DescribedActivityTimeline {
     }
 }
 
-impl crate::widget::Decorator for DescribedActivityTimeline {
+impl tilo_ui_base::widget::Decorator for DescribedActivityTimeline {
     type Inner = ActivityTimeline;
 
     fn inner(&self) -> &ActivityTimeline {
@@ -310,7 +314,7 @@ impl crate::widget::Decorator for DescribedActivityTimeline {
         "ActivityTimeline"
     }
 
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         self.timeline.take_structure_change()
     }
 }
@@ -347,13 +351,19 @@ mod tests {
         let ada = Person::named("Ada");
         let made = by(ada.clone());
         assert_eq!(made.author.relation, AuthorRelation::Person);
-        assert_eq!(made.author.rgb(), crate::presence::identity_rgb(ada.hue));
+        assert_eq!(
+            made.author.rgb(),
+            tilo_ui_base::presence::identity_rgb(ada.hue)
+        );
         let scout = Person::new(
             tilo_actions::MemberId::agent("scenario:Scout", "ada"),
             "Scout",
         );
         let made = by(scout.clone());
         assert_eq!(made.author.relation, AuthorRelation::Software);
-        assert_eq!(made.author.rgb(), crate::presence::identity_rgb(scout.hue));
+        assert_eq!(
+            made.author.rgb(),
+            tilo_ui_base::presence::identity_rgb(scout.hue)
+        );
     }
 }

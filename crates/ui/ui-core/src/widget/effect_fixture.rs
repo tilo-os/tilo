@@ -7,11 +7,12 @@
     reason = "test fixture: a failure is the assertion"
 )]
 
-use super::{Button, Widget};
+use super::Button;
+use tilo_ui_base::widget::Widget;
 
 /// What [`sends`] shows: its button, the resource it publishes and what a send runs.
 struct Sends {
-    child: crate::widget::Element,
+    child: tilo_ui_base::widget::Element,
     resource: tilo_actions::ResourceSpec,
     sent: Box<dyn FnMut()>,
 }
@@ -19,7 +20,7 @@ struct Sends {
 const SEND_OPERATION: &str = "fixture.send";
 
 /// The fixture, its button named `go`: `sent` runs only when the action is admitted.
-pub(crate) fn sends(sent: impl FnMut() + 'static) -> crate::widget::Element {
+pub(crate) fn sends(sent: impl FnMut() + 'static) -> tilo_ui_base::widget::Element {
     sends_through(sent, |binding| {
         Box::new(Button::new("go", "Send").on_action(binding))
     })
@@ -29,8 +30,8 @@ pub(crate) fn sends(sent: impl FnMut() + 'static) -> crate::widget::Element {
 /// control a person presses to send, whatever input it takes (the action has no parameters).
 pub(crate) fn sends_through<I: 'static>(
     sent: impl FnMut() + 'static,
-    control: impl FnOnce(tilo_actions::ActionBinding<I>) -> crate::widget::Element,
-) -> crate::widget::Element {
+    control: impl FnOnce(tilo_actions::ActionBinding<I>) -> tilo_ui_base::widget::Element,
+) -> tilo_ui_base::widget::Element {
     use tilo_actions::{ActionBinding, ActionSpec, EncodedAction, OperationKind, ResourceSpec};
     let spec = ActionSpec::typed_operation(
         "send",
@@ -59,10 +60,10 @@ pub(crate) fn sends_through<I: 'static>(
 }
 
 impl Widget for Sends {
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     crate::testing::delegate_widget_methods!(
@@ -84,40 +85,42 @@ impl Widget for Sends {
     }
 }
 
-impl crate::widget::ResourceOperations for Sends {
+impl tilo_ui_base::widget::ResourceOperations for Sends {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         std::iter::once(SEND_OPERATION.to_owned()).collect()
     }
 
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         if op.request().type_id != SEND_OPERATION {
             return Ok(None);
         }
         (self.sent)();
-        Ok(Some(crate::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(
+            tilo_ui_base::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
 }
 
-impl crate::widget::resources::PublishesResources for Sends {
+impl tilo_ui_base::widget::resources::PublishesResources for Sends {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         vec![self.resource.clone()]
     }
 }
 
-impl crate::widget::controls::ActionControls for Sends {
+impl tilo_ui_base::widget::controls::ActionControls for Sends {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
-        crate::widget::controls::attach_controls(self.child.as_mut(), domain, attachment);
+        tilo_ui_base::widget::controls::attach_controls(self.child.as_mut(), domain, attachment);
     }
 }
 

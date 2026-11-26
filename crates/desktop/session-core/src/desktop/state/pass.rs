@@ -36,7 +36,7 @@ pub struct DesktopPass {
     new_tab_into: Option<(StripId, GroupId)>,
     /// An action chosen in search, for the host's own action API to run as the app's control.
     unrouted_control: Option<ui::tilo_actions::ControlInvocation>,
-    platform: ui::platform::PlatformConventions,
+    platform: tilo_ui_base::platform::PlatformConventions,
     /// The host's retained workspace history, when it keeps one.
     history: Option<Box<dyn HistorySource>>,
     /// What the windows ask of the workspace's activity, when the host serves it to them.
@@ -55,7 +55,7 @@ impl DesktopPass {
             handle,
             new_tab_into: None,
             unrouted_control: None,
-            platform: ui::platform::PlatformConventions::default(),
+            platform: tilo_ui_base::platform::PlatformConventions::default(),
             history: None,
             activity_requests: None,
             activity: None,
@@ -70,7 +70,10 @@ impl DesktopPass {
     }
 
     /// The keys the platform names its chords with, which search shows.
-    pub fn set_platform_conventions(&mut self, platform: ui::platform::PlatformConventions) {
+    pub fn set_platform_conventions(
+        &mut self,
+        platform: tilo_ui_base::platform::PlatformConventions,
+    ) {
         self.platform = platform;
     }
 
@@ -528,7 +531,7 @@ impl DesktopPass {
         if let Some(usage) = usage {
             search.set_usage(usage);
         }
-        ui::widget::Widget::set_platform_conventions(search.palette_mut(), self.platform);
+        tilo_ui_base::widget::Widget::set_platform_conventions(search.palette_mut(), self.platform);
         if let Some(query) = query {
             search.set_query(&query);
         }
@@ -916,7 +919,7 @@ impl DesktopPass {
                 }
             }
             Target::Copy { text } => {
-                ui::text_selection::clipboard_copy(&text);
+                tilo_ui_base::text_selection::clipboard_copy(&text);
                 shared.say(ui::window_toolbar::ToolbarNotice::new(
                     crate::desktop::i18n::t("desktop-search-copied"),
                     ui::widget::toast::ToastKind::Success,
@@ -929,7 +932,9 @@ impl DesktopPass {
             // thread.
             Target::Open { uri, fallback } => {
                 #[cfg(target_arch = "wasm32")]
-                if let Err(error) = ui::platform::try_os_open(fallback.as_deref().unwrap_or(&uri)) {
+                if let Err(error) =
+                    tilo_ui_base::platform::try_os_open(fallback.as_deref().unwrap_or(&uri))
+                {
                     shared.say(ui::window_toolbar::ToolbarNotice::new(
                         error.to_string(),
                         ui::widget::toast::ToastKind::Error,
@@ -941,13 +946,13 @@ impl DesktopPass {
                         let host = ui::process::current();
                         std::thread::spawn(move || {
                             ui::process::scoped(&host, || {
-                                if ui::platform::try_os_open(&uri).is_err() {
-                                    ui::platform::os_open(&fallback);
+                                if tilo_ui_base::platform::try_os_open(&uri).is_err() {
+                                    tilo_ui_base::platform::os_open(&fallback);
                                 }
                             });
                         });
                     }
-                    None => ui::platform::os_open(&uri),
+                    None => tilo_ui_base::platform::os_open(&uri),
                 }
                 None
             }

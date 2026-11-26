@@ -7,18 +7,20 @@
     reason = "in a test these are the assertion"
 )]
 
-use super::testing::*;
-use super::*;
-use crate::component::{Component, Described, PropType};
 use crate::headless::Driver;
 use crate::testing::harness;
-use crate::theme::Theme;
-use crate::widget::{
-    CodeEditor, CodeEditorProps, DescribedCards, DropZone, DropZoneProps, Image, ImageProps,
-    MediaCardProps, MediaGrid, MediaGridProps, PagePreview, PagePreviewProps, QrProps, QrWidget,
-    Widget,
+use crate::{
+    widget::CodeEditor, widget::CodeEditorProps, widget::DescribedCards, widget::DropZone,
+    widget::DropZoneProps, widget::Image, widget::ImageProps, widget::MediaCardProps,
+    widget::MediaGrid, widget::MediaGridProps, widget::PagePreview, widget::PagePreviewProps,
+    widget::QrProps, widget::QrWidget,
 };
 use std::sync::Arc;
+use crate::component_testing::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{component::Component, component::Described, component::PropType};
 
 fn picture(src: &str) -> Value {
     Value::Picture(tilo_ui_graph::component::Picture {
@@ -27,8 +29,8 @@ fn picture(src: &str) -> Value {
 }
 
 fn pictures_with(png: Vec<u8>) -> crate::pictures::Pictures {
-    let fetch: crate::image_store::Fetcher = Arc::new(move |_| Some(png.clone()));
-    crate::pictures::Pictures::new(crate::ImageStore::new(&fetch))
+    let fetch: tilo_ui_base::image_store::Fetcher = Arc::new(move |_| Some(png.clone()));
+    crate::pictures::Pictures::new(tilo_ui_base::ImageStore::new(&fetch))
 }
 
 fn card_of(props: MediaCardProps) -> crate::widget::MediaCard {
@@ -51,7 +53,7 @@ tilo_test_env::scenario! {
     {
         let png = crate::png::encode_rgba8(4, 4, &[40, 80, 160, 255].repeat(16)).expect("a picture");
         let pictures = pictures_with(png);
-        let mut node = Node::new("Image", "photo", &crate::Intents::default())
+        let mut node = Node::new("Image", "photo", &tilo_ui_base::Intents::default())
             .prop("src", text("data:image/png;base64,x"))
             .prop("alt", text("A blue tile"));
         let mut props = ImageProps::from_source(&mut node).expect("reads");
@@ -76,11 +78,11 @@ tilo_test_env::scenario! {
     phase a_picture_answers_a_served_store_and_nothing_else_loads;
     {
         let png = crate::png::encode_rgba8(2, 2, &[255; 4].repeat(4)).expect("a picture");
-        let fetch: crate::image_store::Fetcher = Arc::new(move |url: &str| {
+        let fetch: tilo_ui_base::image_store::Fetcher = Arc::new(move |url: &str| {
             assert_eq!(url, "tilo-blob://only");
             Some(png.clone())
         });
-        let store = crate::ImageStore::new(&fetch);
+        let store = tilo_ui_base::ImageStore::new(&fetch);
         let pictures = crate::pictures::Pictures::new(store);
         let mut shown = crate::ShownPicture::default();
         shown.set(
@@ -99,7 +101,7 @@ tilo_test_env::scenario! {
 
     phase the_media_grid_reads_its_cards_and_a_pressed_card_reports_itself;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let card = Node::new("MediaCard", "blue", &queue)
             .prop("item", Value::Resource("photo".into()))
             .prop("title", text("Blue"))
@@ -113,10 +115,10 @@ tilo_test_env::scenario! {
 
     phase a_pressed_card_opens_what_it_stands_for;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let png = crate::png::encode_rgba8(4, 4, &[255; 4].repeat(16)).expect("a picture");
         let pictures = pictures_with(png);
-        let views: Vec<crate::widget::Element> = vec![Box::new({
+        let views: Vec<tilo_ui_base::widget::Element> = vec![Box::new({
             let mut node = Node::new("MediaCard", "blue", &queue)
                 .prop("item", Value::Resource("photo".into()))
                 .prop("title", text("Blue"))
@@ -135,7 +137,7 @@ tilo_test_env::scenario! {
 
     phase a_shift_press_and_a_drag_take_the_range_of_cards_they_cover;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let parked = |key: &str, item: &str| {
             Node::new("MediaCard", key, &queue)
                 .prop("item", Value::Resource(item.into()))
@@ -222,7 +224,7 @@ tilo_test_env::scenario! {
 
     phase a_drop_zone_settles_its_layout_with_a_message_and_an_action;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut node = Node::new("DropZone", "import", &queue)
             .prop("title", text("Drop files to import"))
             .prop("message", text("Any file up to 50 MB"))
@@ -255,7 +257,7 @@ tilo_test_env::scenario! {
 
     phase a_code_editor_takes_the_language_its_view_names;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut node = Node::new("CodeEditor", "source", &queue)
             .prop("language", Value::Choice("tilolang".into()))
             .prop("min_lines", Value::Int(4))
@@ -284,7 +286,7 @@ tilo_test_env::scenario! {
 
     phase a_player_reads_its_speed_quality_and_captions_and_reports_the_menu_choices;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut node = Node::new("VideoPlayer", "watch", &queue)
             .prop("playing", Value::Bool(false))
             .prop("rate", Value::Float(1.0))
@@ -327,7 +329,7 @@ tilo_test_env::scenario! {
         assert!(video.player().choose_setting("quality", 1));
         assert!(video.player().choose_setting("captions", 1));
         let doc = automerge::AutoCommit::new();
-        crate::widget::Widget::sync(&mut video, &doc, &automerge::ROOT);
+        tilo_ui_base::widget::Widget::sync(&mut video, &doc, &automerge::ROOT);
         assert_eq!(
             queue.take(),
             [
@@ -341,7 +343,7 @@ tilo_test_env::scenario! {
 
     phase turning_captions_off_reports_the_empty_track;
     {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut node = Node::new("VideoPlayer", "watch", &queue)
             .prop(
                 "caption_tracks",
@@ -353,7 +355,7 @@ tilo_test_env::scenario! {
         let mut video = crate::widget::DeclaredVideo::from_props("watch", props);
         assert!(video.player().choose_setting("captions", 0));
         let doc = automerge::AutoCommit::new();
-        crate::widget::Widget::sync(&mut video, &doc, &automerge::ROOT);
+        tilo_ui_base::widget::Widget::sync(&mut video, &doc, &automerge::ROOT);
         assert_eq!(
             queue.take(),
             [fired("watch", "select_captions", Some(text("")))]

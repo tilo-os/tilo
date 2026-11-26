@@ -146,7 +146,7 @@ impl Scrollable {
         };
         self.scroll_by(dx, dy);
         if self.snaps() {
-            self.settle_step(dx, dy, crate::tokens::MotionSource::Keyboard);
+            self.settle_step(dx, dy, tilo_ui_base::tokens::MotionSource::Keyboard);
         }
         true
     }
@@ -162,15 +162,15 @@ impl Scrollable {
     ) -> bool {
         // winit y-positive means "scroll up", but content is drawn at
         // (… − offset), so wheel-up must DECREASE offset_y — negate.
-        let line = crate::tokens::Metrics::BASE.wheel_line;
+        let line = tilo_ui_base::tokens::Metrics::BASE.wheel_line;
         self.device_scale = scale_factor;
-        self.scroll_to.take_over(crate::motion::frame_now());
+        self.scroll_to.take_over(tilo_ui_base::motion::frame_now());
         let pixel = matches!(delta, MouseScrollDelta::PixelDelta(_));
         if pixel {
             match phase {
                 TouchPhase::Ended => {
                     let release = self.kinetic.release(crate::time::now());
-                    let now = crate::motion::frame_now();
+                    let now = tilo_ui_base::motion::frame_now();
                     if self.band.is_stretched(now) {
                         let (vx, vy) = release.unwrap_or_default();
                         self.band.release(
@@ -185,7 +185,7 @@ impl Scrollable {
                     if self.snaps() {
                         self.settle_snap(
                             release.unwrap_or_default(),
-                            crate::tokens::MotionSource::Gesture,
+                            tilo_ui_base::tokens::MotionSource::Gesture,
                         );
                         return true;
                     }
@@ -199,12 +199,12 @@ impl Scrollable {
                 }
                 TouchPhase::Cancelled => {
                     self.kinetic.reset();
-                    if self.band.is_stretched(crate::motion::frame_now()) {
+                    if self.band.is_stretched(tilo_ui_base::motion::frame_now()) {
                         self.band.release(
                             vello::kurbo::Vec2::ZERO,
                             self.band_viewport(),
                             self.motion,
-                            crate::motion::frame_now(),
+                            tilo_ui_base::motion::frame_now(),
                         );
                         self.scroll_dirty = true;
                     }
@@ -236,7 +236,7 @@ impl Scrollable {
         let moved = self.offset_x.to_bits() != before.0.to_bits()
             || self.offset_y.to_bits() != before.1.to_bits();
         if moved && self.snaps() {
-            self.settle_step(dx, dy, crate::tokens::MotionSource::Pointer);
+            self.settle_step(dx, dy, tilo_ui_base::tokens::MotionSource::Pointer);
         }
         moved
     }
@@ -245,7 +245,7 @@ impl Scrollable {
     /// an end through the rubber band; moving back takes the give in first.
     /// Returns whether anything moved.
     pub(super) fn pan(&mut self, dx: f32, dy: f32) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let drawn_before = self.drawn_offset();
         let hand = vello::kurbo::Vec2::new(f64::from(dx), f64::from(dy));
         let viewport = self.band_viewport();

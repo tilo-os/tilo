@@ -118,7 +118,7 @@ fn window_edge_resize_escape_cancels_preview_before_a_late_release() {
     journey.begin();
     let escape = WindowEvent::KeyboardInput {
         device_id: winit::event::DeviceId::dummy(),
-        event: crate::synthetic_input::key_event(
+        event: tilo_ui_base::synthetic_input::key_event(
             Key::Named(winit::keyboard::NamedKey::Escape),
             None,
             ElementState::Pressed,

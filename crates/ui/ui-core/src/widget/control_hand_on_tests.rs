@@ -6,11 +6,12 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::State;
-use crate::a11y::Action;
 use crate::app::driver::Driver;
-use crate::theme::Theme;
-use crate::tokens::MotionSource;
-use crate::widget::{Badge, Checkbox, Column, Slider, Toggle, Widget};
+use crate::{widget::Badge, widget::Checkbox, widget::Column, widget::Slider, widget::Toggle};
+use tilo_ui_base::a11y::Action;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::MotionSource;
+use tilo_ui_base::widget::Widget;
 
 #[derive(Clone, Copy)]
 struct Model {
@@ -36,22 +37,22 @@ fn view(model: &Rc<RefCell<Model>>) -> Vec<Box<dyn Widget>> {
     let level = Rc::clone(model);
     vec![
         Box::new(
-            Toggle::from_state(&crate::LocalState::new(m.on))
+            Toggle::from_state(&tilo_ui_base::LocalState::new(m.on))
                 .on_choose("switch", set(|m, value| m.on = value)),
         ),
         Box::new(
-            Checkbox::from_state(&crate::LocalState::new(m.remember))
+            Checkbox::from_state(&tilo_ui_base::LocalState::new(m.remember))
                 .with_label("Remember me")
                 .on_choose("remember", set(|m, value| m.remember = value)),
         ),
         Box::new(
-            Checkbox::from_state(&crate::LocalState::new(m.nearby))
+            Checkbox::from_state(&tilo_ui_base::LocalState::new(m.nearby))
                 .radio()
                 .with_label("Nearby only")
                 .on_choose("nearby", set(|m, value| m.nearby = value)),
         ),
         Box::new(
-            Slider::from_state(&crate::LocalState::new(m.level))
+            Slider::from_state(&tilo_ui_base::LocalState::new(m.level))
                 .on_change(move |value| level.borrow_mut().level = value),
         ),
         Box::new(Badge::count(m.unread)),
@@ -74,14 +75,14 @@ fn rect(d: &Driver, index: usize) -> vello::kurbo::Rect {
 
 fn act(d: &mut Driver, index: usize, action: &Action, source: MotionSource) {
     let mut doc = automerge::AutoCommit::new();
-    crate::motion::note_source(source);
+    tilo_ui_base::motion::note_source(source);
     let mut column = d.root_mut::<Column>();
     let control = &mut column.children_mut()[index];
     assert!(Widget::perform_action(
         *control,
         action,
         &[],
-        &mut crate::widget::Edits::lend(&mut doc),
+        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
 }
@@ -98,7 +99,7 @@ fn rebuilt_controls_move_on_a_click_and_land_on_a_key() {
     let mut d = Driver::for_root(State::new(), Column::new(), (420, 400), Theme::dark());
     rebuild(&mut d, &model);
     rebuild(&mut d, &model);
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     for index in [SWITCH, BOX, RADIO, SLIDER, BADGE] {
         assert!(
             !moving(&d, index),
@@ -133,7 +134,7 @@ fn rebuilt_controls_move_on_a_click_and_land_on_a_key() {
     let mut d = Driver::for_root(State::new(), Column::new(), (420, 400), Theme::dark());
     rebuild(&mut d, &model);
     rebuild(&mut d, &model);
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     for (index, source) in [
         (SWITCH, MotionSource::Keyboard),
         (BOX, MotionSource::Keyboard),

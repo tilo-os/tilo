@@ -17,9 +17,9 @@ use std::task::Waker;
 use tilo_identity::policy_change;
 use tilo_onboarding_session::identity::IdentityProblem;
 use tilo_onboarding_session::view::OnboardingView;
+use tilo_ui_base::format::UnixSecs;
+use tilo_ui_base::icons::Icon;
 use tilo_user_identity::{CertificateClockError, DeviceCertError};
-use ui::format::UnixSecs;
-use ui::icons::Icon;
 use ui::widget::{Container, EmptyState};
 
 use crate::i18n::{t, t_args};
@@ -201,17 +201,18 @@ impl ClockWait {
     /// What the wait shows: what the clock reads, what the certificate needs instead, and that the
     /// shell opens by itself.
     pub(crate) fn screen(&self) -> Container {
-        let now = ui::format::timestamp(&UnixSecs(secs(self.refusal.clock_ns)));
+        let now = tilo_ui_base::format::timestamp(&UnixSecs(secs(self.refusal.clock_ns)));
         let body = match self.refusal.reason {
             DeviceCertError::NotYetValid => {
-                let valid = ui::format::timestamp(&UnixSecs(secs(self.refusal.valid_from_ns)));
+                let valid =
+                    tilo_ui_base::format::timestamp(&UnixSecs(secs(self.refusal.valid_from_ns)));
                 t_args(
                     "identity-clock-wait-not-yet-valid",
                     &[("now", now.into()), ("valid", valid.into())],
                 )
             }
             DeviceCertError::Expired => {
-                let until = ui::format::timestamp(&UnixSecs(secs(
+                let until = tilo_ui_base::format::timestamp(&UnixSecs(secs(
                     self.refusal.valid_until_ns.unwrap_or(self.refusal.clock_ns),
                 )));
                 t_args(

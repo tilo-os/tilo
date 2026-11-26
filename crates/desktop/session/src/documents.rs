@@ -189,7 +189,7 @@ fn candidate(app: &str, lists: &AppLists) -> DocumentApp {
         id: app.to_owned(),
         name,
         icon: Some(
-            ui::icons::app_glyph(app, category.as_deref())
+            tilo_ui_base::icons::app_glyph(app, category.as_deref())
                 .name()
                 .to_owned(),
         ),

@@ -465,7 +465,7 @@ fn with_row(mut result: SearchResult, title: &str, row: &tilo_resource::SearchRo
     if let Some(icon) = row
         .icon
         .as_deref()
-        .and_then(ui_core::icons::Icon::from_name)
+        .and_then(tilo_ui_base::icons::Icon::from_name)
     {
         result = result.with_icon(icon);
     }
@@ -607,7 +607,7 @@ impl SearchProvider for ResourceSearch {
             .min(result_limit.min(DEFAULT_SEARCH_RESULT_LIMIT));
         let folded = format!(
             "{}\0{:?}",
-            ui_core::text_match::normalize_search_text(query.text()),
+            tilo_ui_base::text_match::normalize_search_text(query.text()),
             query.filters()
         );
         let indexed = self.indexed();
@@ -732,8 +732,8 @@ impl ResourceSearch {
                         !parent.facets.iter().any(|(key, _, value)| {
                             key.eq_ignore_ascii_case(&filter.key)
                                 && query.filter_values(&filter.key).any(|selected| {
-                                    ui_core::text_match::normalize_search_text(value)
-                                        == ui_core::text_match::normalize_search_text(selected)
+                                    tilo_ui_base::text_match::normalize_search_text(value)
+                                        == tilo_ui_base::text_match::normalize_search_text(selected)
                                 })
                         })
                     })
@@ -755,7 +755,7 @@ impl ResourceSearch {
                 if let Some(icon) = entry
                     .icon
                     .as_deref()
-                    .and_then(ui_core::icons::Icon::from_name)
+                    .and_then(tilo_ui_base::icons::Icon::from_name)
                 {
                     result = result.with_icon(icon);
                 }

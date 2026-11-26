@@ -1,12 +1,13 @@
 //! [`Banner`] as a described component.
 
-use crate::component::{Component, Described, Event};
-use crate::icons::Icon;
-use crate::widget::{Button, Press};
+use crate::widget::Button;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::widget::Press;
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 
 use super::{Banner, BannerKind, BannerNotice};
 
-crate::component::choice!(BannerKind, "BannerKind", {
+tilo_ui_base::choice!(BannerKind, "BannerKind", {
     Neutral => "neutral",
     Info => "info",
     Success => "success",

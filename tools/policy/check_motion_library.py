@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Every animation is composed from the motion library.
 
-Tilo's standard motions live in ``crates/ui/ui-core/src/motion/`` (``ui::motion``):
+Tilo's standard motions live in ``crates/ui/ui-base/src/motion/`` (``ui::motion``):
 appear, drill, disclose, panel slide, cross-fade, list change, snap, zoom,
 window motion, feedback, attention. A call site names the motion; how it moves
 is decided there, once. This check fails on the ways an animation gets hand
@@ -96,6 +96,7 @@ SCANNED += (
     Path("crates/ui/tilo-cpu-raster"),
     Path("crates/ui/tilo-formats"),
     Path("crates/ui/tilo-rich-edit"),
+    Path("crates/ui/ui-base"),
     Path("crates/ui/ui-core"),
     Path("crates/ui/ui-kms"),
     Path("crates/ui/ui-macros"),
@@ -120,9 +121,9 @@ SCANNED += (
 
 # Where motion math belongs.
 LIBRARY = (
-    "crates/ui/ui-core/src/motion/",
-    "crates/ui/ui-core/src/animation/",
-    "crates/ui/ui-core/src/tokens/motion.rs",
+    "crates/ui/ui-base/src/motion/",
+    "crates/ui/ui-base/src/animation/",
+    "crates/ui/ui-base/src/tokens/motion.rs",
 )
 
 # Curves that belong to the content, not to UI motion. Keep this short; every
@@ -133,7 +134,7 @@ EXEMPT = {
     "crates/engines/thumbnail/": "paint, brush and media physics simulate the medium, not UI motion",
     "crates/engines/wet-media/": "paint, brush and media physics simulate the medium, not UI motion",
     "crates/engines/video-edit/": "a clip's tone curve and transitions are the cut's own content, not UI motion",
-    "crates/ui/ui-core/src/theme.rs": "blends two themes' tokens, spring presets included",
+    "crates/ui/ui-base/src/theme.rs": "blends two themes' tokens, spring presets included",
     "crates/desktop/compositor/src/a11y.rs": "the visual alert is the compositor's own overlay, faded in its render pass from the frame clock no UI runs on",
     "vendor/": "vendored upstream code",
 }
@@ -261,7 +262,7 @@ def main(argv: list[str]) -> int:
             print(finding)
         return 0
     print(
-        "Animations are composed from ui::motion (crates/ui/ui-core/src/motion/):",
+        "Animations are composed from ui::motion (crates/ui/ui-base/src/motion/):",
         file=sys.stderr,
     )
     for finding in findings:

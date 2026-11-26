@@ -4,7 +4,7 @@ use taffy::style_helpers::length;
 use taffy::{Size, Style};
 
 use super::arranged::{Arranged, Layout, Part, Resolved, wrapper_style};
-use crate::widget::Length;
+use tilo_ui_base::widget::Length;
 
 /// The readable width of a page, in `rem`.
 pub const MEASURE_REM: f32 = 40.0;
@@ -22,7 +22,7 @@ pub struct PageLayout {
 
 #[derive(Clone, Copy, Debug)]
 enum RowSpacing {
-    After(crate::tokens::Rhythm),
+    After(tilo_ui_base::tokens::Rhythm),
     Foot,
 }
 
@@ -32,7 +32,7 @@ enum RowSpacing {
 /// then one distance at every window size, so what stands in a page stands the same distance
 /// from everything around it.
 fn content_gutter(resolved: &Resolved) -> f32 {
-    resolved.gap(crate::tokens::Rhythm::Group)
+    resolved.gap(tilo_ui_base::tokens::Rhythm::Group)
 }
 
 impl Layout for PageLayout {
@@ -57,9 +57,10 @@ impl Layout for PageLayout {
         };
         let (top, bottom) = match self.row {
             Some(RowSpacing::After(gap)) => (length(resolved.gap(gap)), length(0.0_f32)),
-            Some(RowSpacing::Foot) => {
-                (length(resolved.gap(crate::tokens::Rhythm::Section)), gutter)
-            }
+            Some(RowSpacing::Foot) => (
+                length(resolved.gap(tilo_ui_base::tokens::Rhythm::Section)),
+                gutter,
+            ),
             None => (gutter, gutter),
         };
         Style {
@@ -133,7 +134,7 @@ impl Arranged<PageLayout> {
     }
 
     #[must_use]
-    pub const fn row_after(mut self, gap: crate::tokens::Rhythm) -> Self {
+    pub const fn row_after(mut self, gap: tilo_ui_base::tokens::Rhythm) -> Self {
         self.layout.row = Some(RowSpacing::After(gap));
         self
     }
@@ -172,12 +173,12 @@ impl Default for Arranged<PageLayout> {
 #[derive(Debug)]
 pub struct TranscriptEdges {
     resolved: Option<Resolved>,
-    first: crate::tokens::Rhythm,
+    first: tilo_ui_base::tokens::Rhythm,
 }
 
 impl TranscriptEdges {
     #[must_use]
-    pub const fn new(first: crate::tokens::Rhythm) -> Self {
+    pub const fn new(first: tilo_ui_base::tokens::Rhythm) -> Self {
         Self {
             resolved: None,
             first,
@@ -186,7 +187,7 @@ impl TranscriptEdges {
 }
 
 impl crate::widget::virtual_list::ListEdges for TranscriptEdges {
-    fn theme(&mut self, theme: &crate::theme::Theme) {
+    fn theme(&mut self, theme: &tilo_ui_base::theme::Theme) {
         self.resolved = Some(Resolved::of(theme));
     }
 

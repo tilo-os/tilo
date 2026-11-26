@@ -71,7 +71,7 @@ tilo_test_env::scenario! {
         );
         assert_eq!(
             agent.rgb,
-            ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange),
+            tilo_ui_base::presence::identity_rgb(tilo_ui_base::tokens::PresenceHue::Orange),
             "Claude Code wears its client's hue"
         );
         assert_eq!(
@@ -197,7 +197,7 @@ tilo_test_env::scenario! {
     phase an_agent_wears_one_colour_on_every_surface;
     {
         let helper = "agent:helper@host";
-        let (r, g, b) = ui::presence::member_color(&ui::permissions::MemberId::agent(helper, "bo-root"));
+        let (r, g, b) = tilo_ui_base::presence::member_color(&tilo_ui_base::permissions::MemberId::agent(helper, "bo-root"));
         let announced = format!("#{r:02x}{g:02x}{b:02x}");
         let me = LiveMember {
             user: Some("me-root".into()),
@@ -225,7 +225,7 @@ tilo_test_env::scenario! {
                 here.colors().get(helper).copied(),
                 listed.rgb,
                 presence.color_for(&MemberId::agent("helper@host", "bo-root")),
-                ui::presence::member_color(&ui::permissions::MemberId::agent(helper, "bo-root")),
+                tilo_ui_base::presence::member_color(&tilo_ui_base::permissions::MemberId::agent(helper, "bo-root")),
             ),
             (Some((r, g, b)), (r, g, b), (r, g, b), (r, g, b)),
             "the board, its people row, the windows and every app settle one colour"
@@ -256,7 +256,7 @@ tilo_test_env::scenario! {
     // on their own page and on everyone else's: one person, one colour, on the
     // bar, in the People list and in every app they edit in.
     {
-        let violet = ui::presence::identity_rgb(ui::tokens::PresenceHue::Violet);
+        let violet = tilo_ui_base::presence::identity_rgb(tilo_ui_base::tokens::PresenceHue::Violet);
         let hex = format!("#{:02x}{:02x}{:02x}", violet.0, violet.1, violet.2);
         let claiming = |device: &str, root: &str| LiveMember {
             user: Some(root.into()),
@@ -312,13 +312,13 @@ tilo_test_env::scenario! {
         };
         assert_eq!(
             shown(&mut here),
-            (ui::presence::UNSETTLED_RGB, None),
+            (tilo_ui_base::presence::UNSETTLED_RGB, None),
             "not yet known whose device it is"
         );
         assert!(!here.colors().contains_key("ben-tab"));
         assert_eq!(
             here.own_rgb(),
-            Some(ui::presence::user_color("me-root")),
+            Some(tilo_ui_base::presence::user_color("me-root")),
             "this page knows its own person"
         );
         here.set_members(
@@ -331,11 +331,11 @@ tilo_test_env::scenario! {
                 },
             ]),
         );
-        let ben = ui::presence::user_color("ben-root");
+        let ben = tilo_ui_base::presence::user_color("ben-root");
         assert_eq!(shown(&mut here), (ben, Some(ben)));
         // A neutral face paints grey, not a ring colour.
-        let palette = ui::tokens::colors::Colors::dark().presence;
-        let painted = palette.of_rgb(ui::presence::UNSETTLED_RGB);
+        let palette = tilo_ui_base::tokens::colors::Colors::dark().presence;
+        let painted = palette.of_rgb(tilo_ui_base::presence::UNSETTLED_RGB);
         assert!(painted.r().abs_diff(painted.g()) <= 1, "{painted:?}");
         assert!(painted.g().abs_diff(painted.b()) <= 1, "{painted:?}");
     }
@@ -523,7 +523,7 @@ tilo_test_env::scenario! {
         assert!(listed[0].agent, "never one of the person's devices");
         assert_eq!(
             listed[0].rgb,
-            ui::presence::identity_rgb(ui::tokens::PresenceHue::Orange),
+            tilo_ui_base::presence::identity_rgb(tilo_ui_base::tokens::PresenceHue::Orange),
             "in its client's colour"
         );
         assert_eq!(
@@ -1028,7 +1028,8 @@ fn a_member_wears_one_colour_on_the_bar_and_in_every_app() {
     let keeper = (0..1000)
         .map(|n| format!("person-{n}"))
         .find(|id| {
-            ui::tokens::PresenceHue::of_identity(id) == ui::tokens::PresenceHue::of_agent("helper")
+            tilo_ui_base::tokens::PresenceHue::of_identity(id)
+                == tilo_ui_base::tokens::PresenceHue::of_agent("helper")
         })
         .expect("a person whose hue what the agent is lands on");
     let me = LiveMember {

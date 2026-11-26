@@ -10,7 +10,7 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc as _};
 
 use super::*;
 use crate::platform::records::{Changes, Memory};
-use ui::mentions::{MARK, reading_nothing};
+use tilo_ui_base::{mentions::MARK, mentions::reading_nothing};
 use ui::resource::{DocumentId, ResourceType};
 
 const ADA: &str = "u-ada";
@@ -18,18 +18,18 @@ const BEA: &str = "u-bea";
 
 /// A member's id as the apps keep it: a mention's mark, or an item's author.
 fn member_value(person: &str) -> String {
-    serde_json::to_string(&ui::MemberId::person(person)).expect("a member id")
+    serde_json::to_string(&tilo_ui_base::MemberId::person(person)).expect("a member id")
 }
 const CAI: &str = "u-cai";
 const NOTE: &str = "tab:00000000000000a1";
 const NOTES: &str = "so.tilo.notes";
 const WORKSPACE: &str = "6d1c1f36-0000-4000-8000-000000000001";
 
-fn name(member: &ui::MemberId) -> String {
+fn name(member: &tilo_ui_base::MemberId) -> String {
     match member.id() {
         ADA => "Ada".into(),
         BEA => "Bea".into(),
-        _ => ui::presence::unnamed_label(member),
+        _ => tilo_ui_base::presence::unnamed_label(member),
     }
 }
 
@@ -386,7 +386,7 @@ tilo_test_env::scenario! {
         let mut held = Held::default();
         let written = notebook("Ask @Bea", Some((4, 8, BEA)), ADA);
         let mut me = BTreeSet::new();
-        me.insert(ui::MemberId::person(BEA));
+        me.insert(tilo_ui_base::MemberId::person(BEA));
         let told = held.look(
             &Look {
                 app: NOTES,

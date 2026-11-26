@@ -9,8 +9,8 @@ use super::{
 };
 
 impl ToolbarRow {
-    pub(crate) fn accessibility(&self) -> Vec<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    pub(crate) fn accessibility(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let Some(toolbar) = self.toolbar() else {
             return Vec::new();
         };
@@ -30,7 +30,7 @@ impl ToolbarRow {
             && !self.parts.sidebar_folded(toolbar)
         {
             let mut toggle = button(
-                crate::i18n::I18nManager::lookup_plain(sidebar_key(toolbar)),
+                tilo_ui_base::i18n::I18nManager::lookup_plain(sidebar_key(toolbar)),
                 SIDEBAR_TARGET.into(),
                 self.parts.sidebar,
                 !toolbar.sidebar_unavailable,
@@ -41,14 +41,14 @@ impl ToolbarRow {
         }
         if let Some(nav) = toolbar.navigation {
             nodes.push(button(
-                crate::i18n::I18nManager::lookup_plain("window-toolbar-back"),
+                tilo_ui_base::i18n::I18nManager::lookup_plain("window-toolbar-back"),
                 BACK_TARGET.into(),
                 self.parts.back,
                 nav.back,
             ));
             if !self.parts.forward_folded(toolbar) {
                 nodes.push(button(
-                    crate::i18n::I18nManager::lookup_plain("window-toolbar-forward"),
+                    tilo_ui_base::i18n::I18nManager::lookup_plain("window-toolbar-forward"),
                     FORWARD_TARGET.into(),
                     self.parts.forward,
                     nav.forward,
@@ -114,7 +114,7 @@ impl ToolbarRow {
                     node = node.with_description(word);
                 }
                 if toolbar.notice.is_some() {
-                    node = node.with_live(crate::a11y::Politeness::Polite);
+                    node = node.with_live(tilo_ui_base::a11y::Politeness::Polite);
                 }
                 if location.editable || picker {
                     node = node
@@ -178,7 +178,7 @@ impl ToolbarRow {
                 AccessNode::new(Role::StaticText)
                     .with_name(notice.text.clone())
                     .with_bounds(text)
-                    .with_live(crate::a11y::Politeness::Polite),
+                    .with_live(tilo_ui_base::a11y::Politeness::Polite),
             );
             for (action, rect) in notice.actions.iter().zip(&at) {
                 nodes.push(button(
@@ -207,7 +207,7 @@ impl ToolbarRow {
             if self.parts.views_menu.area() > 0.0 {
                 let chosen = views.chosen_index().and_then(|i| views.choices.get(i));
                 let views_name = if views.name.is_empty() {
-                    crate::i18n::I18nManager::lookup_plain("window-toolbar-views")
+                    tilo_ui_base::i18n::I18nManager::lookup_plain("window-toolbar-views")
                 } else {
                     views.name.clone()
                 };
@@ -262,7 +262,7 @@ impl ToolbarRow {
             nodes.push(node);
         }
         if self.parts.overflow.area() > 0.0 {
-            let name = crate::i18n::I18nManager::lookup_plain("window-toolbar-more");
+            let name = tilo_ui_base::i18n::I18nManager::lookup_plain("window-toolbar-more");
             let mut more = button(
                 name.clone(),
                 OVERFLOW_TARGET.into(),
@@ -317,8 +317,8 @@ impl ToolbarRow {
         part: &Part,
         anchor: Rect,
         entries: impl Iterator<Item = MenuEntry>,
-    ) -> crate::a11y::AccessNode {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    ) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let open = self.menu_open_for(part);
         let entries: Vec<MenuEntry> = entries.collect();
         let count = entries.len();
@@ -374,7 +374,7 @@ impl ToolbarRow {
                 (action.toggles || action.on).then_some(action.on),
             )
         };
-        let lookup = crate::i18n::I18nManager::lookup_plain;
+        let lookup = tilo_ui_base::i18n::I18nManager::lookup_plain;
         match entry {
             MenuEntry::Sidebar => Some((
                 lookup(sidebar_key(toolbar)),
@@ -418,8 +418,8 @@ impl ToolbarRow {
         }
     }
 
-    pub(super) fn suggestion_nodes(&self) -> Vec<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    pub(super) fn suggestion_nodes(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         if !self.suggestions_open() {
             return Vec::new();
         }
@@ -446,7 +446,7 @@ impl ToolbarRow {
             })
             .collect();
         let mut node = AccessNode::new(Role::List)
-            .with_name(crate::i18n::I18nManager::lookup_plain(
+            .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain(
                 "window-toolbar-suggestions",
             ))
             .with_children(list);

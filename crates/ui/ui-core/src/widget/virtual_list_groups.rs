@@ -6,11 +6,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 
 use super::{AnyModel, ListKey, VirtualRows};
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use crate::widget::Interaction;
 use crate::widget::section::{SectionHeaderFace, band_height, heading_count};
-use crate::widget::{Interaction, Tone};
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Tone;
 
 pub(super) const HEADING_TARGET: &str = "group:";
 
@@ -61,7 +62,7 @@ impl Groups {
     pub(super) fn theme(
         &mut self,
         theme: &Theme,
-        input: crate::interaction::InteractionEnvironment,
+        input: tilo_ui_base::interaction::InteractionEnvironment,
     ) -> f64 {
         let target = if input.supports_hover() {
             0.0

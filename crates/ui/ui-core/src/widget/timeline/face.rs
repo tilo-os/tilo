@@ -5,13 +5,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use crate::format;
-use crate::paint::PaintCtx;
-use crate::surface::{card, edge_on};
-use crate::text_render::TextStyle;
-use crate::tokens::TextRole;
-use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
 use crate::widget::TimelineDensity;
+use tilo_ui_base::format;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextStyle;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
+use tilo_ui_base::{surface::card, surface::edge_on};
 
 use super::{
     Ghost, MonthTarget, Split, TimelineGeom, TimelineItem, TimelineTarget, TimelineText,
@@ -79,11 +79,13 @@ fn text_in_band(
     band: Rect,
     max_width: f64,
 ) {
-    let shown =
-        ctx.text
-            .elide_to_width_style(text, crate::num::f32_of_f64(max_width.max(0.0)), style);
+    let shown = ctx.text.elide_to_width_style(
+        text,
+        tilo_ui_base::num::f32_of_f64(max_width.max(0.0)),
+        style,
+    );
     let (_, h) = ctx.text.measure_style(&shown, None, style);
-    let top = crate::text_metrics::centered_text_top(band.y0, band.height(), f64::from(h));
+    let top = tilo_ui_base::text_metrics::centered_text_top(band.y0, band.height(), f64::from(h));
     ctx.text(&shown, style, color, Point::new(x, top), None);
 }
 
@@ -103,7 +105,7 @@ fn wrap_lines(
     };
     let elide = |ctx: &mut PaintCtx<'_>, line: &str| {
         ctx.text
-            .elide_to_width_style(line, crate::num::f32_of_f64(width.max(0.0)), style)
+            .elide_to_width_style(line, tilo_ui_base::num::f32_of_f64(width.max(0.0)), style)
     };
     let mut lines = Vec::new();
     let mut words = text.split_whitespace().peekable();
@@ -531,7 +533,7 @@ impl TimelineFace<'_> {
                 }
                 let line = ctx.text.elide_to_width_style(
                     line,
-                    crate::num::f32_of_f64(text_w),
+                    tilo_ui_base::num::f32_of_f64(text_w),
                     &ty.subtitle,
                 );
                 ctx.text(&line, &ty.subtitle, tinted.ink, Point::new(text_x, y), None);
@@ -576,7 +578,7 @@ impl TimelineFace<'_> {
         let text_x = block.x0 + 2.0 * s1;
         let title = ctx.text.elide_to_width_style(
             &ghost.title,
-            crate::num::f32_of_f64((block.x1 - s1 - text_x).max(0.0)),
+            tilo_ui_base::num::f32_of_f64((block.x1 - s1 - text_x).max(0.0)),
             &ty.title,
         );
         let title_h = line_height(ctx, &ty.title);

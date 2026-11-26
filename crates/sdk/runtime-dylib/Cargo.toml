@@ -47,6 +47,7 @@ crate-type = ["dylib"]
 # A Rust dylib's exported symbol names contain the dependency crate hash; if an
 # app enables a UI feature absent here, Cargo builds a second `ui` instance and
 # the app can link successfully but fail at runtime with undefined symbols.
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["portal", "webview-adblock", "dmabuf-import", "gpu-video", "mpris", "model"], default-features = false }
 # The apps the runtime library carries present only what changed, through Tilo's wgpu-hal.
 tilo-presentation = { path = "../../platform/tilo-presentation", features = ["vulkan-damage"] }

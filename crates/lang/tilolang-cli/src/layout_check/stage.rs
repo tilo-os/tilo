@@ -7,9 +7,9 @@ use std::rc::Rc;
 
 use tilo_app_window::AppWindow;
 use tilo_render_protocol::patch::{ResourceRef, ToApp, Value};
+use tilo_ui_base::interaction::InteractionEnvironment;
 use tilolang_tilo::runtime::value::{ResourceRef as RuntimeRef, Value as RuntimeValue};
 use ui::headless::Driver;
-use ui::interaction::InteractionEnvironment;
 
 /// The motion a read window is allowed before it is a finding: two seconds of frames at the pace a
 /// live window presents them, counted in frames so a loaded machine reads the same window a quiet
@@ -46,7 +46,7 @@ pub struct Work {
     pub shaped: u64,
     /// What the layout solver did for those frames: the trees it solved, the passes it took, the
     /// manual regions it ran and the manual regions it kept, what it probed and what it measured.
-    pub layout: ui::widget::counts::LayoutCounts,
+    pub layout: tilo_ui_base::widget::counts::LayoutCounts,
 }
 
 impl Work {
@@ -70,8 +70,8 @@ impl Staged {
         let title = meta.map_or_else(String::new, |meta| meta.title.clone());
         let icon = meta
             .and_then(|meta| meta.icon.as_deref())
-            .and_then(|declared| ui::icons::Icon::from_name(&declared.replace('_', "-")))
-            .unwrap_or(ui::icons::Icon::AppWindow);
+            .and_then(|declared| tilo_ui_base::icons::Icon::from_name(&declared.replace('_', "-")))
+            .unwrap_or(tilo_ui_base::icons::Icon::AppWindow);
         harness.set_window_app(ui::widget::AppKind::App(icon), title);
     }
 }
@@ -103,7 +103,7 @@ impl Staged {
         packages: &Rc<Packages>,
         scenario: &str,
         viewport: (u32, u32),
-        theme: ui::Theme,
+        theme: tilo_ui_base::Theme,
         root: Option<&str>,
         states: &[String],
     ) -> Result<Self, String> {
@@ -128,7 +128,7 @@ impl Staged {
         app: &str,
         packages: &Rc<Packages>,
         viewport: (u32, u32),
-        theme: ui::Theme,
+        theme: tilo_ui_base::Theme,
         staging: Staging,
     ) -> Result<Self, String> {
         let Staging {
@@ -177,7 +177,7 @@ impl Staged {
     pub fn lay_out(
         &mut self,
         viewport: (u32, u32),
-        mut theme: ui::Theme,
+        mut theme: tilo_ui_base::Theme,
         input: InteractionEnvironment,
         display_scale: f64,
     ) -> Result<(), String> {
@@ -296,7 +296,7 @@ impl Staged {
             frames: frames.saturating_sub(self.work.frames),
             nodes: nodes.saturating_sub(self.work.nodes),
             shaped: misses,
-            layout: ui::widget::counts::take(),
+            layout: tilo_ui_base::widget::counts::take(),
         };
         self.work.frames = frames;
         self.work.nodes = nodes;
@@ -478,7 +478,7 @@ impl Staged {
     pub fn lay_out_moving(
         &mut self,
         viewport: (u32, u32),
-        mut theme: ui::Theme,
+        mut theme: tilo_ui_base::Theme,
         input: InteractionEnvironment,
     ) -> Result<(), String> {
         theme.reduce_motion = false;
@@ -511,7 +511,7 @@ impl Staged {
     /// otherwise.
     pub fn press_shell(&mut self, id: &str) -> Result<(), String> {
         let touch = self.window.harness.interaction_environment().modality
-            == ui::interaction::InputModality::Touch;
+            == tilo_ui_base::interaction::InputModality::Touch;
         self.press(id, touch)
     }
 
@@ -521,7 +521,7 @@ impl Staged {
         // A row is pressed the way the window expects its person to: a finger taps it, where a
         // mouse press on a menu a finger opened only dismisses the menu.
         if self.window.harness.interaction_environment().modality
-            == ui::interaction::InputModality::Touch
+            == tilo_ui_base::interaction::InputModality::Touch
         {
             self.window.harness.tap_at(x, y);
         } else {
@@ -545,7 +545,7 @@ impl Staged {
     pub fn press_action(&mut self, id: &str) -> Result<(), String> {
         self.window
             .harness
-            .perform_named(id, &ui::a11y::Action::Activate)
+            .perform_named(id, &tilo_ui_base::a11y::Action::Activate)
             .map_err(|error| format!("pressing {id:?}: {error}"))?;
         self.exchange();
         self.settle()
@@ -557,7 +557,7 @@ impl Staged {
     pub fn press_child(&mut self, id: &str, target: &str) -> Result<(), String> {
         self.window
             .harness
-            .perform_semantic_named(id, Some(target), &ui::a11y::Action::Activate)
+            .perform_semantic_named(id, Some(target), &tilo_ui_base::a11y::Action::Activate)
             .map_err(|error| format!("pressing {target:?}: {error}"))?;
         self.exchange();
         self.settle()
@@ -595,14 +595,14 @@ impl Staged {
              {:?}, the schedule {:?} owed for {:?} with {} images on their way",
             ui::headless::capture_frames(SETTLE_BOUND),
             self.window.harness.frame_requesters(),
-            ui::motion::frames_wanted_by(now),
+            tilo_ui_base::motion::frames_wanted_by(now),
             self.window.harness.pending_visual_work(),
             (self.window.harness.presence())
                 .interaction_animation_demand(now, self.window.harness.theme()),
             self.window.harness.root_widget().holds_frame_until(now),
             self.window.harness.frame_schedule(),
             self.window.harness.queued_work_sources(),
-            ui::image_store::loads_in_flight(),
+            tilo_ui_base::image_store::loads_in_flight(),
         ))
     }
 
@@ -679,7 +679,7 @@ mod tests {
             &packages,
             scenario,
             size,
-            ui::Theme::light(),
+            tilo_ui_base::Theme::light(),
             None,
             &[],
         )
@@ -803,9 +803,10 @@ mod tests {
             .harness()
             .render_png(&captures.join(format!("{name}-before.png")));
         let applied = staged.harness_mut().update_presence(|presence| {
-            presence
-                .names
-                .insert(ui::permissions::MemberId::person("scribe"), "Ada".into());
+            presence.names.insert(
+                tilo_ui_base::permissions::MemberId::person("scribe"),
+                "Ada".into(),
+            );
             presence
                 .apply_interaction(event.clone())
                 .expect("a well-formed interaction applies")
@@ -838,8 +839,8 @@ mod tests {
         staged
             .lay_out(
                 (width, height),
-                ui::Theme::light(),
-                ui::interaction::InteractionEnvironment::POINTER,
+                tilo_ui_base::Theme::light(),
+                tilo_ui_base::interaction::InteractionEnvironment::POINTER,
                 1.0,
             )
             .expect("the window lies out");
@@ -882,7 +883,7 @@ mod tests {
         let packages = app_packages("mail");
         let app = packages.compiled.last().expect("the app").meta.app.clone();
         let shown = |scenario: &str, (width, height): (u32, u32), text: f32| {
-            let theme = ui::Theme::light().with_text_scale(text);
+            let theme = tilo_ui_base::Theme::light().with_text_scale(text);
             let mut staged = Staged::over(
                 &app,
                 &packages,
@@ -897,7 +898,7 @@ mod tests {
                 .lay_out(
                     (width, height),
                     theme,
-                    ui::interaction::InteractionEnvironment::TOUCH,
+                    tilo_ui_base::interaction::InteractionEnvironment::TOUCH,
                     1.0,
                 )
                 .expect("the window lies out");
@@ -932,7 +933,7 @@ mod tests {
         let app = packages.compiled.last().expect("the app").meta.app.clone();
         let back = |scenario: &str| -> bool {
             let (width, height) = (1280, 800);
-            let theme = ui::Theme::light();
+            let theme = tilo_ui_base::Theme::light();
             let mut staged = Staged::over(
                 &app,
                 &packages,
@@ -947,7 +948,7 @@ mod tests {
                 .lay_out(
                     (width, height),
                     theme,
-                    ui::interaction::InteractionEnvironment::POINTER,
+                    tilo_ui_base::interaction::InteractionEnvironment::POINTER,
                     1.0,
                 )
                 .expect("the window lies out");
@@ -983,20 +984,20 @@ mod tests {
     #[test]
     fn a_notice_says_the_time_in_the_clock_the_person_reads() {
         tilo_app_window::i18n::ensure();
-        ui::clock::freeze_for_capture();
+        tilo_ui_base::clock::freeze_for_capture();
         let packages = app_packages("mail");
         let app = packages.compiled.last().expect("the app").meta.app.clone();
-        let notice = |style: ui::clock::TimeStyle| -> String {
-            ui::format::region::install(ui::format::region::RegionFormats {
+        let notice = |style: tilo_ui_base::clock::TimeStyle| -> String {
+            tilo_ui_base::format::region::install(tilo_ui_base::format::region::RegionFormats {
                 time: style,
-                ..ui::format::region::RegionFormats::default()
+                ..tilo_ui_base::format::region::RegionFormats::default()
             });
             let mut staged = Staged::over(
                 &app,
                 &packages,
                 "an account that cannot be reached",
                 (1280, 800),
-                ui::Theme::light(),
+                tilo_ui_base::Theme::light(),
                 None,
                 &[],
             )
@@ -1010,13 +1011,13 @@ mod tests {
         };
         // 12-hour where the person chose it: the notice reads the clock the list beside it reads.
         assert_eq!(
-            notice(ui::clock::TimeStyle::H12),
+            notice(tilo_ui_base::clock::TimeStyle::H12),
             "Connection refused. Last fetched 10:41 AM",
             "the notice says the time as the person reads clocks"
         );
         // 24-hour where they chose that: one clock for everything the window says.
         assert_eq!(
-            notice(ui::clock::TimeStyle::H24),
+            notice(tilo_ui_base::clock::TimeStyle::H24),
             "Connection refused. Last fetched 10:41"
         );
     }
@@ -1150,8 +1151,10 @@ mod tests {
 
     /// The window says it stands on `label`, a form the press opened.
     fn shows_dialog(node: &ui::headless::InspectionNode, label: &str) -> bool {
-        fn within(access: &ui::a11y::AccessNode, label: &str) -> bool {
-            if access.role == ui::a11y::Role::Dialog && access.name.as_deref() == Some(label) {
+        fn within(access: &tilo_ui_base::a11y::AccessNode, label: &str) -> bool {
+            if access.role == tilo_ui_base::a11y::Role::Dialog
+                && access.name.as_deref() == Some(label)
+            {
                 return true;
             }
             access.children.iter().any(|child| within(child, label))
@@ -1235,7 +1238,7 @@ mod tests {
     fn announced<'a>(
         node: &'a ui::headless::InspectionNode,
         label: &str,
-    ) -> Option<&'a ui::a11y::AccessNode> {
+    ) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
         if node
             .semantics
             .as_ref()
@@ -1257,8 +1260,8 @@ mod tests {
         staged
             .lay_out(
                 (width, height),
-                ui::Theme::light(),
-                ui::interaction::InteractionEnvironment::TOUCH,
+                tilo_ui_base::Theme::light(),
+                tilo_ui_base::interaction::InteractionEnvironment::TOUCH,
                 1.0,
             )
             .expect("the window lies out for a finger");
@@ -1307,8 +1310,8 @@ mod tests {
         staged
             .lay_out(
                 (width, height),
-                ui::Theme::light(),
-                ui::interaction::InteractionEnvironment::TOUCH,
+                tilo_ui_base::Theme::light(),
+                tilo_ui_base::interaction::InteractionEnvironment::TOUCH,
                 1.0,
             )
             .expect("the window lies out for a finger");
@@ -1525,7 +1528,7 @@ mod tests {
                 &packages,
                 "today",
                 size,
-                ui::Theme::light(),
+                tilo_ui_base::Theme::light(),
                 None,
                 &[],
             )
@@ -1712,7 +1715,7 @@ mod tests {
                 &packages,
                 "a busy week",
                 (width, height),
-                ui::Theme::light(),
+                tilo_ui_base::Theme::light(),
                 None,
                 &[],
             )
@@ -1754,8 +1757,8 @@ mod tests {
                 );
                 // The document lists the task's subtasks, and the list keeps each of them as a
                 // row of its own beside it.
-                let outline =
-                    named(root, &[ui::a11y::Role::Tree], "Subtasks").expect("the task's outline");
+                let outline = named(root, &[tilo_ui_base::a11y::Role::Tree], "Subtasks")
+                    .expect("the task's outline");
                 for subtask in [
                     "Find the last service date",
                     "Ask whether Tuesday morning works",
@@ -1838,7 +1841,7 @@ mod tests {
                 &packages,
                 "a task that is late",
                 (width, height),
-                ui::Theme::light(),
+                tilo_ui_base::Theme::light(),
                 None,
                 &[],
             )
@@ -1856,20 +1859,24 @@ mod tests {
                 staged.press(&id, false).expect("the row presses");
             }
             let root = &staged.harness().inspection().root;
-            let heading = named(root, &[ui::a11y::Role::Heading { level: 2 }], "Subtasks")
-                .unwrap_or_else(|| panic!("the section names itself at {width}×{height}"));
-            let outline = named(root, &[ui::a11y::Role::Tree], "Subtasks")
+            let heading = named(
+                root,
+                &[tilo_ui_base::a11y::Role::Heading { level: 2 }],
+                "Subtasks",
+            )
+            .unwrap_or_else(|| panic!("the section names itself at {width}×{height}"));
+            let outline = named(root, &[tilo_ui_base::a11y::Role::Tree], "Subtasks")
                 .unwrap_or_else(|| panic!("the section lists its steps at {width}×{height}"));
             for step in steps {
                 let row = named(outline, ROWS, step)
                     .unwrap_or_else(|| panic!("the outline shows {step:?} at {width}×{height}"));
-                let Some(ui::widget::LayoutInfo::Row(row)) = &row.layout else {
+                let Some(tilo_ui_base::widget::LayoutInfo::Row(row)) = &row.layout else {
                     panic!("a row of an outline says the column it stands on");
                 };
                 let left = f64::from(row.content_left);
                 // A row keeps the bleed every row of a list keeps, and
                 // no step for a chevron: what it holds folds nothing.
-                let bleed = ui::chrome::row_bleed(&ui::Theme::light());
+                let bleed = tilo_ui_base::chrome::row_bleed(&tilo_ui_base::Theme::light());
                 assert!(
                     (left - heading.rect[0]).abs() <= bleed + 1.0,
                     "the step {step:?} starts at x {left:.0} where the words naming its section \
@@ -1900,7 +1907,7 @@ mod tests {
             let row = named(root, ROWS, title).unwrap_or_else(|| {
                 panic!("{title:?} is a row of the place's list at {width}×{height}")
             });
-            let Some(ui::widget::LayoutInfo::Row(grid)) = &row.layout else {
+            let Some(tilo_ui_base::widget::LayoutInfo::Row(grid)) = &row.layout else {
                 panic!("a row of a list says the column it stands on");
             };
             (row, grid.depth)
@@ -1927,7 +1934,7 @@ mod tests {
 
     /// What a reader hears of a row and the nodes it holds, as one line.
     fn spoken(node: &ui::headless::InspectionNode) -> String {
-        fn heard(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+        fn heard(node: &tilo_ui_base::a11y::AccessNode, out: &mut Vec<String>) {
             out.extend(node.value.clone());
             out.extend(node.name.clone());
             for child in &node.children {
@@ -1984,7 +1991,7 @@ mod tests {
                 &packages,
                 "a busy week",
                 (width, height),
-                ui::Theme::light(),
+                tilo_ui_base::Theme::light(),
                 None,
                 &[],
             )
@@ -2058,7 +2065,8 @@ mod tests {
     /// in the field at its head, which a reader sees as the field's value.
     fn page_shows(node: &ui::headless::InspectionNode, label: &str) -> bool {
         node.semantics.as_ref().is_some_and(|access| {
-            access.role == ui::a11y::Role::TextInput && access.value.as_deref() == Some(label)
+            access.role == tilo_ui_base::a11y::Role::TextInput
+                && access.value.as_deref() == Some(label)
         }) || node.children.iter().any(|child| page_shows(child, label))
     }
 
@@ -2094,12 +2102,15 @@ mod tests {
     }
 
     /// The rows of a list or a tree, as the window reads them.
-    const ROWS: &[ui::a11y::Role] = &[ui::a11y::Role::ListItem, ui::a11y::Role::TreeItem];
+    const ROWS: &[tilo_ui_base::a11y::Role] = &[
+        tilo_ui_base::a11y::Role::ListItem,
+        tilo_ui_base::a11y::Role::TreeItem,
+    ];
 
     /// How many nodes the window shows named `label` in one of `roles`.
     fn count_named(
         node: &ui::headless::InspectionNode,
-        roles: &[ui::a11y::Role],
+        roles: &[tilo_ui_base::a11y::Role],
         label: &str,
     ) -> usize {
         let here = usize::from(
@@ -2116,7 +2127,7 @@ mod tests {
     /// What the window shows named `label` in one of `roles`.
     fn named<'a>(
         node: &'a ui::headless::InspectionNode,
-        roles: &[ui::a11y::Role],
+        roles: &[tilo_ui_base::a11y::Role],
         label: &str,
     ) -> Option<&'a ui::headless::InspectionNode> {
         // A list row is named by its title and its secondary line; its title
@@ -2164,7 +2175,7 @@ mod tests {
                 item.name.as_deref() == Some(label)
                     && matches!(
                         item.role,
-                        ui::a11y::Role::ListItem | ui::a11y::Role::TreeItem
+                        tilo_ui_base::a11y::Role::ListItem | tilo_ui_base::a11y::Role::TreeItem
                     )
                     && item.state.expanded == Some(true)
             })
@@ -2186,7 +2197,7 @@ mod tests {
                 &packages,
                 scenario,
                 (320, 568),
-                ui::Theme::light(),
+                tilo_ui_base::Theme::light(),
                 None,
                 &[],
             )
@@ -2198,7 +2209,7 @@ mod tests {
             staged
                 .lay_out(
                     (320, 568),
-                    ui::Theme::light(),
+                    tilo_ui_base::Theme::light(),
                     InteractionEnvironment::TOUCH,
                     1.5,
                 )
@@ -2318,7 +2329,7 @@ mod tests {
         tilo_app_window::i18n::ensure();
         let gaps = |packages: &Rc<Packages>, scenario: &str, (width, height): (u32, u32)| {
             let id = packages.compiled.last().expect("the app").meta.app.clone();
-            let theme = ui::Theme::light();
+            let theme = tilo_ui_base::Theme::light();
             let mut staged = Staged::over(
                 &id,
                 packages,
@@ -2333,7 +2344,7 @@ mod tests {
                 .lay_out(
                     (width, height),
                     theme,
-                    ui::interaction::InteractionEnvironment::POINTER,
+                    tilo_ui_base::interaction::InteractionEnvironment::POINTER,
                     1.0,
                 )
                 .expect("the window lies out");
@@ -2365,7 +2376,7 @@ mod tests {
                 .expect("the list under the notice stands");
             (notice.rect[1] - top, below)
         };
-        let gutter = f64::from(ui::Theme::light().tokens.spacing.rhythm.group);
+        let gutter = f64::from(tilo_ui_base::Theme::light().tokens.spacing.rhythm.group);
         // Each app is built once, and staged from that build at both sizes.
         let apps = [
             ("mail", "an account that cannot be reached"),
@@ -2409,7 +2420,7 @@ mod tests {
         }
 
         tilo_app_window::i18n::ensure();
-        ui::clock::freeze_for_capture();
+        tilo_ui_base::clock::freeze_for_capture();
         let packages = app_packages("gallery");
         let (width, height) = (1280, 800);
         let mut staged = Staged::over(
@@ -2417,7 +2428,7 @@ mod tests {
             &packages,
             "every family",
             (width, height),
-            ui::Theme::light(),
+            tilo_ui_base::Theme::light(),
             None,
             &[],
         )
@@ -2425,8 +2436,8 @@ mod tests {
         staged
             .lay_out(
                 (width, height),
-                ui::Theme::light(),
-                ui::interaction::InteractionEnvironment::POINTER,
+                tilo_ui_base::Theme::light(),
+                tilo_ui_base::interaction::InteractionEnvironment::POINTER,
                 1.0,
             )
             .expect("the gallery lays out");
@@ -2479,8 +2490,8 @@ mod tests {
             staged
                 .lay_out(
                     (width, height),
-                    ui::Theme::light(),
-                    ui::interaction::InteractionEnvironment::POINTER,
+                    tilo_ui_base::Theme::light(),
+                    tilo_ui_base::interaction::InteractionEnvironment::POINTER,
                     1.0,
                 )
                 .expect("the chosen page lays out");
@@ -2516,7 +2527,7 @@ mod maps_layout {
     /// The Maps window at a laptop's size, laid out as a person's window is, with the view `states`
     /// staged as the layout check's `--state` stages them.
     fn maps(packages: &Rc<Packages>, app: &str, states: &[&str]) -> Staged {
-        let theme = ui::Theme::light();
+        let theme = tilo_ui_base::Theme::light();
         let mut staged = Staged::over_workspace(
             app,
             packages,
@@ -2532,7 +2543,7 @@ mod maps_layout {
             .lay_out(
                 SIZE,
                 theme,
-                ui::interaction::InteractionEnvironment::POINTER,
+                tilo_ui_base::interaction::InteractionEnvironment::POINTER,
                 1.0,
             )
             .expect("the map lies out");

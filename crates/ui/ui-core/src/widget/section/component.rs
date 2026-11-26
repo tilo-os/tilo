@@ -4,8 +4,12 @@ use std::rc::Rc;
 
 use vello::kurbo::Point;
 
-use crate::component::{Component, Described, Event, PartViews, Value};
-use crate::widget::{Element, Interaction};
+use crate::widget::Interaction;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PartViews,
+    component::Value,
+};
 
 use super::Section;
 
@@ -27,7 +31,7 @@ pub struct SectionProps {
     pub expanded: Option<bool>,
     /// The pace the content arrives and leaves at, and its title's reveal: the theme's unless
     /// said.
-    pub motion: Option<crate::motion::Feel>,
+    pub motion: Option<tilo_ui_base::motion::Feel>,
     /// A collapsible section opened or closed: whether it is open now is the value.
     #[component(event(value = bool))]
     pub toggle: Event,
@@ -53,7 +57,7 @@ impl Described for Section {
             Some(title) if !title.is_empty() => Self::titled(title, content),
             _ => Self::new(content),
         };
-        section.set_feel(motion.unwrap_or(crate::motion::Feel::Standard));
+        section.set_feel(motion.unwrap_or(tilo_ui_base::motion::Feel::Standard));
         if !collapsible {
             return section;
         }
@@ -72,7 +76,7 @@ impl Described for Section {
             motion,
             toggle,
         } = props;
-        self.set_feel(motion.unwrap_or(crate::motion::Feel::Standard));
+        self.set_feel(motion.unwrap_or(tilo_ui_base::motion::Feel::Standard));
         let title = title.filter(|title| !title.is_empty());
         if title != self.header {
             self.header.clone_from(&title);
@@ -235,6 +239,6 @@ impl Section {
     fn described(&mut self) {
         self.structure = self
             .structure
-            .join(crate::widget::StructureChange::Described);
+            .join(tilo_ui_base::widget::StructureChange::Described);
     }
 }

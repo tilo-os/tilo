@@ -162,8 +162,8 @@ fn stage_root(driver: &mut Driver, scenario: Option<&str>) -> Option<Members> {
 /// windows would send.
 type Members = Vec<(
     String,
-    ui_core::presence::PresenceKey,
-    ui_core::PresencePayload,
+    tilo_ui_base::presence::PresenceKey,
+    tilo_ui_base::PresencePayload,
 )>;
 
 /// A scenario action's id and arguments.
@@ -206,7 +206,7 @@ fn stage_with(
     if !members.is_empty() {
         driver.update_presence(|presence| {
             for (name, key, payload) in members {
-                let user = ui_core::permissions::MemberId::person(name.clone());
+                let user = tilo_ui_base::permissions::MemberId::person(name.clone());
                 presence.set_display_name(user.clone(), name);
                 presence.apply_remote_presence(user, key, payload);
             }

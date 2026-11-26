@@ -48,9 +48,9 @@ tilo_test_env::scenario! {
             .unwrap();
         let mut doc = AutoCommit::new();
         assert!(field.perform_action(
-            &ui::a11y::Action::SetValue("48".into()),
+            &tilo_ui_base::a11y::Action::SetValue("48".into()),
             &[],
-            &mut ui::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         app.sync(&doc, &automerge::ROOT);

@@ -6,12 +6,13 @@ use tilo_ui::application::{AppComponent, LaunchTarget, ProcessContext, RestoreIn
 use tilo_ui::headless::Driver;
 use tilo_ui::launch::LaunchError;
 use tilo_ui::ui_graph::{UiDocument, UiDocumentExt as _, UiNode, UiTextRole, UiTextSource};
-use tilo_ui::widget::{AppKind, AppWidget, IconDescriptor, Widget};
 use tilo_ui::winit::event::{ElementState, Ime, MouseButton, WindowEvent};
+use tilo_ui::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
+use tilo_ui_base::widget::Widget;
 
 use crate::support::application::{ProbeHarness, definition, editor_permissions, runner_inputs};
 
-struct Page(tilo_ui::widget::Element);
+struct Page(tilo_ui_base::widget::Element);
 
 impl AppWidget for Page {
     fn app_kind(&self) -> AppKind {
@@ -35,20 +36,24 @@ impl Widget for Page {
     fn children_mut(&mut self) -> Vec<&mut dyn Widget> {
         vec![self.0.as_mut()]
     }
-    fn sync(&mut self, state: &tilo_ui::widget::AppModel, path: &tilo_ui::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.0.sync(state, path);
     }
     fn update(
         &mut self,
-        state: &tilo_ui::widget::AppModel,
-        path: &tilo_ui::widget::ModelPath,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         self.0.update(state, path)
     }
     fn handle_event(
         &mut self,
         event: &tilo_ui::winit::event::WindowEvent,
-        ctx: &mut tilo_ui::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         let Some(&child) = ctx.taffy.children(ctx.node_id).unwrap_or_default().first() else {
             return;
@@ -62,10 +67,10 @@ impl Widget for Page {
     fn build_layout(
         &mut self,
         tree: &mut tilo_ui::taffy::TaffyTree<()>,
-        theme: &tilo_ui::Theme,
+        theme: &tilo_ui_base::Theme,
         nodes: &mut std::collections::HashMap<tilo_ui::taffy::NodeId, *mut dyn Widget>,
     ) -> tilo_ui::taffy::NodeId {
-        use tilo_ui::widget::TaffyTreeExt as _;
+        use tilo_ui_base::widget::TaffyTreeExt as _;
         let child = self.0.build_layout(tree, theme, nodes);
         let node = tree.parent_node(
             tilo_ui::taffy::Style {
@@ -88,7 +93,7 @@ impl Widget for Page {
         node: tilo_ui::taffy::NodeId,
         origin: tilo_ui::kurbo::Point,
     ) {
-        let inner = tilo_ui::widget::layout_rect(tree, node, origin).origin();
+        let inner = tilo_ui_base::widget::layout_rect(tree, node, origin).origin();
         if let Some(&child) = tree.children(node).unwrap_or_default().first() {
             self.0.apply_layout(tree, child, inner);
         }
@@ -96,14 +101,14 @@ impl Widget for Page {
     fn get_rect(&self) -> tilo_ui::kurbo::Rect {
         self.0.get_rect()
     }
-    fn draw(&mut self, ctx: &mut tilo_ui::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.0.draw(&mut tilo_ui::draw::DrawCtx::new(
+        self.0.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -153,7 +158,7 @@ fn create(
         intrinsic_height: false,
         fill_remaining_height: false,
     })
-    .build(&tilo_ui::Theme::dark())
+    .build(&tilo_ui_base::Theme::dark())
     .map_err(|e| LaunchError::Operation(e.to_string()))?;
     Ok(AppComponent::new(
         context,
@@ -227,7 +232,7 @@ fn tab_reaches_a_components_text_input() {
     assert!(
         order
             .iter()
-            .any(|(role, _)| *role == tilo_ui::a11y::Role::TextInput),
+            .any(|(role, _)| *role == tilo_ui_base::a11y::Role::TextInput),
         "{order:?}"
     );
 }
@@ -272,14 +277,14 @@ fn locus_component_with_scroll(
             .with_intrinsic_height()
             .with_no_padding()
             .with_gap(0.0)
-            .push(Box::new(tilo_ui::widget::Spacer::fixed(gap)));
+            .push(Box::new(tilo_ui_base::widget::Spacer::fixed(gap)));
     }
     for index in 0..count {
         column = column.push(Box::new(
             Button::new(&format!("locus-button-{index}"), "Exact locus").on_action(binding.clone()),
         ));
     }
-    let scroll_root: tilo_ui::widget::Element = if scroll_gap.is_some() {
+    let scroll_root: tilo_ui_base::widget::Element = if scroll_gap.is_some() {
         Box::new(
             tilo_ui::widget::Scrollable::new_vertical()
                 .with_height(100.0)
@@ -455,7 +460,7 @@ fn component_publication_locus_checks_owner_record_and_lifetime_without_input() 
         .unwrap();
     assert!(matches!(
         invoked,
-        tilo_ui::host_operation::ResourceOperationStart::Completed(_)
+        tilo_ui_base::host_operation::ResourceOperationStart::Completed(_)
     ));
     frame.resize((320, 240)).unwrap();
     assert_eq!(
@@ -550,9 +555,9 @@ impl AppWidget for WithdrawableResource {
 }
 
 impl Widget for WithdrawableResource {
-    tilo_ui::provides!(
-        dyn tilo_ui::widget::resources::PublishesResources,
-        dyn tilo_ui::host_operation::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::host_operation::ResourceOperations
     );
     fn name(&self) -> &'static str {
         "WithdrawableResource"
@@ -560,7 +565,7 @@ impl Widget for WithdrawableResource {
     fn build_layout(
         &mut self,
         tree: &mut tilo_ui::taffy::TaffyTree<()>,
-        _: &tilo_ui::Theme,
+        _: &tilo_ui_base::Theme,
         nodes: &mut std::collections::HashMap<tilo_ui::taffy::NodeId, *mut dyn Widget>,
     ) -> tilo_ui::taffy::NodeId {
         let node = tree.new_leaf(tilo_ui::taffy::Style::default()).unwrap();
@@ -569,27 +574,27 @@ impl Widget for WithdrawableResource {
     }
 }
 
-impl tilo_ui::host_operation::ResourceOperations for WithdrawableResource {
+impl tilo_ui_base::host_operation::ResourceOperations for WithdrawableResource {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[tilo_ui::widget::resource_actions::OPERATION_TYPE]
     }
 
     fn start_operation(
         &mut self,
-        _: &tilo_ui::host_operation::ResourceOperation<'_>,
-        _: &mut tilo_ui::widget::Edits<'_>,
+        _: &tilo_ui_base::host_operation::ResourceOperation<'_>,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &automerge::ObjId,
-    ) -> Result<Option<tilo_ui::host_operation::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(Some(
-            tilo_ui::host_operation::ResourceOperationStart::Completed(
+            tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ),
         ))
     }
 }
 
-impl tilo_ui::widget::resources::PublishesResources for WithdrawableResource {
+impl tilo_ui_base::widget::resources::PublishesResources for WithdrawableResource {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         if self.published.load(std::sync::atomic::Ordering::SeqCst) {
             vec![self.resource.clone()]

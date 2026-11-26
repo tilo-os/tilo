@@ -5,12 +5,14 @@ use std::path::Path;
 use std::sync::mpsc::TryRecvError;
 
 use imager_backend::support_report::{MAX_REPORT_BYTES, ReportSource, SupportReport};
-use ui::icons::Icon;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
+use tilo_ui_base::{widget::LabelPlacement, widget::Spacer, widget::Widget};
 use ui::portal::{FileFilter, OpenFileChannel, OpenFileOutcome, OpenedFile, PickRequest};
-use ui::tokens::{Rhythm, TextRole};
-use ui::widget::{
-    Button, ButtonRole, Column, Field, LabelPlacement, ListRow, Row, Section, SectionHeader,
-    Spacer, Text, TextInput, TextInputKind, Widget,
+use ui::{
+    widget::Button, widget::ButtonRole, widget::Column, widget::Field, widget::ListRow,
+    widget::Row, widget::Section, widget::SectionHeader, widget::Text, widget::TextInput,
+    widget::TextInputKind,
 };
 
 use super::{Commands, InstallerPreviewEffect};
@@ -62,11 +64,11 @@ fn model_label(report: &SupportReport) -> Option<String> {
 }
 
 pub(super) struct Target {
-    manufacturer: ui::LocalState<String>,
-    model: ui::LocalState<String>,
-    variant: ui::LocalState<String>,
-    board: ui::LocalState<String>,
-    sku: ui::LocalState<String>,
+    manufacturer: tilo_ui_base::LocalState<String>,
+    model: tilo_ui_base::LocalState<String>,
+    variant: tilo_ui_base::LocalState<String>,
+    board: tilo_ui_base::LocalState<String>,
+    sku: tilo_ui_base::LocalState<String>,
     architecture: String,
     report: Option<SupportReport>,
     picker: Option<OpenFileChannel>,
@@ -77,11 +79,11 @@ pub(super) struct Target {
 impl Default for Target {
     fn default() -> Self {
         Self {
-            manufacturer: ui::LocalState::new(String::new()),
-            model: ui::LocalState::new(String::new()),
-            variant: ui::LocalState::new(String::new()),
-            board: ui::LocalState::new(String::new()),
-            sku: ui::LocalState::new(String::new()),
+            manufacturer: tilo_ui_base::LocalState::new(String::new()),
+            model: tilo_ui_base::LocalState::new(String::new()),
+            variant: tilo_ui_base::LocalState::new(String::new()),
+            board: tilo_ui_base::LocalState::new(String::new()),
+            sku: tilo_ui_base::LocalState::new(String::new()),
             architecture: host_architecture(),
             report: None,
             picker: None,
@@ -448,7 +450,7 @@ impl Target {
                 Text::new(error)
                     .with_role(TextRole::Caption)
                     .with_id("installer.target.error")
-                    .with_live(ui::a11y::Politeness::Assertive),
+                    .with_live(tilo_ui_base::a11y::Politeness::Assertive),
             ));
         }
         body.push(Box::new(self.destination_check_section()))
@@ -477,7 +479,7 @@ impl Target {
                 if self.submitted && self.field_missing(field_name) {
                     field.with_error_live(
                         t("installer-preview-target-required"),
-                        ui::a11y::Politeness::Assertive,
+                        tilo_ui_base::a11y::Politeness::Assertive,
                     )
                 } else {
                     field
@@ -515,7 +517,7 @@ impl Target {
             rows.push(Box::new(
                 Text::new(&t(boundary))
                     .with_id("installer.target.architecture-boundary")
-                    .with_live(ui::a11y::Politeness::Polite),
+                    .with_live(tilo_ui_base::a11y::Politeness::Polite),
             ));
         }
         rows.push(Box::new(
@@ -527,7 +529,7 @@ impl Target {
         Section::titled(t("installer-preview-target-identity-heading"), rows)
     }
 
-    fn field_state(&self, field: &str) -> &ui::LocalState<String> {
+    fn field_state(&self, field: &str) -> &tilo_ui_base::LocalState<String> {
         match field {
             "manufacturer" => &self.manufacturer,
             "model" => &self.model,

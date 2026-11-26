@@ -7,12 +7,13 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use crate::icons::Icon;
-use crate::tokens::Rhythm;
-use crate::widget::{
-    Button, Column, ControlSize, Decorator, Element, EmptyState, ListRow, ProgressBar, Row,
-    Scrollable, Section, SectionHeader, Widget,
+use crate::{
+    widget::Button, widget::Column, widget::ControlSize, widget::EmptyState, widget::ListRow,
+    widget::ProgressBar, widget::Row, widget::Scrollable, widget::Section, widget::SectionHeader,
 };
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::tokens::Rhythm;
+use tilo_ui_base::{widget::Decorator, widget::Element, widget::Widget};
 
 use super::record::{Job, JobId, Progress, Subject, Unit};
 use super::{dismiss, revision, rows, show, stop};
@@ -109,7 +110,7 @@ pub fn pane(presses: &Presses) -> Column {
     let all = rows();
     if all.is_empty() {
         return Column::new().with_no_padding().push(Box::new(
-            EmptyState::new(crate::i18n::widget_format("jobs-none", &[]))
+            EmptyState::new(tilo_ui_base::i18n::widget_format("jobs-none", &[]))
                 .with_icon(Icon::Timer)
                 .with_id("jobs-empty"),
         ));
@@ -127,12 +128,18 @@ pub fn pane(presses: &Presses) -> Column {
     let mut parts: Vec<Element> = Vec::new();
     if !running.is_empty() {
         parts.push(Box::new(Section::new(running).with_header(
-            SectionHeader::group(crate::i18n::widget_format("jobs-running-heading", &[])),
+            SectionHeader::group(tilo_ui_base::i18n::widget_format(
+                "jobs-running-heading",
+                &[],
+            )),
         )));
     }
     if !ended.is_empty() {
         parts.push(Box::new(Section::new(ended).with_header(
-            SectionHeader::group(crate::i18n::widget_format("jobs-finished-heading", &[])),
+            SectionHeader::group(tilo_ui_base::i18n::widget_format(
+                "jobs-finished-heading",
+                &[],
+            )),
         )));
     }
     let mut column = Column::new()
@@ -160,8 +167,8 @@ fn job_row(job: &Job, presses: &Presses) -> Element {
             ));
         } else if job.is_stopping() {
             controls.push(Box::new(
-                crate::widget::Text::new(&crate::i18n::widget_format("jobs-stopping", &[]))
-                    .with_role(crate::tokens::TextRole::Caption),
+                crate::widget::Text::new(&tilo_ui_base::i18n::widget_format("jobs-stopping", &[]))
+                    .with_role(tilo_ui_base::tokens::TextRole::Caption),
             ));
         }
     } else {
@@ -171,7 +178,7 @@ fn job_row(job: &Job, presses: &Presses) -> Element {
                 Button::icon_only(
                     &format!("jobs-show-{}", id.number()),
                     Icon::ArrowRight,
-                    &crate::i18n::widget_format("jobs-show-me", &[]),
+                    &tilo_ui_base::i18n::widget_format("jobs-show-me", &[]),
                 )
                 .control_size(ControlSize::Small)
                 .on_open(move || presses.borrow_mut().push(Press::Show(id))),
@@ -182,7 +189,7 @@ fn job_row(job: &Job, presses: &Presses) -> Element {
             Button::icon_only(
                 &format!("jobs-read-{}", id.number()),
                 Icon::X,
-                &crate::i18n::widget_format("jobs-read", &[]),
+                &tilo_ui_base::i18n::widget_format("jobs-read", &[]),
             )
             .control_size(ControlSize::Small)
             .on_open(move || presses.borrow_mut().push(Press::Read(id))),
@@ -220,11 +227,17 @@ fn bar(job: &Job) -> Element {
         }
     };
     let line = match (job.progress(), job.unit()) {
-        (Progress::Measured { done, total }, unit) => crate::i18n::widget_format(
+        (Progress::Measured { done, total }, unit) => tilo_ui_base::i18n::widget_format(
             "jobs-bar-of",
             &[
-                ("done", crate::i18n::ArgValue::from(unit.format(*done))),
-                ("total", crate::i18n::ArgValue::from(unit.format(*total))),
+                (
+                    "done",
+                    tilo_ui_base::i18n::ArgValue::from(unit.format(*done)),
+                ),
+                (
+                    "total",
+                    tilo_ui_base::i18n::ArgValue::from(unit.format(*total)),
+                ),
             ],
         ),
         (Progress::Seen { seen: _ }, Unit::Steps) | (Progress::Starting, _) => String::new(),
@@ -244,9 +257,9 @@ fn more_row(more: usize) -> Element {
     Box::new(
         ListRow::new(
             "jobs-more",
-            crate::i18n::widget_format(
+            tilo_ui_base::i18n::widget_format(
                 "jobs-more",
-                &[("count", crate::i18n::ArgValue::from(more as f64))],
+                &[("count", tilo_ui_base::i18n::ArgValue::from(more as f64))],
             ),
         )
         .icon(Icon::Timer)
@@ -272,7 +285,10 @@ pub fn apply(press: Press) -> Option<Subject> {
 
 /// A jobs surface as a widget: it keeps its rows, rebuilds them when the registry moves, and reports
 /// what was pressed through its [`Presses`].
-#[crate::component::not_a_component(system, "the band of long work the system shows (HIG 10)")]
+#[tilo_ui_base::component::not_a_component(
+    system,
+    "the band of long work the system shows (HIG 10)"
+)]
 pub struct Band {
     inner: Column,
     presses: Presses,
@@ -368,7 +384,11 @@ impl Decorator for Band {
         &mut self.inner
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let inner = Widget::update(&mut self.inner, state, path);
         if self.presses.changed() {
             self.restack();

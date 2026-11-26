@@ -3,9 +3,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
 
-use crate::icons;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::icons;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowControl {
@@ -14,18 +14,18 @@ pub enum WindowControl {
     Close,
 }
 
-pub const CONTROL_PX: f64 = crate::tokens::Metrics::BASE.bar_control_height as f64;
-pub const PILL_PAD: f64 = crate::tokens::Spacing::BASE.s1 as f64;
-pub const CONTROL_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
-pub const EDGE_INSET: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+pub const CONTROL_PX: f64 = tilo_ui_base::tokens::Metrics::BASE.bar_control_height as f64;
+pub const PILL_PAD: f64 = tilo_ui_base::tokens::Spacing::BASE.s1 as f64;
+pub const CONTROL_GAP: f64 = tilo_ui_base::tokens::Spacing::BASE.s1 as f64;
+pub const EDGE_INSET: f64 = tilo_ui_base::tokens::Spacing::BASE.s2 as f64;
 /// Between the pill and whatever stands before it in the row: the window's
 /// controls are a section of their own, apart from the app's by the gap
 /// between sections and by the glass the app's ground has no part of, never
 /// by a drawn line. One step below the gap between groups, so the app's
 /// content keeps the width it names its place with in a narrow window.
-pub const LEAD_GAP: f64 = crate::tokens::Spacing::BASE.rhythm.section as f64;
+pub const LEAD_GAP: f64 = tilo_ui_base::tokens::Spacing::BASE.rhythm.section as f64;
 pub const HISTORY_GAP: f64 = CONTROL_GAP;
-const ACTION_GLYPH_PX: f64 = crate::tokens::Metrics::BASE.icon_sm as f64;
+const ACTION_GLYPH_PX: f64 = tilo_ui_base::tokens::Metrics::BASE.icon_sm as f64;
 const CLOSE_GLYPH_PX: f64 = ACTION_GLYPH_PX * 1.5;
 const HOVER_TINT_ALPHA: u8 = 64;
 const CLOSE_RING_ALPHA: f32 = 0.8;
@@ -285,7 +285,7 @@ impl WindowControls {
             return;
         }
         paint_pill(scene, transform, self.pill, theme);
-        let ground = crate::chrome::panel_ground(theme);
+        let ground = tilo_ui_base::chrome::panel_ground(theme);
         // The pill is the ground its controls stand on: their ink and their
         // hover ring are resolved against it, never against the window's.
         let theme = &theme.on_ground(ground);
@@ -316,9 +316,12 @@ impl WindowControls {
                     .colors
                     .semantic
                     .danger
-                    .with_alpha(CLOSE_RING_ALPHA * crate::num::f32_of_f64(ring)),
+                    .with_alpha(CLOSE_RING_ALPHA * tilo_ui_base::num::f32_of_f64(ring)),
                 WindowControl::Minimize | WindowControl::Maximize => {
-                    crate::tokens::Colors::hairline_on(ground, scale_alpha(HOVER_TINT_ALPHA, ring))
+                    tilo_ui_base::tokens::Colors::hairline_on(
+                        ground,
+                        scale_alpha(HOVER_TINT_ALPHA, ring),
+                    )
                 }
             };
             if ring > 0.0 {
@@ -333,9 +336,12 @@ impl WindowControls {
             // rest, the face lit under the pointer — never a colour picked
             // here.
             let ink = theme.tokens.colors.ink_on_any(
-                &[ground, crate::tokens::colors::composite(colour, ground)],
+                &[
+                    ground,
+                    tilo_ui_base::tokens::colors::composite(colour, ground),
+                ],
                 theme.tokens.colors.text_primary,
-                crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST,
             );
             icons::draw_icon(
                 scene,
@@ -353,13 +359,13 @@ pub fn paint_pill(scene: &mut Scene, transform: Affine, pill: Rect, theme: &Them
     if pill.area() <= 0.0 {
         return;
     }
-    let radius = crate::chrome::ChromeRole::Selector.radius(theme, pill.height());
-    crate::surface::panel_unsnapped(scene, transform, pill, radius, theme);
+    let radius = tilo_ui_base::chrome::ChromeRole::Selector.radius(theme, pill.height());
+    tilo_ui_base::surface::panel_unsnapped(scene, transform, pill, radius, theme);
 }
 
 fn scale_alpha(alpha: u8, progress: f64) -> u8 {
     let scaled = f64::from(alpha) * progress.clamp(0.0, 1.0);
-    crate::num::u8_of_f64(scaled)
+    tilo_ui_base::num::u8_of_f64(scaled)
 }
 
 /// A `side`-px square centred on `c`.

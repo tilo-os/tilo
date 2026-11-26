@@ -3,7 +3,7 @@
 
 // Only the frame's own draw passes draw widgets as children; the portable
 // toolkit has no window to draw.
-use crate::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 /// Snapshot widget damage while its draw-updated geometry still describes the
 /// scene being submitted. Callers deliberately clear dirty flags afterwards.
@@ -39,7 +39,7 @@ fn draw_frame_content(
 }
 
 /// [`draw_frame_content`], for a host that culls the frame
-/// ([`crate::draw_cull`]) when `culled` is given: the widgets then draw
+/// ([`tilo_ui_base::draw_cull`]) when `culled` is given: the widgets then draw
 /// into its scene of their own and what is painted over them into its
 /// layers', leaving `scene` untouched, for the host to compose once it
 /// knows whether the widgets must be drawn again in full
@@ -50,18 +50,18 @@ fn draw_frame_content_with(
     size: (u32, u32),
     scale_factor: f32,
     t_draw_start: Option<crate::time::Instant>,
-    culled: Option<&mut crate::draw_cull::Scenes>,
+    culled: Option<&mut tilo_ui_base::draw_cull::Scenes>,
 ) -> DrawnFrame {
     // The motions and the wishes for frames this pass makes are this app's:
     // whichever surface it shares the thread with, its frame is its own.
     // What a widget places again as it paints (a floating panel measured
     // against its labels) lands on this display's pixels as layout does.
-    let _grid = crate::widget::layout::enter_device_scale(f64::from(scale_factor));
+    let _grid = tilo_ui_base::widget::layout::enter_device_scale(f64::from(scale_factor));
     // A window that does not hold the keyboard paints no caret: what is typed next lands in the
     // surface that took it.
-    let _carets = crate::caret_owner::holding(app.input.keyboard_held);
+    let _carets = tilo_ui_base::caret_owner::holding(app.input.keyboard_held);
     let owner = app.motion_owner();
-    crate::motion::own(owner, || {
+    tilo_ui_base::motion::own(owner, || {
         draw_frame_content_owning(app, scene, size, scale_factor, t_draw_start, culled)
     })
 }
@@ -76,7 +76,7 @@ fn draw_frame_content_owning(
     (width, height): (u32, u32),
     scale_factor: f32,
     t_draw_start: Option<crate::time::Instant>,
-    mut culled: Option<&mut crate::draw_cull::Scenes>,
+    mut culled: Option<&mut tilo_ui_base::draw_cull::Scenes>,
 ) -> DrawnFrame {
     // What the tree holds was drawn from the permissions of that frame. A
     // change since moves what guarded widgets paint with nothing in the tree
@@ -85,11 +85,11 @@ fn draw_frame_content_owning(
         app.root_widget.release_scene_cache();
         #[cfg(feature = "model")]
         {
-            app.painted_permissions = crate::permissions::shared_revision();
+            app.painted_permissions = tilo_ui_base::permissions::shared_revision();
         }
     }
     // Every motion this frame reads is read at this instant or later.
-    let motions_at = crate::motion::frame_now();
+    let motions_at = tilo_ui_base::motion::frame_now();
     app.restore_physical_configuration();
     let __prof_resources = app.profiler.as_ref().map(|_| crate::time::now());
     #[cfg(test)]
@@ -106,8 +106,8 @@ fn draw_frame_content_owning(
     let _phase = tilo_actions::profiling::Phase::start("ui.draw");
     // Widget rects are logical; this transform rasterises at the physical
     // resolution, so the frame stays crisp at any fractional scale.
-    let transform = crate::scale::composite_transform(f64::from(scale_factor));
-    let (vp_w, vp_h) = crate::scale::logical_size((width, height), f64::from(scale_factor));
+    let transform = tilo_ui_base::scale::composite_transform(f64::from(scale_factor));
+    let (vp_w, vp_h) = tilo_ui_base::scale::logical_size((width, height), f64::from(scale_factor));
     let window_rect = KurboRect::new(0.0, 0.0, vp_w, vp_h);
     // The window's own shape, where this scene draws it: what runs along
     // its edges (a scroll bar) keeps out of its rounded corners.
@@ -117,15 +117,18 @@ fn draw_frame_content_owning(
     // frame, so clipping out a static region would just paint background
     // instead of preserving the last frame.
     let __prof_draw = app.profiler.as_ref().map(|_| crate::time::now());
-    let secrets = crate::secret_paint::SecretPaint::begin();
+    let secrets = tilo_ui_base::secret_paint::SecretPaint::begin();
     // A host that splits this scene into damage parts (an app in a tile)
     // compares what is painted around the widgets itself: the window's
     // chrome and layers are parts the size of the window, which repaint it
     // only when they change.
-    let tracked = crate::scene_parts::is_tracked(scene);
+    let tracked = tilo_ui_base::scene_parts::is_tracked(scene);
     let window_bounds = vec![transform.transform_rect_bbox(window_rect)];
     if tracked {
-        crate::scene_parts::begin(scene, crate::scene_parts::PartKey::new("ui.history", ()));
+        tilo_ui_base::scene_parts::begin(
+            scene,
+            tilo_ui_base::scene_parts::PartKey::new("ui.history", ()),
+        );
     }
     // Untracked, History's paint is compared with the last presented
     // frame's: an unchanged toolbar under the live app is no layer.
@@ -151,7 +154,7 @@ fn draw_frame_content_owning(
         }
     }
     if tracked {
-        crate::scene_parts::end(scene, window_bounds.clone());
+        tilo_ui_base::scene_parts::end(scene, window_bounds.clone());
     }
     let app_live = app.app_visible();
     // History mode that hides the live app is a layer over all of it; one
@@ -168,19 +171,19 @@ fn draw_frame_content_owning(
         // dialog, the send box) holds the keyboard: the field under it keeps
         // its place in the text, and only the field the keys go to paints a
         // caret.
-        let carets = crate::caret_owner::shown()
+        let carets = tilo_ui_base::caret_owner::shown()
             && app.root_widget.modal_capture().is_none()
             && !app.window_box.is_open();
         if carets != app.input.widget_carets {
             app.input.widget_carets = carets;
             app.root_widget.release_scene_cache();
         }
-        let _carets = crate::caret_owner::holding(carets);
-        crate::widget::native_view_frame_start(app.root_widget.as_mut());
+        let _carets = tilo_ui_base::caret_owner::holding(carets);
+        tilo_ui_base::widget::native_view_frame_start(app.root_widget.as_mut());
         let widgets: &mut Scene = match culled.as_deref_mut() {
             Some(culled) => {
-                crate::part_paint::backdrop::nest_scene(&culled.widgets);
-                crate::draw_cull::bind(&culled.widgets);
+                tilo_ui_base::part_paint::backdrop::nest_scene(&culled.widgets);
+                tilo_ui_base::draw_cull::bind(&culled.widgets);
                 &mut culled.widgets
             }
             None => &mut *scene,
@@ -206,12 +209,12 @@ fn draw_frame_content_owning(
             let mut draw = draw;
             draw();
         }
-        crate::draw_cull::unbind();
+        tilo_ui_base::draw_cull::unbind();
     }
     // Culled, what is painted over the widgets is drawn apart from them.
     let scene: &mut Scene = match culled {
         Some(culled) => {
-            crate::part_paint::backdrop::nest_scene(&culled.layers);
+            tilo_ui_base::part_paint::backdrop::nest_scene(&culled.layers);
             &mut culled.layers
         }
         None => scene,
@@ -235,33 +238,38 @@ fn draw_frame_content_owning(
     };
     let mut drawn = layer_start;
     if tracked {
-        crate::scene_parts::begin(scene, crate::scene_parts::PartKey::new("ui.layers", ()));
+        tilo_ui_base::scene_parts::begin(
+            scene,
+            tilo_ui_base::scene_parts::PartKey::new("ui.layers", ()),
+        );
     }
     // The window's top layer, after the app and the window's own chrome:
     // open menus, popovers and modals composite above everything drawn so
     // far, so a modal's scrim covers the History bar and every region. The
     // window stays the presence viewport: a modal covers all of it.
     if app.app_visible() {
-        app.root_widget.draw_overlay(&mut crate::draw::DrawCtx::new(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            app.presence_ctx.draw_env(),
-        ));
+        app.root_widget
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                &mut app.text_renderer,
+                &app.theme,
+                app.presence_ctx.draw_env(),
+            ));
         // The box the window was asked for stands over all of it.
-        app.window_box.draw_overlay(&mut crate::draw::DrawCtx::new(
-            scene,
-            transform,
-            &mut app.text_renderer,
-            &app.theme,
-            app.presence_ctx.draw_env(),
-        ));
+        app.window_box
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                &mut app.text_renderer,
+                &app.theme,
+                app.presence_ctx.draw_env(),
+            ));
     }
     painted(scene, "an overlay of the app's widgets", &mut drawn);
     #[cfg(feature = "model")]
     if let Some(history) = &mut app.history {
-        history.draw_overlay(&mut crate::draw::DrawCtx::new(
+        history.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             &mut app.text_renderer,
@@ -271,7 +279,7 @@ fn draw_frame_content_owning(
     }
     painted(scene, "a history overlay", &mut drawn);
     if let Some(dialog) = app.close_admission.dialog.as_mut() {
-        dialog.draw_overlay(&mut crate::draw::DrawCtx::new(
+        dialog.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             &mut app.text_renderer,
@@ -330,7 +338,7 @@ fn draw_frame_content_owning(
                 &mut app.text_renderer,
             ),
         }
-        ap.draw(&mut crate::draw::DrawCtx::new(
+        ap.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             &mut app.text_renderer,
@@ -358,7 +366,7 @@ fn draw_frame_content_owning(
     // The content zoom's level, in the window's bar after it changed.
     app.accessibility.zoom.publish();
     if tracked {
-        crate::scene_parts::end(scene, window_bounds);
+        tilo_ui_base::scene_parts::end(scene, window_bounds);
     }
     let tooltip = draw_visible_tooltip(app, scene, transform, width, height, scale_factor);
     app.set_secret_on_screen(secrets.finish());
@@ -367,7 +375,7 @@ fn draw_frame_content_owning(
         p.record_since(crate::profiling::Pass::Draw, __prof_draw);
     }
     let t_draw_us = t_draw_start.map_or(0, |t| t.elapsed().as_micros());
-    crate::motion::frame_drawn(motions_at);
+    tilo_ui_base::motion::frame_drawn(motions_at);
     DrawnFrame {
         transform,
         window_rect,
@@ -402,13 +410,17 @@ struct DrawnFrame {
 /// Draw the widgets of a culled frame ([`draw_frame_content_with`]) again
 /// in full into `culled`'s scene of theirs, as that draw drew them with
 /// `drawn`'s transform: what the frame left out turned out to be repainted.
-fn redraw_culled_widgets(app: &mut App, culled: &mut crate::draw_cull::Scenes, drawn: &DrawnFrame) {
+fn redraw_culled_widgets(
+    app: &mut App,
+    culled: &mut tilo_ui_base::draw_cull::Scenes,
+    drawn: &DrawnFrame,
+) {
     let widgets = &mut culled.widgets;
-    crate::part_paint::backdrop::forget_nested(widgets);
+    tilo_ui_base::part_paint::backdrop::forget_nested(widgets);
     widgets.reset();
-    crate::part_paint::backdrop::nest_scene(widgets);
+    tilo_ui_base::part_paint::backdrop::nest_scene(widgets);
     let prev_vp = app.presence_ctx.push_viewport(drawn.window_rect);
-    let secrets = crate::secret_paint::SecretPaint::begin();
+    let secrets = tilo_ui_base::secret_paint::SecretPaint::begin();
     let draw = || {
         app.root_widget.draw_child(
             widgets,
@@ -436,9 +448,9 @@ fn redraw_culled_widgets(app: &mut App, culled: &mut crate::draw_cull::Scenes, d
 
 /// Compose a culled frame's widgets and layers into `scene`, carrying
 /// any floating surface drawn into them.
-fn compose_culled(scene: &mut Scene, culled: &crate::draw_cull::Scenes) {
-    crate::part_paint::backdrop::append_nested(scene, &culled.widgets, Affine::IDENTITY);
-    crate::part_paint::backdrop::append_nested(scene, &culled.layers, Affine::IDENTITY);
+fn compose_culled(scene: &mut Scene, culled: &tilo_ui_base::draw_cull::Scenes) {
+    tilo_ui_base::part_paint::backdrop::append_nested(scene, &culled.widgets, Affine::IDENTITY);
+    tilo_ui_base::part_paint::backdrop::append_nested(scene, &culled.layers, Affine::IDENTITY);
 }
 
 /// Paint the tooltip on screen, if any, and return every pixel it painted
@@ -473,11 +485,11 @@ fn draw_visible_tooltip(
 
 /// Paint the presence a window shows over its widgets (peer pointers with
 /// their names and edge mist, semantic action activity) into `layer`, each
-/// draw site one [`crate::scene_parts`] part bounded by what it painted, so
+/// draw site one [`tilo_ui_base::scene_parts`] part bounded by what it painted, so
 /// the frame damages only the marks that changed.
 ///
 /// Returns the frame's presence damage in scene (physical) coordinates
-/// against the last [`crate::presence::PresenceLayer::presented`] frame, or
+/// against the last [`tilo_ui_base::presence::PresenceLayer::presented`] frame, or
 /// `None` when the window must repaint: the presence widgets paint from
 /// changed, or the layer's damage cannot be proven.
 ///
@@ -487,12 +499,12 @@ fn draw_visible_tooltip(
 /// own overlay too.
 fn draw_presence_layer(
     app: &mut App,
-    layer: &mut crate::presence::PresenceLayer,
+    layer: &mut tilo_ui_base::presence::PresenceLayer,
     transform: Affine,
     window_rect: KurboRect,
     now: crate::time::Instant,
 ) -> Option<Vec<KurboRect>> {
-    use crate::scene_parts::{PartKey, part_drawn};
+    use tilo_ui_base::{scene_parts::PartKey, scene_parts::part_drawn};
     // The presence the widgets were just drawn from.
     let widgets_changed = layer.widgets_need_full_repaint(&app.presence_ctx, now);
     app.presence_ctx.prune_interactions(now);
@@ -503,14 +515,14 @@ fn draw_presence_layer(
     } else {
         app.refresh_semantic_tree();
         app.with_native_presentation(|root, _, _, _, _| {
-            crate::widget::controls::control_action_bindings(root)
+            tilo_ui_base::widget::controls::control_action_bindings(root)
         })
         .unwrap_or_default()
     };
     // An agent that said where its caret or selection is in text is there.
     let text_loci = app
         .with_native_presentation(|root, _, _, _, _| {
-            crate::presence::capability::agent_text_loci(
+            tilo_ui_base::presence::capability::agent_text_loci(
                 root,
                 &app.theme,
                 &app.presence_ctx,
@@ -520,9 +532,9 @@ fn draw_presence_layer(
         .unwrap_or_default();
     layer.record(|scene| {
         part_drawn(scene, PartKey::new("ui.remote-presence", ()), |scene| {
-            crate::presence::draw_remote_presence(
+            tilo_ui_base::presence::draw_remote_presence(
                 window_rect,
-                &mut crate::draw::DrawCtx::new(
+                &mut tilo_ui_base::draw::DrawCtx::new(
                     scene,
                     transform,
                     &mut app.text_renderer,
@@ -534,7 +546,7 @@ fn draw_presence_layer(
         part_drawn(scene, PartKey::new("ui.action-presence", ()), |scene| {
             let before = scene.encoding().draw_tags.len();
             app.floating.drawn_action_markers = crate::action_locus::draw_action_presence(
-                &mut crate::paint::PaintCtx::new(
+                &mut tilo_ui_base::paint::PaintCtx::new(
                     scene,
                     transform,
                     &mut app.text_renderer,
@@ -575,15 +587,15 @@ fn draw_presence_layer(
 /// Where members' marks painted over the widgets (`layer`, with this
 /// frame recorded) are on screen and this frame, in whole device pixels of
 /// the `physical_viewport`: what a scroll copy beneath them repaints
-/// ([`crate::scroll_copy::marks_over_copies`]). `None` when the marks
+/// ([`tilo_ui_base::scroll_copy::marks_over_copies`]). `None` when the marks
 /// cannot be bounded, and scrolls beneath them repaint instead of copying.
 fn peer_marks(
-    layer: &crate::presence::PresenceLayer,
-    bounds: &mut crate::scene_parts::DrawBounds,
+    layer: &tilo_ui_base::presence::PresenceLayer,
+    bounds: &mut tilo_ui_base::scene_parts::DrawBounds,
     physical_viewport: KurboRect,
-) -> Option<crate::presence::LayerMarks> {
+) -> Option<tilo_ui_base::presence::LayerMarks> {
     if !layer.paints() {
-        return Some(crate::presence::LayerMarks::default());
+        return Some(tilo_ui_base::presence::LayerMarks::default());
     }
     let marks = layer.marks(bounds)?;
     // As the layer's damage is submitted: bounds already cover
@@ -595,7 +607,7 @@ fn peer_marks(
             .filter(|rect| rect.width() > 0.0 && rect.height() > 0.0)
             .collect()
     };
-    Some(crate::presence::LayerMarks {
+    Some(tilo_ui_base::presence::LayerMarks {
         shown: device(marks.shown),
         painted: device(marks.painted),
     })
@@ -674,15 +686,15 @@ fn run_layout_pass(
     height: u32,
     scale_factor: f32,
     structure_rebuilt: bool,
-    native_host: Option<&crate::widget::NativeViewHost<'_>>,
+    native_host: Option<&tilo_ui_base::widget::NativeViewHost<'_>>,
 ) -> Option<(bool, u128, u128)> {
     // What a motion noted as it was laid out (one that advances in its
     // layout) is laid out in the next frame: it is this window's, not a
     // host's around it (an app hosted in a tile is laid out as its host
     // paints), whose own notes stand.
-    let outer = crate::widget::take_layout_moved();
+    let outer = tilo_ui_base::widget::take_layout_moved();
     // Every edge laid out in this pass lands on one of this display's pixels.
-    let _grid = crate::widget::layout::enter_device_scale(f64::from(scale_factor));
+    let _grid = tilo_ui_base::widget::layout::enter_device_scale(f64::from(scale_factor));
     let result = lay_out_window(
         app,
         root_node,
@@ -691,9 +703,9 @@ fn run_layout_pass(
         structure_rebuilt,
         native_host,
     );
-    app.layout.layout_dirty |= crate::widget::take_layout_moved();
+    app.layout.layout_dirty |= tilo_ui_base::widget::take_layout_moved();
     if outer {
-        crate::widget::note_layout_moved();
+        tilo_ui_base::widget::note_layout_moved();
     }
     result
 }
@@ -709,19 +721,20 @@ fn lay_out_window(
     (width, height): (u32, u32),
     scale_factor: f32,
     structure_rebuilt: bool,
-    native_host: Option<&crate::widget::NativeViewHost<'_>>,
+    native_host: Option<&tilo_ui_base::widget::NativeViewHost<'_>>,
 ) -> Option<(bool, u128, u128)> {
-    use crate::widget::layout::{
-        CompositionFocus, composition_geometry, settle_widget_composition,
+    use tilo_ui_base::{
+        widget::layout::CompositionFocus, widget::layout::composition_geometry,
+        widget::layout::settle_widget_composition,
     };
     let _phase = tilo_actions::profiling::Phase::start("ui.layout");
     // The app's frame starts under the host's chrome and, outside a Tilo
     // session, under the row of its window-bar parts.
-    let area = crate::scale::SafeArea {
+    let area = tilo_ui_base::scale::SafeArea {
         top: app.layout.safe_area.top + app.layout.part_bar_inset,
         ..app.layout.safe_area
     };
-    let (content_origin, logical) = area.content(crate::scale::logical_size(
+    let (content_origin, logical) = area.content(tilo_ui_base::scale::logical_size(
         (width, height),
         f64::from(scale_factor),
     ));
@@ -760,7 +773,7 @@ fn lay_out_window(
         };
         return Some((false, 0, 0));
     }
-    let counted = crate::widget::counts::read();
+    let counted = tilo_ui_base::widget::counts::read();
     // Bounds, and what the widgets lay out, may move.
     app.mark_semantic_tree_stale();
     // A relayout that moves nothing leaves every pixel outside the dirty
@@ -803,9 +816,11 @@ fn lay_out_window(
     // A resize re-solves the retained tree; only a tree that composes from
     // its allocation is composed again for it.
     let recompose_for_viewport = viewport_changed
-        && crate::widget::layout::tree_composition_follows_allocation(app.root_widget.as_ref());
+        && tilo_ui_base::widget::layout::tree_composition_follows_allocation(
+            app.root_widget.as_ref(),
+        );
     // What arrives in the window's first frame shows at rest.
-    let _window = crate::motion::laying_out_window(app.layout.root_node.is_some());
+    let _window = tilo_ui_base::motion::laying_out_window(app.layout.root_node.is_some());
     // Whether the last pass asked for another only to remount in place.
     let mut remount_next = false;
     let mut remounted = false;
@@ -899,7 +914,7 @@ fn lay_out_window(
             current_root = app
                 .layout
                 .root_node
-                .ok_or(crate::widget::WidgetLayoutError::CompositionDidNotSettle)?;
+                .ok_or(tilo_ui_base::widget::WidgetLayoutError::CompositionDidNotSettle)?;
         }
         if must_compute || rebuild || remounted_now {
             #[cfg(test)]
@@ -969,7 +984,7 @@ fn lay_out_window(
             };
             // SAFETY: App exclusively owns this exact stable tree and maps.
             unsafe {
-                crate::widget::compute_widget_layout(
+                tilo_ui_base::widget::compute_widget_layout(
                     &mut app.layout.taffy,
                     host,
                     available,
@@ -981,7 +996,7 @@ fn lay_out_window(
             app.layout.unsolved = false;
             solved = true;
             // A part that did not settle is drawn as it last stood, said once.
-            if let Some(line) = crate::widget::take_unsettled_report() {
+            if let Some(line) = tilo_ui_base::widget::take_unsettled_report() {
                 tracing::error!("{line}");
             }
             t_compute_us = t_compute_us.saturating_add(start.elapsed().as_micros());
@@ -999,8 +1014,8 @@ fn lay_out_window(
                 })
             && !app.presents_history();
         if again {
-            let tree = crate::widget::layout::TreeId::of(&app.layout.taffy);
-            crate::widget::layout::placing_again_in(tree, || {
+            let tree = tilo_ui_base::widget::layout::TreeId::of(&app.layout.taffy);
+            tilo_ui_base::widget::layout::placing_again_in(tree, || {
                 app.apply_history_presentation(current_root);
             });
         } else {
@@ -1010,7 +1025,7 @@ fn lay_out_window(
             });
         }
         app.layout.placed_partly = again;
-        app.layout.placed_scale = f64::from(crate::widget::layout::device_scale());
+        app.layout.placed_scale = f64::from(tilo_ui_base::widget::layout::device_scale());
         t_apply_us = t_apply_us.saturating_add(start.elapsed().as_micros());
         #[cfg(test)]
         drop(place_probe);
@@ -1033,7 +1048,7 @@ fn lay_out_window(
         app.layout.last_layout_logical = None;
         return None;
     }
-    let marked = crate::widget::counts::read();
+    let marked = tilo_ui_base::widget::counts::read();
     app.layout.last_pass = runtime::LayoutPass {
         rebuilt: structure_rebuilt || recomposed,
         remounted: remounted && !(structure_rebuilt || recomposed),
@@ -1061,17 +1076,18 @@ fn lay_out_window(
         && app.app_live()
         && let Some(host) = native_host
     {
-        crate::widget::mount_native_views(app.root_widget.as_mut(), host);
+        tilo_ui_base::widget::mount_native_views(app.root_widget.as_mut(), host);
     }
     if !app.app_live() {
-        crate::widget::unmount_native_views(app.root_widget.as_mut());
+        tilo_ui_base::widget::unmount_native_views(app.root_widget.as_mut());
     }
     app.layout.last_layout_logical = Some(logical);
     app.layout.last_layout_scale = Some(scale_factor);
     app.layout.layout_dirty = false;
     // The size the window wants follows what was laid out in it: a panel whose height follows its
     // page measures that page here.
-    app.window.preferred_size = crate::widget::preferred_window_size(app.root_widget.as_ref());
+    app.window.preferred_size =
+        tilo_ui_base::widget::preferred_window_size(app.root_widget.as_ref());
     if must_compute || recomposed || remounted {
         app.update_focusable_order();
         // The tree this pass built may already hold the keyboard: a form that re-creates the field
@@ -1080,7 +1096,7 @@ fn lay_out_window(
         // across the build, which the rebuild seated before this tree stood.
         // SAFETY: the solve above built this exact tree, exclusively owned.
         let built = unsafe {
-            crate::widget::layout::CompositionFocus::current(
+            tilo_ui_base::widget::layout::CompositionFocus::current(
                 &app.layout.node_map,
                 &app.bindings,
                 Some(&app.focusable_order),
@@ -1168,14 +1184,14 @@ fn owe_changed_action_surface(app: &mut App, rebuilt: bool) {
 impl App {
     /// Place every widget where the current layout puts it, after a frame
     /// that placed only what long collections show
-    /// ([`crate::widget::placing_again`]): for what reads the bounds of
+    /// ([`tilo_ui_base::widget::placing_again`]): for what reads the bounds of
     /// widgets far from any view (accessibility, the semantic tree).
     pub(crate) fn place_all(&mut self) {
         if !self.layout.placed_partly {
             return;
         }
         if let Some(root) = self.layout.root_node {
-            let _grid = crate::widget::layout::enter_device_scale(self.layout.placed_scale);
+            let _grid = tilo_ui_base::widget::layout::enter_device_scale(self.layout.placed_scale);
             self.apply_history_presentation(root);
         }
         self.layout.placed_partly = false;
@@ -1205,12 +1221,12 @@ mod rebuild_focus_tests;
 #[cfg(feature = "model")]
 /// Mutating events should route through this so denied interactions
 /// short-circuit before the widget ever observes them.
-pub fn dispatch_guarded_event<W: crate::widget::Widget + ?Sized>(
-    ctx: &crate::permissions::PermissionContext,
+pub fn dispatch_guarded_event<W: tilo_ui_base::widget::Widget + ?Sized>(
+    ctx: &tilo_ui_base::permissions::PermissionContext,
     widget: &W,
     dispatch: impl FnOnce(),
 ) -> bool {
-    if let Some(scope) = crate::widget::permission::permission_scope(widget)
+    if let Some(scope) = tilo_ui_base::widget::permission::permission_scope(widget)
         && !ctx.check(&scope)
     {
         return false;
@@ -1281,9 +1297,11 @@ impl crate::view::FreezeThaw for App {
             .and_then(|id| self.focusable_order.iter().position(|&x| x == id));
         let focus = crate::view::capture_focus(ordinal, || {
             self.focused_node.and_then(|id| {
-                self.inspect_node(id, |widget| crate::widget::undo_points::get_state(widget))
-                    .ok()
-                    .flatten()
+                self.inspect_node(id, |widget| {
+                    tilo_ui_base::widget::undo_points::get_state(widget)
+                })
+                .ok()
+                .flatten()
             })
         });
         let viewport = self

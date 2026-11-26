@@ -82,7 +82,7 @@ fn front_workspace(session: &Session) -> String {
 /// Press the control `id` of `app` , as a person's own gesture.
 fn press(app: &mut TestApp<WorkspaceSettingsApp>, id: &str) {
     app.harness()
-        .perform_named(id, &ui::a11y::Action::Activate)
+        .perform_named(id, &tilo_ui_base::a11y::Action::Activate)
         .unwrap_or_else(|error| panic!("press {id}: {error}"));
     app.settle();
 }
@@ -95,7 +95,7 @@ fn activate(app: &mut TestApp<WorkspaceSettingsApp>, name: &str) {
         .a11y_node_named(name)
         .unwrap_or_else(|| panic!("no element says {name:?}"));
     app.harness()
-        .perform_a11y_action(node, &ui::a11y::Action::Activate)
+        .perform_a11y_action(node, &tilo_ui_base::a11y::Action::Activate)
         .unwrap_or_else(|error| panic!("activate {name}: {error}"));
     app.settle();
 }
@@ -143,7 +143,7 @@ fn search_open(session: &Session) -> Option<ResourceSpec> {
 /// sheet's rows saying so.
 #[test]
 fn workspace_settings_sets_each_members_role() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &["ada", "bo"]);
@@ -201,7 +201,7 @@ fn workspace_settings_sets_each_members_role() {
 fn workspace_settings_assigns_a_custom_role_and_uses_it_for_document_access() {
     use tilo_action_policy::{ActionKind, Answer, Context};
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &["ada", "bo"]);
@@ -321,7 +321,7 @@ fn workspace_settings_assigns_a_custom_role_and_uses_it_for_document_access() {
 /// fact of it, so their row has no role control and no one chooses a new owner here.
 #[test]
 fn the_people_tab_offers_the_owners_role_as_a_fact() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &["ada"]);
@@ -344,14 +344,14 @@ fn the_people_tab_offers_the_owners_role_as_a_fact() {
         app.harness()
             .perform_named(
                 &format!("ws-people-role-{owner}"),
-                &ui::a11y::Action::Activate
+                &tilo_ui_base::a11y::Action::Activate
             )
             .is_err(),
         "the owner's row offers no role to choose"
     );
     assert!(
         app.harness()
-            .perform_named("ws-people-ownership", &ui::a11y::Action::Activate)
+            .perform_named("ws-people-ownership", &tilo_ui_base::a11y::Action::Activate)
             .is_err(),
         "the tab offers no ownership control"
     );
@@ -376,7 +376,7 @@ fn the_people_tab_offers_the_owners_role_as_a_fact() {
 /// nothing.
 #[test]
 fn no_workspace_settings_tab_leads_into_the_search() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &["ada"]);
@@ -415,7 +415,7 @@ fn no_workspace_settings_tab_leads_into_the_search() {
     for gone in ["ws-permissions-roles", "ws-people-ownership"] {
         assert!(
             app.harness()
-                .perform_named(gone, &ui::a11y::Action::Activate)
+                .perform_named(gone, &tilo_ui_base::a11y::Action::Activate)
                 .is_err(),
             "{gone} is not offered"
         );
@@ -426,7 +426,7 @@ fn no_workspace_settings_tab_leads_into_the_search() {
 /// holds it in between, and the sheet lists it.
 #[test]
 fn workspace_settings_gives_and_revokes_a_permission() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &["ada"]);
@@ -537,7 +537,7 @@ fn chat_posts(workspace: &str) -> tilo_desktop_search::providers::PublishedActio
 fn workspace_settings_lists_an_apps_grant_under_apps_and_revokes_it() {
     use tilo_action_policy::agent_answers::{AnswerScope, answer_grant};
     use tilo_action_policy::{ActionKind, Answer, Grantee};
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let actions = Rc::new(Publishing::default());
     let mut session = crate::common::headless(Options {
         apps: Some(actions.clone()),
@@ -728,7 +728,7 @@ fn link_the_offered_model(state: &std::path::Path, session: &Session) {
 /// chooses its model and takes the agent out of the workspace.
 #[test]
 fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a home of its own");
     settings_offer_a_model();
     let (mut session, _taken_key) = session_keeping_workspaces(&mut home);
@@ -807,7 +807,7 @@ fn workspace_settings_answers_for_an_agent_and_takes_it_out() {
         &format!("app:{}", tilo_action_policy::agent_answers::WORKSPACE_APP),
     );
     assert_eq!(members.label, "Members and settings");
-    assert_eq!(members.icon, ui::icons::Icon::Users);
+    assert_eq!(members.icon, tilo_ui_base::icons::Icon::Users);
     assert_eq!(
         review.note,
         "In apps, outside effects ask you first or are denied; in your own account you may allow them."
@@ -895,7 +895,7 @@ fn opens(package_id: &str, name: &str, kind: &str) -> desktop_policy::AppCandida
 #[test]
 fn workspace_settings_pins_an_app_for_the_workspace() {
     use desktop_policy::{ResourceKind, UserWorkspaceChoice, WorkspaceDefaultPolicy};
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_with_lists(tilo_session::AppLists {
         candidates: vec![
             opens("so.tilo.notes", "Notes", "ext:md"),
@@ -1014,7 +1014,7 @@ fn chat_emoji(session: &Session, workspace: &str) -> Option<Vec<String>> {
 /// where Chat's record holds it, and removes it from there again.
 #[test]
 fn workspace_settings_adds_and_removes_the_workspaces_emoji() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The device store every app's records are kept in, here a home of the test's own: what the tab
     // adds reaches no other test's workspace.
     let home = tilo_test_env::TestHome::new().expect("a home of its own");
@@ -1141,7 +1141,7 @@ fn said(app: &mut TestApp<WorkspaceSettingsApp>) -> Vec<(String, String)> {
 /// leaving it.
 #[test]
 fn workspace_settings_general_says_what_the_workspace_is() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     own_workspace(&session, &["ada"]);
@@ -1188,7 +1188,7 @@ fn workspace_settings_general_says_what_the_workspace_is() {
 /// as the same choice in the workspace menu does.
 #[test]
 fn workspace_settings_general_leaves_the_workspace() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     invoke(&mut session, CHROME_RESOURCE, "new-workspace");
@@ -1302,7 +1302,7 @@ fn make_agent(session: &mut Session, app: &mut TestApp<WorkspaceSettingsApp>, na
     app.harness()
         .perform_named(
             "ws-agents-name",
-            &ui::a11y::Action::SetValue(name.to_owned()),
+            &tilo_ui_base::a11y::Action::SetValue(name.to_owned()),
         )
         .expect("name the agent");
     app.settle();
@@ -1319,7 +1319,7 @@ fn make_agent(session: &mut Session, app: &mut TestApp<WorkspaceSettingsApp>, na
 /// workspace, and a member chooses the model it plans with.
 #[test]
 fn workspace_settings_makes_the_workspaces_agents() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a home of its own");
     settings_offer_a_model();
     let (mut session, _taken_key) = session_keeping_workspaces(&mut home);
@@ -1378,7 +1378,7 @@ fn workspace_settings_makes_the_workspaces_agents() {
 /// and the record keeps it, retired, with its name.
 #[test]
 fn workspace_settings_retires_the_workspaces_agents() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     settings_offer_a_model();
     let mut session = session();
@@ -1420,7 +1420,7 @@ fn workspace_settings_retires_the_workspaces_agents() {
 /// the limit, and the row counts the day against it.
 #[test]
 fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     settings_offer_a_model();
     let mut session = session();
@@ -1441,7 +1441,7 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
     app.harness()
         .perform_named(
             "ws-agent-limit-field",
-            &ui::a11y::Action::SetValue("5".to_owned()),
+            &tilo_ui_base::a11y::Action::SetValue("5".to_owned()),
         )
         .expect("type the day's limit");
     app.settle();
@@ -1497,7 +1497,7 @@ fn workspace_settings_sets_what_an_agent_may_spend_a_day() {
 /// another member's admission is listed as well as the person's own.
 #[test]
 fn workspace_settings_reads_an_agents_admission_into_chats_record() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();

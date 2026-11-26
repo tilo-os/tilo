@@ -1,6 +1,6 @@
 //! [`PagePreview`] as a described component.
 
-use crate::component::{Component, Described};
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::PagePreview;
 

@@ -2,10 +2,11 @@
 //! asked for on the frame's clock. What a presentation shows, and how long each picture stays, is
 //! the view's; the advance is a frame's, never a change to the workspace.
 
-use super::{ImageViewerProps, PictureSource, Widget, ZoomableImage};
-use crate::component::{Component, Described, Event};
+use super::{ImageViewerProps, PictureSource, ZoomableImage};
 use crate::pictures::Pictures;
 use crate::time::{Duration, Instant};
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 
 /// How long a picture stays when the view names no time: five seconds.
 const DEFAULT_SECONDS: f64 = 5.0;
@@ -47,13 +48,13 @@ pub struct Slideshow {
 
 impl Slideshow {
     fn restart(&mut self) {
-        self.started = crate::motion::frame_now();
+        self.started = tilo_ui_base::motion::frame_now();
         self.asked = false;
     }
 
     /// Ask for the next picture once this one's time is up, on the frame's clock.
     fn tick(&mut self) {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         if now >= self.started + self.interval {
             self.started = now;
             self.asked = true;
@@ -71,12 +72,20 @@ impl Widget for Slideshow {
         Some(self)
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.image.sync(state, path);
         self.tick();
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let moved = self.image.update(state, path);
         self.tick();
         moved || self.asked
@@ -96,7 +105,7 @@ impl Widget for Slideshow {
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        theme: &crate::theme::Theme,
+        theme: &tilo_ui_base::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         let node = self.image.build_layout(taffy, theme, node_map);
@@ -113,20 +122,20 @@ impl Widget for Slideshow {
         self.image.apply_layout(taffy, node, origin);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        crate::widget::draw_child(&mut self.image, scene, transform, text, theme, &env);
+        tilo_ui_base::widget::draw_child(&mut self.image, scene, transform, text, theme, &env);
     }
 
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.image.handle_event(event, ctx);
     }
@@ -156,7 +165,7 @@ impl Widget for Slideshow {
         "Slideshow"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.image.accessibility()
     }
 }
@@ -188,7 +197,7 @@ impl Described for Slideshow {
             image: inner,
             address,
             interval,
-            started: crate::motion::frame_now(),
+            started: tilo_ui_base::motion::frame_now(),
             next,
             asked: false,
         };

@@ -1,7 +1,7 @@
 //! The shell's parts: the element each one is, and every one it owns.
 
 use super::{Column, HistoryControl, INERT_PART, NavShell, Part, at};
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 impl NavShell {
     /// Tell every part that stands in a row of the window's bar that it does: its

@@ -65,7 +65,7 @@ fn tabs(session: &Session, id: GroupId) -> usize {
 /// workspace in front change as each asks, and the one shown follows the person.
 #[test]
 fn strips_are_made_stepped_shown_moved_and_named_by_verb() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     open(&mut session, &notes, 1);
     let (before, _) = strips(&session);
@@ -114,7 +114,7 @@ fn strips_are_made_stepped_shown_moved_and_named_by_verb() {
 /// changes back.
 #[test]
 fn a_windows_size_follows_its_verbs() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let shown = open(&mut session, &notes, 2);
     let (front, other) = (shown[1].0, shown[0].0);
@@ -198,7 +198,7 @@ fn a_windows_size_follows_its_verbs() {
 /// gather and part as asked, and a tab is called what the person calls it.
 #[test]
 fn tabs_gather_part_and_are_named_by_verb() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let shown = open(&mut session, &notes, 3);
     let (keeper, joined) = (shown[0].0, shown[1].1);
@@ -268,7 +268,7 @@ fn tabs_gather_part_and_are_named_by_verb() {
 /// back.
 #[test]
 fn a_closed_window_reopens_by_verb() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let shown = open(&mut session, &notes, 2);
     verb(
@@ -294,7 +294,7 @@ fn a_closed_window_reopens_by_verb() {
 /// steps back, and it keeps the name they give it.
 #[test]
 fn workspaces_are_made_stepped_and_named_by_verb() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     open(&mut session, &notes, 1);
     let home = workspace(&session);
@@ -350,7 +350,7 @@ fn workspaces_are_made_stepped_and_named_by_verb() {
 /// A verb naming what the desktop doesn't hold is refused and changes nothing.
 #[test]
 fn a_verb_naming_nothing_here_is_refused() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let shown = open(&mut session, &notes, 1);
     let before = windows(&session);

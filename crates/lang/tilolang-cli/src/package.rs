@@ -360,8 +360,8 @@ pub fn menu_category(declared: &str) -> &'static str {
 /// The icon artwork of a declared `icon:` (`.file_text`, the platform glyph `file-text`).
 pub fn icon_artwork(declared: &str) -> Result<String, String> {
     let name = declared.replace('_', "-");
-    ui::icons::Icon::from_name(&name)
-        .map(ui::icons::icon_svg)
+    tilo_ui_base::icons::Icon::from_name(&name)
+        .map(tilo_ui_base::icons::icon_svg)
         .ok_or_else(|| format!("`.{declared}` is not an icon the platform has"))
 }
 

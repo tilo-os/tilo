@@ -85,7 +85,7 @@ fn surface(session: &Session) -> (String, String) {
 /// list of that app alone, and what they open after shows again.
 #[test]
 fn an_apps_recents_list_what_was_opened_and_clear_hides_it_for_the_person() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let opened = notes(&session, 3);
@@ -206,7 +206,7 @@ fn an_apps_recents_list_what_was_opened_and_clear_hides_it_for_the_person() {
 /// `recents`.
 #[test]
 fn a_tilolang_apps_recents_button_opens_the_history_scoped_to_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let prefix = format!("tl:{TUBE}:root-");

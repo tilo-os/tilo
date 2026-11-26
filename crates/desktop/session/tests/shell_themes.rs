@@ -38,7 +38,7 @@ use std::time::Duration;
 use serde_json::{Map, Value, json};
 use tilo_compositor::Screenshot;
 use tilo_session::{Options, Session};
-use ui::theme::PresetDesign;
+use tilo_ui_base::theme::PresetDesign;
 
 use crate::common::{MAIL, NOTES};
 
@@ -107,12 +107,12 @@ impl Theme {
     /// Whether this theme's `type` role draws text at another weight than the stock one (the design
     /// language's 400 / 500 / 600), so its text runs measure a pixel wider or narrower.
     fn moves_type_metrics(self) -> bool {
-        ui::theme::Preset::find(self.id)
+        tilo_ui_base::theme::Preset::find(self.id)
             .expect("a shipped preset")
             .document()
             .type_
             .weights
-            != ui::theme::ThemeWeights::STOCK
+            != tilo_ui_base::theme::ThemeWeights::STOCK
     }
 }
 
@@ -472,14 +472,14 @@ fn assert_different_frames(frames: &[(Theme, Screenshot)]) {
 fn switching_the_theme_changes_how_the_shell_looks_not_its_layout() {
     // This test's own home, beside the run's app store the session's apps come from.
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The bar draws the time, and a minute turning over is a change, not idle work: the test holds
     // the clock at the minute it runs in, as a capture does, so what it watches at rest is the
     // shell and nothing else.
     let at = ui::time::wall()
         .checked_sub(Duration::from_secs(
             u64::try_from(
-                ui::clock::local_now()
+                tilo_ui_base::clock::local_now()
                     .timestamp()
                     .as_second()
                     .rem_euclid(60),
@@ -515,7 +515,7 @@ fn switching_the_theme_changes_how_the_shell_looks_not_its_layout() {
 #[test]
 fn the_shells_window_in_front_is_the_sessions() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     crate::common::show_preset(&mut session, "so.tilo.shell:strips");
     step(&mut session, 30);
@@ -628,7 +628,7 @@ fn tab_outside(session: &Session, front: &str) -> u64 {
 /// `walk-switcher`, as Alt+Tab asks it.
 #[test]
 fn the_walked_switcher_card_wears_the_persons_accent_at_its_edge() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session, 200);
     for app in [NOTES, MAIL, NOTES] {
@@ -701,7 +701,7 @@ fn the_walked_switcher_card_wears_the_persons_accent_at_its_edge() {
 fn persons_accent(session: &Session) -> [u8; 3] {
     let settings =
         json!({ "appearance": session.read(APPEARANCE).expect("the appearance section") });
-    let accent = ui::theme::Theme::resolved_from_settings(&settings.to_string())
+    let accent = tilo_ui_base::theme::Theme::resolved_from_settings(&settings.to_string())
         .tokens
         .colors
         .intent
@@ -813,7 +813,7 @@ fn open_window(session: &mut Session, app: &str) -> u64 {
 /// once it goes), never the shell at full brightness.
 #[test]
 fn the_switcher_dims_what_it_covers_in_light_and_dark() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session, 200);
     for app in [NOTES, MAIL] {

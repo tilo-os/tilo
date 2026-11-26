@@ -18,7 +18,7 @@ fn focused_title(session: &mut Session) -> Option<String> {
 /// for a window it hid.
 #[test]
 fn a_closed_window_hands_the_keyboard_to_the_window_still_open() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let mut client = Client::connect(session.compositor());
     pump_windows(&mut session, &mut [&mut client], |_, clients| {
@@ -123,7 +123,7 @@ fn types_into(session: &mut Session, client: &mut Client, page: usize, title: &s
 /// come and never a key.
 #[test]
 fn a_window_that_replaces_the_one_before_keeps_the_keyboard() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let mut client = setup_client(&mut session);
     let welcome = open_page(&mut session, &mut client, "Setup - Welcome", None);
@@ -138,7 +138,7 @@ fn a_window_that_replaces_the_one_before_keeps_the_keyboard() {
 /// The next page shown and the one before destroyed in one message to the session: the same.
 #[test]
 fn a_page_shown_and_its_predecessor_destroyed_together_keeps_the_keyboard() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let mut client = setup_client(&mut session);
     let welcome = open_page(&mut session, &mut client, "Setup - Welcome", None);
@@ -153,7 +153,7 @@ fn a_page_shown_and_its_predecessor_destroyed_together_keeps_the_keyboard() {
 /// dialog keeps the keyboard.
 #[test]
 fn a_dialog_whose_parent_goes_as_it_shows_keeps_the_keyboard() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let mut client = setup_client(&mut session);
     let welcome = open_page(&mut session, &mut client, "Setup - Welcome", None);
@@ -168,7 +168,7 @@ fn a_dialog_whose_parent_goes_as_it_shows_keeps_the_keyboard() {
 /// The page before goes first and the next one shows after: the next page takes the keyboard.
 #[test]
 fn a_page_shown_after_the_one_before_went_takes_the_keyboard() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let mut client = setup_client(&mut session);
     let welcome = open_page(&mut session, &mut client, "Setup - Welcome", None);
@@ -187,7 +187,7 @@ fn a_page_shown_after_the_one_before_went_takes_the_keyboard() {
 /// the keyboard.
 #[test]
 fn every_page_of_a_wizard_keeps_the_keyboard() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let mut client = setup_client(&mut session);
     let mut page = open_page(&mut session, &mut client, "Setup - Welcome", None);

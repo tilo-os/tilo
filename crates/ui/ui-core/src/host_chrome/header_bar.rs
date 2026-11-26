@@ -13,14 +13,15 @@ use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use super::model::{CommandGroup, HostCommand};
-use crate::i18n::I18nManager;
-use crate::icons::Icon;
+use tilo_ui_base::i18n::I18nManager;
+use tilo_ui_base::icons::Icon;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use crate::widget::ControlSize;
-use crate::widget::DrawChild;
-use crate::widget::{Button, ContextMenu, MenuItem, Row, Spacer, Text, Widget};
+use crate::{widget::Button, widget::ContextMenu, widget::MenuItem, widget::Row, widget::Text};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{widget::Spacer, widget::Widget};
 
 /// What the person asked of the window or the app through the bar.
 #[derive(Clone, Debug, PartialEq)]
@@ -99,8 +100,9 @@ impl HeaderBar {
                 menu.push(MenuItem::separator());
             }
             previous = Some(command.group);
-            let press =
-                crate::widget::Press::of(crate::component::Event::Action(command.binding.clone()));
+            let press = tilo_ui_base::widget::Press::of(tilo_ui_base::component::Event::Action(
+                command.binding.clone(),
+            ));
             menu.push(MenuItem::bound(command.label.clone(), press).with_enabled(command.enabled));
         }
 
@@ -209,12 +211,14 @@ impl HeaderBar {
             width: taffy::AvailableSpace::Definite(width as f32),
             height: taffy::AvailableSpace::MaxContent,
         };
-        let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
+        let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::new();
         // SAFETY: the arena and node map were just built from this bar alone,
         // which stays in place and unaliased for both calls.
         let solved = unsafe {
             bindings.rebuild(self, tree, node, nodes);
-            crate::widget::compute_widget_layout(tree, node, available, nodes, &bindings, text)
+            tilo_ui_base::widget::compute_widget_layout(
+                tree, node, available, nodes, &bindings, text,
+            )
         };
         solved.ok()?;
         self.apply_layout(tree, node, Point::ORIGIN);
@@ -245,7 +249,7 @@ impl HeaderBar {
     /// Hand the host the command a chosen row pressed.
     fn drain_menu(&mut self) {
         while let Some(invocation) =
-            crate::widget::controls::ActionControls::take_control_invocation(&mut self.menu)
+            tilo_ui_base::widget::controls::ActionControls::take_control_invocation(&mut self.menu)
         {
             self.requests
                 .borrow_mut()
@@ -277,7 +281,11 @@ fn control(id: &str, icon: Icon, key: &str) -> Button {
 }
 
 impl Widget for HeaderBar {
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.dirty = true;
         self.take_menu_request();
         for child in self.children_mut() {
@@ -313,7 +321,7 @@ impl Widget for HeaderBar {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -325,23 +333,24 @@ impl Widget for HeaderBar {
         self.menu.layout_within(text, theme);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.menu.draw_overlay(&mut crate::draw::DrawCtx::new(
-            scene,
-            transform,
-            text,
-            theme,
-            env.clone(),
-        ));
+        self.menu
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         if self.menu.is_open() {
             self.menu
@@ -375,7 +384,11 @@ impl Widget for HeaderBar {
         // from the app's tree, so it answers the press here, before the
         // menu it asks for opens.
         let path = ctx.path;
-        crate::widget::controls::start_pending_control_invocations(self, &mut ctx.edits(), path);
+        tilo_ui_base::widget::controls::start_pending_control_invocations(
+            self,
+            &mut ctx.edits(),
+            path,
+        );
         self.take_menu_request();
         if !*ctx.handled
             && matches!(
@@ -409,11 +422,11 @@ impl Widget for HeaderBar {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -460,13 +473,13 @@ mod tests {
     use crate::app::App;
     use crate::headless::Driver;
     use crate::host_chrome::model::{CommandGroup, HostCommand};
-    use crate::widget::Widget;
+    use tilo_ui_base::widget::Widget;
 
     fn app_with_history() -> App {
         crate::app::framework_history_tests::native_chrome_app()
     }
 
-    fn driver(commands: &[HostCommand], theme: crate::Theme) -> Driver {
+    fn driver(commands: &[HostCommand], theme: tilo_ui_base::Theme) -> Driver {
         let mut driver = Driver::for_root(
             crate::State::new(),
             HeaderBar::new("Notes", commands),
@@ -484,7 +497,7 @@ mod tests {
     fn history_menu_lists_the_command_model_and_hands_back_the_chosen_command() {
         let mut app = app_with_history();
         let commands = app.host_commands(true);
-        let mut driver = driver(&commands, crate::Theme::dark());
+        let mut driver = driver(&commands, tilo_ui_base::Theme::dark());
         let below = vello::kurbo::Point::new(600.0, 110.0);
         assert!(
             !driver.root_mut::<HeaderBar>().claims(below),
@@ -533,8 +546,8 @@ mod tests {
         let mut app = app_with_history();
         let mut bar = HeaderBar::new("Notes", &app.host_commands(true));
         let (mut tree, mut nodes) = (taffy::TaffyTree::new(), std::collections::HashMap::new());
-        let theme = crate::Theme::light();
-        let mut text = crate::TextRenderer::new();
+        let theme = tilo_ui_base::Theme::light();
+        let mut text = tilo_ui_base::TextRenderer::new();
         bar.solve_layout(&mut tree, &mut nodes, &theme, &mut text, 800.0)
             .expect("the bar settles");
         let controls: Vec<_> = Widget::children(&bar.row)
@@ -582,7 +595,7 @@ mod tests {
     fn framework_history_apps_search_from_the_header_bar() {
         let mut app = crate::app::framework_history_tests::native_chrome_app();
         let commands = app.host_commands(false);
-        let mut driver = driver(&commands, crate::Theme::light());
+        let mut driver = driver(&commands, tilo_ui_base::Theme::light());
         driver.click_named("host-header-search").unwrap();
         let requests = driver.root_mut::<HeaderBar>().take_requests();
         let [HeaderRequest::Command(invocation)] = requests.as_slice() else {
@@ -604,7 +617,7 @@ mod tests {
     fn framework_history_menu_opens_at_a_recent_change() {
         let mut app = crate::app::framework_history_tests::native_chrome_app();
         let commands = app.host_commands(true);
-        let mut driver = driver(&commands, crate::Theme::light());
+        let mut driver = driver(&commands, tilo_ui_base::Theme::light());
         driver.click_named("host-header-history").unwrap();
         let bar = driver.root_mut::<HeaderBar>();
         let labels: Vec<_> = bar.menu.items().iter().map(|item| item.label()).collect();
@@ -636,7 +649,7 @@ mod tests {
     fn search_toggle_and_window_controls_ask_the_app_and_the_runner() {
         let mut app = app_with_history();
         let commands = app.host_commands(false);
-        let mut driver = driver(&commands, crate::Theme::light());
+        let mut driver = driver(&commands, tilo_ui_base::Theme::light());
         for id in [
             "host-header-search",
             "host-header-minimize",
@@ -674,7 +687,7 @@ mod tests {
     fn frame_edges_resize_and_the_inside_does_not() {
         use vello::kurbo::{Point, Rect};
         use winit::window::ResizeDirection as Edge;
-        let theme = crate::Theme::dark();
+        let theme = tilo_ui_base::Theme::dark();
         let window = Rect::new(0.0, 0.0, 800.0, 600.0);
         let at = |x, y| resize_edge(Point::new(x, y), window, &theme);
         assert_eq!(at(2.0, 2.0), Some(Edge::NorthWest));
@@ -692,9 +705,9 @@ mod tests {
         let mut app = app_with_history();
         let commands = app.host_commands(true);
         for (name, theme) in [
-            ("light", crate::Theme::light()),
-            ("dark", crate::Theme::dark()),
-            ("high-contrast", crate::Theme::high_contrast()),
+            ("light", tilo_ui_base::Theme::light()),
+            ("dark", tilo_ui_base::Theme::dark()),
+            ("high-contrast", tilo_ui_base::Theme::high_contrast()),
         ] {
             let mut driver = Driver::for_root(
                 crate::State::new(),

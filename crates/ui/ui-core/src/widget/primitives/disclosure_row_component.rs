@@ -1,10 +1,14 @@
 //! [`DisclosureRow`] as a described component.
 
-use crate::component::{Component, Described, Event, PartViews, Person, Value};
-use crate::icons::Icon;
-use crate::tokens::Rhythm;
+use crate::widget::SignalLevel;
 use crate::widget::arrange::{Arranged, FlexLayout, Part, Stack};
-use crate::widget::{Element, SignalLevel};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::tokens::Rhythm;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PartViews,
+    component::Person, component::Value,
+};
 
 use super::{DisclosureRow, Leading};
 
@@ -39,7 +43,7 @@ pub struct DisclosureRowProps {
     /// as tall as that line (an answer's steps, folded under it).
     pub dense: bool,
     /// The pace the body unfolds at, and a view's open or close: the theme's unless said.
-    pub motion: Option<crate::motion::Feel>,
+    pub motion: Option<tilo_ui_base::motion::Feel>,
     /// The row was opened or closed: whether it is open now is the value.
     #[component(event(value = bool))]
     pub toggle: Event,
@@ -114,7 +118,7 @@ impl Described for DisclosureRow {
         if dense {
             row = row.dense();
         }
-        row.with_feel(motion.unwrap_or(crate::motion::Feel::Standard))
+        row.with_feel(motion.unwrap_or(tilo_ui_base::motion::Feel::Standard))
     }
 
     /// Its lines take their new text in place, and a changed `expanded` opens or closes it on
@@ -137,7 +141,7 @@ impl Described for DisclosureRow {
         if dense != self.is_dense() {
             return false;
         }
-        self.set_feel(motion.unwrap_or(crate::motion::Feel::Standard));
+        self.set_feel(motion.unwrap_or(tilo_ui_base::motion::Feel::Standard));
         self.title = title;
         self.secondary = secondary.unwrap_or_default();
         self.side = side.unwrap_or_default();

@@ -213,7 +213,10 @@ impl IndexedContent {
             subtitle,
             facts: Vec::new(),
             score,
-            icon: found.icon.as_deref().and_then(ui::icons::Icon::from_name),
+            icon: found
+                .icon
+                .as_deref()
+                .and_then(tilo_ui_base::icons::Icon::from_name),
             target: Target::Invoke(Box::new(self.bringing(
                 found,
                 InvokeTarget {
@@ -268,7 +271,7 @@ impl IndexedContent {
                         .map_or(0, |elapsed| {
                             i64::try_from(elapsed.as_secs()).unwrap_or(i64::MAX)
                         });
-                    ui::format::relative(now.saturating_sub(when))
+                    tilo_ui_base::format::relative(now.saturating_sub(when))
                 });
                 match (sender, place, age) {
                     (Some(sender), Some(place), Some(age)) => Some(crate::i18n::t_args(
@@ -317,7 +320,7 @@ impl IndexedContent {
             )),
             facts: Vec::new(),
             score: provider_score(found.rank.unwrap_or(0)).max(1),
-            icon: Some(ui::icons::Icon::Lock),
+            icon: Some(tilo_ui_base::icons::Icon::Lock),
             target: Target::Launch {
                 app: app.to_owned(),
                 place: LaunchPlace::Focus,
@@ -1105,7 +1108,7 @@ mod tests {
                 .expect("the message is found by what it says");
             assert_eq!(
                 hit.subtitle.as_deref(),
-                Some(format!("Aria in Ada's design crit, {}", ui::format::relative(3600)).as_str())
+                Some(format!("Aria in Ada's design crit, {}", tilo_ui_base::format::relative(3600)).as_str())
             );
             assert!(
                 hit.title.starts_with('\u{2026}'),

@@ -15,7 +15,7 @@ use super::delivery::{DeliveryState, DeliveryStep};
 use super::draft::{self, DraftBook};
 use super::list::{CaptionShows, captions};
 use super::list::{ConversationLine, ConversationRole, bubble_colors, run_breaks};
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
 
 const NOONISH: i64 = 1_782_828_300;
 
@@ -133,7 +133,7 @@ tilo_test_env::scenario! {
         assert!(!live.contains(DeliveryState::Uncertain.icon().name()));
         // The vocabulary is the same in both apps because it is the same table.
         assert_eq!(DeliveryState::Delivered.label(), "Delivered");
-        assert_eq!(DeliveryState::Failed.tone(), crate::widget::Tone::Danger);
+        assert_eq!(DeliveryState::Failed.tone(), tilo_ui_base::widget::Tone::Danger);
         assert!(DeliveryState::Failed.needs_attention());
         assert!(DeliveryState::Read.is_final());
     }
@@ -385,8 +385,8 @@ tilo_test_env::scenario! {
 
     phase your_own_words_read_on_their_own_colour_in_every_theme;
     {
-        use crate::a11y::contrast_ratio;
-        use crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST;
+        use tilo_ui_base::a11y::contrast_ratio;
+        use tilo_ui_base::tokens::contrast::BODY_TEXT_MIN_CONTRAST;
         for theme in [Theme::dark(), Theme::light()] {
             for role in [ConversationRole::Incoming, ConversationRole::Outgoing] {
                 let (fill, ink) = bubble_colors(&theme, role);

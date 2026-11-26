@@ -325,7 +325,7 @@ impl<S: Copy + PartialEq + 'static> Coach<S> {
     }
 }
 
-/// How long the phases that end on their own take, from the motion ([`crate::motion::Beckon`]) under
+/// How long the phases that end on their own take, from the motion ([`tilo_ui_base::motion::Beckon`]) under
 /// the current reduced-motion choice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Timing {
@@ -335,10 +335,10 @@ pub struct Timing {
 
 impl Timing {
     #[must_use]
-    pub fn of(motion: crate::tokens::EffectiveMotion) -> Self {
+    pub fn of(motion: tilo_ui_base::tokens::EffectiveMotion) -> Self {
         Self {
-            leaving: crate::motion::Beckon::leaving_time(motion),
-            done: crate::motion::Beckon::COMPLETION,
+            leaving: tilo_ui_base::motion::Beckon::leaving_time(motion),
+            done: tilo_ui_base::motion::Beckon::COMPLETION,
         }
     }
 }

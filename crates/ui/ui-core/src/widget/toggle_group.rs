@@ -2,31 +2,34 @@
 //! one surface step off the track. `multiple` gives the multi-select form and `Tabs` the
 //! page tabs.
 
-use crate::num::f32_of_f64;
-use crate::num::f64_of_usize;
-use crate::widget::binding::{BoxedBinding, Pulled};
 use crate::widget::toolbar::Orientation;
-use crate::widget::{AppModel, ModelPath};
 use std::cell::Cell;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::num::f64_of_usize;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::Color;
 use winit::event::{ElementState, KeyEvent, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::chrome::{SelectionState, SelectionTier, selection_tier_on};
 use crate::color_compat::ColorCompat;
-use crate::icons::Icon;
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST;
+use tilo_ui_base::{chrome::SelectionState, chrome::SelectionTier, chrome::selection_tier_on};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 #[path = "toggle_group_component.rs"]
 mod component;
-use crate::widget::{ActionEmitter, ControlBindingMetadata, ControlSize, TaffyTreeExt, Widget};
+use crate::widget::ControlSize;
 pub use component::{SegmentProps, ToggleGroupProps, ViewTabsProps};
+use tilo_ui_base::{
+    widget::ActionEmitter, widget::ControlBindingMetadata, widget::TaffyTreeExt, widget::Widget,
+};
 
 #[path = "toggle_group_fold.rs"]
 mod fold;
@@ -55,11 +58,13 @@ pub enum Press {
 impl Press {
     /// The press `event` runs.
     #[must_use]
-    pub fn of(event: crate::component::Event) -> Self {
+    pub fn of(event: tilo_ui_base::component::Event) -> Self {
         match event {
-            crate::component::Event::None => Self::Nothing,
-            crate::component::Event::Action(binding) => Self::Action(ActionEmitter::new(binding)),
-            crate::component::Event::View(intent) => Self::View(Box::new(intent.sender())),
+            tilo_ui_base::component::Event::None => Self::Nothing,
+            tilo_ui_base::component::Event::Action(binding) => {
+                Self::Action(ActionEmitter::new(binding))
+            }
+            tilo_ui_base::component::Event::View(intent) => Self::View(Box::new(intent.sender())),
         }
     }
 
@@ -217,7 +222,7 @@ impl SegmentedTouch {
                         )
                     })
                     .flatten();
-                let tap = (delta.hypot() <= crate::gesture::TouchGestureArena::TAP_SLOP)
+                let tap = (delta.hypot() <= tilo_ui_base::gesture::TouchGestureArena::TAP_SLOP)
                     .then(|| group.rects.iter().position(|rect| rect.contains(point)))
                     .flatten();
                 swipe
@@ -356,7 +361,7 @@ pub struct ToggleGroup {
     enabled: bool,
     last_cursor: Cell<Point>,
     hovered: Option<usize>,
-    painted: crate::widget::CachedPaint,
+    painted: tilo_ui_base::widget::CachedPaint,
     cache_dirty: bool,
     last_selected: usize,
     is_focused: bool,
@@ -381,7 +386,7 @@ pub struct ToggleGroup {
     orientation: Orientation,
     stacked: (f64, f64),
     choice: Option<Choice>,
-    thumb: crate::motion::MotionValue<Rect>,
+    thumb: tilo_ui_base::motion::MotionValue<Rect>,
     thumb_for: usize,
     last_thumb: Option<Rect>,
     /// Whether this frame drew the group, for [`Widget::mark_drawn`]: one that left it out of
@@ -390,13 +395,13 @@ pub struct ToggleGroup {
     folded: bool,
     menu: crate::widget::ContextMenu,
     viewport: Option<Rect>,
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     in_window_bar: bool,
 }
 
 impl ToggleGroup {
     #[must_use]
-    pub fn into_widget(self) -> Box<dyn crate::widget::Widget> {
+    pub fn into_widget(self) -> Box<dyn tilo_ui_base::widget::Widget> {
         Box::new(self)
     }
 
@@ -430,7 +435,7 @@ impl ToggleGroup {
             enabled: true,
             last_cursor: Cell::new(Point::ZERO),
             hovered: None,
-            painted: crate::widget::CachedPaint::default(),
+            painted: tilo_ui_base::widget::CachedPaint::default(),
             cache_dirty: true,
             last_selected: usize::MAX - 1,
             is_focused: false,
@@ -453,13 +458,13 @@ impl ToggleGroup {
             orientation: Orientation::Horizontal,
             stacked: (0.0, 0.0),
             choice: None,
-            thumb: crate::motion::MotionValue::new(Rect::ZERO),
+            thumb: tilo_ui_base::motion::MotionValue::new(Rect::ZERO),
             thumb_for: NONE_CHOSEN,
             last_thumb: None,
             drew: false,
             folded: false,
             menu: Self::fold_menu(),
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             in_window_bar: false,
             viewport: None,
         }
@@ -467,11 +472,11 @@ impl ToggleGroup {
 
     pub fn from_state<T: Clone + PartialEq + 'static>(
         choices: Vec<(T, Segment)>,
-        state: &crate::LocalState<T>,
+        state: &tilo_ui_base::LocalState<T>,
     ) -> Self {
         let (values, segments): (Vec<T>, Vec<Segment>) = choices.into_iter().unzip();
         let values = std::rc::Rc::new(values);
-        let (current, binding) = crate::local_state::LocalBinding::new(state);
+        let (current, binding) = tilo_ui_base::local_state::LocalBinding::new(state);
         let binding = std::rc::Rc::new(std::cell::RefCell::new(binding));
         let selected = values.iter().position(|value| *value == current);
         let mut group = Self::new(segments, selected.unwrap_or(NONE_CHOSEN));
@@ -513,11 +518,11 @@ impl ToggleGroup {
 
     pub fn multiple_from_state<T: Clone + Ord + 'static>(
         choices: Vec<(T, Segment)>,
-        state: &crate::LocalState<std::collections::BTreeSet<T>>,
+        state: &tilo_ui_base::LocalState<std::collections::BTreeSet<T>>,
     ) -> Self {
         let (values, segments): (Vec<T>, Vec<Segment>) = choices.into_iter().unzip();
         let values = std::rc::Rc::new(values);
-        let (current, binding) = crate::local_state::LocalBinding::new(state);
+        let (current, binding) = tilo_ui_base::local_state::LocalBinding::new(state);
         let binding = std::rc::Rc::new(std::cell::RefCell::new(binding));
         let flags = {
             let values = std::rc::Rc::clone(&values);
@@ -615,8 +620,8 @@ impl ToggleGroup {
     }
 
     #[must_use]
-    pub fn bind_selection(mut self, state: &crate::LocalState<usize>) -> Self {
-        let (selected, binding) = super::binding::local(state);
+    pub fn bind_selection(mut self, state: &tilo_ui_base::LocalState<usize>) -> Self {
+        let (selected, binding) = tilo_ui_base::widget::binding::local(state);
         self.set_selected(selected);
         self.binding = Some(binding);
         self
@@ -704,7 +709,7 @@ impl ToggleGroup {
 
     /// The person pressed choice `index` of a strip whose action they may not run here: nothing is
     /// chosen, and the press is sent, to be refused with why
-    /// ([`crate::widget::ActionEmitter::press`]).
+    /// ([`tilo_ui_base::widget::ActionEmitter::press`]).
     fn press_refused(&mut self, index: usize) {
         let pressed = if let Some(action) = &mut self.action {
             action.press(index)
@@ -971,7 +976,7 @@ impl ToggleGroup {
     }
 
     fn focus_visible(&self) -> bool {
-        self.is_focused && !self.pressed_into_focus && crate::focus_visible::shown()
+        self.is_focused && !self.pressed_into_focus && tilo_ui_base::focus_visible::shown()
     }
 
     fn strip_height(&self) -> f64 {
@@ -1148,7 +1153,10 @@ pub fn segment_colors(
     let chosen = segment_tier(theme, style, SelectionState::active(true)).fill;
     let hover = segment_tier(theme, style, SelectionState::new(false, true, false)).fill;
     let quiet_ink = colors.ink_on_any(
-        &[ground, crate::tokens::colors::composite(hover, ground)],
+        &[
+            ground,
+            tilo_ui_base::tokens::colors::composite(hover, ground),
+        ],
         colors.text_dim,
         ON_FILL_MIN_CONTRAST,
     );
@@ -1173,18 +1181,18 @@ fn segment_tier(
     theme: &Theme,
     style: SegmentedStyle,
     state: SelectionState,
-) -> crate::chrome::SelectionTier {
+) -> tilo_ui_base::chrome::SelectionTier {
     let ground = segment_ground(theme, style);
     let palette = &theme.tokens.colors.palette;
     match style {
         SegmentedStyle::Segmented if !palette.dark && !palette.high_contrast && state.active => {
             SelectionTier {
                 fill: theme.tokens.colors.surfaces.overlay,
-                ..crate::chrome::selector_tier(theme, state, ground)
+                ..tilo_ui_base::chrome::selector_tier(theme, state, ground)
             }
         }
         SegmentedStyle::Segmented | SegmentedStyle::Tabs => {
-            crate::chrome::selector_tier(theme, state, ground)
+            tilo_ui_base::chrome::selector_tier(theme, state, ground)
         }
         SegmentedStyle::Quiet => SelectionTier {
             border: None,
@@ -1434,8 +1442,8 @@ impl ToggleGroup {
         match face.style {
             SegmentedStyle::Segmented if face.chosen.is_none() => {
                 let track = colors.surfaces.raised;
-                let edge = crate::surface::edge_on(track);
-                let bordered = crate::surface::control_face(
+                let edge = tilo_ui_base::surface::edge_on(track);
+                let bordered = tilo_ui_base::surface::control_face(
                     scene,
                     transform,
                     &RoundedRect::from_rect(outer, metrics.track_radius),
@@ -1448,7 +1456,7 @@ impl ToggleGroup {
                         transform,
                         edge,
                         None,
-                        &crate::surface::edge_outline(outer, metrics.track_radius),
+                        &tilo_ui_base::surface::edge_outline(outer, metrics.track_radius),
                     );
                 }
                 // Separators stop short of the edge so they clear the corner radius, and vanish beside
@@ -1473,7 +1481,7 @@ impl ToggleGroup {
             }
             SegmentedStyle::Segmented => {
                 let track = colors.surfaces.raised;
-                let edge = crate::surface::edge_on(track);
+                let edge = tilo_ui_base::surface::edge_on(track);
                 for seg in face.segments {
                     scene.fill(
                         vello::peniko::Fill::NonZero,
@@ -1487,7 +1495,7 @@ impl ToggleGroup {
                         transform,
                         edge,
                         None,
-                        &crate::surface::edge_outline(*seg, metrics.track_radius),
+                        &tilo_ui_base::surface::edge_outline(*seg, metrics.track_radius),
                     );
                 }
             }
@@ -1543,7 +1551,7 @@ impl ToggleGroup {
                 _ => *seg,
             };
             let body = RoundedRect::from_rect(seg.inset(-metrics.inset), metrics.thumb_radius);
-            crate::chrome::paint_selector(scene, transform, &body, &tier, theme);
+            tilo_ui_base::chrome::paint_selector(scene, transform, &body, &tier, theme);
         }
 
         let selected_style = metrics.label.clone().strong();
@@ -1554,7 +1562,7 @@ impl ToggleGroup {
             let selected = is_on(i);
             let (_, ink) = segment_colors(theme, face.style, selected, hovered == Some(i));
             let ink = if item.disabled {
-                ink.with_alpha_factor(crate::widget::DISABLED_ALPHA)
+                ink.with_alpha_factor(tilo_ui_base::widget::DISABLED_ALPHA)
             } else {
                 ink
             };
@@ -1569,7 +1577,7 @@ impl ToggleGroup {
                 };
                 let content = stacked.icon + stacked.gap + stacked.line();
                 let top = seg.center().y - content / 2.0;
-                crate::icons::draw_icon(
+                tilo_ui_base::icons::draw_icon(
                     scene,
                     transform,
                     Rect::new(
@@ -1580,7 +1588,7 @@ impl ToggleGroup {
                     ),
                     icon,
                     ink,
-                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
                 let spare = (seg.width() - 2.0 * metrics.pad_x.min(seg.width() / 4.0)).max(1.0);
                 let shown = text_renderer.elide_to_width_style(
@@ -1617,13 +1625,13 @@ impl ToggleGroup {
                 } else {
                     Rect::from_center_size(seg.center(), (edge, edge))
                 };
-                crate::icons::draw_icon(
+                tilo_ui_base::icons::draw_icon(
                     scene,
                     transform,
                     at,
                     icon,
                     ink,
-                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
                 if !tabs {
                     continue;
@@ -1674,7 +1682,7 @@ impl ToggleGroup {
                 transform,
                 theme.tokens.colors.intent.accent_ink,
                 None,
-                &crate::surface::edge_outline(ring, metrics.track_radius),
+                &tilo_ui_base::surface::edge_outline(ring, metrics.track_radius),
             );
         }
     }
@@ -1854,7 +1862,7 @@ impl ToggleGroup {
             || selected >= count
             || delta.x.abs()
                 < target_size.max(f64::from(
-                    crate::InteractionEnvironment::TOUCH.minimum_target(),
+                    tilo_ui_base::InteractionEnvironment::TOUCH.minimum_target(),
                 ))
             || delta.x.abs() < delta.y.abs() * 1.5
         {
@@ -1960,9 +1968,9 @@ impl ToggleGroup {
 }
 
 impl ToggleGroup {
-    fn follow_thumb(&mut self, motion: crate::tokens::EffectiveMotion) -> Option<Rect> {
-        use crate::motion::{Direction, ListChange};
-        let now = crate::motion::frame_now();
+    fn follow_thumb(&mut self, motion: tilo_ui_base::tokens::EffectiveMotion) -> Option<Rect> {
+        use tilo_ui_base::{motion::Direction, motion::ListChange};
+        let now = tilo_ui_base::motion::frame_now();
         let target = self
             .chosen
             .is_none()
@@ -1977,11 +1985,14 @@ impl ToggleGroup {
             && self.thumb_for < self.segment_rects.len()
             && self.thumb.target().area() > 0.0;
         if chose_another {
-            let timing =
-                ListChange::MOVE.timing(Direction::Enter, motion, crate::motion::input_source());
+            let timing = ListChange::MOVE.timing(
+                Direction::Enter,
+                motion,
+                tilo_ui_base::motion::input_source(),
+            );
             self.thumb.set(target, timing, now);
             if let Some(until) = self.thumb.settles_at() {
-                crate::motion::want_frames_until(until);
+                tilo_ui_base::motion::want_frames_until(until);
             }
         } else if self.thumb_for == NONE_CHOSEN || self.thumb.target() != target {
             self.thumb.snap(target);
@@ -1992,9 +2003,9 @@ impl ToggleGroup {
 }
 
 impl Widget for ToggleGroup {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls);
 
     fn sync(&mut self, state: &AppModel, root: &ModelPath) {
         if let Some(binding) = &mut self.binding
@@ -2012,7 +2023,7 @@ impl Widget for ToggleGroup {
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         if self.interaction != environment {
             self.interaction = environment;
@@ -2173,10 +2184,10 @@ impl Widget for ToggleGroup {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.place(crate::widget::layout_rect(taffy, node, origin));
+        self.place(tilo_ui_base::widget::layout_rect(taffy, node, origin));
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2277,7 +2288,7 @@ impl Widget for ToggleGroup {
                 Affine::IDENTITY,
                 theme.tokens.colors.intent.accent_ink,
                 None,
-                &crate::surface::edge_outline(*seg, self.metrics.track_radius),
+                &tilo_ui_base::surface::edge_outline(*seg, self.metrics.track_radius),
             );
         }
         painted.append(out_scene, out_transform, self.rect);
@@ -2285,12 +2296,12 @@ impl Widget for ToggleGroup {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.thumb.is_moving(crate::motion::frame_now()) || self.menu.needs_animation_frame()
+        self.thumb.is_moving(tilo_ui_base::motion::frame_now()) || self.menu.needs_animation_frame()
     }
 
     fn needs_redraw(&self) -> bool {
         self.cache_dirty
-            || self.thumb.is_moving(crate::motion::frame_now())
+            || self.thumb.is_moving(tilo_ui_base::motion::frame_now())
             || self.last_thumb.is_some()
             || self.selected != self.last_selected
             || self.focus_visible() != self.last_focused
@@ -2307,7 +2318,7 @@ impl Widget for ToggleGroup {
             self.last_focused = self.focus_visible();
             self.last_hovered = self.hovered;
             self.last_thumb = None;
-            self.painted = crate::widget::CachedPaint::default();
+            self.painted = tilo_ui_base::widget::CachedPaint::default();
         }
     }
 
@@ -2319,7 +2330,7 @@ impl Widget for ToggleGroup {
         self.layout_dirty = false;
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor.set(ctx.logical(position));
         }
@@ -2373,7 +2384,7 @@ impl Widget for ToggleGroup {
         self.touch.is_active() || self.menu.is_open()
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2395,11 +2406,11 @@ impl Widget for ToggleGroup {
         }
     }
 
-    fn tooltip_side(&self) -> crate::widget::TooltipSide {
+    fn tooltip_side(&self) -> tilo_ui_base::widget::TooltipSide {
         if self.orientation == Orientation::Vertical {
-            crate::widget::TooltipSide::Beside
+            tilo_ui_base::widget::TooltipSide::Beside
         } else {
-            crate::widget::TooltipSide::Below
+            tilo_ui_base::widget::TooltipSide::Below
         }
     }
 
@@ -2427,12 +2438,12 @@ impl Widget for ToggleGroup {
         self.id.as_deref()
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let name = self
             .accessible_name
             .as_deref()
-            .and_then(|name| crate::i18n::spoken_name(name, self.name_resolved))
+            .and_then(|name| tilo_ui_base::i18n::spoken_name(name, self.name_resolved))
             .or_else(|| self.caption.clone());
         // A folded strip paints one picker, so a reader meets one picker too: the choices are
         // its menu's, and only while that menu is open. The segment shares a folded strip keeps
@@ -2494,8 +2505,8 @@ impl Widget for ToggleGroup {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !self.is_enabled() {
@@ -2514,7 +2525,7 @@ impl Widget for ToggleGroup {
         };
         if !matches!(
             action,
-            crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck
+            tilo_ui_base::a11y::Action::Activate | tilo_ui_base::a11y::Action::ToggleCheck
         ) {
             return false;
         }
@@ -2527,11 +2538,11 @@ impl Widget for ToggleGroup {
     }
 }
 
-impl crate::widget::controls::ActionControls for ToggleGroup {
+impl tilo_ui_base::widget::controls::ActionControls for ToggleGroup {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         if let Some(action) = &mut self.action {
             let _ = action.attach(domain, attachment);
@@ -2615,7 +2626,9 @@ impl ToggleGroup {
             return (0..self.segments.len())
                 .map(|index| ControlBindingMetadata {
                     control_id: self.segment_id(index),
-                    kind: crate::widget::ControlBindingKind::SemanticAction(self.segment_id(index)),
+                    kind: tilo_ui_base::widget::ControlBindingKind::SemanticAction(
+                        self.segment_id(index),
+                    ),
                 })
                 .collect();
         };

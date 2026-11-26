@@ -3,7 +3,7 @@
 //! [`ResourceEnv::query`](super::ResourceEnv::query) invokes a view action of
 //! any provider through the session's action API, as the person using the
 //! app, and shows its answer as data that arrives
-//! ([`Arriving`](ui_core::arriving::Arriving)): the view says what shows
+//! ([`Arriving`](tilo_ui_base::arriving::Arriving)): the view says what shows
 //! once it is there ([`ViewCx::arriving`](super::ViewCx::arriving)), and the
 //! framework shows the placeholder until then. A live action
 //! ([`tilo_actions::ExecutionMode::Live`]) sends a new result whenever its
@@ -21,8 +21,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use serde::de::DeserializeOwned;
 use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{ActionCallError, InvokeArgument, RemoteActionTarget};
-use ui_core::Followed;
-use ui_core::arriving::{Arrival, Arriving, Source};
+use tilo_ui_base::Followed;
+use tilo_ui_base::{arriving::Arrival, arriving::Arriving, arriving::Source};
 
 /// Why a [`Query`] has no answer to show: the caller may not read it, or
 /// the read failed. Either is the read's failure ([`Arrival::Failed`]).

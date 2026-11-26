@@ -15,7 +15,7 @@ pub(super) struct PaintedBar {
     theme: Theme,
     seen: Vec<PersonSeen>,
     scene: Scene,
-    parts: Option<crate::scene_parts::SectionParts>,
+    parts: Option<tilo_ui_base::scene_parts::SectionParts>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -57,7 +57,7 @@ impl TabBar {
     }
 
     /// [`Widget::draw`] of everything the bar shows, at `transform`.
-    pub(super) fn draw_fresh(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub(super) fn draw_fresh(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -66,8 +66,8 @@ impl TabBar {
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.drag_lift_duration = theme.tokens.motion.durations.fast();
         self.painted_labels.borrow_mut().clear();
-        self.busy_drawn =
-            (!self.busy_since.is_empty()).then(|| self.busy_pose_at(crate::motion::frame_now()));
+        self.busy_drawn = (!self.busy_since.is_empty())
+            .then(|| self.busy_pose_at(tilo_ui_base::motion::frame_now()));
         if self.tab_rects.len() != self.tabs.len() {
             return;
         }
@@ -98,11 +98,11 @@ impl TabBar {
         }
 
         self.draw_pills(
-            &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
             layout_t,
             fade_window,
         );
-        self.draw_rename(&mut crate::draw::DrawCtx::new(
+        self.draw_rename(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             tr,
@@ -111,14 +111,14 @@ impl TabBar {
         ));
         // The tab list's focus ring comes and goes with keyboard focus: a
         // damage part around the active pill, not a repaint of the bar.
-        let focus = crate::scene_parts::PartKey::new("ui.tab-focus", ());
-        crate::scene_parts::part_drawn(scene, focus, |scene| {
+        let focus = tilo_ui_base::scene_parts::PartKey::new("ui.tab-focus", ());
+        tilo_ui_base::scene_parts::part_drawn(scene, focus, |scene| {
             self.draw_keyboard_focus(scene, transform, theme)
         });
         self.draw_new_tab_chip(scene, transform, tr, theme);
         self.draw_opened_by_chip(scene, transform, tr, theme);
         if self.window_controls {
-            let now = crate::motion::frame_now();
+            let now = tilo_ui_base::motion::frame_now();
             let motion = self.motion;
             for (control, _) in self.controls.iter() {
                 let on =
@@ -150,15 +150,18 @@ impl TabBar {
                 self.toolbar_row.lay_out(rect);
             }
             let area = self.rect.union(self.toolbar_row.row()).inflate(2.0, 2.0);
-            let key = crate::scene_parts::PartKey::new("ui.window-toolbar-row", &self.group_id_tag);
+            let key = tilo_ui_base::scene_parts::PartKey::new(
+                "ui.window-toolbar-row",
+                &self.group_id_tag,
+            );
             let row = &mut self.toolbar_row;
-            crate::scene_parts::part(
+            tilo_ui_base::scene_parts::part(
                 scene,
                 key,
                 vec![transform.transform_rect_bbox(area)],
                 |scene| {
                     scene.push_clip_layer(vello::peniko::Fill::NonZero, transform, &area);
-                    row.paint(&mut crate::draw::DrawCtx::new(
+                    row.paint(&mut tilo_ui_base::draw::DrawCtx::new(
                         scene,
                         transform,
                         tr,
@@ -171,7 +174,7 @@ impl TabBar {
         }
         self.draw_closing_tabs(scene, transform, tr, theme);
         self.draw_drop_indicator(scene, transform, theme);
-        self.draw_drag_ghost(&mut crate::draw::DrawCtx::new(
+        self.draw_drag_ghost(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             tr,
@@ -234,7 +237,7 @@ impl TabBar {
         &self,
         transform: Affine,
         theme: &Theme,
-        env: &crate::draw::DrawEnv<'_>,
+        env: &tilo_ui_base::draw::DrawEnv<'_>,
     ) -> bool {
         self.painted.as_ref().is_some_and(|painted| {
             painted.epoch == self.paint_epoch
@@ -245,7 +248,7 @@ impl TabBar {
         })
     }
 
-    pub(super) fn people_seen(&self, env: &crate::draw::DrawEnv<'_>) -> Vec<PersonSeen> {
+    pub(super) fn people_seen(&self, env: &tilo_ui_base::draw::DrawEnv<'_>) -> Vec<PersonSeen> {
         let mut seen = Vec::new();
         for tab in &self.tabs {
             for face in env
@@ -272,7 +275,7 @@ impl TabBar {
         self.painted.as_ref().is_none_or(|painted| {
             painted.epoch != self.paint_epoch
                 || !self.at_rest()
-                || crate::presence::frame::frame(|presence| {
+                || tilo_ui_base::presence::frame::frame(|presence| {
                     !self.same_people(&painted.seen, &presence.draw_env())
                 })
                 .unwrap_or(false)
@@ -282,14 +285,14 @@ impl TabBar {
     /// Whether `seen` — the people a drawing was made of — are the people on
     /// the bar's tabs now. Walks the same order [`TabBar::people_seen`]
     /// builds, so it answers without building that list.
-    fn same_people(&self, seen: &[PersonSeen], env: &crate::draw::DrawEnv<'_>) -> bool {
+    fn same_people(&self, seen: &[PersonSeen], env: &tilo_ui_base::draw::DrawEnv<'_>) -> bool {
         *seen == self.people_seen(env)
     }
 
     /// [`Widget::draw`] — a bar at rest whose own state, theme, placement
     /// and the people on its tabs are as when it was last drawn shows that
     /// drawing again ([`TabBar::replays`]); anything else draws it afresh.
-    pub(super) fn paint_or_replay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub(super) fn paint_or_replay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -298,14 +301,19 @@ impl TabBar {
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         if self.replays(transform, theme, &env) {
             if let Some(painted) = self.painted.as_ref() {
-                crate::scene_parts::append(scene, &painted.scene, painted.parts.as_ref(), None);
+                tilo_ui_base::scene_parts::append(
+                    scene,
+                    &painted.scene,
+                    painted.parts.as_ref(),
+                    None,
+                );
             }
             return;
         }
         let _drawn = tilo_actions::profiling::Phase::start("ui.tab_bar.draw");
         let mut own = Scene::new();
-        let ((), parts) = crate::scene_parts::record(&mut own, |own| {
-            self.draw_fresh(&mut crate::draw::DrawCtx::new(
+        let ((), parts) = tilo_ui_base::scene_parts::record(&mut own, |own| {
+            self.draw_fresh(&mut tilo_ui_base::draw::DrawCtx::new(
                 own,
                 transform,
                 tr,
@@ -317,7 +325,7 @@ impl TabBar {
         if self.toolbar_row.take_measured() && self.strip_squeezes_parts() {
             self.lay_out_toolbar_row();
         }
-        crate::scene_parts::append(scene, &own, parts.as_ref(), None);
+        tilo_ui_base::scene_parts::append(scene, &own, parts.as_ref(), None);
         #[cfg(test)]
         {
             self.fresh_draws = self.fresh_draws.saturating_add(1);
@@ -351,7 +359,8 @@ impl TabBar {
                 let now = crate::time::now();
                 let turn = if self.busy_turns(id, now) {
                     // In indicator steps: the arc turns 30 times a second.
-                    let t = crate::animation::indicator_elapsed(busy_epoch(), now).as_secs_f64();
+                    let t =
+                        tilo_ui_base::animation::indicator_elapsed(busy_epoch(), now).as_secs_f64();
                     t.fract() * std::f64::consts::TAU
                 } else {
                     0.0
@@ -364,9 +373,9 @@ impl TabBar {
                     std::f64::consts::TAU * 0.75,
                     0.0,
                 );
-                let key = crate::scene_parts::PartKey::new("ui.tab-busy", id);
+                let key = tilo_ui_base::scene_parts::PartKey::new("ui.tab-busy", id);
                 let bounds = vec![transform.transform_rect_bbox(rect.inflate(2.0, 2.0))];
-                crate::scene_parts::part(scene, key, bounds, |scene| {
+                tilo_ui_base::scene_parts::part(scene, key, bounds, |scene| {
                     scene.stroke(
                         &vello::kurbo::Stroke::new(1.5).with_caps(vello::kurbo::Cap::Round),
                         transform,

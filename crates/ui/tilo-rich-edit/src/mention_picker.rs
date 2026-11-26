@@ -7,8 +7,8 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 use ui::widget::autocomplete::SuggestionList;
 use ui::widget::mention_picker::{MentionCandidate, query_at_caret, rank, suggestion};
 
@@ -213,7 +213,7 @@ impl MentionPicker {
     }
 
     /// The rows in view, for assistive technology.
-    pub(crate) fn access_rows(&self) -> Vec<ui::a11y::AccessNode> {
+    pub(crate) fn access_rows(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {
         if !self.is_open() {
             return Vec::new();
         }
@@ -231,7 +231,7 @@ impl MentionPicker {
 mod tests {
     use super::*;
     use collab_types::MemberId;
-    use ui::tokens::PresenceHue;
+    use tilo_ui_base::tokens::PresenceHue;
 
     fn workspace() -> Vec<MentionCandidate> {
         vec![
@@ -258,13 +258,13 @@ mod tests {
 
         phase the_picker_follows_the_caret_and_stays_closed_after_escape;
         {
-            let _settled = ui::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let workspace = workspace();
             let mut picker = MentionPicker::default();
             assert!(picker.follow(0, "hello @a", |_| false, &workspace));
             assert!(picker.is_open());
             assert_eq!(picker.typed(), 2);
-            let escape = ui::synthetic_input::key_press(Key::Named(NamedKey::Escape), None);
+            let escape = tilo_ui_base::synthetic_input::key_press(Key::Named(NamedKey::Escape), None);
             assert_eq!(picker.handle_key(&escape), PickerKey::Handled);
             assert!(!picker.is_open());
             picker.follow(0, "hello @al", |_| false, &workspace);

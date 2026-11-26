@@ -6,13 +6,15 @@ use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
-use super::{AppModel, Element, ModelPath, TaffyTreeExt, Widget};
+use tilo_ui_base::{
+    widget::AppModel, widget::Element, widget::ModelPath, widget::TaffyTreeExt, widget::Widget,
+};
 
-use crate::theme::Theme;
-use crate::tokens::Rhythm;
-use crate::widget::DrawChild;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::Rhythm;
+use tilo_ui_base::widget::DrawChild;
 
-#[crate::component::not_a_component(layout, "the language's `grid` and `split`")]
+#[tilo_ui_base::component::not_a_component(layout, "the language's `grid` and `split`")]
 pub struct Columns {
     main: Element,
     aside: Option<Element>,
@@ -141,7 +143,7 @@ impl Widget for Columns {
         &mut self,
         tree: &mut TaffyTree<()>,
         node: NodeId,
-        _text: &mut crate::text_render::TextRenderer,
+        _text: &mut tilo_ui_base::text_render::TextRenderer,
     ) -> bool {
         let Ok(width) = tree.layout(node).map(|layout| layout.size.width) else {
             return false;
@@ -163,7 +165,7 @@ impl Widget for Columns {
     }
 
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(tree, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(tree, node, origin);
         let start = Point::new(self.rect.x0, self.rect.y0);
         let parts = std::iter::once(&mut self.main).chain(self.aside.as_mut());
         for (child, &wrapper) in parts.zip(&self.nodes) {
@@ -185,7 +187,7 @@ impl Widget for Columns {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -201,7 +203,7 @@ impl Widget for Columns {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         let parts = std::iter::once(&mut self.main).chain(self.aside.as_mut());
         for (child, &wrapper) in parts.zip(&self.nodes) {
@@ -269,19 +271,19 @@ impl Widget for Columns {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::Spacer;
+    use tilo_ui_base::widget::Spacer;
 
     fn solve(columns: &mut Columns, width: f32) {
         let theme = Theme::dark();
         let mut tree = TaffyTree::new();
         let mut nodes = HashMap::new();
         let node = columns.build_layout(&mut tree, &theme, &mut nodes);
-        let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
-        let mut text = crate::font_catalog::fixture_renderer();
+        let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::new();
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         // SAFETY: exact live, exclusively owned widget tree and matching maps.
         unsafe {
             bindings.rebuild(columns, &tree, node, &nodes);
-            crate::widget::compute_widget_layout(
+            tilo_ui_base::widget::compute_widget_layout(
                 &mut tree,
                 node,
                 taffy::Size {

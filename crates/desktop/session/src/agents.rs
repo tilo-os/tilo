@@ -174,7 +174,7 @@ impl Agents {
         person: &str,
         workspaces: &[(String, WorkspacePolicy)],
     ) -> (Vec<Kept>, Vec<Listed>) {
-        let day = ui::clock::today().to_string();
+        let day = tilo_ui_base::clock::today().to_string();
         // Who keeps each agent, as the broker reads them, started from what it read last: a
         // workspace whose record cannot be read this pass keeps its listing, so a read that
         // failed never says an agent it named before is gone.
@@ -645,7 +645,7 @@ mod tests {
     /// worked on, that is the first client the person approves.
     #[test]
     fn a_clients_agent_member_is_listed_when_the_mcp_server_answers() {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let _home = tilo_test_env::TestHome::new().expect("a home");
         let state = tempfile::tempdir().expect("a state directory");
         let daemon = TestDaemon::start();
@@ -722,7 +722,7 @@ mod tests {
         /// A picture a persona may carry: a 1-by-1 PNG.
         const PNG: &str = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAMAAAAoyzS7AAAAA1BMVEX///+nxBvIAAAAAXRSTlMAQObYZgAAAAxJREFUeNoBgAEAAP//AwABWgH+AAAAAElFTkSuQmCC";
 
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let _home = tilo_test_env::TestHome::new().expect("a home");
         let state = tempfile::tempdir().expect("a state directory");
         let daemon = TestDaemon::start();
@@ -782,7 +782,7 @@ mod tests {
     /// retirement did not happen.
     #[test]
     fn a_change_of_the_agents_record_answers_its_value_and_a_refusal_says_why() {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let _home = tilo_test_env::TestHome::new().expect("a home");
         let state = tempfile::tempdir().expect("a state directory");
         let daemon = TestDaemon::start();
@@ -839,7 +839,7 @@ mod tests {
     fn a_turn_the_daemon_takes_is_held_until_it_ends() {
         use tilo_workspace_service::work::{Actor, Turn, takes_turn};
 
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let _home = tilo_test_env::TestHome::new().expect("a home");
         let state = tempfile::tempdir().expect("a state directory");
         let daemon = TestDaemon::start();
@@ -890,7 +890,7 @@ mod tests {
     fn the_agents_card_lists_a_session_and_stopping_it_ends_it() {
         use tilo_mcp::session_api::Consent;
 
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let _home = tilo_test_env::TestHome::new().expect("a home");
         let state = tempfile::tempdir().expect("a state directory");
         let daemon = TestDaemon::start();

@@ -1,7 +1,7 @@
 //! The window's bar held by the row its app draws.
 use super::WindowGroup;
-use crate::widget::Widget;
 use crate::widget::window_controls::{ControlsState, WindowControl};
+use tilo_ui_base::widget::Widget;
 use vello::kurbo::Point;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -75,7 +75,7 @@ impl WindowGroup {
         crate::widget::window_header::content_bar(app as &dyn Widget)
     }
 
-    pub(super) fn draw_held_furniture(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub(super) fn draw_held_furniture(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -107,7 +107,7 @@ impl WindowGroup {
                 .find_map(super::held_controls::HeldControl::keyboard),
         };
         self.held.paint(
-            &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
             &mut self.search,
             state,
         );
@@ -120,7 +120,7 @@ impl WindowGroup {
     pub(super) fn perform_held_furniture_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> Option<bool> {
         self.held_bar?;
         let control = match target {
@@ -135,7 +135,7 @@ impl WindowGroup {
             Some(WindowControl::Close) => self.held.controls.close,
             Some(WindowControl::Minimize) => return Some(false),
         };
-        if !matches!(action, crate::a11y::Action::Activate) || placed.area() <= 0.0 {
+        if !matches!(action, tilo_ui_base::a11y::Action::Activate) || placed.area() <= 0.0 {
             return Some(false);
         }
         match control {

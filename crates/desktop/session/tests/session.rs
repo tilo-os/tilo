@@ -353,7 +353,7 @@ fn invoke(session: &mut Session, resource: &str, action: &str) {
 
 #[test]
 fn a_window_becomes_a_tab_of_the_strip_and_shows_where_the_strip_lays_it_out() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let _client = mapped(&mut session, "org.example.Terminal");
     let (id, rect) = window(session.compositor(), "org.example.Terminal").unwrap();
@@ -391,7 +391,7 @@ tilo_test_env::scenario! {
 
     phase the_top_bar_draws_above_the_shell_and_opens_the_overview_by_its_action;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = session();
         session.step(Duration::from_millis(1)).unwrap();
         session.step(Duration::from_millis(1)).unwrap();
@@ -419,7 +419,7 @@ tilo_test_env::scenario! {
     // The power menu's shortcut puts it up: the chord, as a person presses it,
     // reaches the menu the same verb opens.
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = session();
         session.step(Duration::from_millis(1)).unwrap();
         invoke_with(
@@ -448,7 +448,7 @@ tilo_test_env::scenario! {
     // Stepping past the first or the last workspace or strip says which end the person reached, rather
     // than doing nothing.
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = session();
         session.step(Duration::from_millis(1)).unwrap();
         invoke_with(
@@ -489,7 +489,7 @@ tilo_test_env::scenario! {
     phase the_desktop_names_and_moves_the_strips_the_overview_offers;
     // Naming and moving strips, as the overview's strip rows ask.
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = session();
         session.step(Duration::from_millis(1)).unwrap();
         add_strip(&session, "Second");
@@ -533,7 +533,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn closing_a_windows_tab_asks_its_client_to_close() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let mut client = mapped(&mut session, "org.example.Editor");
     let tab = window_resource(&session, "org.example.Editor").unwrap();
@@ -618,7 +618,7 @@ fn take_size(session: &mut Session, client: &mut TestClient, app: &str, size: (i
 fn a_full_screen_window_covers_the_display_and_the_bar_comes_back() {
     const APP: &str = "org.example.Cinema";
     const RED: [u8; 4] = [200, 40, 40, 255];
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let mut client = mapped(&mut session, APP);
     let (id, rect) = window(session.compositor(), APP).unwrap();
@@ -755,7 +755,7 @@ fn publishes(session: &Session, resource: &str, action: &str) -> bool {
 
 #[test]
 fn a_desktop_chord_works_while_a_window_has_the_keyboard_and_the_window_never_sees_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let mut client = mapped(&mut session, "org.example.Terminal");
     pump(&mut session, &mut [&mut client], |_, clients| {
@@ -912,7 +912,7 @@ tilo_test_env::scenario! {
 
     phase the_volume_and_brightness_keys_work_with_no_quick_settings_panel;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let asked = Rc::new(RefCell::new(Vec::new()));
         let wireless = Rc::new(RefCell::new(Vec::new()));
         let dials = Dials::with(&[("HEADLESS-1", 0.5)]);
@@ -1008,7 +1008,7 @@ tilo_test_env::scenario! {
 
     phase the_play_key_reaches_whatever_publishes_the_player;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = session();
         let asked = Rc::new(RefCell::new(Vec::new()));
         session.publish(Rc::new(RefCell::new(Player {
@@ -1021,7 +1021,7 @@ tilo_test_env::scenario! {
 
     phase the_touchpad_key_and_the_sessions_own_action_switch_the_touchpad;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = session();
         assert!(session.input_config().touchpad_enabled);
         // The readout that answers the key stays up for a moment of its own, and a machine running a
@@ -1085,11 +1085,13 @@ impl Published for Player {
         address: &tilo_actions::ActionAddress,
         _: &serde_json::Map<String, serde_json::Value>,
         _look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         self.asked.borrow_mut().push(address.action.clone());
-        Ok(ui::host_operation::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        ))
+        Ok(
+            tilo_ui_base::host_operation::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        )
     }
 
     fn accessible_labels(&mut self) -> Vec<String> {
@@ -1136,7 +1138,7 @@ tilo_test_env::scenario! {
     // A session in a window of another desktop runs no idle timers: that desktop owns idle, blanking,
     // locking and suspend.
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut hosted = crate::common::headless(Options {
             machine: tilo_session::Machine::Window,
             ..Options::default()
@@ -1172,7 +1174,7 @@ tilo_test_env::scenario! {
     // heartbeat asked from outside it, so a session whose loop has stopped can be told apart from a
     // slow machine.
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let directory = tempfile::tempdir().expect("a directory");
         let control = directory.path().join("control.sock");
         let mut session = crate::common::headless(Options {
@@ -1223,7 +1225,7 @@ tilo_test_env::scenario! {
     {
         use std::os::unix::fs::PermissionsExt as _;
 
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let channel = tempfile::tempdir().expect("a channel");
         std::fs::set_permissions(channel.path(), std::fs::Permissions::from_mode(0o700))
             .expect("the channel is this person's");
@@ -1249,7 +1251,7 @@ tilo_test_env::scenario! {
 /// machine the window runs on, and shutting down ends the session rather than the host.
 #[test]
 fn a_session_in_a_window_takes_no_power_on_its_host() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = crate::common::headless(Options {
         machine: tilo_session::Machine::Window,
         session_actions: record_session_action,
@@ -1308,7 +1310,7 @@ fn a_session_in_a_window_takes_no_power_on_its_host() {
 /// Locking stays on offer where a password does unlock it.
 #[test]
 fn a_session_that_cannot_check_a_password_never_locks() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     // The session's own lock action, as the key or a client sends it.
@@ -1345,7 +1347,7 @@ fn a_session_that_cannot_check_a_password_never_locks() {
 /// caller offered it put up the same menu.
 #[test]
 fn the_power_menu_opens_by_its_published_verb() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     let menu = session
@@ -1394,7 +1396,7 @@ fn the_power_menu_opens_by_its_published_verb() {
 /// is not offered.
 #[test]
 fn the_session_publishes_the_actions_only_it_can_carry_out() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut own = crate::common::headless(Options {
         session_actions: record_session_action,
         user: "ada".to_owned(),
@@ -1456,7 +1458,7 @@ fn the_session_publishes_the_actions_only_it_can_carry_out() {
 
 #[test]
 fn quick_settings_opens_by_its_action_and_its_shortcut_closes_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     invoke(&mut session, CHROME_RESOURCE, "quick-settings");
     assert!(session.quick_settings_open());
@@ -1482,7 +1484,7 @@ fn quick_settings_opens_by_its_action_and_its_shortcut_closes_it() {
 
 #[test]
 fn the_empty_shells_launchpad_is_published_until_a_window_opens() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // A device with the apps the empty shell's cards open: what its launchpad offers is drawn from
     // the apps installed here.
     let mut session = session_with_lists(tilo_session::AppLists {
@@ -1519,7 +1521,7 @@ fn the_empty_shells_launchpad_is_published_until_a_window_opens() {
 
 #[test]
 fn the_magnifier_zooms_the_screen_about_the_pointer_by_its_actions() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let _client = mapped(&mut session, "org.example.Terminal");
     session
@@ -1593,7 +1595,7 @@ tilo_test_env::scenario! {
     // The sound the session offers is the audio service's, and every change the person makes is the
     // service's own action: the session writes none of it.
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let asked = Rc::new(RefCell::new(Vec::new()));
         let mut session = crate::common::headless(Options {
             services: vec![Box::new(Audio::speakers(Rc::clone(&asked)))],
@@ -1760,7 +1762,7 @@ impl tilo_session::Service for Audio {
 }
 #[test]
 fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = crate::common::headless(Options {
         setup: Some(tilo_session::BeforeShell::Ceremony(Box::new(
             tilo_session::OnboardingView::new_tour(),
@@ -1805,7 +1807,7 @@ fn setup_runs_over_the_desktop_through_its_actions_and_gives_it_back_when_done()
 /// press by that name is the person's press.
 #[test]
 fn setup_lists_its_steps_by_name_and_a_press_by_name_takes_the_step() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = crate::common::headless(Options {
         setup: Some(tilo_session::BeforeShell::Ceremony(Box::new(
             tilo_session::OnboardingView::new_tour(),
@@ -1836,7 +1838,7 @@ fn setup_lists_its_steps_by_name_and_a_press_by_name_takes_the_step() {
 /// stays there, and logging out ends it so the person can sign in again.
 #[test]
 fn a_login_the_daemon_did_not_start_says_so_and_logs_out() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = crate::common::headless(Options {
         setup: Some(tilo_session::BeforeShell::NotStarted),
         collab: false,
@@ -1929,7 +1931,7 @@ tilo_test_env::scenario! {
     phase workspace_settings_renames_the_workspace_through_its_action;
     {
         use tilo_sheets::SheetState as _;
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         // The name is the workspace's governance's, so the session holds the workspace it founds
         // there, as a session of a person with an identity does: a throwaway one, as
         // `dist/dev/nested-session.sh` mints.
@@ -2010,7 +2012,7 @@ tilo_test_env::scenario! {
 #[test]
 fn workspace_settings_shows_a_tab_and_moves_the_workspace() {
     use tilo_sheets::SheetState as _;
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     let state = session
@@ -2305,7 +2307,7 @@ impl Dispatch<ZwpTextInputV3, ()> for Seen {
 /// built-in one, to only the other.
 #[test]
 fn the_display_action_steps_through_the_ways_of_using_two_displays() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT).at(WIDTH, 0);
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("eDP-1", WIDTH, HEIGHT).at(0, 0), external],
@@ -2488,7 +2490,7 @@ fn strips_holding(session: &Session, tab: u64) -> Vec<String> {
 /// Leaving a workspace the person is not in takes it away and leaves them where they are.
 #[test]
 fn leaving_another_workspace_keeps_the_person_where_they_are() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     let home = active_workspace(&session).expect("the first workspace is open");
@@ -2520,7 +2522,7 @@ fn leaving_another_workspace_keeps_the_person_where_they_are() {
 /// their strips and which one was in front, without the windows.
 #[test]
 fn the_next_session_comes_up_where_this_one_was() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // A workspace's layout is the workspace's own record, which the device's daemon keeps: this
     // test is a computer whose daemon serves one session after another.
     let device = crate::common::device_daemon(crate::common::device_home(), None);
@@ -2571,7 +2573,7 @@ fn the_next_session_comes_up_where_this_one_was() {
 /// the shell, reachable by address as an agent or the palette does.
 #[test]
 fn the_desktop_sends_a_window_where_the_overview_offers_to() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let _client = mapped(&mut session, "org.example.Editor");
     let tab = tab_of(&session, "org.example.Editor");
@@ -2649,7 +2651,7 @@ fn the_desktop_sends_a_window_where_the_overview_offers_to() {
 /// The picture the person chose is the shell's, kept beside the session for this device.
 #[test]
 fn the_shell_starts_on_the_picture_the_person_chose() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The choice is made on a device whose session is not running, as `tilo` makes it there: kept
     // for the session that follows, and left at once for what the device's processes read.
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
@@ -2688,7 +2690,7 @@ fn the_shell_starts_on_the_picture_the_person_chose() {
 /// computer holds.
 #[test]
 fn the_workspace_menu_offers_joining_leaving_and_settings() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     invoke(&mut session, CHROME_RESOURCE, "workspace-menu");
@@ -2786,7 +2788,7 @@ fn copy_key(session: &Session, text: &str) -> String {
 /// front to paste with its own chord.
 #[test]
 fn a_copy_is_kept_across_a_restart_and_pasted_into_the_app_in_front() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // A copy is kept whole: its second line pastes into the app in front.
     let text = b"meeting notes\nsecond line";
     let copy = std::str::from_utf8(text).expect("the text");
@@ -2846,7 +2848,7 @@ fn a_copy_is_kept_across_a_restart_and_pasted_into_the_app_in_front() {
 
 #[test]
 fn the_dictation_key_shows_the_session_s_own_card_and_escape_closes_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let mut client = mapped(&mut session, "org.example.Editor");
     pump(&mut session, &mut [&mut client], |_, clients| {

@@ -2,11 +2,11 @@
 //! list beside the content, the content, and an optional inspector, laid out at
 //! `theme.tokens.metrics`.
 
-use crate::num::f64_of_usize;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::num::f64_of_usize;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -14,21 +14,26 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::LocalState;
-use crate::icons::Icon;
-use crate::local_state::LocalBinding;
-use crate::platform::{HostShortcut, PlatformConventions};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use crate::time::Instant;
-use crate::tokens::BreakpointTracker;
 use crate::widget::flap::{FlapState, SplitLayout};
-use crate::widget::manual::{ManualContext, ManualInvalidation, ManualPolicy};
 use crate::widget::window_header::header_row::HeaderRowMetrics;
 use crate::widget::window_header::{HistoryControl, WindowHeader};
-use crate::widget::{
-    AppModel, Button, ButtonRole, DescribedList, Element, ModelPath, NavList, SearchField,
-    StructureChange, TaffyTreeExt, Widget, WidgetLayoutError,
+use crate::{
+    widget::Button, widget::ButtonRole, widget::DescribedList, widget::NavList, widget::SearchField,
+};
+use tilo_ui_base::LocalState;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::local_state::LocalBinding;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::BreakpointTracker;
+use tilo_ui_base::{platform::HostShortcut, platform::PlatformConventions};
+use tilo_ui_base::{
+    widget::AppModel, widget::Element, widget::ModelPath, widget::StructureChange,
+    widget::TaffyTreeExt, widget::Widget, widget::WidgetLayoutError,
+};
+use tilo_ui_base::{
+    widget::manual::ManualContext, widget::manual::ManualInvalidation, widget::manual::ManualPolicy,
 };
 
 mod back;
@@ -48,7 +53,6 @@ mod status_action;
 mod swap;
 mod window_header;
 mod window_toolbar;
-use crate::widget::ContentKind;
 use crate::widget::OverflowButton;
 #[cfg(test)]
 use crate::widget::toast::ToastKind;
@@ -60,6 +64,7 @@ pub use layout::NavGeometry;
 use layout::{layout_of, stack_index};
 pub use notices::HeldNotice;
 use sidebar_resize::AdaptiveSidebar;
+use tilo_ui_base::widget::ContentKind;
 use window_toolbar::Requests;
 pub use window_toolbar::{WINDOW_BACK, WINDOW_SIDEBAR, WindowBarLink};
 
@@ -369,14 +374,14 @@ impl Metrics {
             grid_min: f64::from(m.grid_min_width) * growth,
             compact_min: f64::from(m.window_min_width) * growth,
             hysteresis: f64::from(m.layout_hysteresis),
-            filter: crate::widget::text_control_height(
-                f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
+            filter: tilo_ui_base::widget::text_control_height(
+                f64::from(tilo_ui_base::tokens::Metrics::BASE.min_pointer_target),
                 theme,
             ),
             resize_grip: f64::from(s.s1),
             pointer: f64::from(m.min_pointer_target),
             scale: theme.responsive_scale(),
-            body_line: f64::from(theme.text(crate::TextRole::Body).line_height_px()),
+            body_line: f64::from(theme.text(tilo_ui_base::TextRole::Body).line_height_px()),
             rem: crate::widget::arrange::rem_of(theme),
             reading_measure: f64::from(m.reading_measure) * growth,
             scroll_gutter: f64::from(m.scrollbar_gutter),
@@ -488,7 +493,7 @@ struct Inputs {
     /// rest, where the front screen's index stands.
     push_pos: Option<f64>,
     /// The push stack's position on the drill motion (`motion::Drill`).
-    push: crate::motion::MotionValue<f64>,
+    push: tilo_ui_base::motion::MotionValue<f64>,
     /// The parts in the order they were built (their placement index).
     parts: Vec<Part>,
     fit: Rc<RefCell<[ColumnFit; 4]>>,
@@ -563,7 +568,7 @@ impl Default for Inputs {
             sheet: crate::widget::BottomSheet::new(),
             pane: NavPane::Content,
             push_pos: None,
-            push: crate::motion::MotionValue::new(0.0),
+            push: tilo_ui_base::motion::MotionValue::new(0.0),
             parts: Vec::new(),
             fit: Rc::new(RefCell::new(Default::default())),
             held: Held::default(),
@@ -601,9 +606,9 @@ impl Inputs {
 
     /// The width class the content beside a sidebar is in at the least
     /// ([`ContentKind::beside_sidebar_class`]).
-    fn content_beside_sidebar_class(&self) -> crate::widget::WidthClass {
+    fn content_beside_sidebar_class(&self) -> tilo_ui_base::widget::WidthClass {
         if !self.has_content {
-            return crate::widget::WidthClass::Compact;
+            return tilo_ui_base::widget::WidthClass::Compact;
         }
         self.kind.beside_sidebar_class()
     }
@@ -727,7 +732,7 @@ pub struct NavShell {
     chose_in: Option<NavPane>,
 
     inputs: Rc<RefCell<Inputs>>,
-    policy: Rc<crate::widget::manual::Policy>,
+    policy: Rc<tilo_ui_base::widget::manual::Policy>,
     invalidation: ManualInvalidation,
     baseline: Vec<(NodeId, Style)>,
     /// The parts in the host tree, in build order.
@@ -752,17 +757,17 @@ pub struct NavShell {
     resize_focused: bool,
     edge: sidebar_resize::Edge,
     last_cursor: Point,
-    fade: crate::motion::Presence,
+    fade: tilo_ui_base::motion::Presence,
     /// The columns a layout switch brought in fading in: those that appeared or moved where no
     /// slide carries them, and under reduced motion every one of them.
-    switch_fade: crate::motion::Presence,
+    switch_fade: tilo_ui_base::motion::Presence,
     /// Which columns ([`Column::index`]) the layout switch fades in.
     switch_columns: [bool; 4],
     /// What the content shows, as its owner names it (`NavShellProps::content_key`): when it
     /// changes, the new content is faded in where the old one stood.
     content_key: Option<String>,
     /// The fade of the content a change of [`Self::content_key`] brings.
-    content_fade: crate::motion::Presence,
+    content_fade: tilo_ui_base::motion::Presence,
     /// A slide, push or fade is moving, or its last pose has yet to be laid
     /// out: the host owes the shell a frame.
     animating: bool,
@@ -807,13 +812,13 @@ pub struct NavShell {
     /// Whether Back goes back now, for a shell made from its description with a `back`
     /// event: taken in place as the description changes.
     can_back: Option<Rc<std::cell::Cell<bool>>>,
-    /// The part a host is changing through [`crate::component::Described::part_views`].
+    /// The part a host is changing through [`tilo_ui_base::component::Described::part_views`].
     part_edit: Option<component::PartEdit>,
     /// The window's search narrows the sidebar's list wherever it stands
     /// ([`Self::search_sidebar`]).
     sidebar_search: bool,
     /// How the person reaches the window ([`Self::hear_input`]).
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
 }
 
 impl Default for NavShell {
@@ -828,12 +833,12 @@ impl NavShell {
         let requests = Rc::new(Requests::default());
         let inputs = Rc::new(RefCell::new(Inputs::default()));
         let policy_inputs = Rc::clone(&inputs);
-        let policy: Rc<crate::widget::manual::Policy> =
+        let policy: Rc<tilo_ui_base::widget::manual::Policy> =
             Rc::new(move |ctx: &mut ManualContext<'_>| place_parts(&policy_inputs.borrow(), ctx));
         let toggle = Self::shell_button(
             WINDOW_SIDEBAR,
             Icon::PanelLeft,
-            &crate::i18n::I18nManager::lookup_plain("window-toolbar-hide-sidebar"),
+            &tilo_ui_base::i18n::I18nManager::lookup_plain("window-toolbar-hide-sidebar"),
             {
                 let requests = Rc::clone(&requests);
                 move || requests.toggle.set(true)
@@ -842,7 +847,7 @@ impl NavShell {
         let back = Self::shell_button(
             WINDOW_BACK,
             Icon::ChevronLeft,
-            &crate::i18n::I18nManager::lookup_plain("window-toolbar-back"),
+            &tilo_ui_base::i18n::I18nManager::lookup_plain("window-toolbar-back"),
             {
                 let requests = Rc::clone(&requests);
                 move || requests.back.set(true)
@@ -851,7 +856,7 @@ impl NavShell {
         let inspector_toggle = Self::shell_button(
             "nav-shell-inspector",
             Icon::PanelRight,
-            &crate::i18n::I18nManager::lookup_plain("window-toolbar-hide-inspector"),
+            &tilo_ui_base::i18n::I18nManager::lookup_plain("window-toolbar-hide-inspector"),
             {
                 let requests = Rc::clone(&requests);
                 move || requests.inspector.set(true)
@@ -861,7 +866,7 @@ impl NavShell {
             id: None,
             sidebar: None,
             overview: None,
-            content: Box::new(crate::widget::Spacer::new()),
+            content: Box::new(tilo_ui_base::widget::Spacer::new()),
             content_shown: true,
             content_shown_built: true,
             held: None,
@@ -909,11 +914,11 @@ impl NavShell {
             resize_focused: false,
             edge: sidebar_resize::Edge::default(),
             last_cursor: Point::ZERO,
-            fade: crate::motion::Presence::opened(),
-            switch_fade: crate::motion::Presence::opened(),
+            fade: tilo_ui_base::motion::Presence::opened(),
+            switch_fade: tilo_ui_base::motion::Presence::opened(),
             switch_columns: [false; 4],
             content_key: None,
-            content_fade: crate::motion::Presence::opened(),
+            content_fade: tilo_ui_base::motion::Presence::opened(),
             animating: false,
             settling: false,
             slid: false,
@@ -937,7 +942,7 @@ impl NavShell {
             can_back: None,
             part_edit: None,
             sidebar_search: false,
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
         }
     }
 
@@ -1125,7 +1130,7 @@ impl NavShell {
         self.inputs
             .borrow_mut()
             .sidebar
-            .from_input(crate::tokens::MotionSource::Action);
+            .from_input(tilo_ui_base::tokens::MotionSource::Action);
         self.inputs.borrow_mut().sidebar.set_open(open);
         self.after_flap_change();
     }
@@ -1139,7 +1144,7 @@ impl NavShell {
         self.inputs
             .borrow_mut()
             .inspector
-            .from_input(crate::tokens::MotionSource::Action);
+            .from_input(tilo_ui_base::tokens::MotionSource::Action);
         self.inputs.borrow_mut().inspector.set_open(open);
         self.after_flap_change();
     }
@@ -1237,14 +1242,14 @@ impl NavShell {
     /// shows its Back chip at the leading edge of the content's header, and pressing it pops
     /// the stack (browse history, a drill-down from a dashboard into a queue).
     #[must_use]
-    pub fn with_back<T>(self, stack: &LocalState<crate::NavStack<T>>) -> Self
+    pub fn with_back<T>(self, stack: &LocalState<tilo_ui_base::NavStack<T>>) -> Self
     where
         T: Clone + PartialEq + 'static,
     {
         let read = stack.clone();
         let write = stack.clone();
         self.on_back(
-            move || read.with(crate::NavStack::can_go_back),
+            move || read.with(tilo_ui_base::NavStack::can_go_back),
             move || {
                 write.update(|stack| {
                     stack.back();
@@ -1625,7 +1630,7 @@ impl NavShell {
     /// The overview's first list, however the app wraps it inside its view of
     /// the column: the rows it shows and the person's choice among them.
     pub fn overview_list_mut(&mut self) -> Option<&mut DescribedList> {
-        crate::widget::find_mut::<DescribedList>(self.app_body_mut(Column::Overview)?)
+        tilo_ui_base::widget::find_mut::<DescribedList>(self.app_body_mut(Column::Overview)?)
     }
 
     pub fn content_mut<T: Widget + 'static>(&mut self) -> Option<&mut T> {
@@ -1736,7 +1741,7 @@ impl NavShell {
             } else {
                 &mut inputs.sidebar
             };
-            flap.from_input(crate::tokens::MotionSource::Keyboard);
+            flap.from_input(tilo_ui_base::tokens::MotionSource::Keyboard);
         }
         if column == Column::Inspector {
             self.toggle_inspector();
@@ -1770,7 +1775,7 @@ impl NavShell {
         if !self.inputs.borrow().sidebar.is_open(SplitLayout::Docked) {
             return None;
         }
-        let list = crate::widget::find::<NavList>(self.sidebar.as_deref()?)?;
+        let list = tilo_ui_base::widget::find::<NavList>(self.sidebar.as_deref()?)?;
         if list.is_rail() {
             return None;
         }
@@ -1920,15 +1925,15 @@ impl NavShell {
     /// Bring `pane` to the front of a narrow window's push stack. In a wide window every pane
     /// is already showing; this records which one a later collapse keeps in front.
     pub fn show(&mut self, pane: NavPane) {
-        let source = crate::motion::recent_input(crate::time::now())
-            .unwrap_or(crate::tokens::MotionSource::Action);
+        let source = tilo_ui_base::motion::recent_input(crate::time::now())
+            .unwrap_or(tilo_ui_base::tokens::MotionSource::Action);
         self.show_from(pane, source);
     }
 
     /// [`Self::show`] for an open whose origin the caller knows: `source` is
-    /// what asked for it ([`crate::tokens::MotionSource::Action`] for an
+    /// what asked for it ([`tilo_ui_base::tokens::MotionSource::Action`] for an
     /// agent's action, a search hit or an `open` request).
-    pub fn show_from(&mut self, pane: NavPane, source: crate::tokens::MotionSource) {
+    pub fn show_from(&mut self, pane: NavPane, source: tilo_ui_base::tokens::MotionSource) {
         let pane = match pane {
             NavPane::Sidebar if !self.has_sidebar() => self.content_pane(),
             NavPane::Overview if !self.has_overview() => self.content_pane(),
@@ -1945,7 +1950,7 @@ impl NavShell {
                 return;
             }
             let stack = &self.geometry.stack;
-            let now = crate::motion::frame_now();
+            let now = tilo_ui_base::motion::frame_now();
             if !inputs.push.is_moving(now) {
                 let from = f64_of_usize(stack_index(stack, inputs.pane));
                 inputs.push.snap(from);
@@ -1956,8 +1961,8 @@ impl NavShell {
                 inputs.push.snap(to);
                 inputs.push_pos = None;
             } else {
-                let direction = crate::motion::Direction::of(to >= inputs.push.target());
-                let timing = crate::motion::Drill::SPEC.timing(
+                let direction = tilo_ui_base::motion::Direction::of(to >= inputs.push.target());
+                let timing = tilo_ui_base::motion::Drill::SPEC.timing(
                     direction,
                     self.layout_theme.motion(),
                     source,
@@ -2007,9 +2012,9 @@ impl NavShell {
             let at = inputs.push.target();
             inputs.push.snap(at);
         }
-        self.fade = crate::motion::Presence::opened();
-        self.switch_fade = crate::motion::Presence::opened();
-        self.content_fade = crate::motion::Presence::opened();
+        self.fade = tilo_ui_base::motion::Presence::opened();
+        self.switch_fade = tilo_ui_base::motion::Presence::opened();
+        self.content_fade = tilo_ui_base::motion::Presence::opened();
         self.switch_columns = [false; 4];
         self.animating = false;
         self.settling = false;
@@ -2023,7 +2028,7 @@ impl NavShell {
             .shortcut(self.conventions)
             .label(self.conventions);
         let sidebar_open = self.is_sidebar_open();
-        let name = crate::i18n::I18nManager::lookup_plain(if sidebar_open {
+        let name = tilo_ui_base::i18n::I18nManager::lookup_plain(if sidebar_open {
             "window-toolbar-hide-sidebar"
         } else {
             "window-toolbar-show-sidebar"
@@ -2031,7 +2036,7 @@ impl NavShell {
         self.toggle.set_accessible_name(&name);
         self.toggle
             .set_tooltip(Some(format!("{name} ({shortcut})")));
-        let name = crate::i18n::I18nManager::lookup_plain(if self.is_inspector_open() {
+        let name = tilo_ui_base::i18n::I18nManager::lookup_plain(if self.is_inspector_open() {
             "window-toolbar-hide-inspector"
         } else {
             "window-toolbar-show-inspector"
@@ -2134,14 +2139,16 @@ impl NavShell {
     fn column_theme(&self, theme: &Theme, column: Option<Column>) -> Theme {
         match column {
             Some(Column::Sidebar) => match self.geometry.sidebar {
-                SidebarPlacement::Drawer => theme.on_ground(crate::chrome::panel_ground(theme)),
-                _ => theme.in_region(crate::surface::Region::Sidebar),
+                SidebarPlacement::Drawer => {
+                    theme.on_ground(tilo_ui_base::chrome::panel_ground(theme))
+                }
+                _ => theme.in_region(tilo_ui_base::surface::Region::Sidebar),
             },
             Some(Column::Inspector) => match self.geometry.inspector {
                 InspectorPlacement::Sheet | InspectorPlacement::Drawer => {
-                    theme.on_ground(crate::chrome::panel_ground(theme))
+                    theme.on_ground(tilo_ui_base::chrome::panel_ground(theme))
                 }
-                _ => theme.in_region(crate::surface::Region::Inspector),
+                _ => theme.in_region(tilo_ui_base::surface::Region::Inspector),
             },
             Some(Column::Overview | Column::Content) | None => theme.clone(),
         }
@@ -2201,7 +2208,7 @@ impl NavShell {
     /// that chose it, so its invocation leaves with that event.
     fn take_more_choices(
         &mut self,
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let mut acted = false;
@@ -2211,7 +2218,7 @@ impl NavShell {
             if let Some(row) = header.more.take_choice()
                 && let Some(action) = header.actions.get_mut(shown.saturating_add(row))
             {
-                action.perform_action(&crate::a11y::Action::Activate, &[], state, path);
+                action.perform_action(&tilo_ui_base::a11y::Action::Activate, &[], state, path);
                 acted = true;
             }
         }
@@ -2297,7 +2304,7 @@ impl NavShell {
 
     /// Advance the slides to this frame's time.
     fn tick(&mut self, theme: &Theme) {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let motion = theme.motion();
         let sidebar_layout = layout_of(self.geometry.sidebar);
         let inspector_layout = inspector_layout_of(self.geometry.inspector);
@@ -2370,9 +2377,9 @@ impl NavShell {
         if !changed {
             return;
         }
-        let now = crate::motion::frame_now();
-        let source =
-            crate::motion::recent_input(now).unwrap_or(crate::tokens::MotionSource::Action);
+        let now = tilo_ui_base::motion::frame_now();
+        let source = tilo_ui_base::motion::recent_input(now)
+            .unwrap_or(tilo_ui_base::tokens::MotionSource::Action);
         // The content it shows now is what the window shows: on a narrow window, where the list
         // stands in front, it comes forward as a place chosen from that list does.
         if self.has_content() {
@@ -2381,26 +2388,26 @@ impl NavShell {
         self.content_fade.snap(false);
         self.content_fade.show(
             true,
-            crate::motion::CROSS_FADE,
+            tilo_ui_base::motion::CROSS_FADE,
             self.layout_theme.motion(),
             source,
             now,
         );
         if let Some(until) = self.content_fade.settles_at() {
-            crate::motion::want_frames_until(until);
+            tilo_ui_base::motion::want_frames_until(until);
         }
         self.paint_dirty = true;
         self.invalidate();
     }
 
-    fn fading_in(motion: crate::tokens::EffectiveMotion) -> crate::motion::Presence {
-        let mut fade = crate::motion::Presence::closed();
+    fn fading_in(motion: tilo_ui_base::tokens::EffectiveMotion) -> tilo_ui_base::motion::Presence {
+        let mut fade = tilo_ui_base::motion::Presence::closed();
         fade.show(
             true,
-            crate::motion::CROSS_FADE,
+            tilo_ui_base::motion::CROSS_FADE,
             motion,
-            crate::tokens::MotionSource::Pointer,
-            crate::motion::frame_now(),
+            tilo_ui_base::tokens::MotionSource::Pointer,
+            tilo_ui_base::motion::frame_now(),
         );
         fade
     }
@@ -2515,12 +2522,12 @@ impl NavShell {
                 let i = f64_of_usize(stack_index(&after.stack, front));
                 let last = f64_of_usize(after.stack.len().saturating_sub(1));
                 let from = (i - (was.x0 - is.x0) / w).clamp(0.0, last);
-                let now = crate::motion::frame_now();
+                let now = tilo_ui_base::motion::frame_now();
                 inputs.push.snap(from);
-                let timing = crate::motion::Drill::SPEC.timing(
-                    crate::motion::Direction::Enter,
+                let timing = tilo_ui_base::motion::Drill::SPEC.timing(
+                    tilo_ui_base::motion::Direction::Enter,
                     self.layout_theme.motion(),
-                    crate::tokens::MotionSource::Pointer,
+                    tilo_ui_base::tokens::MotionSource::Pointer,
                 );
                 inputs.push.set(i, timing, now);
                 inputs.push_pos = inputs.push.is_moving(now).then_some(from);
@@ -2622,8 +2629,11 @@ impl NavShell {
 
     fn paint(&mut self, f: &mut Frame<'_>) {
         let g = self.geometry.clone();
-        let fade = unit_f32(self.fade.progress(crate::motion::frame_now()));
-        let content = unit_f32(self.content_fade.progress(crate::motion::frame_now()));
+        let fade = unit_f32(self.fade.progress(tilo_ui_base::motion::frame_now()));
+        let content = unit_f32(
+            self.content_fade
+                .progress(tilo_ui_base::motion::frame_now()),
+        );
 
         let inspector_region =
             g.inspector == InspectorPlacement::Docked && g.inspector_column.width() > 0.0;
@@ -2656,20 +2666,20 @@ impl NavShell {
                 );
             }
             if column == Column::Sidebar && sidebar_region {
-                crate::surface::region(
+                tilo_ui_base::surface::region(
                     f.scene,
                     f.transform,
                     g.sidebar_column,
-                    crate::surface::Region::Sidebar,
+                    tilo_ui_base::surface::Region::Sidebar,
                     f.theme,
                 );
             }
             if column == Column::Inspector && inspector_region {
-                crate::surface::region(
+                tilo_ui_base::surface::region(
                     f.scene,
                     f.transform,
                     g.inspector_column,
-                    crate::surface::Region::Inspector,
+                    tilo_ui_base::surface::Region::Inspector,
                     f.theme,
                 );
             }
@@ -2818,7 +2828,7 @@ impl NavShell {
         let local = self.column_theme(f.theme, Some(column));
         let clip = rect.intersect(self.rect);
         let alpha = if self.switch_columns[column.index()] {
-            unit_f32(self.switch_fade.progress(crate::motion::frame_now()))
+            unit_f32(self.switch_fade.progress(tilo_ui_base::motion::frame_now()))
         } else {
             1.0
         };
@@ -2894,7 +2904,7 @@ impl NavShell {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                crate::surface::edge_on(theme.tokens.colors.surfaces.content),
+                tilo_ui_base::surface::edge_on(theme.tokens.colors.surfaces.content),
                 None,
                 &rule,
             );
@@ -2914,13 +2924,13 @@ struct Frame<'a> {
     transform: Affine,
     text: &'a mut TextRenderer,
     theme: &'a Theme,
-    env: &'a crate::draw::DrawEnv<'a>,
+    env: &'a tilo_ui_base::draw::DrawEnv<'a>,
 }
 
 impl Frame<'_> {
     fn draw(&mut self, widget: Option<&mut (dyn Widget + 'static)>, theme: &Theme) {
         if let Some(widget) = widget {
-            crate::widget::draw_child(
+            tilo_ui_base::widget::draw_child(
                 widget,
                 self.scene,
                 self.transform,
@@ -2935,53 +2945,56 @@ impl Frame<'_> {
 impl Widget for NavShell {
     fn on_nav_gesture(
         &mut self,
-        dir: crate::gesture::NavDirection,
+        dir: tilo_ui_base::gesture::NavDirection,
         state: &AppModel,
         path: &ModelPath,
     ) -> bool {
         self.nav_gesture(dir, state, path)
     }
 
-    fn nav_availability(&self) -> crate::gesture::NavAvailability {
+    fn nav_availability(&self) -> tilo_ui_base::gesture::NavAvailability {
         self.nav_gesture_availability()
     }
 
-    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+    fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
         if request.wants::<Self>() {
             request.provide::<Self>(self);
-        } else if request.wants::<dyn crate::widget::controls::ActionControls>() {
-            request.provide::<dyn crate::widget::controls::ActionControls>(self);
+        } else if request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
+            request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
         } else if request.wants::<dyn WindowHeader>() {
             request.provide::<dyn WindowHeader>(self);
-        } else if request.wants::<dyn crate::widget::resources::PublishesResources>() {
-            request.provide::<dyn crate::widget::resources::PublishesResources>(self);
-        } else if request.wants::<dyn crate::widget::ResourceOperations>() {
-            request.provide::<dyn crate::widget::ResourceOperations>(self);
+        } else if request.wants::<dyn tilo_ui_base::widget::resources::PublishesResources>() {
+            request.provide::<dyn tilo_ui_base::widget::resources::PublishesResources>(self);
+        } else if request.wants::<dyn tilo_ui_base::widget::ResourceOperations>() {
+            request.provide::<dyn tilo_ui_base::widget::ResourceOperations>(self);
         } else if self.sidebar_search
             && request.wants::<dyn crate::widget::Filterable>()
             && let Some(sidebar) = &self.sidebar
         {
             sidebar.provide(request);
-        } else if !request.wants::<dyn crate::widget::Decorated>() {
+        } else if !request.wants::<dyn tilo_ui_base::widget::Decorated>() {
             self.content.provide(request);
         }
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
-        if request.wants::<dyn crate::widget::controls::ActionControls>() {
-            request.provide::<dyn crate::widget::controls::ActionControls>(self);
+    fn provide_mut<'a>(
+        &'a mut self,
+        request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
+        if request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
+            request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
         } else if request.wants::<dyn WindowHeader>() {
             request.provide::<dyn WindowHeader>(self);
-        } else if request.wants::<dyn crate::widget::resources::PublishesResources>() {
-            request.provide::<dyn crate::widget::resources::PublishesResources>(self);
-        } else if request.wants::<dyn crate::widget::ResourceOperations>() {
-            request.provide::<dyn crate::widget::ResourceOperations>(self);
+        } else if request.wants::<dyn tilo_ui_base::widget::resources::PublishesResources>() {
+            request.provide::<dyn tilo_ui_base::widget::resources::PublishesResources>(self);
+        } else if request.wants::<dyn tilo_ui_base::widget::ResourceOperations>() {
+            request.provide::<dyn tilo_ui_base::widget::ResourceOperations>(self);
         } else if self.sidebar_search
             && request.wants::<dyn crate::widget::Filterable>()
             && let Some(sidebar) = &mut self.sidebar
         {
             sidebar.provide_mut(request);
-        } else if !request.wants::<dyn crate::widget::Decorated>() {
+        } else if !request.wants::<dyn tilo_ui_base::widget::Decorated>() {
             self.content.provide_mut(request);
         }
     }
@@ -3002,7 +3015,7 @@ impl Widget for NavShell {
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.hear_input(environment);
         self.for_each_owned_mut(|child| child.set_interaction_environment(environment));
@@ -3025,7 +3038,7 @@ impl Widget for NavShell {
         self.publish_notice();
     }
 
-    fn settle(&mut self, edits: &mut super::Edits<'_>, path: &automerge::ObjId) {
+    fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, path: &automerge::ObjId) {
         // A command chosen from a header's menu by assistive technology has no pointer event to
         // carry it, so the settle pass runs it.
         self.take_more_choices(edits, path);
@@ -3041,7 +3054,7 @@ impl Widget for NavShell {
         changed |= self.notice.expire();
         self.publish_notice();
         if self.animating || self.settling {
-            crate::widget::note_layout_moved();
+            tilo_ui_base::widget::note_layout_moved();
         }
         changed
     }
@@ -3117,7 +3130,7 @@ impl Widget for NavShell {
         let before = self
             .geometry
             .translated(Vec2::new(-self.rect.x0, -self.rect.y0));
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         let stale = self.replan(&before);
         self.inputs.borrow_mut().held = Held::of(&self.geometry);
         self.follow_sidebar_width(self.geometry.body(Column::Sidebar).width());
@@ -3163,7 +3176,7 @@ impl Widget for NavShell {
             || self.laid_out_parts.iter().any(part_dirty)
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -3180,7 +3193,7 @@ impl Widget for NavShell {
         self.tick(theme);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -3188,7 +3201,7 @@ impl Widget for NavShell {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         for child in self.children_mut() {
-            child.draw_overlay(&mut crate::draw::DrawCtx::new(
+            child.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -3198,7 +3211,7 @@ impl Widget for NavShell {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if self.handle_own_event(event, ctx) {
             *ctx.handled = true;
             return;
@@ -3370,23 +3383,25 @@ impl Widget for NavShell {
 
     /// Each column's header row as the last layout left it: what its title says against what
     /// the row gave it, and what its actions kept of their labels and their place in the row.
-    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
+    fn layout_info(&self) -> Option<tilo_ui_base::widget::LayoutInfo> {
         let inputs = self.inputs.borrow();
         let fit = inputs.fit.borrow();
-        let mut rows: [Option<crate::widget::HeaderRowLayout>; 4] = [None; 4];
+        let mut rows: [Option<tilo_ui_base::widget::HeaderRowLayout>; 4] = [None; 4];
         for (index, (row, part)) in rows.iter_mut().zip(fit.iter()).enumerate() {
-            *row = part.header.map(|facts| crate::widget::HeaderRowLayout {
-                column: Column::ALL[index].key(),
-                title_needs: crate::num::f32_of_f64(facts.title_needs),
-                title_has: crate::num::f32_of_f64(facts.title_has),
-                free_beside_title: crate::num::f32_of_f64(facts.free_beside_title),
-                title_opens: self
-                    .headers
-                    .get(index)
-                    .is_none_or(|header| header.title.opens_within(facts.title_has)),
-                labelled_action: facts.labelled_action,
-                primary_shown: facts.primary_shown,
-            });
+            *row = part
+                .header
+                .map(|facts| tilo_ui_base::widget::HeaderRowLayout {
+                    column: Column::ALL[index].key(),
+                    title_needs: tilo_ui_base::num::f32_of_f64(facts.title_needs),
+                    title_has: tilo_ui_base::num::f32_of_f64(facts.title_has),
+                    free_beside_title: tilo_ui_base::num::f32_of_f64(facts.free_beside_title),
+                    title_opens: self
+                        .headers
+                        .get(index)
+                        .is_none_or(|header| header.title.opens_within(facts.title_has)),
+                    labelled_action: facts.labelled_action,
+                    primary_shown: facts.primary_shown,
+                });
         }
         let m = inputs.metrics;
         let beside = self.beside_sidebar();
@@ -3396,18 +3411,18 @@ impl Widget for NavShell {
         )]
         let (beside_rem, beside_width) =
             ((beside / f64::from(m.rem.max(1.0))) as f32, beside as f32);
-        Some(crate::widget::LayoutInfo::Shell(
-            crate::widget::ShellLayout {
+        Some(tilo_ui_base::widget::LayoutInfo::Shell(
+            tilo_ui_base::widget::ShellLayout {
                 sidebar: match self.geometry.sidebar {
-                    SidebarPlacement::None => crate::widget::SidebarPosition::None,
-                    SidebarPlacement::Docked => crate::widget::SidebarPosition::Docked,
-                    SidebarPlacement::Drawer => crate::widget::SidebarPosition::Over,
-                    SidebarPlacement::Screen => crate::widget::SidebarPosition::Alone,
+                    SidebarPlacement::None => tilo_ui_base::widget::SidebarPosition::None,
+                    SidebarPlacement::Docked => tilo_ui_base::widget::SidebarPosition::Docked,
+                    SidebarPlacement::Drawer => tilo_ui_base::widget::SidebarPosition::Over,
+                    SidebarPlacement::Screen => tilo_ui_base::widget::SidebarPosition::Alone,
                 },
-                beside: crate::widget::WidthClass::of(beside_rem),
+                beside: tilo_ui_base::widget::WidthClass::of(beside_rem),
                 needs: inputs.content_beside_sidebar_class(),
                 beside_width,
-                rows: crate::widget::HeaderRows { rows },
+                rows: tilo_ui_base::widget::HeaderRows { rows },
             },
         ))
     }
@@ -3425,14 +3440,17 @@ impl Widget for NavShell {
 
     /// The window's group, keyed by the shell's id so what stands under a titled column keeps its
     /// identity on the agent surface while titles come and go; the titles are its headings.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         let key = self.id.as_deref().unwrap_or("nav-shell");
         let resize = self.sidebar_resize_handle().map(|handle| {
             let target = self.sidebar_resize_target();
             handle
                 .accessibility()
-                .with_name(crate::i18n::widget_format("widget-sidebar-resize", &[]))
+                .with_name(tilo_ui_base::i18n::widget_format(
+                    "widget-sidebar-resize",
+                    &[],
+                ))
                 .with_action_target(target.clone())
                 .with_hashed_key(&target)
                 .with_bounds(self.geometry.resize_handle)
@@ -3452,8 +3470,8 @@ impl Widget for NavShell {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if target == self.sheet_target() {
@@ -3462,7 +3480,7 @@ impl Widget for NavShell {
         if target != self.sidebar_resize_target() || self.sidebar_resize_handle().is_none() {
             return false;
         }
-        if matches!(action, crate::a11y::Action::Focus) {
+        if matches!(action, tilo_ui_base::a11y::Action::Focus) {
             self.resize_focused = true;
             self.invalidate();
             return true;
@@ -3502,8 +3520,10 @@ impl Widget for NavShell {
         // owned part.
         self.animating
             || self.settling
-            || self.fade.is_moving(crate::motion::frame_now())
-            || self.content_fade.is_moving(crate::motion::frame_now())
+            || self.fade.is_moving(tilo_ui_base::motion::frame_now())
+            || self
+                .content_fade
+                .is_moving(tilo_ui_base::motion::frame_now())
             || self.painted_parts().any(Widget::needs_animation_frame)
     }
 
@@ -3535,7 +3555,7 @@ impl Widget for NavShell {
             || self.status_dirty
             || self.animating
             || self.settling
-            || self.fade.is_moving(crate::motion::frame_now())
+            || self.fade.is_moving(tilo_ui_base::motion::frame_now())
             || self.painted_parts().any(Widget::needs_redraw)
     }
 
@@ -3552,7 +3572,10 @@ impl Widget for NavShell {
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        if self.paint_dirty || self.animating || self.fade.is_moving(crate::motion::frame_now()) {
+        if self.paint_dirty
+            || self.animating
+            || self.fade.is_moving(tilo_ui_base::motion::frame_now())
+        {
             regions.push(self.rect);
         } else {
             self.for_each_owned(|child| child.collect_damage(regions));
@@ -3604,7 +3627,7 @@ impl Widget for NavShell {
 
     /// The parts the shell lays out carry out their own changes, those of a
     /// screen not in front too: they stand in the tree while it slides.
-    fn remount_children(&mut self, remount: &mut crate::widget::Remount<'_>) -> bool {
+    fn remount_children(&mut self, remount: &mut tilo_ui_base::widget::Remount<'_>) -> bool {
         if self.bodies_swapped && !self.swap_bodies(remount) {
             return false;
         }
@@ -3677,7 +3700,7 @@ fn button_of(action: &dyn Widget) -> Option<&Button> {
         return Some(button);
     }
     if let Some(inner) =
-        crate::widget::capability::capability::<dyn crate::widget::Decorated>(action)
+        tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::Decorated>(action)
     {
         return button_of(inner.decorated());
     }
@@ -3690,7 +3713,7 @@ fn button_of(action: &dyn Widget) -> Option<&Button> {
 /// The accessibility node a header action speaks with: its own, or the one of the control it
 /// shows as, for an action wrapped in a view of the window's state (which is presentational and
 /// says nothing itself).
-fn action_node(action: &dyn Widget) -> Option<crate::a11y::AccessNode> {
+fn action_node(action: &dyn Widget) -> Option<tilo_ui_base::a11y::AccessNode> {
     if let Some(node) = action.accessibility() {
         return Some(node);
     }
@@ -3716,8 +3739,9 @@ fn button_mut(action: &mut dyn Widget) -> Option<*mut Button> {
     {
         return Some(std::ptr::from_mut(button));
     }
-    if let Some(inner) =
-        crate::widget::capability::capability_mut::<dyn crate::widget::DecoratedMut>(action)
+    if let Some(inner) = tilo_ui_base::widget::capability::capability_mut::<
+        dyn tilo_ui_base::widget::DecoratedMut,
+    >(action)
         && let Some(button) = button_mut(inner.decorated_mut())
     {
         return Some(button);
@@ -3791,21 +3815,21 @@ fn same_words(a: &str, b: &str) -> bool {
 /// Controls in a column the shell is not showing (a hidden sidebar, a closed drawer, a
 /// pushed-away screen) still belong to the window: ownership, invocations and availability reach
 /// every part the shell owns.
-impl crate::widget::resources::PublishesResources for NavShell {}
+impl tilo_ui_base::widget::resources::PublishesResources for NavShell {}
 
-impl crate::widget::ResourceOperations for NavShell {}
+impl tilo_ui_base::widget::ResourceOperations for NavShell {}
 
-impl crate::widget::controls::ActionControls for NavShell {
-    fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        crate::widget::controls::children_action_control_bindings(self)
+impl tilo_ui_base::widget::controls::ActionControls for NavShell {
+    fn action_control_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
+        tilo_ui_base::widget::controls::children_action_control_bindings(self)
     }
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         self.for_each_owned_mut(|child| {
-            crate::widget::controls::attach_controls(child, domain, attachment);
+            tilo_ui_base::widget::controls::attach_controls(child, domain, attachment);
         });
     }
 
@@ -3813,7 +3837,7 @@ impl crate::widget::controls::ActionControls for NavShell {
         let mut taken = None;
         self.for_each_owned_mut(|child| {
             if taken.is_none() {
-                taken = crate::widget::controls::take_control_invocation(child);
+                taken = tilo_ui_base::widget::controls::take_control_invocation(child);
             }
         });
         taken
@@ -3822,17 +3846,19 @@ impl crate::widget::controls::ActionControls for NavShell {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>,
+        result: &Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError>,
     ) {
         self.for_each_owned_mut(|child| {
-            if !crate::widget::component_walk::has_separate_document_owner(child) {
-                crate::widget::controls::on_control_invocation_result(child, address, result);
+            if !tilo_ui_base::widget::component_walk::has_separate_document_owner(child) {
+                tilo_ui_base::widget::controls::on_control_invocation_result(
+                    child, address, result,
+                );
             }
         });
     }
 
     fn has_action_control_bindings(&self) -> bool {
-        crate::widget::controls::children_have_action_control_bindings(self)
+        tilo_ui_base::widget::controls::children_have_action_control_bindings(self)
     }
 
     fn refresh_control_action_availability(
@@ -3840,14 +3866,14 @@ impl crate::widget::controls::ActionControls for NavShell {
         allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
     ) {
         self.for_each_owned_mut(|child| {
-            crate::widget::controls::refresh_control_action_availability(child, allowed);
+            tilo_ui_base::widget::controls::refresh_control_action_availability(child, allowed);
         });
     }
 
     fn has_pending_control_invocation(&self) -> bool {
         let mut pending = false;
         self.for_each_owned(|child| {
-            pending |= crate::widget::controls::has_pending_control_invocation(child);
+            pending |= tilo_ui_base::widget::controls::has_pending_control_invocation(child);
         });
         pending
     }
@@ -3869,7 +3895,7 @@ impl NavShell {
     fn handle_own_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         if self.sheet_event(event, ctx) {
             return true;
@@ -3926,11 +3952,11 @@ impl NavShell {
         }
     }
 
-    fn handle_key(&mut self, key: &Key, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
+    fn handle_key(&mut self, key: &Key, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
         if self.resize_focused {
             let step = match key {
-                Key::Named(NamedKey::ArrowLeft) => Some(crate::a11y::Action::Decrement),
-                Key::Named(NamedKey::ArrowRight) => Some(crate::a11y::Action::Increment),
+                Key::Named(NamedKey::ArrowLeft) => Some(tilo_ui_base::a11y::Action::Decrement),
+                Key::Named(NamedKey::ArrowRight) => Some(tilo_ui_base::a11y::Action::Increment),
                 _ => None,
             };
             if let Some(step) = step {
@@ -4044,7 +4070,7 @@ impl NavShell {
     fn route_event_to_children(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) else {
             return;

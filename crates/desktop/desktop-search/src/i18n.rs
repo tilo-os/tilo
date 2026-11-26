@@ -3,7 +3,7 @@
 //! source catalogue is embedded; other languages come from the language
 //! packs, and a message missing from one falls back to `en-US`.
 
-ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
+tilo_ui_base::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
 /// Load the palette's catalogue on this thread, so the rows it builds read in
 /// the desktop's language without reading a language pack there.
@@ -32,9 +32,9 @@ mod tests {
         // language as the row's label does.
         {
             let english = (t("search-open-as-tab"), t("search-open-beside"));
-            ui::i18n::I18nManager::set_locale("de-DE");
+            tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
             let german = (t("search-open-as-tab"), t("search-open-beside"));
-            ui::i18n::I18nManager::set_locale("en-US");
+            tilo_ui_base::i18n::I18nManager::set_locale("en-US");
             assert_eq!(
                 english,
                 (

@@ -4,13 +4,13 @@
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
-use crate::presence::{Face, FaceStack};
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::BarControlFace;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{presence::Face, presence::FaceStack};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 
 /// One bar chip's content and state, borrowed. Built by the caller each
 /// frame; [`Self::paint`] draws it and hands back where its parts landed.
@@ -282,7 +282,7 @@ impl<'a> BarChipFace<'a> {
                 ctx.transform,
                 Rect::from_center_size(centre, (icon, icon)),
                 ink,
-                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
             x += icon + gap;
         }
@@ -311,9 +311,11 @@ impl<'a> BarChipFace<'a> {
             let style = Self::label_style(theme);
             let spare = (rect.x1 - Self::pad(theme) - trailing - x).max(0.0);
             let spare = self.label_width.map_or(spare, |most| spare.min(most));
-            let shown =
-                ctx.text
-                    .elide_to_width_style(self.label, crate::num::f32_of_f64(spare), &style);
+            let shown = ctx.text.elide_to_width_style(
+                self.label,
+                tilo_ui_base::num::f32_of_f64(spare),
+                &style,
+            );
             let (w, h) = ctx.text.measure_style(&shown, None, &style);
             if !shown.is_empty() {
                 ctx.text.draw_style(
@@ -340,7 +342,7 @@ impl<'a> BarChipFace<'a> {
                 ctx.transform,
                 Rect::from_center_size(Point::new(x + gap + icon / 2.0, cy), (icon, icon)),
                 ink,
-                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
         }
         if self.focused {
@@ -372,7 +374,7 @@ impl<'a> BarChipFace<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::Theme;
+    use tilo_ui_base::theme::Theme;
 
     fn faces(names: &[&'static str]) -> Vec<Face<'static>> {
         names

@@ -1,7 +1,7 @@
 //! The chip naming who opened a window someone else opened, in their colour, below its tab when
 //! the pointer rests there. It stands in for the tab's own tip, never beside it.
 use super::{Rect, TabBar, TextRenderer, Theme};
-use crate::i18n::widget_format;
+use tilo_ui_base::i18n::widget_format;
 use vello::Scene;
 use vello::kurbo::Affine;
 
@@ -28,7 +28,7 @@ impl TabBar {
         let at = crate::widget::tooltip::person_tooltip_rect_on(
             tr,
             theme,
-            (*rect, crate::widget::TooltipSide::Below),
+            (*rect, tilo_ui_base::widget::TooltipSide::Below),
             &label,
             viewport,
         );

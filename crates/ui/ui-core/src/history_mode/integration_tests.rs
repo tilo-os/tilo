@@ -3,12 +3,9 @@ use crate::application::{LaunchTarget, RestoreInput};
 use crate::application_test_support::{
     APP, ProbeHarness, runner_permissions, runner_probe_definition,
 };
-use crate::{
-    State,
-    headless::Driver,
-    widget::{BoundAppWidget, Widget},
-};
+use crate::{State, headless::Driver, widget::BoundAppWidget};
 use automerge::{ROOT, transaction::Transactable};
+use tilo_ui_base::widget::Widget;
 
 static BOUND: HistoryDefinition = HistoryDefinition {
     app_id: APP,
@@ -45,7 +42,7 @@ tilo_test_env::scenario! {
                 history.commit_action_authored(doc, None, None, Some(binding.author.clone()));
                 format!(
                     "timeline-entry:{}",
-                    crate::HistoryEntryId::hex(
+                    tilo_ui_base::HistoryEntryId::hex(
                         &crate::history_source::entry_id_from_hash(&hash.to_string())
                     )
                 )
@@ -70,7 +67,7 @@ tilo_test_env::scenario! {
             .perform_semantic_named(
                 "activity_timeline",
                 Some(&selected),
-                &crate::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
             )
             .unwrap();
         assert!(driver.targets().contains_key("history-preview"));
@@ -89,8 +86,8 @@ tilo_test_env::scenario! {
             component,
             (900, 650),
             crate::application::ComponentRunnerInputs {
-                theme: crate::Theme::dark(),
-                text_renderer: crate::font_catalog::fixture_renderer(),
+                theme: tilo_ui_base::Theme::dark(),
+                text_renderer: tilo_ui_base::font_catalog::fixture_renderer(),
             },
         )
         .unwrap();
@@ -170,7 +167,7 @@ tilo_test_env::scenario! {
         driver.click_named("history-open").unwrap();
         let target = format!(
             "timeline-entry:{}",
-            crate::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
+            tilo_ui_base::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
                 &hash.to_string()
             ))
         );
@@ -178,7 +175,7 @@ tilo_test_env::scenario! {
             .perform_semantic_named(
                 "activity_timeline",
                 Some(&target),
-                &crate::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
             )
             .unwrap();
         driver
@@ -211,7 +208,7 @@ tilo_test_env::scenario! {
 
     phase actual_confirmation_rechecks_unchanged_grant_expiry_replacement_and_actor_mapping;
     {
-        use crate::permissions::*;
+        use tilo_ui_base::permissions::*;
         for case in ["expiry", "replacement", "actor"] {
             let mut driver = review_driver();
             driver.set_permission_ctx(grant(LOCAL_USER, RESTORABLE.app_id, Some(150)));
@@ -220,7 +217,7 @@ tilo_test_env::scenario! {
             match case {
                 "expiry" => NOW.set(200),
                 "replacement" => driver.set_permission_ctx(
-                    crate::permissions::PermissionContext::stranger(&crate::permissions::MemberId::person(LOCAL_USER)),
+                    tilo_ui_base::permissions::PermissionContext::stranger(&tilo_ui_base::permissions::MemberId::person(LOCAL_USER)),
                 ),
                 _ => driver.set_permission_ctx(grant("another-person", RESTORABLE.app_id, None)),
             }
@@ -228,7 +225,7 @@ tilo_test_env::scenario! {
                 .a11y_node_named("Restore version")
                 .expect("real modal footer exports AT action");
             driver
-                .perform_a11y_action(confirm, &crate::a11y::Action::Activate)
+                .perform_a11y_action(confirm, &tilo_ui_base::a11y::Action::Activate)
                 .unwrap();
             assert_eq!(driver.state_mut().doc.base_heads(), before, "{case}");
             assert!(
@@ -250,7 +247,7 @@ tilo_test_env::scenario! {
         driver.key("Escape");
         assert!(
             driver
-                .perform_a11y_action(old_confirm, &crate::a11y::Action::Activate)
+                .perform_a11y_action(old_confirm, &tilo_ui_base::a11y::Action::Activate)
                 .is_err()
         );
         driver.click_named("history-restore").unwrap();
@@ -324,7 +321,7 @@ fn review_driver() -> Driver {
     driver.click_named("history-open").unwrap();
     let target = format!(
         "timeline-entry:{}",
-        crate::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
+        tilo_ui_base::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
             &hash.to_string()
         ))
     );
@@ -332,7 +329,7 @@ fn review_driver() -> Driver {
         .perform_semantic_named(
             "activity_timeline",
             Some(&target),
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
         )
         .unwrap();
     driver
@@ -342,7 +339,7 @@ fn review_driver() -> Driver {
 fn managed_review_dialog_drains_and_returns_to_retained_preview() {
     // Dialogs appear from their origin (4480e9f9b6): this test checks that
     // the review dialog rests once drawn, so motion reads at its end.
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut driver = review_driver();
     assert!(driver.targets().contains_key("history-preview"));
     assert!(
@@ -373,10 +370,14 @@ fn managed_review_dialog_drains_and_returns_to_retained_preview() {
     );
     assert!(!driver.poll_frame().unwrap());
 }
-fn grant(actor: &str, app: &str, until: Option<u64>) -> crate::permissions::PermissionContext {
-    use crate::permissions::*;
+fn grant(
+    actor: &str,
+    app: &str,
+    until: Option<u64>,
+) -> tilo_ui_base::permissions::PermissionContext {
+    use tilo_ui_base::permissions::*;
     PermissionContext::granted(
-        &crate::permissions::MemberId::person(actor),
+        &tilo_ui_base::permissions::MemberId::person(actor),
         &TreePath::root().app(app),
         policy::KindSet::ALL,
         until,

@@ -7,11 +7,11 @@
 use vello::kurbo::Rect;
 
 use super::{Inputs, Metrics, NavMode, NavShell, Resize};
-use crate::interaction::InteractionEnvironment;
-use crate::num::f32_of_f64;
-use crate::theme::Theme;
 use crate::widget::flap::SplitLayout;
 use crate::widget::{SplitHandle, SplitOrientation, SplitRatio};
+use tilo_ui_base::interaction::InteractionEnvironment;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::theme::Theme;
 
 /// The sidebar edge's own state beside the drag: the finger dragging it,
 /// and where the width the person chose is remembered ([`super::memory`]),
@@ -93,7 +93,7 @@ impl NavShell {
             .sidebar_max
             .min((extent - overview - inputs.content_min()).max(0.0));
         let mut ratio = SplitRatio::default().with_bounds(0.0, f32_of_f64(widest / extent));
-        ratio.set(crate::num::f32_of_f64(
+        ratio.set(tilo_ui_base::num::f32_of_f64(
             self.geometry.sidebar_column.width() / extent,
         ));
         let mut handle = SplitHandle::new(SplitOrientation::Horizontal, ratio);
@@ -102,7 +102,7 @@ impl NavShell {
         Some(handle)
     }
 
-    pub(super) fn step_sidebar_resize(&mut self, action: &crate::a11y::Action) -> bool {
+    pub(super) fn step_sidebar_resize(&mut self, action: &tilo_ui_base::a11y::Action) -> bool {
         let Some(mut handle) = self.sidebar_resize_handle() else {
             return false;
         };
@@ -143,7 +143,7 @@ impl NavShell {
         // A step that only moves the edge changes what is laid out and nothing the app reads:
         // the open state, the toggle's name and the window's parts stand as they were.
         if was_open == self.is_sidebar_open() {
-            crate::widget::note_view_only_pan();
+            tilo_ui_base::widget::note_view_only_pan();
         } else {
             self.update_toggle_names();
             self.publish_open_states();
@@ -179,7 +179,7 @@ impl NavShell {
     pub(super) fn handle_resize_touch(
         &mut self,
         touch: &winit::event::Touch,
-        ctx: &crate::widget::EventCtx<'_>,
+        ctx: &tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         use winit::event::TouchPhase;
         let p = ctx.logical(touch.location);

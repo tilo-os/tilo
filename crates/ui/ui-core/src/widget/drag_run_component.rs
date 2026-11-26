@@ -1,7 +1,8 @@
 //! [`DragRun`] as a described component: a run of items a person reorders by dragging one.
 
-use crate::component::{
-    Accepts, Component, Described, Event, PartType, PartViews, ResourceId, Source,
+use tilo_ui_base::{
+    component::Accepts, component::Component, component::Described, component::Event,
+    component::PartType, component::PartViews, component::ResourceId, component::Source,
 };
 
 use super::drag_run::{DragDrop, DragRun, RunAxis, RunItem};
@@ -26,7 +27,7 @@ pub struct DragRunProps {
     /// What stands beside the items at the run's trailing end and is never moved: a
     /// taskbar's time and device status.
     #[component(part)]
-    pub trailing: Vec<crate::widget::Element>,
+    pub trailing: Vec<tilo_ui_base::widget::Element>,
     /// An item was let go in a new place: carries the resource it stands for and its place
     /// among the run's other items, from 0 — what `items.move(item, to: at)` takes.
     #[component(event(value = ResourceId, at = i64))]
@@ -52,7 +53,7 @@ pub struct DragItemProps {
     pub group: Option<super::drag_run::RunGroup>,
     /// What it shows.
     #[component(part(default))]
-    pub body: Vec<crate::widget::Element>,
+    pub body: Vec<tilo_ui_base::widget::Element>,
     /// It was pressed and let go without moving: open what it stands for.
     #[component(event)]
     pub activate: Event,
@@ -124,7 +125,9 @@ impl Described for DragRun {
                 .next()
                 // An item with no view of its own takes up nothing.
                 .unwrap_or_else(|| {
-                    Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0))
+                    Box::new(tilo_ui_base::widget::Spacer::token(
+                        tilo_ui_base::tokens::SpacingStep::S0,
+                    ))
                 });
             activates.push((key.clone(), activate));
             run = run.push(RunItem {
@@ -139,7 +142,7 @@ impl Described for DragRun {
             if let Some((_, event)) = activates.iter().find(|(own, _)| own == key) {
                 event
                     .clone()
-                    .fire(Some(crate::component::Value::Text(key.to_owned())));
+                    .fire(Some(tilo_ui_base::component::Value::Text(key.to_owned())));
             }
         });
         // A drop reports the item moved and its place, as a board's list reports
@@ -150,12 +153,12 @@ impl Described for DragRun {
                 .iter()
                 .find(|(key, _)| key == &dropped.moved)
                 .and_then(|(_, id)| id.clone())
-                .map_or(crate::component::Value::None, |id| {
-                    crate::component::Value::Resource(id.0)
+                .map_or(tilo_ui_base::component::Value::None, |id| {
+                    tilo_ui_base::component::Value::Resource(id.0)
                 });
-            drop.fire(Some(crate::component::Value::List(vec![
+            drop.fire(Some(tilo_ui_base::component::Value::List(vec![
                 value,
-                crate::component::Value::Int(dropped.at),
+                tilo_ui_base::component::Value::Int(dropped.at),
             ])));
         });
         run
@@ -199,7 +202,9 @@ impl Described for DragRun {
                 .next()
                 // An item with no view of its own takes up nothing.
                 .unwrap_or_else(|| {
-                    Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0))
+                    Box::new(tilo_ui_base::widget::Spacer::token(
+                        tilo_ui_base::tokens::SpacingStep::S0,
+                    ))
                 });
             activates.push((key.clone(), activate));
             taken.push(RunItem {
@@ -217,7 +222,7 @@ impl Described for DragRun {
             if let Some((_, event)) = activates.iter().find(|(own, _)| own == key) {
                 event
                     .clone()
-                    .fire(Some(crate::component::Value::Text(key.to_owned())));
+                    .fire(Some(tilo_ui_base::component::Value::Text(key.to_owned())));
             }
         })));
         // A drop reports the item moved and its place, as a board's list reports
@@ -228,12 +233,12 @@ impl Described for DragRun {
                 .iter()
                 .find(|(key, _)| key == &dropped.moved)
                 .and_then(|(_, id)| id.clone())
-                .map_or(crate::component::Value::None, |id| {
-                    crate::component::Value::Resource(id.0)
+                .map_or(tilo_ui_base::component::Value::None, |id| {
+                    tilo_ui_base::component::Value::Resource(id.0)
                 });
-            drop.fire(Some(crate::component::Value::List(vec![
+            drop.fire(Some(tilo_ui_base::component::Value::List(vec![
                 value,
-                crate::component::Value::Int(dropped.at),
+                tilo_ui_base::component::Value::Int(dropped.at),
             ])));
         })));
         true

@@ -22,9 +22,10 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::headless::Driver;
 use crate::state::State;
-use crate::theme::Theme;
 use crate::time::{Duration, Instant};
-use crate::widget::{Banner, Button, Column, Container, TaffyTreeExt, TextInput, Widget};
+use crate::{widget::Banner, widget::Button, widget::Column, widget::Container, widget::TextInput};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 const WIDTH: u32 = 200;
 const HEIGHT: u32 = 100;
@@ -62,9 +63,9 @@ impl Widget for Slider {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.cursor = Point::new(position.x, position.y);
@@ -86,7 +87,7 @@ impl Widget for Slider {
         self.progress(crate::time::now()) < 1.0 && self.started.is_some()
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         let transform = ctx.transform;
         let scene = &mut *ctx.scene;
         let x = self.rect.x0 + self.progress(crate::time::now()) * (self.rect.width() - SQUARE);
@@ -198,7 +199,7 @@ fn a_control_is_reached_by_its_name_its_accessibility_node_and_tab() {
     assert_eq!(presses.get(), 1, "a click at the named control presses it");
 
     driver
-        .perform_named("add", &crate::a11y::Action::Activate)
+        .perform_named("add", &tilo_ui_base::a11y::Action::Activate)
         .unwrap();
     assert_eq!(
         presses.get(),
@@ -210,7 +211,7 @@ fn a_control_is_reached_by_its_name_its_accessibility_node_and_tab() {
         .a11y_node_named("Add")
         .expect("the button is in the tree");
     driver
-        .perform_a11y_action(node, &crate::a11y::Action::Activate)
+        .perform_a11y_action(node, &tilo_ui_base::a11y::Action::Activate)
         .unwrap();
     assert_eq!(
         presses.get(),
@@ -226,7 +227,7 @@ fn a_control_is_reached_by_its_name_its_accessibility_node_and_tab() {
         .clone();
     assert!(
         driver
-            .perform_semantic(&id, &crate::a11y::Action::Activate)
+            .perform_semantic(&id, &tilo_ui_base::a11y::Action::Activate)
             .unwrap(),
         "the button takes the action on its semantic node"
     );
@@ -279,7 +280,7 @@ impl Widget for AsksForTheKeyboard {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
     fn name(&self) -> &'static str {
         "AsksForTheKeyboard"
@@ -384,9 +385,9 @@ fn a_driver_runs_a_window_on_a_default_test_thread_stack() {
 #[test]
 fn a_text_field_shows_the_text_cursor_through_the_shared_rule() {
     use winit::window::CursorIcon;
-    let root = Column::new().push(Box::new(TextInput::new(vec![crate::PathSegment::Field(
-        "draft".into(),
-    )])));
+    let root = Column::new().push(Box::new(TextInput::new(vec![
+        tilo_ui_base::PathSegment::Field("draft".into()),
+    ])));
     let mut driver = Driver::new(State::new(), Box::new(root), (240, 160));
     driver.relayout();
     let over = (1..80)
@@ -419,7 +420,7 @@ struct RebuildsWhileDrawing {
 
 fn draft_card() -> Box<dyn Widget> {
     Box::new(crate::widget::Row::new().push(Box::new(TextInput::new(vec![
-        crate::PathSegment::Field("draft".into()),
+        tilo_ui_base::PathSegment::Field("draft".into()),
     ]))))
 }
 
@@ -443,7 +444,7 @@ impl Widget for RebuildsWhileDrawing {
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if let Some(&child) = taffy.children(node).unwrap_or_default().first() {
             self.child.apply_layout(taffy, child, origin);
         }
@@ -453,14 +454,14 @@ impl Widget for RebuildsWhileDrawing {
         self.rect
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.child.draw(&mut crate::draw::DrawCtx::new(
+        self.child.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -562,9 +563,9 @@ impl Widget for Painted {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if matches!(
             event,
             WindowEvent::MouseInput {
@@ -627,8 +628,8 @@ fn controlled_field(name: &str, value: &str) -> Driver {
         Box::new(TextInput::local().with_id(name).with_initial_value(value)),
         (400, 200),
         Theme::dark(),
-        crate::font_catalog::fixture_renderer(),
-        crate::permissions::MemberId::person("fixture-user"),
+        tilo_ui_base::font_catalog::fixture_renderer(),
+        tilo_ui_base::permissions::MemberId::person("fixture-user"),
     )
 }
 
@@ -636,8 +637,8 @@ fn controlled_field(name: &str, value: &str) -> Driver {
 fn select_all_on_a_russian_source_selects_the_field() {
     let mut driver = controlled_field("name", "hello");
     driver.relayout();
-    driver.set_platform_conventions(crate::platform::PlatformConventions::new(
-        crate::platform::Platform::Linux,
+    driver.set_platform_conventions(tilo_ui_base::platform::PlatformConventions::new(
+        tilo_ui_base::platform::Platform::Linux,
     ));
     driver
         .click_named("name")
@@ -648,13 +649,13 @@ fn select_all_on_a_russian_source_selects_the_field() {
         "the field holds the keyboard before the selection key"
     );
     driver.set_modifiers(&["ctrl".to_owned()]);
-    let mut select_all = crate::synthetic_input::key_event(
+    let mut select_all = tilo_ui_base::synthetic_input::key_event(
         winit::keyboard::Key::Character("ф".into()),
         Some("ф".into()),
         winit::event::ElementState::Pressed,
     );
     select_all.physical_key = winit::keyboard::PhysicalKey::Code(winit::keyboard::KeyCode::KeyA);
-    driver.send_host_event(&crate::synthetic_input::keyboard_input(select_all));
+    driver.send_host_event(&tilo_ui_base::synthetic_input::keyboard_input(select_all));
     driver.set_modifiers(&[]);
     driver.send_host_event(&WindowEvent::Ime(winit::event::Ime::Commit("я".into())));
     assert_eq!(
@@ -680,12 +681,12 @@ fn a_focus_asked_of_the_field_takes_the_keyboard_it_types_into() {
         Box::new(field),
         (400, 200),
         Theme::dark(),
-        crate::font_catalog::fixture_renderer(),
-        crate::permissions::MemberId::person("fixture-user"),
+        tilo_ui_base::font_catalog::fixture_renderer(),
+        tilo_ui_base::permissions::MemberId::person("fixture-user"),
     );
     driver.relayout();
     driver
-        .perform_named("field", &crate::a11y::Action::Focus)
+        .perform_named("field", &tilo_ui_base::a11y::Action::Focus)
         .expect("the field takes a focus asked of it");
     assert_eq!(
         driver.focused(),
@@ -725,7 +726,7 @@ fn a_tap_places_the_caret_and_a_double_tap_selects_the_word() {
     assert!(caret.focus > 0 && caret.focus < 5, "{caret:?}");
     assert_eq!(
         caret_at(2),
-        crate::a11y::AccessibleTextSelection {
+        tilo_ui_base::a11y::AccessibleTextSelection {
             anchor: 0,
             focus: 5
         }
@@ -772,7 +773,7 @@ fn switching_theme_repaints_retained_controls_as_a_fresh_window_would() {
 /// Records what each pointer event it handles says about the pen.
 struct PenProbe {
     rect: Rect,
-    seen: Rc<std::cell::RefCell<Vec<(&'static str, Option<crate::widget::PenSample>)>>>,
+    seen: Rc<std::cell::RefCell<Vec<(&'static str, Option<tilo_ui_base::widget::PenSample>)>>>,
 }
 
 impl Widget for PenProbe {
@@ -785,9 +786,9 @@ impl Widget for PenProbe {
         taffy.fill_leaf(node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let kind = match event {
             WindowEvent::CursorMoved { .. } => "move",
             WindowEvent::MouseInput {
@@ -815,8 +816,8 @@ fn pen_sample(pressure: f64, eraser: bool) -> WindowEvent {
     }
 }
 
-fn pen(pressure: f64, eraser: bool) -> Option<crate::widget::PenSample> {
-    Some(crate::widget::PenSample {
+fn pen(pressure: f64, eraser: bool) -> Option<tilo_ui_base::widget::PenSample> {
+    Some(tilo_ui_base::widget::PenSample {
         pressure,
         tilt: (25.0, -40.0),
         eraser,
@@ -834,25 +835,25 @@ fn a_widget_reads_the_pen_behind_each_pointer_event_and_none_for_a_mouse() {
         }),
         (320, 200),
         Theme::dark(),
-        crate::font_catalog::fixture_renderer(),
-        crate::permissions::MemberId::person("pen-review"),
+        tilo_ui_base::font_catalog::fixture_renderer(),
+        tilo_ui_base::permissions::MemberId::person("pen-review"),
     );
-    let button = |state| crate::synthetic_input::mouse_input(state, MouseButton::Left);
+    let button = |state| tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left);
     for event in [
         pen_sample(0.0, false),
-        crate::synthetic_input::cursor_moved(40.0, 50.0),
+        tilo_ui_base::synthetic_input::cursor_moved(40.0, 50.0),
         pen_sample(0.3, false),
         button(ElementState::Pressed),
         pen_sample(0.8, false),
-        crate::synthetic_input::cursor_moved(60.0, 70.0),
+        tilo_ui_base::synthetic_input::cursor_moved(60.0, 70.0),
         pen_sample(0.0, false),
         button(ElementState::Released),
     ] {
         driver.send_host_event(&event);
     }
     driver.send_host_event(&pen_sample(0.5, true));
-    driver.send(&crate::synthetic_input::cursor_moved(80.0, 90.0));
-    driver.send_host_event(&crate::synthetic_input::cursor_moved(100.0, 110.0));
+    driver.send(&tilo_ui_base::synthetic_input::cursor_moved(80.0, 90.0));
+    driver.send_host_event(&tilo_ui_base::synthetic_input::cursor_moved(100.0, 110.0));
     driver.send_host_event(&button(ElementState::Pressed));
 
     assert_eq!(
@@ -894,7 +895,7 @@ impl Widget for Unplaced {
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
     }
 
     fn get_rect(&self) -> Rect {

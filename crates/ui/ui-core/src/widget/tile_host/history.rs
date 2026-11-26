@@ -22,7 +22,7 @@ impl TileHost {
                     history.set_window_presents(tab_presents);
                 }
                 self.history = Some(history);
-                self.attach_live(crate::control_domain::DomainAttachment::Dynamic);
+                self.attach_live(tilo_ui_base::control_domain::DomainAttachment::Dynamic);
                 self.structure_dirty = true;
             }
             Err(error) => {

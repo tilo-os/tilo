@@ -7,8 +7,8 @@
 //! into the invocation's output.
 
 use tilo_actions::InvocationUpdate;
+use tilo_ui_base::text_match::FieldWeight;
 use ui::search::system::{ResourceKind, rank_fields};
-use ui::text_match::FieldWeight;
 
 use crate::i18n::{t, t_args};
 use crate::model::{Hit, LaunchPlace, Source, Target};
@@ -167,7 +167,7 @@ impl Source for Jobs {
                     subtitle: None,
                     facts: Vec::new(),
                     score: score.saturating_sub(1).max(1),
-                    icon: Some(ui::icons::Icon::X),
+                    icon: Some(tilo_ui_base::icons::Icon::X),
                     target: Target::Cancel {
                         app: job.app.clone(),
                         workspace: job.workspace.clone(),

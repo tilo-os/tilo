@@ -82,10 +82,10 @@ impl super::App {
         let may_pan = self.may_pan_view_only(event);
         let view_only_scroll = may_pan && self.root_widget.view_only_scroll(event);
         // A pan reported by an earlier dispatch is not this event's.
-        crate::widget::take_view_only_pan();
+        tilo_ui_base::widget::take_view_only_pan();
         let mark = ResourceInputMark {
-            document: crate::doc::settle_mark(&self.state.doc),
-            presentation: crate::widget::resource_presentation_epoch(),
+            document: tilo_ui_base::doc::settle_mark(&self.state.doc),
+            presentation: tilo_ui_base::widget::resource_presentation_epoch(),
             focused: self.focused_node,
             view_only_scroll,
             may_pan,
@@ -109,7 +109,7 @@ impl super::App {
     /// no modifier, nothing pending, no modal or floating surface. The root
     /// may declare a wheel so up front ([`Self::is_view_only_scroll`]); else
     /// a scroll container or a pane's edge reports during dispatch that it
-    /// only moved what is laid out ([`crate::widget::note_view_only_pan`]).
+    /// only moved what is laid out ([`tilo_ui_base::widget::note_view_only_pan`]).
     fn may_pan_view_only(&self, event: &WindowEvent) -> bool {
         let held = self.input.pointer.buttons != 0;
         let movable = match event {
@@ -141,7 +141,7 @@ impl super::App {
     ) -> bool {
         use crate::profiling::resource_trace::{CacheResult, Stage};
         let trace = self.trace_resource_stage(Stage::InputCarry);
-        let panned = crate::widget::take_view_only_pan();
+        let panned = tilo_ui_base::widget::take_view_only_pan();
         let declared = before.view_only_scroll && self.is_view_only_scroll(event);
         let view_only = allow_scroll
             && before.may_pan
@@ -149,9 +149,9 @@ impl super::App {
             && before.document.1 == 0
             && before.owners_committed();
         let unchanged = ((!consumed && self.input.pointer.is_inert(event)) || view_only)
-            && crate::widget::resource_presentation_epoch() == before.presentation
+            && tilo_ui_base::widget::resource_presentation_epoch() == before.presentation
             && self.focused_node == before.focused
-            && crate::doc::settle_mark(&self.state.doc) == before.document
+            && tilo_ui_base::doc::settle_mark(&self.state.doc) == before.document
             && self.owners_unmoved_since(before);
         trace.finish(if unchanged {
             CacheResult::Hit

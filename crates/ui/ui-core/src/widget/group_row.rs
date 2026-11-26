@@ -3,30 +3,32 @@
 //! and splices a published `pending_detach` tab and `TileHost` into a matching sibling.
 //! Within-group reorder lives in `TabBar` and `WindowGroup`.
 
-use crate::num::f32_of_f64;
 use crate::time::{Duration, Instant};
-use crate::tokens::MotionSource;
-use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
 use taffy::{
     Dimension, Display, FlexDirection, LengthPercentageAuto, NodeId, Overflow, Position, Size,
     Style, TaffyTree,
 };
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::tokens::MotionSource;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::floating_surface::FloatingSurfaceProvider;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::DrawChild;
-use crate::widget::TaffyTreeExt;
 use crate::widget::TileContent;
-use crate::widget::{
-    DEFAULT_STRIP_USABLE_PX, EdgeGrab, HANDLE_SLOT_PX, ResizeHandle, TabDescriptor, TileHost,
-    Widget, WindowGroup, WindowWidth,
+use crate::{
+    widget::DEFAULT_STRIP_USABLE_PX, widget::EdgeGrab, widget::HANDLE_SLOT_PX,
+    widget::ResizeHandle, widget::TabDescriptor, widget::TileHost, widget::WindowGroup,
+    widget::WindowWidth,
 };
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 #[path = "group_row_edges.rs"]
 mod edges;
@@ -50,7 +52,7 @@ use scroll::{SnapTiming, snap_motion, strip_motion};
 /// Idle time before the strip snaps to the nearest group's left edge.
 const SNAP_IDLE_MS: u32 = 200;
 const MOVE_SETTLED_PX: f64 = 0.25;
-const MOVE_SETTLED_PX_PER_S: f64 = crate::tokens::motion::MOVE_SETTLED_PX_PER_S; // rest velocity in px/s, not a Theme gap
+const MOVE_SETTLED_PX_PER_S: f64 = tilo_ui_base::tokens::motion::MOVE_SETTLED_PX_PER_S; // rest velocity in px/s, not a Theme gap
 /// Two pan targets closer than this are the same place on screen.
 const SNAP_SETTLED_PX: f64 = 0.5;
 
@@ -59,20 +61,20 @@ pub(crate) const DRAG_SPRING_LOAD: Duration = Duration::from_millis(500);
 
 #[derive(Clone, Copy, Debug, Default)]
 struct DragReach {
-    edge: crate::edge_autoscroll::EdgeAutoscroll,
+    edge: tilo_ui_base::edge_autoscroll::EdgeAutoscroll,
     tab: Option<(u64, u64, Instant)>,
 }
 /// Release velocity (px/s) below which lifted fingers leave the strip where
 /// it is rather than throwing it.
-const FLING_MIN_VELOCITY: f64 = crate::tokens::motion::FLING_MIN_VELOCITY;
+const FLING_MIN_VELOCITY: f64 = tilo_ui_base::tokens::motion::FLING_MIN_VELOCITY;
 
 const TAB_GROUP_EDGE_FRAC: f64 = 0.25;
-const TAB_GROUP_EDGE_MIN_PX: f64 = crate::tokens::Spacing::BASE.s12 as f64;
-const TAB_GROUP_EDGE_MAX_PX: f64 = crate::tokens::Spacing::BASE.s12 as f64 * 3.0;
+const TAB_GROUP_EDGE_MIN_PX: f64 = tilo_ui_base::tokens::Spacing::BASE.s12 as f64;
+const TAB_GROUP_EDGE_MAX_PX: f64 = tilo_ui_base::tokens::Spacing::BASE.s12 as f64 * 3.0;
 const TAB_GROUP_EDGE_MAX_FRAC: f64 = 0.32;
 /// Keep a resolved target through a few pixels of jitter; release commits the retained preview
 /// verbatim, so the window cannot land elsewhere than the indicator showed.
-const TAB_DROP_HYSTERESIS_PX: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+const TAB_DROP_HYSTERESIS_PX: f64 = tilo_ui_base::tokens::Spacing::BASE.s2 as f64;
 
 fn tab_group_edge_width(group_width: f64) -> f64 {
     (group_width * TAB_GROUP_EDGE_FRAC)
@@ -82,19 +84,19 @@ fn tab_group_edge_width(group_width: f64) -> f64 {
 }
 
 const TRAILING_REVEAL_FRAC: f64 = 0.20;
-pub const STRIP_EDGE_GUTTER_PX: f64 = crate::tokens::Spacing::BASE.s8 as f64;
-pub const STRIP_BOTTOM_GUTTER_PX: f64 = crate::tokens::Spacing::BASE.s3 as f64;
-pub const STRIP_TOP_GAP_PX: f64 = crate::tokens::Spacing::BASE.s1 as f64;
+pub const STRIP_EDGE_GUTTER_PX: f64 = tilo_ui_base::tokens::Spacing::BASE.s8 as f64;
+pub const STRIP_BOTTOM_GUTTER_PX: f64 = tilo_ui_base::tokens::Spacing::BASE.s3 as f64;
+pub const STRIP_TOP_GAP_PX: f64 = tilo_ui_base::tokens::Spacing::BASE.s1 as f64;
 /// Maximum *additional* visual give while a three-finger pan pulls beyond a
 /// legal end. The shared rubber-band curve approaches this asymptotically.
 const STRIP_OVERSCROLL_REACH_FRAC: f64 = 0.28;
 /// How far a group's shadow sprites paint past its rect: `bloom_pad` with the clip's margin. Not a
 /// theme token, since it must match the compositor's shadow draw.
-const GROUP_SPRITE_REACH_PX: f64 = crate::tokens::motion::GROUP_SPRITE_REACH;
+const GROUP_SPRITE_REACH_PX: f64 = tilo_ui_base::tokens::motion::GROUP_SPRITE_REACH;
 
 /// Press displacement (px) before a tab-bar-background press becomes a
 /// whole-group reorder drag instead of a focus click.
-const GROUP_DRAG_THRESHOLD: f64 = crate::tokens::Metrics::BASE.icon_label_gap as f64;
+const GROUP_DRAG_THRESHOLD: f64 = tilo_ui_base::tokens::Metrics::BASE.icon_label_gap as f64;
 
 const TOUCH_GRAB_HOLD: crate::time::Duration = crate::time::Duration::from_millis(300);
 
@@ -134,9 +136,9 @@ struct GroupDrag {
 
 fn resisted(delta: vello::kurbo::Vec2) -> vello::kurbo::Vec2 {
     let pull = |d: f64| {
-        f64::from(crate::tokens::rubber_band(
-            crate::num::f32_of_f64(d.abs()),
-            crate::tokens::Spacing::BASE.s4,
+        f64::from(tilo_ui_base::tokens::rubber_band(
+            tilo_ui_base::num::f32_of_f64(d.abs()),
+            tilo_ui_base::tokens::Spacing::BASE.s4,
         ))
         .copysign(d)
     };
@@ -168,7 +170,7 @@ pub use tilo_desktop_model::GroupShape as GroupTopology;
               combinatorial config API — folding them into an enum or bitflags would not make \
               any call site clearer"
 )]
-#[crate::component::not_a_component(shell, "the strip of window groups")]
+#[tilo_ui_base::component::not_a_component(shell, "the strip of window groups")]
 pub struct GroupRow {
     external_navigation: bool,
     close_reports: Vec<crate::application::ComponentCloseReport>,
@@ -212,7 +214,7 @@ pub struct GroupRow {
     group_drag: Option<GroupDrag>,
     edge_hover: Option<(EdgeGrab, bool)>,
     edge_drag: Option<RowEdgeDrag>,
-    group_resist_back: Option<(u64, crate::motion::MotionValue<vello::kurbo::Vec2>)>,
+    group_resist_back: Option<(u64, tilo_ui_base::motion::MotionValue<vello::kurbo::Vec2>)>,
     touch_pan: Option<TouchPan>,
     pointer_pan: Option<PointerPan>,
     group_reorder_target: Option<usize>,
@@ -231,12 +233,12 @@ pub struct GroupRow {
     output_spans: Vec<OutputSpan>,
     last_laid_x: HashMap<u64, f64>,
     shift_armed: bool,
-    moves: Vec<(u64, crate::motion::MotionValue<f64>)>,
+    moves: Vec<(u64, tilo_ui_base::motion::MotionValue<f64>)>,
     shift_hold: Option<Duration>,
     reduce_motion: bool,
     motion_source: MotionSource,
-    motion: crate::tokens::Motion,
-    sibling_fade: crate::motion::Presence,
+    motion: tilo_ui_base::tokens::Motion,
+    sibling_fade: tilo_ui_base::motion::Presence,
     /// Capture-harness pose for [`Self::hold_sibling_fade_at`]: skips `sync_sibling_fade`, so a
     /// slow offscreen paint cannot retire the curve before the next snapshot.
     sibling_fade_hold: Option<Duration>,
@@ -273,11 +275,11 @@ pub struct GroupRow {
     collapsed_cards: std::collections::HashSet<u64>,
     float_drag_from: Option<Rect>,
     pending_float: Option<FloatAsk>,
-    float_fade: HashMap<u64, crate::motion::Presence>,
+    float_fade: HashMap<u64, tilo_ui_base::motion::Presence>,
     drawn_covers: Vec<(u64, Rect)>,
 }
 
-fn seen_across(env: &crate::draw::DrawEnv<'_>, rect: Rect) -> Option<(f64, f64)> {
+fn seen_across(env: &tilo_ui_base::draw::DrawEnv<'_>, rect: Rect) -> Option<(f64, f64)> {
     env.viewport.map(|viewport| {
         (
             (viewport.x0 - rect.x0).max(0.0),
@@ -291,12 +293,16 @@ struct GroupDrawing(ApartDrawing);
 impl GroupDrawing {
     fn append_to(&self, scene: &mut Scene) -> usize {
         let drawing = &self.0;
-        crate::scene_parts::append_with(
+        tilo_ui_base::scene_parts::append_with(
             scene,
             drawing.parts.as_ref(),
             Some(Affine::IDENTITY),
             |scene| {
-                crate::part_paint::backdrop::append_nested(scene, &drawing.scene, Affine::IDENTITY)
+                tilo_ui_base::part_paint::backdrop::append_nested(
+                    scene,
+                    &drawing.scene,
+                    Affine::IDENTITY,
+                )
             },
         )
     }
@@ -361,7 +367,7 @@ struct ApartDrawing {
     rect: Rect,
     transform: Affine,
     scene: Scene,
-    parts: Option<crate::scene_parts::SectionParts>,
+    parts: Option<tilo_ui_base::scene_parts::SectionParts>,
     shows_secret: bool,
     /// What of the group the drawing culled nothing in, across, from the group's left edge; `None`
     /// when nothing was culled. A replay must show no more of the group.
@@ -405,7 +411,7 @@ pub struct Pan {
     scroll_x: f64,
     strip_pan_origin: Option<f64>,
     finger_path: super::finger_path::FingerPath,
-    motion: Option<crate::motion::MotionValue<f64>>,
+    motion: Option<tilo_ui_base::motion::MotionValue<f64>>,
     /// Total content width incl. gaps; cached so the wheel handler can
     /// clamp `scroll_x` without re-summing children.
     content_w: f64,
@@ -488,12 +494,12 @@ impl Pan {
         let max = self.pan_max_scroll_x();
         let reach = self.viewport.width().max(1.0) * STRIP_OVERSCROLL_REACH_FRAC;
         if requested < 0.0 {
-            -f64::from(crate::tokens::rubber_band(
+            -f64::from(tilo_ui_base::tokens::rubber_band(
                 (-requested) as f32,
                 reach as f32,
             ))
         } else if requested > max {
-            max + f64::from(crate::tokens::rubber_band(
+            max + f64::from(tilo_ui_base::tokens::rubber_band(
                 (requested - max) as f32,
                 reach as f32,
             ))
@@ -538,8 +544,8 @@ impl Pan {
         &mut self,
         now: Instant,
         throw: bool,
-        motion: crate::tokens::EffectiveMotion,
-        settle: crate::motion::Timing,
+        motion: tilo_ui_base::tokens::EffectiveMotion,
+        settle: tilo_ui_base::motion::Timing,
     ) -> bool {
         let from = match (self.strip_pan_origin, self.resampled_travel(now)) {
             (Some(origin), Some(travel)) => self.rubber_banded(origin + travel),
@@ -555,7 +561,7 @@ impl Pan {
         self.last_wheel_at = None;
         self.scroll_x = from;
         let max = self.pan_max_scroll_x();
-        let coast = crate::motion::Snap::rest_for(from, velocity, motion);
+        let coast = tilo_ui_base::motion::Snap::rest_for(from, velocity, motion);
         let to = coast.clamp(0.0, max);
         self.past_windows = to > self.max_scroll_x() + 0.5;
         if velocity.abs() < FLING_MIN_VELOCITY && (to - from).abs() <= SNAP_SETTLED_PX {
@@ -563,8 +569,8 @@ impl Pan {
             return false;
         }
         let timing = if (coast - to).abs() <= f64::EPSILON {
-            crate::motion::Snap::COAST.timing(
-                crate::motion::Direction::Enter,
+            tilo_ui_base::motion::Snap::COAST.timing(
+                tilo_ui_base::motion::Direction::Enter,
                 motion,
                 MotionSource::Gesture,
             )
@@ -653,7 +659,7 @@ impl Pan {
         self.motion.is_some_and(|motion| motion.is_moving(now))
     }
 
-    fn glide_to(&mut self, sx: f64, now: Instant, timing: crate::motion::Timing) {
+    fn glide_to(&mut self, sx: f64, now: Instant, timing: tilo_ui_base::motion::Timing) {
         if timing.is_instant() {
             self.jump_to(sx);
             return;
@@ -690,7 +696,7 @@ impl Pan {
     }
 
     fn snap_in_flight(&self, snap: SnapTiming) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         if self.motion_moving(now) || self.direct_pan_moving(now) {
             return true;
         }
@@ -955,8 +961,8 @@ impl GroupRow {
             shift_hold: None,
             reduce_motion: false,
             motion_source: MotionSource::default(),
-            motion: crate::tokens::Motion::default(),
-            sibling_fade: crate::motion::Presence::opened(),
+            motion: tilo_ui_base::tokens::Motion::default(),
+            sibling_fade: tilo_ui_base::motion::Presence::opened(),
             sibling_fade_hold: None,
             fade_hero: None,
             sibling_fade_drawn_moving: false,
@@ -1071,22 +1077,25 @@ impl GroupRow {
                 .or_else(|| self.groups.iter().position(|g| g.maximized))
                 .and_then(|i| self.groups.get(i).map(|g| g.id));
         } else if self.sibling_fade.is_open()
-            && !self.sibling_fade.is_moving(crate::motion::frame_now())
+            && !self
+                .sibling_fade
+                .is_moving(tilo_ui_base::motion::frame_now())
         {
             self.fade_hero = None;
         }
         let want_open = !hide;
         self.sibling_fade.show(
             want_open,
-            crate::motion::WindowMotion::SIBLINGS,
+            tilo_ui_base::motion::WindowMotion::SIBLINGS,
             theme.motion(),
             self.motion_source,
-            crate::motion::frame_now(),
+            tilo_ui_base::motion::frame_now(),
         );
     }
 
     fn sibling_fade_in_flight(&self) -> bool {
-        self.sibling_fade.is_moving(crate::motion::frame_now())
+        self.sibling_fade
+            .is_moving(tilo_ui_base::motion::frame_now())
     }
 
     fn sibling_fade_needs_frame(&self) -> bool {
@@ -1101,10 +1110,10 @@ impl GroupRow {
             return false;
         }
         let hide = self.siblings_should_hide();
-        let eased = crate::motion::WindowMotion::SIBLINGS.progress_after(
-            crate::motion::Direction::of(!hide),
-            crate::tokens::EffectiveMotion::default(),
-            crate::tokens::MotionSource::Pointer,
+        let eased = tilo_ui_base::motion::WindowMotion::SIBLINGS.progress_after(
+            tilo_ui_base::motion::Direction::of(!hide),
+            tilo_ui_base::tokens::EffectiveMotion::default(),
+            tilo_ui_base::tokens::MotionSource::Pointer,
             elapsed,
         );
         let openness = if hide { 1.0 - eased } else { eased };
@@ -1114,7 +1123,7 @@ impl GroupRow {
             reason = "openness is 0..=1 so permille is 0..=1000, which fits u16"
         )]
         let permille = (openness * 1000.0).round().clamp(0.0, 1000.0) as u16;
-        self.sibling_fade = crate::motion::Presence::held_at(permille);
+        self.sibling_fade = tilo_ui_base::motion::Presence::held_at(permille);
         self.sibling_fade_hold = Some(elapsed);
         true
     }
@@ -1915,11 +1924,12 @@ impl GroupRow {
     /// the final one, so hit-testing and the app's configure size are
     /// never mid-flight — same choice the per-group spawn fade makes.
     pub fn shift_offset_for(&self, group_id: u64) -> f64 {
-        self.move_state_at(group_id, crate::motion::frame_now()).0
+        self.move_state_at(group_id, tilo_ui_base::motion::frame_now())
+            .0
     }
 
     fn shift_in_flight(&self) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.shift_hold.is_none() && self.moves.iter().any(|(_, m)| m.is_moving(now))
     }
 
@@ -1930,9 +1940,13 @@ impl GroupRow {
         self.moves.clear();
     }
 
-    fn move_timing(&self, source: MotionSource) -> crate::motion::Timing {
-        let motion = crate::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
-        crate::motion::WindowMotion::MOVE.timing(crate::motion::Direction::Enter, motion, source)
+    fn move_timing(&self, source: MotionSource) -> tilo_ui_base::motion::Timing {
+        let motion = tilo_ui_base::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
+        tilo_ui_base::motion::WindowMotion::MOVE.timing(
+            tilo_ui_base::motion::Direction::Enter,
+            motion,
+            source,
+        )
     }
 
     pub fn remove_group_by_id(&mut self, id: u64) -> bool {
@@ -2181,7 +2195,7 @@ impl GroupRow {
                 crate::control_hints::performed::Performed::PannedView,
             );
         }
-        let motion = crate::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
+        let motion = tilo_ui_base::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
         let settle = self.move_timing(MotionSource::Gesture);
         let settling = self
             .pan_of_section_mut(self.focus_section)
@@ -2407,7 +2421,7 @@ impl GroupRow {
     }
 
     fn snap_timing(&self, source: MotionSource) -> SnapTiming {
-        let motion = crate::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
+        let motion = tilo_ui_base::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
         SnapTiming::of(motion, source)
     }
 
@@ -2745,7 +2759,7 @@ impl GroupRow {
         if !view.contains(p) {
             return 0.0;
         }
-        let velocity = crate::edge_autoscroll::velocity(p.x, view.x0, view.x1);
+        let velocity = tilo_ui_base::edge_autoscroll::velocity(p.x, view.x0, view.x1);
         let spare = if velocity < 0.0 {
             pan.scroll_x > 0.0
         } else {
@@ -3135,13 +3149,14 @@ impl GroupRow {
         if drag.held {
             if drag.moved && !self.reduce_motion {
                 let pull = resisted(self.last_cursor - drag.start);
-                let motion = crate::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
-                let back = crate::motion::Snap::SPEC.timing(
-                    crate::motion::Direction::Enter,
+                let motion =
+                    tilo_ui_base::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
+                let back = tilo_ui_base::motion::Snap::SPEC.timing(
+                    tilo_ui_base::motion::Direction::Enter,
                     motion,
                     MotionSource::Gesture,
                 );
-                let mut pulled = crate::motion::MotionValue::new(pull);
+                let mut pulled = tilo_ui_base::motion::MotionValue::new(pull);
                 pulled.set(vello::kurbo::Vec2::ZERO, back, crate::time::now());
                 self.group_resist_back = Some((drag.group_id, pulled));
             }
@@ -3187,7 +3202,7 @@ impl GroupRow {
             return Some(resisted(self.last_cursor - drag.start));
         }
         let (group, pulled) = self.group_resist_back?;
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         (group == id && pulled.is_moving(now)).then(|| pulled.get(now))
     }
 
@@ -3519,14 +3534,14 @@ impl FloatingSurfaceProvider for GroupRow {
         &mut self,
         id: &str,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         self.groups
             .iter_mut()
             .any(|group| FloatingSurfaceProvider::floating_surface_event(group, id, event, ctx))
     }
 
-    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+    fn floating_surface_accessibility(&self, id: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.groups
             .iter()
             .find_map(|group| FloatingSurfaceProvider::floating_surface_accessibility(group, id))
@@ -3536,8 +3551,8 @@ impl FloatingSurfaceProvider for GroupRow {
         &mut self,
         id: &str,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> bool {
         self.groups.iter_mut().any(|group| {
@@ -3547,7 +3562,7 @@ impl FloatingSurfaceProvider for GroupRow {
         })
     }
 
-    fn floating_surface_ime(&self, id: &str) -> Option<(crate::ime::InputContent, Rect)> {
+    fn floating_surface_ime(&self, id: &str) -> Option<(tilo_ui_base::ime::InputContent, Rect)> {
         self.groups
             .iter()
             .find_map(|group| FloatingSurfaceProvider::floating_surface_ime(group, id))
@@ -3574,7 +3589,7 @@ impl FloatingSurfaceProvider for GroupRow {
             .collect()
     }
 
-    fn draw_floating_surfaces(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_floating_surfaces(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -3584,12 +3599,22 @@ impl FloatingSurfaceProvider for GroupRow {
         for group in &mut self.groups {
             FloatingSurfaceProvider::draw_floating_surfaces(
                 group,
-                &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+                &mut tilo_ui_base::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    env.clone(),
+                ),
             );
         }
     }
 
-    fn draw_floating_surface(&mut self, id: &str, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
+    fn draw_floating_surface(
+        &mut self,
+        id: &str,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
+    ) -> bool {
         #[allow(
             unused_variables,
             unused_mut,
@@ -3600,7 +3625,13 @@ impl FloatingSurfaceProvider for GroupRow {
             FloatingSurfaceProvider::draw_floating_surface(
                 group,
                 id,
-                &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+                &mut tilo_ui_base::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    env.clone(),
+                ),
             )
         })
     }
@@ -3789,7 +3820,7 @@ impl GroupRow {
         if let Some(max_i) = plan.maximized_in.get(section).copied().flatten() {
             if i == max_i {
                 style.size.width = Dimension::auto();
-                style = crate::widget::layout::filling(style, 1.0e6);
+                style = tilo_ui_base::widget::layout::filling(style, 1.0e6);
             } else {
                 style.display = Display::None;
             }
@@ -3946,10 +3977,10 @@ impl GroupRow {
 }
 
 impl Widget for GroupRow {
-    crate::provides!(
+    tilo_ui_base::provides!(
         dyn crate::floating_surface::FloatingSurfaceProvider,
         #[cfg(feature = "model")]
-        dyn crate::widget::presence_topology::CollaborationTopology,
+        dyn tilo_ui_base::widget::presence_topology::CollaborationTopology,
         dyn crate::component_lifecycle::ComponentLifecycle
     );
 
@@ -3979,7 +4010,10 @@ impl Widget for GroupRow {
             .min()
     }
 
-    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+    fn set_platform_conventions(
+        &mut self,
+        conventions: tilo_ui_base::platform::PlatformConventions,
+    ) {
         for child in self.groups.iter_mut().map(|group| group as &mut dyn Widget) {
             child.set_platform_conventions(conventions);
         }
@@ -3987,14 +4021,14 @@ impl Widget for GroupRow {
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         for child in self.groups.iter_mut().map(|group| group as &mut dyn Widget) {
             child.set_interaction_environment(environment);
         }
     }
 
-    fn mount_native_views(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>) {
+    fn mount_native_views(&mut self, host: &tilo_ui_base::widget::native_view::NativeViewHost<'_>) {
         for child in self.groups.iter_mut().map(|group| group as &mut dyn Widget) {
             child.mount_native_views(host);
         }
@@ -4038,7 +4072,7 @@ impl Widget for GroupRow {
             .collect()
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -4053,7 +4087,7 @@ impl Widget for GroupRow {
         for index in self.shown_group_indices() {
             let before = drawn(scene);
             let group = &mut self.groups[index];
-            group.draw_overlay(&mut crate::draw::DrawCtx::new(
+            group.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -4112,12 +4146,12 @@ impl Widget for GroupRow {
             if self.node_ids.len() == self.groups.len() {
                 self.prune_closed_groups();
             }
-            let now = crate::motion::frame_now();
+            let now = tilo_ui_base::motion::frame_now();
             self.tick_snap_at(now);
             self.advance_drag_reach(now);
             self.advance_edge_autoscroll(now);
             if self.scroll_dirty {
-                crate::widget::note_layout_moved();
+                tilo_ui_base::widget::note_layout_moved();
             }
         }
         let mut any = false;
@@ -4190,7 +4224,7 @@ impl Widget for GroupRow {
             self.rect = Rect::ZERO;
             return;
         }
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         // A floating window is laid out at its own rect, never in the flow
         // of a section or canvas: what the strip measures stays its own.
         self.mark_floating();
@@ -4269,7 +4303,7 @@ impl Widget for GroupRow {
         let edge_resizing = self.edge_drag.is_some();
         let ease_reframe = self.shift_armed && !self.reduce_motion;
         let reframe = self.snap_timing(self.motion_source);
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let dest_w: Vec<f64> = (0..runs).map(|k| self.dest_content_w(k)).collect();
         let going: Vec<u64> = self
             .groups
@@ -4318,7 +4352,7 @@ impl Widget for GroupRow {
         // scroll_x to max doesn't get re-eased.
         self.tick_snap_at(now);
         if self.snap_in_flight() {
-            crate::widget::note_layout_moved();
+            tilo_ui_base::widget::note_layout_moved();
         }
         let collapsed: Vec<bool> = (0..runs)
             .map(|k| {
@@ -4364,7 +4398,7 @@ impl Widget for GroupRow {
         self.recheck_edge_hover();
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -4482,9 +4516,9 @@ impl Widget for GroupRow {
                 // A clipped section is one damage part, there whichever of its groups draw, bounded by
                 // the clip that bounds them: a group the row leaves out and draws again changes
                 // only parts inside the section, which then damages the section alone, not every display.
-                crate::scene_parts::begin(
+                tilo_ui_base::scene_parts::begin(
                     scene,
-                    crate::scene_parts::PartKey::new("ui.strip-section", k),
+                    tilo_ui_base::scene_parts::PartKey::new("ui.strip-section", k),
                 );
                 scene.push_layer(
                     vello::peniko::Fill::NonZero,
@@ -4495,20 +4529,20 @@ impl Widget for GroupRow {
                 );
             }
             self.draw_groups(
-                &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
+                &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
                 maximized_idx,
                 &in_run,
             );
             crate::window_pictures::unseen(self.culled_groups.iter());
             crate::window_pictures::settled(self.groups.iter().map(|group| &group.id));
             self.draw_handles(
-                &mut crate::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
+                &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, tr, theme, env.clone()),
                 maximized_idx,
                 &in_run,
             );
             if clipped {
                 scene.pop_layer();
-                crate::scene_parts::end(scene, vec![transform.transform_rect_bbox(clip)]);
+                tilo_ui_base::scene_parts::end(scene, vec![transform.transform_rect_bbox(clip)]);
             }
             if shifted {
                 self.offset_section(k, -shift);
@@ -4525,7 +4559,7 @@ impl Widget for GroupRow {
         self.pan_drawings
             .retain(|drawing| kept.contains(&drawing.id));
         self.draw_floats(scene, transform, (tr, theme, &env));
-        self.draw_group_drag_preview(&mut crate::draw::DrawCtx::new(
+        self.draw_group_drag_preview(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             tr,
@@ -4535,7 +4569,7 @@ impl Widget for GroupRow {
         self.draw_reorder_capsule(scene, transform, theme);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if self.external_navigation && self.hidden {
             return;
         }
@@ -4633,11 +4667,11 @@ impl Widget for GroupRow {
         "GroupRow"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 
         Some(
-            AccessNode::new(Role::Group).with_name(crate::i18n::widget_format(
+            AccessNode::new(Role::Group).with_name(tilo_ui_base::i18n::widget_format(
                 "widget-hosted-applications",
                 &[],
             )),
@@ -4650,8 +4684,8 @@ impl Widget for GroupRow {
 
     /// The shell gave the keyboard to another window of the row since the frame last asked: a search
     /// chose it, it opened, the one in front closed, or the person clicked it. Its app is the shell's
-    /// to name ([`crate::widget::AppActivation::Ready`]); the row reports the move.
-    fn take_app_activation(&mut self, _ready: bool) -> Option<crate::widget::AppActivation> {
+    /// to name ([`tilo_ui_base::widget::AppActivation::Ready`]); the row reports the move.
+    fn take_app_activation(&mut self, _ready: bool) -> Option<tilo_ui_base::widget::AppActivation> {
         let now = self
             .groups
             .iter()
@@ -4659,14 +4693,17 @@ impl Widget for GroupRow {
             .map(|group| group.id);
         let before = std::mem::replace(&mut self.keyboard_window, now);
         (before.is_some() && now.is_some() && now != before)
-            .then_some(crate::widget::AppActivation::Moved)
+            .then_some(tilo_ui_base::widget::AppActivation::Moved)
     }
 
     fn wants_pointer_capture(&self) -> bool {
         (self.canvas.is_some() && self.group_drag.is_some_and(|drag| drag.moved))
             || self.pointer_pan.is_some_and(|pan| pan.engaged)
             || self.edge_drag.is_some()
-            || self.groups.iter().any(super::Widget::wants_pointer_capture)
+            || self
+                .groups
+                .iter()
+                .any(tilo_ui_base::widget::Widget::wants_pointer_capture)
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -4777,8 +4814,11 @@ impl Widget for GroupRow {
         self.groups
             .iter()
             .filter(|g| self.paints_within_row(g.get_rect(), 0.0))
-            .any(super::Widget::needs_redraw)
-            || self.handles.iter().any(super::Widget::needs_redraw)
+            .any(tilo_ui_base::widget::Widget::needs_redraw)
+            || self
+                .handles
+                .iter()
+                .any(tilo_ui_base::widget::Widget::needs_redraw)
     }
 
     fn mark_drawn(&mut self) {
@@ -4819,27 +4859,27 @@ impl Widget for GroupRow {
                 .groups
                 .iter()
                 .filter(|g| self.paints_within_row(g.get_rect(), 0.0))
-                .any(super::Widget::needs_animation_frame)
+                .any(tilo_ui_base::widget::Widget::needs_animation_frame)
     }
 
     fn take_structure_dirty(&mut self) -> bool {
         self.take_structure_change().rebuilds()
     }
-    fn take_structure_change(&mut self) -> super::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         let own = if std::mem::take(&mut self.structure_dirty) {
             if self.laid_same_groups() {
-                super::StructureChange::Children
+                tilo_ui_base::widget::StructureChange::Children
             } else {
-                super::StructureChange::Rebuild
+                tilo_ui_base::widget::StructureChange::Rebuild
             }
         } else {
-            super::StructureChange::None
+            tilo_ui_base::widget::StructureChange::None
         };
         self.groups.iter_mut().fold(own, |change, group| {
             change.join(group.take_structure_change())
         })
     }
-    fn remount_children(&mut self, remount: &mut super::Remount<'_>) -> bool {
+    fn remount_children(&mut self, remount: &mut tilo_ui_base::widget::Remount<'_>) -> bool {
         let Some(row) = self.node else {
             return false;
         };
@@ -4917,7 +4957,7 @@ impl crate::component_lifecycle::ComponentLifecycle for GroupRow {
 }
 
 #[cfg(feature = "model")]
-impl crate::widget::presence_topology::CollaborationTopology for GroupRow {
+impl tilo_ui_base::widget::presence_topology::CollaborationTopology for GroupRow {
     fn collaboration_children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.groups
             .iter_mut()
@@ -4938,7 +4978,7 @@ impl GroupRow {
         if timing.is_instant() {
             self.land_moves();
         } else if armed {
-            let moves: Vec<(u64, crate::motion::MotionValue<f64>)> = laid_x
+            let moves: Vec<(u64, tilo_ui_base::motion::MotionValue<f64>)> = laid_x
                 .iter()
                 .filter_map(|&(id, laid)| {
                     let jump = self.last_laid_x.get(&id).map_or(0.0, |was| was - laid);
@@ -5006,7 +5046,7 @@ impl GroupRow {
 
     fn draw_groups(
         &mut self,
-        ctx: &mut crate::draw::DrawCtx<'_>,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
         maximized_idx: Option<usize>,
         in_run: &[bool],
     ) {
@@ -5018,8 +5058,10 @@ impl GroupRow {
         let (scene, transform, tr, theme, mut env) = ctx.parts();
         self.culled_groups.clear();
         if let Some(max_i) = maximized_idx {
-            let fade_alpha =
-                crate::motion::unit_opacity(self.sibling_fade.progress(crate::motion::frame_now()));
+            let fade_alpha = tilo_ui_base::motion::unit_opacity(
+                self.sibling_fade
+                    .progress(tilo_ui_base::motion::frame_now()),
+            );
             if fade_alpha > f32::EPSILON {
                 for i in 0..self.groups.len() {
                     let sibling = &mut self.groups[i];
@@ -5046,8 +5088,8 @@ impl GroupRow {
             }
             return;
         }
-        let now = crate::motion::frame_now();
-        let fade_alpha = crate::motion::unit_opacity(self.sibling_fade.progress(now));
+        let now = tilo_ui_base::motion::frame_now();
+        let fade_alpha = tilo_ui_base::motion::unit_opacity(self.sibling_fade.progress(now));
         // Only the hero's own run fades: on a strip spread across displays
         // the others keep their windows.
         let fade_hero = self.fade_hero.filter(|&hero| {
@@ -5205,7 +5247,7 @@ impl GroupRow {
         window: ApartWindow,
         scene: &mut Scene,
         transform: Affine,
-        (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
+        (tr, theme, env): (&mut TextRenderer, &Theme, &tilo_ui_base::draw::DrawEnv<'_>),
     ) {
         let (id, rect) = (self.groups[i].id, self.groups[i].get_rect());
         let reach = rect.inflate(GROUP_SPRITE_REACH_PX, 0.0);
@@ -5215,7 +5257,7 @@ impl GroupRow {
         // (a window off screen that changed while the strip rested: none of
         // the screen). Everything it paints stays inside its sprites' reach
         // and the section's clip.
-        let key = crate::scene_parts::PartKey::new("ui.strip-group", id);
+        let key = tilo_ui_base::scene_parts::PartKey::new("ui.strip-group", id);
         let bounds = vec![transform.transform_rect_bbox(Rect::new(
             reach.x0,
             window.rows.0,
@@ -5239,8 +5281,8 @@ impl GroupRow {
             && (!on_screen || (at_rest && drawing.current))
         {
             drawing.current &= only_moved;
-            crate::scene_parts::part(scene, key, bounds, |scene| {
-                crate::scene_parts::append(
+            tilo_ui_base::scene_parts::part(scene, key, bounds, |scene| {
+                tilo_ui_base::scene_parts::append(
                     scene,
                     &drawing.scene,
                     drawing.parts.as_ref(),
@@ -5248,7 +5290,7 @@ impl GroupRow {
                 );
             });
             if drawing.shows_secret {
-                crate::secret_paint::note_secret_painted();
+                tilo_ui_base::secret_paint::note_secret_painted();
             }
             if on_screen {
                 drawing.offer_picture();
@@ -5264,7 +5306,7 @@ impl GroupRow {
             .unwrap_or_default();
         let drawing = self.record_group(i, local, transform, (tr, theme, env));
         let carried =
-            crate::scene_parts::part(scene, key, bounds, |scene| drawing.append_to(scene));
+            tilo_ui_base::scene_parts::part(scene, key, bounds, |scene| drawing.append_to(scene));
         drawing.offer_picture(carried);
         if let Some(drawing) = drawing.keep(carried) {
             self.apart_drawings.push(drawing);
@@ -5276,7 +5318,7 @@ impl GroupRow {
         i: usize,
         scene: &mut Scene,
         transform: Affine,
-        (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
+        (tr, theme, env): (&mut TextRenderer, &Theme, &tilo_ui_base::draw::DrawEnv<'_>),
     ) {
         if !crate::window_pictures::wanted(self.groups[i].id) {
             self.groups[i].draw_child(scene, transform, tr, theme, env);
@@ -5292,14 +5334,14 @@ impl GroupRow {
         i: usize,
         mut local: Scene,
         transform: Affine,
-        (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
+        (tr, theme, env): (&mut TextRenderer, &Theme, &tilo_ui_base::draw::DrawEnv<'_>),
     ) -> GroupDrawing {
         local.reset();
-        crate::part_paint::backdrop::nest_scene(&local);
-        let secrets = crate::secret_paint::SecretPaint::begin();
+        tilo_ui_base::part_paint::backdrop::nest_scene(&local);
+        let secrets = tilo_ui_base::secret_paint::SecretPaint::begin();
         let group = &mut self.groups[i];
         let (id, rect) = (group.id, group.get_rect());
-        let ((), parts) = crate::scene_parts::record(&mut local, |local| {
+        let ((), parts) = tilo_ui_base::scene_parts::record(&mut local, |local| {
             group.draw_child(local, transform, tr, theme, env);
         });
         GroupDrawing(ApartDrawing {
@@ -5347,7 +5389,7 @@ impl GroupRow {
         i: usize,
         scene: &mut Scene,
         transform: Affine,
-        (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
+        (tr, theme, env): (&mut TextRenderer, &Theme, &tilo_ui_base::draw::DrawEnv<'_>),
     ) {
         let (id, rect) = (self.groups[i].id, self.groups[i].get_rect());
         if !self.group_at_rest(i, crate::time::now()) || self.pan_unkept.contains(&id) {
@@ -5367,9 +5409,14 @@ impl GroupRow {
             let dx = rect.x0 - drawing.rect.x0;
             let moved =
                 Affine::translate(transform * Point::new(dx, 0.0) - transform * Point::ORIGIN);
-            crate::scene_parts::append(scene, &drawing.scene, drawing.parts.as_ref(), Some(moved));
+            tilo_ui_base::scene_parts::append(
+                scene,
+                &drawing.scene,
+                drawing.parts.as_ref(),
+                Some(moved),
+            );
             if drawing.shows_secret {
-                crate::secret_paint::note_secret_painted();
+                tilo_ui_base::secret_paint::note_secret_painted();
             }
             drawing.offer_picture();
             self.replayed_groups.push(id);
@@ -5388,7 +5435,7 @@ impl GroupRow {
         }
     }
 
-    fn draw_group_drag_preview(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_group_drag_preview(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -5413,7 +5460,7 @@ impl GroupRow {
             reason = "Affine multiplication composes finite floating-point transforms"
         )]
         let preview_transform = transform * lift;
-        group.draw_group_drag_visual(&mut crate::draw::DrawCtx::new(
+        group.draw_group_drag_visual(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             preview_transform,
             tr,
@@ -5430,10 +5477,10 @@ impl GroupRow {
         let progress = if theme.reduce_motion {
             1.0
         } else {
-            crate::motion::ListChange::FADE.progress_after(
-                crate::motion::Direction::Enter,
+            tilo_ui_base::motion::ListChange::FADE.progress_after(
+                tilo_ui_base::motion::Direction::Enter,
                 theme.motion(),
-                crate::tokens::MotionSource::Pointer,
+                tilo_ui_base::tokens::MotionSource::Pointer,
                 crate::time::now().saturating_duration_since(drag.lifted_at),
             )
         };
@@ -5457,7 +5504,7 @@ impl GroupRow {
     /// window mid-slide.
     fn draw_handles(
         &mut self,
-        ctx: &mut crate::draw::DrawCtx<'_>,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
         maximized_idx: Option<usize>,
         in_run: &[bool],
     ) {
@@ -5474,7 +5521,7 @@ impl GroupRow {
         if any_drag || maximized_idx.is_some() || self.canvas.is_some() {
             return;
         }
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let offsets: Vec<f64> = self
             .groups
             .iter()
@@ -5571,7 +5618,11 @@ impl GroupRow {
         );
     }
 
-    fn dispatch_to_groups(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn dispatch_to_groups(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
         // Mouse buttons and wheels carry no position, so dispatch the group that owns the
         // remembered cursor (or an active capture) before siblings. What the pointer stands on
         // may take it, and so may a group holding the pointer from a press of its own still under

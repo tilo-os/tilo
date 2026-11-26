@@ -25,17 +25,17 @@ use ui::kurbo::{Point, Rect};
 /// The height of the shell's bar across the top of a display, logical pixels: popovers stand
 /// under it.
 pub const TOPBAR_HEIGHT_PX: f32 =
-    ui::tokens::Metrics::BASE.bar_control_height + ui::tokens::Spacing::BASE.s1;
+    tilo_ui_base::tokens::Metrics::BASE.bar_control_height + tilo_ui_base::tokens::Spacing::BASE.s1;
 
 /// The bar's height under `theme`: [`TOPBAR_HEIGHT_PX`], grown with a large text size so the
 /// time's line still fits with air above and below.
 #[must_use]
-pub fn topbar_height(theme: &ui::Theme) -> f32 {
-    let line = ui::tokens::Typography::default()
-        .style(ui::TextRole::Body)
+pub fn topbar_height(theme: &tilo_ui_base::Theme) -> f32 {
+    let line = tilo_ui_base::tokens::Typography::default()
+        .style(tilo_ui_base::TextRole::Body)
         .line_height_px()
         * theme.text_scale;
-    TOPBAR_HEIGHT_PX.max((line + 2.0 * ui::tokens::Spacing::BASE.s1).ceil())
+    TOPBAR_HEIGHT_PX.max((line + 2.0 * tilo_ui_base::tokens::Spacing::BASE.s1).ceil())
 }
 
 /// How long Alt has to stay down after Tab before the switcher's panel shows: shorter than a

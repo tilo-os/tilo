@@ -255,7 +255,7 @@ impl<R: Resource> PastVersion<R> {
     /// Every name and value the drawn view exposes to assistive technology,
     /// depth first: what a reader of the past version would hear.
     pub fn texts(&self) -> Vec<String> {
-        ui_core::a11y::texts(self.preview.root())
+        tilo_ui_base::a11y::texts(self.preview.root())
     }
 
     /// The state the view was presented.
@@ -282,8 +282,8 @@ pub(crate) fn render_past<A: ResourceApp>(
         .map(|typed| typed.live.clone())
         .ok_or_else(|| format!("{} drew another resource", super::app::hooks::<A>().title()))?;
     let mut preview = past_preview(root, doc, <A::Resource as Resource>::LABEL);
-    let theme = ui_core::Theme::dark();
-    let mut text = ui_core::text_render::TextRenderer::new();
+    let theme = tilo_ui_base::Theme::dark();
+    let mut text = tilo_ui_base::text_render::TextRenderer::new();
     let bounds = Rect::new(0.0, 0.0, f64::from(size.0), f64::from(size.1));
     preview.layout(bounds, &mut text, &theme)?;
     let mut scene = ui_core::vello::Scene::new();
@@ -308,7 +308,7 @@ pub(crate) fn draw_past<A: ResourceApp>(
     bounds: Rect,
     scene: &mut ui_core::vello::Scene,
     transform: ui_core::vello::kurbo::Affine,
-    theme: &ui_core::Theme,
+    theme: &tilo_ui_base::Theme,
 ) -> Result<(), String> {
     draw_over(
         doc,
@@ -332,11 +332,11 @@ fn draw_over(
     bounds: Rect,
     scene: &mut ui_core::vello::Scene,
     transform: ui_core::vello::kurbo::Affine,
-    theme: &ui_core::Theme,
+    theme: &tilo_ui_base::Theme,
 ) -> Result<(), String> {
     let root = root(&doc)?;
     let mut preview = past_preview(root, doc, label);
-    let mut text = ui_core::text_render::TextRenderer::new();
+    let mut text = tilo_ui_base::text_render::TextRenderer::new();
     preview.layout(bounds, &mut text, theme)?;
     preview.draw(scene, transform, &mut text, theme);
     Ok(())
@@ -347,8 +347,8 @@ mod tests {
     use super::*;
     use crate::prelude::*;
     use tilo_resource::AppNamed;
-    use ui_core::Theme;
-    use ui_core::text_render::TextRenderer;
+    use tilo_ui_base::Theme;
+    use tilo_ui_base::text_render::TextRenderer;
     use ui_core::vello::Scene;
     use ui_core::vello::kurbo::Affine;
 

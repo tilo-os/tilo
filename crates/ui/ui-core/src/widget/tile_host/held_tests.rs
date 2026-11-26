@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use super::*;
-use crate::offscreen::OffscreenRenderer;
+use tilo_ui_base::offscreen::OffscreenRenderer;
 use vello::kurbo::Vec2;
 use vello::peniko::Color;
 
@@ -12,7 +12,7 @@ struct Repaints {
 }
 
 impl Widget for Repaints {
-    crate::provides!(dyn crate::widget::CompleteContentProvider);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::CompleteContentProvider);
 
     fn build_layout(
         &mut self,
@@ -23,7 +23,7 @@ impl Widget for Repaints {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -49,7 +49,7 @@ impl Widget for Repaints {
     }
 }
 
-impl crate::widget::CompleteContentProvider for Repaints {
+impl tilo_ui_base::widget::CompleteContentProvider for Repaints {
     fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
         Some(vello::kurbo::Size::new(
             self.rect.width(),
@@ -57,7 +57,11 @@ impl crate::widget::CompleteContentProvider for Repaints {
         ))
     }
 
-    fn draw_complete_content(&mut self, bounds: Rect, ctx: &mut crate::draw::DrawCtx<'_>) -> bool {
+    fn draw_complete_content(
+        &mut self,
+        bounds: Rect,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
+    ) -> bool {
         #[allow(
             unused_variables,
             unused_mut,
@@ -101,20 +105,20 @@ fn shown(scene: &Scene, at: Point) -> (u8, u8, u8) {
     let (r, g, b, _) = OffscreenRenderer::sample(
         &rgba,
         SIZE.0,
-        crate::num::u32_of_f64(at.x),
-        crate::num::u32_of_f64(at.y),
+        tilo_ui_base::num::u32_of_f64(at.x),
+        tilo_ui_base::num::u32_of_f64(at.y),
     );
     (r, g, b)
 }
 
 fn draw(host: &mut TileHost, tr: &mut TextRenderer, theme: &Theme) -> Scene {
     let mut scene = Scene::new();
-    host.draw(&mut crate::draw::DrawCtx::new(
+    host.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         tr,
         theme,
-        crate::presence::PresenceCtx::empty().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
     ));
     scene
 }
@@ -133,7 +137,11 @@ fn an_in_process_window_that_repaints_while_held_shows_what_it_showed_when_held(
     assert_eq!(shown(&draw(&mut host, &mut tr, &theme), rect.center()), OLD);
 
     assert!(hold_windows());
-    host.hold_content(&mut tr, &theme, &crate::presence::PresenceCtx::empty());
+    host.hold_content(
+        &mut tr,
+        &theme,
+        &tilo_ui_base::presence::PresenceCtx::empty(),
+    );
     assert!(host.content_held());
     assert!(
         !host.needs_redraw(),
@@ -162,12 +170,12 @@ fn an_in_process_window_that_repaints_while_held_shows_what_it_showed_when_held(
     assert!((complete.height() - rect.height() * 2.0).abs() < 0.5);
     let mut capture = Scene::new();
     let captured = host
-        .draw_complete_content_capture(&mut crate::draw::DrawCtx::new(
+        .draw_complete_content_capture(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut capture,
             Affine::IDENTITY,
             &mut tr,
             &theme,
-            crate::presence::PresenceCtx::empty().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
         ))
         .expect("the complete capture paints");
     assert_eq!(captured, complete);

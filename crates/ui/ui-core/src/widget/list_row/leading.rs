@@ -1,8 +1,9 @@
 //! What a row leads with: the builders that fill its leading column.
 
 use super::{Leading, ListRow};
-use crate::icons::Icon;
-use crate::widget::{MediaAspect, MediaSource};
+use crate::widget::MediaSource;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::widget::MediaAspect;
 use vello::peniko::{Color, ImageData};
 
 impl ListRow {
@@ -104,6 +105,6 @@ impl ListRow {
     #[cfg(feature = "local-daemons")]
     #[must_use]
     pub fn with_profile_photo(self, photo: &tilo_identity_client::ProfilePhoto) -> Self {
-        self.avatar_image(crate::widget::avatar_face::profile_image(photo))
+        self.avatar_image(tilo_ui_base::widget::avatar_face::profile_image(photo))
     }
 }

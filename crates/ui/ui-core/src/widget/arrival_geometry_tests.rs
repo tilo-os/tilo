@@ -3,10 +3,14 @@
 //! skeleton held a while, the answer landing and its cross-fade.
 
 use super::*;
-use crate::arriving::GRACE;
 use crate::launch::ShotFrame;
 use crate::time::{Duration, testing::with_monotonic_time};
-use crate::widget::{Column, ListRow, MediaCard, MediaGrid, MediaSource, RowShape, Text};
+use crate::{
+    widget::Column, widget::ListRow, widget::MediaCard, widget::MediaGrid, widget::MediaSource,
+    widget::Text,
+};
+use tilo_ui_base::arriving::GRACE;
+use tilo_ui_base::widget::RowShape;
 
 /// A wait long past the skeleton's first frame.
 const LATE: Duration = Duration::from_secs(2);
@@ -29,7 +33,7 @@ fn page(body: Element) -> Column {
     Column::new()
         .with_intrinsic_height()
         .push(Box::new(
-            Text::new("Heading").with_role(crate::tokens::TextRole::Title),
+            Text::new("Heading").with_role(tilo_ui_base::tokens::TextRole::Title),
         ))
         .push(body)
         .push(Box::new(Text::new("What follows")))
@@ -141,7 +145,9 @@ fn a_remote_list_grid_and_page_move_nothing_as_their_content_arrives() {
                                     .meta("Album"),
                             )
                         })
-                        .shaped(SkeletonShape::Media(crate::widget::MediaAspect::Square)),
+                        .shaped(SkeletonShape::Media(
+                            tilo_ui_base::widget::MediaAspect::Square,
+                        )),
                 )
             })
             .collect();

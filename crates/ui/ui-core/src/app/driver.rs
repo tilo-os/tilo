@@ -42,21 +42,21 @@ mod widget;
 mod window_bar;
 #[cfg(feature = "model")]
 mod workspace_side;
-use crate::a11y::AccessNode;
 use crate::headless::{
     AccessibilityAudit, InspectionNode, InspectionSnapshot, NativeAppAudit, NativeAppIssue,
     SemanticExpectation,
 };
-#[cfg(feature = "model")]
-use crate::permissions::PermissionContext;
-use crate::presence::PresenceCtx;
 use crate::state::State;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::Widget;
 pub use apps_a::{WindowBarNotice, WindowBarNoticeButton};
 #[cfg(feature = "model")]
 pub use palette::FollowedView;
+use tilo_ui_base::a11y::AccessNode;
+#[cfg(feature = "model")]
+use tilo_ui_base::permissions::PermissionContext;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 pub use wake::OwedSettle;
 #[cfg(feature = "model")]
 pub use workspace_side::{ProvidedInvocation, ServedProvider, ShownHost};
@@ -98,8 +98,8 @@ impl Surface {
         let (width, height) = self.viewport.get();
         let scale = self.scale.get();
         (
-            crate::num::u32_of_f64((f64::from(width) * scale).round()),
-            crate::num::u32_of_f64((f64::from(height) * scale).round()),
+            tilo_ui_base::num::u32_of_f64((f64::from(width) * scale).round()),
+            tilo_ui_base::num::u32_of_f64((f64::from(height) * scale).round()),
         )
     }
 }
@@ -145,7 +145,7 @@ impl super::part_bar::BarWindow for Surface {
         self.title.borrow().clone()
     }
 
-    fn app_draws_frame(&self, _platform: crate::platform::PlatformConventions) -> bool {
+    fn app_draws_frame(&self, _platform: tilo_ui_base::platform::PlatformConventions) -> bool {
         self.frames_itself.get()
     }
 
@@ -202,7 +202,7 @@ pub struct Driver {
     surface: Surface,
     scene: Scene,
     damage: SurfaceDamage,
-    touch: crate::interaction::TouchPointerEmulator,
+    touch: tilo_ui_base::interaction::TouchPointerEmulator,
     /// Concrete type of the root when it was mounted through [`Driver::for_root`]; checks
     /// [`Driver::root`].
     root_type: Option<TypeId>,
@@ -268,7 +268,7 @@ impl Driver {
     /// workspace in place first, so what the app asks of it while mounting is asked through it.
     fn built(app: Box<App>, viewport: (u32, u32)) -> Self {
         #[cfg(not(target_arch = "wasm32"))]
-        let scale = f64::from(crate::offscreen::capture_device_scale());
+        let scale = f64::from(tilo_ui_base::offscreen::capture_device_scale());
         #[cfg(target_arch = "wasm32")]
         let scale = 1.0;
         Self {
@@ -277,7 +277,7 @@ impl Driver {
             scene: Scene::new(),
             // A window of its own paints members' pointers and activity over the widgets.
             damage: SurfaceDamage::default().painting_peers(),
-            touch: crate::interaction::TouchPointerEmulator::default(),
+            touch: tilo_ui_base::interaction::TouchPointerEmulator::default(),
             root_type: None,
             window_app: None,
             frames: 0,
@@ -523,7 +523,7 @@ impl Driver {
         // What the widgets' update moves — a pan, a fade, a closure that answers what it waits for —
         // advances in the surface frame's own model pump, which a window runs before it synchronizes.
         let mut again = true;
-        for _ in 0..crate::widget::SETTLE_FRAMES {
+        for _ in 0..tilo_ui_base::widget::SETTLE_FRAMES {
             // The bar first, as a window's frame refreshes it: its height is part of the app's
             // top inset.
             if self.bar_at_rest {
@@ -590,11 +590,11 @@ impl Driver {
 
     /// Run a frame now, whatever asked for it, as a caller asks for one after changing anything:
     /// the model is refreshed whole ([`Self::refresh_model`]) and every component pass runs
-    /// whatever its observation says ([`crate::component_inputs::forcing`]), so what was written
+    /// whatever its observation says ([`tilo_ui_base::component_inputs::forcing`]), so what was written
     /// past the framework is shown and published.
     pub fn relayout(&mut self) {
         self.take_up_reported_layout();
-        crate::component_inputs::forcing(|| self.refresh_model());
+        tilo_ui_base::component_inputs::forcing(|| self.refresh_model());
     }
 
     /// Run one frame at `viewport`.
@@ -605,7 +605,7 @@ impl Driver {
     pub fn relayout_at(
         &mut self,
         viewport: (u32, u32),
-    ) -> Result<(), crate::widget::WidgetLayoutError> {
+    ) -> Result<(), tilo_ui_base::widget::WidgetLayoutError> {
         self.surface.viewport.set(viewport);
         self.take_up_reported_layout();
         self.run_frame();
@@ -622,9 +622,9 @@ impl Driver {
         if let Some(root) = self.app.layout.root_node {
             // Placed on the surface's device pixels, as its frames lay the widgets out: a list's
             // offset snapped to another grid stands its rows between pixels.
-            let _grid = crate::widget::layout::enter_device_scale(self.surface.scale.get());
-            let tree = crate::widget::layout::TreeId::of(&self.app.layout.taffy);
-            crate::widget::layout::placing_again_in(tree, || {
+            let _grid = tilo_ui_base::widget::layout::enter_device_scale(self.surface.scale.get());
+            let tree = tilo_ui_base::widget::layout::TreeId::of(&self.app.layout.taffy);
+            tilo_ui_base::widget::layout::placing_again_in(tree, || {
                 self.app.apply_history_presentation(root);
             });
             // What stood under a still pointer may have moved: the next press replays where the
@@ -641,7 +641,7 @@ impl Driver {
     ///
     /// # Errors
     /// As [`Self::relayout_at`].
-    pub fn recompose(&mut self) -> Result<(), crate::widget::WidgetLayoutError> {
+    pub fn recompose(&mut self) -> Result<(), tilo_ui_base::widget::WidgetLayoutError> {
         self.app.layout.request_rebuild();
         self.run_frame();
         Ok(())
@@ -655,7 +655,7 @@ impl Driver {
         &mut self,
         viewport: (u32, u32),
         theme: Theme,
-    ) -> Result<(), crate::widget::WidgetLayoutError> {
+    ) -> Result<(), tilo_ui_base::widget::WidgetLayoutError> {
         // The theme is the window's whole appearance, as it is when the window opens: its scale
         // and its comforts are worn as composed, not as a base the person's settings paint over.
         self.app.adopt_theme(theme);
@@ -666,7 +666,10 @@ impl Driver {
     ///
     /// # Errors
     /// As [`Self::relayout_at`].
-    pub fn resize(&mut self, viewport: (u32, u32)) -> Result<(), crate::widget::WidgetLayoutError> {
+    pub fn resize(
+        &mut self,
+        viewport: (u32, u32),
+    ) -> Result<(), tilo_ui_base::widget::WidgetLayoutError> {
         if self.surface.viewport.get() == viewport {
             return Ok(());
         }
@@ -760,7 +763,7 @@ impl Driver {
     ///
     /// # Errors
     /// As [`Self::relayout_at`].
-    pub fn poll_frame(&mut self) -> Result<bool, crate::widget::WidgetLayoutError> {
+    pub fn poll_frame(&mut self) -> Result<bool, tilo_ui_base::widget::WidgetLayoutError> {
         let now = crate::time::now();
         self.presence_tick(now);
         if let Some((device, events)) = self.touch.poll(now) {
@@ -824,7 +827,7 @@ impl Driver {
 
     /// What a window does once input stops: the frames owed run until none is.
     pub fn idle(&mut self) {
-        for _ in 0..crate::widget::SETTLE_FRAMES {
+        for _ in 0..tilo_ui_base::widget::SETTLE_FRAMES {
             if !matches!(self.poll_frame(), Ok(true)) {
                 break;
             }
@@ -1008,7 +1011,7 @@ impl Driver {
         !self.app.surface_moving(now)
             && self.app.root_widget.holds_frame_until(now).is_none()
             && !self.app.root_widget.has_pending_visual_work()
-            && crate::image_store::loads_in_flight() == 0
+            && tilo_ui_base::image_store::loads_in_flight() == 0
     }
 
     /// Run frames until the visual work the widgets asked for (an image decode, a fixture read) is
@@ -1078,11 +1081,11 @@ impl Driver {
         // between events: the press lands on what that frame placed, not on the layout the
         // deadline found.
         self.serve_due_frame();
-        crate::focus_visible::note(event);
+        tilo_ui_base::focus_visible::note(event);
         self.note_pointer(event);
         // A chord typed on a layout that is not Latin is the Latin chord it is on the keys: a
         // person with a Russian layout selects all with the same keys as anyone else.
-        let renamed = crate::latin_chord::renamed(event, self.app.input.modifiers.state());
+        let renamed = tilo_ui_base::latin_chord::renamed(event, self.app.input.modifiers.state());
         let event = renamed.as_ref().unwrap_or(event);
         let running = self.running();
         // The window's bar takes what is its own before the app sees it, as a window's frame
@@ -1120,11 +1123,11 @@ impl Driver {
     /// Note where a pointer event puts the pointer, in the toolkit's own logical pixels: what a
     /// surface opening now comes out of (the control the person pressed).
     fn note_pointer(&self, event: &WindowEvent) {
-        let Some(at) = crate::motion::pointer_of(event) else {
+        let Some(at) = tilo_ui_base::motion::pointer_of(event) else {
             return;
         };
         let scale = self.surface.scale.get().max(f64::EPSILON);
-        crate::motion::note_pointer(Point::new(at.x / scale, at.y / scale));
+        tilo_ui_base::motion::note_pointer(Point::new(at.x / scale, at.y / scale));
     }
 
     /// Hand `event` to the app without running a frame: what lands before the next one. Whether
@@ -1133,7 +1136,7 @@ impl Driver {
         let Some(_pen) = self.app.input.pen.route(event) else {
             return false;
         };
-        crate::focus_visible::note(event);
+        tilo_ui_base::focus_visible::note(event);
         self.app.surface_input(&self.surface, event.clone(), false)
     }
 
@@ -1167,7 +1170,7 @@ impl Driver {
     /// Move the pointer to logical `(x, y)` with no button held.
     pub fn hover_at(&mut self, x: f64, y: f64) {
         let (x, y) = self.device(x, y);
-        self.send(&crate::synthetic_input::cursor_moved(x, y));
+        self.send(&tilo_ui_base::synthetic_input::cursor_moved(x, y));
     }
 
     fn press_at(&mut self, point: Point, button: winit::event::MouseButton) {
@@ -1179,12 +1182,12 @@ impl Driver {
         if !coalesced {
             self.set_coalesce_input_frames(true);
         }
-        self.send(&crate::synthetic_input::cursor_moved(x, y));
-        self.send(&crate::synthetic_input::mouse_input(
+        self.send(&tilo_ui_base::synthetic_input::cursor_moved(x, y));
+        self.send(&tilo_ui_base::synthetic_input::mouse_input(
             ElementState::Pressed,
             button,
         ));
-        self.send(&crate::synthetic_input::mouse_input(
+        self.send(&tilo_ui_base::synthetic_input::mouse_input(
             ElementState::Released,
             button,
         ));
@@ -1207,7 +1210,7 @@ impl Driver {
     /// Two left clicks at `(x, y)` that count as one double-click however long the frames between
     /// the presses take.
     pub fn double_click_at(&mut self, x: f64, y: f64) {
-        crate::gesture::with_capture_multi_click_interval(
+        tilo_ui_base::gesture::with_capture_multi_click_interval(
             crate::time::Duration::from_secs(3600),
             || {
                 self.click_at(x, y);
@@ -1218,7 +1221,7 @@ impl Driver {
 
     /// Three left clicks at logical `(x, y)` that count as one triple-click.
     pub fn triple_click_at(&mut self, x: f64, y: f64) {
-        crate::gesture::with_capture_multi_click_interval(
+        tilo_ui_base::gesture::with_capture_multi_click_interval(
             crate::time::Duration::from_secs(3600),
             || {
                 for _ in 0..3 {
@@ -1231,16 +1234,16 @@ impl Driver {
     /// Press the left button at `from`, move through intermediate points to `to` and release there.
     pub fn drag_at(&mut self, from: (f64, f64), to: (f64, f64)) {
         let (x, y) = self.device(from.0, from.1);
-        self.send(&crate::synthetic_input::cursor_moved(x, y));
-        self.send(&crate::synthetic_input::mouse_press());
+        self.send(&tilo_ui_base::synthetic_input::cursor_moved(x, y));
+        self.send(&tilo_ui_base::synthetic_input::mouse_press());
         for fraction in [0.25, 0.5, 0.75, 1.0] {
             let (x, y) = self.device(
                 from.0 + (to.0 - from.0) * fraction,
                 from.1 + (to.1 - from.1) * fraction,
             );
-            self.send(&crate::synthetic_input::cursor_moved(x, y));
+            self.send(&tilo_ui_base::synthetic_input::cursor_moved(x, y));
         }
-        self.send(&crate::synthetic_input::mouse_release());
+        self.send(&tilo_ui_base::synthetic_input::mouse_release());
     }
 
     /// Send wheel line deltas at the last pointer position.
@@ -1250,7 +1253,7 @@ impl Driver {
             reason = "line-delta counts are small; winit's `LineDelta` is f32"
         )]
         let (dx, dy) = (dx as f32, dy as f32);
-        self.send(&crate::synthetic_input::mouse_wheel(dx, dy));
+        self.send(&tilo_ui_base::synthetic_input::mouse_wheel(dx, dy));
     }
 
     /// Deliver one finger's contact at logical `(x, y)`; `id` tells simultaneous fingers apart.
@@ -1283,7 +1286,7 @@ impl Driver {
 
     /// Two taps at logical `(x, y)` that count as one double tap.
     pub fn double_tap_at(&mut self, x: f64, y: f64) {
-        crate::gesture::with_capture_multi_click_interval(
+        tilo_ui_base::gesture::with_capture_multi_click_interval(
             crate::time::Duration::from_secs(3600),
             || {
                 for id in [u64::MAX - 1, u64::MAX] {
@@ -1361,12 +1364,12 @@ impl Driver {
     /// for as long as the press lasts.
     pub fn key(&mut self, spec: &str) {
         let (spec, held) = crate::app::driver::chord(spec);
-        let key = crate::keys::parse(spec);
+        let key = tilo_ui_base::keys::parse(spec);
         if !held.is_empty() {
             self.set_modifiers(&held);
         }
         for state in [ElementState::Pressed, ElementState::Released] {
-            self.send(&crate::synthetic_input::key_input(&key, state));
+            self.send(&tilo_ui_base::synthetic_input::key_input(&key, state));
         }
         if !held.is_empty() {
             self.set_modifiers(&[]);
@@ -1550,25 +1553,28 @@ impl Driver {
     /// How the person reaches the surface: pointer, touch, keyboard.
     pub fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.app.set_interaction_environment(environment);
         self.run_frame();
     }
 
     #[must_use]
-    pub fn interaction_environment(&self) -> crate::interaction::InteractionEnvironment {
+    pub fn interaction_environment(&self) -> tilo_ui_base::interaction::InteractionEnvironment {
         self.app.interaction_environment()
     }
 
     /// The platform whose conventions the app follows (its command key, its shortcuts).
-    pub fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+    pub fn set_platform_conventions(
+        &mut self,
+        conventions: tilo_ui_base::platform::PlatformConventions,
+    ) {
         self.app.set_platform_conventions(conventions);
         self.run_frame();
     }
 
     #[must_use]
-    pub fn platform_conventions(&self) -> crate::platform::PlatformConventions {
+    pub fn platform_conventions(&self) -> tilo_ui_base::platform::PlatformConventions {
         self.app.platform_conventions()
     }
 
@@ -1585,7 +1591,7 @@ impl Driver {
     pub fn cursor_at(&self, point: Point) -> Option<winit::window::CursorIcon> {
         let mut pick = self.app.tree().cursor_pick_at(point);
         for root in self.app.presentation_roots() {
-            let Ok(_entry) = crate::widget::bound_nodes::enter_widget(root) else {
+            let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(root) else {
                 continue;
             };
             pick.offer_tree(root, point);
@@ -1664,7 +1670,7 @@ impl Driver {
     #[cfg(not(target_arch = "wasm32"))]
     fn render_rgba_on(&self, background: vello::peniko::Color) -> Vec<u8> {
         let (width, height) = self.device_size();
-        let mut renderer = crate::offscreen::OffscreenRenderer::new(width, height);
+        let mut renderer = tilo_ui_base::offscreen::OffscreenRenderer::new(width, height);
         self.render_rgba_with(&mut renderer, background)
     }
 
@@ -1676,7 +1682,7 @@ impl Driver {
     #[must_use]
     pub fn render_rgba_with(
         &self,
-        renderer: &mut crate::offscreen::OffscreenRenderer,
+        renderer: &mut tilo_ui_base::offscreen::OffscreenRenderer,
         background: vello::peniko::Color,
     ) -> Vec<u8> {
         assert_eq!(
@@ -1695,7 +1701,7 @@ impl Driver {
             let _ = std::fs::create_dir_all(parent);
         }
         let (width, height) = self.device_size();
-        let mut renderer = crate::offscreen::OffscreenRenderer::new(width, height);
+        let mut renderer = tilo_ui_base::offscreen::OffscreenRenderer::new(width, height);
         renderer.set_backdrop(Some(self.records.captured_backdrops()));
         renderer.render_png(
             &self.scene,
@@ -1711,7 +1717,7 @@ impl Driver {
             let _ = std::fs::create_dir_all(parent);
         }
         let (width, height) = self.device_size();
-        let mut renderer = crate::offscreen::OffscreenRenderer::new(width, height);
+        let mut renderer = tilo_ui_base::offscreen::OffscreenRenderer::new(width, height);
         renderer.render_png(
             &Scene::new(),
             self.app.theme.tokens.colors.surfaces.content,
@@ -1768,7 +1774,7 @@ impl Driver {
     /// Tab through the whole focus order from the top: the accessible `(role, name)` said at each
     /// stop.
     /// A stop whose control says nothing to a reader is passed over, as a reader passes it.
-    pub fn tab_through(&mut self) -> Vec<(crate::a11y::Role, Option<String>)> {
+    pub fn tab_through(&mut self) -> Vec<(tilo_ui_base::a11y::Role, Option<String>)> {
         self.clear_focus();
         let count = self.focus_order().len();
         let mut stops = Vec::with_capacity(count);
@@ -1822,7 +1828,7 @@ impl Driver {
             .inspect_node(node, |widget| {
                 widget
                     .accessibility()
-                    .map(|access| crate::a11y::with_synthetic_bounds(access, widget))
+                    .map(|access| tilo_ui_base::a11y::with_synthetic_bounds(access, widget))
             })
             .ok()
             .flatten()
@@ -2022,8 +2028,8 @@ impl Driver {
     /// Certify the laid-out app against the action-native contract.
     #[must_use]
     pub fn native_app_audit(&self) -> NativeAppAudit {
-        use crate::widget::ControlBindingKind;
         use std::collections::HashSet;
+        use tilo_ui_base::widget::ControlBindingKind;
         let mut resources = self.resources();
         // Shared chrome invokes the host's own APIs rather than the app's: search, and History
         // where the window serves one. A control bound to either is not stale.
@@ -2036,7 +2042,7 @@ impl Driver {
             ));
         }
         let bindings =
-            crate::widget::controls::control_action_bindings(self.app.root_widget.as_ref());
+            tilo_ui_base::widget::controls::control_action_bindings(self.app.root_widget.as_ref());
         let inventoried_controls = bindings
             .iter()
             .map(|binding| binding.control_id.clone())
@@ -2306,21 +2312,21 @@ impl Driver {
         let mut update = if !app.presents_history() && !palette && app.window_box.is_drawn() {
             // The box with no window around it is read over the app, as it is drawn.
             let roots: [&dyn Widget; 2] = [app.root_widget.as_ref(), &app.window_box];
-            crate::accesskit_bridge::build_presentation_tree_bound(
+            tilo_ui_base::accesskit_bridge::build_presentation_tree_bound(
                 &roots,
                 &exported.nodes,
                 exported.focus(app.focused_node),
                 scale,
             )
         } else if !app.presents_history() && !palette {
-            crate::accesskit_bridge::build_tree_update_bound(
+            tilo_ui_base::accesskit_bridge::build_tree_update_bound(
                 app.root_widget.as_ref(),
                 &exported.nodes,
                 exported.focus(app.focused_node),
                 scale,
             )
         } else {
-            crate::accesskit_bridge::build_presentation_tree_bound(
+            tilo_ui_base::accesskit_bridge::build_presentation_tree_bound(
                 &app.presentation_roots(),
                 &exported.nodes,
                 exported.focus(app.focused_node),
@@ -2334,7 +2340,7 @@ impl Driver {
             .filter(|_| !self.bar_at_rest)
             .and_then(|bar| bar.accessibility(app))
         {
-            crate::accesskit_bridge::publish_host_part(&mut update, &row, scale);
+            tilo_ui_base::accesskit_bridge::publish_host_part(&mut update, &row, scale);
         }
         update
     }
@@ -2362,14 +2368,14 @@ impl Driver {
     pub fn perform_a11y_action(
         &mut self,
         target: accesskit::NodeId,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> Result<(), String> {
         if !self.a11y_nodes().iter().any(|(id, _)| *id == target) {
             return Err(format!(
                 "no accessibility node {target:?} in the current frame"
             ));
         }
-        crate::motion::note_source(crate::tokens::MotionSource::Action);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Action);
         let running = self.running();
         let bar_took = self
             .bar
@@ -2409,10 +2415,10 @@ impl Driver {
     /// When the widget's component refuses the dispatch.
     pub fn perform_semantic(
         &mut self,
-        id: &crate::a11y::SemanticId,
-        action: &crate::a11y::Action,
+        id: &tilo_ui_base::a11y::SemanticId,
+        action: &tilo_ui_base::a11y::Action,
     ) -> Result<bool, String> {
-        crate::motion::note_source(crate::tokens::MotionSource::Action);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Action);
         let running = self.running();
         let handled = self.app.perform_semantic_verb(id, action.clone(), true);
         drop(running);
@@ -2427,7 +2433,7 @@ impl Driver {
     pub fn perform_named(
         &mut self,
         name: &str,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> Result<(), String> {
         self.perform_semantic_named(name, None, action)
     }
@@ -2441,13 +2447,13 @@ impl Driver {
         &mut self,
         name: &str,
         semantic_target: Option<&str>,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> Result<(), String> {
-        crate::motion::note_source(crate::tokens::MotionSource::Action);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Action);
         let id = self.semantic_id_named(name, semantic_target)?;
         let handled = self.app.perform_semantic_verb(&id, action.clone(), true)?;
         self.run_frame();
-        if handled || matches!(action, crate::a11y::Action::Focus) {
+        if handled || matches!(action, tilo_ui_base::a11y::Action::Focus) {
             Ok(())
         } else {
             Err(format!(
@@ -2461,7 +2467,7 @@ impl Driver {
         &mut self,
         name: &str,
         semantic_target: Option<&str>,
-    ) -> Result<crate::a11y::SemanticId, String> {
+    ) -> Result<tilo_ui_base::a11y::SemanticId, String> {
         let _ = self.app.refresh_semantic_tree();
         let targets = self.named_target_nodes();
         let tree = self.app.semantic_tree();
@@ -2564,7 +2570,7 @@ impl Driver {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         approval: Option<&tilo_actions::remote::asked::Approval>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let actor = tilo_actions::Actor::Member(self.app.local_author.clone());
         self.invoke_action_as(&actor, address, arguments, approval)
     }
@@ -2582,7 +2588,7 @@ impl Driver {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         approval: Option<&tilo_actions::remote::asked::Approval>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         // Search is the window's own API, served by its host rather than the app: a call to it
         // opens the window's search as its magnifier does.
         if crate::widget::search_request::is_search_address(address) {
@@ -2597,7 +2603,7 @@ impl Driver {
                 .map_err(|error| tilo_actions::ApiError::InvalidArguments(error.to_string()))?;
             self.app.open_search(request);
             self.run_frame();
-            return Ok(crate::widget::ResourceOperationStart::Completed(
+            return Ok(tilo_ui_base::widget::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ));
         }
@@ -2616,11 +2622,13 @@ impl Driver {
         // A view operation that shows an item first (the render of one, the lines of one) asks
         // for the view to be laid out before it reads it: a frame lays it out, and the
         // operation runs again, reading the item where the window shows it.
-        let started = crate::widget::resource_operation::laying_out_first(|| {
+        let started = tilo_ui_base::widget::resource_operation::laying_out_first(|| {
             self.invoke_resource_as(actor, address, &argument, approval)
         });
         let started = match started {
-            Err(error) if crate::widget::resource_operation::asks_to_lay_out_first(&error) => {
+            Err(error)
+                if tilo_ui_base::widget::resource_operation::asks_to_lay_out_first(&error) =>
+            {
                 self.relayout();
                 self.invoke_resource_as(actor, address, &argument, approval)
             }
@@ -2646,7 +2654,7 @@ impl Driver {
         address: &tilo_actions::ActionAddress,
         argument: &str,
         approval: Option<&tilo_actions::remote::asked::Approval>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.app.invoke_resource_action(
             crate::app_core::ResourceInvocation::new(address, actor)
                 .argument(Some(argument))
@@ -2668,10 +2676,13 @@ impl Driver {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         approval: Option<&tilo_actions::remote::asked::Approval>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let sent = self.peer_requests().len();
         let started = self.invoke_action(address, arguments, approval)?;
-        if matches!(started, crate::widget::ResourceOperationStart::Completed(_)) {
+        if matches!(
+            started,
+            tilo_ui_base::widget::ResourceOperationStart::Completed(_)
+        ) {
             return Ok(started);
         }
         // What the app handed its peer before running it is answered in the frames after the
@@ -2688,7 +2699,7 @@ impl Driver {
         // Another provider's action ends as that provider answered it.
         match self.provider_answer(invocation) {
             Some(tilo_actions::remote::ReceiptStatus::Completed { output }) => {
-                return Ok(crate::widget::ResourceOperationStart::Completed(
+                return Ok(tilo_ui_base::widget::ResourceOperationStart::Completed(
                     output.clone(),
                 ));
             }
@@ -2710,9 +2721,9 @@ impl Driver {
             .into_iter()
             .find(tilo_actions::InvocationUpdate::is_terminal);
         match ended {
-            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => {
-                Ok(crate::widget::ResourceOperationStart::Completed(output))
-            }
+            Some(tilo_actions::InvocationUpdate::Succeeded { output, .. }) => Ok(
+                tilo_ui_base::widget::ResourceOperationStart::Completed(output),
+            ),
             Some(tilo_actions::InvocationUpdate::Failed { error, .. }) => {
                 Err(jobs::failure_refusal(address, error))
             }
@@ -2738,7 +2749,7 @@ impl Driver {
             .into_iter()
             .skip(sent)
             .find_map(|request| match request {
-                crate::collaboration::CollabRequest::RemoteAction {
+                tilo_ui_base::collaboration::CollabRequest::RemoteAction {
                     message: tilo_actions::remote::RemoteActionMessage::Invoke(request),
                     ..
                 } if request.target.address.action == address.action => Some(request.invocation),
@@ -2757,7 +2768,7 @@ impl Driver {
         resource: &str,
         action: &str,
         arguments: serde_json::Value,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.call_resource(resource, action, arguments, false)
     }
 
@@ -2772,7 +2783,7 @@ impl Driver {
         resource: &str,
         action: &str,
         arguments: serde_json::Value,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.call_resource(resource, action, arguments, true)
     }
 
@@ -2783,7 +2794,7 @@ impl Driver {
         action: &str,
         arguments: serde_json::Value,
         approved: bool,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let serde_json::Value::Object(arguments) = arguments else {
             return Err(tilo_actions::ApiError::InvalidArguments(
                 "arguments are an object".into(),
@@ -2809,7 +2820,7 @@ impl Driver {
         resource: &str,
         action: &str,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invoke_action(
             &tilo_actions::ActionAddress::new(resource, action),
             arguments,
@@ -2846,7 +2857,7 @@ impl Driver {
     pub fn perform_undo(&mut self) -> bool {
         let moved = self
             .app
-            .perform_undo_request(crate::widget::undo_access::UndoRequest::Undo);
+            .perform_undo_request(tilo_ui_base::widget::undo_access::UndoRequest::Undo);
         self.run_frame();
         moved
     }
@@ -2855,13 +2866,13 @@ impl Driver {
     pub fn perform_redo(&mut self) -> bool {
         let moved = self
             .app
-            .perform_undo_request(crate::widget::undo_access::UndoRequest::Redo);
+            .perform_undo_request(tilo_ui_base::widget::undo_access::UndoRequest::Redo);
         self.run_frame();
         moved
     }
 
     /// Whether undo and redo are possible for the focused document.
-    pub fn undo_status(&mut self) -> crate::widget::undo_access::UndoStatus {
+    pub fn undo_status(&mut self) -> tilo_ui_base::widget::undo_access::UndoStatus {
         self.app.focused_undo_status()
     }
 
@@ -2929,8 +2940,9 @@ impl Driver {
     /// have all run.
     #[must_use]
     pub fn controls_settled(&self) -> bool {
-        !crate::widget::controls::has_pending_control_invocation(self.app.root_widget.as_ref())
-            && !self.app.actions.bound_calls_running()
+        !tilo_ui_base::widget::controls::has_pending_control_invocation(
+            self.app.root_widget.as_ref(),
+        ) && !self.app.actions.bound_calls_running()
     }
 
     /// Why what was done last did not run, as the window says it at the control used: none when
@@ -3074,7 +3086,7 @@ impl Driver {
 
     /// Where the app's text input stands, as an input method is told.
     #[must_use]
-    pub fn ime_window(&self) -> Option<crate::ime::ImeWindowState> {
+    pub fn ime_window(&self) -> Option<tilo_ui_base::ime::ImeWindowState> {
         self.app.ime_window_state()
     }
 }
@@ -3090,7 +3102,7 @@ impl Driver {
         &mut self,
         address: &tilo_actions::ActionAddress,
         arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         self.invoke_action(address, &arguments, None)
     }
 
@@ -3104,7 +3116,7 @@ impl Driver {
         &mut self,
         address: &tilo_actions::ActionAddress,
         arguments: serde_json::Map<String, serde_json::Value>,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let approval = self.approval();
         self.invoke_action(address, &arguments, Some(&approval))
     }
@@ -3316,19 +3328,21 @@ pub(crate) fn chord(spec: &str) -> (&str, Vec<String>) {
 /// The accessibility action a semantic step names, as the app's own action.
 pub(crate) fn semantic_action_from_wire(
     action: tilo_headless_schema::SemanticAction,
-) -> crate::a11y::Action {
+) -> tilo_ui_base::a11y::Action {
     use tilo_headless_schema::SemanticAction as Wire;
     match action {
-        Wire::Activate => crate::a11y::Action::Activate,
-        Wire::Focus => crate::a11y::Action::Focus,
-        Wire::ToggleCheck => crate::a11y::Action::ToggleCheck,
-        Wire::Increment => crate::a11y::Action::Increment,
-        Wire::Decrement => crate::a11y::Action::Decrement,
-        Wire::Expand => crate::a11y::Action::Expand,
-        Wire::Collapse => crate::a11y::Action::Collapse,
-        Wire::ScrollIntoView => crate::a11y::Action::ScrollIntoView,
-        Wire::ShowContextMenu => crate::a11y::Action::ShowContextMenu,
-        Wire::SetValue(value) => crate::a11y::Action::SetValue(value),
-        Wire::SetSelection { anchor, focus } => crate::a11y::Action::SetSelection { anchor, focus },
+        Wire::Activate => tilo_ui_base::a11y::Action::Activate,
+        Wire::Focus => tilo_ui_base::a11y::Action::Focus,
+        Wire::ToggleCheck => tilo_ui_base::a11y::Action::ToggleCheck,
+        Wire::Increment => tilo_ui_base::a11y::Action::Increment,
+        Wire::Decrement => tilo_ui_base::a11y::Action::Decrement,
+        Wire::Expand => tilo_ui_base::a11y::Action::Expand,
+        Wire::Collapse => tilo_ui_base::a11y::Action::Collapse,
+        Wire::ScrollIntoView => tilo_ui_base::a11y::Action::ScrollIntoView,
+        Wire::ShowContextMenu => tilo_ui_base::a11y::Action::ShowContextMenu,
+        Wire::SetValue(value) => tilo_ui_base::a11y::Action::SetValue(value),
+        Wire::SetSelection { anchor, focus } => {
+            tilo_ui_base::a11y::Action::SetSelection { anchor, focus }
+        }
     }
 }

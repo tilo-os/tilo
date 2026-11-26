@@ -4,10 +4,10 @@
 
 use vello::Scene;
 
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 /// What a live frame runs for a widget a test drives on its own: its update, then its sync.
-pub fn frame_widget(widget: &mut dyn Widget, doc: &crate::widget::AppModel) {
+pub fn frame_widget(widget: &mut dyn Widget, doc: &tilo_ui_base::widget::AppModel) {
     widget.update(doc, &automerge::ROOT);
     widget.sync(doc, &automerge::ROOT);
 }
@@ -65,5 +65,5 @@ pub struct FrameOutput<'a> {
     pub needs_animation_frame: bool,
     /// Earliest future update across the active presentation roots.
     pub next_wake_deadline: Option<crate::time::Instant>,
-    pub ime: Option<crate::ime::ImeWindowState>,
+    pub ime: Option<tilo_ui_base::ime::ImeWindowState>,
 }

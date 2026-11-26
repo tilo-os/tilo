@@ -19,8 +19,8 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::app::driver::Driver;
 use crate::state::State;
-use crate::theme::Theme;
-use crate::widget::{EventCtx, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::EventCtx, widget::Widget};
 
 /// What reached the card and what reached the window under it, by kind.
 type Seen = Rc<RefCell<Vec<&'static str>>>;
@@ -82,9 +82,9 @@ impl crate::floating_surface::FloatingSurfaceProvider for Card {
         true
     }
 
-    fn floating_surface_accessibility(&self, id: &str) -> Option<crate::a11y::AccessNode> {
+    fn floating_surface_accessibility(&self, id: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
         (id == "card").then(|| {
-            crate::a11y::AccessNode::new(crate::a11y::Role::Button)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button)
                 .with_hashed_key("card-unmute")
                 .with_action_target("card-unmute")
         })
@@ -92,9 +92,9 @@ impl crate::floating_surface::FloatingSurfaceProvider for Card {
 }
 
 impl Widget for Card {
-    crate::provides!(dyn crate::floating_surface::FloatingSurfaceProvider);
+    tilo_ui_base::provides!(dyn crate::floating_surface::FloatingSurfaceProvider);
 
-    fn sync(&mut self, _: &crate::widget::AppModel, _: &crate::widget::ModelPath) {}
+    fn sync(&mut self, _: &tilo_ui_base::widget::AppModel, _: &tilo_ui_base::widget::ModelPath) {}
 
     fn build_layout(
         &mut self,
@@ -102,7 +102,7 @@ impl Widget for Card {
         _: &Theme,
         _: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        use crate::widget::TaffyTreeExt as _;
+        use tilo_ui_base::widget::TaffyTreeExt as _;
         taffy.leaf_node(taffy::Style::default())
     }
 
@@ -123,8 +123,8 @@ fn frame_with_a_card() -> (Driver, Seen) {
         Box::new(card),
         (800, 600),
         Theme::dark(),
-        crate::font_catalog::fixture_renderer(),
-        crate::permissions::MemberId::person("reader"),
+        tilo_ui_base::font_catalog::fixture_renderer(),
+        tilo_ui_base::permissions::MemberId::person("reader"),
     );
     frame.relayout();
     (frame, seen)
@@ -152,8 +152,8 @@ tilo_test_env::scenario! {
         // Where the frame stood the card: a press inside it is the card's, and
         // the root's own handling does not see it.
         let at = resting_rect(&frame).center();
-        frame.send_host_event(&crate::synthetic_input::cursor_moved(at.x, at.y));
-        frame.send_host_event(&crate::synthetic_input::mouse_input(
+        frame.send_host_event(&tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y));
+        frame.send_host_event(&tilo_ui_base::synthetic_input::mouse_input(
             ElementState::Pressed,
             MouseButton::Left,
         ));
@@ -174,13 +174,13 @@ tilo_test_env::scenario! {
     {
         let (mut frame, seen) = frame_with_a_card();
         let at = resting_rect(&frame).center();
-        frame.send_host_event(&crate::synthetic_input::cursor_moved(at.x, at.y));
-        frame.send_host_event(&crate::synthetic_input::mouse_input(
+        frame.send_host_event(&tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y));
+        frame.send_host_event(&tilo_ui_base::synthetic_input::mouse_input(
             ElementState::Pressed,
             MouseButton::Left,
         ));
         seen.borrow_mut().clear();
-        frame.send_host_event(&crate::synthetic_input::char_key("a"));
+        frame.send_host_event(&tilo_ui_base::synthetic_input::char_key("a"));
         assert!(
             seen.borrow().contains(&"card:key"),
             "the keys go to the card the person pressed: {:?}",

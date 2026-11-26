@@ -43,7 +43,7 @@ impl Host for System {
             .map(|(scheme, _)| scheme)
             .ok_or("no scheme")?;
         let scan = desktop_entry::cache::cached_scan(&desktop_entry::locale::language_candidates(
-            ui::i18n::preferred_language().as_deref(),
+            tilo_ui_base::i18n::preferred_language().as_deref(),
         ));
         let chain = desktop_policy::MimeAppsChain::load(&desktop_policy::mimeapps::search_path(
             &[desktop_policy::mimeapps::CURRENT_DESKTOP.to_owned()],

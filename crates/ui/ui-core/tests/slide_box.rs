@@ -4,12 +4,13 @@
 //! here is the shared editor's, so these tests say what a slide box does and not what it might.
 
 use tilo_rich_edit::BlockEditor;
-use tilo_ui::component::{Described, Event, Fired, Intent, Value};
 use tilo_ui::headless::Driver;
-use tilo_ui::widget::{Stage, StagePinProps, StageProps, Widget};
-use tilo_ui::{
-    Intents, State, Theme, accesskit, collaboration, font_catalog, synthetic_input, text_selection,
-    time, winit,
+use tilo_ui::{State, accesskit, time, winit};
+use tilo_ui::{widget::Stage, widget::StagePinProps, widget::StageProps};
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{Intents, Theme, collaboration, font_catalog, synthetic_input, text_selection};
+use tilo_ui_base::{
+    component::Described, component::Event, component::Fired, component::Intent, component::Value,
 };
 
 const DEVICE: (u32, u32) = (800, 600);
@@ -70,7 +71,7 @@ fn slide_box(markdown: &str) -> (Driver, Intents<Fired>) {
 
 /// The box's editor, the widget the stage places on its page.
 fn editor(host: &mut Driver) -> &mut BlockEditor {
-    use tilo_ui::component::PartViews;
+    use tilo_ui_base::component::PartViews;
     host.root_widget_mut()
         .as_any_mut()
         .and_then(|any| any.downcast_mut::<Stage>())

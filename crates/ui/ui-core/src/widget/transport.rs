@@ -22,9 +22,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Point, Rect, RoundedRect, Shape, Stroke};
 use vello::peniko::Fill;
 
-use crate::icons::Icon;
-use crate::theme::Theme;
 use crate::widget::{ButtonRole, ControlSize, Interaction, face_colors};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::theme::Theme;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TransportControl {
@@ -46,7 +46,7 @@ impl TransportControl {
 
     #[must_use]
     pub fn name(self) -> String {
-        crate::i18n::widget_format(
+        tilo_ui_base::i18n::widget_format(
             match self {
                 Self::Previous => "media-previous",
                 Self::PlayPause { playing: true } => "media-pause",

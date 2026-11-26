@@ -7,11 +7,10 @@
 
 use std::cell::Cell;
 
-use crate::component::{Component, Described, Moment};
 use crate::time::{Duration, Instant};
-use crate::widget::{
-    AppModel, Column, Decorator, ModelPath, ProgressRing, ProgressRingSize, Text, Widget,
-};
+use crate::{widget::Column, widget::ProgressRing, widget::ProgressRingSize, widget::Text};
+use tilo_ui_base::{component::Component, component::Described, component::Moment};
+use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::ModelPath, widget::Widget};
 
 /// The seconds between readings.
 const SECOND: i64 = 1;
@@ -87,7 +86,7 @@ impl Countdown {
         } else {
             children.push(Box::new(
                 Text::new(&format_timecode(0))
-                    .with_role(crate::tokens::TextRole::Display)
+                    .with_role(tilo_ui_base::tokens::TextRole::Display)
                     .with_id(key),
             ));
         }
@@ -142,7 +141,7 @@ impl Countdown {
 
 /// A length of time as a clock reads it (`4:32`, `1:04:32`).
 fn format_timecode(secs: u64) -> String {
-    crate::format::timecode(secs)
+    tilo_ui_base::format::timecode(secs)
 }
 
 impl Decorator for Countdown {

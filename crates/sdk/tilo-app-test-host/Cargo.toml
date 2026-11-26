@@ -31,6 +31,7 @@ tilo-automerge.workspace = true
 tilo-content = { path = "../../core/content" }
 tilo-history = { path = "../tilo-history" }
 tilo-reference = { path = "../../core/reference" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The toolkit's collaboration over a real socket, which the collaboration tests drive.
 ui-core = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["broker-transport", "model"] }
 # The collaboration host the real-socket tests stand up: it speaks the collaboration wire and keeps

@@ -3,14 +3,14 @@
 //! columns from affordances in the gutters.
 
 use std::collections::HashMap;
-use ui::i18n::widget_text;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use ui::widget::document_line::DocumentLine as _;
-use ui::widget::{AppModel, ModelPath};
 
 use automerge::{ObjId, ObjType};
 use taffy::style_helpers::length;
 use taffy::{Display, NodeId, Rect as TaffyRect, Size, Style, TaffyTree};
-use ui::widget::TaffyTreeExt;
+use tilo_ui_base::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
@@ -19,13 +19,14 @@ use winit::keyboard::{Key, NamedKey};
 
 pub use crate::table_model::*;
 use crate::table_model::{DEFAULT_COL_W, MIN_COL_W, cell_key, cells_map, child_obj, col_width};
+use tilo_ui_base::paint::PaintCtx;
 use ui::color_compat::ColorCompat;
-use ui::paint::PaintCtx;
 
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::widget::DrawChild;
-use ui::widget::{TextInput, Widget};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Widget;
+use ui::widget::TextInput;
 
 const LEFT_GUTTER: f64 = 24.0;
 const TOP_GUTTER: f64 = 24.0;
@@ -69,7 +70,7 @@ struct Resize {
     orig_w: f64,
 }
 
-#[ui::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "a table block of the block editor, which a document's body edits"
 )]
@@ -174,13 +175,13 @@ impl Table {
         TextInput::new(vec![])
             .with_id(&format!("cell_{rid}_{cid}"))
             .with_plain_chrome()
-            .with_text_role(ui::tokens::TextRole::Body)
+            .with_text_role(tilo_ui_base::tokens::TextRole::Body)
     }
 
     pub(super) fn project_cells(&mut self, rows: &[Vec<String>]) {
         let columns = rows.iter().map(Vec::len).max().unwrap_or(0);
         let saved_focus = self.projected_focus().and_then(|(row, column)| {
-            let state = ui::widget::undo_points::get_state(
+            let state = tilo_ui_base::widget::undo_points::get_state(
                 self.cells.get(self.projected_index(row, column)?)?,
             );
             Some((row, column, state))
@@ -193,7 +194,7 @@ impl Table {
                 .map(|_| {
                     let mut input = TextInput::local()
                         .with_plain_chrome()
-                        .with_text_role(ui::tokens::TextRole::Body);
+                        .with_text_role(tilo_ui_base::tokens::TextRole::Body);
                     input.set_multiline(true);
                     input
                 })
@@ -258,7 +259,9 @@ impl Table {
 
     pub(super) fn projected_caret(&self) -> Option<String> {
         let (row, column) = self.projected_focus()?;
-        ui::widget::undo_points::get_state(self.cells.get(self.projected_index(row, column)?)?)
+        tilo_ui_base::widget::undo_points::get_state(
+            self.cells.get(self.projected_index(row, column)?)?,
+        )
     }
 
     pub(super) fn restore_projected_caret(&mut self, state: &str) {
@@ -271,7 +274,7 @@ impl Table {
         let Some(input) = self.cells.get_mut(index) else {
             return;
         };
-        ui::widget::undo_points::set_state(input, state);
+        tilo_ui_base::widget::undo_points::set_state(input, state);
         let caret = input.caret_position();
         let selection = input.selection_range_public();
         input.set_caret_position(caret);
@@ -319,7 +322,7 @@ impl Table {
             .iter()
             .enumerate()
             .find(|(_, input)| input.is_focused())?;
-        Some(ui::ime::scoped_fingerprint(
+        Some(tilo_ui_base::ime::scoped_fingerprint(
             &index.to_le_bytes(),
             input.ime_edit_fingerprint(key)?,
             key,
@@ -351,14 +354,14 @@ impl Table {
                 if let Some((start, end)) = input.selection_range_public()
                     && let Some(selected) = input.value().get(start..end)
                 {
-                    let accepted = ui::text_selection::clipboard_copy_accepted(selected);
+                    let accepted = tilo_ui_base::text_selection::clipboard_copy_accepted(selected);
                     if command == "cut" && accepted {
                         input.delete_local_selection();
                     }
                 }
             }
             "paste" => {
-                if let Some(value) = ui::text_selection::clipboard_paste() {
+                if let Some(value) = tilo_ui_base::text_selection::clipboard_paste() {
                     input.insert_at_cursor(&value);
                 }
             }
@@ -382,7 +385,7 @@ impl Table {
 
     pub(super) fn draw_projected_focus(
         &mut self,
-        ctx: &mut tilo_ui::DrawCtx<'_>,
+        ctx: &mut tilo_ui_base::DrawCtx<'_>,
         suppress_caret: bool,
     ) {
         #[allow(
@@ -416,7 +419,7 @@ impl Table {
     pub(super) fn handle_projected_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> Option<(usize, usize, String)> {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = Some(ctx.logical(position));
@@ -516,7 +519,7 @@ impl Table {
         self.rect.x0 + LEFT_GUTTER + self.col_widths.iter().sum::<f64>()
     }
     fn grid_bottom(&self) -> f64 {
-        self.rect.y0 + TOP_GUTTER + ui::num::f64_of_usize(self.n_rows()) * ROW_H
+        self.rect.y0 + TOP_GUTTER + tilo_ui_base::num::f64_of_usize(self.n_rows()) * ROW_H
     }
 
     /// Rect of the delete handle for column `c` (centred in the top gutter).
@@ -604,7 +607,7 @@ impl Table {
         }
         (
             LEFT_GUTTER + self.col_widths.iter().sum::<f64>() + RIGHT_PAD,
-            TOP_GUTTER + ui::num::f64_of_usize(self.n_rows()) * ROW_H + BOTTOM_PAD,
+            TOP_GUTTER + tilo_ui_base::num::f64_of_usize(self.n_rows()) * ROW_H + BOTTOM_PAD,
         )
     }
 
@@ -632,7 +635,7 @@ impl Table {
             if hovered {
                 theme.tokens.colors.intent.accent_ink
             } else {
-                ui::surface::edge_on(box_color)
+                tilo_ui_base::surface::edge_on(box_color)
             },
             None,
             &rr,
@@ -701,7 +704,7 @@ impl Table {
         let line = Stroke::new(1.0);
         // Rules derive from the body surface they cross (HIG §9.5): a white
         // veneer vanishes on a light table, a declared border on a dark one.
-        let line_color = ui::surface::edge_on(tk.colors.surfaces.raised);
+        let line_color = tilo_ui_base::surface::edge_on(tk.colors.surfaces.raised);
         // A 1 px rule centred on an integer edge smears over two half-alpha
         // columns; the edges are whole pixels (see `draw`), so centre each
         // rule on the pixel just inside the body.
@@ -738,7 +741,10 @@ impl Table {
             scene.stroke(
                 &line,
                 transform,
-                ui::surface::edge_on_with(tk.colors.surfaces.raised, ui::chrome::GLOW_ALPHA),
+                tilo_ui_base::surface::edge_on_with(
+                    tk.colors.surfaces.raised,
+                    tilo_ui_base::chrome::GLOW_ALPHA,
+                ),
                 None,
                 &Line::new((gl, y), (gr, y)),
             );
@@ -782,13 +788,13 @@ impl Table {
         let on_accent_mark = tk.colors.ink_on_any(
             &[accent],
             tk.colors.text_primary,
-            ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST,
         );
         let danger = tk.colors.semantic.danger;
         let on_danger_mark = tk.colors.ink_on_any(
             &[danger],
             Color::WHITE,
-            ui::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST,
         );
 
         match self.hover {
@@ -944,7 +950,7 @@ impl Table {
     fn forward_to_cells(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
         child_nodes: &[NodeId],
     ) {
         let Some(cells_obj) = self.cells_obj.clone() else {
@@ -954,7 +960,7 @@ impl Table {
         if let Some(idx) = self
             .cells
             .iter()
-            .position(ui::widget::Widget::wants_pointer_capture)
+            .position(tilo_ui_base::widget::Widget::wants_pointer_capture)
             && let Some(&cn) = child_nodes.get(idx)
             && let Some(cell) = self.cells.get_mut(idx)
         {
@@ -1008,7 +1014,7 @@ fn cross(scene: &mut Scene, transform: Affine, c: Point, r: f64, color: Color, w
 
 impl Widget for Table {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document_ref(state, path);
+        let (state, path) = tilo_ui_base::doc::document_ref(state, path);
 
         let new_rows = row_ids(state, path);
         let new_cols = col_ids(state, path);
@@ -1105,7 +1111,7 @@ impl Widget for Table {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         let cell_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(child_nodes) = taffy.children(node) {
             for (cell, &cn) in self.cells.iter_mut().zip(child_nodes.iter()) {
@@ -1114,7 +1120,7 @@ impl Widget for Table {
         }
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1157,7 +1163,10 @@ impl Widget for Table {
             // surface (HIG §9.5), so they flip polarity on a light palette
             // instead of laying a white veneer over a white table.
             let fill = if is_header || r % 2 == 1 {
-                ui::tokens::colors::tier_on(tk.colors.surfaces.raised, ui::chrome::HAIRLINE_ALPHA)
+                tilo_ui_base::tokens::colors::tier_on(
+                    tk.colors.surfaces.raised,
+                    tilo_ui_base::chrome::HAIRLINE_ALPHA,
+                )
             } else {
                 continue;
             };
@@ -1173,7 +1182,7 @@ impl Widget for Table {
         self.draw_hover_affordance(&mut ctx, &grid);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let child_nodes = ctx.taffy.children(ctx.node_id).unwrap_or_default();
 
         if let Some(rz) = self.resize.as_ref() {
@@ -1234,8 +1243,10 @@ impl Widget for Table {
                 event: key_event, ..
             } if key_event.state == ElementState::Pressed => {
                 if matches!(key_event.logical_key, Key::Named(NamedKey::Enter))
-                    && let Some(focused) =
-                        self.cells.iter().position(ui::widget::Widget::is_focused)
+                    && let Some(focused) = self
+                        .cells
+                        .iter()
+                        .position(tilo_ui_base::widget::Widget::is_focused)
                 {
                     let cols = self.n_cols().max(1);
                     let up = ctx.modifiers.state().shift_key();
@@ -1302,7 +1313,7 @@ impl Widget for Table {
             || self
                 .cells
                 .iter()
-                .any(ui::widget::Widget::wants_pointer_capture)
+                .any(tilo_ui_base::widget::Widget::wants_pointer_capture)
     }
 
     fn take_structure_dirty(&mut self) -> bool {
@@ -1311,12 +1322,16 @@ impl Widget for Table {
         d |= self
             .cells
             .iter_mut()
-            .any(ui::widget::Widget::take_structure_dirty);
+            .any(tilo_ui_base::widget::Widget::take_structure_dirty);
         d
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.cells.iter().any(ui::widget::Widget::needs_redraw)
+        self.dirty
+            || self
+                .cells
+                .iter()
+                .any(tilo_ui_base::widget::Widget::needs_redraw)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
@@ -1325,11 +1340,15 @@ impl Widget for Table {
         }
     }
     fn is_layout_dirty(&self) -> bool {
-        self.structure_dirty || self.cells.iter().any(ui::widget::Widget::is_layout_dirty)
+        self.structure_dirty
+            || self
+                .cells
+                .iter()
+                .any(tilo_ui_base::widget::Widget::is_layout_dirty)
     }
 
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
-        use ui::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         Some(AccessNode::new(Role::Table))
     }
 }
@@ -1397,11 +1416,11 @@ mod tests {
         (taffy, node)
     }
 
-    use ui::synthetic_input::char_key;
-    use ui::synthetic_input::cursor_moved;
-    use ui::synthetic_input::mouse_press;
+    use tilo_ui_base::synthetic_input::char_key;
+    use tilo_ui_base::synthetic_input::cursor_moved;
+    use tilo_ui_base::synthetic_input::mouse_press;
     fn enter() -> WindowEvent {
-        ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+        tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
             Key::Named(NamedKey::Enter),
             None,
             ElementState::Pressed,
@@ -1664,7 +1683,7 @@ mod tests {
                     (col_width(&doc, &t, &cid0) - before).abs() < 0.5,
                     "the column follows the pointer; the owner gets the width when the drag ends"
                 );
-                let release = ui::synthetic_input::mouse_release();
+                let release = tilo_ui_base::synthetic_input::mouse_release();
                 dispatch(&mut table, &taffy, node, &mut doc, &t, &release, mods);
 
                 let after = col_width(&doc, &t, &cid0);

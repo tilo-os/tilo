@@ -67,7 +67,7 @@ fn fingers_on_the_pad(session: &mut Session, events: &[GestureEvent]) {
 /// Three fingers up or down: the strip before or after the one shown, and back.
 #[test]
 fn three_fingers_up_and_down_step_the_strips() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     open(&mut session, &notes, 1);
     let first = strips(&session).0[0];
@@ -96,7 +96,7 @@ fn three_fingers_up_and_down_step_the_strips() {
 /// Four fingers sideways: the workspace beside the one in front, and back.
 #[test]
 fn four_fingers_switch_the_workspace() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     open(&mut session, &notes, 1);
     let home = workspace(&session);
@@ -138,7 +138,7 @@ fn four_fingers_switch_the_workspace() {
 /// A pinch in opens the shell's overview; a pinch out closes it.
 #[test]
 fn a_pinch_opens_and_closes_the_overview() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     open(&mut session, &notes, 1);
     let overview = tilo_session_core::desktop::overlays::Overlay::Overview.name();
@@ -156,7 +156,7 @@ fn a_pinch_opens_and_closes_the_overview() {
 /// while moving, the row glides on the way they went.
 #[test]
 fn three_fingers_carry_the_strip_and_it_glides_on() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     open(&mut session, &notes, 6);
     // The row keeps the window in front in view, so a window picked by its place among six may
@@ -206,7 +206,7 @@ fn three_fingers_carry_the_strip_and_it_glides_on() {
 /// what the desktop presents.
 #[test]
 fn the_strip_in_front_presents_its_pan_and_the_pan_verb_moves_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     open(&mut session, &notes, 6);
     settle(&mut session);

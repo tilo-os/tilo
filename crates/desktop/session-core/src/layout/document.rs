@@ -23,7 +23,7 @@ use tilo_desktop_model::ownership::Authors;
 use tilo_desktop_model::{
     Layout as Tree, STATE_SCHEMA_VERSION, TabId, desktop_doc, shared_resource,
 };
-use ui::permissions::MemberId;
+use tilo_ui_base::permissions::MemberId;
 use ui::state::UndoLog;
 
 /// How long a drag or a burst of switches waits for its last frame before how the layout looks is

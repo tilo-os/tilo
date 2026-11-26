@@ -5,9 +5,9 @@
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 
-use crate::theme::Theme;
-use crate::tokens::colors::tier_on;
-use crate::widget::{PAGE_FRACTION, ScrollMetrics};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::colors::tier_on;
+use tilo_ui_base::{widget::PAGE_FRACTION, widget::ScrollMetrics};
 
 /// Minimum thumb length (logical px) so a near-infinite content still
 /// leaves a grabbable target.
@@ -27,16 +27,16 @@ pub fn thumb_color(theme: &Theme, active: bool) -> Color {
         return colors.ink_on(
             ground,
             colors.text_dim,
-            crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+            tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST,
         );
     }
     let rest = colors.ink_on(
         ground,
         colors.text_tertiary,
-        crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+        tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST,
     );
     if crate::color::relative_luminance(ground) >= LIGHT_GROUND_LUMINANCE {
-        crate::tokens::colors::over(rest, ground, LIGHT_REST_TOWARD_GROUND)
+        tilo_ui_base::tokens::colors::over(rest, ground, LIGHT_REST_TOWARD_GROUND)
     } else {
         rest
     }
@@ -123,10 +123,10 @@ impl BarFade {
     }
 
     /// The scroll bar's hold and fade, last woken at `last_activity`.
-    fn idle_fade(last_activity: Option<crate::time::Instant>) -> crate::animation::IdleFade {
-        crate::animation::IdleFade::new(
+    fn idle_fade(last_activity: Option<crate::time::Instant>) -> tilo_ui_base::animation::IdleFade {
+        tilo_ui_base::animation::IdleFade::new(
             crate::time::Duration::from_millis(BAR_HOLD_MS),
-            crate::animation::CHROME_FADE,
+            tilo_ui_base::animation::CHROME_FADE,
         )
         .woken_at(last_activity)
     }
@@ -143,7 +143,7 @@ pub struct TrackMark {
     pub len: f64,
     /// What the mark means: `Tone::Neutral` for a search hit, a status
     /// tone for a diagnostic, a presence tone for a member.
-    pub tone: crate::widget::Tone,
+    pub tone: tilo_ui_base::widget::Tone,
 }
 
 /// Paint a scrollbar thumb in `thumb`, pill-shaped, for a host that draws
@@ -202,25 +202,25 @@ pub fn horizontal_track(rect: Rect, gutter: f64) -> Rect {
 /// The rounded corners of the surface a scroll owner sits in (the window), as the owner sees
 /// them in its own coordinates.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
-pub struct SurfaceCorners(Option<crate::theme::SurfaceShape>);
+pub struct SurfaceCorners(Option<tilo_ui_base::theme::SurfaceShape>);
 
 impl SurfaceCorners {
     /// The corners of `theme`'s surface for an owner drawing with
     /// `transform` (through every cache being recorded around it).
     #[must_use]
     pub fn seen(theme: &Theme, transform: vello::kurbo::Affine) -> Self {
-        let on_screen = crate::scroll_copy::on_screen(transform);
+        let on_screen = tilo_ui_base::scroll_copy::on_screen(transform);
         Self(
             theme
                 .surface
-                .filter(crate::theme::SurfaceShape::is_rounded)
+                .filter(tilo_ui_base::theme::SurfaceShape::is_rounded)
                 .map(|surface| surface.seen_through(on_screen)),
         )
     }
 
     /// The corners of `surface`, already in the owner's coordinates.
     #[must_use]
-    pub fn of(surface: Option<crate::theme::SurfaceShape>) -> Self {
+    pub fn of(surface: Option<tilo_ui_base::theme::SurfaceShape>) -> Self {
         Self(surface)
     }
 
@@ -237,7 +237,7 @@ impl SurfaceCorners {
 pub fn clear_of_corners(
     track: Rect,
     vertical: bool,
-    surface: Option<&crate::theme::SurfaceShape>,
+    surface: Option<&tilo_ui_base::theme::SurfaceShape>,
 ) -> Rect {
     let Some(surface) = surface else {
         return track;
@@ -363,7 +363,7 @@ impl Scrollbar {
         transform: vello::kurbo::Affine,
         track: Rect,
         metrics: ScrollMetrics,
-        theme: &crate::theme::Theme,
+        theme: &tilo_ui_base::theme::Theme,
         focused: bool,
     ) {
         let Some(thumb) = self.thumb_rect(track, metrics) else {
@@ -542,7 +542,7 @@ mod tests {
 
         phase a_resting_thumb_is_lighter_on_a_light_ground_and_reads_once_active;
         {
-            use crate::a11y::contrast_ratio;
+            use tilo_ui_base::a11y::contrast_ratio;
             let light = Theme::light();
             let ground = light.tokens.colors.surfaces.content;
             let rest = thumb_color(&light, false);
@@ -578,7 +578,7 @@ mod tests {
 
         phase a_track_keeps_out_of_rounded_corners_and_reaches_square_ones;
         {
-            use crate::theme::SurfaceShape;
+            use tilo_ui_base::theme::SurfaceShape;
             let window = Rect::new(0.0, 0.0, 400.0, 300.0);
             let vertical = Rect::new(390.0, 2.0, 398.0, 298.0);
             let horizontal = Rect::new(2.0, 290.0, 380.0, 298.0);
@@ -617,7 +617,7 @@ mod tests {
         // is on it, on every material, and at rest on a dark one; a resting thumb on a light
         // ground is lighter but still shows.
         {
-            use crate::a11y::contrast_ratio;
+            use tilo_ui_base::a11y::contrast_ratio;
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
                 let ground = theme.tokens.colors.surfaces.content;
                 let idle = contrast_ratio(thumb_color(&theme, false), ground);
@@ -626,11 +626,11 @@ mod tests {
                 let floor = if light {
                     1.5
                 } else {
-                    crate::tokens::colors::NON_TEXT_MIN_CONTRAST
+                    tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST
                 };
                 assert!(idle >= floor, "{}: idle thumb {idle:.2}:1", theme.name);
                 assert!(
-                    active >= crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                    active >= tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST,
                     "{}: active thumb {active:.2}:1",
                     theme.name
                 );

@@ -72,7 +72,7 @@ tilo_test_env::scenario! {
 
     phase application_identity_and_metadata_share_native_match_bands;
     {
-        let index = crate::text_match::ListIndex::default();
+        let index = tilo_ui_base::text_match::ListIndex::default();
         let score = |query: &str, name, id, category| {
             index.ranks(query, [application_fields(name, id, category)])[0].map(provider_score)
         };
@@ -293,8 +293,8 @@ tilo_test_env::scenario! {
     phase filters_targets_match_semantic_activation_after_draw;
     {
         use crate::search::system::filters::{FilterAction, FilterText, KindChip, SearchFilters};
-        use crate::text_render::TextRenderer;
-        use crate::theme::Theme;
+        use tilo_ui_base::text_render::TextRenderer;
+        use tilo_ui_base::theme::Theme;
         use vello::kurbo::{Affine, Rect};
         let mut filters = SearchFilters::default();
         filters.configure(
@@ -308,7 +308,7 @@ tilo_test_env::scenario! {
         let mut renderer = TextRenderer::new();
         let mut scene = vello::Scene::new();
         let rows = filters.draw(
-            &mut crate::paint::PaintCtx::new(
+            &mut tilo_ui_base::paint::PaintCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut renderer,
@@ -378,8 +378,8 @@ tilo_test_env::scenario! {
 }
 #[test]
 fn every_builtin_kind_is_named_in_the_shells_language() {
-    const SOURCE: &str = include_str!("../../../locales/en-US.ftl");
-    const GERMAN: &str = include_str!("../../../locales/de-DE.ftl");
+    const SOURCE: &str = include_str!("../../../../ui-base/locales/en-US.ftl");
+    const GERMAN: &str = include_str!("../../../../ui-base/locales/de-DE.ftl");
     let kinds = [
         ResourceKind::Action,
         ResourceKind::Application,
@@ -394,7 +394,7 @@ fn every_builtin_kind_is_named_in_the_shells_language() {
         ResourceKind::WindowGroup,
     ];
     let labels = || -> Vec<String> { kinds.iter().map(ResourceKind::display_label).collect() };
-    crate::i18n::I18nManager::install("en-US", "en-US", &[("en-US", SOURCE)])
+    tilo_ui_base::i18n::I18nManager::install("en-US", "en-US", &[("en-US", SOURCE)])
         .expect("the source catalogue parses");
     assert_eq!(
         labels(),
@@ -412,8 +412,12 @@ fn every_builtin_kind_is_named_in_the_shells_language() {
             "Window groups",
         ]
     );
-    crate::i18n::I18nManager::install("en-US", "de-DE", &[("en-US", SOURCE), ("de-DE", GERMAN)])
-        .expect("both catalogues parse");
+    tilo_ui_base::i18n::I18nManager::install(
+        "en-US",
+        "de-DE",
+        &[("en-US", SOURCE), ("de-DE", GERMAN)],
+    )
+    .expect("both catalogues parse");
     assert_eq!(
         labels(),
         [
@@ -434,7 +438,7 @@ fn every_builtin_kind_is_named_in_the_shells_language() {
         ResourceKind::Custom("Antworten".into()).display_label(),
         "Antworten"
     );
-    crate::i18n::I18nManager::set_locale("en-US");
+    tilo_ui_base::i18n::I18nManager::set_locale("en-US");
 }
 
 /// An action's own words, typed whole, lead a title that only begins with the query: the person
@@ -444,12 +448,12 @@ fn every_builtin_kind_is_named_in_the_shells_language() {
 fn an_action_known_by_a_phrase_typed_whole_outranks_a_title_begun_by_it() {
     let keyword = action_ranks(
         crate::search::MatchTier::Exact,
-        crate::text_match::FieldWeight::KEYWORD,
+        tilo_ui_base::text_match::FieldWeight::KEYWORD,
     )
     .expect("a keyword typed whole names the action");
     let begun = action_ranks(
         crate::search::MatchTier::Prefix,
-        crate::text_match::FieldWeight::TITLE,
+        tilo_ui_base::text_match::FieldWeight::TITLE,
     )
     .expect("a title begun names the action");
     assert!(
@@ -460,7 +464,7 @@ fn an_action_known_by_a_phrase_typed_whole_outranks_a_title_begun_by_it() {
         Some(keyword),
         action_ranks(
             crate::search::MatchTier::Exact,
-            crate::text_match::FieldWeight::TITLE,
+            tilo_ui_base::text_match::FieldWeight::TITLE,
         ),
         "the phrase ranks as the action's title typed whole"
     );

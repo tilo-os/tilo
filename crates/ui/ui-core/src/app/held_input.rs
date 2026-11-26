@@ -16,7 +16,8 @@ use std::collections::VecDeque;
 use winit::event::{Ime, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::widget::{AwaitsContent, Widget, capability::capability};
+use crate::widget::AwaitsContent;
+use tilo_ui_base::{widget::Widget, widget::capability::capability};
 
 /// The input waiting for the window's content, and whether that content arrived once.
 #[derive(Debug, Default)]

@@ -14,7 +14,7 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex, OnceLock, PoisonError};
 
 use tilo_session_core::surface::{Region, SurfaceFrame};
-use ui::offscreen::CpuSurface;
+use tilo_ui_base::offscreen::CpuSurface;
 use vello::Scene;
 
 /// Threads drawing surfaces' frames: each rasterizes one surface at a time with the cores its

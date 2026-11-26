@@ -10,7 +10,7 @@ use std::collections::{HashMap, HashSet};
 
 use taffy::NodeId;
 
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 type Identity = (usize, &'static str);
 

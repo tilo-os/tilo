@@ -35,12 +35,12 @@ fn name_the_unnamed(rows: &mut [RosterRow]) {
     let joined: Vec<(usize, u64)> = rows
         .iter()
         .enumerate()
-        .filter(|(_, row)| ui::presence::is_unnamed_person(&row.label))
+        .filter(|(_, row)| tilo_ui_base::presence::is_unnamed_person(&row.label))
         .filter_map(|(index, row)| Some((index, row.joined?)))
         .collect();
     let seconds: Vec<String> = joined
         .iter()
-        .map(|(_, at)| clock(*at, ui::format::time_of_with_seconds))
+        .map(|(_, at)| clock(*at, tilo_ui_base::format::time_of_with_seconds))
         .collect();
     let mut counts: HashMap<&str, usize> = HashMap::new();
     for text in &seconds {
@@ -63,9 +63,9 @@ fn name_the_unnamed(rows: &mut [RosterRow]) {
 
 /// The local clock `at` (Unix milliseconds) reads by, to the second, through the person's own
 /// time format.
-fn clock(at: u64, read: fn(&ui::format::UnixSecs) -> String) -> String {
+fn clock(at: u64, read: fn(&tilo_ui_base::format::UnixSecs) -> String) -> String {
     i64::try_from(at / 1000)
-        .map(|seconds| read(&ui::format::UnixSecs(seconds)))
+        .map(|seconds| read(&tilo_ui_base::format::UnixSecs(seconds)))
         .unwrap_or_default()
 }
 
@@ -73,7 +73,9 @@ fn clock(at: u64, read: fn(&ui::format::UnixSecs) -> String) -> String {
 /// second apart.
 fn clock_millis(at: u64) -> String {
     i64::try_from(at)
-        .map(|millis| ui::format::time_of_with_millis(&ui::format::UnixMillis(millis)))
+        .map(|millis| {
+            tilo_ui_base::format::time_of_with_millis(&tilo_ui_base::format::UnixMillis(millis))
+        })
         .unwrap_or_default()
 }
 

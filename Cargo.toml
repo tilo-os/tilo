@@ -59,6 +59,7 @@ default-members = [
     "crates/desktop/session",
     "crates/desktop/control-cli",
     "crates/ui/ui-core",
+    "crates/ui/ui-base",
     "crates/core/tilo-app-package",
 ]
 members = [
@@ -89,6 +90,7 @@ members = [
     "crates/engines/content-blocker",
     # Core product surfaces
     "crates/ui/ui-core",
+    "crates/ui/ui-base",
 
     # Applications
     "apps/moderation-model",

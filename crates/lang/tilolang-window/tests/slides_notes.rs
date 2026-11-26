@@ -28,7 +28,7 @@ fn open() -> Window {
         APP,
         &support::packages_of("slides"),
         WINDOW,
-        ui::Theme::light(),
+        tilo_ui_base::Theme::light(),
     )
 }
 
@@ -57,7 +57,9 @@ fn press(window: &mut Window, name: &str) {
 fn press_slide(window: &mut Window, number: &str) {
     let at = accessible(window)
         .into_iter()
-        .find(|node| node.role == ui::a11y::Role::ListItem && node.name.as_deref() == Some(number))
+        .find(|node| {
+            node.role == tilo_ui_base::a11y::Role::ListItem && node.name.as_deref() == Some(number)
+        })
         .and_then(|node| node.bounds)
         .unwrap_or_else(|| panic!("the rail offers slide {number}"));
     window
@@ -71,12 +73,12 @@ fn press_slide(window: &mut Window, number: &str) {
 fn click_the_notes(window: &mut Window) {
     let at = accessible(window)
         .into_iter()
-        .filter(|node| node.role == ui::a11y::Role::MultilineTextInput)
+        .filter(|node| node.role == tilo_ui_base::a11y::Role::MultilineTextInput)
         .filter_map(|node| node.bounds)
         .filter(|bounds| bounds.x0 > 900.0 && bounds.y1 > bounds.y0)
         .max_by(|a, b| a.y0.total_cmp(&b.y0))
         .unwrap_or_else(|| {
-            let names: Vec<(String, Option<ui::a11y::Role>)> = accessible(window)
+            let names: Vec<(String, Option<tilo_ui_base::a11y::Role>)> = accessible(window)
                 .into_iter()
                 .map(|node| (node.name.unwrap_or_default(), Some(node.role)))
                 .collect();

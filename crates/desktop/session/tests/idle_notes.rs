@@ -163,7 +163,7 @@ fn an_idle_notes_window_in_a_workspace_this_device_holds_wakes_nothing() {
         module_path!(),
         "an_idle_notes_window_in_a_workspace_this_device_holds_wakes_nothing",
         || {
-            let _settled = ui::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let root = crate::common::private_home();
             let mut home = tilo_test_env::TestHome::new().expect("a home");
             let launches = Arc::new(tilo_session::Launches::default());

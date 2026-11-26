@@ -102,13 +102,7 @@
     )
 )]
 
-pub mod a11y;
-pub(crate) mod a11y_child_route;
 pub mod a11y_tree;
-pub(crate) mod a11y_walk;
-#[cfg(all(feature = "native", target_os = "android"))]
-mod accesskit_android_adapter;
-pub mod accesskit_bridge;
 mod action_locus;
 /// The document action host behind the framework's dispatcher. Apps submit edits through the framework,
 /// never through this host.
@@ -116,26 +110,21 @@ mod action_locus;
 pub mod local_dispatch;
 #[cfg(feature = "model")]
 pub mod local_document_action;
-pub use action_locus::{ActionUiRoute, PaintedActionMarker};
+pub use {action_locus::ActionUiRoute, action_locus::PaintedActionMarker};
 #[cfg(feature = "model")]
 pub mod action_palette;
-pub mod agent_identity;
-pub mod animation;
-pub mod arriving;
 /// An app's sound on its device's output, over the connection its launcher handed it.
 #[cfg(not(target_arch = "wasm32"))]
 mod audio_output;
 pub mod author;
-pub mod capability;
 pub mod content_zoom;
 pub mod control_hints;
 pub mod control_notice;
 /// What is running: one cancellable job with a body, which the whole system can see and which outlives
 /// the window that started it.
 pub mod jobs;
-pub mod motion;
 /// The actions the host publishes itself, named for apps to call through `ui`.
-pub use tilo_app_id::{apps, chat};
+pub use {tilo_app_id::apps, tilo_app_id::chat};
 pub mod shell;
 extern crate self as tilo_ui;
 #[cfg(test)]
@@ -152,58 +141,29 @@ pub mod app;
 #[cfg(feature = "model")]
 pub use collab_types::app_surface;
 pub mod auth_backdrop;
-pub mod backdrop;
 #[cfg(feature = "model")]
 pub mod call_pictures;
-pub mod caps_lock;
-/// Who the keyboard belongs to, which is who paints a caret.
-pub mod caret_owner;
-pub mod chart_palette;
 pub mod charts;
-pub mod chrome;
-pub mod clock;
-#[cfg(feature = "model")]
-pub mod collaboration;
 #[cfg(feature = "model")]
 pub use runtime_collab::shown_actions;
 #[cfg(feature = "model")]
 pub use tilo_actions::remote::native_media;
-pub mod collection_transition;
-pub use tilo_ui_paint::{color, color_compat};
-pub mod carry_out;
-pub mod component;
+pub use {tilo_ui_paint::color, tilo_ui_paint::color_compat};
 pub mod component_catalogue;
-pub mod component_inputs;
 pub mod component_lifecycle;
 pub mod composition;
 pub mod content;
-pub mod content_layout;
 mod cpu_raster;
-pub mod damage;
-pub mod date;
 pub mod device_local_api;
-pub mod diag;
 /// Zero-copy DMA-BUF → `wgpu` texture import via Vulkan external memory.
 #[cfg(all(feature = "dmabuf-import", target_os = "linux"))]
 pub mod dmabuf_import;
-pub mod dnd;
-pub mod doc;
-pub mod doc_source;
-#[cfg(any(all(windows, feature = "dx12-shader-cache"), test))]
-mod dx12_shader_cache;
-pub mod edge_autoscroll;
 pub mod element_pictures;
-pub mod evdev;
-pub mod fact;
 pub mod files;
 pub mod floating_layer;
 pub mod floating_surface;
-pub mod focus_visible;
-pub mod font_catalog;
-pub mod format;
-pub mod fullscreen;
-pub mod gesture;
-pub mod gpu;
+#[cfg(any(test, feature = "test-support"))]
+pub mod frame_probe;
 /// Painting decoded video on the GPU: uploading a hardware decoder's planar output and converting YUV
 /// to RGB in a shader.
 pub mod gpu_video;
@@ -211,71 +171,32 @@ pub mod headless;
 pub mod history_mode;
 #[cfg(feature = "model")]
 pub mod history_source;
-#[cfg(feature = "native")]
-mod host_appearance;
 mod host_chrome;
-pub mod host_data;
+#[cfg(not(all(windows, feature = "native")))]
+#[path = "host_notifications_unsupported.rs"]
+pub mod host_notifications;
 pub mod hosted_window;
 /// What a frame shows an inspector, a screen reader and an automated check: the widget and
 /// semantic tree, the named targets a caller addresses, and the accessibility issues it reports.
 pub mod inspection;
+pub mod launch;
+pub mod lift;
+pub mod live_activity;
+pub mod live_pictures;
+pub mod math;
 #[cfg(feature = "model")]
 pub mod owner_wake;
+pub mod passcode_keyboard;
+pub mod pick;
+pub mod pick_wire;
+pub mod pictures;
 /// The app's own vello pipelines, kept across launches in its cache directory.
 #[cfg(feature = "native")]
 pub(crate) mod pipeline_cache;
 /// The session's read-only vello pipeline cache every app starts from.
 pub mod pipeline_seed;
-#[cfg(all(windows, feature = "native"))]
-pub use native::host_notifications;
-pub mod emoji_catalogue;
-#[cfg(any(test, feature = "test-support"))]
-pub mod frame_probe;
-pub mod held_images;
-#[cfg(not(all(windows, feature = "native")))]
-#[path = "host_notifications_unsupported.rs"]
-pub mod host_notifications;
-pub mod i18n;
-pub mod icons;
-pub mod image_decoders;
-pub mod image_store;
-pub mod ime;
-pub mod input;
-pub mod input_generation;
-pub mod interaction;
-pub mod keycaps;
-pub mod keys;
-pub mod latin_chord;
-pub mod launch;
-pub mod lift;
-pub mod live_activity;
-pub mod live_pictures;
-pub mod local_identity;
-pub mod local_state;
-pub mod math;
-#[cfg(feature = "native")]
-pub mod native;
-pub mod nav_stack;
-pub mod num;
-pub mod offscreen;
-pub mod outside_paint;
-pub mod overlay;
-pub mod paint;
-pub mod part_paint;
-pub mod passcode_keyboard;
-pub mod pen;
-pub mod people_photos;
-pub mod permissions;
-pub mod person_card;
-pub mod pick;
-pub mod pick_wire;
-pub mod pictures;
-pub mod platform;
 pub mod pointer_replay;
-pub mod presence;
-pub mod press;
 pub mod profiling;
-pub mod query_text;
 pub use tilo_ui_paint::raster;
 pub mod storage;
 /// Where each settings section is kept, and so published: `settings/<section>` for the person's,
@@ -285,9 +206,6 @@ pub use settings_store::placement as settings_placement;
 /// The verb a setting is set by, `set-<field>`: each field of a settings section has its own.
 #[cfg(feature = "model")]
 pub use settings_store::workspace::verb as setting_verb;
-pub mod settings_device;
-pub mod settings_source;
-pub mod workspace_sync;
 /// The shell's keyboard shortcut table (actions, their chords and the defaults) as the settings
 /// document keeps it: what every shell host resolves a key press through, the native shell and a
 /// browser page alike.
@@ -307,98 +225,39 @@ pub mod widgets {
         DockEdge, Place, ShowMode, WidgetId, WidgetPrefs, WidgetsPrefs, prefs_key,
     };
 }
-pub use query_text::{QueryComposition, QueryEventChange, QueryImeChange, QueryInk, QueryView};
 pub use tilo_lock::deferred;
-pub mod personal_dictionary;
-pub mod text_assistance;
-pub mod text_break;
-pub mod text_detect;
-pub use text_break::{LineBreakKind, line_break_opportunities};
-pub mod close_admission;
-/// The raw operation protocol between a host and the toolkit's widgets: the operation the host admits,
-/// how a widget starts it, and the routing to a widget's children. For the toolkit's hosts (the app
-/// framework, the shell, the browser runtime, the installer); an app answers operations as a typed
-/// effect vocabulary and never names these (`tools/policy/check_app_resource_action_contract.py`).
-pub mod host_operation {
-    #[cfg(feature = "model")]
-    pub use crate::widget::resource_operation::OperationTarget;
-    pub use crate::widget::resource_operation::{
-        LAY_OUT_FIRST, OperationRequest, ResourceOperation, ResourceOperationStart,
-        ResourceOperations, asks_to_lay_out_first, host_lays_out_first, lay_out_first,
-        laying_out_first, local_resource_operation_handlers, poll_resource_operation,
-        resource_operation_handlers, start_in_children, start_operation,
-    };
-}
 mod app_core;
-pub mod draw;
-pub(crate) mod draw_cull;
-#[cfg(feature = "model")]
-pub mod mentions;
-pub mod own_paint;
-pub mod published;
+pub mod close_admission;
 pub mod reader_hud;
-#[cfg(feature = "model")]
-pub mod remote_actions;
 pub mod render_bump_recovery;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 pub mod render_thread;
-pub mod reorder;
 #[cfg(feature = "model")]
 pub mod resource;
 pub mod retained_present;
 pub mod retained_raster;
-pub mod richtext;
+pub mod text_assistance;
 /// Rich text as a component shows it: paragraphs with their marks, and how each reference in them reads
 /// (`ui.BlockEditor`'s value), the one model the runtime sends and the window draws.
 pub use tilo_ui_graph::rich;
 mod part_row;
 pub mod save_status;
-pub mod scale;
-pub mod scene_parts;
-pub mod screen_reader;
-pub mod screen_reader_chord;
-pub mod screen_reader_touch;
-pub mod scroll_copy;
 pub mod search;
-pub mod secret_paint;
-pub mod selection;
 pub mod session_api;
 pub mod shared_selection;
-pub mod shared_subject;
 pub mod shell_cards;
 pub mod shell_tabs;
-pub mod snap;
 pub mod state;
-pub mod step;
 pub mod strip_layers;
-pub mod surface;
 /// The actions socket a session hands a surface app is a descriptor of a native process: a browser page
 /// is no surface, and no session places its window.
 #[cfg(all(feature = "native", feature = "model"))]
 pub mod surface_peer;
-pub mod surface_services;
-pub mod sysdirs;
 #[cfg(any(test, feature = "test-support"))]
 pub mod testing;
-pub mod text_edit;
-pub mod text_match;
-pub mod text_metrics;
-pub mod text_position;
-pub mod text_render;
-pub mod text_selection;
-pub mod theme;
-pub mod theme_bundle;
-mod theme_document;
-mod theme_layers;
-#[cfg(feature = "model")]
-mod theme_record;
-pub mod tokens;
-pub mod type_ahead;
 pub mod ui_graph;
 pub mod undo;
-pub mod uri;
 pub mod view;
-pub mod virtual_viewport;
 pub mod window_link;
 pub mod window_name;
 pub mod window_parts;
@@ -406,14 +265,10 @@ pub mod window_pictures;
 pub mod window_share;
 pub mod window_targets;
 pub mod window_toolbar;
-pub mod workspace_emoji;
-#[cfg(feature = "native")]
-pub use native::warmup;
 /// Private completion receipts shared by native and browser text editors.
 pub mod text_input {
     pub use tilo_webview::text_input::{Failure, Receipt, Resolver};
 }
-pub mod key_input;
 pub mod terminal;
 pub mod webview;
 pub mod widget;
@@ -424,9 +279,13 @@ pub mod window_icon;
 #[doc(inline)]
 pub use tilo_process_services::models;
 #[doc(inline)]
-pub use tilo_process_services::{
-    background, capture, clipboard, env, jpeg, location, mpris, notify, png, portal, process,
-    secrets, shell_choosers, time, wake,
+pub use {
+    tilo_process_services::background, tilo_process_services::capture,
+    tilo_process_services::clipboard, tilo_process_services::env, tilo_process_services::jpeg,
+    tilo_process_services::location, tilo_process_services::mpris, tilo_process_services::notify,
+    tilo_process_services::png, tilo_process_services::portal, tilo_process_services::process,
+    tilo_process_services::secrets, tilo_process_services::shell_choosers,
+    tilo_process_services::time, tilo_process_services::wake,
 };
 
 /// The AccessKit types the bridge and [`headless::Driver`] hand back, re-exported so an app crate
@@ -441,101 +300,64 @@ pub use tilo_lock as lock;
 /// `block_on` for synchronous entry points.
 pub use tilo_rt as rt;
 pub use vello;
-pub use vello::{kurbo, peniko};
 pub use vello_encoding;
 pub use winit;
+pub use {vello::kurbo, vello::peniko};
 
 pub use app::App;
-pub use arriving::{Arrival, ArrivalClock, ArrivalCompletion, ArrivalWriter, Arriving};
-pub use caps_lock::CapsLockEstimate;
-pub use collection_transition::{RowMotion, RowMotions};
 pub use color_compat::ColorCompat;
-pub use content_layout::{FocusedContentArea, ResponsiveControlBar};
-pub use doc::{TextEdit, put_text_diffed, splice_text_diffed};
-pub use i18n::{ArgValue, EmbeddedCatalog, I18nError, I18nManager, PseudoLocale};
-pub use image_store::{Fetcher, HostImageLoader, ImageStore};
-pub use input::{
-    ActionBindings, BindingConflict, BindingSet, ControllerBinding, ControllerButton, InputBinding,
-    KeyLegend, KeyboardBinding, KeyboardModifier, TouchGesture,
-};
-pub use interaction::{
-    ControllerFamily, InputAvailability, InputDevice, InputModality, InteractionEnvironment,
-    KeyboardFamily, PointerPrecision, TouchClaim, TouchPointerEmulator, TouchPointerEvent,
-};
-pub use keycaps::{KeycapLanguage, Keycaps};
-pub use local_state::{
-    Intents, LatestRequest, LatestTask, LocalState, LocalStateWriter, RequestCompletion,
-    TaskCompletion,
-};
-pub use nav_stack::{EdgeSwipeBack, NavAction, NavStack};
-pub use platform::local_surface_id;
 // Paragraph composition is the document engine's, so the reader, the word processor and PDF
 // export lay text out by one policy.
-pub use pictures::{BLOB_SCHEME, Pictures, Shown as ShownPicture};
-pub use pictures::{lend_content, set_remote_fetcher};
-pub use platform::{
-    DialogActionOrder, HostShortcut, Platform, PlatformConventions, Shortcut, spell_shortcut,
-    spell_shortcut_keycaps,
-};
-pub use portal::{FileFilter, PickRequest, PortalChannel, PortalOutcome};
-pub use profiling::{
-    FRAME_BUDGET_US, FrameProfiler, FrameTiming, Pass, PerfReport, PerfScenario, PerfStep,
-    StatSummary, run_scenario, run_scenario_on,
-};
-pub use reader_hud::{
-    HudAction, HudControls, HudPlacement, HudSide, HudSwatch, MarkerDrag, SelectionHud,
-};
-#[cfg(feature = "model")]
-pub use remote_actions::{
-    CancellationCall, CatalogueCall, ChangedCall, Followed, FollowedRead, InvocationCall,
-    RemoteActions, RemoteActionsGuard, ResourceReadCall,
-};
-pub use reorder::{
-    DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop, ReorderMotion,
-};
-#[cfg(feature = "model")]
-pub use resource::{
-    DocumentCheckout, DocumentId, DocumentRef, ResourceRefusal, ResourceSet, ResourceStore,
-    ResourceType,
-};
-pub use search::{FnProvider, SearchGroup, SearchProvider, SearchRegistry, SearchResult};
-pub use selection::{KeySelection, SelectionModel};
 pub use state::State;
-#[cfg(feature = "model")]
-pub use state::{DocumentFrontier, UndoEntry, UndoLog};
-pub use text_break::discretionary_hyphen_breaks;
-pub use theme::{
-    AppearanceIntent, ContentSurface, SurfaceShape, Theme, WindowAppearance, resolve_theme_layers,
-    workspace_hue,
-};
-pub use tilo_doc::paragraph::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
 /// The one image codec: sniff, decode, encode and transform pixels, with the browser's own codecs on
 /// the web.
 pub use tilo_image_codec as image_codec;
-pub use ui_graph::{
-    GraphPropKind, LIVE_GRAPH_DIR_ENV, LIVE_GRAPH_OPERATION, LiveUi, UI_GRAPH_VERSION,
-    UiBuildContext, UiButtonRole, UiComponentRequest, UiDocument, UiDocumentExt, UiGraphEdit,
-    UiGraphEditor, UiGraphError, UiGraphHandle, UiNavigation, UiNode, UiTextRole, UiTextSource,
-    UiValues, parse_ui_graph_edits,
+pub use {pictures::BLOB_SCHEME, pictures::Pictures, pictures::Shown as ShownPicture};
+pub use {pictures::lend_content, pictures::set_remote_fetcher};
+pub use {portal::FileFilter, portal::PickRequest, portal::PortalChannel, portal::PortalOutcome};
+pub use {
+    profiling::FRAME_BUDGET_US, profiling::FrameProfiler, profiling::FrameTiming, profiling::Pass,
+    profiling::PerfReport, profiling::PerfScenario, profiling::PerfStep, profiling::StatSummary,
+    profiling::run_scenario, profiling::run_scenario_on,
 };
-pub use undo::{UndoAccess, UndoRequest, UndoStatus};
-pub use view::{
-    FROZEN_VERSION, FocusView, FreezeThaw, FrozenApp, ThawError, View, ViewContribution, ViewRect,
+pub use {
+    reader_hud::HudAction, reader_hud::HudControls, reader_hud::HudPlacement, reader_hud::HudSide,
+    reader_hud::HudSwatch, reader_hud::MarkerDrag, reader_hud::SelectionHud,
 };
-pub use virtual_viewport::{
-    DragScrollFinish, DragScrollUpdate, DragScroller, KineticSampler, ReconcileError,
-    ScrollAlignment, ScrollGlide, ScrollMomentum, SparseAnchor, SparseVirtualViewport,
-    VirtualViewport, WheelStep,
+#[cfg(feature = "model")]
+pub use {
+    resource::DocumentCheckout, resource::DocumentId, resource::DocumentRef,
+    resource::ResourceRefusal, resource::ResourceSet, resource::ResourceStore,
+    resource::ResourceType,
+};
+pub use {
+    search::FnProvider, search::SearchGroup, search::SearchProvider, search::SearchRegistry,
+    search::SearchResult,
+};
+#[cfg(feature = "model")]
+pub use {state::DocumentFrontier, state::UndoEntry, state::UndoLog};
+pub use {
+    tilo_doc::paragraph::ComposedLine, tilo_doc::paragraph::ParagraphBox,
+    tilo_doc::paragraph::ParagraphOptions, tilo_doc::paragraph::compose_paragraph,
+};
+pub use {
+    ui_graph::GraphPropKind, ui_graph::LIVE_GRAPH_DIR_ENV, ui_graph::LIVE_GRAPH_OPERATION,
+    ui_graph::LiveUi, ui_graph::UI_GRAPH_VERSION, ui_graph::UiBuildContext, ui_graph::UiButtonRole,
+    ui_graph::UiComponentRequest, ui_graph::UiDocument, ui_graph::UiDocumentExt,
+    ui_graph::UiGraphEdit, ui_graph::UiGraphEditor, ui_graph::UiGraphError,
+    ui_graph::UiGraphHandle, ui_graph::UiNavigation, ui_graph::UiNode, ui_graph::UiTextRole,
+    ui_graph::UiTextSource, ui_graph::UiValues, ui_graph::parse_ui_graph_edits,
+};
+pub use {undo::UndoAccess, undo::UndoRequest, undo::UndoStatus};
+pub use {
+    view::FROZEN_VERSION, view::FocusView, view::FreezeThaw, view::FrozenApp, view::ThawError,
+    view::View, view::ViewContribution, view::ViewRect,
 };
 
-// `a11y::Role` / `a11y::Action` are reached through the module path to avoid
-// clashing with `permissions::{Role}` / `permissions::Verb`, which are
-// already re-exported at the crate root.
-pub use a11y::SemanticId;
-pub use a11y::{A11ySettings, AccessBounds, AccessNode, AccessState, AccessibleTextSelection};
-pub use a11y_tree::{SemanticAction, SemanticActionKind, SemanticNode, SemanticTree, TreeDelta};
-
-pub use screen_reader::{ScreenReader, describe, flatten_reading_order};
+pub use {
+    a11y_tree::SemanticAction, a11y_tree::SemanticActionKind, a11y_tree::SemanticNode,
+    a11y_tree::SemanticTree, a11y_tree::TreeDelta,
+};
 
 #[cfg(feature = "model")]
 pub use action_palette::ActionPalette;
@@ -546,42 +368,50 @@ pub use tilo_actions;
 pub mod autocorrect {
     pub use spellcheck::contraction;
 }
-#[cfg(feature = "model")]
-pub use action_palette::{ArgumentKind, ArgumentSpec, CommandEntry, CommandOutcome, RowFace};
-pub use draw::{DrawCtx, DrawEnv, WidgetOverlay};
 pub use widget::ModelView;
-pub use widget::{AppCommand, AppKind, AppWidget, IconDescriptor};
-pub use widget::{Card, CardGrid, Section, card_column_width, card_columns};
-pub use widget::{ContentKind, NavItem, NavList, NavMode, NavPane, NavSection, NavShell};
-pub use widget::{EditOutcome, EditableLabel};
-pub use widget::{Element, Widget};
-pub use widget::{
-    NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
-    NativeViewInput,
+#[cfg(feature = "model")]
+pub use {
+    action_palette::ArgumentKind, action_palette::ArgumentSpec, action_palette::CommandEntry,
+    action_palette::CommandOutcome, action_palette::RowFace,
+};
+pub use {widget::AppCommand, widget::AppKind, widget::AppWidget, widget::IconDescriptor};
+pub use {
+    widget::Card, widget::CardGrid, widget::Section, widget::card_column_width,
+    widget::card_columns,
+};
+pub use {widget::EditOutcome, widget::EditableLabel};
+pub use {
+    widget::NavItem, widget::NavList, widget::NavMode, widget::NavPane, widget::NavSection,
+    widget::NavShell,
 };
 
-pub use widget::{RouteError, RouteHandle, Router};
 // Audit-timeline widgets + their shared types. The `ArtifactKind`
 // re-export flows through these widgets, so callers can build
 // a `HistoryEntry` without a direct dependency on the collab-types crate.
 #[cfg(feature = "model")]
-pub use history_mode::{
-    HistoryController, HistoryError, HistoryResource, HistorySnapshot, PreviewSide, RestoreReview,
-};
-pub use widget::HistoryEntryId;
-#[cfg(feature = "model")]
-pub use widget::activity_timeline::{ActivityTimeline, BandUndoRequest};
-#[cfg(feature = "model")]
-pub use widget::history::{
-    AuthorRelation, EntryKind, HistoryAttribution, HistoryAuthor, HistoryClassification,
-    HistoryEntry, HistoryFilter, RedactionDisplay, format_relative_time, hue_to_rgb,
+pub use {
+    history_mode::HistoryController, history_mode::HistoryError, history_mode::HistoryResource,
+    history_mode::HistorySnapshot, history_mode::PreviewSide, history_mode::RestoreReview,
 };
 #[cfg(feature = "model")]
-pub use widget::history_group::{
-    FOLD_ACTION_FACET, FOLD_ITEM_FACET, GroupNameRequest, GroupingConfig, HistoryGroup,
-    MAX_GROUP_DEPTH, NamedRange, OpFamily, group_entries,
+pub use {widget::activity_timeline::ActivityTimeline, widget::activity_timeline::BandUndoRequest};
+#[cfg(feature = "model")]
+pub use {
+    widget::history::AuthorRelation, widget::history::EntryKind,
+    widget::history::HistoryAttribution, widget::history::HistoryAuthor,
+    widget::history::HistoryClassification, widget::history::HistoryEntry,
+    widget::history::HistoryFilter, widget::history::RedactionDisplay,
+    widget::history::format_relative_time, widget::history::hue_to_rgb,
 };
-pub use widget::name_field::{NameField, NameFieldOutcome};
+#[cfg(feature = "model")]
+pub use {
+    widget::history_group::FOLD_ACTION_FACET, widget::history_group::FOLD_ITEM_FACET,
+    widget::history_group::GroupNameRequest, widget::history_group::GroupingConfig,
+    widget::history_group::HistoryGroup, widget::history_group::MAX_GROUP_DEPTH,
+    widget::history_group::NamedRange, widget::history_group::OpFamily,
+    widget::history_group::group_entries,
+};
+pub use {widget::name_field::NameField, widget::name_field::NameFieldOutcome};
 // Re-exported so an app reaches the whole history stack through `tilo_ui::`
 // without knowing the module layout.
 #[cfg(feature = "model")]
@@ -589,78 +419,56 @@ pub use collab_types::presence::CallPresence;
 #[cfg(feature = "model")]
 pub use history_source::groups as history_groups;
 #[cfg(feature = "model")]
-pub use history_source::sentence::{
-    AuthorParts, attribution_hover, author_line, author_parts, author_spoken, learn_item_names,
-    wire_author_line, writer_badge,
-};
-#[cfg(feature = "model")]
-pub use history_source::{
-    ActivityBrief, ActivityBriefAction, ActivityDigest, ActivityNarrator, AuthorDirectory,
-    CompareError, GroundedNarrative, HistoryComparison, HistoryFacetIndex, HistoryResourceTarget,
-    HistorySelectionDetail, HistorySource, NarrativeRequest, NarrativeSource, compare_entries,
-    deterministic_narrative, heads_for_entry, validate_narrative, version_index_for_entry,
-};
-pub use tilo_presence::{
-    Availability, IDLE_AFTER, INFERRED_STATUS_TTL, LiveStatus, MAX_STATUS_CHARS,
-    PresenceVisibility, StatusOrigin, StatusSharing,
-};
-#[cfg(feature = "model")]
 pub use widget::history::author_face;
-// Undoing a run of changes that never reached anybody's undo stack — a
-// remote author's, an agent's.
-pub use gesture::{DragSelect, Granularity};
 #[cfg(feature = "model")]
-pub use history_source::invocations::{
-    AgentSession, InvocationStep, forget_invocation, invocation_starting_at, read_invocations,
-    record_invocation, record_invocation_with_details,
+pub use {
+    history_source::ActivityBrief, history_source::ActivityBriefAction,
+    history_source::ActivityDigest, history_source::ActivityNarrator,
+    history_source::AuthorDirectory, history_source::CompareError,
+    history_source::GroundedNarrative, history_source::HistoryComparison,
+    history_source::HistoryFacetIndex, history_source::HistoryResourceTarget,
+    history_source::HistorySelectionDetail, history_source::HistorySource,
+    history_source::NarrativeRequest, history_source::NarrativeSource,
+    history_source::compare_entries, history_source::deterministic_narrative,
+    history_source::heads_for_entry, history_source::validate_narrative,
+    history_source::version_index_for_entry,
 };
 #[cfg(feature = "model")]
-pub use history_source::revert::{
-    ChangeRange, KeptSlot, RevertError, RevertOutcome, Slot, latest_invocation_by, plan_revert,
-    revert_invocation,
+pub use {
+    history_source::invocations::AgentSession, history_source::invocations::InvocationStep,
+    history_source::invocations::forget_invocation,
+    history_source::invocations::invocation_starting_at,
+    history_source::invocations::read_invocations, history_source::invocations::record_invocation,
+    history_source::invocations::record_invocation_with_details,
 };
-pub use richtext::{BaselineShift, FontFamily, RichSpan, RichTextLayout, TextAlign};
-pub use save_status::{
-    SAVE_GIVE_UP, SAVE_RETRY_ACTION, SAVE_STALL, SaveAction, SaveNotice, SaveState,
-    SaveStatusSurface,
+#[cfg(feature = "model")]
+pub use {
+    history_source::revert::ChangeRange, history_source::revert::KeptSlot,
+    history_source::revert::RevertError, history_source::revert::RevertOutcome,
+    history_source::revert::Slot, history_source::revert::latest_invocation_by,
+    history_source::revert::plan_revert, history_source::revert::revert_invocation,
 };
-pub use text_edit::{
-    CaretWord, CharFilter, CharSplice, Edit, EditCore, Motion, SUGGESTION_SETTLE, TypingRun,
-    delete_last_grapheme, word_at_caret,
+#[cfg(feature = "model")]
+pub use {
+    history_source::sentence::AuthorParts, history_source::sentence::attribution_hover,
+    history_source::sentence::author_line, history_source::sentence::author_parts,
+    history_source::sentence::author_spoken, history_source::sentence::learn_item_names,
+    history_source::sentence::wire_author_line, history_source::sentence::writer_badge,
 };
-pub use text_render::{
-    FontChoice, FontVariation, Fragmentation, GlyphOutline, HangingPunctuation, Hyphenation,
-    NumericStyle, OpenTypeFeature, OpenTypeTag, OpticalSizing, ParagraphAlign, PolygonTextLayout,
-    TextFlowRegion, TextFlowRegionError, TextGround, TextKind, TextLayoutConstraints,
-    TextLayoutEngine, TextRenderer, TextScaling, TextStyle, TextWeight, TextWrapMode,
-    UI_HYPERLEGIBLE_FAMILY, UI_MONOSPACE_FAMILY, UI_SANS_FAMILY, UI_SERIF_FAMILY,
-    configured_font_system,
+pub use {
+    save_status::SAVE_GIVE_UP, save_status::SAVE_RETRY_ACTION, save_status::SAVE_STALL,
+    save_status::SaveAction, save_status::SaveNotice, save_status::SaveState,
+    save_status::SaveStatusSurface,
 };
-pub use text_selection::{
-    CopyWatch, Selection, TextAffinity, TextPosition, clipboard_available, clipboard_copy,
-    clipboard_copy_image, clipboard_copy_primary, clipboard_copy_rich_accepted, clipboard_paste,
-    clipboard_paste_image, clipboard_paste_primary, clipboard_paste_rich, extend_span_drag,
-    grapheme_boundary_at_or_before, line_boundaries, next_char_boundary, next_word_boundary,
-    next_word_boundary_chars, prev_char_boundary, prev_word_boundary, prev_word_boundary_chars,
-    reserve_clipboard_copy, try_clipboard_copy, try_clipboard_copy_secret, word_boundaries,
-    word_boundaries_chars,
+pub use {
+    tilo_presence::Availability, tilo_presence::IDLE_AFTER, tilo_presence::INFERRED_STATUS_TTL,
+    tilo_presence::LiveStatus, tilo_presence::MAX_STATUS_CHARS, tilo_presence::PresenceVisibility,
+    tilo_presence::StatusOrigin, tilo_presence::StatusSharing,
 };
-pub use tokens::{ReadingFace, TextRole, UiFace};
 
-pub use animation::Lerp;
-
-#[cfg(feature = "model")]
-pub use collaboration::PresencePayload;
-#[cfg(feature = "model")]
-pub use permissions::{
-    Access, CapDecision, CapOverride, PermissionContext, PermissionScope, ResourceRef, Role,
-    Scope as CapScope,
+pub use {
+    wake::WakeBindError, wake::WakeEvent, wake::WakeHandle, wake::WakeScope, wake::WakeScopeGuard,
 };
-pub use permissions::{Acting, ActionKind, Grantee, MemberId};
-pub use presence::{PathSegment, PresenceCtx, PresenceKey, SelectionRange, human_label};
-pub use wake::{WakeBindError, WakeEvent, WakeHandle, WakeScope, WakeScopeGuard};
-#[cfg(feature = "model")]
-pub use widget::ViewPresence;
 
 #[cfg(feature = "model")]
 pub mod application;
@@ -674,14 +482,9 @@ mod physical_input_trace;
 #[cfg(all(feature = "native", feature = "test-support"))]
 #[doc(hidden)]
 pub use physical_input_trace::Trace as NativePhysicalInputTrace;
-#[cfg(feature = "native")]
-pub mod input_frame;
 #[cfg(feature = "model")]
 pub mod semantic_document_read;
 pub mod semantic_outline;
-#[cfg(feature = "model")]
-pub mod semantic_readers;
-pub mod synthetic_input;
 
 pub mod bound_dispatch;
 pub(crate) mod retained_widgets;
@@ -689,11 +492,124 @@ pub(crate) mod retained_widgets;
 #[cfg(all(feature = "native", not(target_arch = "wasm32")))]
 mod presentation_feedback;
 
-/// Emission-time local control ownership.
-pub mod control_domain;
-pub use control_domain::{
-    ControlCoverage, ControlDomain, ControlOutbox, ControlProducerDiscipline,
-};
 mod focus_navigation;
 
-pub use widget::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMapSelection};
+pub use {
+    widget::KeyboardMap, widget::KeyboardMapInput, widget::KeyboardMapKey,
+    widget::KeyboardMapSelection,
+};
+
+/// Components as a test builds them: a node with its props, parts and views, without a document.
+#[cfg(any(test, feature = "test-support"))]
+pub mod component_testing;
+
+// Tests of the base that drive the widgets above it.
+#[cfg(test)]
+#[path = "a11y_child_route/tests.rs"]
+mod a11y_child_route_tests;
+#[cfg(test)]
+#[path = "accesskit_bridge/tests.rs"]
+mod accesskit_bridge_tests;
+#[cfg(test)]
+#[cfg(all(unix, feature = "broker-transport"))]
+#[path = "collaboration/broker_app_tests.rs"]
+mod collaboration_app_tests;
+#[cfg(test)]
+#[path = "component/controls_tests.rs"]
+mod component_controls_tests;
+#[cfg(test)]
+#[path = "component/coverage_tests.rs"]
+mod component_coverage_tests;
+#[cfg(test)]
+#[path = "component/data_tests.rs"]
+mod component_data_tests;
+#[cfg(test)]
+#[path = "component/feedback_tests.rs"]
+mod component_feedback_tests;
+#[cfg(test)]
+#[path = "component/media_tests.rs"]
+mod component_media_tests;
+#[cfg(test)]
+#[path = "component/part_fill_tests.rs"]
+mod component_part_fill_tests;
+#[cfg(test)]
+#[path = "component/tests.rs"]
+mod component_tests;
+#[cfg(test)]
+#[path = "control_domain/lifecycle_tests.rs"]
+mod control_domain_lifecycle_tests;
+#[cfg(test)]
+#[path = "control_domain/tests.rs"]
+mod control_domain_tests;
+#[cfg(test)]
+#[path = "i18n/tests.rs"]
+mod i18n_tests;
+#[cfg(test)]
+#[path = "ime/tests.rs"]
+mod ime_tests;
+#[cfg(test)]
+#[path = "keycaps/tests.rs"]
+mod keycaps_tests;
+#[cfg(test)]
+#[path = "part_paint/tests.rs"]
+mod part_paint_tests;
+#[cfg(test)]
+#[cfg(not(feature = "lazy-painter"))]
+#[path = "part_paint/wasm_tests.rs"]
+mod part_paint_wasm_tests;
+#[cfg(test)]
+#[path = "presence/draft/tests.rs"]
+mod presence_draft_tests;
+#[cfg(test)]
+#[cfg(feature = "model")]
+#[path = "presence/key/view_key_tests.rs"]
+mod presence_key_view_key_tests;
+/// A session must not paint its own member, and must go on
+/// painting everybody else. Both halves are asserted here: the second
+/// is the one that keeps a fix in this area from hiding the workspace.
+#[cfg(test)]
+#[cfg(feature = "model")]
+#[path = "presence/own_identity_tests.rs"]
+mod presence_own_identity_tests;
+#[cfg(test)]
+#[path = "richtext/retained_layout_tests.rs"]
+mod richtext_retained_layout_tests;
+#[cfg(test)]
+#[path = "scene_parts/widget_keys/tests.rs"]
+mod scene_parts_widget_keys_tests;
+#[cfg(test)]
+#[path = "secret_paint/tests.rs"]
+mod secret_paint_tests;
+#[cfg(test)]
+#[path = "surface/tests.rs"]
+mod surface_tests;
+#[cfg(test)]
+#[path = "theme_bundle/tests.rs"]
+mod theme_bundle_tests;
+#[cfg(test)]
+#[path = "widget/binding/tests.rs"]
+mod widget_binding_tests;
+#[cfg(test)]
+#[path = "widget/keyboard_entry_tests.rs"]
+mod widget_keyboard_entry_tests;
+#[cfg(test)]
+#[path = "widget/scrollable_placement_tests.rs"]
+mod widget_layout_scrollable_placement_tests;
+#[cfg(test)]
+#[path = "widget/layout/tests.rs"]
+mod widget_layout_tests;
+#[cfg(test)]
+#[path = "widget/manual/ownership_tests.rs"]
+mod widget_manual_ownership_tests;
+#[cfg(test)]
+#[path = "widget/manual/tests.rs"]
+mod widget_manual_tests;
+#[cfg(test)]
+#[path = "widget/native_view/tests.rs"]
+mod widget_native_view_tests;
+#[cfg(test)]
+#[path = "widget/resource_operation/tests.rs"]
+mod widget_resource_operation_tests;
+#[cfg(test)]
+#[path = "widget/spacer/tests.rs"]
+mod widget_spacer_tests;

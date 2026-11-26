@@ -2,9 +2,10 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use super::Pacer;
-use crate::LocalState;
 use crate::time::{Duration, Instant};
-use crate::widget::{Container, Widget};
+use crate::widget::Container;
+use tilo_ui_base::LocalState;
+use tilo_ui_base::widget::Widget;
 
 const BEAT: Duration = Duration::from_millis(850);
 

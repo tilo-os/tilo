@@ -9,12 +9,14 @@ use tilo_resource::{
     ActionDecl, Binds, Collection, Edit, Effect, Id, Model, Params, Path, Resource, Segment,
     Settable,
 };
-use ui_core::LocalState;
-use ui_core::arriving::Arriving;
-use ui_core::i18n::LabelKey;
+use tilo_ui_base::LocalState;
+use tilo_ui_base::arriving::Arriving;
+use tilo_ui_base::i18n::LabelKey;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::widget::SkeletonShape;
 use ui_core::resource::ResourceSaveStatus;
-use ui_core::widget::{ArrivingView, SkeletonShape};
-use ui_core::widget::{Button, Checkbox, Element, Text, TextInput};
+use ui_core::widget::ArrivingView;
+use ui_core::{widget::Button, widget::Checkbox, widget::Text, widget::TextInput};
 
 use super::controls::{ActionControl, Actions};
 use super::dispatch::{Dispatcher, Submit};
@@ -52,13 +54,13 @@ pub(crate) trait PageWait: std::fmt::Display + Sized + 'static {
     fn page(holdings: &Arriving<(), Self>, part: Rc<ScopedPart>) -> Element;
 }
 
-impl PageWait for ui_core::workspace_sync::WorkspaceUnreachable {
+impl PageWait for tilo_ui_base::workspace_sync::WorkspaceUnreachable {
     fn page(holdings: &Arriving<(), Self>, part: Rc<ScopedPart>) -> Element {
         workspace_arrival(holdings, part)
     }
 }
 
-impl PageWait for ui_core::workspace_sync::RecordNotHere {
+impl PageWait for tilo_ui_base::workspace_sync::RecordNotHere {
     fn page(holdings: &Arriving<(), Self>, part: Rc<ScopedPart>) -> Element {
         workspace_arrival(holdings, part)
     }
@@ -341,7 +343,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// called (who they are, the workspace's policy, what bounds them), for a
     /// runtime that decides its own invocations by the policy the API
     /// decides by. `None` outside a host.
-    pub fn access(&self) -> impl Fn() -> Option<ui_core::permissions::MemberAccess> + 'static {
+    pub fn access(&self) -> impl Fn() -> Option<tilo_ui_base::permissions::MemberAccess> + 'static {
         self.dispatch.access_source()
     }
 
@@ -907,7 +909,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// tree when the effect starts; an effect invoked while it is not open
     /// is refused. What finishes later reaches state the window shares, or
     /// the window itself with [`Self::window_host_effects`].
-    pub fn window_effects<E: Effect, W: ui_core::widget::Widget + 'static>(
+    pub fn window_effects<E: Effect, W: tilo_ui_base::widget::Widget + 'static>(
         &self,
         handle: impl FnMut(&mut W, E, &mut EffectCx<R>) -> EffectAnswer + 'static,
     ) -> EffectsHandle {
@@ -919,7 +921,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// get the window `W` too (`EffectCx<R, W>`). Work whose window is not
     /// in the view waits for it to show again; what is still running when
     /// this part of the view goes is stopped.
-    pub fn window_host_effects<E: Effect, W: ui_core::widget::Widget + 'static>(
+    pub fn window_host_effects<E: Effect, W: tilo_ui_base::widget::Widget + 'static>(
         &self,
         handle: impl FnMut(&mut W, E, &mut EffectCx<R, W>) -> EffectAnswer + 'static,
     ) -> EffectsHandle {
@@ -962,7 +964,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
     /// surface's get the surface. They finish before the view syncs, wait
     /// while the window is not in the view, and stop once this part of the
     /// view goes. See [`Jobs`](super::Jobs).
-    pub fn window_jobs<W: ui_core::widget::Widget + 'static>(&self) -> super::Jobs<R> {
+    pub fn window_jobs<W: tilo_ui_base::widget::Widget + 'static>(&self) -> super::Jobs<R> {
         self.effects.window_jobs::<W>(self.alive.clone())
     }
 

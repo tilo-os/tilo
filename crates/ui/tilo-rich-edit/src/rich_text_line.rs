@@ -4,35 +4,36 @@
 use std::collections::HashMap;
 use std::sync::{Arc, LazyLock};
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use ui::widget::document_line::DocumentLine as _;
-use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ReadDoc, ScalarValue};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::{richtext::RichSpan, richtext::inline_emoji};
 use ui::color_compat::ColorCompat;
-use ui::richtext::{RichSpan, inline_emoji};
 use ui::widget::document_line::SingleLineAttributes;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::tokens::TextRole;
-use ui::widget::DrawChild;
-use ui::widget::TaffyTreeExt;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use ui::widget::TextInput;
 use ui::widget::code_editor::TokenKind;
 use ui::widget::markdown_input;
 use ui::widget::marks::{self, Mark, MarkSegment, MarkSpan, PageId};
-use ui::widget::{TextInput, Widget};
 
 /// A stored run size is in points, the unit every document codec writes; the
 /// toolkit draws in logical pixels at 96 dpi.
 const POINTS_TO_PIXELS: f32 = 96.0 / 72.0;
 
 /// A presentation-only syntax colour over a byte range of the line, painted
-/// from the theme's [`SyntaxPalette`](ui::tokens::SyntaxPalette) and never
+/// from the theme's [`SyntaxPalette`](tilo_ui_base::tokens::SyntaxPalette) and never
 /// written to the document.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransientColorSpan {
@@ -138,7 +139,7 @@ pub(super) struct StackMeasure {
     pub(super) width: f32,
     /// The float bands the height was measured beside: a line narrows in the same width beside a
     /// picture, so a height measured beside one is not the height beside none.
-    bands: ui::text_render::RowBands,
+    bands: tilo_ui_base::text_render::RowBands,
     pub(super) height: f32,
 }
 
@@ -190,7 +191,7 @@ struct LineFaceTheme {
     accent_ink: vello::peniko::Color,
     raised: vello::peniko::Color,
     content: vello::peniko::Color,
-    syntax: ui::tokens::SyntaxPalette,
+    syntax: tilo_ui_base::tokens::SyntaxPalette,
     radius: f32,
     caret_width: f64,
     text_scale: f32,
@@ -222,14 +223,17 @@ impl LineFaceTheme {
 /// the face, size in points, weight, slant and ink its style sets. A run's own look wins.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct RunLook {
-    pub family: Option<ui::richtext::FontFamily>,
+    pub family: Option<tilo_ui_base::richtext::FontFamily>,
     pub size: Option<f32>,
     pub bold: Option<bool>,
     pub italic: Option<bool>,
     pub color: Option<[u8; 3]>,
 }
 
-#[ui::component::not_a_component(part, "the line `ui.RichTextLine` edits its bound text in")]
+#[tilo_ui_base::component::not_a_component(
+    part,
+    "the line `ui.RichTextLine` edits its bound text in"
+)]
 pub struct RichTextLine {
     inner: TextInput,
     /// At most one signal in flight per frame; new signals overwrite the slot.
@@ -251,7 +255,7 @@ pub struct RichTextLine {
     layout_inset: f32,
     /// The bands a floating picture leaves beside the line's rows, in the line's own text space:
     /// rows standing in one wrap to the width it leaves and start past the picture.
-    row_bands: ui::text_render::RowBands,
+    row_bands: tilo_ui_base::text_render::RowBands,
     layout_header_height: f32,
     table_preview: Option<bool>,
     table_source_height: f32,
@@ -276,14 +280,14 @@ pub struct RichTextLine {
     dirty: RichTextDirty,
     paint_dirty: bool,
     /// What the last frame drew, appended again while the line holds and
-    /// only moves ([`ui::widget::CachedPaint`]).
-    face: ui::widget::CachedPaint,
+    /// only moves ([`tilo_ui_base::widget::CachedPaint`]).
+    face: tilo_ui_base::widget::CachedPaint,
     /// What `face` was drawn from, and the permission generation it was drawn at: a permission
     /// change alters the field's check.
     face_key: Option<LineFace>,
     face_permissions: u64,
     accent_rgb: Option<[u8; 3]>,
-    syntax: Option<ui::tokens::SyntaxPalette>,
+    syntax: Option<tilo_ui_base::tokens::SyntaxPalette>,
     /// Drained once `handle_event` observes a text-input edit.
     pending_marks: Vec<Mark>,
     /// Snapshot used to detect splice direction + length so `marks` stays
@@ -323,14 +327,14 @@ impl RichTextLine {
         Self {
             inner,
             signal: None,
-            font_size: ui::tokens::typography::stock().size(TextRole::Body),
+            font_size: tilo_ui_base::tokens::typography::stock().size(TextRole::Body),
             wrap: false,
             compact_wrapped: false,
             inline_formatting: true,
             measurement_theme: default_measurement_theme(),
             stack_measures: Vec::new(),
             layout_inset: 0.0,
-            row_bands: ui::text_render::RowBands::default(),
+            row_bands: tilo_ui_base::text_render::RowBands::default(),
             layout_header_height: 0.0,
             table_preview: None,
             table_source_height: 0.0,
@@ -342,7 +346,7 @@ impl RichTextLine {
             transient_key: None,
             dirty: RichTextDirty::default(),
             paint_dirty: true,
-            face: ui::widget::CachedPaint::default(),
+            face: tilo_ui_base::widget::CachedPaint::default(),
             face_key: None,
             face_permissions: 0,
             accent_rgb: None,
@@ -414,7 +418,7 @@ impl RichTextLine {
     pub fn set_text_role(&mut self, role: TextRole) {
         self.paint_dirty = true;
         self.inner.set_text_role(role);
-        self.set_size(ui::tokens::typography::stock().size(role));
+        self.set_size(tilo_ui_base::tokens::typography::stock().size(role));
     }
 
     /// A document editor's own 1× size for this line (a heading block, the
@@ -556,7 +560,7 @@ impl RichTextLine {
     /// The height the picture's editable source takes at `width`, the width the line is applied
     /// at: the measurement made there, else the newest one made.
     pub(super) fn image_source_height_at(&self, width: f64) -> f32 {
-        let width = ui::num::f32_of_f64(width);
+        let width = tilo_ui_base::num::f32_of_f64(width);
         self.image_source
             .iter()
             .find(|(measured, _)| (measured - width).abs() < 0.5)
@@ -616,17 +620,17 @@ impl RichTextLine {
         self.inner.bound_obj().cloned()
     }
 
-    pub fn set_local_author(&mut self, author: Option<ui::permissions::MemberId>) {
+    pub fn set_local_author(&mut self, author: Option<tilo_ui_base::permissions::MemberId>) {
         self.paint_dirty = true;
         self.inner.set_local_author(author);
     }
 
-    pub fn set_align(&mut self, align: ui::richtext::TextAlign) {
+    pub fn set_align(&mut self, align: tilo_ui_base::richtext::TextAlign) {
         self.paint_dirty = true;
         self.inner.set_align(align);
     }
 
-    pub fn align(&self) -> ui::richtext::TextAlign {
+    pub fn align(&self) -> tilo_ui_base::richtext::TextAlign {
         self.inner.align()
     }
 
@@ -897,7 +901,7 @@ impl RichTextLine {
         self.inner.first_row_band()
     }
 
-    pub(super) fn line_style(&self, text_scale: f32) -> ui::text_render::TextStyle {
+    pub(super) fn line_style(&self, text_scale: f32) -> tilo_ui_base::text_render::TextStyle {
         self.inner.line_style(text_scale)
     }
 
@@ -1097,9 +1101,9 @@ impl RichTextLine {
                     let &[start, end] = range else {
                         return None;
                     };
-                    let mut span = ui::richtext::RichSpan::new(text.get(start..end)?);
+                    let mut span = tilo_ui_base::richtext::RichSpan::new(text.get(start..end)?);
                     if self.inner.is_mono() {
-                        span.family = Some(ui::richtext::FontFamily::Mono);
+                        span.family = Some(tilo_ui_base::richtext::FontFamily::Mono);
                     }
                     if let Some(color) = self
                         .transient_colors
@@ -1138,7 +1142,7 @@ impl RichTextLine {
                 let source = text.get(segment.range.clone())?;
                 // The paragraph's style sets the words first; their own marks and meanings
                 // are laid over it.
-                let mut span = ui::richtext::RichSpan::new(source)
+                let mut span = tilo_ui_base::richtext::RichSpan::new(source)
                     .bold(segment.bold || segment.mention.is_some() || look.bold == Some(true))
                     .italic(segment.italic || look.italic == Some(true));
                 span.size = look.size.map(|points| points * POINTS_TO_PIXELS);
@@ -1152,7 +1156,7 @@ impl RichTextLine {
                     span.background = band;
                 }
                 if segment.code {
-                    span.family = Some(ui::richtext::FontFamily::Mono);
+                    span.family = Some(tilo_ui_base::richtext::FontFamily::Mono);
                     let background = theme.tokens.colors.surfaces.raised;
                     span.background = Some([background.r(), background.g(), background.b()]);
                 }
@@ -1279,13 +1283,13 @@ impl RichTextLine {
     }
 
     fn forget_face(&mut self) {
-        self.face = ui::widget::CachedPaint::default();
+        self.face = tilo_ui_base::widget::CachedPaint::default();
         self.face_key = None;
     }
 
     /// Draw everything this line shows into `scene`, which the line keeps and
     /// moves while it holds (see [`Self::keeps_its_drawing`]).
-    fn paint_into(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn paint_into(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1341,7 +1345,7 @@ impl RichTextLine {
     /// document did not, and nothing in it moves on its own — the person's
     /// own caret, a settling suggestion, a completion list, a scroll glide,
     /// or someone else in the document.
-    fn keeps_its_drawing(&self, theme: &Theme, env: &tilo_ui::DrawEnv<'_>) -> bool {
+    fn keeps_its_drawing(&self, theme: &Theme, env: &tilo_ui_base::DrawEnv<'_>) -> bool {
         if self.paint_dirty || self.face.is_empty() {
             return false;
         }
@@ -1352,7 +1356,7 @@ impl RichTextLine {
             return false;
         }
         if self.inner.is_focused()
-            || ui::presence::capability::presence_key(&self.inner)
+            || tilo_ui_base::presence::capability::presence_key(&self.inner)
                 .is_some_and(|key| env.sites.get(&key).is_some_and(|people| !people.is_empty()))
         {
             return false;
@@ -1387,7 +1391,7 @@ impl RichTextLine {
     /// paragraph rows without a measure pass and the rhythm is the one
     /// every other surface uses.
     pub(super) fn row_height(&self, text_scale: f32) -> f32 {
-        let style = ui::tokens::typography::stock().style(self.inner.text_role());
+        let style = tilo_ui_base::tokens::typography::stock().style(self.inner.text_role());
         let leading = (style.line_height_px() / style.size.max(1.0)).max(1.0);
         let spacing = self.inner.line_height_ratio() / TextInput::DEFAULT_LINE_HEIGHT_RATIO;
         (self.font_size * text_scale * leading * spacing).max(20.0 * text_scale)
@@ -1404,7 +1408,7 @@ impl RichTextLine {
     pub(super) fn stacked_height(
         &self,
         width: f32,
-        bands: &ui::text_render::RowBands,
+        bands: &tilo_ui_base::text_render::RowBands,
     ) -> Option<f32> {
         self.stack_measures
             .iter()
@@ -1414,7 +1418,7 @@ impl RichTextLine {
     }
 
     /// The bands a floating picture leaves beside this line's rows.
-    pub(super) fn set_row_bands(&mut self, bands: ui::text_render::RowBands) {
+    pub(super) fn set_row_bands(&mut self, bands: tilo_ui_base::text_render::RowBands) {
         if self.row_bands == bands {
             return;
         }
@@ -1425,14 +1429,14 @@ impl RichTextLine {
     }
 
     /// The bands the line's rows are laid out beside.
-    pub(super) fn row_bands(&self) -> &ui::text_render::RowBands {
+    pub(super) fn row_bands(&self) -> &tilo_ui_base::text_render::RowBands {
         &self.row_bands
     }
 
     /// The inset above the first row, in the line's rect: rows are placed from the top of the
     /// text inside the field's chrome, which a host folding the line at a picture counts from.
     pub(super) fn text_top_inset(&self) -> f32 {
-        ui::num::f32_of_f64(self.inner.text_top_inset())
+        tilo_ui_base::num::f32_of_f64(self.inner.text_top_inset())
     }
 
     pub(super) fn forget_stacked_height(&mut self) {
@@ -1563,7 +1567,7 @@ impl RichTextLine {
                 (width - 2.0 * pad)
                     .max(1.0)
                     .min(sized.map_or(f32::INFINITY, |sized| {
-                        ui::num::f32_of_u32(sized) * self.measurement_theme.text_scale
+                        tilo_ui_base::num::f32_of_u32(sized) * self.measurement_theme.text_scale
                     }));
             let preview_height = dimensions
                 .map_or(
@@ -1572,7 +1576,9 @@ impl RichTextLine {
                         image_width * image_h.max(1) as f32 / image_w.max(1) as f32
                     },
                 )
-                .min(max_height.map_or(f32::INFINITY, |max| ui::num::f32_of_u32(max.max(1))));
+                .min(max_height.map_or(f32::INFINITY, |max| {
+                    tilo_ui_base::num::f32_of_u32(max.max(1))
+                }));
             return Size {
                 width,
                 height: source_height
@@ -1610,8 +1616,8 @@ impl Default for RichTextLine {
     }
 }
 
-impl ui::widget::TextFits for RichTextLine {
-    fn cut_text(&mut self, text: &mut TextRenderer) -> Option<ui::widget::CutText> {
+impl tilo_ui_base::widget::TextFits for RichTextLine {
+    fn cut_text(&mut self, text: &mut TextRenderer) -> Option<tilo_ui_base::widget::CutText> {
         if !self.wrap {
             return None;
         }
@@ -1637,7 +1643,7 @@ impl ui::widget::TextFits for RichTextLine {
                 text,
             )
             .height;
-        (f64::from(needs) > rect.height() + 1.0).then(|| ui::widget::CutText {
+        (f64::from(needs) > rect.height() + 1.0).then(|| tilo_ui_base::widget::CutText {
             said: self.inner.value().chars().take(80).collect(),
             needs,
             #[allow(
@@ -1650,7 +1656,7 @@ impl ui::widget::TextFits for RichTextLine {
 }
 
 impl Widget for RichTextLine {
-    ui::provides!(dyn ui::widget::TextFits);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::TextFits);
 
     /// The inner field's timers (a settling squiggle, a suggestion for the
     /// word under the caret) must wake the host; the field is not a child.
@@ -1680,7 +1686,7 @@ impl Widget for RichTextLine {
     /// Where the field's text stands in it, as the field paints it: an audit of a window reads
     /// the line a composer or a block editor shows, whether it stands in the middle of a band
     /// taller than itself or at its inset.
-    fn layout_info(&self) -> Option<ui::widget::LayoutInfo> {
+    fn layout_info(&self) -> Option<tilo_ui_base::widget::LayoutInfo> {
         self.inner.layout_info()
     }
 
@@ -1688,7 +1694,7 @@ impl Widget for RichTextLine {
     /// makes the field a finger's target tall, as any field is.
     fn set_interaction_environment(
         &mut self,
-        environment: ui::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.paint_dirty = true;
         self.inner.set_interaction_environment(environment);
@@ -1698,7 +1704,7 @@ impl Widget for RichTextLine {
     /// styling it shows mark their own frames, and the authorship runs are
     /// the part only this read computes.
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, path) = ui::doc::document_ref(state, path);
+        let (state, path) = tilo_ui_base::doc::document_ref(state, path);
         self.inner.sync(state, path);
         let authors = std::mem::take(&mut self.author_runs);
         self.align_bound_projection(state);
@@ -1735,7 +1741,7 @@ impl Widget for RichTextLine {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = ui::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.inner.apply_layout_external(rect);
     }
 
@@ -1751,7 +1757,7 @@ impl Widget for RichTextLine {
         size
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1766,7 +1772,7 @@ impl Widget for RichTextLine {
         } else {
             let rect = self.inner.get_rect();
             let mut face = std::mem::take(&mut self.face);
-            self.paint_into(&mut tilo_ui::DrawCtx::new(
+            self.paint_into(&mut tilo_ui_base::DrawCtx::new(
                 face.repaint(rect),
                 Affine::IDENTITY,
                 text_renderer,
@@ -1781,7 +1787,7 @@ impl Widget for RichTextLine {
         self.face.append(scene, transform, self.inner.get_rect());
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.paint_dirty = true;
         // Intercepted before the inner TextInput sees them — otherwise Enter
         // would be filtered as a control char, and Backspace at byte 0 would
@@ -1942,8 +1948,8 @@ impl Widget for RichTextLine {
         Widget::ime_cursor_rect(&self.inner)
     }
 
-    fn ime_content(&self) -> Option<ui::ime::InputContent> {
-        Some(ui::ime::InputContent::TEXT)
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
+        Some(tilo_ui_base::ime::InputContent::TEXT)
     }
 
     /// `multiline` is cleared — a block editor stacks many of these to form a document.
@@ -1951,7 +1957,7 @@ impl Widget for RichTextLine {
         self.inner.ime_edit_fingerprint(key)
     }
 
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         Widget::accessibility(&self.inner)
     }
 
@@ -1961,15 +1967,15 @@ impl Widget for RichTextLine {
 
     fn perform_action(
         &mut self,
-        action: &ui::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        state: &mut ui::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.paint_dirty = true;
-        let (state, path) = ui::doc::document(state, path);
+        let (state, path) = tilo_ui_base::doc::document(state, path);
         let handled = Widget::perform_action(&mut self.inner, action, &[], state, path);
-        if handled && matches!(action, ui::a11y::Action::SetValue(_)) {
+        if handled && matches!(action, tilo_ui_base::a11y::Action::SetValue(_)) {
             self.marks.clear();
             self.pending_marks.clear();
             self.prev_text = self.inner.value().to_string();
@@ -1981,7 +1987,7 @@ impl Widget for RichTextLine {
 }
 
 fn window_emoji_revision() -> Option<u64> {
-    ui::workspace_emoji::current().map(|source| source.revision())
+    tilo_ui_base::workspace_emoji::current().map(|source| source.revision())
 }
 
 fn transient_color(theme: &Theme, kind: TokenKind) -> vello::peniko::Color {
@@ -2045,15 +2051,15 @@ pub fn link_at_byte(marks_list: &[MarkSpan], byte: usize) -> Option<PageId> {
 }
 
 /// What a marked stretch is: a mention names a person
-/// ([`TextKind::Identifier`](ui::text_render::TextKind::Identifier)) and an external link is
-/// a [`TextKind::Url`](ui::text_render::TextKind::Url), whatever its label says.
-fn mark_kind(segment: &MarkSegment) -> Option<ui::text_render::TextKind> {
+/// ([`TextKind::Identifier`](tilo_ui_base::text_render::TextKind::Identifier)) and an external link is
+/// a [`TextKind::Url`](tilo_ui_base::text_render::TextKind::Url), whatever its label says.
+fn mark_kind(segment: &MarkSegment) -> Option<tilo_ui_base::text_render::TextKind> {
     if segment.code {
         None
     } else if segment.mention.is_some() {
-        Some(ui::text_render::TextKind::Identifier)
+        Some(tilo_ui_base::text_render::TextKind::Identifier)
     } else if segment.external_link {
-        Some(ui::text_render::TextKind::Url)
+        Some(tilo_ui_base::text_render::TextKind::Url)
     } else {
         None
     }
@@ -2062,14 +2068,14 @@ fn mark_kind(segment: &MarkSegment) -> Option<ui::text_render::TextKind> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::presence::PresenceCtx;
+    use tilo_ui_base::presence::PresenceCtx;
     use ui::testing::{Dispatch, dispatch};
     use ui::widget::marks::Mark;
     use winit::keyboard::{ModifiersState, NamedKey};
 
-    use ui::synthetic_input::named_key;
+    use tilo_ui_base::synthetic_input::named_key;
 
-    use ui::synthetic_input::char_key;
+    use tilo_ui_base::synthetic_input::char_key;
 
     fn layout_and_draw(line: &mut RichTextLine, theme: &Theme, width: f32) -> Scene {
         let mut taffy = TaffyTree::<()>::new();
@@ -2089,7 +2095,7 @@ mod tests {
         let mut renderer = TextRenderer::new();
         renderer.set_text_scale(theme.text_scale);
         let mut scene = Scene::new();
-        line.draw(&mut tilo_ui::DrawCtx::new(
+        line.draw(&mut tilo_ui_base::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut renderer,
@@ -2262,7 +2268,7 @@ mod tests {
             }
 
             {
-                use ui::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 let l = RichTextLine::new().with_text("hello world");
                 let node = Widget::accessibility(&l).expect("editable line is a text input");
                 assert_eq!(node.role, Role::TextInput);
@@ -2373,12 +2379,12 @@ mod tests {
                 let mut doc = AutoCommit::new();
                 assert!(Widget::perform_action(
                     line.inner_mut(),
-                    &ui::a11y::Action::SetSelection {
+                    &tilo_ui_base::a11y::Action::SetSelection {
                         anchor: 0,
                         focus: 4
                     },
                     &[],
-                    &mut ui::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ));
                 let _ = line.take_dirty(); // Selection has its own presentation edge.
@@ -2389,12 +2395,12 @@ mod tests {
                 assert!(line.take_dirty().is_none());
                 assert!(Widget::perform_action(
                     line.inner_mut(),
-                    &ui::a11y::Action::SetSelection {
+                    &tilo_ui_base::a11y::Action::SetSelection {
                         anchor: 4,
                         focus: 4
                     },
                     &[],
-                    &mut ui::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT
                 ));
                 let _ = line.take_dirty(); // Selection has its own presentation edge.
@@ -2528,7 +2534,9 @@ mod tests {
     /// wrapped or not, marked or not; it stops once the workspace drops it.
     #[test]
     fn a_workspace_emoji_draws_as_its_picture_until_the_workspace_drops_it() {
-        use ui::richtext::inline_emoji::testing::{Fixed, workspace};
+        use tilo_ui_base::{
+            richtext::inline_emoji::testing::Fixed, richtext::inline_emoji::testing::workspace,
+        };
         let draws_picture = |scene: &Scene| {
             scene
                 .encoding()
@@ -2552,7 +2560,7 @@ mod tests {
         let scope = ui::wake::WakeScope::new();
         let _entry = scope.enter();
         let source = std::rc::Rc::new(Fixed::new(workspace()));
-        ui::workspace_emoji::register(&scope.handle(), source.clone());
+        tilo_ui_base::workspace_emoji::register(&scope.handle(), source.clone());
         for (wrap, marked) in [(false, false), (true, false), (true, true), (false, true)] {
             let mut line = RichTextLine::new().with_text(text);
             line.set_wrap(wrap);
@@ -2567,7 +2575,8 @@ mod tests {
                 "wrap {wrap}, marked {marked}"
             );
             let rects = line.mark_rects(&theme, emoji.clone());
-            let advance = f64::from(ui::richtext::inline_emoji::ADVANCE_EM * line.font_size);
+            let advance =
+                f64::from(tilo_ui_base::richtext::inline_emoji::ADVANCE_EM * line.font_size);
             assert_eq!(rects.len(), 1);
             assert!(
                 (rects[0].width() - advance).abs() < 0.5,
@@ -2577,7 +2586,7 @@ mod tests {
             assert_eq!(line.value(), text, "the text is unchanged");
             assert!(!line.emoji_moved(), "drawn against the emoji now");
 
-            source.set(ui::workspace_emoji::WorkspaceEmoji::default());
+            source.set(tilo_ui_base::workspace_emoji::WorkspaceEmoji::default());
             assert!(
                 line.emoji_moved() && line.is_layout_dirty(),
                 "the workspace's emoji moved"

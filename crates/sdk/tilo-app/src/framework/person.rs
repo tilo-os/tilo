@@ -16,7 +16,7 @@ use super::resources::{Held, ResourceApi};
 use super::section::{SectionApi, SectionKind};
 use super::workspace::Pending;
 use tilo_resource::{Invoke, Resource};
-use ui_core::LocalState;
+use tilo_ui_base::LocalState;
 use ui_core::history_mode::HistoryOwner;
 use ui_core::resource::ResourceType;
 use ui_core::resource::StoredResource;

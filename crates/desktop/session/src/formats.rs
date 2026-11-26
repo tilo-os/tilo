@@ -1,7 +1,7 @@
 //! The person's region formats, followed from their settings: the first day of their week, their
 //! date and clock styles, which Settings' Region & Formats pane writes to the `locale` section.
 //!
-//! The session's own date and clock formatters read them through [`ui::format::region`], which
+//! The session's own date and clock formatters read them through [`tilo_ui_base::format::region`], which
 //! is read once and kept; a change is read again here, and every tilolang host running in this
 //! session's apps is told on its channel ([`crate::apps::Apps::locale_changed`]), so the instances
 //! write what their windows show again in the formats the person chose. Their windows' dates,
@@ -34,7 +34,7 @@ impl Formats {
             return false;
         }
         self.settings.set(settings);
-        ui::format::region::refresh()
+        tilo_ui_base::format::region::refresh()
     }
 }
 
@@ -63,7 +63,7 @@ mod tests {
     /// next change: a pass over unchanged settings reads nothing.
     #[test]
     fn a_region_the_person_changes_is_followed_once_per_change() {
-        let before = ui::format::region::current();
+        let before = tilo_ui_base::format::region::current();
         let document = Arc::new(settings_store::HostDocument::new(
             serde_json::json!({
                 "locale": {"first_day_of_week": "Sunday", "time_format": "H12"}
@@ -79,8 +79,8 @@ mod tests {
 
         assert!(follow.follow(), "the person starts their week on Sunday");
         assert_eq!(
-            ui::format::region::current().first_day,
-            ui::format::region::FirstDayOfWeek::Sunday
+            tilo_ui_base::format::region::current().first_day,
+            tilo_ui_base::format::region::FirstDayOfWeek::Sunday
         );
         assert!(!follow.follow(), "unchanged settings read nothing again");
 
@@ -96,7 +96,7 @@ mod tests {
         assert!(follow.follow(), "they put their week back to Monday");
 
         settings_store::install_source(None);
-        ui::format::region::install(before);
+        tilo_ui_base::format::region::install(before);
     }
 
     /// With no settings store (`stamp()` is `None`), a follower reads the defaults once and skips
@@ -112,12 +112,12 @@ mod tests {
         let _source = settings_store::scoped_source(None);
         assert_eq!(settings_store::stamp(), None);
 
-        let before = ui::format::region::current();
-        let non_default = ui::format::region::RegionFormats {
-            first_day: ui::format::region::FirstDayOfWeek::Sunday,
-            ..ui::format::region::RegionFormats::default()
+        let before = tilo_ui_base::format::region::current();
+        let non_default = tilo_ui_base::format::region::RegionFormats {
+            first_day: tilo_ui_base::format::region::FirstDayOfWeek::Sunday,
+            ..tilo_ui_base::format::region::RegionFormats::default()
         };
-        ui::format::region::install(non_default);
+        tilo_ui_base::format::region::install(non_default);
 
         let follow = Formats::new();
         assert!(
@@ -125,17 +125,17 @@ mod tests {
             "the first pass refreshes even without a settings store"
         );
         assert_eq!(
-            ui::format::region::current(),
-            ui::format::region::RegionFormats::default()
+            tilo_ui_base::format::region::current(),
+            tilo_ui_base::format::region::RegionFormats::default()
         );
 
-        ui::format::region::install(non_default);
+        tilo_ui_base::format::region::install(non_default);
         assert!(
             !follow.follow(),
             "the second pass skips the refresh while there is still no stamp"
         );
-        assert_eq!(ui::format::region::current(), non_default);
+        assert_eq!(tilo_ui_base::format::region::current(), non_default);
 
-        ui::format::region::install(before);
+        tilo_ui_base::format::region::install(before);
     }
 }

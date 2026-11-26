@@ -190,7 +190,7 @@ fn says(session: &Session, words: &str) -> bool {
 #[test]
 fn a_device_asking_for_the_sound_is_allowed_and_turned_down_where_it_stands() {
     let _home = tilo_test_env::TestHome::new().expect("a home of the test's own");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let calls = Rc::new(RefCell::new(Vec::new()));
     let mut session = session(&calls);
     open_quick_settings(&mut session);
@@ -219,7 +219,7 @@ fn a_device_asking_for_the_sound_is_allowed_and_turned_down_where_it_stands() {
 #[test]
 fn a_route_is_stopped_and_the_stopped_one_dismissed() {
     let _home = tilo_test_env::TestHome::new().expect("a home of the test's own");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let calls = Rc::new(RefCell::new(Vec::new()));
     let mut session = session(&calls);
     open_quick_settings(&mut session);
@@ -238,7 +238,7 @@ fn a_route_is_stopped_and_the_stopped_one_dismissed() {
 #[test]
 fn the_sounds_to_send_are_listed_and_one_is_chosen() {
     let _home = tilo_test_env::TestHome::new().expect("a home of the test's own");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let calls = Rc::new(RefCell::new(Vec::new()));
     let mut session = session(&calls);
     open_quick_settings(&mut session);
@@ -260,7 +260,7 @@ fn the_sounds_to_send_are_listed_and_one_is_chosen() {
 #[test]
 fn a_device_offers_the_row_that_drives_it_with_this_pointer() {
     let _home = tilo_test_env::TestHome::new().expect("a home of the test's own");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let calls = Rc::new(RefCell::new(Vec::new()));
     let mut session = session(&calls);
     open_quick_settings(&mut session);
@@ -275,7 +275,7 @@ fn a_device_offers_the_row_that_drives_it_with_this_pointer() {
 #[test]
 fn quick_settings_stands_beside_the_caret_that_asked_for_it() {
     let _home = tilo_test_env::TestHome::new().expect("a home of the test's own");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let calls = Rc::new(RefCell::new(Vec::new()));
     let mut session = session(&calls);
     session
@@ -352,7 +352,7 @@ fn press_paste(session: &mut Session) {
 #[test]
 fn the_clipboard_pastes_a_copy_and_the_keyboard_chooses_one() {
     let _home = tilo_test_env::TestHome::new().expect("a home of the test's own");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let calls = Rc::new(RefCell::new(Vec::new()));
     let mut session = session(&calls);
     let copied = "the copied line";

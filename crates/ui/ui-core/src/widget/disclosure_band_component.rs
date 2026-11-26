@@ -1,9 +1,9 @@
 //! [`DisclosureBand`] as a described component.
 
-use crate::component::{Component, Described, PartViews};
-use crate::tokens::Rhythm;
-use crate::widget::Element;
 use crate::widget::arrange::{Arranged, FlexLayout, Part, Stack};
+use tilo_ui_base::tokens::Rhythm;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::{component::Component, component::Described, component::PartViews};
 
 use super::DisclosureBand;
 

@@ -1,8 +1,8 @@
 //! `Autocomplete` — a text field with a suggestion list that floats below it — and the [`Suggestion`]
 //! rows that list shows.
 
-use crate::widget::{AppModel, ModelPath};
 use std::collections::HashMap;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect, RoundedRect, Vec2};
@@ -10,21 +10,22 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::chrome::SelectionState;
-use crate::icons::{Icon, LUCIDE_DEFAULT_STROKE_PX, draw_icon};
-use crate::num::f32_of_f64;
-use crate::paint::PaintCtx;
 use crate::search::system::filters::{draw_filter_chip, share_row};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::DrawChild;
-use crate::widget::TaffyTreeExt;
 use crate::widget::floating_list::{FloatingList, FloatingMetrics, FloatingRow, RowState};
+use tilo_ui_base::chrome::SelectionState;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{icons::Icon, icons::LUCIDE_DEFAULT_STROKE_PX, icons::draw_icon};
 #[path = "autocomplete_component.rs"]
 mod component;
-use crate::widget::{TextInput, TextInputKind, Widget};
+use crate::{widget::TextInput, widget::TextInputKind};
 pub use component::{AutocompleteProps, SuggestionProps};
+use tilo_ui_base::widget::Widget;
 
 pub type SuggestionList = FloatingList<Suggestion>;
 
@@ -44,7 +45,7 @@ pub struct Suggestion {
     pub detail: Option<String>,
     pub subtitle: Option<String>,
     pub icon: Option<Icon>,
-    pub person: Option<crate::component::Person>,
+    pub person: Option<tilo_ui_base::component::Person>,
     /// What the row is: a pickable item (the default), a group's header or a
     /// notice ("No matches").
     pub role: RowRole,
@@ -141,7 +142,7 @@ impl Suggestion {
     }
 
     #[must_use]
-    pub fn with_person(mut self, person: crate::component::Person) -> Self {
+    pub fn with_person(mut self, person: tilo_ui_base::component::Person) -> Self {
         self.person = Some(person);
         self
     }
@@ -301,9 +302,9 @@ fn paint_item(
         theme.text_primary
     };
     let dim = theme.tokens.colors.ink_on_any(
-        &[crate::chrome::panel_ground(theme)],
+        &[tilo_ui_base::chrome::panel_ground(theme)],
         theme.text_dim,
-        crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST,
     );
     let label_style = theme.text(state.role);
     let detail_style = theme.text(TextRole::Caption);
@@ -316,7 +317,7 @@ fn paint_item(
             x + side,
             row.center().y + side / 2.0,
         );
-        crate::widget::AvatarFace::of(person)
+        tilo_ui_base::widget::AvatarFace::of(person)
             .paint(&mut PaintCtx::new(scene, transform, text, theme), mark);
         x += side + m.spacing;
     } else if let Some(icon) = s.icon {
@@ -406,7 +407,7 @@ fn paint_item(
         // The letters the query matched, bold, between the rest.
         let bold = label_style
             .clone()
-            .with_weight(crate::text_render::TextWeight::Bold);
+            .with_weight(tilo_ui_base::text_render::TextWeight::Bold);
         let mut pen = x;
         for (run, strong) in matched_runs(&label, &s.matched) {
             let style = if strong { &bold } else { &label_style };
@@ -467,9 +468,9 @@ fn paint_header(
     let m = &state.metrics;
     let style = theme.text(TextRole::Caption);
     let dim = theme.tokens.colors.ink_on_any(
-        &[crate::chrome::panel_ground(theme)],
+        &[tilo_ui_base::chrome::panel_ground(theme)],
         theme.text_dim,
-        crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST,
     );
     let x = row.x0 + m.pad;
     let shown =
@@ -502,9 +503,9 @@ fn paint_notice(
     let m = &state.metrics;
     let style = theme.text(state.role);
     let dim = theme.tokens.colors.ink_on_any(
-        &[crate::chrome::panel_ground(theme)],
+        &[tilo_ui_base::chrome::panel_ground(theme)],
         theme.text_dim,
-        crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST,
     );
     let x = row.x0 + m.pad;
     let shown =
@@ -522,8 +523,11 @@ fn paint_notice(
 
 impl FloatingList<Suggestion> {
     /// The open list as assistive technology reads it: its panel and each row, keyed by `key`.
-    pub fn access_rows(&self, key: impl Fn(&Suggestion) -> u64) -> Vec<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Politeness, Role};
+    pub fn access_rows(
+        &self,
+        key: impl Fn(&Suggestion) -> u64,
+    ) -> Vec<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Politeness, a11y::Role};
         let Some(panel) = self.rect() else {
             return Vec::new();
         };
@@ -531,7 +535,7 @@ impl FloatingList<Suggestion> {
             let busy = self.is_busy();
             let arriving = self.arriving().map(|clock| {
                 crate::widget::ArrivalFace::new(
-                    crate::widget::SkeletonShape::Text { lines: 1 },
+                    tilo_ui_base::widget::SkeletonShape::Text { lines: 1 },
                     clock,
                     crate::time::now(),
                 )
@@ -646,13 +650,13 @@ pub struct Autocomplete {
     taken: bool,
     /// The modifier a row was taken with, and the row: fired as [`Autocomplete::on_alternate`].
     alternate_pending: Option<String>,
-    edits: Option<crate::component::Bound<String>>,
-    accepted: Option<crate::component::Event>,
+    edits: Option<tilo_ui_base::component::Bound<String>>,
+    accepted: Option<tilo_ui_base::component::Event>,
     /// The text as it is edited, fired as [`Autocomplete::on_change`].
-    changed: Option<crate::component::Event>,
-    alternate: Option<crate::component::Event>,
-    filter_kind: Option<crate::component::Event>,
-    adjust_event: Option<crate::component::Event>,
+    changed: Option<tilo_ui_base::component::Event>,
+    alternate: Option<tilo_ui_base::component::Event>,
+    filter_kind: Option<tilo_ui_base::component::Event>,
+    adjust_event: Option<tilo_ui_base::component::Event>,
 }
 
 impl Autocomplete {
@@ -808,17 +812,17 @@ impl Autocomplete {
     }
 
     /// The event a row taken with Shift, Ctrl or Alt fires: the way it was opened and the row.
-    pub fn on_alternate(&mut self, event: crate::component::Event) {
+    pub fn on_alternate(&mut self, event: tilo_ui_base::component::Event) {
         self.alternate = (!event.is_none()).then_some(event);
     }
 
     /// The event a kind chip fires when it is pressed.
-    pub fn on_filter(&mut self, event: crate::component::Event) {
+    pub fn on_filter(&mut self, event: tilo_ui_base::component::Event) {
         self.filter_kind = (!event.is_none()).then_some(event);
     }
 
     /// The event a step of the selected row's value fires: the step and the row's value.
-    pub fn on_adjust(&mut self, event: crate::component::Event) {
+    pub fn on_adjust(&mut self, event: tilo_ui_base::component::Event) {
         self.adjust_event = (!event.is_none()).then_some(event);
     }
 
@@ -827,7 +831,7 @@ impl Autocomplete {
         self.input.request_focus();
     }
 
-    pub fn set_arriving(&mut self, clock: Option<crate::arriving::ArrivalClock>) {
+    pub fn set_arriving(&mut self, clock: Option<tilo_ui_base::arriving::ArrivalClock>) {
         self.list.set_arriving(clock);
     }
 
@@ -910,8 +914,8 @@ impl Autocomplete {
     #[must_use]
     pub fn on_edit(
         mut self,
-        edits: crate::component::Bound<String>,
-        accept: crate::component::Event,
+        edits: tilo_ui_base::component::Bound<String>,
+        accept: tilo_ui_base::component::Event,
     ) -> Self {
         self.edits = Some(edits);
         self.accepted = Some(accept);
@@ -921,7 +925,7 @@ impl Autocomplete {
     /// Report each edit of the field's text to `event`, carrying what the field holds after it: a
     /// host that reads the query as the person types ([`Self::on_edit`] also says when a choice is
     /// taken). An edit alone is no choice.
-    pub fn on_change(&mut self, event: crate::component::Event) {
+    pub fn on_change(&mut self, event: tilo_ui_base::component::Event) {
         self.changed = (!event.is_none()).then_some(event);
     }
 
@@ -1129,7 +1133,7 @@ impl Autocomplete {
     fn handle_key_while_editing(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
         logical_key: &Key,
     ) {
         match logical_key {
@@ -1189,7 +1193,7 @@ impl Autocomplete {
                     -1
                 };
                 if let (Some(row), Some(event)) = (self.highlighted(), &self.adjust_event) {
-                    event.fire(Some(crate::component::Value::Text(format!(
+                    event.fire(Some(tilo_ui_base::component::Value::Text(format!(
                         "{delta}\t{}",
                         row.value
                     ))));
@@ -1214,11 +1218,11 @@ impl Autocomplete {
 }
 
 impl Widget for Autocomplete {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls);
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.input.set_interaction_environment(environment);
     }
@@ -1228,26 +1232,26 @@ impl Widget for Autocomplete {
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let inner = crate::widget::Widget::update(&mut self.input, state, path);
+        let inner = tilo_ui_base::widget::Widget::update(&mut self.input, state, path);
         if self.open {
             self.list.advance();
         }
         if let Some(text) = self.take_edited() {
             if let Some(edits) = &self.edits {
-                edits.edited(crate::component::Value::Text(text.clone()));
+                edits.edited(tilo_ui_base::component::Value::Text(text.clone()));
             }
             // A letter typed is an edit, which the host hears as the text and as the edit it made;
             // only a row or the text taken is a choice.
             if let Some(changed) = &self.changed {
-                changed.fire(Some(crate::component::Value::Text(text.clone())));
+                changed.fire(Some(tilo_ui_base::component::Value::Text(text.clone())));
             }
             if std::mem::take(&mut self.taken) {
                 if let Some(pending) = self.alternate_pending.take() {
                     if let Some(alternate) = &self.alternate {
-                        alternate.fire(Some(crate::component::Value::Text(pending)));
+                        alternate.fire(Some(tilo_ui_base::component::Value::Text(pending)));
                     }
                 } else if let Some(accepted) = &self.accepted {
-                    accepted.fire(Some(crate::component::Value::Text(text)));
+                    accepted.fire(Some(tilo_ui_base::component::Value::Text(text)));
                 }
             }
         }
@@ -1274,7 +1278,7 @@ impl Widget for Autocomplete {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
+        self.apply_layout_external(tilo_ui_base::widget::layout_rect(taffy, node, origin));
     }
 
     /// A field's band tall across the width it is given: placed once, it asks for no layout.
@@ -1282,7 +1286,7 @@ impl Widget for Autocomplete {
         self.rect == Rect::ZERO
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         let (scene, transform, text_renderer, theme, env) = ctx.parts();
         if let Some(viewport) = env.viewport {
             self.list.set_viewport(viewport);
@@ -1337,7 +1341,7 @@ impl Widget for Autocomplete {
         self.chip_rects = rects;
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1368,7 +1372,7 @@ impl Widget for Autocomplete {
         self.open && self.list.arriving_moved()
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_pointer = ctx.logical(position);
             if self.open {
@@ -1423,7 +1427,7 @@ impl Widget for Autocomplete {
                     && let Some(kind) = self.kinds.get(i).cloned()
                     && let Some(event) = &self.filter_kind
                 {
-                    event.fire(Some(crate::component::Value::Text(kind)));
+                    event.fire(Some(tilo_ui_base::component::Value::Text(kind)));
                 }
                 *ctx.handled = true;
             }
@@ -1535,7 +1539,7 @@ impl Widget for Autocomplete {
         self.input.ime_edit_fingerprint(key)
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         Widget::ime_content(&self.input)
     }
 
@@ -1543,8 +1547,8 @@ impl Widget for Autocomplete {
         self.input.is_dragging()
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::hash_key;
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::a11y::hash_key;
         let mut node = self.input.accessibility()?;
         let id = self.test_id().unwrap_or("autocomplete");
         // This widget owns the embedded input and its synthetic result rows.
@@ -1556,7 +1560,7 @@ impl Widget for Autocomplete {
         node.state.expanded = Some(self.open);
         node.state.busy = self.open && self.list.is_busy();
         if !self.kinds.is_empty() {
-            use crate::a11y::{AccessNode, AccessState, Role};
+            use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
             let mut chips = Vec::with_capacity(self.kinds.len());
             for (i, kind) in self.kinds.iter().enumerate() {
                 let chosen = self.chosen.iter().any(|chosen| chosen == kind);
@@ -1590,12 +1594,12 @@ impl Widget for Autocomplete {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        use crate::a11y::{Action, hash_key};
+        use tilo_ui_base::{a11y::Action, a11y::hash_key};
         let own_key = hash_key(&self.test_id().unwrap_or("autocomplete"));
         if let [_, chip_key] = key_path
             && matches!(action, Action::Activate | Action::ToggleCheck)
@@ -1605,11 +1609,11 @@ impl Widget for Autocomplete {
                 .find(|kind| hash_key(&("autocomplete-kind", kind.as_str())) == *chip_key)
             && let Some(event) = &self.filter_kind
         {
-            event.fire(Some(crate::component::Value::Text(kind.clone())));
+            event.fire(Some(tilo_ui_base::component::Value::Text(kind.clone())));
             return true;
         }
         if key_path.is_empty() || key_path == [own_key] {
-            let (state, path) = crate::doc::document(state, path);
+            let (state, path) = tilo_ui_base::doc::document(state, path);
             return match action {
                 Action::Focus | Action::Expand => {
                     self.begin_edit();
@@ -1655,11 +1659,11 @@ impl Widget for Autocomplete {
     }
 }
 
-impl crate::widget::controls::ActionControls for Autocomplete {
+impl tilo_ui_base::widget::controls::ActionControls for Autocomplete {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         self.input.attach_controls(domain, attachment);
     }
@@ -1683,13 +1687,13 @@ mod tests {
         })
     }
 
-    use crate::synthetic_input::char_key;
+    use tilo_ui_base::synthetic_input::char_key;
 
-    use crate::synthetic_input::named_key;
+    use tilo_ui_base::synthetic_input::named_key;
 
-    use crate::synthetic_input::cursor_moved;
+    use tilo_ui_base::synthetic_input::cursor_moved;
 
-    use crate::synthetic_input::mouse_press;
+    use tilo_ui_base::synthetic_input::mouse_press;
 
     tilo_test_env::scenario! {
         /// The autocomplete field: its list, its selection and its rows.
@@ -1699,13 +1703,13 @@ mod tests {
         phase suggestions_open_highlight_accept_or_cancel;
         {
             fn accessible_edits_update_suggestions_and_activate_the_selected_value() {
-                use crate::a11y::{Action, hash_key};
+                use tilo_ui_base::{a11y::Action, a11y::hash_key};
                 let mut ac = suggester_paths();
                 let mut state = AutoCommit::new();
                 assert!(ac.perform_action(
                     &Action::SetValue("al".into()),
                     &[],
-                    &mut crate::widget::Edits::lend(&mut state),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut state),
                     &automerge::ROOT
                 ));
                 assert_eq!(ac.suggestions().len(), 2);
@@ -1715,7 +1719,7 @@ mod tests {
                 assert!(ac.perform_action(
                     &Action::Activate,
                     &[key],
-                    &mut crate::widget::Edits::lend(&mut state),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut state),
                     &automerge::ROOT
                 ));
                 assert_eq!(ac.text(), "album");
@@ -1727,7 +1731,7 @@ mod tests {
                 assert!(!ac.perform_action(
                     &Action::Activate,
                     &[key],
-                    &mut crate::widget::Edits::lend(&mut state),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut state),
                     &automerge::ROOT
                 ));
             }
@@ -1887,18 +1891,18 @@ mod tests {
                 let mut text = TextRenderer::new();
                 let theme = Theme::dark().with_text_scale(2.0);
                 text.set_text_scale(theme.text_scale);
-                ac.draw_overlay(&mut crate::draw::DrawCtx::new(
+                ac.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                     &mut scene,
                     Affine::IDENTITY,
                     &mut text,
                     &theme,
-                    crate::draw::DrawEnv::default(),
+                    tilo_ui_base::draw::DrawEnv::default(),
                 ));
                 let panel = ac.dropdown_rect().expect("large-text dropdown");
                 let first = ac.row_rect(panel, 0);
                 let second = ac.row_rect(panel, 1);
                 assert!(
-                    first.height() > f64::from(crate::tokens::Metrics::BASE.menu_row_height),
+                    first.height() > f64::from(tilo_ui_base::tokens::Metrics::BASE.menu_row_height),
                     "rows grow with the text: {first:?}"
                 );
                 assert_eq!(first.y1, second.y0, "rows do not overlap");
@@ -1946,9 +1950,9 @@ mod tests {
             busy.set_anchor(Rect::new(0.0, 0.0, 200.0, 32.0));
             assert!(busy.rect().is_none());
             let asked = crate::time::now();
-            busy.set_arriving(Some(crate::arriving::ArrivalClock::new(
+            busy.set_arriving(Some(tilo_ui_base::arriving::ArrivalClock::new(
                 asked,
-                crate::arriving::Source::Remote,
+                tilo_ui_base::arriving::Source::Remote,
             )));
             assert!(busy.rect().is_some());
             let rows = busy.access_rows(|_| 0);
@@ -1964,9 +1968,9 @@ mod tests {
 
             let mut ac = Autocomplete::with_input(TextInput::local().with_placeholder("City"));
             ac.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 32.0));
-            ac.set_arriving(Some(crate::arriving::ArrivalClock::new(
+            ac.set_arriving(Some(tilo_ui_base::arriving::ArrivalClock::new(
                 asked,
-                crate::arriving::Source::Remote,
+                tilo_ui_base::arriving::Source::Remote,
             )));
             ac.open();
             assert!(ac.list_rect().is_some());
@@ -1976,7 +1980,7 @@ mod tests {
             );
             assert_eq!(
                 Widget::next_wake_deadline(&ac),
-                crate::arriving::ArrivalClock::new(asked, crate::arriving::Source::Remote)
+                tilo_ui_base::arriving::ArrivalClock::new(asked, tilo_ui_base::arriving::Source::Remote)
                     .next_step_at(crate::time::now()),
                 "the placeholder steps on at its deadline"
             );
@@ -1988,8 +1992,8 @@ mod tests {
 /// dropdown closes when nothing matches and every row returns when the field is cleared.
 #[test]
 fn a_view_offered_list_narrows_as_text_is_typed() {
-    use crate::synthetic_input::char_key;
     use crate::testing::dispatch;
+    use tilo_ui_base::synthetic_input::char_key;
 
     let mut ac = Autocomplete::new().with_id("recipient");
     ac.set_suggestions(vec![
@@ -2026,11 +2030,11 @@ fn a_view_offered_list_narrows_as_text_is_typed() {
 /// text is taken.
 #[test]
 fn an_edit_reports_the_text_and_no_choice() {
-    use crate::component::{Bound, Event, Intent};
-    use crate::synthetic_input::char_key;
     use crate::testing::dispatch;
+    use tilo_ui_base::synthetic_input::char_key;
+    use tilo_ui_base::{component::Bound, component::Event, component::Intent};
 
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let mut ac = Autocomplete::new().with_id("search").on_edit(
         Bound::default(),
         Event::View(Intent::new(&queue, "search", "accept")),
@@ -2049,7 +2053,7 @@ fn an_edit_reports_the_text_and_no_choice() {
         .iter()
         .map(|fired| {
             let text = match fired.value.as_ref() {
-                Some(crate::component::Value::Text(text)) => Some(text.clone()),
+                Some(tilo_ui_base::component::Value::Text(text)) => Some(text.clone()),
                 _ => None,
             };
             (fired.event.clone(), text)
@@ -2079,13 +2083,13 @@ fn an_edit_reports_the_text_and_no_choice() {
 /// hands to its host as a tab in front, a window beside or the row's own way.
 #[test]
 fn a_held_modifier_carries_the_row_and_the_way_it_opens() {
-    use crate::component::{Event, Intent};
-    use crate::synthetic_input::named_key;
     use crate::testing::{Dispatch, dispatch};
+    use tilo_ui_base::synthetic_input::named_key;
+    use tilo_ui_base::{component::Event, component::Intent};
     use winit::event::Modifiers;
     use winit::keyboard::{ModifiersState, NamedKey};
 
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let mut ac = Autocomplete::new().with_id("search");
     ac.set_open_list(true);
     ac.on_alternate(Event::View(Intent::new(&queue, "search", "alternate")));
@@ -2111,11 +2115,11 @@ fn a_held_modifier_carries_the_row_and_the_way_it_opens() {
 /// host narrows the rows to.
 #[test]
 fn a_kind_chip_reports_the_kind_it_narrows_to() {
-    use crate::a11y::{Action, hash_key};
-    use crate::component::testing::fired;
-    use crate::component::{Event, Intent, Value};
+    use crate::component_testing::fired;
+    use tilo_ui_base::{a11y::Action, a11y::hash_key};
+    use tilo_ui_base::{component::Event, component::Intent, component::Value};
 
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let mut ac = Autocomplete::new().with_id("search");
     ac.set_open_list(true);
     ac.set_kinds(vec!["Apps".into(), "Files".into()], Vec::new());
@@ -2130,7 +2134,7 @@ fn a_kind_chip_reports_the_kind_it_narrows_to() {
             hash_key(&"search"),
             hash_key(&("autocomplete-kind", "Files")),
         ],
-        &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+        &mut tilo_ui_base::widget::Edits::lend(&mut automerge::AutoCommit::new()),
         &automerge::ROOT,
     );
     assert!(handled, "the chip takes the press");
@@ -2148,13 +2152,13 @@ fn a_kind_chip_reports_the_kind_it_narrows_to() {
 /// caret, so a level or a volume is stepped where it stands.
 #[test]
 fn a_step_on_an_adjustable_row_reports_the_step_and_the_row() {
-    use crate::component::testing::fired;
-    use crate::component::{Event, Intent, Value};
-    use crate::synthetic_input::named_key;
+    use crate::component_testing::fired;
     use crate::testing::dispatch;
+    use tilo_ui_base::synthetic_input::named_key;
+    use tilo_ui_base::{component::Event, component::Intent, component::Value};
     use winit::keyboard::NamedKey;
 
-    let queue = crate::Intents::default();
+    let queue = tilo_ui_base::Intents::default();
     let mut ac = Autocomplete::new().with_id("search");
     ac.set_open_list(true);
     let mut volume = Suggestion::new("level:volume");

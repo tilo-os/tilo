@@ -1,7 +1,7 @@
 //! Dates and times as people read them, and the `date` control. A `Date` or `Time` reaches the view
 //! as its ISO text with a sibling prop `<prop>:as` (`"date"` or `"time"`); [`shown`] formats it the
 //! person's way, and [`shown_brief`] as a list reads it, through the toolkit's one day fact
-//! (`ui::format::day_fact`). A day paired with the time of day it is due gives the sibling prop
+//! (`tilo_ui_base::format::day_fact`). A day paired with the time of day it is due gives the sibling prop
 //! `<prop>:time`, and the two read as one fact (`Today 09:00`). The `date` control is the toolkit's
 //! [`DateField`] over the bound value, reported as ISO text (empty for no date) through the same
 //! edit every bound input reports.
@@ -9,8 +9,9 @@
 use crate::{UiNode, Value};
 use jiff::civil::{Date, Time};
 use tilo_formats::{day_of, duration_of};
-use ui::LocalState;
-use ui::widget::{DateField, Decorator, Tone, Widget};
+use tilo_ui_base::LocalState;
+use tilo_ui_base::{widget::Decorator, widget::Tone, widget::Widget};
+use ui::widget::DateField;
 
 use crate::reconcile::{EventSink, UiEvent, display};
 
@@ -25,14 +26,19 @@ pub fn shown(node: &UiNode, name: &str) -> Option<String> {
         && let Some(day) = day_of(&text)
         && let Some(time) = paired_time(node, name)
     {
-        return Some(ui::format::timestamp(&day.to_datetime(time)));
+        return Some(tilo_ui_base::format::timestamp(&day.to_datetime(time)));
     }
-    formatted(node, name, ui::format::date, ui::format::timestamp)
+    formatted(
+        node,
+        name,
+        tilo_ui_base::format::date,
+        tilo_ui_base::format::timestamp,
+    )
 }
 
 /// The prop `name` of `node` as a list row reads it: the day fact (`Overdue`, `Today`, `Thursday`,
 /// `Jun 29`), with the time of day the view pairs with it (`Today 09:00`); a time is
-/// [`ui::format::list_date`], as native lists show when a message came. The day something was done
+/// [`tilo_ui_base::format::list_date`], as native lists show when a message came. The day something was done
 /// on (`<name>_done`) reads as the day it happened, never a day gone by. A day fact a heading over
 /// the row already says is the heading's to say: the row keeps only the time of day it is due
 /// (`09:00`), and says nothing where it names no time. That holds only under a heading (`under`).
@@ -45,15 +51,15 @@ pub fn shown_brief(node: &UiNode, name: &str, under: Option<&str>) -> Option<Str
     };
     let done = done_day(node, name);
     if under.is_some_and(|heading| said_by_heading(node, name, heading)) {
-        return paired_time(node, name).map(ui::format::time);
+        return paired_time(node, name).map(tilo_ui_base::format::time);
     }
     Some(match kind.as_str() {
-        "date" if done => day_of(&text).map_or(text, ui::format::day_done_today),
+        "date" if done => day_of(&text).map_or(text, tilo_ui_base::format::day_done_today),
         "date" => day_of(&text).map_or(text, |day| {
-            ui::format::day_fact_today(day, paired_time(node, name)).text
+            tilo_ui_base::format::day_fact_today(day, paired_time(node, name)).text
         }),
-        "time" => moment_of(&text).map_or(text, |at| ui::format::list_date(&at)),
-        "duration" => duration_of(&text).map_or(text, ui::format::duration),
+        "time" => moment_of(&text).map_or(text, |at| tilo_ui_base::format::list_date(&at)),
+        "duration" => duration_of(&text).map_or(text, tilo_ui_base::format::duration),
         _ => text,
     })
 }
@@ -95,13 +101,13 @@ fn day_heading(node: &UiNode, name: &str) -> Option<String> {
         return None;
     }
     let day = day_of(&display(node.props.get(name)?))?;
-    Some(ui::format::day_fact_today(day, None).text)
+    Some(tilo_ui_base::format::day_fact_today(day, None).text)
 }
 
 fn says_day(heading: &str, day: Date) -> bool {
     heading
         .trim()
-        .eq_ignore_ascii_case(&ui::format::day_fact_today(day, None).text)
+        .eq_ignore_ascii_case(&tilo_ui_base::format::day_fact_today(day, None).text)
 }
 
 #[must_use]
@@ -132,8 +138,10 @@ pub fn under_headings(node: UiNode) -> UiNode {
         {
             match paired_time(&node, name) {
                 Some(time) => {
-                    node.props
-                        .insert(name.to_owned(), Value::text(ui::format::time(time)));
+                    node.props.insert(
+                        name.to_owned(),
+                        Value::text(tilo_ui_base::format::time(time)),
+                    );
                 }
                 None => {
                     node.props.remove(name);
@@ -166,8 +174,8 @@ pub fn shown_case(node: &UiNode, value: &str) -> Option<String> {
         return None;
     };
     match kind.as_str() {
-        "time" => moment_of(value).map(|at| ui::format::moment_fact(&at)),
-        "duration" => duration_of(value).map(ui::format::duration),
+        "time" => moment_of(value).map(|at| tilo_ui_base::format::moment_fact(&at)),
+        "duration" => duration_of(value).map(tilo_ui_base::format::duration),
         _ => None,
     }
 }
@@ -176,7 +184,7 @@ pub fn shown_case(node: &UiNode, value: &str) -> Option<String> {
 /// installed on the toolkit's shared region state.
 #[must_use]
 pub fn formats() -> tilo_formats::RegionFormats {
-    ui::format::region::current()
+    tilo_ui_base::format::region::current()
 }
 
 /// The localized date and clock words (`day-today`, `format-month-short`, …) for [`tilo_formats`],
@@ -184,7 +192,7 @@ pub fn formats() -> tilo_formats::RegionFormats {
 #[must_use]
 pub fn format_words() -> &'static dyn tilo_formats::Words {
     crate::i18n::ensure();
-    ui::format::words()
+    tilo_ui_base::format::words()
 }
 
 /// The tone the prop `name` of `node` reads in, where a day is gone by ([`Tone::Danger`]); `None`
@@ -203,7 +211,7 @@ pub fn shown_tone(node: &UiNode, name: &str, under: Option<&str>) -> Option<Tone
     if under.is_some_and(|heading| says_day(heading, day)) && trailing_day(node) == Some(name) {
         return None;
     }
-    let fact = ui::format::day_fact_today(day, paired_time(node, name));
+    let fact = tilo_ui_base::format::day_fact_today(day, paired_time(node, name));
     (fact.tone != Tone::Neutral).then_some(fact.tone)
 }
 
@@ -211,7 +219,7 @@ pub fn shown_tone(node: &UiNode, name: &str, under: Option<&str>) -> Option<Tone
 /// `<name>:time`.
 fn paired_time(node: &UiNode, name: &str) -> Option<Time> {
     let text = display(node.props.get(&format!("{name}:time"))?);
-    moment_of(&text).map(|at| ui::clock::at(at).time())
+    moment_of(&text).map(|at| tilo_ui_base::clock::at(at).time())
 }
 
 fn formatted(
@@ -228,7 +236,7 @@ fn formatted(
     Some(match kind.as_str() {
         "date" => day_of(&text).map_or(text, date),
         "time" => moment_of(&text).map_or(text, |at| time(&at)),
-        "duration" => duration_of(&text).map_or(text, ui::format::duration),
+        "duration" => duration_of(&text).map_or(text, tilo_ui_base::format::duration),
         _ => text,
     })
 }
@@ -289,7 +297,11 @@ impl Decorator for DateControl {
         &mut self.field
     }
 
-    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let followed = self.follow_value();
         let inner = Widget::update(&mut self.field, state, path);
         followed || inner
@@ -325,7 +337,7 @@ mod tests {
         let day = node(&[("value", "2026-10-24"), ("value:as", "date")]);
         assert_eq!(
             shown(&day, "value").as_deref(),
-            Some(ui::format::date(Date::new(2026, 10, 24).unwrap()).as_str())
+            Some(tilo_ui_base::format::date(Date::new(2026, 10, 24).unwrap()).as_str())
         );
         let none = node(&[("value", ""), ("value:as", "date")]);
         assert_eq!(shown(&none, "value").as_deref(), Some(""));
@@ -345,20 +357,20 @@ mod tests {
     }
 
     fn at(hour: i8) -> String {
-        let at = ui::clock::instant_of(jiff::civil::date(2026, 6, 30).at(hour, 0, 0, 0))
+        let at = tilo_ui_base::clock::instant_of(jiff::civil::date(2026, 6, 30).at(hour, 0, 0, 0))
             .expect("nine in the morning exists");
         format!("{at:.0}")
     }
 
     #[test]
     fn a_day_reads_as_briefly_as_a_list_states_it() {
-        let today = ui::clock::today();
+        let today = tilo_ui_base::clock::today();
         let yesterday = today - jiff::Span::new().days(1);
         let day = yesterday.strftime("%Y-%m-%d").to_string();
         let row = node(&[("value", &day), ("value:as", "date")]);
         assert_eq!(
             shown_brief(&row, "value", None),
-            Some(ui::format::day_fact_today(yesterday, None).text)
+            Some(tilo_ui_base::format::day_fact_today(yesterday, None).text)
         );
         assert_eq!(shown_tone(&row, "value", None), Some(Tone::Danger));
 
@@ -372,14 +384,14 @@ mod tests {
 
     #[test]
     fn a_done_day_reads_as_the_day_it_happened_and_is_never_overdue() {
-        let today = ui::clock::today();
+        let today = tilo_ui_base::clock::today();
         let done = today - jiff::Span::new().days(40);
         let day = done.strftime("%Y-%m-%d").to_string();
         let mut row = node(&[("group", &day), ("group:as", "date")]);
         row.props.insert("group_done".to_owned(), Value::Int(1));
         assert_eq!(
             shown_brief(&row, "group", None),
-            Some(ui::format::day_done_today(done)),
+            Some(tilo_ui_base::format::day_done_today(done)),
             "a heading over finished work says the day it happened"
         );
         assert_eq!(
@@ -395,7 +407,7 @@ mod tests {
         row
     }
 
-    fn row_facts(widget: &dyn ui::widget::Widget, found: &mut Option<String>) {
+    fn row_facts(widget: &dyn tilo_ui_base::widget::Widget, found: &mut Option<String>) {
         if let Some(list_row) = widget
             .as_any()
             .and_then(|any| any.downcast_ref::<ui::widget::ListRow>())
@@ -409,12 +421,12 @@ mod tests {
     }
 
     fn heading(day: Date) -> String {
-        ui::format::day_fact_today(day, None).text
+        tilo_ui_base::format::day_fact_today(day, None).text
     }
 
     #[test]
     fn a_day_fact_a_heading_over_the_row_says_is_the_headings_to_say() {
-        let today = ui::clock::today();
+        let today = tilo_ui_base::clock::today();
         let day = today.strftime("%Y-%m-%d").to_string();
         let fact = row("ListRow", &[("meta", &day), ("meta:as", "date")]);
         assert_eq!(
@@ -445,7 +457,7 @@ mod tests {
 
     #[test]
     fn a_row_under_its_day_keeps_the_time_of_day_it_is_due() {
-        let today = ui::clock::today();
+        let today = tilo_ui_base::clock::today();
         let day = today.strftime("%Y-%m-%d").to_string();
         let at_nine = Time::new(9, 0, 0, 0).expect("nine");
         let timed = row(
@@ -454,13 +466,13 @@ mod tests {
         );
         assert_eq!(
             shown_brief(&timed, "meta", Some(&heading(today))).as_deref(),
-            Some(ui::format::time(at_nine).as_str()),
+            Some(tilo_ui_base::format::time(at_nine).as_str()),
             "the day is the heading's, and the time of day is the row's"
         );
         assert_eq!(
             shown_brief(&timed, "meta", None).as_deref(),
             Some(
-                ui::format::day_fact_today(today, Some(at_nine))
+                tilo_ui_base::format::day_fact_today(today, Some(at_nine))
                     .text
                     .as_str()
             ),
@@ -470,7 +482,7 @@ mod tests {
 
     #[test]
     fn the_tree_drops_a_rows_day_fact_a_heading_over_it_says() {
-        let today = ui::clock::today();
+        let today = tilo_ui_base::clock::today();
         let day = today.strftime("%Y-%m-%d").to_string();
         let later = (today + jiff::Span::new().days(2))
             .strftime("%Y-%m-%d")
@@ -525,7 +537,7 @@ mod tests {
 
     #[test]
     fn a_card_naming_the_day_shows_no_day_on_its_rows() {
-        let today = ui::clock::today();
+        let today = tilo_ui_base::clock::today();
         let day = today.strftime("%Y-%m-%d").to_string();
         let at_nine = Time::new(9, 0, 0, 0).expect("nine");
         assert_eq!(
@@ -534,7 +546,7 @@ mod tests {
                 &[("meta", &day), ("meta:as", "date"), ("meta:time", &at(9))]
             )
             .as_deref(),
-            Some(ui::format::time(at_nine).as_str()),
+            Some(tilo_ui_base::format::time(at_nine).as_str()),
             "the card says the day, so its row keeps the time of day it is due"
         );
         assert_eq!(
@@ -555,7 +567,7 @@ mod tests {
 
     #[test]
     fn the_tree_drops_a_rows_day_fact_a_group_over_it_says() {
-        let today = ui::clock::today();
+        let today = tilo_ui_base::clock::today();
         let day = today.strftime("%Y-%m-%d").to_string();
         let at_nine = Time::new(9, 0, 0, 0).expect("nine");
         let mut item = node(&[("group", &day), ("group:as", "date")]);
@@ -572,7 +584,7 @@ mod tests {
         let shown = under_headings(item.clone());
         assert_eq!(
             shown.children[0].props.get("meta"),
-            Some(&Value::text(ui::format::time(at_nine))),
+            Some(&Value::text(tilo_ui_base::format::time(at_nine))),
             "the group says the day: the row keeps the time of day it is due"
         );
 
@@ -588,7 +600,7 @@ mod tests {
 
     #[test]
     fn a_day_and_the_time_it_is_due_read_as_one_fact() {
-        let today = ui::clock::today();
+        let today = tilo_ui_base::clock::today();
         let day = today.strftime("%Y-%m-%d").to_string();
         let time = Time::new(9, 0, 0, 0).expect("nine");
         let alone = node(&[("value", &day), ("value:as", "date")]);
@@ -599,7 +611,7 @@ mod tests {
         ]);
         assert_eq!(
             shown_brief(&paired, "value", None),
-            Some(ui::format::day_fact_today(today, Some(time)).text)
+            Some(tilo_ui_base::format::day_fact_today(today, Some(time)).text)
         );
         assert_ne!(
             shown_brief(&paired, "value", None),
@@ -608,7 +620,7 @@ mod tests {
         );
         assert_eq!(
             shown(&paired, "value"),
-            Some(ui::format::timestamp(&today.to_datetime(time))),
+            Some(tilo_ui_base::format::timestamp(&today.to_datetime(time))),
             "a form states the day and its time together"
         );
         assert_eq!(

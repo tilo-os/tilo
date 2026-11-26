@@ -27,6 +27,7 @@ taffy = { workspace = true, features = ["content_size"] }
 # The dashboard benchmark runs the tree on a clock of its own events
 # (`tilo_clock::testing`), so its redraw counters do not follow node load.
 tilo-clock = { path = "../../crates/platform/tilo-clock", features = ["test-support"] }
+tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
 tilo-ui = { path = "../../crates/ui/ui-core", default-features = false, features = ["model"] }
 vello.workspace = true
 winit.workspace = true

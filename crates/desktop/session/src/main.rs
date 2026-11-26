@@ -655,7 +655,7 @@ fn start(
     // build and the compositor's first frame run beside it, and what needs text finds it ready.
     // Building it on this thread instead put font discovery and face mapping (the font index alone
     // is a large read) in front of everything the session says to its first client.
-    let _warmup = ui::warmup::spawn_warmup();
+    let _warmup = tilo_ui_base::warmup::spawn_warmup();
     let wake = tilo_service::LoopWake::default();
     // The person's settings, read once here: the power policy they resolve is part of them.
     let config = tilo_session::SessionConfig::load();

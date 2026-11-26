@@ -1,11 +1,11 @@
 //! `FilterMenu` — a compact picker anchored at the caret: a [`SuggestionList`] of rows
 //! narrowed by a query, ranked the way every list search ranks
-//! ([`crate::text_match::ranked_rows`]). The [`SlashMenu`](crate::widget::SlashMenu) (block
+//! ([`tilo_ui_base::text_match::ranked_rows`]). The [`SlashMenu`](crate::widget::SlashMenu) (block
 //! kinds and commands) and the [`LinkPopover`](crate::widget::LinkPopover) (page links) are
 //! this menu over their own row values.
 
-use crate::i18n::widget_text;
 use std::collections::HashMap;
+use tilo_ui_base::i18n::widget_text;
 
 use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
@@ -13,18 +13,21 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
-use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
-use crate::text_match::{FieldWeight, ListIndex};
-use crate::text_render::TextRenderer;
-use crate::text_selection::Selection;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::ModelPath;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
 use crate::widget::autocomplete::{Suggestion, SuggestionList};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::text_selection::Selection;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::ModelPath;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    query_text::QueryComposition, query_text::QueryEventChange, query_text::QueryInk,
+    query_text::QueryView,
+};
+use tilo_ui_base::{text_match::FieldWeight, text_match::ListIndex};
 
 const FILTER_HEIGHT: f64 = 32.0;
 const FILTER_GAP: f64 = 4.0;
@@ -75,7 +78,7 @@ impl<T> MenuEntry<T> {
     }
 }
 
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "the block editor's caret menu, drawn over its own text: the slash menu and the link popover"
 )]
@@ -93,8 +96,8 @@ pub struct FilterMenu<T> {
     narrows_itself: bool,
     scale: f64,
     pending: Option<T>,
-    appear: crate::motion::Appearing,
-    drawn: crate::motion::Pose,
+    appear: tilo_ui_base::motion::Appearing,
+    drawn: tilo_ui_base::motion::Pose,
     leaving: Option<String>,
 
     dirty: bool,
@@ -119,8 +122,8 @@ impl<T: Clone> FilterMenu<T> {
             narrows_itself: true,
             scale: 1.0,
             pending: None,
-            appear: crate::motion::Appearing::closed(),
-            drawn: crate::motion::Pose::REST,
+            appear: tilo_ui_base::motion::Appearing::closed(),
+            drawn: tilo_ui_base::motion::Pose::REST,
             leaving: None,
         };
         menu.rebuild_visible();
@@ -317,7 +320,7 @@ impl<T: Clone> FilterMenu<T> {
 
     fn rebuild_visible(&mut self) {
         self.visible = if self.narrows_itself {
-            crate::text_match::ranked_rows(
+            tilo_ui_base::text_match::ranked_rows(
                 &self.index,
                 self.filter.trim(),
                 self.entries.iter().map(|entry| {
@@ -428,7 +431,7 @@ impl<T: Clone> FilterMenu<T> {
         }
         self.appear.follow(shows, theme.motion());
         if !self.appear.is_drawn() {
-            self.drawn = crate::motion::Pose::REST;
+            self.drawn = tilo_ui_base::motion::Pose::REST;
             self.leaving = None;
             return;
         }
@@ -482,9 +485,9 @@ impl<T: Clone> FilterMenu<T> {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            crate::surface::edge_on(tokens.colors.surfaces.base),
+            tilo_ui_base::surface::edge_on(tokens.colors.surfaces.base),
             None,
-            &crate::surface::edge_outline(filter_rect, filter_radius),
+            &tilo_ui_base::surface::edge_outline(filter_rect, filter_radius),
         );
         let leaving = self.leaving.clone();
         let text = leaving.as_deref().unwrap_or(&self.filter);
@@ -519,11 +522,11 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
         self.spec.widget_name
@@ -557,16 +560,16 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
             .ime_edit_fingerprint(&self.filter, &self.filter_selection, key)
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
-        Some(crate::ime::InputContent::TEXT)
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
+        Some(tilo_ui_base::ime::InputContent::TEXT)
     }
 
     fn accessibility_hidden(&self) -> bool {
         !self.visible_flag
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         if self.accessibility_hidden() {
             return Some(
                 AccessNode::new(Role::Menu)
@@ -607,8 +610,8 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         let Some(entry_index) = target
@@ -618,7 +621,7 @@ impl<T: Clone + 'static> Widget for FilterMenu<T> {
             return false;
         };
         if !self.visible_flag
-            || !matches!(action, crate::a11y::Action::Activate)
+            || !matches!(action, tilo_ui_base::a11y::Action::Activate)
             || !self.visible.contains(&entry_index)
         {
             return false;

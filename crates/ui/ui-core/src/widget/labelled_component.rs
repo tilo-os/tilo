@@ -1,7 +1,7 @@
 //! [`Labelled`](super::Labelled) as a described component.
 
-use crate::component::{Component, Described, PartViews};
-use crate::widget::Element;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::{component::Component, component::Described, component::PartViews};
 
 use super::Labelled;
 
@@ -22,7 +22,9 @@ pub struct LabelledProps {
 }
 
 fn nothing() -> Element {
-    Box::new(crate::widget::Spacer::token(crate::tokens::SpacingStep::S0))
+    Box::new(tilo_ui_base::widget::Spacer::token(
+        tilo_ui_base::tokens::SpacingStep::S0,
+    ))
 }
 
 impl Described for Labelled {

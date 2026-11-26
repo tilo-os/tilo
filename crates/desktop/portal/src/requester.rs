@@ -99,7 +99,9 @@ impl Requesters {
         let scan = desktop_entry::scan::scan_dirs(
             &self.applications,
             &[],
-            &desktop_entry::locale::language_candidates(ui::i18n::preferred_language().as_deref()),
+            &desktop_entry::locale::language_candidates(
+                tilo_ui_base::i18n::preferred_language().as_deref(),
+            ),
         );
         scan.entries
             .iter()

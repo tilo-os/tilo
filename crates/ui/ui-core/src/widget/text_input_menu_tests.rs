@@ -6,10 +6,10 @@ use super::drive;
 use super::mods;
 use super::right_click;
 use super::suggesting_field;
-use crate::synthetic_input::cursor_moved;
 use crate::testing::dispatch;
-use crate::text_edit::SUGGESTION_SETTLE;
 use std::time::Duration;
+use tilo_ui_base::synthetic_input::cursor_moved;
+use tilo_ui_base::text_edit::SUGGESTION_SETTLE;
 
 /// A field laid out wide enough for a menu, holding `text`.
 fn menu_field(text: &str) -> TextInput {
@@ -24,13 +24,13 @@ tilo_test_env::scenario! {
     phase the_menus_rows_follow_what_the_field_allows;
     {
         // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let services = crate::process::ProcessServices::null();
         let _host = crate::process::enter(&services);
 
         // A menu opened while the field was editable cannot edit once the field is read-only.
         {
-            crate::text_selection::clipboard_copy("clipboard");
+            tilo_ui_base::text_selection::clipboard_copy("clipboard");
             let mut input = menu_field("source");
             input.select_all();
             input.open_text_menu_at([20.0, 20.0]);
@@ -46,7 +46,7 @@ tilo_test_env::scenario! {
             );
             assert_eq!(input.value(), "source");
             assert_eq!(
-                crate::text_selection::clipboard_paste().as_deref(),
+                tilo_ui_base::text_selection::clipboard_paste().as_deref(),
                 Some("clipboard")
             );
             input.context_menu.close();
@@ -66,7 +66,7 @@ tilo_test_env::scenario! {
             drive(
                 &mut input,
                 &mut doc,
-                &crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
+                &tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right),
                 mods(false, false),
             );
             assert!(input.context_menu.is_open());
@@ -84,7 +84,7 @@ tilo_test_env::scenario! {
                 .unwrap();
             input.dispatch_context_action(copy);
             assert_eq!(
-                crate::text_selection::clipboard_paste().as_deref(),
+                tilo_ui_base::text_selection::clipboard_paste().as_deref(),
                 Some("source")
             );
             assert_eq!(input.value(), "source");
@@ -166,8 +166,8 @@ tilo_test_env::scenario! {
             ti.open_context_menu([10.0, 18.0]);
             assert!(ti.context_menu.is_open());
 
-            let moved = crate::synthetic_input::cursor_moved(280.0, 38.0);
-            let press = crate::synthetic_input::mouse_press();
+            let moved = tilo_ui_base::synthetic_input::cursor_moved(280.0, 38.0);
+            let press = tilo_ui_base::synthetic_input::mouse_press();
             let handled = dispatch(&mut ti, &moved) | dispatch(&mut ti, &press);
             assert!(handled, "click consumed while menu open");
             assert!(
@@ -233,7 +233,7 @@ tilo_test_env::scenario! {
     phase spellcheck_squiggles_appear_at_word_boundaries_and_after_settling;
     {
         // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         // Case `spelling_checks_immediately_but_only_hides_the_word_being_typed`.
         {
             let mut ti = TextInput::local()
@@ -296,7 +296,7 @@ tilo_test_env::scenario! {
     phase a_settled_word_offers_its_suggestion_on_a_pause_wherever_the_caret_sets;
     {
         // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut ti = suggesting_field("so beautifull");
         let start = crate::time::now();
 
@@ -406,7 +406,7 @@ tilo_test_env::scenario! {
     phase autocorrect_previews_applies_restores_and_respects_opt_outs;
     {
         // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         // Case `obvious_typo_autocorrects_at_boundary_and_backspace_restores_it`.
         {
             let mut ti = TextInput::local()
@@ -480,13 +480,13 @@ tilo_test_env::scenario! {
 /// row Enter takes.
 #[test]
 fn a_click_on_send_to_opens_the_box_in_the_fields_menus_place() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     crate::shared_selection::set_send_host_available(true);
     let mut ti = TextInput::local().with_initial_value("hello world");
     ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
     ti.set_focus(true);
     let mut doc = AutoCommit::new();
-    crate::widget::context_menu::note_input(&crate::synthetic_input::mouse_input(
+    crate::widget::context_menu::note_input(&tilo_ui_base::synthetic_input::mouse_input(
         ElementState::Pressed,
         MouseButton::Right,
     ));
@@ -494,7 +494,7 @@ fn a_click_on_send_to_opens_the_box_in_the_fields_menus_place() {
     let send = ti.context_menu.items().len() - 1;
     assert_eq!(
         ti.context_menu.items()[send].label(),
-        Some(crate::i18n::widget_text("menu-send").as_str()),
+        Some(tilo_ui_base::i18n::widget_text("menu-send").as_str()),
         "the field's menu ends in Send to…"
     );
     let row = ti
@@ -504,8 +504,8 @@ fn a_click_on_send_to_opens_the_box_in_the_fields_menus_place() {
         .center();
     for event in [
         cursor_moved(row.x, row.y),
-        crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Left),
-        crate::synthetic_input::mouse_input(ElementState::Released, MouseButton::Left),
+        tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Left),
+        tilo_ui_base::synthetic_input::mouse_input(ElementState::Released, MouseButton::Left),
     ] {
         drive(&mut ti, &mut doc, &event, mods(false, false));
     }

@@ -265,14 +265,14 @@ fn a_device(
         .expect("this computer's certificate");
     env.set("TILO_IDENTITY_ROOT", root.path());
     // The name they go by, which the workspace learns of them: never their device's.
-    ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
-        ui::local_identity::LocalIdentity {
+    tilo_ui_base::local_identity::install_source(Some(Arc::new(
+        tilo_ui_base::local_identity::FixedIdentity(tilo_ui_base::local_identity::LocalIdentity {
             group_public_key: cert.user_public_key,
             display_name: "Ada".to_owned(),
             avatar_color: [40, 80, 120],
             device_public_key: None,
-        },
-    ))));
+        }),
+    )));
     root
 }
 
@@ -418,7 +418,7 @@ fn asserts_the_clubs_row(session: &Session) {
 
 #[test]
 fn opening_the_directory_lists_the_community_sites_public_workspaces() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (responder, page) = site();
     let mut env = tilo_test_env::ScopedEnv::new();
     let _config = community_site(&mut env, &responder.url());
@@ -467,7 +467,7 @@ fn opening_the_directory_lists_the_community_sites_public_workspaces() {
 
 #[test]
 fn a_site_that_cannot_be_read_says_so_and_offers_nothing_to_join() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // A site with nothing at its entry.
     let responder = Responder::handle(|_| Some(Reply::status(404)));
     let mut env = tilo_test_env::ScopedEnv::new();
@@ -491,7 +491,7 @@ fn a_site_that_cannot_be_read_says_so_and_offers_nothing_to_join() {
 
 #[test]
 fn a_computer_with_no_community_site_has_nothing_to_join() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut env = tilo_test_env::ScopedEnv::new();
     let _config = community_site(&mut env, "");
     let mut session = session();
@@ -513,7 +513,7 @@ fn a_computer_with_no_community_site_has_nothing_to_join() {
 
 #[test]
 fn a_join_with_an_expired_certificate_renews_it_before_presenting_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     // This computer's certificate lasted a day, and it ran out twelve hours ago: ownership starts
@@ -622,14 +622,14 @@ fn expired_throwaway_identity(
         &aged,
     )
     .expect("the aged certificate where the identity keeps it");
-    ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
-        ui::local_identity::LocalIdentity {
+    tilo_ui_base::local_identity::install_source(Some(Arc::new(
+        tilo_ui_base::local_identity::FixedIdentity(tilo_ui_base::local_identity::LocalIdentity {
             group_public_key: aged.user_public_key,
             display_name: "Ada".to_owned(),
             avatar_color: [40, 80, 120],
             device_public_key: None,
-        },
-    ))));
+        }),
+    )));
     (hex::encode(aged.user_public_key), paths)
 }
 
@@ -1158,7 +1158,7 @@ impl Lounge {
 
 #[test]
 fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_root, person) = this_computer_with_an_identity(&mut home);
     let lounge = Lounge::start(person, "Pulled up a chair");
@@ -1225,7 +1225,7 @@ fn a_pasted_invitation_link_joins_its_workspace_and_its_people() {
 /// which the top bar shows, never a stand-in for a name the join has not learned.
 #[test]
 fn a_session_started_with_an_invitation_names_the_workspace_it_joins_in_its_notice() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_root, person) = this_computer_with_an_identity(&mut home);
     let lounge = Lounge::start(person, "Pulled up a chair");
@@ -1286,7 +1286,7 @@ fn the_lounges_desktop(person: &str) -> SharedDesktop {
 /// workspace where they are.
 #[test]
 fn a_computer_that_joins_the_lounge_shows_its_desktop_as_the_site_holds_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_root, person) = this_computer_with_an_identity(&mut home);
@@ -1731,7 +1731,7 @@ fn publisher_key(device: &[u8; 32]) -> String {
 
 #[test]
 fn a_workspace_joined_brings_the_chat_written_before_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // This computer keeps its own channel state in the platform secret store,
     // which the test keeps in memory.
     tilo_secrets::keep_in_memory_for_process();
@@ -1796,7 +1796,7 @@ fn a_workspace_joined_brings_the_chat_written_before_it() {
 
 #[test]
 fn a_member_the_lounge_removes_leaves_its_roster_and_reads_nothing_more() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     tilo_secrets::keep_in_memory_for_process();
     let mut home = tilo_test_env::TestHome::new().expect("a test home");
     let (_root, person) = this_computer_with_an_identity(&mut home);

@@ -1,6 +1,6 @@
 //! Where an action's write landed in a field: the widget reports the text and
 //! the geometry of a byte range, and the presence layer draws the wash and
-//! caret ([`crate::presence::capability::WrittenPlace`]).
+//! caret ([`tilo_ui_base::presence::capability::WrittenPlace`]).
 use super::TextInput;
 use automerge::{AutoCommit, ObjId};
 

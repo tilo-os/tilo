@@ -832,7 +832,7 @@ mod tests {
         let refusal = helper::development_layers(&heavy).unwrap_err();
         let bound = format!(
             "more than {} of development layers",
-            ui::format::size(helper::MAX_DEVELOPMENT_LAYER_BYTES)
+            tilo_ui_base::format::size(helper::MAX_DEVELOPMENT_LAYER_BYTES)
         );
         assert!(refusal.contains(&bound), "{refusal}");
     }

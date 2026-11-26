@@ -4,8 +4,8 @@
 use vello::kurbo::Point;
 
 use super::TextActionRequest;
-use crate::text_selection::{clipboard_paste, word_boundaries};
 use crate::widget::context_menu::{ContextMenu, MenuItem};
+use tilo_ui_base::{text_selection::clipboard_paste, text_selection::word_boundaries};
 
 /// `MenuItem` callbacks are `Arc<dyn Fn>` and can't mutate the widget, so
 /// clicks dispatch through this parallel list by `item_at` index instead.
@@ -120,11 +120,9 @@ impl super::TextInput {
         }
         menu.push(MenuItem::action("Select All", || {}));
         actions.push(Some(CtxAction::SelectAll));
-        menu.set_about(
-            self.shareable_selection().map(|text| {
-                crate::shared_subject::SharedSelection::of_text(text).within(self.rect)
-            }),
-        );
+        menu.set_about(self.shareable_selection().map(|text| {
+            tilo_ui_base::shared_subject::SharedSelection::of_text(text).within(self.rect)
+        }));
         menu.open_at(pos);
         *self.context_menu = menu;
         self.context_actions = actions;
@@ -174,11 +172,11 @@ impl super::TextInput {
                 self.spell_cache_key = None;
             }
             CtxAction::AddToDictionary(word) => {
-                let result = crate::personal_dictionary::snapshot().and_then(|snapshot| {
-                    crate::personal_dictionary::edit(
+                let result = tilo_ui_base::personal_dictionary::snapshot().and_then(|snapshot| {
+                    tilo_ui_base::personal_dictionary::edit(
                         snapshot.revision,
-                        crate::personal_dictionary::Edit::Add(
-                            crate::personal_dictionary::Word::new(&word, None)?,
+                        tilo_ui_base::personal_dictionary::Edit::Add(
+                            tilo_ui_base::personal_dictionary::Word::new(&word, None)?,
                         ),
                     )
                 });

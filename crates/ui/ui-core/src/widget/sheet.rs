@@ -5,8 +5,8 @@
 //! the grid reports the changes a person makes as events. Only the rows and columns on screen are
 //! laid out and painted, so a sheet of a hundred thousand cells costs its window.
 
-use crate::a11y::{AccessNode, AccessState, Role};
 use std::collections::{HashMap, HashSet};
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 
 use taffy::TaffyTree;
 use vello::kurbo::{Line, Point, Rect, Stroke};
@@ -14,16 +14,16 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, Ime, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::paint::PaintCtx;
-use crate::surface::{Region, edge_on};
-use crate::text_edit::{EditCore, Motion};
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::ScrollMetrics;
 use crate::widget::find_bar::{FindMatch, FindOptions, Findable};
 use crate::widget::scrollbar::Scrollbar;
-use crate::widget::{EventCtx, NodeId, TaffyTreeExt, Widget};
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::ScrollMetrics;
+use tilo_ui_base::{surface::Region, surface::edge_on};
+use tilo_ui_base::{text_edit::EditCore, text_edit::Motion};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
+use tilo_ui_base::{widget::EventCtx, widget::NodeId, widget::TaffyTreeExt, widget::Widget};
 
 /// A zero-based cell: its column, then its row.
 pub type Addr = (u32, u32);
@@ -228,14 +228,14 @@ struct Editing {
 /// What the grid reports to the app.
 #[derive(Default)]
 pub(crate) struct Events {
-    select: crate::component::Event,
-    edit: crate::component::Event,
-    resized_column: crate::component::Event,
-    resized_row: crate::component::Event,
-    fill: crate::component::Event,
-    copy: crate::component::Event,
-    cut: crate::component::Event,
-    paste: crate::component::Event,
+    select: tilo_ui_base::component::Event,
+    edit: tilo_ui_base::component::Event,
+    resized_column: tilo_ui_base::component::Event,
+    resized_row: tilo_ui_base::component::Event,
+    fill: tilo_ui_base::component::Event,
+    copy: tilo_ui_base::component::Event,
+    cut: tilo_ui_base::component::Event,
+    paste: tilo_ui_base::component::Event,
 }
 
 /// A sheet drawn as a grid of cells.
@@ -646,7 +646,7 @@ impl Sheet {
     fn fire_select(&self) {
         self.events
             .select
-            .fire(Some(crate::component::Value::Text(area_ref(
+            .fire(Some(tilo_ui_base::component::Value::Text(area_ref(
                 self.selection(),
             ))));
     }
@@ -658,12 +658,12 @@ impl Sheet {
         }
         let mut values = Vec::with_capacity(writes.len() * 2);
         for (addr, input) in writes {
-            values.push(crate::component::Value::Text(cell_ref(addr)));
-            values.push(crate::component::Value::Text(input));
+            values.push(tilo_ui_base::component::Value::Text(cell_ref(addr)));
+            values.push(tilo_ui_base::component::Value::Text(input));
         }
         self.events
             .edit
-            .fire(Some(crate::component::Value::List(values)));
+            .fire(Some(tilo_ui_base::component::Value::List(values)));
     }
 
     /// The input the cell holds in the app's data, as the editor starts from it.
@@ -868,14 +868,16 @@ impl Sheet {
                 if text.eq_ignore_ascii_case("c") {
                     self.events
                         .copy
-                        .fire(Some(crate::component::Value::Text(self.copy_selection())));
+                        .fire(Some(tilo_ui_base::component::Value::Text(
+                            self.copy_selection(),
+                        )));
                     return true;
                 }
                 if text.eq_ignore_ascii_case("x") {
                     let cut = self.copy_selection();
                     self.events
                         .cut
-                        .fire(Some(crate::component::Value::Text(cut)));
+                        .fire(Some(tilo_ui_base::component::Value::Text(cut)));
                     return true;
                 }
                 if text.eq_ignore_ascii_case("v") {
@@ -1101,13 +1103,13 @@ impl Sheet {
 }
 
 impl Widget for Sheet {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn name(&self) -> &'static str {
         "Sheet"
     }
 
-    crate::provides!(dyn Findable);
+    tilo_ui_base::provides!(dyn Findable);
 
     fn get_rect(&self) -> Rect {
         self.rect
@@ -1117,7 +1119,7 @@ impl Widget for Sheet {
         &mut self,
         taffy: &mut TaffyTree<()>,
         theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn crate::widget::Widget>,
+        node_map: &mut HashMap<NodeId, *mut dyn tilo_ui_base::widget::Widget>,
     ) -> NodeId {
         self.metrics.scale = f64::from(theme.text_scale);
         let style = taffy::Style {
@@ -1137,14 +1139,14 @@ impl Widget for Sheet {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.rect = rect;
             self.dirty = true;
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1302,12 +1304,12 @@ impl Widget for Sheet {
                         let width = (point.x - body.x0 - start + self.scroll_x).max(f64::from(16));
                         self.widths.insert(column, width);
                         self.dirty = true;
-                        self.events
-                            .resized_column
-                            .fire(Some(crate::component::Value::List(vec![
-                                crate::component::Value::Text(col_letters(column)),
-                                crate::component::Value::Text(format!("{width:.0}")),
-                            ])));
+                        self.events.resized_column.fire(Some(
+                            tilo_ui_base::component::Value::List(vec![
+                                tilo_ui_base::component::Value::Text(col_letters(column)),
+                                tilo_ui_base::component::Value::Text(format!("{width:.0}")),
+                            ]),
+                        ));
                     }
                     Some(Drag::ResizeRow(row)) => {
                         let body = self.body();
@@ -1317,9 +1319,9 @@ impl Widget for Sheet {
                         self.dirty = true;
                         self.events
                             .resized_row
-                            .fire(Some(crate::component::Value::List(vec![
-                                crate::component::Value::Text((row + 1).to_string()),
-                                crate::component::Value::Text(format!("{height:.0}")),
+                            .fire(Some(tilo_ui_base::component::Value::List(vec![
+                                tilo_ui_base::component::Value::Text((row + 1).to_string()),
+                                tilo_ui_base::component::Value::Text(format!("{height:.0}")),
                             ])));
                     }
                     Some(Drag::Fill) => self.dirty = true,
@@ -1411,9 +1413,9 @@ impl Widget for Sheet {
                             if from != to {
                                 self.events
                                     .fill
-                                    .fire(Some(crate::component::Value::List(vec![
-                                        crate::component::Value::Text(from),
-                                        crate::component::Value::Text(to),
+                                    .fire(Some(tilo_ui_base::component::Value::List(vec![
+                                        tilo_ui_base::component::Value::Text(from),
+                                        tilo_ui_base::component::Value::Text(to),
                                     ])));
                             }
                         }
@@ -1461,13 +1463,13 @@ impl Widget for Sheet {
         Some(self.cell_rect(editing.addr))
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         self.editing
             .as_ref()
-            .map(|_| crate::ime::InputContent::TEXT)
+            .map(|_| tilo_ui_base::ime::InputContent::TEXT)
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let (start, end) = self.selection();
         let (columns, rows) = self.visible.clone();
         let mut row_nodes = Vec::new();
@@ -1592,7 +1594,7 @@ impl Sheet {
         rows: &std::ops::Range<u32>,
     ) {
         let body = self.body();
-        let color = crate::surface::edge_on(theme.tokens.colors.surfaces.content);
+        let color = tilo_ui_base::surface::edge_on(theme.tokens.colors.surfaces.content);
         let stroke = Stroke::new(1.0);
         for &column in &columns.clone().collect::<Vec<_>>() {
             let x = (body.x0 + self.column_x(column) + self.column_w(column) - self.scroll_x)
@@ -1652,9 +1654,9 @@ impl Sheet {
             self.rect.x0 + header_w,
             self.rect.y0 + header_h,
         );
-        crate::surface::region(ctx.scene, ctx.transform, col_strip, Region::Sidebar, theme);
-        crate::surface::region(ctx.scene, ctx.transform, row_strip, Region::Sidebar, theme);
-        crate::surface::region(ctx.scene, ctx.transform, corner, Region::Sidebar, theme);
+        tilo_ui_base::surface::region(ctx.scene, ctx.transform, col_strip, Region::Sidebar, theme);
+        tilo_ui_base::surface::region(ctx.scene, ctx.transform, row_strip, Region::Sidebar, theme);
+        tilo_ui_base::surface::region(ctx.scene, ctx.transform, corner, Region::Sidebar, theme);
         let style = theme.text(TextRole::Caption).numeric();
         let (start, end) = self.selection();
         // A chosen column or row reads lifted in the header.
@@ -2021,8 +2023,11 @@ impl Findable for Sheet {
 #[cfg(test)]
 mod window_tests {
     use super::*;
-    use crate::component::{Described, Event, Fired, Intent, Value};
     use crate::widget::InPlace;
+    use tilo_ui_base::{
+        component::Described, component::Event, component::Fired, component::Intent,
+        component::Value,
+    };
 
     fn cell(reference: &str, text: &str) -> SheetCell {
         SheetCell {
@@ -2032,7 +2037,7 @@ mod window_tests {
         }
     }
 
-    fn sheet_of(queue: &crate::Intents<Fired>, cells: Vec<SheetCell>) -> Sheet {
+    fn sheet_of(queue: &tilo_ui_base::Intents<Fired>, cells: Vec<SheetCell>) -> Sheet {
         let mut sheet = Sheet::new();
         sheet.set_props(crate::widget::SheetProps {
             columns: 4,
@@ -2049,7 +2054,7 @@ mod window_tests {
     /// fires.
     #[test]
     fn a_window_s_search_finds_cells_in_reading_order_and_replaces_them() {
-        let queue: crate::Intents<Fired> = crate::Intents::default();
+        let queue: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
         let mut sheet = sheet_of(
             &queue,
             vec![
@@ -2085,7 +2090,7 @@ mod window_tests {
     /// Options narrow the search as the bar says, and closing it stops marking cells.
     #[test]
     fn match_case_and_whole_word_narrow_and_closing_clears() {
-        let queue: crate::Intents<Fired> = crate::Intents::default();
+        let queue: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
         let mut sheet = sheet_of(&queue, vec![cell("A1", "cat"), cell("A2", "concatenate")]);
         let exact = FindOptions {
             match_case: true,
@@ -2106,7 +2111,7 @@ mod window_tests {
     /// reports the chosen cells as a table and asks the app to paste.
     #[test]
     fn copy_cut_and_paste_are_the_clipboard_events() {
-        let queue: crate::Intents<Fired> = crate::Intents::default();
+        let queue: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
         let mut sheet = Sheet::new();
         sheet.set_props(crate::widget::SheetProps {
             columns: 3,
@@ -2120,7 +2125,7 @@ mod window_tests {
         });
         let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
         let press = |ch: &str| {
-            crate::synthetic_input::key_event(
+            tilo_ui_base::synthetic_input::key_event(
                 winit::keyboard::Key::Character(ch.into()),
                 None,
                 winit::event::ElementState::Pressed,

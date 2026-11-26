@@ -5,9 +5,10 @@ use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, TaffyTree};
 
 use super::Scrollable;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::{Column, Text, Widget};
+use crate::{widget::Column, widget::Text};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 
 /// Lay `scroll` out `height` tall, as a window solves it: whether it holds a gutter for its bar.
 fn pass(
@@ -24,7 +25,7 @@ fn pass(
         height: Dimension::length(height),
     };
     taffy.set_style(node, style).unwrap();
-    crate::widget::layout::solve_built(
+    tilo_ui_base::widget::layout::solve_built(
         scroll,
         taffy,
         (node, node),
@@ -64,7 +65,7 @@ fn a_gutter_needed_only_in_a_box_measured_on_the_way_is_given_back() {
 /// gives it its place, where the page fits.
 #[test]
 fn content_that_overflowed_before_the_view_had_its_place_keeps_no_gutter() {
-    let page = || -> crate::widget::Element {
+    let page = || -> tilo_ui_base::widget::Element {
         let mut column = Column::new().with_intrinsic_height();
         for _ in 0..6 {
             column = column.push(Box::new(Text::new(
@@ -75,7 +76,7 @@ fn content_that_overflowed_before_the_view_had_its_place_keeps_no_gutter() {
         Box::new(column)
     };
     let shell = crate::widget::NavShell::new()
-        .content_kind(crate::widget::ContentKind::Page)
+        .content_kind(tilo_ui_base::widget::ContentKind::Page)
         .mode(crate::widget::NavMode::Push)
         .sidebar(Box::new(crate::widget::NavList::new(vec![
             crate::widget::NavSection::untitled(
@@ -118,7 +119,7 @@ fn content_that_overflowed_before_the_view_had_its_place_keeps_no_gutter() {
 /// or the window settles on no frame at all.
 #[test]
 fn a_view_measured_at_its_natural_height_and_placed_at_a_cap_settles_with_its_gutter() {
-    use crate::widget::{Manual, MeasureConstraint};
+    use tilo_ui_base::{widget::Manual, widget::MeasureConstraint};
     const CAP: f64 = 120.0;
     let mut words = Column::new().with_intrinsic_height();
     for _ in 0..8 {
@@ -133,7 +134,7 @@ fn a_view_measured_at_its_natural_height_and_placed_at_a_cap_settles_with_its_gu
             .measure_child(
                 0,
                 Size {
-                    width: crate::widget::MeasureConstraint::Exact(width),
+                    width: tilo_ui_base::widget::MeasureConstraint::Exact(width),
                     height: MeasureConstraint::Intrinsic,
                 },
             )?

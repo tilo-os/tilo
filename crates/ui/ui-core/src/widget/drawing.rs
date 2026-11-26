@@ -13,13 +13,13 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::ColorCompat;
 use crate::color::to_rgb8;
-use crate::motion::{Direction, Feel, MotionValue, Reading};
-use crate::paint::with_alpha_scaled;
+use tilo_ui_base::paint::with_alpha_scaled;
+use tilo_ui_base::{motion::Direction, motion::Feel, motion::MotionValue, motion::Reading};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::{EffectiveMotion, MotionSource, TextRole};
-use crate::widget::{TaffyTreeExt, Tone, Widget};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource, tokens::TextRole};
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Tone, widget::Widget};
 
 /// A colour of the design system a shape is painted in: a role of the person's theme, never a
 /// colour of the app's own.
@@ -63,7 +63,7 @@ impl Ink {
     }
 }
 
-crate::component::choice!(Ink, "Ink", {
+tilo_ui_base::choice!(Ink, "Ink", {
     Accent => "accent", Ink => "ink", Muted => "muted", Track => "track",
     Success => "success", Warning => "warning", Danger => "danger", Info => "info",
     Base => "base", Surface => "surface", Sidebar => "sidebar",
@@ -91,7 +91,7 @@ impl Weight {
     }
 }
 
-crate::component::choice!(Weight, "Weight", {
+tilo_ui_base::choice!(Weight, "Weight", {
     Hairline => "hairline", Regular => "regular", Strong => "strong",
 });
 
@@ -108,7 +108,7 @@ pub enum Meaning {
     Decoration,
 }
 
-crate::component::choice!(Meaning, "Meaning", {
+tilo_ui_base::choice!(Meaning, "Meaning", {
     Progress => "progress", Chart => "chart", Picture => "picture", Decoration => "decoration",
 });
 
@@ -122,7 +122,7 @@ pub enum Anchor {
     End,
 }
 
-crate::component::choice!(Anchor, "Anchor", {
+tilo_ui_base::choice!(Anchor, "Anchor", {
     Start => "start", Middle => "middle", End => "end",
 });
 
@@ -613,8 +613,8 @@ impl Drawing {
             self.shapes = shapes;
             return;
         };
-        let now = crate::motion::frame_now();
-        let source = crate::motion::recent_input(now).unwrap_or(MotionSource::Pointer);
+        let now = tilo_ui_base::motion::frame_now();
+        let source = tilo_ui_base::motion::recent_input(now).unwrap_or(MotionSource::Pointer);
         let timing = Reading::CHANGE.timing(Direction::Enter, self.feel.over(motion), source);
         if self.moving.is_empty() {
             let mut at = Vec::new();
@@ -1003,7 +1003,7 @@ impl Drawing {
 }
 
 impl Widget for Drawing {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -1020,16 +1020,16 @@ impl Widget for Drawing {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, running, mut env) = ctx.parts();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let moved = self.shapes_at(now);
         if moved.is_none() {
             self.moving.clear();
@@ -1043,7 +1043,7 @@ impl Widget for Drawing {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.dirty || self.is_moving(crate::motion::frame_now())
+        self.dirty || self.is_moving(tilo_ui_base::motion::frame_now())
     }
 
     fn mark_drawn(&mut self) {
@@ -1052,10 +1052,10 @@ impl Widget for Drawing {
 
     /// Frames only while a reading moves: a drawing at rest asks for none.
     fn needs_animation_frame(&self) -> bool {
-        self.is_moving(crate::motion::frame_now())
+        self.is_moving(tilo_ui_base::motion::frame_now())
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if self.gesture(event, ctx.scale_factor) {
             // A drag, a wheel or a pinch over the drawing is the drawing's: the window under it
             // must not scroll or pan as well.
@@ -1096,8 +1096,8 @@ impl Widget for Drawing {
         "Drawing"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         let node = match self.meaning {
             Meaning::Progress => AccessNode::new(Role::ProgressBar)
                 .with_optional_name(self.label.clone())

@@ -19,8 +19,8 @@ tilo_test_env::scenario! {
     // close among its controls, to the pointer or to assistive technology,
     // and keeps the rest.
     {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
         let mut b = TabBar::new("g1", vec![TabDescriptor::new(1, "Notes")], 1);
         b.set_window_controls(true);
         b.set_holder(
@@ -36,7 +36,7 @@ tilo_test_env::scenario! {
         assert!(controls.close.area() <= 0.0);
         assert!(controls.maximize.area() > 0.0);
         let node = Widget::accessibility(&b).expect("the bar is described");
-        fn targets(node: &crate::a11y::AccessNode, into: &mut Vec<String>) {
+        fn targets(node: &tilo_ui_base::a11y::AccessNode, into: &mut Vec<String>) {
             into.extend(node.action_target.clone());
             for child in &node.children {
                 targets(child, into);
@@ -103,14 +103,14 @@ tilo_test_env::scenario! {
     phase a_secondary_press_on_the_location_opens_the_windows_menu;
     {
         let mut b = solo_bar_with_slots();
-        lay_out_at_width_with(&mut b, 900.0, &crate::theme::Theme::dark());
+        lay_out_at_width_with(&mut b, 900.0, &tilo_ui_base::theme::Theme::dark());
         let location = b.location_rect();
         assert!(
             location.area() > 0.0,
             "the app's location stands in the row"
         );
         let reload = b.toolbar_rects().3[0];
-        let right = crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
+        let right = tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
         move_to(&mut b, location.center().x, location.center().y);
         assert!(dispatch(&mut b, &right), "the bar takes the press");
         assert_eq!(
@@ -130,7 +130,7 @@ tilo_test_env::scenario! {
         );
         b.set_window_controls(true);
         assert!(b.set_toolbar(1, Some(browser_parts())));
-        lay_out_at_width_with(&mut b, 900.0, &crate::theme::Theme::dark());
+        lay_out_at_width_with(&mut b, 900.0, &tilo_ui_base::theme::Theme::dark());
         let location = b.location_rect();
         assert!(location.y0 >= b.tab_row().y1, "{location:?}");
         move_to(&mut b, location.center().x, location.center().y);

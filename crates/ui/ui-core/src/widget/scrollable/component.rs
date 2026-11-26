@@ -1,7 +1,7 @@
 //! [`Scrollable`] as a described component: a column's body that scrolls.
 
-use crate::component::{Component, Described, PartViews};
-use crate::widget::Element;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::{component::Component, component::Described, component::PartViews};
 
 use super::Scrollable;
 
@@ -103,8 +103,8 @@ impl PartViews for Scrollable {
     }
 
     fn remove(&mut self, _index: usize) {
-        let _ = self.replace_child(Box::new(crate::widget::Spacer::token(
-            crate::tokens::SpacingStep::S0,
+        let _ = self.replace_child(Box::new(tilo_ui_base::widget::Spacer::token(
+            tilo_ui_base::tokens::SpacingStep::S0,
         )));
     }
 

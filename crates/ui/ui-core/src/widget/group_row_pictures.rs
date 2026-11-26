@@ -5,8 +5,8 @@ use vello::Scene;
 use vello::kurbo::Affine;
 
 use super::GroupRow;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 
 impl GroupRow {
     /// Group `i`, drawn whole for its picture alone when one is wanted and the frame left
@@ -18,7 +18,7 @@ impl GroupRow {
         &mut self,
         i: usize,
         transform: Affine,
-        (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
+        (tr, theme, env): (&mut TextRenderer, &Theme, &tilo_ui_base::draw::DrawEnv<'_>),
     ) {
         let id = self.groups[i].id;
         if !crate::window_pictures::owed(id)
@@ -37,7 +37,7 @@ impl GroupRow {
 
 #[cfg(test)]
 mod tests {
-    use crate::widget::Widget as _;
+    use tilo_ui_base::widget::Widget as _;
 
     /// A wanted window panned out of the row is drawn once for its picture, which keeps its rect,
     /// and nothing of it reaches the frame; once pictured it is not drawn again off screen.

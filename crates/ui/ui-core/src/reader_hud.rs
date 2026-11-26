@@ -10,11 +10,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::Color;
 
-use crate::icons::Icon;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use crate::widget::color_swatch::ColorSwatchFace;
 use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize, floating_surface};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 
 /// The swatch index in [`HudAction::Highlight`] indexes into the `swatches` slice passed to
 /// [`SelectionHud::draw`]; the caller maps it back to its own colour model.
@@ -203,7 +203,7 @@ fn hud_button<'a>(rect: Rect, label: &'a str, key: Option<&str>) -> ButtonFace<'
         .role(ButtonRole::Plain)
         .control_size(ControlSize::Small);
     match key {
-        Some(key) => face.shortcut_hint(crate::platform::Shortcut::command(key)),
+        Some(key) => face.shortcut_hint(tilo_ui_base::platform::Shortcut::command(key)),
         None => face,
     }
 }
@@ -226,7 +226,7 @@ impl SelectionHud {
         cursor: Point,
     ) -> Self {
         let m = HudMetrics::of(theme);
-        let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
+        let on_panel = theme.on_ground(tilo_ui_base::chrome::panel_ground(theme));
         let face = |rect: Rect, label: &'static str, key: Option<&'static str>| {
             hud_button(rect, label, key.filter(|_| controls.shortcuts))
         };
@@ -299,7 +299,7 @@ impl SelectionHud {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                crate::chrome::chrome_hairline(&on_panel),
+                tilo_ui_base::chrome::chrome_hairline(&on_panel),
                 None,
                 &Line::new(
                     Point::new(div_x, row.y0 + m.gap),
@@ -434,7 +434,7 @@ mod tests {
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
-            &crate::theme::Theme::dark(),
+            &tilo_ui_base::theme::Theme::dark(),
             &HudControls {
                 swatches: &swatches(),
                 show_note,
@@ -523,7 +523,7 @@ mod tests {
 
         phase hud_prefers_its_side_and_steps_aside;
         {
-            let theme = crate::theme::Theme::dark();
+            let theme = tilo_ui_base::theme::Theme::dark();
             let bounds = Rect::new(0.0, 0.0, 800.0, 600.0);
             let draw = |placement: HudPlacement| {
                 SelectionHud::draw(
@@ -603,7 +603,7 @@ mod tests {
                     &mut Scene::new(),
                     Affine::IDENTITY,
                     &mut TextRenderer::new(),
-                    &crate::theme::Theme::dark(),
+                    &tilo_ui_base::theme::Theme::dark(),
                     &HudControls {
                         swatches: &swatches(),
                         show_note: true,

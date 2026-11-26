@@ -112,7 +112,7 @@ fn open_beside(session: &mut Session, resource: &str, beside: &str) {
 /// the record keeps for it (720 × 520, the canvas's frame), and only its own place action sets it.
 #[test]
 fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
 
@@ -201,7 +201,7 @@ fn opening_a_place_beside_another_keeps_the_sizes_of_what_stands() {
 /// keeps the width it was drawn at, whichever places arrive beside it.
 #[test]
 fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
 
@@ -260,7 +260,7 @@ fn opening_a_third_place_never_shrinks_what_the_person_is_reading() {
 #[test]
 fn the_style_shell_menu_has_no_empty_band_above_its_rows() {
     use ui::window_targets::TargetAction;
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
     // The canvas keeps no switch on its bar: the person's own menu holds the styles.
@@ -297,7 +297,7 @@ fn the_style_shell_menu_has_no_empty_band_above_its_rows() {
 /// names.
 #[test]
 fn switching_to_the_frameless_style_keeps_every_place() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = session(root.path());
     enter_text(&mut session, "my mails");

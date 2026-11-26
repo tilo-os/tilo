@@ -6,8 +6,8 @@ use vello::kurbo::{Affine, Point, Rect};
 
 use super::{ActionPalette, FACET_H};
 use crate::search::FacetFilter;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 
 impl ActionPalette {
     /// One row of facet value chips, in facet order, as many as fit.
@@ -25,7 +25,7 @@ impl ActionPalette {
             return;
         }
         let gap = f64::from(theme.tokens.spacing.s2);
-        let label_style = theme.text(crate::tokens::TextRole::Caption);
+        let label_style = theme.text(tilo_ui_base::tokens::TextRole::Caption);
         let mut x = x0;
         for facet in &self.facets {
             let (label_w, label_h) = text.measure_style(&facet.label, None, &label_style);
@@ -36,7 +36,7 @@ impl ActionPalette {
             self.facet_labels.push((
                 Point::new(
                     x,
-                    crate::text_metrics::centered_text_top(top, FACET_H, f64::from(label_h)),
+                    tilo_ui_base::text_metrics::centered_text_top(top, FACET_H, f64::from(label_h)),
                 ),
                 facet.label.clone(),
             ));
@@ -71,7 +71,7 @@ impl ActionPalette {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        let label_style = theme.text(crate::tokens::TextRole::Caption);
+        let label_style = theme.text(tilo_ui_base::tokens::TextRole::Caption);
         for (at, label) in &self.facet_labels {
             #[allow(
                 clippy::arithmetic_side_effects,

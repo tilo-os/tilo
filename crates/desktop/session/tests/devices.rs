@@ -329,7 +329,7 @@ impl Harness {
 
 #[test]
 fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let link = FakeLink::joined(true);
     let mut harness = session(&link, Rc::new(Host::default()));
     harness.playing();
@@ -383,7 +383,7 @@ fn the_person_s_devices_become_rows_and_where_an_accessory_can_move() {
 /// each other there without a server.
 #[test]
 fn a_device_on_the_local_network_is_listed_as_nearby() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let link = FakeLink::joined(false);
     link.nearby
         .lock()
@@ -430,7 +430,7 @@ fn until(harness: &mut Harness, mut done: impl FnMut(&mut Harness) -> bool) {
 
 #[test]
 fn pressing_another_device_sends_it_what_plays_here() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let link = FakeLink::joined(true);
     let mut harness = session(&link, Rc::new(Host::default()));
     harness.playing();
@@ -478,7 +478,7 @@ fn pressing_another_device_sends_it_what_plays_here() {
 
 #[test]
 fn pressing_a_device_with_nothing_playing_opens_its_settings() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let host = Rc::new(Host::default());
     let link = FakeLink::joined(false);
     let mut harness = session(&link, Rc::clone(&host));
@@ -556,7 +556,7 @@ fn pressing_a_device_with_nothing_playing_opens_its_settings() {
 
 #[test]
 fn this_device_s_row_does_nothing() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The steps this test takes change nothing, the bar's own clock included: a minute turning over
     // on it is not the frame it checks.
     let _clock = tilo_test_env::held_wall_clock();
@@ -574,7 +574,7 @@ fn this_device_s_row_does_nothing() {
 
 #[test]
 fn a_row_a_device_left_behind_is_a_press_on_nothing() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // As above: the bar's clock keeps still while the frames are compared.
     let _clock = tilo_test_env::held_wall_clock();
     let link = FakeLink::joined(true);
@@ -591,7 +591,7 @@ fn a_row_a_device_left_behind_is_a_press_on_nothing() {
 
 #[test]
 fn a_sleeping_device_that_reports_no_way_to_be_woken_opens_its_settings() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let link = FakeLink::joined(false);
     link.joined_device(sleeping(), "Session", false, false);
     let host = Rc::new(Host::default());
@@ -677,7 +677,7 @@ fn sent_our_sound(harness: &mut Harness, link: &FakeLink) -> String {
 
 #[test]
 fn the_sound_of_this_device_travels_to_another_and_its_route_is_listed() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let link = FakeLink::joined(true);
     let mut harness = session(&link, Rc::new(Host::default()));
     let route = sent_our_sound(&mut harness, &link);
@@ -727,7 +727,7 @@ fn the_sound_of_this_device_travels_to_another_and_its_route_is_listed() {
 
 #[test]
 fn a_route_is_stopped_from_its_row() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let link = FakeLink::joined(true);
     let mut harness = session(&link, Rc::new(Host::default()));
     let route = sent_our_sound(&mut harness, &link);
@@ -749,7 +749,7 @@ fn a_route_is_stopped_from_its_row() {
 
 #[test]
 fn a_device_asking_for_this_sound_is_declined_from_its_row() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let link = FakeLink::joined(true);
     let mut harness = session(&link, Rc::new(Host::default()));
     open_devices(&mut harness);
@@ -785,10 +785,13 @@ fn a_device_asking_for_this_sound_is_declined_from_its_row() {
         ask.actions,
         HostedActions::Pair {
             first: (
-                ui::icons::Icon::Check,
+                tilo_ui_base::icons::Icon::Check,
                 "Allow this remote audio once".into()
             ),
-            second: (ui::icons::Icon::X, "Decline this remote audio".into()),
+            second: (
+                tilo_ui_base::icons::Icon::X,
+                "Decline this remote audio".into()
+            ),
         },
         "the person allows it once or declines it"
     );
@@ -848,7 +851,7 @@ fn what_plays() -> tilo_audio_service::media::Media {
 /// never opened: the widget is a view of the audio service's players, not of the panel.
 #[test]
 fn what_plays_reaches_the_shell_with_the_panel_closed() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let link = FakeLink::joined(true);
     let mut harness = session(&link, Rc::new(Host::default()));
     for _ in 0..4 {
@@ -891,7 +894,7 @@ fn what_plays_reaches_the_shell_with_the_panel_closed() {
 /// fails, and a session on the person's fabric stays theirs.
 #[test]
 fn a_view_reads_the_login_and_the_layouts_workspaces() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let link = FakeLink::joined(true);
     let mut harness = session(&link, Rc::new(Host::default()));
     for _ in 0..4 {
@@ -958,7 +961,7 @@ fn a_view_reads_the_login_and_the_layouts_workspaces() {
 /// so, never a silent success.
 #[test]
 fn a_revocation_that_reaches_no_daemon_fails_and_says_so() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let link = FakeLink::joined(true);
     let mut harness = session(&link, Rc::new(Host::default()));
     for _ in 0..4 {

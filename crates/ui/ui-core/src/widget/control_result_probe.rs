@@ -57,10 +57,10 @@ impl Probe {
     }
 }
 impl Widget for Probe {
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     fn build_layout(
@@ -78,7 +78,7 @@ impl Widget for Probe {
     }
 }
 
-impl crate::widget::ResourceOperations for Probe {
+impl tilo_ui_base::widget::ResourceOperations for Probe {
     fn poll_resource_operation(
         &mut self,
         invocation: tilo_actions::InvocationId,
@@ -117,7 +117,7 @@ impl crate::widget::ResourceOperations for Probe {
     fn start_operation(
         &mut self,
         op: &ResourceOperation<'_>,
-        _: &mut crate::widget::Edits<'_>,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         let request = op.request();
@@ -135,7 +135,7 @@ impl crate::widget::ResourceOperations for Probe {
     }
 }
 
-impl crate::widget::resources::PublishesResources for Probe {
+impl tilo_ui_base::widget::resources::PublishesResources for Probe {
     fn resources(&self, _: &AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         let mut contract = tilo_actions::ActionContract::default();
         if self.accepted {
@@ -182,7 +182,7 @@ impl crate::widget::resources::PublishesResources for Probe {
     }
 }
 
-impl crate::widget::controls::ActionControls for Probe {
+impl tilo_ui_base::widget::controls::ActionControls for Probe {
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
         self.observed.pending.borrow_mut().pop_front()
     }

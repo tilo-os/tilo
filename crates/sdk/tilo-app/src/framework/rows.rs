@@ -12,7 +12,7 @@ pub use tilo_resource::row::LiveRow;
 
 use tilo_actions::remote::ApplicationLaunch;
 use tilo_actions::{ActionBinding, ActionSpec, ResourceSemanticIdentity, ResourceSpec};
-use ui_core::widget::ActionEmitter;
+use tilo_ui_base::widget::ActionEmitter;
 
 pub(crate) use tilo_resource::share::{outside_document, resolved_outside_document};
 

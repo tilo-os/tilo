@@ -5,10 +5,10 @@ use tilo_actions::remote::{
     RemoteActionTarget,
 };
 use tilo_actions::{ActionAddress, ActionFailure, InvocationId, InvocationUpdate};
-use ui_core::collaboration::{CollabEvent, CollabRequest};
-use ui_core::widget::Collaborative as _;
+use tilo_ui_base::widget::Collaborative as _;
+use tilo_ui_base::{collaboration::CollabEvent, collaboration::CollabRequest};
 
-use ui_core::arriving::Arrival;
+use tilo_ui_base::arriving::Arrival;
 
 use super::{Query, ReadFailure};
 use crate::framework::reference::Opener;

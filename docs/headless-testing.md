@@ -583,5 +583,5 @@ Every build, release included, also runs the main-loop watchdog (`crates/desktop
 | Frame-loop metrics | `crates/desktop/frame-metrics/src/lib.rs` |
 | Memory report | `crates/desktop/compositor/src/memory_report.rs` |
 | App headless drive | `crates/ui/ui-core/src/app/driver/` |
-| Offscreen renderer | `crates/ui/ui-core/src/offscreen.rs` |
+| Offscreen renderer | `crates/ui/ui-base/src/offscreen.rs` |
 | Example harnesses | `scripts/headless-examples/` |

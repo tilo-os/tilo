@@ -1,7 +1,10 @@
 use super::*;
-use crate::i18n::{widget_format, widget_text};
-use crate::synthetic_input::{char_key, cursor_moved, mouse_press, mouse_release, named_key};
 use crate::testing::{Dispatch, dispatch};
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
+use tilo_ui_base::{
+    synthetic_input::char_key, synthetic_input::cursor_moved, synthetic_input::mouse_press,
+    synthetic_input::mouse_release, synthetic_input::named_key,
+};
 use winit::keyboard::ModifiersState;
 
 fn typed(prompt: &mut SecretPrompt, text: &str) {
@@ -250,9 +253,9 @@ tilo_test_env::scenario! {
 
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
-        let mut edits = crate::widget::Edits::lend(&mut doc);
+        let mut edits = tilo_ui_base::widget::Edits::lend(&mut doc);
         assert!(prompt.perform_access_action(
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
             &[FIELD_KEY, REVEAL_KEY],
             &mut edits,
             &root,
@@ -369,7 +372,7 @@ tilo_test_env::scenario! {
         assert!(ime.is_secret(), "the input method is told it is a secret");
         assert_eq!(
             ime.purpose,
-            crate::ime::InputPurpose::Pin,
+            tilo_ui_base::ime::InputPurpose::Pin,
             "and offers digits"
         );
         let mut prompt = focused(SecretKind::SimPin {

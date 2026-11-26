@@ -3,10 +3,10 @@
 //! from the sources, and the closed sets with fields their props name.
 //!
 //! The catalogue names the widgets themselves, so it sits above the description machinery
-//! ([`crate::component`]): the machinery describes a component, and this lists the ones the
+//! ([`tilo_ui_base::component`]): the machinery describes a component, and this lists the ones the
 //! toolkit has.
 
-use crate::component::{EnumDescription, Set};
+use tilo_ui_base::{component::EnumDescription, component::Set};
 
 include!(concat!(env!("OUT_DIR"), "/component_registry.rs"));
 

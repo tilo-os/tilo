@@ -9,10 +9,10 @@
 //! Nothing here is reached from an app binary's own modes: those use
 //! [`super::headless`], so a release app carries none of this module.
 
+use tilo_ui_base::{permissions::MemberId, permissions::Role};
 use ui_core::application::{ApplicationOwner, ComponentRunnerInputs};
 use ui_core::headless::Driver;
 use ui_core::launch::LaunchError;
-use ui_core::permissions::{MemberId, Role};
 
 use tilo_resource::Resource;
 
@@ -122,7 +122,7 @@ fn takes_the_bars_way_back(driver: &mut Driver) -> bool {
 /// the frames that follow; `None` when the view hosts no such surface at its
 /// root. For a test that drives a component mounted another way than
 /// [`HeadlessApp`] (two windows over one record).
-pub fn with_surface<A: ResourceApp, S: ui_core::widget::Widget + 'static, T>(
+pub fn with_surface<A: ResourceApp, S: tilo_ui_base::widget::Widget + 'static, T>(
     driver: &mut Driver,
     visit: impl FnOnce(&mut S) -> T,
 ) -> Option<T> {
@@ -134,8 +134,8 @@ pub fn with_surface<A: ResourceApp, S: ui_core::widget::Widget + 'static, T>(
 /// The custom surface of type `S` that `A`'s view hosts, when `widget` is
 /// `A`'s root as a host mounted it: a tab of `A` in a shell, found in the
 /// host's own widget map.
-pub fn surface_in_root<A: ResourceApp, S: ui_core::widget::Widget + 'static>(
-    widget: &mut dyn ui_core::widget::Widget,
+pub fn surface_in_root<A: ResourceApp, S: tilo_ui_base::widget::Widget + 'static>(
+    widget: &mut dyn tilo_ui_base::widget::Widget,
 ) -> Option<&mut S> {
     surface_of::<A, S>(widget.as_any_mut()?.downcast_mut::<ResourceRoot>()?)
 }
@@ -337,7 +337,7 @@ pub fn resolve<R: Resource>(
         let mut refused = None;
         for action in &actions {
             if let Err(error) =
-                dispatcher.apply_confirmed(&mut ui_core::widget::Edits::lend(doc), action)
+                dispatcher.apply_confirmed(&mut tilo_ui_base::widget::Edits::lend(doc), action)
             {
                 refused = Some(error.to_string());
                 break;

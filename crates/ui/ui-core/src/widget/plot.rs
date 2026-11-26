@@ -5,16 +5,16 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::a11y::{AccessNode, AccessState, Role};
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use crate::widget::chart_legend::SeriesToggles;
 use crate::widget::chart_navigation::{
     ChartInspection, InteractiveChart, activated_key, chart_nav_action, handle_chart_event,
 };
 use crate::widget::chart_readout::Readout;
-use crate::widget::{ModelPath, Widget};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::ModelPath, widget::Widget};
 
 /// Where a chart kind's marks sit and what is inspected: the shell lays the
 /// frame out and drives its inspection; the marks read both.
@@ -99,7 +99,7 @@ impl Margins {
         let rows = if legend_rows == 0 {
             0.0
         } else {
-            crate::num::f64_of_usize(legend_rows) * crate::widget::chart_legend::ROW_HEIGHT
+            tilo_ui_base::num::f64_of_usize(legend_rows) * crate::widget::chart_legend::ROW_HEIGHT
                 + f64::from(theme.tokens.spacing.rhythm.related)
         };
         Self {
@@ -124,8 +124,8 @@ impl Margins {
     pub(crate) fn labels_under(mut self, theme: &Theme, lines: usize) -> Self {
         if lines > 0 {
             let under = step(theme)
-                + crate::num::f64_of_usize(lines) * caption_line(theme)
-                + crate::num::f64_of_usize(lines - 1) * f64::from(theme.tokens.spacing.s1);
+                + tilo_ui_base::num::f64_of_usize(lines) * caption_line(theme)
+                + tilo_ui_base::num::f64_of_usize(lines - 1) * f64::from(theme.tokens.spacing.s1);
             self.bottom = self.bottom.max(under);
         }
         self
@@ -148,7 +148,7 @@ impl Margins {
 pub(crate) fn caption_line(theme: &Theme) -> f64 {
     f64::from(
         theme
-            .text(crate::tokens::TextRole::Caption)
+            .text(tilo_ui_base::tokens::TextRole::Caption)
             .line_height_px(),
     )
 }
@@ -164,7 +164,7 @@ pub(crate) fn widest<S: AsRef<str>>(
     theme: &Theme,
     labels: impl IntoIterator<Item = S>,
 ) -> f64 {
-    let style = theme.text(crate::tokens::TextRole::Caption);
+    let style = theme.text(tilo_ui_base::tokens::TextRole::Caption);
     labels
         .into_iter()
         .map(|label| f64::from(tr.measure_style(label.as_ref(), None, &style).0))
@@ -272,7 +272,11 @@ pub trait PlotMarks: 'static {
     /// Takes the events the shell's own inspection cannot drive — zoom,
     /// pan, brush, focus loss — before the shell inspects. Whether the
     /// event was consumed.
-    fn event(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) -> bool {
+    fn event(
+        &mut self,
+        _event: &WindowEvent,
+        _ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         false
     }
     /// Whether a gesture is in flight and must keep receiving the pointer.
@@ -300,7 +304,11 @@ pub trait PlotMarks: 'static {
 /// How tall a chart with nothing to show stands: its title, and its note with a line of room above
 /// and below it, so an empty chart is no blank box as tall as its marks would be.
 fn nothing_to_show_height<H>(frame: &PlotFrame<H>, theme: &Theme) -> f64 {
-    let line = f64::from(theme.text(crate::tokens::TextRole::Body).line_height_px());
+    let line = f64::from(
+        theme
+            .text(tilo_ui_base::tokens::TextRole::Body)
+            .line_height_px(),
+    );
     crate::widget::chart_navigation::title_band(theme, &frame.title) + 3.0 * line
 }
 
@@ -329,12 +337,12 @@ fn paint_nothing_to_show<H>(
         frame.rect.y1.max(frame.rect.y0 + below),
     );
     let message = if frame.empty.is_empty() {
-        crate::i18n::widget_format("widget-chart-nothing", &[])
+        tilo_ui_base::i18n::widget_format("widget-chart-nothing", &[])
     } else {
         frame.empty.clone()
     };
-    let style = theme.text(crate::tokens::TextRole::Body);
-    let width = crate::num::f32_of_f64(room.width().max(0.0));
+    let style = theme.text(tilo_ui_base::tokens::TextRole::Body);
+    let width = tilo_ui_base::num::f32_of_f64(room.width().max(0.0));
     let (w, h) = tr.measure_style(&message, Some(width), &style);
     let at = Point::new(
         room.center().x - f64::from(w) / 2.0,
@@ -351,7 +359,7 @@ fn paint_nothing_to_show<H>(
 }
 
 /// The one chart widget; see the [module docs](self).
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "the body every chart shares; each chart is described under its own name"
 )]
@@ -533,7 +541,7 @@ impl<M: PlotMarks> InteractiveChart for Plot<M> {
 }
 
 impl<M: PlotMarks> Widget for Plot<M> {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -553,7 +561,7 @@ impl<M: PlotMarks> Widget for Plot<M> {
             flex_grow: if fills { 1.0 } else { 0.0 },
             ..Default::default()
         };
-        crate::widget::TaffyTreeExt::widget_leaf(taffy, style, node_map, self)
+        tilo_ui_base::widget::TaffyTreeExt::widget_leaf(taffy, style, node_map, self)
     }
     fn measure(
         &mut self,
@@ -566,11 +574,11 @@ impl<M: PlotMarks> Widget for Plot<M> {
             _ => 320.0,
         });
         let height = if self.marks.items().is_empty() {
-            crate::num::f32_of_f64(nothing_to_show_height(self.marks.frame(), &self.theme))
+            tilo_ui_base::num::f32_of_f64(nothing_to_show_height(self.marks.frame(), &self.theme))
         } else {
             match self.marks.layout_height() {
                 Some(height) => height,
-                None => crate::num::f32_of_f64(self.marks.natural_height(
+                None => tilo_ui_base::num::f32_of_f64(self.marks.natural_height(
                     text,
                     &self.theme,
                     f64::from(width),
@@ -583,9 +591,9 @@ impl<M: PlotMarks> Widget for Plot<M> {
         }
     }
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        self.marks.frame_mut().rect = crate::widget::layout_rect(taffy, node, origin);
+        self.marks.frame_mut().rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         let theme = self.theme.clone();
-        crate::text_render::with_layout_renderer(&theme, |tr| self.marks.place(tr, &theme));
+        tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| self.marks.place(tr, &theme));
     }
     fn get_rect(&self) -> Rect {
         self.marks.frame().rect
@@ -599,14 +607,14 @@ impl<M: PlotMarks> Widget for Plot<M> {
     fn layout_measured(&mut self) {
         self.layout_dirty = false;
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
-        crate::scene_parts::picture();
+        tilo_ui_base::scene_parts::picture();
         if self.marks.items().is_empty() {
             paint_nothing_to_show(self.marks.frame(), scene, transform, tr, theme);
             return;
@@ -616,7 +624,7 @@ impl<M: PlotMarks> Widget for Plot<M> {
             readout.paint(scene, transform, tr, theme);
         }
     }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         if self.marks.event(event, ctx) {
             self.layout_dirty = true;
@@ -679,9 +687,9 @@ impl<M: PlotMarks> Widget for Plot<M> {
     }
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         let Some(key) = activated_key(action, key_path) else {
@@ -701,7 +709,7 @@ impl<M: PlotMarks> Widget for Plot<M> {
             .marks
             .items()
             .into_iter()
-            .find(|item| crate::a11y::hash_key(&item.target) == key)
+            .find(|item| tilo_ui_base::a11y::hash_key(&item.target) == key)
             .and_then(|item| item.activates)
         else {
             return false;
@@ -711,11 +719,11 @@ impl<M: PlotMarks> Widget for Plot<M> {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
         M::NAME
@@ -790,7 +798,7 @@ impl<F: Fn(f64, f64) -> String> ValueAxis<F> {
         tr: &mut TextRenderer,
         theme: &Theme,
     ) {
-        use crate::tokens::TextRole;
+        use tilo_ui_base::tokens::TextRole;
         use vello::kurbo::{Line, Stroke};
         let (plot, (min, max)) = (self.plot, self.range);
         let ticks = crate::charts::nice_ticks(min, max, AXIS_TICKS);

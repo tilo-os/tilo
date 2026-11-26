@@ -8,9 +8,9 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
-use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DividerAxis {
@@ -18,7 +18,7 @@ pub enum DividerAxis {
     Vertical,
 }
 
-#[crate::component::not_a_component(layout, "the language's `divider`")]
+#[tilo_ui_base::component::not_a_component(layout, "the language's `divider`")]
 pub struct Divider {
     axis: DividerAxis,
     thickness: f32,
@@ -63,7 +63,7 @@ impl Divider {
     }
 
     /// A rule inside `surface` (a card, popover or panel fill): the colour becomes
-    /// [`crate::surface::edge_on`] measured against that surface, so it registers on every
+    /// [`tilo_ui_base::surface::edge_on`] measured against that surface, so it registers on every
     /// theme where a declared `border_standard` would sit within rounding distance of the
     /// fill (HIG §9.5).
     #[must_use]
@@ -81,7 +81,7 @@ impl Divider {
     pub fn rule_color(&self, theme: &Theme) -> vello::peniko::Color {
         self.color.unwrap_or_else(|| {
             self.surface
-                .map_or(theme.border_standard, crate::surface::edge_on)
+                .map_or(theme.border_standard, tilo_ui_base::surface::edge_on)
         })
     }
 }
@@ -159,9 +159,9 @@ impl Widget for Divider {
         false
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -226,7 +226,7 @@ mod tests {
             let raised = theme.tokens.colors.surfaces.raised;
             assert_eq!(
                 Divider::horizontal().on(raised).rule_color(&theme),
-                crate::surface::edge_on(raised),
+                tilo_ui_base::surface::edge_on(raised),
                 "a rule on a surface takes that surface's edge, as the widget's does"
             );
         }

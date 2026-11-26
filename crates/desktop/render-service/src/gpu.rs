@@ -20,11 +20,11 @@ pub struct Gpu {
     /// the service may use): frames go into shared memory, not dma-bufs.
     pub software: bool,
     pub adapter: wgpu::AdapterInfo,
-    loss: ui::gpu::DeviceLossMonitor,
+    loss: tilo_ui_base::gpu::DeviceLossMonitor,
     #[cfg(target_os = "linux")]
     pub allocator: Option<crate::buffers::Allocator>,
     /// Keeps the instance and the device handle alive.
-    _context: ui::gpu::RenderContext,
+    _context: tilo_ui_base::gpu::RenderContext,
 }
 
 /// Why the device could not be opened.
@@ -43,14 +43,14 @@ impl Gpu {
     /// `render_node`, build every vello pipeline now (the service exists to
     /// have them warm), and open a GBM allocator on the same node.
     pub fn open(render_node: Option<&std::path::Path>) -> Result<Self, GpuError> {
-        let mut context = ui::gpu::RenderContext::new();
+        let mut context = tilo_ui_base::gpu::RenderContext::new();
         let index = pollster::block_on(context.device(None)).ok_or(GpuError::NoAdapter)?;
         let handle = context.devices.get(index).ok_or(GpuError::NoAdapter)?;
         let device = handle.device.clone();
         let queue = handle.queue.clone();
         let adapter = handle.adapter.get_info();
         let loss = handle.loss_monitor();
-        let software = ui::gpu::rasterizes_on_cpu(&adapter);
+        let software = tilo_ui_base::gpu::rasterizes_on_cpu(&adapter);
         let renderer = new_renderer(&device)?;
         #[cfg(target_os = "linux")]
         if software {
@@ -95,17 +95,18 @@ impl Gpu {
     }
 
     /// Wait until everything submitted finished, and say whether it did. A GPU that finishes
-    /// nothing for [`ui::gpu::NOT_PROGRESSING_AFTER`] has stopped, and nothing else would ever
+    /// nothing for [`tilo_ui_base::gpu::NOT_PROGRESSING_AFTER`] has stopped, and nothing else would ever
     /// say so: its device is declared lost ([`Self::lost`]).
     pub fn finish(&self) -> bool {
-        let waited = ui::gpu::NOT_PROGRESSING_AFTER;
+        let waited = tilo_ui_base::gpu::NOT_PROGRESSING_AFTER;
         match self.device.poll(wgpu::PollType::Wait {
             submission_index: None,
             timeout: Some(waited),
         }) {
             Ok(_) => true,
             Err(wgpu::PollError::Timeout) => {
-                ui::gpu::LossWatch::new(self.loss.clone()).stopped(self.queue.clone(), waited);
+                tilo_ui_base::gpu::LossWatch::new(self.loss.clone())
+                    .stopped(self.queue.clone(), waited);
                 false
             }
             Err(_) => self.lost().is_none(),
@@ -291,7 +292,7 @@ mod tests {
         use std::time::Duration;
 
         const HELPERS: usize = 3;
-        let mut context = ui::gpu::RenderContext::new();
+        let mut context = tilo_ui_base::gpu::RenderContext::new();
         let index = pollster::block_on(context.device(None)).expect("a wgpu adapter");
         let handle = &context.devices[index];
         let renderer = new_renderer(&handle.device).expect("the renderer builds");

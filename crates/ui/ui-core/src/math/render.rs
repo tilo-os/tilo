@@ -4,7 +4,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Cap, Join, Point, Stroke};
 use vello::peniko::Color;
 
-use crate::text_render::TextRenderer;
+use tilo_ui_base::text_render::TextRenderer;
 
 use super::layout::{Box2d, BoxKind, Layout};
 

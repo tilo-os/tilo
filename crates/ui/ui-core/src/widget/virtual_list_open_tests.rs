@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use super::tests::{ProbeRow, inside, lay_out, named, within};
 use super::*;
-use crate::collection_transition::ListModelChange;
+use tilo_ui_base::collection_transition::ListModelChange;
 
 use crate::testing::Dispatch;
 
@@ -105,7 +105,7 @@ tilo_test_env::scenario! {
                 .layout(&taffy, node)
                 .send(
                     &mut list,
-                    &crate::synthetic_input::named_key(NamedKey::Escape)
+                    &tilo_ui_base::synthetic_input::named_key(NamedKey::Escape)
                 )
                 .handled
         );
@@ -161,7 +161,7 @@ tilo_test_env::scenario! {
                 .layout(&taffy, node)
                 .send(
                     &mut list,
-                    &crate::synthetic_input::named_key(NamedKey::Escape)
+                    &tilo_ui_base::synthetic_input::named_key(NamedKey::Escape)
                 )
                 .handled
         );
@@ -267,7 +267,7 @@ tilo_test_env::scenario! {
 
         let semantics = list.accessibility().expect("the list has a node");
         let item = semantics.children.first().expect("the list hands its rows");
-        assert_eq!(item.role, crate::a11y::Role::ListItem);
+        assert_eq!(item.role, tilo_ui_base::a11y::Role::ListItem);
         assert_eq!(item.state.expanded, Some(true));
         assert_eq!(item.name.as_deref(), Some("row 0"));
         let nested: Vec<_> = item
@@ -276,7 +276,7 @@ tilo_test_env::scenario! {
             .filter(|node| {
                 matches!(
                     node.role,
-                    crate::a11y::Role::ListItem | crate::a11y::Role::TreeItem
+                    tilo_ui_base::a11y::Role::ListItem | tilo_ui_base::a11y::Role::TreeItem
                 )
             })
             .collect();
@@ -358,13 +358,13 @@ fn opening_list() -> VirtualList<Opens> {
     .with_viewport_height(200.0)
 }
 
-fn document(saved: Rc<Cell<usize>>, done: crate::LocalState<bool>) -> Element {
+fn document(saved: Rc<Cell<usize>>, done: tilo_ui_base::LocalState<bool>) -> Element {
     use crate::widget::{Button, Checkbox, Column, TextInput};
     Box::new(
         Column::new()
             .push(Box::new(
                 TextInput::new(Vec::new())
-                    .with_text_role(crate::tokens::TextRole::Title)
+                    .with_text_role(tilo_ui_base::tokens::TextRole::Title)
                     .with_id("title")
                     .with_accessible_name("Title")
                     .with_initial_value("Ring the plumber"),
@@ -385,7 +385,10 @@ fn document(saved: Rc<Cell<usize>>, done: crate::LocalState<bool>) -> Element {
     )
 }
 
-fn documented_list(saved: Rc<Cell<usize>>, done: crate::LocalState<bool>) -> VirtualList<Opens> {
+fn documented_list(
+    saved: Rc<Cell<usize>>,
+    done: tilo_ui_base::LocalState<bool>,
+) -> VirtualList<Opens> {
     VirtualList::with_selection_delegate(
         Opens {
             rows: (0..6_u64).collect(),
@@ -412,17 +415,17 @@ fn documented_list(saved: Rc<Cell<usize>>, done: crate::LocalState<bool>) -> Vir
 
 #[test]
 fn an_item_open_in_its_row_hands_a_reader_the_fields_that_edit_it() {
-    use crate::a11y::Action;
     use crate::app::driver::Driver;
     use accesskit::{Action as AkAction, Role as AkRole};
+    use tilo_ui_base::a11y::Action;
 
     let saved = Rc::new(Cell::new(0));
-    let done = crate::LocalState::new(false);
+    let done = tilo_ui_base::LocalState::new(false);
     let mut harness = Driver::for_root(
         crate::State::new(),
         documented_list(Rc::clone(&saved), done.clone()),
         (400, 600),
-        crate::theme::Theme::dark(),
+        tilo_ui_base::theme::Theme::dark(),
     );
     harness.root_mut::<VirtualList<Opens>>().set_open(Some(0));
     harness.relayout();
@@ -465,16 +468,16 @@ fn an_item_open_in_its_row_hands_a_reader_the_fields_that_edit_it() {
         );
     }
 
-    let stops: Vec<(crate::a11y::Role, Option<String>)> = harness
+    let stops: Vec<(tilo_ui_base::a11y::Role, Option<String>)> = harness
         .tab_through()
         .into_iter()
         .filter(|(role, _)| {
             matches!(
                 role,
-                crate::a11y::Role::TextInput
-                    | crate::a11y::Role::MultilineTextInput
-                    | crate::a11y::Role::Checkbox
-                    | crate::a11y::Role::Button
+                tilo_ui_base::a11y::Role::TextInput
+                    | tilo_ui_base::a11y::Role::MultilineTextInput
+                    | tilo_ui_base::a11y::Role::Checkbox
+                    | tilo_ui_base::a11y::Role::Button
             )
         })
         .collect();

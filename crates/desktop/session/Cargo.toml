@@ -182,6 +182,7 @@ tilo-live = { path = "../../core/tilo-live", features = ["live_session", "relay"
 
 zeroize.workspace = true
 jiff.workspace = true
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 serde.workspace = true
 serde_json.workspace = true
@@ -224,6 +225,7 @@ hex-engine = { path = "../../engines/hex-engine" }
 # The apps the session runs itself keep their resources in the workspace's store, whose
 # commands are answered by this device's own workspace service.
 tilo-resource-store = { version = "0.1.0", path = "../../core/resource-store" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The toolkit's native half: the winit runner, the host services and the
 # broker transport, which only a desktop host runs.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
@@ -598,6 +600,7 @@ tilolang-tilo = { path = "../../lang/tilolang-tilo", features = ["test-support"]
 # The styles the shell's switch lists when no daemon serves a session: the language reads the
 # store's packages, and the shell names its own styles as a daemon would offer them.
 tilolang-workspace = { path = "../../lang/tilolang-workspace" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["test-support", "model"] }
 # The sheets' apps mounted for a person, so a test presses a control of one
 # as the person's own gesture.

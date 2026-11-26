@@ -20,7 +20,7 @@ use crate::bound_dispatch::{
     BoundActionAddress, BoundActionTarget, BoundResourceSnapshot, CallbackBinding,
 };
 #[cfg(feature = "model")]
-use crate::published::{Change, SharedChildren, SharedResource};
+use tilo_ui_base::{published::Change, published::SharedChildren, published::SharedResource};
 
 #[cfg(feature = "model")]
 pub(super) type BoundActions = HashMap<(SemanticId, String), BoundActionTarget>;
@@ -165,7 +165,7 @@ impl ComponentNodes {
         let mut added = Vec::new();
         let mut heads = Vec::new();
         let mut roots_changed = false;
-        crate::published::diff(&last, next, &mut |change| match change {
+        tilo_ui_base::published::diff(&last, next, &mut |change| match change {
             Change::Removed(subtree) => removed.push(subtree),
             Change::Added(subtree) => added.push(subtree),
             Change::Head { last, next } => heads.push((last, next)),
@@ -488,7 +488,7 @@ fn bind_actions(
         bound_actions.insert(
             (id.clone(), spec.id.clone()),
             BoundActionTarget {
-                input: crate::widget::input_provenance::Input::Discrete,
+                input: tilo_ui_base::widget::input_provenance::Input::Discrete,
                 binding: binding.clone(),
                 address: BoundActionAddress {
                     instance_id: binding.instance_id,

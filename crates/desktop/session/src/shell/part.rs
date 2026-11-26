@@ -208,7 +208,13 @@ pub struct SessionLink {
     /// The person's answers to their asked records, in order: each the workspace the record is
     /// in, the record's own action and its arguments by name, which the session runs on the
     /// device's dispatch at that workspace's invocations ([`SessionLink::take_answers`]).
-    answers: RefCell<Vec<(String, ActionAddress, serde_json::Map<String, serde_json::Value>)>>,
+    answers: RefCell<
+        Vec<(
+            String,
+            ActionAddress,
+            serde_json::Map<String, serde_json::Value>,
+        )>,
+    >,
     /// How many effects the shell handed the session, and how many the session ran.
     handed: Cell<u64>,
     served: Cell<u64>,
@@ -278,7 +284,7 @@ impl SessionLink {
     pub fn ask(&self, mut ask: Ask) {
         ask.resource = tilolang_tilo::platform_apps::on_device(
             &ask.resource,
-            &ui::settings_device::settings_device(),
+            &tilo_ui_base::settings_device::settings_device(),
         );
         self.asked
             .borrow_mut()
@@ -331,7 +337,11 @@ impl SessionLink {
     /// The person's answers to their asked records since the session last took them.
     pub fn take_answers(
         &self,
-    ) -> Vec<(String, ActionAddress, serde_json::Map<String, serde_json::Value>)> {
+    ) -> Vec<(
+        String,
+        ActionAddress,
+        serde_json::Map<String, serde_json::Value>,
+    )> {
         let answers = std::mem::take(&mut *self.answers.borrow_mut());
         self.served
             .set(self.served.get().wrapping_add(answers.len() as u64));
@@ -1095,7 +1105,7 @@ impl ShellPart {
     /// Draw the shell with `theme`, the person's as their appearance settings make it: a
     /// change of mode (dark mode in the quick settings, a theme chosen in Settings) redraws
     /// the bar and every surface over the shell in it.
-    pub fn set_theme(&mut self, theme: ui::Theme) {
+    pub fn set_theme(&mut self, theme: tilo_ui_base::Theme) {
         self.widgets.set_theme(theme);
         self.again = true;
     }
@@ -1524,7 +1534,8 @@ impl tilo_session_core::surfaces::Published for ShellPart {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError>
+    {
         self.input = true;
         tilo_session_core::surfaces::Published::invoke(&mut self.widgets, address, arguments, look)
     }
@@ -1555,7 +1566,11 @@ impl tilo_session_core::surfaces::Published for ShellPart {
         tilo_session_core::surfaces::Published::a11y_name(&self.widgets)
     }
 
-    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+    fn a11y_action(
+        &mut self,
+        target: ui::accesskit::NodeId,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         self.input = true;
         tilo_session_core::surfaces::Published::a11y_action(&mut self.widgets, target, action)
     }
@@ -1685,7 +1700,7 @@ impl ShellPart {
 /// Every body of the shell's chrome `widget` holds — a bar or a dock, as `ui.Chrome` names it —
 /// as the rectangle it was laid out at, in the part's logical pixels.
 fn collect_chrome(
-    widget: &dyn ui::widget::Widget,
+    widget: &dyn tilo_ui_base::widget::Widget,
     out: &mut Vec<tilo_device_surfaces::room::Chrome>,
 ) {
     if widget.name() == "Chrome" {
@@ -1714,8 +1729,8 @@ struct DrawnText {
     clip: Option<vello::kurbo::Rect>,
 }
 
-fn drawn_text(widget: &dyn ui::widget::Widget, text: &str) -> Option<DrawnText> {
-    fn says(widget: &dyn ui::widget::Widget, text: &str) -> Option<vello::kurbo::Rect> {
+fn drawn_text(widget: &dyn tilo_ui_base::widget::Widget, text: &str) -> Option<DrawnText> {
+    fn says(widget: &dyn tilo_ui_base::widget::Widget, text: &str) -> Option<vello::kurbo::Rect> {
         let access = widget.accessibility()?;
         let held = [
             access.name.as_deref(),
@@ -1726,13 +1741,14 @@ fn drawn_text(widget: &dyn ui::widget::Widget, text: &str) -> Option<DrawnText> 
         .flatten()
         .any(|said| said.contains(text));
         held.then(|| {
-            access
-                .bounds
-                .map_or_else(|| widget.get_rect(), ui::a11y::AccessBounds::to_rect)
+            access.bounds.map_or_else(
+                || widget.get_rect(),
+                tilo_ui_base::a11y::AccessBounds::to_rect,
+            )
         })
     }
     fn walk(
-        widget: &dyn ui::widget::Widget,
+        widget: &dyn tilo_ui_base::widget::Widget,
         text: &str,
         clip: Option<vello::kurbo::Rect>,
     ) -> Option<DrawnText> {

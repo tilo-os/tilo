@@ -1,8 +1,8 @@
 //! How big a control is — the one size knob a control takes.
 
-use crate::text_render::TextStyle;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::text_render::TextStyle;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
 /// Small, regular or large: a control's height and label role together.
 ///
@@ -20,7 +20,7 @@ pub enum ControlSize {
     Large,
 }
 
-crate::component::choice!(ControlSize, "ControlSize", {
+tilo_ui_base::choice!(ControlSize, "ControlSize", {
     Small => "small",
     Regular => "regular",
     Large => "large",

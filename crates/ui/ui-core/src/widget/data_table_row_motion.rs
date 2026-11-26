@@ -4,7 +4,7 @@
 
 use super::{DataTableCore, RowIdentity, TableModelChange};
 
-use crate::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 use vello::kurbo::Affine;
 
 /// The table's rows on their way, and where the last frame showed them.
@@ -15,7 +15,7 @@ use vello::kurbo::Affine;
 /// puts in its place (`motion::keep`), which goes on from there.
 #[derive(Default)]
 pub(super) struct Moving {
-    pub(super) rows: crate::collection_transition::RowMotions<RowIdentity>,
+    pub(super) rows: tilo_ui_base::collection_transition::RowMotions<RowIdentity>,
     pub(super) drawn: Vec<(RowIdentity, f64)>,
     /// Laid out, so it took up what the table it replaces left, and leaves
     /// its own when dropped.
@@ -27,7 +27,7 @@ impl DataTableCore {
         if std::mem::replace(&mut self.moving.bound, true) || self.test_id.is_empty() {
             return;
         }
-        if let Some(kept) = crate::motion::take_kept::<Moving>(&self.test_id) {
+        if let Some(kept) = tilo_ui_base::motion::take_kept::<Moving>(&self.test_id) {
             self.moving = Moving {
                 bound: true,
                 ..kept
@@ -72,11 +72,12 @@ impl DataTableCore {
         let inserts = changes
             .iter()
             .any(|change| matches!(change, TableModelChange::RowsInserted { .. }));
-        let source = crate::collection_transition::RowMotions::<RowIdentity>::caused_by_hand(
-            crate::motion::frame_now(),
-            self.reduce_motion,
-        )
-        .filter(|_| structural && !resets && !self.moving.drawn.is_empty());
+        let source =
+            tilo_ui_base::collection_transition::RowMotions::<RowIdentity>::caused_by_hand(
+                tilo_ui_base::motion::frame_now(),
+                self.reduce_motion,
+            )
+            .filter(|_| structural && !resets && !self.moving.drawn.is_empty());
         self.moving
             .rows
             .capture(self.moving.drawn.iter().copied(), inserts, source);
@@ -87,11 +88,12 @@ impl DataTableCore {
     /// shown before came from off-screen (or is new) and fades in at its
     /// slot.
     pub(super) fn capture_reorder_motion(&mut self) {
-        let source = crate::collection_transition::RowMotions::<RowIdentity>::caused_by_hand(
-            crate::motion::frame_now(),
-            self.reduce_motion,
-        )
-        .filter(|_| !self.moving.drawn.is_empty());
+        let source =
+            tilo_ui_base::collection_transition::RowMotions::<RowIdentity>::caused_by_hand(
+                tilo_ui_base::motion::frame_now(),
+                self.reduce_motion,
+            )
+            .filter(|_| !self.moving.drawn.is_empty());
         self.moving
             .rows
             .capture(self.moving.drawn.iter().copied(), true, source);
@@ -99,8 +101,8 @@ impl DataTableCore {
 
     pub(super) fn draw_moving_rows(
         &mut self,
-        ctx: &mut crate::draw::DrawCtx<'_>,
-    ) -> Vec<crate::scroll_copy::Piece<crate::scroll_copy::Painted>> {
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
+    ) -> Vec<tilo_ui_base::scroll_copy::Piece<tilo_ui_base::scroll_copy::Painted>> {
         #[allow(
             unused_variables,
             unused_mut,
@@ -109,7 +111,7 @@ impl DataTableCore {
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         // A sort or change the person made since the last frame starts its
         // motion from where the rows were drawn to where they are now.
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let shown = self.shown_rows();
         self.moving
             .rows
@@ -153,7 +155,11 @@ impl DataTableCore {
 impl Drop for DataTableCore {
     fn drop(&mut self) {
         if self.moving.bound && !self.test_id.is_empty() {
-            crate::motion::keep(self.test_id.clone(), None, std::mem::take(&mut self.moving));
+            tilo_ui_base::motion::keep(
+                self.test_id.clone(),
+                None,
+                std::mem::take(&mut self.moving),
+            );
         }
     }
 }

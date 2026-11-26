@@ -23,7 +23,7 @@ use settings_store::hardware::{
 };
 use tilo_compositor::OutputConfig as CompositorOutput;
 use tilo_session::{Options, Session};
-use ui::a11y::Action;
+use tilo_ui_base::a11y::Action;
 use ui::accesskit::{Node, NodeId, Role, TreeUpdate};
 
 const REFRESH: Duration = Duration::from_millis(16);
@@ -104,7 +104,7 @@ fn reached(tree: &TreeUpdate, label: &str) -> (NodeId, Node) {
 
 #[test]
 fn the_shell_is_one_window_whose_bar_a_screen_reader_reads() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, mut session) = session();
     // The bar stands, its bell among the nodes, so the shell has drawn itself.
     crate::common::until(&mut session, "the shell's export", |session| {
@@ -157,7 +157,7 @@ fn the_shell_is_one_window_whose_bar_a_screen_reader_reads() {
 
 #[test]
 fn activating_a_button_through_the_export_performs_its_action() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, mut session) = session();
     let (place, opener) = crate::common::wait_for(
         &mut session,
@@ -206,7 +206,7 @@ fn activating_a_button_through_the_export_performs_its_action() {
 
 #[test]
 fn an_app_the_session_hosts_is_exported_with_working_controls() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = tilo_test_env::TestHome::new().unwrap();
     let mut session = crate::common::headless_on(
         &[

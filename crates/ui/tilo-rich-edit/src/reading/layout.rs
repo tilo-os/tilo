@@ -9,12 +9,13 @@
 //! [`TextRenderer`] is available) and is cached per [`LayoutKey`]; it only
 //! recomputes when the chapter, content width, or a typography setting changes.
 
-use ui::text_render::paging::{Kind as PageKind, Paginator, Piece};
-use ui::text_render::{FontChoice, TextRenderer, TextWeight};
-use ui::{
-    ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph, discretionary_hyphen_breaks,
-    line_break_opportunities,
+use tilo_ui_base::{discretionary_hyphen_breaks, line_break_opportunities};
+use tilo_ui_base::{text_render::FontChoice, text_render::TextRenderer, text_render::TextWeight};
+use tilo_ui_base::{
+    text_render::paging::Kind as PageKind, text_render::paging::Paginator,
+    text_render::paging::Piece,
 };
+use ui::{ComposedLine, ParagraphBox, ParagraphOptions, compose_paragraph};
 use unicode_bidi::{BidiInfo, Level};
 
 use super::model::{Block, ReadingStyle, Span};
@@ -1035,7 +1036,7 @@ fn compose_block_lines(
 ) -> Vec<LaidLine> {
     let text_width = (composition.content_width - composition.style.indent).max(40.0);
     let space_width = measure_space(text, composition.style.size, composition.base_family);
-    let bidi = ui::text_break::bidi_info(composition.canonical_text);
+    let bidi = tilo_ui_base::text_break::bidi_info(composition.canonical_text);
     let paragraph_rtl = bidi
         .paragraphs
         .first()

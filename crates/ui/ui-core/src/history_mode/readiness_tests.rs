@@ -17,7 +17,7 @@ impl DraftRoot {
     }
 }
 impl Widget for DraftRoot {
-    crate::provides!(dyn crate::history_mode::capability::DocumentHistory);
+    tilo_ui_base::provides!(dyn crate::history_mode::capability::DocumentHistory);
 
     crate::testing::delegate_widget_methods!(
         inner: sync,
@@ -74,7 +74,7 @@ fn global_driver(pending: Rc<Cell<bool>>, calls: Rc<Cell<usize>>) -> Driver {
     driver.click_named("history-open").unwrap();
     let target = format!(
         "timeline-entry:{}",
-        crate::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
+        tilo_ui_base::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
             &hash.to_string()
         ))
     );
@@ -82,7 +82,7 @@ fn global_driver(pending: Rc<Cell<bool>>, calls: Rc<Cell<usize>>) -> Driver {
         .perform_semantic_named(
             "activity_timeline",
             Some(&target),
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
         )
         .unwrap();
     driver
@@ -209,7 +209,7 @@ fn readiness_component_tile_checks_retained_child_at_confirmation() {
     driver.click_named("history-open").unwrap();
     let target = format!(
         "timeline-entry:{}",
-        crate::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
+        tilo_ui_base::HistoryEntryId::hex(&crate::history_source::entry_id_from_hash(
             &selected.to_string()
         ))
     );
@@ -217,7 +217,7 @@ fn readiness_component_tile_checks_retained_child_at_confirmation() {
         .perform_semantic_named(
             "activity_timeline",
             Some(&target),
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
         )
         .unwrap();
     driver.click_named("history-restore").unwrap();

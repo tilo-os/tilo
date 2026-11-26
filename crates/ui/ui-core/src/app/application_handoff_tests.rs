@@ -1,8 +1,8 @@
 // Exercise the real host action API, not an app-local launcher.
 #[test]
 fn application_action_handoff_requires_workspace_admission_and_routes_exact_destination() {
-    use crate::collaboration::{PeerTransport, RouteSpec};
     use tilo_actions::remote::{ApplicationLaunch, InvokeArgument, RemoteActionMessage};
+    use tilo_ui_base::{collaboration::PeerTransport, collaboration::RouteSpec};
     struct Transport {
         sent: Rc<RefCell<Vec<CollabRequest>>>,
         joined: Option<RouteSpec>,
@@ -84,7 +84,7 @@ fn application_action_handoff_requires_workspace_admission_and_routes_exact_dest
     ).is_err(), "a routing effect requires an admitted invocation receipt");
     assert!(matches!(
         invoke(&mut app).unwrap(),
-        crate::widget::ResourceOperationStart::Accepted
+        tilo_ui_base::widget::ResourceOperationStart::Accepted
     ));
     let sent = sent.borrow();
     let routed: Vec<_> = sent

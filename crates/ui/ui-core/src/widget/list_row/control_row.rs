@@ -2,11 +2,11 @@
 //! lift.
 
 use super::{RowMetrics, row_fill};
-use crate::a11y::{AccessNode, AccessState, Role};
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 
-use crate::theme::Theme;
-use crate::widget::DrawChild;
-use crate::widget::{AppModel, ModelPath, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Fill;
@@ -22,7 +22,7 @@ struct RowChoice {
 /// versions with a restore button): a [`crate::widget::Row`] of widgets
 /// in the list row's selection lift.
 ///
-/// It is selected while the [`crate::LocalState`] it was bound to with
+/// It is selected while the [`tilo_ui_base::LocalState`] it was bound to with
 /// [`ControlRow::choosing`] holds its value, so every row of the list
 /// follows one selection without being rebuilt. A press on the row that
 /// none of its controls took chooses it; assistive technology meets it as a
@@ -62,7 +62,7 @@ impl ControlRow {
     #[must_use]
     pub fn choosing<T: Clone + PartialEq + Send + Sync + 'static>(
         self,
-        state: &crate::LocalState<T>,
+        state: &tilo_ui_base::LocalState<T>,
         value: T,
     ) -> Self {
         self.choosing_any(state, vec![value])
@@ -75,7 +75,7 @@ impl ControlRow {
     #[must_use]
     pub fn choosing_any<T: Clone + PartialEq + Send + Sync + 'static>(
         mut self,
-        state: &crate::LocalState<T>,
+        state: &tilo_ui_base::LocalState<T>,
         values: Vec<T>,
     ) -> Self {
         let Some(first) = values.first().cloned() else {
@@ -206,7 +206,7 @@ impl ControlRow {
     }
 }
 
-impl crate::widget::Decorator for ControlRow {
+impl tilo_ui_base::widget::Decorator for ControlRow {
     type Inner = crate::widget::Row;
 
     fn inner(&self) -> &crate::widget::Row {
@@ -221,17 +221,20 @@ impl crate::widget::Decorator for ControlRow {
         "ControlRow"
     }
 
-    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn crate::widget::controls::ActionControls>() {
-            request.provide::<dyn crate::widget::controls::ActionControls>(self);
+    fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
+            request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
         } else {
             Widget::provide(&self.content, request);
         }
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
-        if request.wants::<dyn crate::widget::controls::ActionControls>() {
-            request.provide::<dyn crate::widget::controls::ActionControls>(self);
+    fn provide_mut<'a>(
+        &'a mut self,
+        request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
+        if request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
+            request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
         } else {
             Widget::provide_mut(&mut self.content, request);
         }
@@ -250,7 +253,7 @@ impl crate::widget::Decorator for ControlRow {
         self.content.sync(state, path);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -262,7 +265,7 @@ impl crate::widget::Decorator for ControlRow {
             .draw_child(scene, transform, text_renderer, theme, &env);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = ctx.logical(position);
             let hovered = Widget::get_rect(&self.content).contains(self.cursor);
@@ -306,15 +309,14 @@ impl crate::widget::Decorator for ControlRow {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         match action {
-            crate::a11y::Action::Activate | crate::a11y::Action::SetSelection { .. } => {
-                self.choose()
-            }
+            tilo_ui_base::a11y::Action::Activate
+            | tilo_ui_base::a11y::Action::SetSelection { .. } => self.choose(),
             _ => self.content.perform_action(action, &[], state, path),
         }
     }
@@ -331,7 +333,7 @@ mod tests {
 
         phase control_rows_follow_one_shared_choice;
         {
-            let chosen = crate::LocalState::new("ink".to_owned());
+            let chosen = tilo_ui_base::LocalState::new("ink".to_owned());
             let mut ink = ControlRow::new(crate::widget::Row::new())
                 .choosing(&chosen, "ink".to_owned())
                 .with_accessible_name("Ink");
@@ -343,9 +345,9 @@ mod tests {
             let root = automerge::ROOT;
             assert!(Widget::perform_action(
                 &mut oil,
-                &crate::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
                 &[],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert_eq!(chosen.with(Clone::clone), "oil");
@@ -357,9 +359,9 @@ mod tests {
             assert!(oil.is_selected());
             Widget::perform_action(
                 &mut oil,
-                &crate::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
                 &[],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &root,
             );
             assert_eq!(chosen.with(Clone::clone), "oil-mask");
@@ -381,9 +383,9 @@ mod tests {
             let root = automerge::ROOT;
             assert!(Widget::perform_action(
                 &mut row,
-                &crate::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
                 &[],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &root
             ));
             assert_eq!(presses.get(), 1, "the press runs where it is made");

@@ -5,8 +5,11 @@
 //! around it (the toolbar, the suggestions) and what a press types; the pad draws the keys,
 //! hit-tests them the way a thumb does, and reports what happened.
 
-use crate::component::{Component, Described, Event, PropType, Type, Value};
 use crate::widget::key_pad::{KeyPad, PadKey, PadSize, PadTone};
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PropType,
+    component::Type, component::Value,
+};
 
 /// The keyboard's keys.
 #[derive(Component)]
@@ -141,7 +144,7 @@ impl PropType for PadKey {
 
     fn from_value(value: &Value) -> Result<Self, String> {
         let Value::Case { case, fields } = value else {
-            return Err(crate::component::wrong(&Self::ty(), value));
+            return Err(tilo_ui_base::component::wrong(&Self::ty(), value));
         };
         if case != "key" {
             return Err(format!("has no case `{case}`"));
@@ -202,7 +205,7 @@ impl PropType for PadKey {
 
 /// The pad's keys, as the catalogue describes them: one case, its fields and what each carries.
 #[must_use]
-pub fn key_pad_description() -> crate::component::EnumDescription {
+pub fn key_pad_description() -> tilo_ui_base::component::EnumDescription {
     use tilo_ui_graph::component::{CaseDescription, EnumDescription, FieldDescription};
     let text = |name: &str, doc: &str| FieldDescription {
         name: name.to_owned(),

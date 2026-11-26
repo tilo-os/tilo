@@ -72,20 +72,20 @@ impl VirtualRows {
             return;
         };
         self.at_end = false;
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         self.reveal(&key);
         let landed = self
             .scroll
             .to
-            .take_over(crate::motion::frame_now())
+            .take_over(tilo_ui_base::motion::frame_now())
             .map_or_else(|| self.scroll_offset(), |to| to.y);
         self.set_scroll_offset(landed);
     }
 
     pub(super) fn jump_to_present(&mut self) {
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         self.at_end = true;
-        let _ = self.scroll.to.take_over(crate::motion::frame_now());
+        let _ = self.scroll.to.take_over(tilo_ui_base::motion::frame_now());
         self.set_scroll_offset(self.viewport.max_offset());
     }
 
@@ -168,11 +168,11 @@ impl VirtualRows {
 
     /// The way back the list offers over its rows, and whether the pill fits its words:
     /// what a layout check reads to see a floating pill shows what it says.
-    pub(super) fn pill_layout(&self) -> Option<crate::widget::ListPillLayout> {
+    pub(super) fn pill_layout(&self) -> Option<tilo_ui_base::widget::ListPillLayout> {
         let (jump, rect) = self.pill_rect_for(self.rect)?;
-        Some(crate::widget::ListPillLayout {
-            needs: crate::num::f32_of_f64(self.pill_width(jump)),
-            has: crate::num::f32_of_f64(rect.width()),
+        Some(tilo_ui_base::widget::ListPillLayout {
+            needs: tilo_ui_base::num::f32_of_f64(self.pill_width(jump)),
+            has: tilo_ui_base::num::f32_of_f64(rect.width()),
         })
     }
 

@@ -4,12 +4,12 @@
 use super::*;
 use crate::testing::TestLeaf;
 use crate::testing::{Dispatch, dispatch};
-use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::{Element, Widget};
 use std::cell::Cell;
 use std::rc::Rc;
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{widget::Element, widget::Widget};
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::NamedKey;
@@ -25,9 +25,9 @@ fn vertical(content_h: f32) -> Scrollable {
     s
 }
 
-use crate::synthetic_input::cursor_moved;
+use tilo_ui_base::synthetic_input::cursor_moved;
 fn mouse(state: ElementState) -> WindowEvent {
-    crate::synthetic_input::mouse_input(state, MouseButton::Left)
+    tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left)
 }
 
 tilo_test_env::scenario! {
@@ -67,7 +67,7 @@ tilo_test_env::scenario! {
     {
         use crate::time::testing::with_monotonic_time;
         let mut s = vertical(1000.0);
-        s.motion = crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), true);
+        s.motion = tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), true);
         with_monotonic_time(crate::time::now(), || {
             assert!(!s.pan(0.0, -60.0), "nothing moved: the wheel may bubble");
             assert_eq!(s.drawn_offset(), (0.0, 0.0));
@@ -78,7 +78,7 @@ tilo_test_env::scenario! {
     {
         use crate::time::testing::with_monotonic_time;
         let mut s = vertical(1000.0);
-        let mut wheel = crate::widget::PhaselessWheel::default();
+        let mut wheel = tilo_ui_base::widget::PhaselessWheel::default();
         let start = crate::time::now();
         let feed = |s: &mut Scrollable, event: &WindowEvent| {
             if let WindowEvent::MouseWheel { delta, phase, .. } = event {
@@ -292,7 +292,7 @@ tilo_test_env::scenario! {
             );
             // The solve reserves the gutter once the content overflows, and lays the content
             // out beside it, in the same solve.
-            crate::widget::layout::solve_built(
+            tilo_ui_base::widget::layout::solve_built(
                 &mut scroll,
                 &mut taffy,
                 (parent, node),
@@ -358,7 +358,8 @@ tilo_test_env::scenario! {
         }
 
         {
-            use crate::{LocalState, widget::TextInput};
+            use crate::widget::TextInput;
+            use tilo_ui_base::LocalState;
             let mut input = TextInput::from_state(&LocalState::new(String::new())).with_id("last");
             input.set_focus(true);
             let mut column = Column::new().with_intrinsic_height();
@@ -476,8 +477,9 @@ tilo_test_env::scenario! {
 
     phase a_scrolled_disclosure_gets_motion_after_leaving_a_text_field;
     {
-        use crate::LocalState;
-        use crate::widget::{Column, Section, SectionHeader, Spacer, Text, TextInput};
+        use tilo_ui_base::LocalState;
+        use crate::{widget::Column, widget::Section, widget::SectionHeader, widget::Text, widget::TextInput};
+        use tilo_ui_base::widget::Spacer;
 
         for scale in [1.0, 2.0] {
             let opened = Rc::new(Cell::new(None));
@@ -564,7 +566,7 @@ tilo_test_env::scenario! {
     phase keyboard_scrolling_and_focusability_require_scrollable_focus;
     {
         {
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let s = vertical(1200.0);
             let node = Widget::accessibility(&s).expect("scroll container is a region");
             assert_eq!(node.role, Role::Group);
@@ -652,7 +654,7 @@ tilo_test_env::scenario! {
         {
             let mut s = vertical(1200.0);
             let before = s.offset_y();
-            let ev = crate::synthetic_input::mouse_wheel(0.0, -1.0);
+            let ev = tilo_ui_base::synthetic_input::mouse_wheel(0.0, -1.0);
             assert!(dispatch(&mut s, &ev), "wheel handled");
             assert!(s.offset_y() > before, "wheel down increases offset");
         }
@@ -738,9 +740,10 @@ tilo_test_env::scenario! {
 
 #[test]
 fn field_validation_focus_reveal_fits_context_or_prioritises_protected_input() {
+    use crate::State;
     use crate::app::driver::Driver;
     use crate::widget::{Field, TextInput, TextInputKind};
-    use crate::{LocalState, State};
+    use tilo_ui_base::LocalState;
 
     fn named<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
         if root.test_id() == Some(id) {
@@ -753,7 +756,7 @@ fn field_validation_focus_reveal_fits_context_or_prioritises_protected_input() {
     fn correction<'a>(root: &'a dyn Widget, message: &str) -> Option<&'a dyn Widget> {
         if root.accessibility().is_some_and(|node| {
             node.name.as_deref() == Some(message)
-                && node.live == Some(crate::a11y::Politeness::Assertive)
+                && node.live == Some(tilo_ui_base::a11y::Politeness::Assertive)
         }) {
             return Some(root);
         }
@@ -775,7 +778,7 @@ fn field_validation_focus_reveal_fits_context_or_prioritises_protected_input() {
                 .with_secret(true);
             input.set_focus(true);
             let field = Field::new("Password", input)
-                .with_error_live(&message, crate::a11y::Politeness::Assertive);
+                .with_error_live(&message, tilo_ui_base::a11y::Politeness::Assertive);
             let mut content = Column::new().with_intrinsic_height();
             for _ in 0..20 {
                 content = content.push(Box::new(Text::new("Earlier form content")));
@@ -981,7 +984,7 @@ tilo_test_env::scenario! {
 
     phase edge_fades_show_only_where_more_content_can_scroll_in;
     {
-        use crate::surface::ContentEdge;
+        use tilo_ui_base::surface::ContentEdge;
         let mut scroll = vertical(900.0).with_edge_fade();
         assert_eq!(scroll.faded_edges(), vec![ContentEdge::Bottom]);
         scroll.set_offset_y(100.0);
@@ -1012,12 +1015,12 @@ fn host_solve(root: &mut dyn Widget, width: f32, height: f32) {
     let mut tree = TaffyTree::<()>::new();
     let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
     let node = root.build_layout(&mut tree, &theme, &mut nodes);
-    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
-    let mut text = crate::font_catalog::fixture_renderer();
+    let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::new();
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
     // SAFETY: exact live, exclusively owned widget tree and matching maps.
     unsafe {
         bindings.rebuild(root, &tree, node, &nodes);
-        crate::widget::compute_widget_layout(
+        tilo_ui_base::widget::compute_widget_layout(
             &mut tree,
             node,
             Size {
@@ -1049,7 +1052,7 @@ fn both(content_w: f32, content_h: f32) -> Scrollable {
     s
 }
 
-use crate::synthetic_input::named_key;
+use tilo_ui_base::synthetic_input::named_key;
 
 /// A field that holds the keyboard focus and handles no key: a note's
 /// paragraph has no page of its own to move through.
@@ -1072,7 +1075,7 @@ impl Widget for FocusedField {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
     }
 
     fn is_focused(&self) -> bool {
@@ -1109,7 +1112,7 @@ impl Widget for Kept {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
     }
 
     fn name(&self) -> &'static str {

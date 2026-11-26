@@ -34,7 +34,7 @@ impl InstallerPreview {
         };
         let heading = Text::new(&heading)
             .with_id("installer.heading")
-            .with_align(ui::ParagraphAlign::Start)
+            .with_align(tilo_ui_base::ParagraphAlign::Start)
             .with_role(heading_role)
             .with_balanced_wrap()
             .with_heading_level(1);
@@ -51,7 +51,7 @@ impl InstallerPreview {
         if !intro.is_empty() {
             let intro = Text::new(&intro)
                 .with_id("installer.intro")
-                .with_align(ui::ParagraphAlign::Start)
+                .with_align(tilo_ui_base::ParagraphAlign::Start)
                 .with_role(TextRole::Body);
             header = header.push(Box::new(intro));
         }

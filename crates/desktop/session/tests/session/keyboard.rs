@@ -293,7 +293,7 @@ fn displays(session: &mut Session) -> Vec<String> {
 #[test]
 fn a_touch_into_a_field_brings_the_keyboard_up_on_that_display() {
     const APP: &str = "org.example.Notes";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_RUNTIME_DIR", home.path());
@@ -372,7 +372,7 @@ fn a_touch_into_a_field_brings_the_keyboard_up_on_that_display() {
 /// The always-on choice: the keyboard stands on a display with no field and nothing touched at all.
 #[test]
 fn an_always_on_keyboard_is_up_where_the_person_works_with_no_field_at_all() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_RUNTIME_DIR", home.path());
@@ -416,7 +416,7 @@ fn an_always_on_keyboard_is_up_where_the_person_works_with_no_field_at_all() {
 fn the_keyboard_goes_away_when_the_field_loses_the_focus() {
     const NOTES: &str = "org.example.Notes";
     const MAIL: &str = "org.example.Mail";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_RUNTIME_DIR", home.path());
@@ -501,7 +501,7 @@ fn the_keyboard_goes_away_when_the_field_loses_the_focus() {
 /// published action, so what a press of its Dismiss asks for is what a step of an agent's asks for.
 #[test]
 fn the_keyboard_shows_and_hides_by_its_published_action() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_RUNTIME_DIR", home.path());
@@ -573,7 +573,7 @@ fn controls(session: &Session) -> Vec<Control> {
 #[test]
 fn the_keyboards_keys_are_listed_and_pressed_through_the_sessions_api() {
     const APP: &str = "org.example.Notes";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = private_home();
     let mut environment = tilo_test_env::ScopedEnv::new();
     environment.set("XDG_RUNTIME_DIR", home.path());
@@ -769,7 +769,7 @@ const BACKSPACE: u32 = 14;
 #[test]
 fn typed_words_compose_correct_and_take_a_correction_back() {
     use zwp_text_input_v3::{ContentHint, ContentPurpose};
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, _environment, mut session, mut client) =
         typing_for(ContentHint::empty(), ContentPurpose::Normal);
 
@@ -812,7 +812,7 @@ fn typed_words_compose_correct_and_take_a_correction_back() {
 fn return_and_marks_end_the_word() {
     use zwp_text_input_v3::{ContentHint, ContentPurpose};
     const RETURN: u32 = 28;
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, _environment, mut session, mut client) =
         typing_for(ContentHint::empty(), ContentPurpose::Normal);
 
@@ -837,7 +837,7 @@ fn return_and_marks_end_the_word() {
 #[test]
 fn a_secret_field_is_typed_as_it_is() {
     use zwp_text_input_v3::{ContentHint, ContentPurpose};
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, _environment, mut session, mut client) =
         typing_for(ContentHint::SensitiveData, ContentPurpose::Password);
     assert_eq!(reading(&session)["secret"], true, "{}", reading(&session));
@@ -863,7 +863,7 @@ fn ctrl_holds_for_the_next_key_only() {
     use zwp_text_input_v3::{ContentHint, ContentPurpose};
     const CTRL: u32 = 29;
     const C: u32 = 46;
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, _environment, mut session, mut client) =
         typing_for(ContentHint::empty(), ContentPurpose::Terminal);
     for name in ["Esc", "Tab", "Ctrl", "Alt", "Left", "Down", "Up", "Right"] {
@@ -904,7 +904,7 @@ fn ctrl_holds_for_the_next_key_only() {
 #[test]
 fn a_number_field_gets_the_number_pad() {
     use zwp_text_input_v3::{ContentHint, ContentPurpose};
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, _environment, mut session, mut client) =
         typing_for(ContentHint::empty(), ContentPurpose::Number);
     let names: Vec<String> = controls(&session)

@@ -1,0 +1,290 @@
+//! Where a key's time goes inside the app, stage by stage. With `RUST_LOG` enabling
+//! `tilo::input_frame=debug` (the launcher forwards `RUST_LOG` into the sandbox), each key press the
+//! window dispatches starts a record, and the first frame submitted after it ends one: one content-free
+//! `INPUT-FRAME` line on stderr, which the session log keeps beside the compositor's `KEY-LATENCY` for
+//! the same key.
+
+use std::cell::{Cell, RefCell};
+
+use crate::time::Instant;
+
+/// The tracing target that turns the record on.
+pub const TARGET: &str = "tilo::input_frame";
+
+struct Pending {
+    dispatched: Instant,
+    handled: Option<Instant>,
+    keys: u32,
+    frame_started: Option<Instant>,
+    before_frame: Vec<tilo_actions::profiling::Sample>,
+}
+
+thread_local! {
+    /// Whether the target is on; read once, after the app installed its subscriber (the first key comes
+    /// long after).
+    static ENABLED: Cell<Option<bool>> = const { Cell::new(None) };
+    static PENDING: RefCell<Option<Pending>> = const { RefCell::new(None) };
+}
+
+fn enabled() -> bool {
+    ENABLED.with(|enabled| {
+        if let Some(on) = enabled.get() {
+            return on;
+        }
+        let on = tracing::enabled!(target: TARGET, tracing::Level::DEBUG);
+        enabled.set(Some(on));
+        on
+    })
+}
+
+fn pending() -> bool {
+    ENABLED.with(|enabled| enabled.get() == Some(true))
+        && PENDING.with(|pending| pending.borrow().is_some())
+}
+
+/// The window starts dispatching `event`: a key press starts a record, or joins the one waiting for its
+/// frame.
+pub fn key_dispatched(event: &winit::event::WindowEvent) {
+    use winit::event::{ElementState, Ime, WindowEvent};
+    let is_key = matches!(event,
+        WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed)
+        || matches!(event, WindowEvent::Ime(Ime::Commit(_)));
+    if !is_key || !enabled() {
+        return;
+    }
+    PENDING.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        match pending.as_mut() {
+            Some(waiting) if waiting.frame_started.is_none() => {
+                waiting.keys = waiting.keys.saturating_add(1);
+            }
+            Some(_) => {}
+            None => {
+                *pending = Some(Pending {
+                    dispatched: crate::time::now(),
+                    handled: None,
+                    keys: 1,
+                    frame_started: None,
+                    before_frame: Vec::new(),
+                });
+                tilo_actions::profiling::begin_live();
+            }
+        }
+    });
+}
+
+/// The window has handled the event it started dispatching.
+pub fn event_handled() {
+    if !pending() {
+        return;
+    }
+    PENDING.with(|pending| {
+        if let Some(waiting) = pending.borrow_mut().as_mut()
+            && waiting.handled.is_none()
+        {
+            waiting.handled = Some(crate::time::now());
+        }
+    });
+}
+
+/// A frame starts: the first after a key answers it.
+pub fn frame_started() {
+    if !pending() {
+        return;
+    }
+    PENDING.with(|pending| {
+        if let Some(waiting) = pending.borrow_mut().as_mut()
+            && waiting.frame_started.is_none()
+        {
+            waiting.frame_started = Some(crate::time::now());
+            waiting.before_frame = tilo_actions::profiling::take_live();
+            tilo_actions::profiling::begin_live();
+        }
+    });
+}
+
+/// The frame that started after a key is handed to the render thread: what to call once the render
+/// thread presented it, which writes the record. What a frame repaints: the whole window, and why, or
+/// the pixels its damage covers.
+pub enum Repaint<'a> {
+    Full(RepaintWhy),
+    /// The damage's rectangles, in the frame's pixels.
+    Damage(&'a [vello::kurbo::Rect]),
+}
+
+/// Why a frame repaints its whole window: each reason the frame found, by name.
+#[derive(Clone, Copy, Default)]
+pub struct RepaintWhy(u32);
+
+const REASONS: [&str; 14] = [
+    "structure",
+    "record",
+    "rebuilt",
+    "moved",
+    "render",
+    "overlay",
+    "decorations",
+    "part-bar",
+    "presence",
+    "layer",
+    "moves",
+    "marks",
+    "theme",
+    "other",
+];
+
+impl RepaintWhy {
+    /// `full`, noting it as `reason` when it holds.
+    pub fn note(&mut self, reason: &'static str, full: bool) -> bool {
+        if full {
+            let bit = REASONS
+                .iter()
+                .position(|known| *known == reason)
+                .unwrap_or(REASONS.len() - 1);
+            self.0 |= 1 << bit;
+        }
+        full
+    }
+
+    pub fn names(self) -> String {
+        let names: Vec<&str> = REASONS
+            .iter()
+            .enumerate()
+            .filter(|(bit, _)| self.0 & (1 << bit) != 0)
+            .map(|(_, name)| *name)
+            .collect();
+        names.join("+")
+    }
+}
+
+/// `repaint` says what the frame repaints.
+pub fn submitted(repaint: Repaint<'_>) -> Option<Box<dyn FnOnce() + Send>> {
+    if !pending() {
+        return None;
+    }
+    let waiting = PENDING.with(|pending| {
+        let mut pending = pending.borrow_mut();
+        pending
+            .as_ref()
+            .is_some_and(|waiting| waiting.frame_started.is_some())
+            .then(|| pending.take())
+            .flatten()
+    })?;
+    let submitted = crate::time::now();
+    let mut line = line_until_submit(&waiting, submitted, &tilo_actions::profiling::take_live());
+    #[allow(
+        clippy::cast_possible_truncation,
+        clippy::cast_sign_loss,
+        reason = "a pixel count of one window"
+    )]
+    line.push_str(&match repaint {
+        Repaint::Full(why) => format!(" repaint=full:{}", why.names()),
+        Repaint::Damage(rects) => {
+            let pixels: f64 = rects.iter().map(vello::kurbo::Rect::area).sum();
+            let largest = rects
+                .iter()
+                .max_by(|a, b| a.area().total_cmp(&b.area()))
+                .map_or_else(
+                    || "none".to_owned(),
+                    |rect| format!("{}x{}", rect.width() as u64, rect.height() as u64),
+                );
+            format!(
+                " repaint_px={} rects={} largest={largest}",
+                pixels.max(0.0) as u64,
+                rects.len()
+            )
+        }
+    });
+    Some(Box::new(move || {
+        let presented = crate::time::now();
+        let present_us = presented.saturating_duration_since(submitted).as_micros();
+        let total_us = presented
+            .saturating_duration_since(waiting.dispatched)
+            .as_micros();
+        crate::diag!("INPUT-FRAME {line} present_us={present_us} total_us={total_us}");
+    }))
+}
+
+fn line_until_submit(
+    waiting: &Pending,
+    submitted: Instant,
+    scopes: &[tilo_actions::profiling::Sample],
+) -> String {
+    let handled = waiting.handled.unwrap_or(waiting.dispatched);
+    let started = waiting.frame_started.unwrap_or(submitted);
+    let mut line = format!(
+        "keys={} handle_us={} wait_us={} frame_us={}",
+        waiting.keys,
+        handled
+            .saturating_duration_since(waiting.dispatched)
+            .as_micros(),
+        started.saturating_duration_since(handled).as_micros(),
+        submitted.saturating_duration_since(started).as_micros(),
+    );
+    for (stage, scopes) in [("key:", waiting.before_frame.as_slice()), ("", scopes)] {
+        for scope in scopes {
+            line.push_str(&format!(
+                " {stage}{}={}/{}",
+                scope.phase,
+                scope.elapsed_ns / 1000,
+                scope.calls
+            ));
+        }
+    }
+    line
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn on() {
+        ENABLED.with(|enabled| enabled.set(Some(true)));
+    }
+
+    tilo_test_env::scenario! {
+        fn an_input_frame_is_recorded_only_from_a_key_to_its_first_frame;
+
+        phase nothing_is_recorded_with_no_key_waiting;
+        {
+            on();
+            PENDING.with(|pending| *pending.borrow_mut() = None);
+            frame_started();
+            event_handled();
+            assert!(submitted(Repaint::Damage(&[])).is_none());
+        }
+
+        phase the_first_frame_after_a_key_ends_its_record_with_the_scopes_it_ran;
+        {
+            on();
+            PENDING.with(|pending| {
+                *pending.borrow_mut() = Some(Pending {
+                    dispatched: crate::time::now(),
+                    handled: None,
+                    keys: 1,
+                    frame_started: None,
+                    before_frame: Vec::new(),
+                });
+            });
+            tilo_actions::profiling::begin_live();
+            event_handled();
+            assert!(
+                submitted(Repaint::Damage(&[])).is_none(),
+                "no frame started yet"
+            );
+            frame_started();
+            drop(tilo_actions::profiling::Phase::start("ui.frame_sync"));
+            drop(tilo_actions::profiling::Phase::start("ui.frame_sync"));
+            let scopes = tilo_actions::profiling::take_live();
+            let line = PENDING.with(|pending| {
+                let pending = pending.borrow();
+                line_until_submit(pending.as_ref().unwrap(), crate::time::now(), &scopes)
+            });
+            assert!(line.starts_with("keys=1 handle_us="), "{line}");
+            assert!(line.contains(" ui.frame_sync="), "{line}");
+            assert!(line.ends_with("/2"), "{line}");
+            assert!(submitted(Repaint::Full(RepaintWhy::default())).is_some());
+            assert!(PENDING.with(|pending| pending.borrow().is_none()));
+        }
+    }
+}

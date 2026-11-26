@@ -18,8 +18,9 @@ use winit::event::WindowEvent;
 use super::super::App;
 use crate::part_row::{PartRow, PartRowHost, RowInput, RowPlace, WindowAction};
 use crate::widget::search_request::SearchRequest;
-use crate::widget::{HistoryControl, InPlace, Widget};
 use crate::window_toolbar::{SearchOpening, ToolbarEvent};
+use crate::{widget::HistoryControl, widget::InPlace};
+use tilo_ui_base::widget::Widget;
 
 /// What the row needs of the window it stands in: how the window stands, and
 /// the window actions its controls ask for.
@@ -35,7 +36,7 @@ pub(super) trait BarWindow {
     /// Whether the app draws the window's frame itself on `platform`: the
     /// one case the row carries the window's controls, since the host draws
     /// none.
-    fn app_draws_frame(&self, platform: crate::platform::PlatformConventions) -> bool;
+    fn app_draws_frame(&self, platform: tilo_ui_base::platform::PlatformConventions) -> bool;
     /// Run a press on the window's own controls or the row's ground. Close
     /// never comes here: the host's own close path runs it
     /// ([`PartBar::take_close`]).
@@ -66,7 +67,7 @@ impl BarWindow for winit::window::Window {
         winit::window::Window::title(self)
     }
 
-    fn app_draws_frame(&self, platform: crate::platform::PlatformConventions) -> bool {
+    fn app_draws_frame(&self, platform: tilo_ui_base::platform::PlatformConventions) -> bool {
         crate::host_chrome::frame::app_draws_frame(
             crate::host_chrome::HostChrome::current(platform),
             tilo_presentation::desktop_draws_frame(self),
@@ -152,9 +153,9 @@ pub(super) fn window_tree_update(
 ) -> accesskit::TreeUpdate {
     let mut update = app.build_a11y_tree_update(scale);
     if let Some(row) = bar.accessibility(app) {
-        crate::accesskit_bridge::publish_host_part(&mut update, &row, scale);
+        tilo_ui_base::accesskit_bridge::publish_host_part(&mut update, &row, scale);
     }
-    crate::accesskit_bridge::native_tree_update(update)
+    tilo_ui_base::accesskit_bridge::native_tree_update(update)
 }
 
 pub(super) struct PartBar {
@@ -200,7 +201,7 @@ impl PartBar {
             && !window.fullscreen()
             && app.root_widget.paints_ground()
             && crate::widget::window_header::window_frame_of(app.root_widget.as_ref()).is_none();
-        let size = crate::scale::logical_size(window.device_size(), window.scale_factor());
+        let size = tilo_ui_base::scale::logical_size(window.device_size(), window.scale_factor());
         // The app's own header row takes the window's bar where it stands as the bar's parts: the
         // row then fills the window's top and the window's controls and search stand at its
         // trailing end, and no row of parts stands above it.
@@ -276,7 +277,7 @@ impl PartBar {
 
     /// The row's parts as assistive technology reaches them: each with the
     /// target [`Self::perform`] runs it by.
-    pub(super) fn parts(&self) -> Vec<crate::a11y::AccessNode> {
+    pub(super) fn parts(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {
         self.row.accessibility()
     }
 
@@ -287,7 +288,7 @@ impl PartBar {
         &mut self,
         app: &mut App,
         target: &str,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> bool {
         self.row.perform(app, target, action)
     }
@@ -296,7 +297,7 @@ impl PartBar {
     /// Replace chord does.
     pub(super) fn open_search(&mut self, app: &mut App, opening: SearchOpening) {
         self.row
-            .open_search(app, crate::tokens::MotionSource::Keyboard, opening);
+            .open_search(app, tilo_ui_base::tokens::MotionSource::Keyboard, opening);
     }
 
     pub(super) fn search(&self) -> &crate::widget::WindowSearch {
@@ -342,7 +343,7 @@ impl PartBar {
     pub(super) fn draw(&mut self, app: &mut App, scene: &mut Scene, transform: Affine) {
         let left = app.layout.safe_area.left;
         self.row.draw(
-            &mut crate::draw::DrawCtx::new(
+            &mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 &mut app.text_renderer,
@@ -364,7 +365,7 @@ impl PartBar {
             search.set_app_name(&self.title);
             search.set_frame_origin(vello::kurbo::Point::ZERO);
             furniture.paint(
-                &mut crate::draw::DrawCtx::new(
+                &mut tilo_ui_base::draw::DrawCtx::new(
                     scene,
                     transform,
                     &mut app.text_renderer,
@@ -412,12 +413,12 @@ impl PartBar {
     /// The row as one toolbar of the window's accessibility tree, named for
     /// the window: the app's parts, the window's History in its menu and
     /// the search. None while it is hidden or the palette covers the window.
-    pub(super) fn accessibility(&self, app: &App) -> Option<crate::a11y::AccessNode> {
+    pub(super) fn accessibility(&self, app: &App) -> Option<tilo_ui_base::a11y::AccessNode> {
         if !self.row.is_shown() || app.palette_presented() {
             return None;
         }
         Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Toolbar)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Toolbar)
                 .with_key(WINDOW_PARTS_KEY)
                 .with_name(self.title.clone())
                 .with_bounds(self.row.band(app.layout.safe_area.left, &app.theme))
@@ -433,12 +434,12 @@ impl PartBar {
         &mut self,
         app: &mut App,
         target: accesskit::NodeId,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> bool {
         let Some(row) = self.accessibility(app) else {
             return false;
         };
-        let Some(part) = crate::accesskit_bridge::surface_action_target(&row, target) else {
+        let Some(part) = tilo_ui_base::accesskit_bridge::surface_action_target(&row, target) else {
             return false;
         };
         let part = part.to_owned();
@@ -450,10 +451,10 @@ impl PartBar {
 #[cfg(feature = "native")]
 mod tests {
     use super::*;
-    use crate::tokens::MotionSource;
     use crate::widget::tabs::TOOLBAR_ROW_HEIGHT;
     use crate::widget::{NavItem, NavList, NavSection};
     use crate::window_toolbar::{ToolbarAction, WindowToolbar};
+    use tilo_ui_base::tokens::MotionSource;
     use vello::kurbo::Rect;
 
     fn settings_like_list() -> NavList {
@@ -598,7 +599,7 @@ mod tests {
         let (_, window) = update
             .nodes
             .iter()
-            .find(|(id, _)| *id == crate::accesskit_bridge::ROOT_ID)
+            .find(|(id, _)| *id == tilo_ui_base::accesskit_bridge::ROOT_ID)
             .expect("the window's root");
         let (toolbar_id, toolbar) = labelled(&update, "Call").expect("the row's toolbar");
         assert_eq!(toolbar.role(), accesskit::Role::Toolbar);
@@ -616,7 +617,7 @@ mod tests {
         let (mute, mute_node) = labelled(&update, "Mute").expect("the microphone's part");
         assert!(toolbar.children().contains(mute));
         assert_eq!(
-            crate::accesskit_bridge::surface_action_target(&row, *mute),
+            tilo_ui_base::accesskit_bridge::surface_action_target(&row, *mute),
             Some("window-toolbar-action:call-mute")
         );
         assert!(
@@ -625,7 +626,7 @@ mod tests {
         );
         let (leave, _) = labelled(&update, "Leave").expect("the leave part");
         assert_eq!(
-            crate::accesskit_bridge::surface_action_target(&row, *leave),
+            tilo_ui_base::accesskit_bridge::surface_action_target(&row, *leave),
             Some("window-toolbar-action:call-leave")
         );
 
@@ -635,7 +636,7 @@ mod tests {
             target_node: *mute,
             data: None,
         };
-        let action = crate::accesskit_bridge::accesskit_action_to_ours(
+        let action = tilo_ui_base::accesskit_bridge::accesskit_action_to_ours(
             request.action,
             request.data.as_ref(),
         )
@@ -671,11 +672,15 @@ mod tests {
             .nodes
             .iter()
             .find(|(id, _)| {
-                crate::accesskit_bridge::surface_action_target(&row, *id)
+                tilo_ui_base::accesskit_bridge::surface_action_target(&row, *id)
                     == Some("window-search-open")
             })
             .expect("the window's search control");
-        assert!(bar.perform_accessibility(&mut app, *search, &crate::a11y::Action::Activate));
+        assert!(bar.perform_accessibility(
+            &mut app,
+            *search,
+            &tilo_ui_base::a11y::Action::Activate
+        ));
         assert!(bar.row.search_mut().is_open(), "the search opens");
     }
 

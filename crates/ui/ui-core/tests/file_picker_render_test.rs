@@ -22,16 +22,16 @@
 )]
 
 use std::path::PathBuf;
-use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui_base::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::Color;
 
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
-use tilo_ui::widget::Widget;
 use tilo_ui::widget::file_picker::{FileFilter, FilePicker, FilePickerMode};
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 
 fn temp_dir() -> (tempfile::TempDir, PathBuf) {
     let dir = tempfile::tempdir().unwrap();
@@ -75,7 +75,7 @@ fn render(
     ));
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    picker.draw(&mut tilo_ui::draw::DrawCtx::new(
+    picker.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
@@ -89,7 +89,7 @@ fn render(
 const PICKER_INSET: f64 = 20.0;
 
 fn luminance_of(px: (u8, u8, u8, u8)) -> f64 {
-    tilo_ui::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
+    tilo_ui_base::a11y::relative_luminance(Color::from_rgba8(px.0, px.1, px.2, px.3))
 }
 
 /// HIG §9.5 "Rest edges": the picker's outermost pixel row is a derived
@@ -109,9 +109,9 @@ fn assert_panel_edge_registers(rgba: &[u8], w: u32, theme_name: &str) {
     let delta = (luminance_of(edge) - luminance_of(inside)).abs();
     eprintln!("{theme_name}: panel edge {edge:?} vs fill {inside:?} → Δlum={delta:.4}");
     assert!(
-        delta >= tilo_ui::tokens::colors::FLOATING_EDGE_MIN_DELTA,
+        delta >= tilo_ui_base::tokens::colors::FLOATING_EDGE_MIN_DELTA,
         "{theme_name}: the picker's panel edge {edge:?} does not register against its fill          {inside:?} (Δlum={delta:.4} < {})",
-        tilo_ui::tokens::colors::FLOATING_EDGE_MIN_DELTA
+        tilo_ui_base::tokens::colors::FLOATING_EDGE_MIN_DELTA
     );
 }
 

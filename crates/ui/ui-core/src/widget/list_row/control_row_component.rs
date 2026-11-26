@@ -1,7 +1,8 @@
 //! [`ControlRow`] as a described component.
 
-use crate::component::{Component, Described, Event};
-use crate::widget::{ControlRow, Element, Row};
+use crate::{widget::ControlRow, widget::Row};
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 
 /// A selectable row of a short list whose items carry their own controls.
 #[derive(Component, Default)]
@@ -51,7 +52,7 @@ impl Described for ControlRow {
         true
     }
 
-    fn part_views(&mut self, part: &str) -> Option<&mut dyn crate::component::PartViews> {
+    fn part_views(&mut self, part: &str) -> Option<&mut dyn tilo_ui_base::component::PartViews> {
         if part != "children" {
             return None;
         }

@@ -9,10 +9,10 @@ use tilo_actions::{ActionBinding, ActionSpec, ControlInvocation, OperationKind, 
 
 use super::edit::EDIT_RESOURCE;
 use crate::history_mode::api::{HISTORY_RESOURCE, encode_entry};
-use crate::i18n::I18nManager;
-use crate::platform::{HostShortcut, PlatformConventions, Shortcut};
-use crate::widget::HistoryEntryId;
 use crate::widget::search_request::SEARCH_RESOURCE;
+use tilo_ui_base::i18n::I18nManager;
+use tilo_ui_base::widget::HistoryEntryId;
+use tilo_ui_base::{platform::HostShortcut, platform::PlatformConventions, platform::Shortcut};
 
 /// How many recent changes a History menu lists.
 pub(crate) const RECENT_CHANGES: usize = 8;

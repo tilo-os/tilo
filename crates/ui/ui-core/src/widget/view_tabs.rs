@@ -1,7 +1,7 @@
 //! Switching what a window's content shows: [`ViewTabs`].
 use super::toggle_group::{Segment, SegmentedStyle, ToggleGroup};
-use crate::a11y::{AccessNode, Role};
 use crate::widget::ControlSize;
+use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 
 /// Tabs that switch the view of a window's content.
 ///
@@ -20,7 +20,7 @@ impl ViewTabs {
 
     pub fn from_state<T: Clone + PartialEq + 'static>(
         views: Vec<(T, Segment)>,
-        state: &crate::LocalState<T>,
+        state: &tilo_ui_base::LocalState<T>,
     ) -> Self {
         Self::of(ToggleGroup::from_state(views, state))
     }
@@ -33,7 +33,7 @@ impl ViewTabs {
 
     /// Keep the showing tab's index in `state`.
     #[must_use]
-    pub fn bind_selection(self, state: &crate::LocalState<usize>) -> Self {
+    pub fn bind_selection(self, state: &tilo_ui_base::LocalState<usize>) -> Self {
         self.map(|strip| strip.bind_selection(state))
     }
 
@@ -115,7 +115,7 @@ fn as_tab_list(mut node: AccessNode) -> AccessNode {
     node
 }
 
-impl crate::widget::Decorator for ViewTabs {
+impl tilo_ui_base::widget::Decorator for ViewTabs {
     type Inner = ToggleGroup;
 
     fn inner(&self) -> &ToggleGroup {
@@ -127,15 +127,15 @@ impl crate::widget::Decorator for ViewTabs {
     }
 
     fn accessibility(&self) -> Option<AccessNode> {
-        crate::widget::Widget::accessibility(&self.strip).map(as_tab_list)
+        tilo_ui_base::widget::Widget::accessibility(&self.strip).map(as_tab_list)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::a11y::Action;
-    use crate::widget::Widget;
+    use tilo_ui_base::a11y::Action;
+    use tilo_ui_base::widget::Widget;
 
     fn tabs() -> ViewTabs {
         ViewTabs::new(
@@ -195,7 +195,7 @@ mod tests {
             let acted = tabs.perform_semantic_action(
                 &target,
                 &Action::Activate,
-                &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+                &mut tilo_ui_base::widget::Edits::lend(&mut automerge::AutoCommit::new()),
                 &automerge::ROOT,
             );
             assert!(acted);
@@ -205,20 +205,20 @@ mod tests {
 
         phase arrows_move_the_showing_tab_and_report_it;
         {
-            use crate::synthetic_input::named_key;
+            use tilo_ui_base::synthetic_input::named_key;
             use winit::keyboard::NamedKey;
             let chosen = std::rc::Rc::new(std::cell::Cell::new(None));
             let seen = std::rc::Rc::clone(&chosen);
             // The page keeps the showing tab in its own state and sets it from the strip's
             // choice, as a view's `on change` does: the strip follows that state back.
-            let state = crate::LocalState::new(1_usize);
+            let state = tilo_ui_base::LocalState::new(1_usize);
             let pulled = state.clone();
             let mut tabs = tabs().bind_selection(&state).on_choose("request-tabs", move |index| {
                 seen.set(Some(index));
                 pulled.set(index);
             });
             tabs.apply_layout_external(vello::kurbo::Rect::new(0.0, 0.0, 400.0, 34.0));
-            crate::widget::Widget::set_focus(&mut tabs, true);
+            tilo_ui_base::widget::Widget::set_focus(&mut tabs, true);
             let doc = automerge::AutoCommit::new();
             for (key, shown) in [
                 ("ArrowRight", 2_usize),
@@ -237,18 +237,18 @@ mod tests {
                     "{key} is the tab list's"
                 );
                 assert_eq!(chosen.get(), Some(shown), "{key} asks for tab {shown}");
-                crate::widget::Decorator::sync(&mut tabs, &doc, &automerge::ROOT);
+                tilo_ui_base::widget::Decorator::sync(&mut tabs, &doc, &automerge::ROOT);
                 assert_eq!(tabs.selected(), shown, "{key} shows tab {shown}");
             }
         }
 
         phase a_hand_placed_strip_names_where_each_tab_stands;
         {
-            let theme = crate::theme::Theme::dark();
+            let theme = tilo_ui_base::theme::Theme::dark();
             let mut tabs = tabs();
             let strip = vello::kurbo::Rect::new(10.0, 20.0, 410.0, 60.0);
             tabs.apply_layout_external(strip);
-            tabs.draw(&mut crate::draw::DrawCtx::new(&mut vello::Scene::new(), vello::kurbo::Affine::IDENTITY, &mut crate::text_render::TextRenderer::new(), &theme, crate::presence::PresenceCtx::default().draw_env()));
+            tabs.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut vello::Scene::new(), vello::kurbo::Affine::IDENTITY, &mut tilo_ui_base::text_render::TextRenderer::new(), &theme, tilo_ui_base::presence::PresenceCtx::default().draw_env()));
             tabs.apply_layout_external(strip);
             let rects: Vec<_> = (0..4).map(|i| tabs.tab_rect(i).expect("a tab")).collect();
             assert_eq!(tabs.tab_rect(4), None);

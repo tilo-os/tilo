@@ -5,7 +5,7 @@ use serde_json::{Map, Value};
 use tilo_resource::Effect as _;
 use tilo_resource::LiveRow;
 use tilo_resource::RowBindings;
-use ui::i18n::ArgValue;
+use tilo_ui_base::i18n::ArgValue;
 use ui::tilo_actions::{ActionOutput, ResourcePresentation};
 use zeroize::Zeroizing;
 
@@ -478,7 +478,7 @@ impl InstallerApp {
             Check::new(
                 "copy-recovery-key",
                 no_key.clone().or_else(|| {
-                    (!ui::clipboard_available())
+                    (!tilo_ui_base::clipboard_available())
                         .then(|| ("no_clipboard", t("installer-blocked-no-clipboard")))
                 }),
             ),
@@ -585,11 +585,11 @@ impl InstallerApp {
                         &[
                             (
                                 "size",
-                                ArgValue::Text(ui::format::memory(plan.free_size_bytes)),
+                                ArgValue::Text(tilo_ui_base::format::memory(plan.free_size_bytes)),
                             ),
                             (
                                 "start",
-                                ArgValue::Text(ui::format::memory(plan.free_start_bytes)),
+                                ArgValue::Text(tilo_ui_base::format::memory(plan.free_start_bytes)),
                             ),
                         ],
                     ),
@@ -991,7 +991,7 @@ impl InstallerApp {
                 full.with_capacity_bytes(bytes).ok_or_else(|| {
                     format!(
                         "Choose at least {} within the selected unallocated region",
-                        ui::format::memory(imager_backend::MIN_TARGET_BYTES)
+                        tilo_ui_base::format::memory(imager_backend::MIN_TARGET_BYTES)
                     )
                 })?;
                 self.alongside_capacity = Some((disk.clone(), full, bytes));
@@ -1226,10 +1226,11 @@ impl InstallerApp {
                 let Some(key) = &self.recovery_key else {
                     return Err("No recovery key has been generated".into());
                 };
-                if !ui::clipboard_available() {
+                if !tilo_ui_base::clipboard_available() {
                     return Err(t("installer-blocked-no-clipboard"));
                 }
-                let copy = ui::try_clipboard_copy_secret(key, RECOVERY_KEY_ON_CLIPBOARD_FOR);
+                let copy =
+                    tilo_ui_base::try_clipboard_copy_secret(key, RECOVERY_KEY_ON_CLIPBOARD_FOR);
                 if !self.recovery_key_copy.watch(copy) {
                     return Err("Could not copy the recovery key to the clipboard".into());
                 }

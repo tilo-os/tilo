@@ -370,7 +370,10 @@ impl Planned {
         };
         // The person's language, as they chose it in Settings now: the app reads its words, and
         // its window's chrome, in it from its first frame.
-        crate::env::speak(&mut env, ui::i18n::preferred_language().as_deref());
+        crate::env::speak(
+            &mut env,
+            tilo_ui_base::i18n::preferred_language().as_deref(),
+        );
         if let Some(instance) = context.continuity_instance.filter(|_| window) {
             // The window's instance: the id of the tab it opens in, which
             // its continuation reports are addressed by.
@@ -432,7 +435,7 @@ impl Planned {
         context: &PlanContext<'_>,
     ) -> Result<Self, PlanError> {
         let scan = desktop_entry::cache::cached_scan(&desktop_entry::locale::language_candidates(
-            ui::i18n::preferred_language().as_deref(),
+            tilo_ui_base::i18n::preferred_language().as_deref(),
         ));
         let entry = scan.find(desktop_id).ok_or_else(|| {
             PlanError::Host(desktop_entry::launch::HostLaunchError::NotFound(

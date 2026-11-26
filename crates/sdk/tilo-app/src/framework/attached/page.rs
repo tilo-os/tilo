@@ -16,7 +16,7 @@ impl AttachedView {
     #[must_use]
     pub fn composition(&self) -> ui_core::composition::Composition {
         drop(self.frame());
-        let _still = ui_core::arriving::still_frames();
+        let _still = tilo_ui_base::arriving::still_frames();
         let mut frame = self.frame.borrow_mut();
         for _ in 0..PAGE_FRAMES {
             if !frame.poll_frame().unwrap_or(false) {
@@ -30,7 +30,7 @@ impl AttachedView {
 
     /// The theme the view is laid out in: what a page's colours are.
     #[must_use]
-    pub fn theme(&self) -> ui_core::Theme {
+    pub fn theme(&self) -> tilo_ui_base::Theme {
         self.frame_as_is().theme().clone()
     }
 }

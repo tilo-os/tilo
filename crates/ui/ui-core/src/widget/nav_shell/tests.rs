@@ -182,7 +182,7 @@ tilo_test_env::scenario! {
         // breakpoint a painted app guesses at (840).
         assert!(
             m.sidebar_min + m.beside_sidebar_min(ContentKind::List)
-                < f64::from(crate::tokens::Metrics::BASE.compact_breakpoint)
+                < f64::from(tilo_ui_base::tokens::Metrics::BASE.compact_breakpoint)
         );
     }
 
@@ -423,8 +423,8 @@ tilo_test_env::scenario! {
         let mut h = harness(shell, 1280, 700, Theme::dark());
         settle(&mut h, 1280, 700);
         let point = geometry(&h).content_column.center();
-        h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
-        h.dispatch_to_root(&crate::synthetic_input::mouse_press());
+        h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(point.x, point.y));
+        h.dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_press());
         settle(&mut h, 360, 700);
         let g = geometry(&h);
         assert_eq!(g.sidebar, SidebarPlacement::Screen);
@@ -464,7 +464,7 @@ fn narrowing_keeps_the_keyboard_where_it_was() {
     let mut h = harness(shell, 1280, 700, Theme::dark());
     settle(&mut h, 1280, 700);
     let row = h.a11y_node_named("Appearance").expect("the list row");
-    h.perform_a11y_action(row, &crate::a11y::Action::Focus)
+    h.perform_a11y_action(row, &tilo_ui_base::a11y::Action::Focus)
         .expect("focus the list");
     assert!(h.focused().is_some());
     settle(&mut h, 360, 700);
@@ -499,10 +499,10 @@ fn narrowing_shows_the_page_chosen_in_the_sidebar() {
     settle(&mut h, 1280, 700);
     // A press on the row: it takes the keyboard, and chooses its page.
     let row = h.a11y_node_named("Appearance").expect("the sidebar row");
-    h.perform_a11y_action(row, &crate::a11y::Action::Focus)
+    h.perform_a11y_action(row, &tilo_ui_base::a11y::Action::Focus)
         .expect("the row takes the keyboard");
     let row = h.a11y_node_named("Appearance").expect("the sidebar row");
-    h.perform_a11y_action(row, &crate::a11y::Action::Activate)
+    h.perform_a11y_action(row, &tilo_ui_base::a11y::Action::Activate)
         .expect("the row chooses its page");
     settle(&mut h, 1280, 700);
     settle(&mut h, 360, 700);
@@ -576,7 +576,7 @@ tilo_test_env::scenario! {
         let toggle = h
             .a11y_node_named("Show sidebar")
             .expect("the toggle stands to be pressed");
-        h.perform_a11y_action(toggle, &crate::a11y::Action::Activate)
+        h.perform_a11y_action(toggle, &tilo_ui_base::a11y::Action::Activate)
             .expect("the toggle answers");
         settle(&mut h, 1280, 800);
         assert!(h.root::<NavShell>().is_sidebar_open(), "the sidebar is open");
@@ -588,9 +588,9 @@ tilo_test_env::scenario! {
         let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
         settle(&mut h, 1280, 800);
         h.root_mut::<NavShell>()
-            .set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+            .set_platform_conventions(PlatformConventions::new(tilo_ui_base::platform::Platform::Linux));
         settle(&mut h, 1280, 800);
-        let key = crate::synthetic_input::key_input(&Key::Character("L".into()), ElementState::Pressed);
+        let key = tilo_ui_base::synthetic_input::key_input(&Key::Character("L".into()), ElementState::Pressed);
         let modifiers = winit::event::Modifiers::from(
             winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
         );
@@ -637,8 +637,10 @@ fn an_open_drawer_floats_over_the_content_without_a_scrim() {
 
     let seen = content_events.events();
     let point = Point::new(g.sidebar_column.x1 + 40.0, 300.0);
-    h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
-    let handled = h.dispatch_to_root(&crate::synthetic_input::mouse_press());
+    h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(
+        point.x, point.y,
+    ));
+    let handled = h.dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_press());
     assert!(handled);
     assert!(!h.root::<NavShell>().is_sidebar_open());
     assert_eq!(
@@ -723,7 +725,7 @@ tilo_test_env::scenario! {
         assert_eq!(g.overview_column, Rect::ZERO, "the overview has slid away");
 
         let esc =
-            crate::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
+            tilo_ui_base::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
         assert!(h.dispatch_to_root(&esc));
         settle(&mut h, 560, 800);
         assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
@@ -749,8 +751,10 @@ fn escape_pops_the_apps_page_stack() {
         h.root::<NavShell>().can_go_back(),
         "the page has a way back"
     );
-    let esc =
-        crate::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
+    let esc = tilo_ui_base::synthetic_input::key_input(
+        &Key::Named(NamedKey::Escape),
+        ElementState::Pressed,
+    );
     assert!(h.dispatch_to_root(&esc), "Escape is the way back");
     settle(&mut h, 1280, 800);
     assert!(!can.get(), "the app's page stack popped");
@@ -820,11 +824,16 @@ fn a_toggle_that_lands_at_once_reaches_the_screen() {
     let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
     settle(&mut h, 1280, 800);
     h.root_mut::<NavShell>()
-        .set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+        .set_platform_conventions(PlatformConventions::new(
+            tilo_ui_base::platform::Platform::Linux,
+        ));
     settle(&mut h, 1280, 800);
     let open = geometry(&h).sidebar_column.width();
     assert!(open > 0.0);
-    let key = crate::synthetic_input::key_input(&Key::Character("L".into()), ElementState::Pressed);
+    let key = tilo_ui_base::synthetic_input::key_input(
+        &Key::Character("L".into()),
+        ElementState::Pressed,
+    );
     let modifiers = winit::event::Modifiers::from(
         winit::keyboard::ModifiersState::CONTROL | winit::keyboard::ModifiersState::SHIFT,
     );
@@ -839,7 +848,7 @@ fn a_toggle_that_lands_at_once_reaches_the_screen() {
     pump(&mut h, 1280, 800);
     assert!((geometry(&h).sidebar_column.width() - open).abs() < 0.5);
 
-    let _arrived = crate::motion::testing::settled();
+    let _arrived = tilo_ui_base::motion::testing::settled();
     let toggle = geometry(&h).toggle.center();
     h.click_at(toggle.x, toggle.y);
     pump(&mut h, 1280, 800);
@@ -1049,7 +1058,7 @@ tilo_test_env::scenario! {
         assert_eq!(node.name.as_deref(), Some("Working offline"));
         assert_eq!(
             node.live,
-            Some(crate::a11y::Politeness::Polite),
+            Some(tilo_ui_base::a11y::Politeness::Polite),
             "politely, without interrupting"
         );
         assert!(
@@ -1074,7 +1083,7 @@ tilo_test_env::scenario! {
         let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
         settle(&mut h, 1280, 800);
         let theme = Theme::dark();
-        let mut text = crate::font_catalog::fixture_renderer();
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         let mut shell = h.root_mut::<NavShell>();
         let _ = present_shell(&mut shell, &mut text, &theme, 1.0);
         let _ = present_shell(&mut shell, &mut text, &theme, 1.0);
@@ -1268,17 +1277,17 @@ tilo_test_env::scenario! {
     {
         let shell = NavShell::new()
             .sidebar(TestLeaf::fill("sidebar").boxed().0)
-            .content(Box::new(ResumableContent(crate::widget::Spacer::new())));
+            .content(Box::new(ResumableContent(tilo_ui_base::widget::Spacer::new())));
         let mut h = harness(shell, 900, 600, Theme::dark());
         settle(&mut h, 900, 600);
         let document = automerge::AutoCommit::new();
         let metadata =
-            crate::widget::capability::capability::<dyn crate::widget::Continuable>(h.root_widget())
+            tilo_ui_base::widget::capability::capability::<dyn tilo_ui_base::widget::Continuable>(h.root_widget())
                 .and_then(|continuable| continuable.continuation_metadata(&document, &automerge::ROOT))
                 .expect("the content's continuation");
         assert_eq!(metadata.bytes, b"line 3");
         assert!(
-            crate::widget::capability::capability_mut::<dyn crate::widget::Continuable>(
+            tilo_ui_base::widget::capability::capability_mut::<dyn tilo_ui_base::widget::Continuable>(
                 &mut *h.root_mut::<NavShell>()
             )
             .is_some()
@@ -1304,9 +1313,11 @@ fn narrowing_keeps_the_list_an_app_showed_and_its_actions_answer() {
     let list = geometry(&h).overview_column;
     assert!(list.width() > 0.0 && list.x0 >= 0.0, "{list:?}");
     let point = list.center();
-    h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
-    h.dispatch_to_root(&crate::synthetic_input::mouse_press());
-    h.dispatch_to_root(&crate::synthetic_input::mouse_release());
+    h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(
+        point.x, point.y,
+    ));
+    h.dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_press());
+    h.dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_release());
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Overview);
 
     // Otherwise the page the app opened stays in front.
@@ -1350,7 +1361,7 @@ fn the_navigation_list_keeps_its_typed_identity_and_selected_activation_opens_co
     let inbox = h
         .a11y_node_named("Inbox")
         .expect("published navigation row");
-    h.perform_a11y_action(inbox, &crate::a11y::Action::Activate)
+    h.perform_a11y_action(inbox, &tilo_ui_base::a11y::Action::Activate)
         .expect("activating the already-selected destination");
     settle(&mut h, 360, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
@@ -1387,7 +1398,7 @@ fn push_navigation_keeps_back_operable_before_the_incoming_screen_is_visible() {
         "outgoing navigation rows are inert even while their pixels remain visible"
     );
     assert!(
-        h.perform_a11y_action(outgoing, &crate::a11y::Action::Activate)
+        h.perform_a11y_action(outgoing, &tilo_ui_base::a11y::Action::Activate)
             .is_err(),
         "a stale AT target cannot activate the outgoing screen"
     );
@@ -1402,7 +1413,7 @@ fn push_navigation_keeps_back_operable_before_the_incoming_screen_is_visible() {
         })
         .expect("Back remains exported during the transition");
     assert!(geometry(&h).back.x0 >= 0.0 && geometry(&h).back.x1 <= 360.0);
-    h.perform_a11y_action(back.0, &crate::a11y::Action::Activate)
+    h.perform_a11y_action(back.0, &tilo_ui_base::a11y::Action::Activate)
         .expect("Back cancels the in-flight navigation through AT");
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
 }
@@ -1480,16 +1491,16 @@ fn present_shell(
     scale: f64,
 ) -> (Scene, Vec<Rect>) {
     let mut scene = Scene::new();
-    let presence = crate::presence::PresenceCtx::empty();
+    let presence = tilo_ui_base::presence::PresenceCtx::empty();
     let transform = Affine::scale(scale);
-    shell.draw(&mut crate::draw::DrawCtx::new(
+    shell.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         transform,
         text,
         theme,
         presence.draw_env(),
     ));
-    shell.draw_overlay(&mut crate::draw::DrawCtx::new(
+    shell.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         transform,
         text,
@@ -1517,7 +1528,7 @@ fn notes_shell_with_search() -> NavShell {
     let actions: Vec<Element> = vec![
         Box::new(Button::icon_only(
             "note-menu",
-            crate::icons::Icon::MoreHorizontal,
+            tilo_ui_base::icons::Icon::MoreHorizontal,
             "Note actions",
         )),
         Box::new(crate::widget::search_request::search_button(
@@ -1587,28 +1598,31 @@ fn a_focused_sidebar_resize_edge_follows_the_arrow_keys_until_a_press() {
     assert_eq!(geometry(&h).sidebar_column.width(), wider);
 }
 
-struct ResumableContent(crate::widget::Spacer);
+struct ResumableContent(tilo_ui_base::widget::Spacer);
 
-impl crate::widget::Decorator for ResumableContent {
-    type Inner = crate::widget::Spacer;
+impl tilo_ui_base::widget::Decorator for ResumableContent {
+    type Inner = tilo_ui_base::widget::Spacer;
 
-    fn inner(&self) -> &crate::widget::Spacer {
+    fn inner(&self) -> &tilo_ui_base::widget::Spacer {
         &self.0
     }
 
-    fn inner_mut(&mut self) -> &mut crate::widget::Spacer {
+    fn inner_mut(&mut self) -> &mut tilo_ui_base::widget::Spacer {
         &mut self.0
     }
 
-    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
-        if request.wants::<dyn crate::widget::Continuable>() {
-            request.provide::<dyn crate::widget::Continuable>(self);
+    fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
+        if request.wants::<dyn tilo_ui_base::widget::Continuable>() {
+            request.provide::<dyn tilo_ui_base::widget::Continuable>(self);
         }
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
-        if request.wants::<dyn crate::widget::Continuable>() {
-            request.provide::<dyn crate::widget::Continuable>(self);
+    fn provide_mut<'a>(
+        &'a mut self,
+        request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
+        if request.wants::<dyn tilo_ui_base::widget::Continuable>() {
+            request.provide::<dyn tilo_ui_base::widget::Continuable>(self);
         }
     }
 
@@ -1621,7 +1635,7 @@ impl crate::widget::Decorator for ResumableContent {
     }
 }
 
-impl crate::widget::Continuable for ResumableContent {
+impl tilo_ui_base::widget::Continuable for ResumableContent {
     fn continuation_metadata(
         &self,
         _state: &automerge::AutoCommit,
@@ -1636,7 +1650,7 @@ impl crate::widget::Continuable for ResumableContent {
     fn restore_continuation_metadata(
         &mut self,
         _metadata: &::collaboration::ContinuationMetadata,
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &automerge::ObjId,
     ) -> bool {
         true
@@ -1651,8 +1665,10 @@ fn narrowing_keeps_the_explicit_or_last_interacted_content_pane() {
         settle(&mut h, 1600, 800);
         if clicked {
             let point = geometry(&h).overview_column.center();
-            h.dispatch_to_root(&crate::synthetic_input::cursor_moved(point.x, point.y));
-            h.dispatch_to_root(&crate::synthetic_input::mouse_press());
+            h.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(
+                point.x, point.y,
+            ));
+            h.dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_press());
         } else {
             h.root_mut::<NavShell>().show(NavPane::Overview);
         }
@@ -1716,12 +1732,12 @@ fn the_sidebar_edge_takes_nothing_from_the_rows_beside_it() {
         "the grip reaches into the sidebar"
     );
     assert_ne!(
-        crate::widget::cursor::in_tree(h.root_widget(), on_row),
+        tilo_ui_base::widget::cursor::in_tree(h.root_widget(), on_row),
         Some(winit::window::CursorIcon::ColResize),
         "a row's far end shows no resize pointer"
     );
     assert_eq!(
-        crate::widget::cursor::in_tree(h.root_widget(), g.resize_handle.center()),
+        tilo_ui_base::widget::cursor::in_tree(h.root_widget(), g.resize_handle.center()),
         Some(winit::window::CursorIcon::ColResize),
         "the grip does"
     );
@@ -1738,7 +1754,7 @@ fn a_phone_wide_bar_gives_the_app_its_row_before_the_windows_controls() {
         Box::new(Button::new("new-note", "New note")),
         Box::new(Button::icon_only(
             "note-menu",
-            crate::icons::Icon::MoreHorizontal,
+            tilo_ui_base::icons::Icon::MoreHorizontal,
             "Note actions",
         )),
     ];
@@ -1802,8 +1818,8 @@ fn the_overview_narrows_into_its_rail_before_it_pushes() {
     let rail = crate::widget::NavList::new(vec![crate::widget::NavSection::untitled(
         "places",
         vec![
-            crate::widget::NavItem::new("oslo", "Oslo").icon(crate::icons::Icon::Pin),
-            crate::widget::NavItem::new("lima", "Lima").icon(crate::icons::Icon::Pin),
+            crate::widget::NavItem::new("oslo", "Oslo").icon(tilo_ui_base::icons::Icon::Pin),
+            crate::widget::NavItem::new("lima", "Lima").icon(tilo_ui_base::icons::Icon::Pin),
         ],
     )])
     .rail();

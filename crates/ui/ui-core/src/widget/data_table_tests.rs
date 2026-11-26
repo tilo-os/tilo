@@ -262,8 +262,8 @@ tilo_test_env::scenario! {
             assert!(Widget::perform_semantic_action(
                 &mut table,
                 "row:99999999:0",
-                &crate::a11y::Action::Focus,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &tilo_ui_base::a11y::Action::Focus,
+                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(table.model_selection().primary(), Some(&99_999_999));
@@ -347,7 +347,7 @@ tilo_test_env::scenario! {
                     position: (20.0, 10.0).into(),
                 },
             );
-            dispatch(&mut t, &tree, node, &crate::synthetic_input::mouse_press());
+            dispatch(&mut t, &tree, node, &tilo_ui_base::synthetic_input::mouse_press());
 
             assert_eq!(*hits.borrow(), vec![0], "header click reported column 0");
             // Sort direction unchanged because the callback replaced toggle.
@@ -369,7 +369,7 @@ tilo_test_env::scenario! {
                         .with_text(|row: &R| row.name.clone()),
                 ]
             };
-            let state = crate::LocalState::new(None::<TableSort>);
+            let state = tilo_ui_base::LocalState::new(None::<TableSort>);
             let clicks = Rc::new(RefCell::new(Vec::new()));
             let activations = Rc::new(RefCell::new(Vec::new()));
             let (click_sink, activate_sink) = (Rc::clone(&clicks), Rc::clone(&activations));
@@ -416,7 +416,7 @@ tilo_test_env::scenario! {
                         &mut table,
                         &tree,
                         node,
-                        &crate::synthetic_input::mouse_input(state, MouseButton::Left),
+                        &tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left),
                     );
                 }
             }
@@ -448,7 +448,7 @@ tilo_test_env::scenario! {
     phase table_accessibility_names_roles_sort_and_selection;
     {
         fn accessibility_reports_table_role_sort_and_selection() {
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
             t.set_rows(rows4());
             // Active sort surfaces via the column's human header, not its key.
@@ -610,7 +610,7 @@ tilo_test_env::scenario! {
             );
             let handled = Dispatch::new()
                 .layout(&tree, node)
-                .send(&mut table, &crate::synthetic_input::mouse_wheel(0.0, -3.0))
+                .send(&mut table, &tilo_ui_base::synthetic_input::mouse_wheel(0.0, -3.0))
                 .handled;
             assert!(!handled, "the wheel is the host's");
         }
@@ -641,13 +641,13 @@ tilo_test_env::scenario! {
                 &mut table,
                 &tree,
                 node,
-                &crate::synthetic_input::mouse_press(),
+                &tilo_ui_base::synthetic_input::mouse_press(),
             );
             dispatch(
                 &mut table,
                 &tree,
                 node,
-                &crate::synthetic_input::mouse_release(),
+                &tilo_ui_base::synthetic_input::mouse_release(),
             );
 
             assert_eq!(clicks.get(), 1, "real cell button receives activation");
@@ -681,7 +681,7 @@ tilo_test_env::scenario! {
                     position: (50.0, HEADER_HEIGHT + 2.5 * ROW_HEIGHT).into(),
                 },
             );
-            dispatch(&mut t, &tree, node, &crate::synthetic_input::mouse_press());
+            dispatch(&mut t, &tree, node, &tilo_ui_base::synthetic_input::mouse_press());
 
             assert!(t.selection().is_selected(2), "row 2 selected");
             assert_eq!(t.selection().primary(), Some(2));
@@ -701,7 +701,7 @@ tilo_test_env::scenario! {
                     position: (50.0, 85.0).into(),
                 },
             );
-            dispatch(&mut t, &tree, node, &crate::synthetic_input::mouse_press());
+            dispatch(&mut t, &tree, node, &tilo_ui_base::synthetic_input::mouse_press());
             assert!(
                 t.selection().is_empty(),
                 "read-only table keeps empty selection"
@@ -715,7 +715,7 @@ tilo_test_env::scenario! {
             t.set_focus(true);
             let (tree, node) = lay_out(&mut t);
             let key = |named| {
-                crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+                tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
                     winit::keyboard::Key::Named(named),
                     None,
                     ElementState::Pressed,
@@ -839,7 +839,7 @@ tilo_test_env::scenario! {
         fn wheel_scrolls_in_internal_mode() {
             let (mut t, tree, node) = scrolling_table();
             assert_eq!(t.scroll_y(), 0.0);
-            let wheel = crate::synthetic_input::mouse_wheel(0.0, -1.0);
+            let wheel = tilo_ui_base::synthetic_input::mouse_wheel(0.0, -1.0);
             dispatch(&mut t, &tree, node, &wheel);
             assert!(
                 t.scroll_y() > 0.0,
@@ -921,7 +921,7 @@ tilo_test_env::scenario! {
                     position: (x, mid_y).into(),
                 },
             );
-            dispatch(&mut t, &tree, node, &crate::synthetic_input::mouse_press());
+            dispatch(&mut t, &tree, node, &tilo_ui_base::synthetic_input::mouse_press());
             assert!(t.vbar.is_dragging(), "press on thumb begins a drag");
             assert!(t.wants_pointer_capture(), "drag captures the pointer");
             assert_eq!(t.scroll_y(), 0.0);
@@ -960,7 +960,7 @@ tilo_test_env::scenario! {
                 &mut t,
                 &tree,
                 node,
-                &crate::synthetic_input::mouse_release(),
+                &tilo_ui_base::synthetic_input::mouse_release(),
             );
             assert!(!t.vbar.is_dragging(), "release ends the drag");
         }
@@ -980,10 +980,10 @@ tilo_test_env::scenario! {
                     position: (x, below_y).into(),
                 },
             );
-            dispatch(&mut t, &tree, node, &crate::synthetic_input::mouse_press());
+            dispatch(&mut t, &tree, node, &tilo_ui_base::synthetic_input::mouse_press());
             assert!(!t.vbar.is_dragging(), "track click is not a drag");
             let expected =
-                5.0 * f32_of_f64(ROW_HEIGHT) * f32_of_f64(crate::widget::PAGE_FRACTION);
+                5.0 * f32_of_f64(ROW_HEIGHT) * f32_of_f64(tilo_ui_base::widget::PAGE_FRACTION);
             assert!(
                 (t.scroll_y() - expected).abs() < 1.0,
                 "page step ≈ viewport*frac ({expected}), got {}",
@@ -1006,7 +1006,7 @@ tilo_test_env::scenario! {
                     position: (x, mid_y).into(),
                 },
             );
-            dispatch(&mut t, &tree, node, &crate::synthetic_input::mouse_press());
+            dispatch(&mut t, &tree, node, &tilo_ui_base::synthetic_input::mouse_press());
             assert!(
                 t.selection().is_empty(),
                 "scrollbar press must not select a row"
@@ -1030,7 +1030,7 @@ tilo_test_env::scenario! {
                 device_id: winit::event::DeviceId::dummy(),
                 position: (20.0, y).into(),
             };
-            let button = |state| crate::synthetic_input::mouse_input(state, MouseButton::Left);
+            let button = |state| tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left);
 
             dispatch(&mut table, &tree, node, &move_cursor(body_top + 100.0));
             dispatch(&mut table, &tree, node, &button(ElementState::Pressed));
@@ -1231,9 +1231,9 @@ pub(super) fn table_color_fills(t: &mut DataTable<R>) -> usize {
     let _laid = lay_out(t);
     let theme = Theme::dark();
     let mut tr = TextRenderer::new();
-    let presence = crate::presence::PresenceCtx::default();
+    let presence = tilo_ui_base::presence::PresenceCtx::default();
     let mut scene = Scene::new();
-    t.draw(&mut crate::draw::DrawCtx::new(
+    t.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         vello::kurbo::Affine::IDENTITY,
         &mut tr,
@@ -1269,7 +1269,7 @@ fn a_row_carries_its_name_activation_and_menu_into_the_accessibility_tree() {
 
     let semantics = Widget::accessibility(&table).expect("table semantics");
     let row = semantics.children.first().expect("first visible row");
-    assert_eq!(row.role, crate::a11y::Role::Row);
+    assert_eq!(row.role, tilo_ui_base::a11y::Role::Row);
     assert_eq!(
         row.name.as_deref(),
         Some("a"),
@@ -1286,18 +1286,18 @@ fn a_row_carries_its_name_activation_and_menu_into_the_accessibility_tree() {
 
     assert!(Widget::perform_action(
         &mut table,
-        &crate::a11y::Action::Activate,
+        &tilo_ui_base::a11y::Action::Activate,
         &[0],
-        &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+        &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
         &automerge::ROOT,
     ));
     assert_eq!(&*opened.borrow(), &[0], "the row's own record is opened");
 
     assert!(Widget::perform_action(
         &mut table,
-        &crate::a11y::Action::ShowContextMenu,
+        &tilo_ui_base::a11y::Action::ShowContextMenu,
         &[1],
-        &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+        &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
         &automerge::ROOT,
     ));
     let menus = menus.borrow();
@@ -1332,9 +1332,9 @@ fn a_routed_action_naming_a_row_that_no_longer_exists_does_nothing() {
     let root = automerge::ROOT;
     let handled = Widget::perform_action(
         &mut t,
-        &crate::a11y::Action::Activate,
+        &tilo_ui_base::a11y::Action::Activate,
         &[7],
-        &mut crate::widget::Edits::lend(&mut doc),
+        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
         &root,
     );
     assert!(!handled, "a vanished row cannot be activated");

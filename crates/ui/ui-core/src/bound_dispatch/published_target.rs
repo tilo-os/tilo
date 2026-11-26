@@ -1,7 +1,7 @@
 //! The resource a local invocation resolves to: the node the component's shared tree keeps, with
 //! the status its surfaces lay over the action it names.
 use super::{AutoCommit, CallbackBinding, ResourceSpec, SharedResource, Widget};
-use crate::widget::capability::capability;
+use tilo_ui_base::widget::capability::capability;
 
 /// The resource a local invocation of `address` resolves to in `widget`'s
 /// filtered tree, found in the component's shared tree without building the
@@ -9,7 +9,7 @@ use crate::widget::capability::capability;
 /// status: whether the effect can be used there, how it is named, the
 /// parameters it narrows) is not kept in the shared tree, so the target action
 /// is laid over as the widget publishes it
-/// ([`crate::widget::resources::PublishesResources::published_action`]): a caller
+/// ([`tilo_ui_base::widget::resources::PublishesResources::published_action`]): a caller
 /// cannot invoke what the palette refuses, and no invocation builds a
 /// publication. `None` defers to the whole tree: the tree does not resolve the
 /// address itself (the unbound and provider fallbacks), or the action is not
@@ -20,12 +20,13 @@ pub(super) fn resolve_published_action(
     binding: &CallbackBinding,
     address: &tilo_actions::ActionAddress,
 ) -> Option<ResourceSpec> {
-    if crate::widget::component_walk::has_separate_document_owner(widget) {
+    if tilo_ui_base::widget::component_walk::has_separate_document_owner(widget) {
         return None;
     }
-    let forest = crate::widget::resources::shared_resources(widget, doc);
+    let forest = tilo_ui_base::widget::resources::shared_resources(widget, doc);
     let mut found = shared_target(&forest, Some(binding), address)?;
-    let Some(publisher) = capability::<dyn crate::widget::resources::PublishesResources>(widget)
+    let Some(publisher) =
+        capability::<dyn tilo_ui_base::widget::resources::PublishesResources>(widget)
     else {
         return Some(found);
     };
@@ -60,7 +61,7 @@ pub(super) fn shared_target(
                 .any(|action| action.id == address.action))
             || node.children().iter().any(|child| resolves(child, address))
     }
-    fn kept(decider: &crate::permissions::ActionDecider<'_>, node: &SharedResource) -> bool {
+    fn kept(decider: &tilo_ui_base::permissions::ActionDecider<'_>, node: &SharedResource) -> bool {
         let head = node.head();
         head.actions
             .iter()
@@ -70,7 +71,7 @@ pub(super) fn shared_target(
     /// The first node with resource id `id` that filtering keeps (any, with no decider). A node
     /// filtering drops has no kept node beneath it.
     fn first<'a>(
-        decider: Option<&crate::permissions::ActionDecider<'_>>,
+        decider: Option<&tilo_ui_base::permissions::ActionDecider<'_>>,
         node: &'a SharedResource,
         id: &str,
     ) -> Option<&'a SharedResource> {

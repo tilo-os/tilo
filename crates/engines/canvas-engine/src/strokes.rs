@@ -255,7 +255,7 @@ mod tests {
                     strokes: vec![NewStroke {
                         id: Some("line".into()),
                         points: (0..MAX_POINTS - 1)
-                            .map(|x| vec![tilo_ui::num::f64_of_usize(x), 20.0])
+                            .map(|x| vec![tilo_ui_base::num::f64_of_usize(x), 20.0])
                             .collect(),
                         size: 4.0,
                         colour: "#112233".into(),

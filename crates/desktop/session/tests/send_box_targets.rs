@@ -11,7 +11,8 @@ use tilo_session_core::surfaces::Published as _;
 /// A session-hosted app window with no menu of its own, drawn on the desktop: the window carries
 /// the send-to box itself.
 fn window() -> AppProcess {
-    let content = ui::widget::Column::new().push(Box::new(ui::widget::Spacer::fixed(200.0)));
+    let content =
+        ui::widget::Column::new().push(Box::new(tilo_ui_base::widget::Spacer::fixed(200.0)));
     let mut host = AppProcess::new(
         ui::App::new(ui::State::new(), Box::new(content)),
         Placement {
@@ -40,14 +41,14 @@ fn controls(host: &mut AppProcess) -> Vec<(String, Option<String>)> {
 /// writes the message, and Send.
 #[test]
 fn the_box_a_send_key_opens_publishes_its_controls() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     ui::shared_selection::set_send_host_available(true);
     let _ = ui::shared_selection::take_send_to();
     let mut host = window();
     assert!(
         !controls(&mut host)
             .iter()
-            .any(|(name, _)| name == &ui::i18n::widget_text("send-to-send")),
+            .any(|(name, _)| name == &tilo_ui_base::i18n::widget_text("send-to-send")),
         "no box stands yet: the window's own controls are all it shows"
     );
 
@@ -59,9 +60,9 @@ fn the_box_a_send_key_opens_publishes_its_controls() {
     let published = controls(&mut host);
     let names: Vec<&str> = published.iter().map(|(name, _)| name.as_str()).collect();
     for wanted in [
-        ui::i18n::widget_text("send-to-recipients-name"),
-        ui::i18n::widget_text("send-to-message-name"),
-        ui::i18n::widget_text("send-to-send"),
+        tilo_ui_base::i18n::widget_text("send-to-recipients-name"),
+        tilo_ui_base::i18n::widget_text("send-to-message-name"),
+        tilo_ui_base::i18n::widget_text("send-to-send"),
     ] {
         assert!(
             names.contains(&wanted.as_str()),
@@ -74,7 +75,7 @@ fn the_box_a_send_key_opens_publishes_its_controls() {
 /// holds: the session acts on it as the person, not by aiming a point at the window.
 #[test]
 fn send_is_pressed_through_the_published_control() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     ui::shared_selection::set_send_host_available(true);
     let _ = ui::shared_selection::take_send_to();
     let mut host = window();
@@ -93,7 +94,7 @@ fn send_is_pressed_through_the_published_control() {
     for _ in 0..4 {
         host.prepare_frame();
     }
-    let send = ui::i18n::widget_text("send-to-send");
+    let send = tilo_ui_base::i18n::widget_text("send-to-send");
     assert!(
         controls(&mut host).iter().any(|(name, _)| name == &send),
         "Send is one of the surface's controls"

@@ -10,8 +10,8 @@
 
 use crate::headless::Driver;
 use crate::state::State;
-use crate::theme::Theme;
 use crate::widget::{Column, TextInput};
+use tilo_ui_base::theme::Theme;
 
 const VIEW: (u32, u32) = (400, 240);
 
@@ -112,7 +112,7 @@ fn a_change_made_outside_the_app_shows_in_the_frame_its_wake_brings() {
             .into_iter()
             .find_map(|(_, node)| node.value().map(str::to_owned))
     }
-    let text = crate::LocalState::new("one".to_owned());
+    let text = tilo_ui_base::LocalState::new("one".to_owned());
     let mut driver = Driver::for_root(
         State::new(),
         TextInput::from_state(&text),

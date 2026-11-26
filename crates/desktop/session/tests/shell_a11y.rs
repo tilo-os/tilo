@@ -153,7 +153,7 @@ fn holding(tree: &TreeUpdate, words: &str) -> Option<(NodeId, Node)> {
 
 #[test]
 fn the_shell_is_a_window_whose_bar_and_windows_a_screen_reader_reads() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (notebook, titles) = notes(&crate::common::TITLES[..1]);
     let mut session = crate::common::headless_on(
         &[OutputConfig::new("HEADLESS-1", WIDTH, HEIGHT)],
@@ -233,7 +233,7 @@ fn the_shell_is_a_window_whose_bar_and_windows_a_screen_reader_reads() {
 /// the tree opens the notification centre, exactly as a press on it does.
 #[test]
 fn a_control_pressed_through_the_export_acts_on_the_shell() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(&[(0, 0)]);
     until(&mut session, "the bar's bell", |session| {
         session.shell_control("Notifications").is_some()
@@ -244,7 +244,7 @@ fn a_control_pressed_through_the_export_acts_on_the_shell() {
     let (place, tree) = shell_windows(&session).remove(0);
     let (bell, _) = labelled(&tree, "Notifications");
     assert!(
-        session.a11y_perform(place, bell, &ui::a11y::Action::Activate),
+        session.a11y_perform(place, bell, &tilo_ui_base::a11y::Action::Activate),
         "the export takes the activation"
     );
     until(&mut session, "the centre up", |session| {
@@ -254,7 +254,7 @@ fn a_control_pressed_through_the_export_acts_on_the_shell() {
 
 #[test]
 fn every_display_draws_a_window_of_the_shell_of_its_own() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(&[(0, 0), (WIDTH, 0)]);
     until(&mut session, "two parts of the shell", |session| {
         session.shell_parts().len() == 2
@@ -288,7 +288,7 @@ fn every_display_draws_a_window_of_the_shell_of_its_own() {
 /// shell raises for it carries the words it says, marked polite.
 #[test]
 fn a_notice_that_arrives_is_announced_politely() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(&[(0, 0)]);
     until(&mut session, "the bar's bell", |session| {
         session.shell_control("Notifications").is_some()
@@ -324,7 +324,7 @@ fn a_notice_that_arrives_is_announced_politely() {
 /// the rows is told the same line the row draws under the name.
 #[test]
 fn the_people_list_names_each_person_and_what_they_are_doing() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = collaborating(&[(0, 0)]);
     until(&mut session, "the people button", |session| {
         session.shell_control("People").is_some()

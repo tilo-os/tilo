@@ -2,15 +2,16 @@
 
 use std::collections::HashMap;
 use std::rc::Rc;
-use ui_core::widget::{AppModel, ModelPath};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use taffy::{NodeId, TaffyTree};
 
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{LocalState, Theme};
+use tilo_ui_base::{widget::Element, widget::Widget};
+use ui_core::taffy;
 use ui_core::vello::kurbo::{Point, Rect};
-use ui_core::widget::DrawChild;
-use ui_core::widget::{Element, Widget};
 use ui_core::winit::event::WindowEvent;
-use ui_core::{LocalState, Theme, taffy};
 
 type BuildPart<K> = Box<dyn Fn(&K, &Rc<()>) -> Element>;
 
@@ -147,7 +148,7 @@ impl Widget for Switch {
         self.part.apply_layout(taffy, node, origin);
     }
 
-    fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -157,7 +158,7 @@ impl Widget for Switch {
         self.part.draw_child(scene, transform, text, theme, &env);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui_core::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.part.handle_event(event, ctx);
     }
 
@@ -168,7 +169,7 @@ impl Widget for Switch {
     // The switch stands for its part in its container: a part that is a
     // band on its way, or a column one moves in, moves what follows the
     // switch as it would its own followers.
-    fn disclosing(&self) -> Option<ui_core::widget::Disclosing> {
+    fn disclosing(&self) -> Option<tilo_ui_base::widget::Disclosing> {
         self.part.disclosing()
     }
 
@@ -180,7 +181,7 @@ impl Widget for Switch {
         self.part.is_band()
     }
 
-    fn note_placement(&mut self, placement: ui_core::widget::Placement) {
+    fn note_placement(&mut self, placement: tilo_ui_base::widget::Placement) {
         self.part.note_placement(placement);
     }
 

@@ -5,8 +5,8 @@ use taffy::{Size, Style};
 
 use super::arranged::{Arranged, Layout, Part, Resolved, lead_container, wrapper_style};
 use super::units::{Axis, Direction, PaneSplit, pane_split_for};
-use crate::tokens::Rhythm;
-use crate::widget::Length;
+use tilo_ui_base::tokens::Rhythm;
+use tilo_ui_base::widget::Length;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Pane {
@@ -287,7 +287,7 @@ impl Arranged<SplitLayout> {
     }
 
     /// Open or close the drawer, with the panes moving as a change of what the container holds
-    /// does (the container's [`crate::motion::Feel`], reduced motion landing at once). A split
+    /// does (the container's [`tilo_ui_base::motion::Feel`], reduced motion landing at once). A split
     /// that is not collapsed ignores it.
     pub fn set_drawer_open(&mut self, open: bool) {
         if self.layout.drawer_open == open {

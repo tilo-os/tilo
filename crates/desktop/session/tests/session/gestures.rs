@@ -17,7 +17,7 @@ fn gesture(session: &mut Session, events: &[GestureEvent]) {
 
 #[test]
 fn touchpad_gestures_the_desktop_takes_switch_workspaces_and_open_the_overview() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     session.step(Duration::from_millis(1)).unwrap();
     let first = active_workspace(&session);

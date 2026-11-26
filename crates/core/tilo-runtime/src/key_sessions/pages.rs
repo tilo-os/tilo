@@ -751,7 +751,8 @@ fn waited<T>(answer: Pending<T>) -> Result<T, PageRefusal> {
 /// The stylesheet every page of the device's own starts from: the theme's and the shared page
 /// rules.
 fn page_css() -> String {
-    ui::composition::page::theme_css(&ui::Theme::default()) + ui::composition::page::PAGE_CSS
+    ui::composition::page::theme_css(&tilo_ui_base::Theme::default())
+        + ui::composition::page::PAGE_CSS
 }
 
 /// An app's page name: the last part of its id (`notes` for `so.tilo.notes`).

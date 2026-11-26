@@ -1,19 +1,19 @@
 use super::*;
-use crate::synthetic_input::{key_event, keyboard_input};
+use tilo_ui_base::{synthetic_input::key_event, synthetic_input::keyboard_input};
 use winit::keyboard::Key;
 
 fn send(region: &mut ScrollRegion, event: &WindowEvent) -> bool {
     let mut tree = taffy::TaffyTree::<()>::new();
-    let node = crate::widget::TaffyTreeExt::leaf_node(&mut tree, taffy::Style::default());
+    let node = tilo_ui_base::widget::TaffyTreeExt::leaf_node(&mut tree, taffy::Style::default());
     let mut handled = false;
     let mut focus_target = None;
     let mut doc = automerge::AutoCommit::new();
     region.handle_event(
         event,
-        &mut crate::widget::EventCtx {
+        &mut tilo_ui_base::widget::EventCtx {
             scale_factor: 1.0,
             modifiers: &winit::event::Modifiers::default(),
-            state: crate::widget::Edits::lend(&mut doc),
+            state: tilo_ui_base::widget::Edits::lend(&mut doc),
             path: &automerge::ROOT,
             handled: &mut handled,
             focus_target: &mut focus_target,
@@ -26,11 +26,11 @@ fn send(region: &mut ScrollRegion, event: &WindowEvent) -> bool {
 }
 
 fn moved(point: Point) -> WindowEvent {
-    crate::synthetic_input::cursor_moved(point.x, point.y)
+    tilo_ui_base::synthetic_input::cursor_moved(point.x, point.y)
 }
 
 fn button(state: ElementState) -> WindowEvent {
-    crate::synthetic_input::mouse_input(state, MouseButton::Left)
+    tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left)
 }
 
 fn cancellation_journey(cancel: WindowEvent) {

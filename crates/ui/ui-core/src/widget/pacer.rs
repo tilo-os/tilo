@@ -16,12 +16,12 @@
 
 use std::cell::Cell;
 
-use super::{AppModel, Element, ModelPath, Widget};
-use crate::LocalState;
 use crate::time::{Duration, Instant};
+use tilo_ui_base::LocalState;
+use tilo_ui_base::{widget::AppModel, widget::Element, widget::ModelPath, widget::Widget};
 
 /// Steps its `step` once a beat while `running` is `true`.
-#[crate::component::not_a_component(framework, "frame pacing around a view")]
+#[tilo_ui_base::component::not_a_component(framework, "frame pacing around a view")]
 pub struct Pacer {
     content: Element,
     running: LocalState<bool>,
@@ -78,7 +78,7 @@ impl Pacer {
     }
 }
 
-impl super::Decorator for Pacer {
+impl tilo_ui_base::widget::Decorator for Pacer {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {

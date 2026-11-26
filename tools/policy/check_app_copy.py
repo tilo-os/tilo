@@ -348,7 +348,7 @@ def copy_readers(root: Path, modules: dict[str, Path], crates: list[Path]) -> li
     return readers
 
 
-TOOLKIT = "crates/ui/ui-core"
+TOOLKIT = "crates/ui/ui-base"
 # Crates whose copy keys also travel through conditionals and tables, by the
 # namespaces their code picks keys in. The session's desktop picks `activity-`
 # keys in a `match` and in its word builders.

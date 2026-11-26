@@ -15,10 +15,10 @@ use std::cell::Cell;
 use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
-use crate::component::{Component, Described, Event};
-use crate::theme::Theme;
 use crate::time::{Duration, Instant};
-use crate::widget::{TaffyTreeExt as _, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{component::Component, component::Described, component::Event};
+use tilo_ui_base::{widget::TaffyTreeExt as _, widget::Widget};
 
 thread_local! {
     /// Whether the person can see the window this thread draws: its loop says so as the window
@@ -126,7 +126,7 @@ impl Timer {
 }
 
 impl Widget for Timer {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -134,15 +134,19 @@ impl Widget for Timer {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        taffy.widget_leaf(super::layout::removed_from_flow(), node_map, self)
+        taffy.widget_leaf(
+            tilo_ui_base::widget::layout::removed_from_flow(),
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.laid_out = true;
     }
 
-    fn draw(&mut self, _ctx: &mut crate::draw::DrawCtx<'_>) {}
+    fn draw(&mut self, _ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {}
 
     fn name(&self) -> &'static str {
         "Timer"
@@ -167,8 +171,8 @@ impl Widget for Timer {
     /// A window seen again ticks what came due while it was away.
     fn update(
         &mut self,
-        _state: &crate::widget::AppModel,
-        _path: &crate::widget::ModelPath,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         self.serve(crate::time::now())
     }
@@ -209,13 +213,15 @@ impl Described for Timer {
 mod tests {
     use super::*;
 
-    fn counting() -> (crate::Intents<crate::component::Fired>, Timer) {
-        let queue = crate::Intents::default();
+    fn counting() -> (tilo_ui_base::Intents<tilo_ui_base::component::Fired>, Timer) {
+        let queue = tilo_ui_base::Intents::default();
         let props = TimerProps {
             every: 1.0,
             after: 0.0,
             restart: String::new(),
-            tick: Event::View(crate::component::Intent::new(&queue, "clock", "tick")),
+            tick: Event::View(tilo_ui_base::component::Intent::new(
+                &queue, "clock", "tick",
+            )),
         };
         (queue, Timer::new("clock", props))
     }
@@ -247,14 +253,14 @@ mod tests {
 
     #[test]
     fn a_one_off_timer_ticks_once_and_rests() {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let timer = Timer::new(
             "once",
             TimerProps {
                 every: 0.0,
                 after: 3.0,
                 restart: String::new(),
-                tick: Event::View(crate::component::Intent::new(&queue, "once", "tick")),
+                tick: Event::View(tilo_ui_base::component::Intent::new(&queue, "once", "tick")),
             },
         );
         let due = timer
@@ -270,12 +276,14 @@ mod tests {
     /// again, and drawing it again with the same text keeps where it stands.
     #[test]
     fn a_timer_counts_again_when_what_it_counts_from_changes() {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let props = |typed: &str| TimerProps {
             every: 0.0,
             after: 0.15,
             restart: typed.to_owned(),
-            tick: Event::View(crate::component::Intent::new(&queue, "pause", "tick")),
+            tick: Event::View(tilo_ui_base::component::Intent::new(
+                &queue, "pause", "tick",
+            )),
         };
         let mut timer = Timer::new("pause", props("w"));
         let due = timer.next_wake_deadline().expect("it waits");

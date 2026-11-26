@@ -5,9 +5,9 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use super::{TileContent, TileHost};
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 
 thread_local! {
     static HOLD: Cell<(u64, bool)> = const { Cell::new((0, false)) };
@@ -53,7 +53,7 @@ impl TileHost {
         }
         self.held = None;
         let mut window = Scene::new();
-        self.draw_steady_state(&mut crate::draw::DrawCtx::new(
+        self.draw_steady_state(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut window,
             Affine::IDENTITY,
             tr,
@@ -62,7 +62,7 @@ impl TileHost {
         ));
         let complete = if matches!(self.content, TileContent::App(_)) {
             let mut scene = Scene::new();
-            self.draw_complete_content_capture(&mut crate::draw::DrawCtx::new(
+            self.draw_complete_content_capture(&mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 tr,
@@ -115,7 +115,7 @@ impl TileHost {
         self.rect.origin() - held.origin
     }
 
-    pub(super) fn draw_window(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub(super) fn draw_window(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -127,7 +127,7 @@ impl TileHost {
                 let moved = Affine::translate(self.held_offset(held));
                 scene.append(&held.window, Some(transform * moved));
             }
-            None => self.draw_steady_state(&mut crate::draw::DrawCtx::new(
+            None => self.draw_steady_state(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 tr,

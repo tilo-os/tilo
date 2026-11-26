@@ -1,11 +1,8 @@
 //! Opaque canvas; the domain renderer never enters the live Widget/action tree.
 use super::{HistoryPreview, PreviewNavigation};
-use crate::{
-    theme::Theme,
-    widget::{TaffyTreeExt, Widget},
-};
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::{theme::Theme, widget::TaffyTreeExt, widget::Widget};
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{MouseScrollDelta, WindowEvent};
 
@@ -86,7 +83,7 @@ impl Widget for PreviewCanvas {
         node
     }
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(tree, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(tree, node, origin);
         if self.rect != rect {
             self.rect = rect;
             self.dirty = true;
@@ -96,7 +93,7 @@ impl Widget for PreviewCanvas {
         clippy::arithmetic_side_effects,
         reason = "floating point display geometry is non-authoritative and does not overflow integers"
     )]
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -124,7 +121,7 @@ impl Widget for PreviewCanvas {
         }
         self.paint_generation = self.paint_generation.wrapping_add(1);
     }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.cursor = ctx.logical(position);
         }
@@ -144,16 +141,16 @@ impl Widget for PreviewCanvas {
     fn get_rect(&self) -> Rect {
         self.rect
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Document).with_name(
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Document).with_name(
                 self.error
                     .clone()
                     .or_else(|| self.status.clone())
                     .unwrap_or_else(|| {
                         self.preview.as_ref().map_or_else(
                             || {
-                                crate::i18n::I18nManager::lookup_plain(
+                                tilo_ui_base::i18n::I18nManager::lookup_plain(
                                     "history-mode-content-unavailable",
                                 )
                             },
@@ -163,5 +160,5 @@ impl Widget for PreviewCanvas {
             ),
         )
     }
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 }

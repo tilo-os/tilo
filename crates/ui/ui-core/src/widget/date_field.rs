@@ -5,12 +5,15 @@ use std::rc::Rc;
 
 use jiff::civil::{Date, Time};
 
-use crate::icons::Icon;
 use crate::widget::arrange::Stack;
-use crate::widget::binding::{BoxedBinding, Pulled, derived};
-use crate::widget::{
-    AppModel, Button, ButtonRole, DatePicker, Decorator, Element, ModelPath, PopoverButton, Tone,
-    Widget,
+use crate::{widget::Button, widget::ButtonRole, widget::DatePicker, widget::PopoverButton};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{
+    widget::AppModel, widget::Decorator, widget::Element, widget::ModelPath, widget::Tone,
+    widget::Widget,
+};
+use tilo_ui_base::{
+    widget::binding::BoxedBinding, widget::binding::Pulled, widget::binding::derived,
 };
 
 #[path = "date_field_component.rs"]
@@ -37,7 +40,7 @@ pub struct DateField {
     picked: Picked,
     /// The day the calendar shows and highlights: the day the person picked, and the one the
     /// owner set from elsewhere, so the calendar never disagrees with the chip.
-    shown: crate::LocalState<Date>,
+    shown: tilo_ui_base::LocalState<Date>,
     on_change: Option<Box<dyn FnMut(Option<Date>)>>,
     bound: Option<BoxedBinding<Option<Date>>>,
     waiting: Waiting,
@@ -60,7 +63,7 @@ impl DateField {
         label: Option<&str>,
     ) -> Self {
         let picked: Picked = Rc::default();
-        let shown = crate::LocalState::new(value.unwrap_or_else(crate::clock::today));
+        let shown = tilo_ui_base::LocalState::new(value.unwrap_or_else(tilo_ui_base::clock::today));
         Self {
             inner: field(
                 Chip {
@@ -93,14 +96,14 @@ impl DateField {
     /// that picks `at`, the time of day the day is due at: a day set there shows in place.
     pub(super) fn from_state(
         id: &str,
-        state: &crate::LocalState<String>,
+        state: &tilo_ui_base::LocalState<String>,
         optional: bool,
         at: Option<&str>,
         time: Vec<Element>,
         label: Option<&str>,
         compact: bool,
     ) -> Self {
-        let (day, binding) = derived(state, |text| crate::component::moment_day(text));
+        let (day, binding) = derived(state, |text| tilo_ui_base::component::moment_day(text));
         let at = time_in(at);
         let mut field = Self::built(id, day, at, optional, compact, time, label);
         field.bound = Some(binding);
@@ -138,7 +141,8 @@ impl DateField {
             return;
         }
         self.value = value;
-        self.shown.set(value.unwrap_or_else(crate::clock::today));
+        self.shown
+            .set(value.unwrap_or_else(tilo_ui_base::clock::today));
         self.show_label();
     }
 
@@ -200,12 +204,12 @@ impl DateField {
         value.map_or_else(
             || {
                 (
-                    crate::i18n::widget_format("date-field-add", &[]),
+                    tilo_ui_base::i18n::widget_format("date-field-add", &[]),
                     Tone::Neutral,
                 )
             },
             |day| {
-                let fact = crate::format::day_fact_today(day, at);
+                let fact = tilo_ui_base::format::day_fact_today(day, at);
                 (fact.text, fact.tone)
             },
         )
@@ -222,7 +226,7 @@ impl DateField {
     pub fn spoken(label: Option<&str>, value: Option<Date>, at: Option<Time>) -> String {
         let day = Self::label(value, at);
         label.map_or(day.clone(), |label| {
-            crate::i18n::widget_format(
+            tilo_ui_base::i18n::widget_format(
                 "date-field-named",
                 &[("label", label.into()), ("day", day.into())],
             )
@@ -244,9 +248,9 @@ pub(crate) fn with_time(text: &str, time: Option<Time>) -> String {
     let Some(time) = time else {
         return String::new();
     };
-    match crate::component::moment_day(text) {
+    match tilo_ui_base::component::moment_day(text) {
         Some(day) => instant_text(day, time),
-        None => crate::format::machine!(
+        None => tilo_ui_base::format::machine!(
             "the field's value, read back rather than shown in their style",
             time.strftime("%H:%M").to_string()
         ),
@@ -255,7 +259,7 @@ pub(crate) fn with_time(text: &str, time: Option<Time>) -> String {
 
 /// The instant `day` at `time` in the person's zone, as ISO-8601 UTC text.
 pub(crate) fn instant_text(day: Date, time: Time) -> String {
-    match crate::clock::instant_of(day.to_datetime(time)) {
+    match tilo_ui_base::clock::instant_of(day.to_datetime(time)) {
         Some(at) => format!("{at:.0}"),
         None => tilo_failure::ignored!(
             "an hour the change of clocks skipped keeps its day",
@@ -275,7 +279,7 @@ pub(crate) fn time_in(text: Option<&str>) -> Option<Time> {
         "a value that is no time is shown as no time",
         text.parse::<jiff::Timestamp>()
             .ok()
-            .map(|at| crate::clock::at(at).time())
+            .map(|at| tilo_ui_base::clock::at(at).time())
     )
 }
 
@@ -297,7 +301,7 @@ fn field(
     value: Option<Date>,
     at: Option<Time>,
     picked: &Picked,
-    shown: &crate::LocalState<Date>,
+    shown: &tilo_ui_base::LocalState<Date>,
 ) -> PopoverButton<Stack> {
     let Chip {
         id,
@@ -306,14 +310,17 @@ fn field(
         compact,
         time,
     } = chip;
-    let today = crate::clock::local_now().date();
+    let today = tilo_ui_base::clock::local_now().date();
     let on_day = Rc::clone(picked);
     // The calendar is its own name inside the field: the chip carries what the day is for,
     // so a screen reader hears "Due, Today" on the field and "Calendar" on what opens over it,
     // never the same name on both.
     let picker = DatePicker::from_state(shown)
         .with_today(today)
-        .with_accessible_name(crate::i18n::widget_format("date-field-calendar", &[]))
+        .with_accessible_name(tilo_ui_base::i18n::widget_format(
+            "date-field-calendar",
+            &[],
+        ))
         .on_choose(format!("{id}-calendar"), move |day| {
             on_day.set(Some(Some(day)))
         });
@@ -326,7 +333,7 @@ fn field(
         let on_clear = Rc::clone(picked);
         let clear = Button::new(
             &format!("{id}-clear"),
-            &crate::i18n::widget_format("date-field-clear", &[]),
+            &tilo_ui_base::i18n::widget_format("date-field-clear", &[]),
         )
         .role(ButtonRole::Plain)
         .on_open(move || on_clear.set(Some(None)));
@@ -422,10 +429,10 @@ mod tests {
         phase a_day_with_its_time_reads_as_one_fact;
         {
             let nine = Time::new(9, 0, 0, 0).ok();
-            let day = crate::clock::today();
+            let day = tilo_ui_base::clock::today();
             assert_eq!(
                 DateField::label(Some(day), nine),
-                crate::format::day_fact_today(day, nine).text,
+                tilo_ui_base::format::day_fact_today(day, nine).text,
                 "the chip says the day as the platform reads a day, with its time"
             );
             assert_eq!(
@@ -437,7 +444,7 @@ mod tests {
 
         phase a_late_day_reads_in_the_overdue_tone;
         {
-            let today = crate::clock::today();
+            let today = tilo_ui_base::clock::today();
             let tomorrow = today.tomorrow().expect("a day");
             let late = today.yesterday().expect("a day");
             assert_eq!(DateField::fact(Some(tomorrow), None).1, Tone::Neutral);
@@ -476,7 +483,7 @@ mod tests {
 
         phase a_bound_day_shows_and_one_set_while_the_calendar_is_open_waits_for_it;
         {
-            let state = crate::LocalState::new("2026-06-30".to_owned());
+            let state = tilo_ui_base::LocalState::new("2026-06-30".to_owned());
             let mut field = DateField::from_state("due", &state, true, None, Vec::new(), None, false);
             assert_eq!(
                 field.value(),

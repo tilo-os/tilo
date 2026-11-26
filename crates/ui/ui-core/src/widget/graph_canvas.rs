@@ -1,9 +1,9 @@
 //! Retained graph composition: real controls on Manual, decorative themed edges.
-use super::composition_parts::{Parts, retained_parts};
-use super::{Element, Manual, MeasureConstraint, Widget};
-use crate::Theme;
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::Theme;
+use tilo_ui_base::widget::composition_parts::Parts;
+use tilo_ui_base::{widget::Element, widget::Manual, widget::MeasureConstraint, widget::Widget};
 use vello::kurbo::{BezPath, Point, Rect, Stroke};
 
 /// One domain-owned node's placement and ordinary retained content.
@@ -33,7 +33,7 @@ pub struct GraphCanvas {
     /// What the graph is called: shown over it, as a chart's title, and its name for assistive
     /// technology.
     title: Option<String>,
-    /// Where its described nodes stand, as its props said ([`Described`](crate::component::Described)).
+    /// Where its described nodes stand, as its props said ([`Described`](tilo_ui_base::component::Described)).
     layout: String,
 }
 
@@ -145,7 +145,8 @@ impl GraphCanvas {
     #[must_use]
     pub fn with_title(mut self, title: Option<String>) -> Self {
         if let Some(title) = &title {
-            let heading = super::Text::new(title).with_role(crate::tokens::TextRole::Heading);
+            let heading =
+                super::Text::new(title).with_role(tilo_ui_base::tokens::TextRole::Heading);
             self.parts.children.insert(0, Box::new(heading));
         }
         self.title = title;
@@ -172,13 +173,13 @@ impl GraphCanvas {
 }
 
 fn find(widget: &dyn Widget, id: &str) -> Option<Rect> {
-    super::find_test_id(widget, id).map(Widget::get_rect)
+    tilo_ui_base::widget::find_test_id(widget, id).map(Widget::get_rect)
 }
 
 impl Widget for GraphCanvas {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    retained_parts!("GraphCanvas");
+    tilo_ui_base::retained_parts!("GraphCanvas");
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -208,7 +209,7 @@ impl Widget for GraphCanvas {
         map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
         node
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -216,7 +217,7 @@ impl Widget for GraphCanvas {
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         // The lines are the canvas's own paint; its nodes draw as widgets of their own.
-        crate::scene_parts::picture();
+        tilo_ui_base::scene_parts::picture();
         for (from, to) in self.connection_rects() {
             let start = from.center();
             let end = to.center();
@@ -236,7 +237,7 @@ impl Widget for GraphCanvas {
                 &path,
             );
         }
-        self.parts.draw(&mut crate::draw::DrawCtx::new(
+        self.parts.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -245,9 +246,9 @@ impl Widget for GraphCanvas {
         ));
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
                 .with_optional_name(self.title.clone()),
         )
     }

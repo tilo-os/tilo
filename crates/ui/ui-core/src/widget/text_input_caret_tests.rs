@@ -7,8 +7,8 @@ use super::draw_with_theme;
 use super::drive;
 use super::middle_press;
 use super::mods;
-use crate::synthetic_input::{char_key, named_key};
 use crate::testing::{Dispatch, dispatch};
+use tilo_ui_base::{synthetic_input::char_key, synthetic_input::named_key};
 
 tilo_test_env::scenario! {
     /// A field's metadata, state, caches and bindings.
@@ -17,12 +17,12 @@ tilo_test_env::scenario! {
 
     phase hovering_and_leaving_a_field_do_not_consume_a_siblings_pointer_movement;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut input = TextInput::local();
         input.rect = Rect::new(0.0, 0.0, 200.0, 40.0);
         let mut doc = AutoCommit::new();
         for (x, hovered) in [(100.0, true), (250.0, false)] {
-            let moved = crate::synthetic_input::cursor_moved(x, 20.0);
+            let moved = tilo_ui_base::synthetic_input::cursor_moved(x, 20.0);
             assert!(!drive(&mut input, &mut doc, &moved, Modifiers::default()));
             assert_eq!(input.is_hovered, hovered);
         }
@@ -30,7 +30,7 @@ tilo_test_env::scenario! {
 
     phase value_bindings_publish_user_edits_but_not_model_updates;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let captured = std::rc::Rc::clone(&changes);
@@ -91,7 +91,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let state = crate::LocalState::new(String::from("Ada"));
+            let state = tilo_ui_base::LocalState::new(String::from("Ada"));
             let mut first = TextInput::from_state(&state);
             let mut second = TextInput::from_state(&state);
             let mut document = AutoCommit::new();
@@ -105,9 +105,9 @@ tilo_test_env::scenario! {
 
             assert!(Widget::perform_action(
                 &mut first,
-                &crate::a11y::Action::SetValue("Lin".into()),
+                &tilo_ui_base::a11y::Action::SetValue("Lin".into()),
                 &[],
-                &mut crate::widget::Edits::lend(&mut document),
+                &mut tilo_ui_base::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert_eq!(state.get(), "Lin", "user edits publish typed state");
@@ -124,7 +124,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let state = crate::LocalState::new(String::from("before"));
+            let state = tilo_ui_base::LocalState::new(String::from("before"));
             let changes = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let captured = std::rc::Rc::clone(&changes);
             let mut input = TextInput::from_state(&state)
@@ -133,9 +133,9 @@ tilo_test_env::scenario! {
 
             assert!(Widget::perform_action(
                 &mut input,
-                &crate::a11y::Action::SetValue("after".into()),
+                &tilo_ui_base::a11y::Action::SetValue("after".into()),
                 &[],
-                &mut crate::widget::Edits::lend(&mut document),
+                &mut tilo_ui_base::widget::Edits::lend(&mut document),
                 &automerge::ROOT,
             ));
             assert_eq!(state.get(), "after");
@@ -143,7 +143,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            let state = crate::LocalState::new(String::from("short"));
+            let state = tilo_ui_base::LocalState::new(String::from("short"));
             let mut input = TextInput::from_state(&state).multiline(true);
             input.apply_layout_external(Rect::new(0.0, 0.0, 240.0, 80.0));
             assert!(!Widget::layout_needs_measure(&input));
@@ -159,7 +159,7 @@ tilo_test_env::scenario! {
 
     phase disabled_input_is_inert_to_focus_keys_pointer_and_accessibility;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let enabled = TextInput::new(Vec::new());
             assert!(Widget::is_focusable(&enabled), "default input is focusable");
@@ -199,9 +199,9 @@ tilo_test_env::scenario! {
             let mut ti = TextInput::local().disabled(true);
             ti.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
 
-            let moved = crate::synthetic_input::cursor_moved(20.0, 20.0);
+            let moved = tilo_ui_base::synthetic_input::cursor_moved(20.0, 20.0);
             let moved = Dispatch::new().send(&mut ti, &moved);
-            let press = crate::synthetic_input::mouse_press();
+            let press = tilo_ui_base::synthetic_input::mouse_press();
             let press = Dispatch::new().send(&mut ti, &press);
             let handled = moved.handled | press.handled;
             let focus_target = press.focus_target.or(moved.focus_target);
@@ -247,7 +247,7 @@ tilo_test_env::scenario! {
 
     phase a_field_under_another_surface_keeps_its_text_and_gives_up_the_caret;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut input = TextInput::local().with_initial_value("kept");
         input.set_focus(true);
         input.set_selection(1, 3);
@@ -260,8 +260,8 @@ tilo_test_env::scenario! {
         );
         let mut left = Scene::new();
         {
-            let _keyboard = crate::caret_owner::holding(false);
-            assert!(!crate::caret_owner::shown());
+            let _keyboard = tilo_ui_base::caret_owner::holding(false);
+            assert!(!tilo_ui_base::caret_owner::shown());
             input.draw_single_line_caret(&mut left, Affine::IDENTITY, &theme);
         }
         assert!(
@@ -289,7 +289,7 @@ tilo_test_env::scenario! {
 
     phase caret_respects_graphemes_and_visual_bidi_order;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let mut combining = TextInput::local().with_initial_value("a\u{301}b");
             combining.set_cursor_pos(1);
@@ -422,7 +422,7 @@ tilo_test_env::scenario! {
 
     phase a_collapsed_anchor_does_not_select_the_text_inserted_after_it;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut ti = TextInput::local();
         ti.set_focus(true);
         ti.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 40.0));
@@ -441,7 +441,7 @@ tilo_test_env::scenario! {
 
     phase ime_preedit_is_shaped_underlined_and_committed_without_touching_the_document;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let mut ti = TextInput::local().with_initial_value("ab");
             ti.set_cursor_pos(1);
@@ -526,7 +526,7 @@ tilo_test_env::scenario! {
 
     phase unfocused_input_shows_start_and_placeholder;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         // Case `unfocused_input_renders_from_start_not_caret`.
         // Otherwise caret-following scroll hides the first characters.
         {
@@ -535,10 +535,10 @@ tilo_test_env::scenario! {
             ti.apply_layout_external(Rect::new(0.0, 0.0, 120.0, 24.0)); // narrow
             ti.set_cursor_pos(long.len()); // caret at the very end
             let theme = Theme::dark();
-            let presence = crate::presence::PresenceCtx::empty();
+            let presence = tilo_ui_base::presence::PresenceCtx::empty();
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
-            Widget::draw(&mut ti, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+            Widget::draw(&mut ti, &mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             assert_eq!(
                 ti.scroll_x(),
                 0.0,
@@ -546,7 +546,7 @@ tilo_test_env::scenario! {
             );
 
             ti.set_focus(true);
-            Widget::draw(&mut ti, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+            Widget::draw(&mut ti, &mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             assert!(
                 ti.scroll_x() > 0.0,
                 "focused input follows the caret on a long line"
@@ -590,12 +590,12 @@ tilo_test_env::scenario! {
         {
             let theme = Theme::dark();
             let mut tr = TextRenderer::new();
-            let presence = crate::presence::PresenceCtx::empty();
+            let presence = tilo_ui_base::presence::PresenceCtx::empty();
 
             let mut shown = TextInput::local().with_placeholder("Type here");
             shown.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
             let mut scene = Scene::new();
-            Widget::draw(&mut shown, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+            Widget::draw(&mut shown, &mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             assert!(
                 !scene.encoding().resources.glyph_runs.is_empty(),
                 "placeholder must paint a glyph run when shown",
@@ -605,7 +605,7 @@ tilo_test_env::scenario! {
             focused.set_focus(true);
             focused.apply_layout_external(Rect::new(0.0, 0.0, 200.0, 40.0));
             let mut scene_focused = Scene::new();
-            Widget::draw(&mut focused, &mut crate::draw::DrawCtx::new(&mut scene_focused, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+            Widget::draw(&mut focused, &mut tilo_ui_base::draw::DrawCtx::new(&mut scene_focused, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
             assert!(
                 !scene_focused.encoding().resources.glyph_runs.is_empty(),
                 "a focused empty input still paints the placeholder",

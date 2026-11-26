@@ -46,7 +46,7 @@ impl Meter {
         let window = Box::new(AppWindow::new(Box::new(end), Vec::new()));
         let driver = clock(now, || {
             let mut driver = ui::headless::Driver::new(ui::State::new(), window, (900, 700));
-            driver.set_theme(ui::Theme::dark().with_reduce_motion(false));
+            driver.set_theme(tilo_ui_base::Theme::dark().with_reduce_motion(false));
             driver
         });
         let mut meter = Self { app, driver, now };
@@ -77,7 +77,7 @@ impl Meter {
         self.now = now;
         clock(now, || {
             let root = self.driver.root_widget_mut();
-            ui::widget::find_mut::<AppWindow>(root)
+            tilo_ui_base::widget::find_mut::<AppWindow>(root)
                 .expect("the window")
                 .receive();
             self.driver.relayout();
@@ -86,7 +86,8 @@ impl Meter {
 
     /// Where the bar ends, as drawn.
     fn drawn(&mut self) -> f64 {
-        let drawing = ui::widget::find_mut::<ui::widget::Drawing>(self.driver.root_widget_mut());
+        let drawing =
+            tilo_ui_base::widget::find_mut::<ui::widget::Drawing>(self.driver.root_widget_mut());
         match drawing
             .expect("the meter is drawn")
             .drawn_at(self.now)
@@ -144,7 +145,7 @@ fn a_reading_moves_from_where_it_is_drawn_and_rests_on_the_latest() {
 
     // Reduced motion, and a view asking for `.still`, draw a new reading at once.
     let later = start + Duration::from_secs(4);
-    let reduced = ui::Theme::dark().with_reduce_motion(true);
+    let reduced = tilo_ui_base::Theme::dark().with_reduce_motion(true);
     clock(later, || meter.driver.set_theme(reduced));
     let mut still = Meter::open(0.2, "still", later);
     for meter in [&mut meter, &mut still] {

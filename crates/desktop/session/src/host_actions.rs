@@ -32,7 +32,7 @@ use tilo_session_core::desktop::host::contract::WORKSPACE_SETTINGS;
 #[cfg(target_os = "linux")]
 use tilo_session_core::desktop::launchpad::{LaunchpadAction, WorkspaceScope};
 use tilo_session_core::desktop::state::{DesktopHandle, HostAction, HostActionSource};
-use ui::icons::Icon;
+use tilo_ui_base::icons::Icon;
 
 /// The session's own rows, in the order a person reads them: what happens to the screen first, what
 /// happens to the computer last. Switch user and suspend are the power menu's alone.

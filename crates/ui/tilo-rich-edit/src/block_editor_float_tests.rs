@@ -2,8 +2,8 @@
 //! the narrowed column until they pass its bottom, and take the whole width again below it.
 
 use super::*;
+use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
 use ui::testing::Dispatch;
-use ui::widget::bound_nodes::BoundNodeMap;
 use winit::event::MouseButton;
 
 /// One visual row of a line: where its words start and end, and which bytes they are.
@@ -43,8 +43,9 @@ impl FloatEditor {
             .any(|block| standalone_markdown_image(block.text()).is_some());
         editor.set_blocks(blocks);
         let bytes = ui::png::encode_rgba8(200, 200, &vec![200; 200 * 200 * 4]).unwrap();
-        let fetch: ui::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
-        editor.set_image_store(Some(ui::ImageStore::new(&fetch)));
+        let fetch: tilo_ui_base::image_store::Fetcher =
+            std::sync::Arc::new(move |_| Some(bytes.clone()));
+        editor.set_image_store(Some(tilo_ui_base::ImageStore::new(&fetch)));
         if has_picture {
             assert!(
                 editor.prewarm_images_for_shots(),
@@ -52,7 +53,7 @@ impl FloatEditor {
             );
         }
         let theme = Theme::dark();
-        let mut text = ui::font_catalog::fixture_renderer();
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         text.set_text_scale(theme.text_scale);
         let mut tree = TaffyTree::new();
         let mut nodes = HashMap::new();
@@ -99,7 +100,7 @@ impl FloatEditor {
         // SAFETY: this fixture exclusively owns the stable boxed editor and the matching maps;
         // callbacks never replace blocks while measuring.
         unsafe {
-            ui::widget::compute_widget_layout(
+            tilo_ui_base::widget::compute_widget_layout(
                 &mut self.tree,
                 self.root,
                 Size {
@@ -321,7 +322,7 @@ fn a_picture_that_does_not_fit_moves_to_the_next_page_with_its_anchor() {
         let middle = low + (high - low) / 2;
         let mut editor = BlockEditor::new().with_wrap_lines(true);
         editor.set_blocks(filled(middle));
-        let mut renderer = ui::font_catalog::fixture_renderer();
+        let mut renderer = tilo_ui_base::font_catalog::fixture_renderer();
         layout_image_editor(&mut editor, 520.0, &mut renderer);
         if editor.stack.tops[middle] + height > content {
             high = middle;
@@ -362,7 +363,7 @@ fn a_picture_that_does_not_fit_moves_to_the_next_page_with_its_anchor() {
     /// The height the picture of `fixture` takes.
     fn clip_height(fixture: &FloatEditor) -> f32 {
         let picture = fixture.editor.image_preview_rects[0].expect("the picture is placed");
-        ui::num::f32_of_f64(picture.height())
+        tilo_ui_base::num::f32_of_f64(picture.height())
     }
 
     /// A page of one-line paragraphs, then the picture, then the words beside it.

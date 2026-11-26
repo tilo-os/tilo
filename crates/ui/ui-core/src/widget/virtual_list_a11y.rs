@@ -1,8 +1,8 @@
 //! The accessibility tree of a [`super::VirtualList`]: its mounted rows, and the heading
 //! before each group of them.
-use crate::i18n::widget_text;
 use std::collections::HashMap;
 use std::sync::Arc;
+use tilo_ui_base::i18n::widget_text;
 
 use super::edit::RenameStamp;
 use super::groups::{Band, HEADING_TARGET};
@@ -10,8 +10,8 @@ use super::jump::PILL_TARGET;
 use super::open::first_page_title;
 use super::{ListKey, VirtualRows};
 use super::{MountedRow, MountedRowState};
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 use vello::kurbo::Rect;
 
 pub(super) struct KeptAccessRows<K> {
@@ -107,15 +107,15 @@ impl VirtualRows {
         &self,
         row: &MountedRow<ListKey>,
         enabled: bool,
-    ) -> crate::a11y::AccessNode {
+    ) -> tilo_ui_base::a11y::AccessNode {
         let count = self.model.len();
-        let mut child = crate::a11y::stated_node(row.widget.as_ref());
+        let mut child = tilo_ui_base::a11y::stated_node(row.widget.as_ref());
         // A row the list holds but did not lay out stands nowhere: the controls it publishes (a
         // task's box) would read at the window's origin, so they carry no place.
-        if !crate::a11y::is_placed(row.widget.as_ref())
+        if !tilo_ui_base::a11y::is_placed(row.widget.as_ref())
             && let Some(node) = &mut child
         {
-            crate::a11y::unplace(node);
+            tilo_ui_base::a11y::unplace(node);
         }
         // The item held open in its row is still the row: it is named by the title its
         // document states, never by the name of the field the document happens to begin with.
@@ -194,7 +194,7 @@ impl VirtualRows {
         if (owns_the_row || self.semantic_key.is_none())
             && let Some(semantic) = child.as_ref().and_then(|node| node.semantic_key.clone())
         {
-            item.key = Some(crate::a11y::hash_key(&semantic));
+            item.key = Some(tilo_ui_base::a11y::hash_key(&semantic));
             item.semantic_key = Some(semantic);
         }
         let field = self
@@ -251,11 +251,11 @@ impl VirtualRows {
     pub(super) fn perform_a11y_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
 
         if let Some(performed) = self.perform_menu_action(target, action, state, path) {
             return performed;
@@ -323,7 +323,7 @@ impl VirtualRows {
                 Action::Activate => {
                     if !matches!(
                         self.model.row_state(index),
-                        crate::arriving::Arrival::Ready(())
+                        tilo_ui_base::arriving::Arrival::Ready(())
                     ) {
                         return false;
                     }
@@ -368,7 +368,7 @@ impl VirtualRows {
             {
                 return true;
             }
-            if let Some(stated) = crate::a11y::stated_widget_mut(row.widget.as_mut())
+            if let Some(stated) = tilo_ui_base::a11y::stated_widget_mut(row.widget.as_mut())
                 && stated.perform_semantic_action(target, action, state, path)
             {
                 return true;
@@ -490,7 +490,7 @@ impl VirtualRows {
             .with_optional_name(
                 self.accessible_name
                     .as_deref()
-                    .map(crate::i18n::I18nManager::lookup_plain),
+                    .map(tilo_ui_base::i18n::I18nManager::lookup_plain),
             )
             .with_state(
                 AccessState::new()
@@ -568,9 +568,10 @@ fn holds_controls(widget: &dyn Widget) -> bool {
 #[cfg(test)]
 mod tests {
     use super::super::open::first_page_title;
-    use crate::tokens::TextRole;
+    use crate::widget::Text;
     use crate::widget::arrange::Row;
-    use crate::widget::{Element, Text};
+    use tilo_ui_base::tokens::TextRole;
+    use tilo_ui_base::widget::Element;
 
     #[test]
     fn a_documents_title_is_the_title_it_states() {

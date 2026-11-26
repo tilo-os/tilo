@@ -7,11 +7,14 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
 use super::arrange::Fit;
-use super::{AppModel, Decorator, Element, ModelPath, StructureChange, TaffyTreeExt, Widget};
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{
+    widget::AppModel, widget::Decorator, widget::Element, widget::ModelPath,
+    widget::StructureChange, widget::TaffyTreeExt, widget::Widget,
+};
 
 #[derive(Default)]
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     framework,
     "content shown on a condition; the language writes `if`"
 )]
@@ -33,7 +36,11 @@ impl Widget for Absent {
         _theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        taffy.widget_leaf(super::layout::removed_from_flow(), node_map, self)
+        taffy.widget_leaf(
+            tilo_ui_base::widget::layout::removed_from_flow(),
+            node_map,
+            self,
+        )
     }
 
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, origin: Point) {
@@ -67,7 +74,7 @@ pub fn optional(child: Option<Element>) -> Element {
 
 /// A child shown only while a condition holds; while it does not, the child is out of its
 /// container's flow: no box, no gap, no paint, no focus and no accessibility node.
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     framework,
     "content shown on a condition; the language writes `if`"
 )]
@@ -92,7 +99,7 @@ impl When {
     }
 
     pub fn from_state<T: 'static>(
-        state: &crate::LocalState<T>,
+        state: &tilo_ui_base::LocalState<T>,
         mut visible: impl FnMut(&T) -> bool + 'static,
         child: Element,
     ) -> Self {
@@ -123,7 +130,7 @@ impl When {
     }
 }
 
-impl super::Decorator for When {
+impl tilo_ui_base::widget::Decorator for When {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -176,7 +183,7 @@ impl super::Decorator for When {
 
 /// A view with the fit its node asked for, for a described component's slot: a host wraps the
 /// view in it, and the component holds it at that fit.
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     framework,
     "the fit a view's arguments ask for, carried into a described component's slot"
 )]
@@ -252,14 +259,15 @@ impl Decorator for Fitted {
 mod tests {
 
     use super::*;
-    use crate::widget::{Column, Row, Spacer, Text};
+    use crate::{widget::Column, widget::Row, widget::Text};
+    use tilo_ui_base::widget::Spacer;
 
     fn solve(root: &mut dyn Widget, width: f32) {
         let theme = Theme::dark();
         let mut tree = TaffyTree::new();
         let mut map = HashMap::new();
         let node = root.build_layout(&mut tree, &theme, &mut map);
-        crate::text_render::with_layout_renderer(&theme, |text| {
+        tilo_ui_base::text_render::with_layout_renderer(&theme, |text| {
             tree.compute_layout_with_measure(
                 node,
                 taffy::Size {
@@ -284,7 +292,7 @@ mod tests {
     }
 
     fn rect_of(root: &dyn Widget, id: &str) -> Rect {
-        crate::widget::find_test_id(root, id)
+        tilo_ui_base::widget::find_test_id(root, id)
             .expect("child present")
             .get_rect()
     }
@@ -342,7 +350,7 @@ mod tests {
 
         phase bound_text_with_nothing_to_say_takes_no_gap;
         {
-            let caption = crate::LocalState::new(String::new());
+            let caption = tilo_ui_base::LocalState::new(String::new());
             let mut column = Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
@@ -373,7 +381,7 @@ mod tests {
 
         phase when_follows_its_state_and_asks_for_a_rebuild_on_change;
         {
-            let state = crate::LocalState::new(false);
+            let state = tilo_ui_base::LocalState::new(false);
             let mut when = When::from_state(&state, |shown| *shown, Box::new(Text::new("Caption")));
             assert!(!when.is_shown());
             assert!(

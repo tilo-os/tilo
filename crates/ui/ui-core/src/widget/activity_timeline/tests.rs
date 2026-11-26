@@ -1,14 +1,14 @@
 use super::*;
-use crate::presence::PresenceCtx;
-use crate::synthetic_input::{cursor_moved, mouse_press};
 use crate::testing::dispatch;
 use crate::time::Duration;
-use crate::widget::Widget;
 use crate::widget::history::HistoryAuthor;
 use automerge::AutoCommit;
 use collab_types::ArtifactKind;
 use std::cell::RefCell;
 use std::rc::Rc;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press};
 use winit::event::ElementState;
 
 #[allow(
@@ -17,9 +17,13 @@ use winit::event::ElementState;
     reason = "probe coordinates are non-negative pixel positions inside the test surface"
 )]
 fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
-    let (r, g, b, _) =
-        crate::offscreen::OffscreenRenderer::sample(rgba, w, x.floor() as u32, y.floor() as u32);
-    crate::a11y::relative_luminance(Color::from_rgb8(r, g, b))
+    let (r, g, b, _) = tilo_ui_base::offscreen::OffscreenRenderer::sample(
+        rgba,
+        w,
+        x.floor() as u32,
+        y.floor() as u32,
+    );
+    tilo_ui_base::a11y::relative_luminance(Color::from_rgb8(r, g, b))
 }
 
 /// `$UX1X_F4_OUT/<theme>/<name>` when the 1× review asked for evidence.
@@ -61,7 +65,7 @@ fn provenance_and_author_pill_presentation() {
     /// Writes `$UX1X_F4_OUT/<theme>/activity_timeline.png` plus the driver's
     /// inspection when that variable is set; asserts regardless.
     fn ux1x_pane_chips_and_bands_keep_a_derived_edge_on_both_presets() {
-        use crate::offscreen::OffscreenRenderer;
+        use tilo_ui_base::offscreen::OffscreenRenderer;
         const EDGE_MIN: f64 = 0.008;
         let margin = 16.0;
         let (pw, ph) = (520.0, 520.0);
@@ -97,7 +101,7 @@ fn provenance_and_author_pill_presentation() {
             let mut tr = TextRenderer::new();
             let mut scene = Scene::new();
             t.place_controls(&theme);
-            t.draw(&mut crate::draw::DrawCtx::new(
+            t.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut tr,
@@ -246,7 +250,7 @@ fn provenance_and_author_pill_presentation() {
                 .clone()
                 .unwrap_or_default()
         };
-        let task = crate::i18n::I18nManager::lookup_plain("history-work-task");
+        let task = tilo_ui_base::i18n::I18nManager::lookup_plain("history-work-task");
         assert!(
             spoken(&timeline).starts_with(&task),
             "{}",
@@ -371,7 +375,7 @@ fn click(t: &mut ActivityTimeline, p: Point) {
 
 /// Only the pub fields the widget reads are overwritten.
 fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-    crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+    tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
         logical_key,
         None,
         ElementState::Pressed,
@@ -815,7 +819,7 @@ tilo_test_env::scenario! {
 
         assert!(timeline.copy_row(row), "the face copies its result");
         assert_eq!(
-            crate::text_selection::clipboard_paste().as_deref(),
+            tilo_ui_base::text_selection::clipboard_paste().as_deref(),
             Some("3")
         );
 
@@ -853,7 +857,7 @@ tilo_test_env::scenario! {
 
     phase a_genesis_row_names_no_author_and_no_time;
     {
-        use crate::a11y::Role;
+        use tilo_ui_base::a11y::Role;
         let mut genesis = entry(EntryKind::Details, "Unknown member", 0, 1);
         genesis.summary = "Created".into();
         genesis.context = Some(tilo_actions::ActionContext {
@@ -889,7 +893,7 @@ tilo_test_env::scenario! {
     phase timeline_rows_are_accessible_keyboard_and_hover_targets;
     {
         fn accessibility_reports_list_role_name_and_count() {
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let entries = vec![
                 entry(EntryKind::Text, "Alice", 10, 1),
                 entry(EntryKind::Text, "Bob", 20, 2),
@@ -902,7 +906,7 @@ tilo_test_env::scenario! {
         }
 
         fn individual_entries_have_stable_accessible_targets_and_activate() {
-            use crate::a11y::{Action, Role};
+            use tilo_ui_base::{a11y::Action, a11y::Role};
             let activated = Rc::new(RefCell::new(Vec::new()));
             let received = activated.clone();
             let entries = vec![entry(EntryKind::Text, "Alice", 10, 1)];
@@ -921,7 +925,7 @@ tilo_test_env::scenario! {
                 &mut timeline,
                 &target,
                 &Action::Focus,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(
@@ -934,7 +938,7 @@ tilo_test_env::scenario! {
                 &mut timeline,
                 &target,
                 &Action::Activate,
-                &mut crate::widget::Edits::lend(&mut AutoCommit::new()),
+                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(timeline.selection(), Some((0, 0)));
@@ -1121,7 +1125,7 @@ fn a_long_writer_name_never_reaches_a_rows_time() {
         let mut text = TextRenderer::new();
         let mut scene = Scene::new();
         t.place_controls(&theme);
-        t.draw(&mut crate::draw::DrawCtx::new(
+        t.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
@@ -1178,7 +1182,7 @@ fn an_agent_author_has_its_face_and_no_chip() {
         .with_relation(crate::widget::history::AuthorRelation::Software);
     let mut t = timeline_at(Rect::new(8.0, 8.0, 360.0, 408.0), vec![entry]);
     t.place_controls(&theme);
-    t.draw(&mut crate::draw::DrawCtx::new(
+    t.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut Scene::new(),
         Affine::IDENTITY,
         &mut TextRenderer::new(),

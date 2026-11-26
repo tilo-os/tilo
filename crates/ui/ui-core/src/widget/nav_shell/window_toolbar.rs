@@ -236,7 +236,7 @@ impl NavShell {
     #[must_use]
     pub fn window_toolbar(&self) -> WindowToolbar {
         use crate::window_toolbar::ToolbarAction;
-        let lookup = crate::i18n::I18nManager::lookup_plain;
+        let lookup = tilo_ui_base::i18n::I18nManager::lookup_plain;
         let back = self.can_go_back();
         // Back leads in the toggle's place while the sidebar is closed on a screen or in a
         // drawer: it returns to the screen the person came from. The sidebar's own screen holds

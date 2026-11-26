@@ -3,16 +3,16 @@
 
 use vello::kurbo::{Affine, Rect, RoundedRect};
 
-use crate::paint::PaintCtx;
+use tilo_ui_base::paint::PaintCtx;
 
 use super::RowSelection;
 use super::VirtualRows;
 use super::remount::row_kept;
 use super::shown::ListShown;
-use crate::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 impl VirtualRows {
-    pub(super) fn paint(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub(super) fn paint(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -26,7 +26,7 @@ impl VirtualRows {
         if self.reduce_motion {
             self.scroll.momentum.stop();
         }
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.arrivals.mark_drawn(now);
         self.start_row_motion(self.feel.over(theme.motion()));
         self.motion = self.feel.over(theme.motion());
@@ -35,7 +35,7 @@ impl VirtualRows {
             self.scroll_metrics().overflows(),
             self.motion,
         );
-        let opacity = self.scroll.to.opacity(crate::motion::frame_now());
+        let opacity = self.scroll.to.opacity(tilo_ui_base::motion::frame_now());
         let moved = self.moved_since_presented();
         let presented = self.shown.presented().map(|shown| shown.position);
         self.shown.note(ListShown {
@@ -45,7 +45,7 @@ impl VirtualRows {
                 .map_or(self.viewport.offset(), |(position, moved)| position - moved),
             moved_known: moved.is_some(),
             rect: self.rect,
-            transform: crate::scroll_copy::on_screen(transform),
+            transform: tilo_ui_base::scroll_copy::on_screen(transform),
             beside_bar: self.rows_beside_bar,
             chrome: self.chrome_fingerprint(),
             in_motion: !self.row_motion.is_empty() || opacity < 1.0,
@@ -87,7 +87,7 @@ impl VirtualRows {
             .iter()
             .map(|row| self.row_selection(row.index))
             .collect();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let poses: Vec<(f64, f32)> = self
             .mounted
             .iter()
@@ -99,10 +99,14 @@ impl VirtualRows {
         // The row that grew into its item keeps its chevron on its own line, where it starts.
         let open = self.open.clone();
         let line_height = self.row_line;
-        let guide_color = crate::surface::edge_on(theme.tokens.colors.surfaces.content);
-        let _kept = crate::draw_cull::keep_scope(
+        let guide_color = tilo_ui_base::surface::edge_on(theme.tokens.colors.surfaces.content);
+        let _kept = tilo_ui_base::draw_cull::keep_scope(
             scene,
-            self.draw_keep(crate::scroll_copy::on_screen(frame_transform), opacity, now),
+            self.draw_keep(
+                tilo_ui_base::scroll_copy::on_screen(frame_transform),
+                opacity,
+                now,
+            ),
         );
         let focused = self.focused_key.as_ref().filter(|_| self.is_focused);
         for (((row, (row_rect, growing)), selection), (dy, alpha)) in self
@@ -128,8 +132,9 @@ impl VirtualRows {
                     .as_any_mut()
                     .and_then(|any| any.downcast_mut::<crate::widget::ListRow>())
                     .is_some_and(|list_row| {
-                        let around = content
-                            .get_or_insert_with(|| crate::widget::Widget::get_rect(list_row));
+                        let around = content.get_or_insert_with(|| {
+                            tilo_ui_base::widget::Widget::get_rect(list_row)
+                        });
                         let lift_box = super::lift::selection_around(row_rect, *around, lift_bleed);
                         list_row.set_lift_box(Some(lift_box));
                         crate::widget::RowSelectionSink::take_selection(list_row, selection);
@@ -156,9 +161,9 @@ impl VirtualRows {
             }
             let row_rect = row_rect + vello::kurbo::Vec2::new(0.0, dy);
             let row_transform = transform * Affine::translate((0.0, dy));
-            let row_key = crate::scene_parts::begin_item(
+            let row_key = tilo_ui_base::scene_parts::begin_item(
                 scene,
-                crate::scene_parts::item_key("ui.list-row", &row.key),
+                tilo_ui_base::scene_parts::item_key("ui.list-row", &row.key),
                 transform * Affine::translate((row_rect.x0, row_rect.y0)),
             );
             let faded = alpha < 1.0;
@@ -173,11 +178,11 @@ impl VirtualRows {
             }
             if let Some(lift) = lift {
                 let lift = lift + vello::kurbo::Vec2::new(0.0, dy);
-                crate::chrome::paint_row_selection_joined(
+                tilo_ui_base::chrome::paint_row_selection_joined(
                     scene,
                     transform,
                     lift,
-                    crate::chrome::SelectionState::active(selection.selected),
+                    tilo_ui_base::chrome::SelectionState::active(selection.selected),
                     theme.tokens.colors.surfaces.content,
                     theme,
                     selection.join(),
@@ -201,7 +206,7 @@ impl VirtualRows {
                 let device = transform.transform_rect_bbox(row_rect);
                 if let Some(faces) = env.sites.get(&place) {
                     for face in faces {
-                        crate::presence::render::paint_mist(
+                        tilo_ui_base::presence::render::paint_mist(
                             scene,
                             theme.tokens.colors.presence.of_rgb(face.colour),
                             device,
@@ -280,7 +285,7 @@ impl VirtualRows {
             if faded {
                 scene.pop_layer();
             }
-            crate::scene_parts::end_widget(scene, row_key);
+            tilo_ui_base::scene_parts::end_widget(scene, row_key);
         }
         self.draw_bands(scene, transform, text_renderer, theme);
         self.place_rename();

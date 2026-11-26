@@ -179,6 +179,7 @@ uuid.workspace = true
 
 # Mounts the workspace files where this user can mount FUSE.
 tilo-device-identity = { version = "0.1.0", path = "../tilo-device-identity" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The toolkit the Unix launch edge and its surface files are read with.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
 # What a device whose machine is a server keeps beyond its own copies: certification, kept

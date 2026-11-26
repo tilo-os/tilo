@@ -1,9 +1,10 @@
 //! The install's status log: what the installer reports, newest last.
 
-use ui::a11y::Politeness;
-use ui::theme::Theme;
-use ui::tokens::{Rhythm, TextRole};
-use ui::widget::{Card, Column, Element, Scrollable, Text};
+use tilo_ui_base::a11y::Politeness;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
+use ui::{widget::Card, widget::Column, widget::Scrollable, widget::Text};
 
 const VISIBLE_LINES: u16 = 8;
 
@@ -48,7 +49,9 @@ pub fn status_log(lines: &[String], theme: &Theme) -> Element {
 mod tests {
     use super::*;
 
-    fn announced(widget: &dyn ui::widget::Widget) -> Option<ui::a11y::AccessNode> {
+    fn announced(
+        widget: &dyn tilo_ui_base::widget::Widget,
+    ) -> Option<tilo_ui_base::a11y::AccessNode> {
         if widget.test_id() == Some("installer.install-status") {
             return widget.accessibility();
         }

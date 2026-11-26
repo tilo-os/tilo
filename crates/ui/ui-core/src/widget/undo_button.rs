@@ -15,25 +15,28 @@
 //! No further wiring: the host publishes the status and drains the request by
 //! sweeping its `node_map`, so the control works at any depth.
 
-use crate::i18n::widget_text;
-use crate::widget::ModelPath;
-use crate::widget::TaffyTreeExt;
 use std::collections::HashMap;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::widget::ModelPath;
+use tilo_ui_base::widget::TaffyTreeExt;
 use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::theme::Theme;
-use crate::widget::Widget;
 use crate::widget::button::FaceSizer;
-use crate::widget::undo_access::{UndoAccess, UndoRequest, UndoStatus};
 use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    widget::undo_access::UndoAccess, widget::undo_access::UndoRequest,
+    widget::undo_access::UndoStatus,
+};
 
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent pointer, focus, availability, and repaint states"
 )]
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     system,
     "history and undo are the system's (AGENTS.md principle 3)"
 )]
@@ -116,10 +119,10 @@ impl UndoButton {
         self.access.status()
     }
 
-    fn icon(&self) -> crate::icons::Icon {
+    fn icon(&self) -> tilo_ui_base::icons::Icon {
         match self.kind {
-            UndoRequest::Undo => crate::icons::Icon::Undo2,
-            UndoRequest::Redo => crate::icons::Icon::Redo2,
+            UndoRequest::Undo => tilo_ui_base::icons::Icon::Undo2,
+            UndoRequest::Redo => tilo_ui_base::icons::Icon::Redo2,
         }
     }
 
@@ -155,7 +158,7 @@ impl UndoButton {
 }
 
 impl Widget for UndoButton {
-    crate::provides!(dyn crate::widget::undo_access::UndoControl);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::undo_access::UndoControl);
 
     fn build_layout(
         &mut self,
@@ -189,7 +192,7 @@ impl Widget for UndoButton {
         &mut self,
         known: Size<Option<f32>>,
         _available: Size<taffy::AvailableSpace>,
-        text: &mut crate::text_render::TextRenderer,
+        text: &mut tilo_ui_base::text_render::TextRenderer,
     ) -> Size<f32> {
         let label = widget_text(&self.label);
         #[allow(
@@ -207,14 +210,14 @@ impl Widget for UndoButton {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let next = crate::widget::layout_rect(taffy, node, origin);
+        let next = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if next != self.rect {
             self.rect = next;
             self.dirty = true;
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -238,7 +241,7 @@ impl Widget for UndoButton {
         Button::paint(scene, transform, text_renderer, theme, &face);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if !self.is_available() {
             if self.is_hovered || self.is_pressed {
                 self.is_hovered = false;
@@ -331,19 +334,19 @@ impl Widget for UndoButton {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action {
-            crate::a11y::Action::Activate => self.activate(),
+            tilo_ui_base::a11y::Action::Activate => self.activate(),
             _ => false,
         }
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let available = self.is_available();
         Some(
             AccessNode::new(Role::Button)
@@ -370,7 +373,7 @@ impl Widget for UndoButton {
     fn mark_drawn(&mut self) {
         self.dirty = false;
         self.last_paint_state = self.paint_state();
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn is_layout_dirty(&self) -> bool {
@@ -378,7 +381,7 @@ impl Widget for UndoButton {
     }
 }
 
-impl crate::widget::undo_access::UndoControl for UndoButton {
+impl tilo_ui_base::widget::undo_access::UndoControl for UndoButton {
     fn set_undo_status(&mut self, status: &mut dyn FnMut() -> UndoStatus) {
         self.access.publish(&status());
         if !self.is_available() && self.is_focused {
@@ -397,10 +400,10 @@ impl crate::widget::undo_access::UndoControl for UndoButton {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::a11y::Action;
     use crate::testing::dispatch;
     use automerge::AutoCommit;
     use automerge::ROOT;
+    use tilo_ui_base::a11y::Action;
 
     fn button_at(kind: UndoRequest, rect: Rect) -> UndoButton {
         let mut b = match kind {
@@ -453,7 +456,7 @@ mod tests {
             // undo on the stack means `disabled`, not focusable, and a description
             // that says so.
             {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
 
                 let node = Widget::accessibility(&b).expect("an undo button is not presentational");
@@ -464,7 +467,7 @@ mod tests {
                 assert_eq!(node.description.as_deref(), Some("Nothing to undo"));
                 assert!(!b.is_enabled(), "is_enabled must agree with the a11y state");
 
-                crate::widget::undo_access::set_undo_status(&mut b, &mut || status(true, false));
+                tilo_ui_base::widget::undo_access::set_undo_status(&mut b, &mut || status(true, false));
                 let node = Widget::accessibility(&b).unwrap();
                 assert!(!node.state.disabled, "an action on the stack enables it");
                 assert!(node.state.focusable);
@@ -478,8 +481,8 @@ mod tests {
             {
                 let mut undo = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
                 let mut redo = button_at(UndoRequest::Redo, Rect::new(0.0, 0.0, 32.0, 32.0));
-                crate::widget::undo_access::set_undo_status(&mut undo, &mut || status(true, false));
-                crate::widget::undo_access::set_undo_status(&mut redo, &mut || status(true, false));
+                tilo_ui_base::widget::undo_access::set_undo_status(&mut undo, &mut || status(true, false));
+                tilo_ui_base::widget::undo_access::set_undo_status(&mut redo, &mut || status(true, false));
                 assert!(undo.is_enabled(), "undo is available");
                 assert!(!redo.is_enabled(), "redo is not, despite undo being");
                 assert_eq!(
@@ -494,7 +497,7 @@ mod tests {
                 b.dirty = false;
                 assert!(!b.needs_redraw(), "nothing has changed yet");
 
-                crate::widget::undo_access::set_undo_status(&mut b, &mut || status(true, false));
+                tilo_ui_base::widget::undo_access::set_undo_status(&mut b, &mut || status(true, false));
                 assert!(
                     b.needs_redraw() || b.needs_animation_frame(),
                     "gaining an undoable action must repaint the control"
@@ -508,7 +511,7 @@ mod tests {
             // just left the focus order.
             {
                 let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
-                crate::widget::undo_access::set_undo_status(&mut b, &mut || status(true, false));
+                tilo_ui_base::widget::undo_access::set_undo_status(&mut b, &mut || status(true, false));
                 b.set_focus(true);
                 assert!(b.is_focused());
                 assert!(
@@ -516,7 +519,7 @@ mod tests {
                     "a live, focused control reports focus"
                 );
 
-                crate::widget::undo_access::set_undo_status(&mut b, &mut || status(false, true));
+                tilo_ui_base::widget::undo_access::set_undo_status(&mut b, &mut || status(false, true));
                 assert!(!b.is_focused(), "focus is surrendered with the verb");
                 let node = Widget::accessibility(&b).unwrap();
                 assert!(!node.state.focused, "and is not reported to an AT");
@@ -530,19 +533,19 @@ mod tests {
                 let mut b = button_at(UndoRequest::Undo, Rect::new(0.0, 0.0, 32.0, 32.0));
                 click(&mut b);
                 assert_eq!(
-                    crate::widget::undo_access::take_undo_request(&mut b),
+                    tilo_ui_base::widget::undo_access::take_undo_request(&mut b),
                     None,
                     "a disabled control must not ask the host to undo"
                 );
 
-                crate::widget::undo_access::set_undo_status(&mut b, &mut || status(true, false));
+                tilo_ui_base::widget::undo_access::set_undo_status(&mut b, &mut || status(true, false));
                 click(&mut b);
                 assert_eq!(
-                    crate::widget::undo_access::take_undo_request(&mut b),
+                    tilo_ui_base::widget::undo_access::take_undo_request(&mut b),
                     Some(UndoRequest::Undo)
                 );
                 assert_eq!(
-                    crate::widget::undo_access::take_undo_request(&mut b),
+                    tilo_ui_base::widget::undo_access::take_undo_request(&mut b),
                     None,
                     "one click, one undo"
                 );
@@ -556,22 +559,22 @@ mod tests {
                     !b.perform_action(
                         &Action::Activate,
                         &[],
-                        &mut crate::widget::Edits::lend(&mut doc),
+                        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                         &ROOT
                     ),
                     "an unavailable verb declines the action"
                 );
-                assert_eq!(crate::widget::undo_access::take_undo_request(&mut b), None);
+                assert_eq!(tilo_ui_base::widget::undo_access::take_undo_request(&mut b), None);
 
-                crate::widget::undo_access::set_undo_status(&mut b, &mut || status(false, true));
+                tilo_ui_base::widget::undo_access::set_undo_status(&mut b, &mut || status(false, true));
                 assert!(b.perform_action(
                     &Action::Activate,
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &ROOT
                 ));
                 assert_eq!(
-                    crate::widget::undo_access::take_undo_request(&mut b),
+                    tilo_ui_base::widget::undo_access::take_undo_request(&mut b),
                     Some(UndoRequest::Redo)
                 );
             }

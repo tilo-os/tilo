@@ -4,12 +4,12 @@
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 
-use crate::icons::{self, Icon, LUCIDE_DEFAULT_STROKE_PX};
-use crate::paint::PaintCtx;
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::{BadgeFace, BarControlFace, ChipStyle};
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{icons, icons::Icon, icons::LUCIDE_DEFAULT_STROKE_PX};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum StatusPart {
@@ -381,7 +381,7 @@ impl<'a> StatusClusterFace<'a> {
                             None,
                             &vello::kurbo::RoundedRect::from_rect(
                                 badge,
-                                crate::chrome::ChromeRole::Selector.radius(theme, height),
+                                tilo_ui_base::chrome::ChromeRole::Selector.radius(theme, height),
                             ),
                         );
                         let ink = colors.ink_on(danger, bright, 4.5);
@@ -580,7 +580,7 @@ fn paint_battery_gauge(
     percent: u8,
     charging: bool,
     hue: Color,
-    colors: &crate::tokens::colors::Colors,
+    colors: &tilo_ui_base::tokens::colors::Colors,
 ) {
     // lucide's battery is a 16×12 body at x=2, y=6 in a 24 box, with the
     // nub from x=22. Keep those ratios so the gauge lines up optically with

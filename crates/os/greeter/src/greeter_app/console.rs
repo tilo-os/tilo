@@ -24,7 +24,7 @@ use zeroize::{Zeroize, Zeroizing};
 
 use super::{AuthPhase, GreeterApp};
 use tilo_lock::MutexRecover as _;
-use ui::a11y::AccessibilityRequest;
+use tilo_ui_base::a11y::AccessibilityRequest;
 
 /// The provider callers address the greeter's actions at.
 pub const PROVIDER: &str = "greeter";
@@ -56,7 +56,7 @@ impl ConsoleApp for Console<'_> {
     }
 
     fn published(&self) -> Vec<ResourceSpec> {
-        ui::widget::resources::resources(self.app, self.state)
+        tilo_ui_base::widget::resources::resources(self.app, self.state)
     }
 
     fn run(
@@ -465,7 +465,7 @@ fn diagnostics_action() -> Option<ActionSpec> {
     console_spec(GreeterConsole::CONFIGURE_SESSION_DIAGNOSTICS)
 }
 
-impl ui::widget::resources::PublishesResources for GreeterApp {
+impl tilo_ui_base::widget::resources::PublishesResources for GreeterApp {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         let mut resource = tilo_resource::typed_resource::<GreeterConsoleRoot>(
             PROVIDER,
@@ -599,11 +599,11 @@ mod tests {
             let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
             for phase in [AuthPhase::Idle, AuthPhase::Authenticating] {
                 app.phase = phase;
-                let resources = ui::widget::resources::resources(&app, &AutoCommit::new());
+                let resources = tilo_ui_base::widget::resources::resources(&app, &AutoCommit::new());
                 let violations = ui::tilo_actions::validate_surface(
                     &resources,
                     &ui::tilo_actions::ActionRegistry::new(),
-                    &ui::widget::resource_operation_handlers(&app),
+                    &tilo_ui_base::widget::resource_operation_handlers(&app),
                 );
                 assert!(violations.is_empty(), "{phase:?}: {violations:?}");
                 for action in [
@@ -625,7 +625,7 @@ mod tests {
             }
 
             app.phase = AuthPhase::Idle;
-            let resources = ui::widget::resources::resources(&app, &AutoCommit::new());
+            let resources = tilo_ui_base::widget::resources::resources(&app, &AutoCommit::new());
             let encoded = ui::tilo_actions::api::resolve(
                 &resources,
                 &ui::tilo_actions::ActionAddress::new(PROVIDER, "choose-session"),
@@ -634,15 +634,15 @@ mod tests {
             .build_json(json!({"session":"GNOME"}).as_object().unwrap())
             .unwrap();
             let mut doc = AutoCommit::new();
-            let started = ui::host_operation::start_operation(
+            let started = tilo_ui_base::host_operation::start_operation(
                 &mut app,
-                &ui::host_operation::ResourceOperation::local(
+                &tilo_ui_base::host_operation::ResourceOperation::local(
                     ui::tilo_actions::InvocationId::new(),
                     OperationKind::Effect,
                     &encoded.type_id,
                     &encoded.payload,
                 ),
-                &mut ui::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             )
             .unwrap();
@@ -713,7 +713,7 @@ mod tests {
                 let reply = invoke(&mut app, id, &json!({ "enabled": enabled }));
                 assert_eq!(reply["answer"]["status"], "accepted", "{id}: {reply}");
                 assert_eq!(
-                    ui::widget::Widget::take_accessibility_request(&mut app),
+                    tilo_ui_base::widget::Widget::take_accessibility_request(&mut app),
                     Some(expected),
                     "{id}"
                 );
@@ -819,10 +819,10 @@ mod authentication_tests {
         let events = std::mem::take(&mut *updates.lock().unwrap());
         for event in events {
             assert!(!event.encode().contains(SECRET));
-            ui::widget::Widget::on_external_event(
+            tilo_ui_base::widget::Widget::on_external_event(
                 app,
                 &event.encode(),
-                &mut ui::widget::Edits::lend(doc),
+                &mut tilo_ui_base::widget::Edits::lend(doc),
                 &automerge::ROOT,
             );
         }
@@ -1224,7 +1224,9 @@ mod authentication_tests {
     fn remote_sign_in_fixture_child() {
         let Some(route) = std::env::var_os("TILO_GREETER_CONSOLE_AUTH_FIXTURE") else {
             let app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
-            assert!(!ui::widget::resources::resources(&app, &AutoCommit::new()).is_empty());
+            assert!(
+                !tilo_ui_base::widget::resources::resources(&app, &AutoCommit::new()).is_empty()
+            );
             return;
         };
         let _logs = tracing_subscriber::fmt()
@@ -1234,7 +1236,7 @@ mod authentication_tests {
         let mut app = GreeterApp::for_shot(AuthScenario::PersonalSessions);
         assert!(!app.keyboard_focus);
         let mut doc = AutoCommit::new();
-        let resources = ui::widget::resources::resources(&app, &doc);
+        let resources = tilo_ui_base::widget::resources::resources(&app, &doc);
         let args = json!({"password":SECRET}).as_object().unwrap().clone();
         // The secret is a `Secret` parameter: the published catalogue never
         // carries it; it reaches the handler only inside the in-process
@@ -1258,19 +1260,19 @@ mod authentication_tests {
             .unwrap()
             .build_json(&args)
             .unwrap();
-            let started = ui::host_operation::start_operation(
+            let started = tilo_ui_base::host_operation::start_operation(
                 &mut app,
-                &ui::host_operation::ResourceOperation::local(
+                &tilo_ui_base::host_operation::ResourceOperation::local(
                     ui::tilo_actions::InvocationId::new(),
                     OperationKind::Effect,
                     &encoded.type_id,
                     &encoded.payload,
                 ),
-                &mut ui::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             )
             .unwrap()
-            .and_then(ui::host_operation::ResourceOperationStart::completed)
+            .and_then(tilo_ui_base::host_operation::ResourceOperationStart::completed)
             .unwrap();
             started.value.unwrap().to_string()
         } else {

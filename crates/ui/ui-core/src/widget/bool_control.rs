@@ -3,10 +3,12 @@
 //! action broker.
 
 #[cfg(feature = "model")]
-use crate::permissions::PermissionScope;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::widget::binding::{BoxedBinding, Pulled};
-use crate::widget::{ActionEmitter, AppModel, ControlBindingMetadata, ModelPath};
+use tilo_ui_base::permissions::PermissionScope;
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
+use tilo_ui_base::{
+    widget::ActionEmitter, widget::AppModel, widget::ControlBindingMetadata, widget::ModelPath,
+};
+use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
 use vello::kurbo::Rect;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -57,8 +59,8 @@ impl BoolAction {
 
     pub(crate) fn attach(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         let _ = match self {
             Self::Value(action) => action.attach(domain, attachment),
@@ -118,7 +120,7 @@ pub(super) struct BoolControl {
     /// What a flip, a press or a screen reader's set calls with the value it sets.
     pub on_set: Option<BoolViewHandler>,
     pub action: Option<BoolAction>,
-    pub interaction: crate::interaction::InteractionEnvironment,
+    pub interaction: tilo_ui_base::interaction::InteractionEnvironment,
 }
 
 impl BoolControl {
@@ -134,7 +136,7 @@ impl BoolControl {
             "a bound control needs a document key; a value of its own is built with `given`"
         );
         Self {
-            binding: Some(crate::doc_source::bool_key(document_key)),
+            binding: Some(tilo_ui_base::doc_source::bool_key(document_key)),
             ..Self::bare(accessible_name)
         }
     }
@@ -166,12 +168,12 @@ impl BoolControl {
             binding: None,
             on_set: None,
             action: None,
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
         }
     }
 
-    pub fn local(state: &crate::LocalState<bool>, accessible_name: Option<String>) -> Self {
-        let (checked, binding) = super::binding::local(state);
+    pub fn local(state: &tilo_ui_base::LocalState<bool>, accessible_name: Option<String>) -> Self {
+        let (checked, binding) = tilo_ui_base::widget::binding::local(state);
         Self {
             is_checked: checked,
             binding: Some(binding),
@@ -181,7 +183,7 @@ impl BoolControl {
 
     #[must_use]
     pub fn focus_visible(&self) -> bool {
-        self.is_focused && !self.pressed_into_focus && crate::focus_visible::shown()
+        self.is_focused && !self.pressed_into_focus && tilo_ui_base::focus_visible::shown()
     }
 
     /// The state the control paints: its own hover, focus ring and availability, or the state an
@@ -208,7 +210,7 @@ impl BoolControl {
 
     pub fn spoken_name(&self) -> Option<String> {
         let name = self.accessible_name.as_ref()?;
-        crate::i18n::spoken_name(name, self.name_resolved)
+        tilo_ui_base::i18n::spoken_name(name, self.name_resolved)
     }
 
     pub fn test_id<'a>(&'a self, kind: &'a str) -> &'a str {
@@ -257,7 +259,7 @@ impl BoolControl {
 
     pub fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.interaction = environment;
         self.is_hovered &= environment.supports_hover();
@@ -273,7 +275,11 @@ impl BoolControl {
         }
     }
 
-    pub fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    pub fn handle_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
         if !self.enabled {
             return;
         }
@@ -321,8 +327,8 @@ impl BoolControl {
         }
     }
 
-    pub fn perform_action(&mut self, action: &crate::a11y::Action) -> bool {
-        use crate::a11y::Action;
+    pub fn perform_action(&mut self, action: &tilo_ui_base::a11y::Action) -> bool {
+        use tilo_ui_base::a11y::Action;
         if !self.effectively_enabled() {
             return false;
         }
@@ -344,7 +350,7 @@ impl BoolControl {
         if let Some(action) = &self.action {
             return vec![action.metadata(id)];
         }
-        crate::widget::controls::value_control_bindings::<bool>(
+        tilo_ui_base::widget::controls::value_control_bindings::<bool>(
             id,
             None,
             self.binding.as_ref().and_then(|b| b.document_key()),
@@ -367,7 +373,7 @@ macro_rules! bool_control_api {
         #[must_use]
         pub fn on_action(mut self, binding: tilo_actions::ActionBinding<bool>) -> Self {
             self.control.action = Some(crate::widget::BoolAction::Value(
-                crate::widget::ActionEmitter::new(binding),
+                tilo_ui_base::widget::ActionEmitter::new(binding),
             ));
             self.control.on_set = None;
             self
@@ -376,7 +382,7 @@ macro_rules! bool_control_api {
         #[must_use]
         pub fn on_choose_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
             self.control.action = Some(crate::widget::BoolAction::Press(
-                crate::widget::ActionEmitter::new(binding),
+                tilo_ui_base::widget::ActionEmitter::new(binding),
             ));
             self.control.on_set = None;
             self
@@ -396,14 +402,17 @@ macro_rules! bool_control_api {
         }
 
         #[must_use]
-        pub fn with_presence(mut self, path: Vec<crate::presence::PathSegment>) -> Self {
+        pub fn with_presence(mut self, path: Vec<tilo_ui_base::presence::PathSegment>) -> Self {
             self.control.presence_path = path;
             self
         }
 
         #[must_use]
         #[cfg(feature = "model")]
-        pub fn with_permission_scope(mut self, scope: crate::permissions::PermissionScope) -> Self {
+        pub fn with_permission_scope(
+            mut self,
+            scope: tilo_ui_base::permissions::PermissionScope,
+        ) -> Self {
             self.control.permission_scope = Some(scope);
             self
         }
@@ -454,43 +463,47 @@ pub(super) use bool_control_api;
 /// [`BoolControl::handle_event`], a switch also lets its knob be dragged.
 macro_rules! bool_control_widget_methods {
     ($kind:literal) => {
-        fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+        fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
             #[cfg(feature = "model")]
-            if request.wants::<dyn crate::widget::permission::PermissionGuarded>() {
-                request.provide::<dyn crate::widget::permission::PermissionGuarded>(self);
+            if request.wants::<dyn tilo_ui_base::widget::permission::PermissionGuarded>() {
+                request.provide::<dyn tilo_ui_base::widget::permission::PermissionGuarded>(self);
                 return;
             }
-            if request.wants::<dyn crate::widget::controls::ActionControls>() {
-                request.provide::<dyn crate::widget::controls::ActionControls>(self);
-            } else if request.wants::<dyn crate::presence::capability::PublishesPresence>() {
-                request.provide::<dyn crate::presence::capability::PublishesPresence>(self);
+            if request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
+                request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
+            } else if request.wants::<dyn tilo_ui_base::presence::capability::PublishesPresence>() {
+                request.provide::<dyn tilo_ui_base::presence::capability::PublishesPresence>(self);
             }
         }
 
         fn provide_mut<'a>(
             &'a mut self,
-            request: &mut crate::widget::capability::RequestMut<'a, '_>,
+            request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
         ) {
             #[cfg(feature = "model")]
-            if request.wants::<dyn crate::widget::permission::PermissionGuarded>() {
-                request.provide::<dyn crate::widget::permission::PermissionGuarded>(self);
+            if request.wants::<dyn tilo_ui_base::widget::permission::PermissionGuarded>() {
+                request.provide::<dyn tilo_ui_base::widget::permission::PermissionGuarded>(self);
                 return;
             }
-            if request.wants::<dyn crate::widget::controls::ActionControls>() {
-                request.provide::<dyn crate::widget::controls::ActionControls>(self);
-            } else if request.wants::<dyn crate::presence::capability::PublishesPresence>() {
-                request.provide::<dyn crate::presence::capability::PublishesPresence>(self);
+            if request.wants::<dyn tilo_ui_base::widget::controls::ActionControls>() {
+                request.provide::<dyn tilo_ui_base::widget::controls::ActionControls>(self);
+            } else if request.wants::<dyn tilo_ui_base::presence::capability::PublishesPresence>() {
+                request.provide::<dyn tilo_ui_base::presence::capability::PublishesPresence>(self);
             }
         }
 
         fn set_interaction_environment(
             &mut self,
-            environment: crate::interaction::InteractionEnvironment,
+            environment: tilo_ui_base::interaction::InteractionEnvironment,
         ) {
             self.control.set_interaction_environment(environment);
         }
 
-        fn sync(&mut self, state: &crate::widget::AppModel, root: &crate::widget::ModelPath) {
+        fn sync(
+            &mut self,
+            state: &tilo_ui_base::widget::AppModel,
+            root: &tilo_ui_base::widget::ModelPath,
+        ) {
             self.control.sync(state, root);
         }
 
@@ -518,10 +531,10 @@ macro_rules! bool_control_widget_methods {
 
         fn perform_action(
             &mut self,
-            action: &crate::a11y::Action,
+            action: &tilo_ui_base::a11y::Action,
             _key_path: &[u64],
-            _state: &mut crate::widget::Edits<'_>,
-            _path: &crate::widget::ModelPath,
+            _state: &mut tilo_ui_base::widget::Edits<'_>,
+            _path: &tilo_ui_base::widget::ModelPath,
         ) -> bool {
             self.control.perform_action(action)
         }
@@ -533,24 +546,24 @@ pub(super) use bool_control_widget_methods;
 /// from its [`BoolControl`]; `$kind` is the default test id.
 macro_rules! bool_control_capabilities {
     ($ty:ty, $kind:literal) => {
-        impl crate::presence::capability::PublishesPresence for $ty {
-            fn presence_key(&self) -> Option<crate::presence::PresenceKey> {
+        impl tilo_ui_base::presence::capability::PublishesPresence for $ty {
+            fn presence_key(&self) -> Option<tilo_ui_base::presence::PresenceKey> {
                 self.control.presence_key()
             }
         }
 
         #[cfg(feature = "model")]
-        impl crate::widget::permission::PermissionGuarded for $ty {
-            fn permission_scope(&self) -> Option<crate::permissions::PermissionScope> {
+        impl tilo_ui_base::widget::permission::PermissionGuarded for $ty {
+            fn permission_scope(&self) -> Option<tilo_ui_base::permissions::PermissionScope> {
                 self.control.permission_scope.clone()
             }
         }
 
-        impl crate::widget::controls::ActionControls for $ty {
+        impl tilo_ui_base::widget::controls::ActionControls for $ty {
             fn attach_controls(
                 &mut self,
-                domain: &crate::ControlDomain,
-                attachment: crate::control_domain::DomainAttachment,
+                domain: &tilo_ui_base::ControlDomain,
+                attachment: tilo_ui_base::control_domain::DomainAttachment,
             ) {
                 if let Some(action) = &mut self.control.action {
                     action.attach(domain, attachment);
@@ -570,7 +583,7 @@ macro_rules! bool_control_capabilities {
                     action.refresh_availability(allowed);
                 }
             }
-            fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+            fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
                 self.control.control_action_bindings($kind)
             }
         }

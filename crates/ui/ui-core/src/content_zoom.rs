@@ -4,8 +4,8 @@
 use winit::event::{ElementState, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, ModifiersState};
 
-use crate::platform::PlatformConventions;
 use crate::time::Instant;
+use tilo_ui_base::platform::PlatformConventions;
 
 /// The zoom levels every step moves between, as factors of the default.
 pub const LEVELS: [f32; 13] = [
@@ -243,7 +243,7 @@ impl ZoomModel {
         if self.is_default() {
             default_label.to_string()
         } else {
-            crate::format::percent(f64::from(self.factor))
+            tilo_ui_base::format::percent(f64::from(self.factor))
         }
     }
 }
@@ -279,11 +279,11 @@ pub fn controls<F: FnMut(ZoomStep) + 'static>(
         crate::widget::Button::icon_only(
             &format!("{prefix}.{id}"),
             match wanted {
-                ZoomStep::In => crate::icons::Icon::Plus,
-                ZoomStep::Out => crate::icons::Icon::Minus,
-                ZoomStep::Reset => crate::icons::Icon::Maximize2,
+                ZoomStep::In => tilo_ui_base::icons::Icon::Plus,
+                ZoomStep::Out => tilo_ui_base::icons::Icon::Minus,
+                ZoomStep::Reset => tilo_ui_base::icons::Icon::Maximize2,
             },
-            &crate::i18n::I18nManager::lookup_plain(key),
+            &tilo_ui_base::i18n::I18nManager::lookup_plain(key),
         )
         .with_enabled(model.can_step(wanted))
         .on_click(step(wanted))
@@ -347,8 +347,9 @@ pub trait ContentZoom {
 
 /// Offer `step` to the widgets under `widget`, depth first: the factor the first one that took it now
 /// shows.
-pub fn offer(widget: &mut dyn crate::widget::Widget, step: ZoomStep) -> Option<f32> {
-    if let Some(zoom) = crate::widget::capability::capability_mut::<dyn ContentZoom>(&mut *widget)
+pub fn offer(widget: &mut dyn tilo_ui_base::widget::Widget, step: ZoomStep) -> Option<f32> {
+    if let Some(zoom) =
+        tilo_ui_base::widget::capability::capability_mut::<dyn ContentZoom>(&mut *widget)
         && let Some(factor) = zoom.zoom_content(step)
     {
         return Some(factor);
@@ -359,8 +360,8 @@ pub fn offer(widget: &mut dyn crate::widget::Widget, step: ZoomStep) -> Option<f
         .find_map(|child| offer(child, step))
 }
 
-pub fn provided(widget: &mut dyn crate::widget::Widget) -> bool {
-    crate::widget::capability::capability_mut::<dyn ContentZoom>(&mut *widget).is_some()
+pub fn provided(widget: &mut dyn tilo_ui_base::widget::Widget) -> bool {
+    tilo_ui_base::widget::capability::capability_mut::<dyn ContentZoom>(&mut *widget).is_some()
         || widget
             .children_mut()
             .into_iter()
@@ -459,7 +460,7 @@ impl WindowZoom {
     /// Say the level `factor` in the window's bar (a widget zoom says its level the same way); the same
     /// level again (a step at a bound) says it once more.
     pub fn indicate(&mut self, factor: f32, _now: Instant) {
-        let text = crate::format::percent(f64::from(factor));
+        let text = tilo_ui_base::format::percent(f64::from(factor));
         self.level.show(text);
         self.publish();
     }
@@ -545,7 +546,7 @@ impl WindowZoom {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::platform::Platform;
+    use tilo_ui_base::platform::Platform;
 
     tilo_test_env::scenario! {
         fn zoom_steps_move_between_levels_by_key;

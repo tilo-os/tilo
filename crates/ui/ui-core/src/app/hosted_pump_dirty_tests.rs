@@ -13,9 +13,9 @@ struct HostedPumpProbe {
     actions: usize,
 }
 impl Widget for HostedPumpProbe {
-    crate::provides!(
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     crate::testing::inert_widget_methods!(unregistered_leaf_layout, name = "hosted-pump-probe");
@@ -27,28 +27,30 @@ impl Widget for HostedPumpProbe {
     }
 }
 
-impl crate::widget::ResourceOperations for HostedPumpProbe {
+impl tilo_ui_base::widget::ResourceOperations for HostedPumpProbe {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE]
     }
 
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         let request = op.request();
         assert_eq!(request.kind, OperationKind::View);
         assert_eq!(request.type_id, COUNTER_TYPE);
         *self.pending_label.borrow_mut() = Some("After".into());
-        Ok(Some(crate::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(
+            tilo_ui_base::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
 }
 
-impl crate::widget::resources::PublishesResources for HostedPumpProbe {
+impl tilo_ui_base::widget::resources::PublishesResources for HostedPumpProbe {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         self.calls.set(self.calls.get() + 1);
         let count = if doc.get(ROOT, "more").unwrap().is_some() {
@@ -90,15 +92,15 @@ struct HostedPumpFixture {
     pending_label: std::rc::Rc<RefCell<Option<String>>>,
     sent: std::rc::Rc<RefCell<Vec<CollabRequest>>>,
     events: std::rc::Rc<RefCell<Vec<CollabEvent>>>,
-    directory: std::rc::Rc<RefCell<Vec<crate::collaboration::ActionDirectoryRequest>>>,
+    directory: std::rc::Rc<RefCell<Vec<tilo_ui_base::collaboration::ActionDirectoryRequest>>>,
 }
 
 struct HostedPumpTransport {
     sent: std::rc::Rc<RefCell<Vec<CollabRequest>>>,
     events: std::rc::Rc<RefCell<Vec<CollabEvent>>>,
-    directory: std::rc::Rc<RefCell<Vec<crate::collaboration::ActionDirectoryRequest>>>,
+    directory: std::rc::Rc<RefCell<Vec<tilo_ui_base::collaboration::ActionDirectoryRequest>>>,
 }
-impl crate::collaboration::PeerTransport for HostedPumpTransport {
+impl tilo_ui_base::collaboration::PeerTransport for HostedPumpTransport {
     fn is_connected(&self) -> bool {
         true
     }
@@ -114,7 +116,7 @@ impl crate::collaboration::PeerTransport for HostedPumpTransport {
     }
     fn take_action_directory_requests(
         &mut self,
-    ) -> Vec<crate::collaboration::ActionDirectoryRequest> {
+    ) -> Vec<tilo_ui_base::collaboration::ActionDirectoryRequest> {
         std::mem::take(&mut *self.directory.borrow_mut())
     }
 }
@@ -194,7 +196,7 @@ impl HostedPumpFixture {
         let mut response = waits.then_some(response);
         self.directory
             .borrow_mut()
-            .push(crate::collaboration::ActionDirectoryRequest::Query { query, reply });
+            .push(tilo_ui_base::collaboration::ActionDirectoryRequest::Query { query, reply });
         self.wake.notify_events();
         let report = self.pump();
         let page = response
@@ -259,7 +261,7 @@ tilo_test_env::scenario! {
             .unwrap();
         assert!(matches!(
             started,
-            crate::widget::ResourceOperationStart::Completed(_)
+            tilo_ui_base::widget::ResourceOperationStart::Completed(_)
         ));
         assert_eq!(
             fixture.app.state.doc.save(),
@@ -393,10 +395,10 @@ tilo_test_env::scenario! {
         let mut fixture = HostedPumpFixture::new(1);
         let time = Arc::new(AtomicU64::new(100));
         let sample = time.clone();
-        fixture.app.permission_ctx = crate::permissions::PermissionContext::granted(
-            &crate::permissions::MemberId::person("fixture-user"),
-            &crate::permissions::TreePath::root(),
-            crate::permissions::policy::KindSet::ALL,
+        fixture.app.permission_ctx = tilo_ui_base::permissions::PermissionContext::granted(
+            &tilo_ui_base::permissions::MemberId::person("fixture-user"),
+            &tilo_ui_base::permissions::TreePath::root(),
+            tilo_ui_base::permissions::policy::KindSet::ALL,
             Some(110),
         )
         .with_policy_time_sampler(Arc::new(move || Ok(sample.load(Ordering::Acquire))));
@@ -443,8 +445,8 @@ tilo_test_env::scenario! {
             opens_before_resource: false,
             create: owned_declared_directory_factory,
         };
-        let permissions = crate::permissions::SharedPermissions::new(
-            crate::permissions::PermissionContext::permissive(),
+        let permissions = tilo_ui_base::permissions::SharedPermissions::new(
+            tilo_ui_base::permissions::PermissionContext::permissive(),
         );
         let context = ProcessContext::prepare(
             &definition,
@@ -454,7 +456,7 @@ tilo_test_env::scenario! {
                 device_id: "D".into(),
                 instance_id: 82,
                 permissions: permissions.clone(),
-                author: crate::permissions::MemberId::person("fixture-user"),
+                author: tilo_ui_base::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &LaunchTarget::New,
@@ -466,14 +468,14 @@ tilo_test_env::scenario! {
         let binding = component.callback_binding();
         let inputs = crate::application::ComponentRunnerInputs {
             theme: Theme::dark(),
-            text_renderer: crate::font_catalog::fixture_renderer(),
+            text_renderer: tilo_ui_base::font_catalog::fixture_renderer(),
         };
         let mut app = App::from_component_using(component, inputs, |_, _| {
             AppConstructionInputs::controlled()
         })
         .unwrap();
         app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
-        app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
+        app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
             route: binding.broker_route().unwrap(),
             epoch: uuid::Uuid::new_v4(),
         });
@@ -489,8 +491,8 @@ tilo_test_env::scenario! {
         );
         assert_eq!(app.actions.resource_generation.get(), generation);
         // What a host does with its recomputed authority before a pump.
-        permissions.set(crate::permissions::PermissionContext::stranger(
-            &crate::permissions::MemberId::person("fixture-user"),
+        permissions.set(tilo_ui_base::permissions::PermissionContext::stranger(
+            &tilo_ui_base::permissions::MemberId::person("fixture-user"),
         ));
         let report = app.pump_hosted_model_as(false);
         assert!(report.synced && report.published);
@@ -540,10 +542,10 @@ tilo_test_env::scenario! {
                 views,
                 device_id: "D".into(),
                 instance_id: 83,
-                permissions: crate::permissions::SharedPermissions::new(
-                    crate::permissions::PermissionContext::permissive(),
+                permissions: tilo_ui_base::permissions::SharedPermissions::new(
+                    tilo_ui_base::permissions::PermissionContext::permissive(),
                 ),
-                author: crate::permissions::MemberId::person("fixture-user"),
+                author: tilo_ui_base::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &LaunchTarget::New,
@@ -556,14 +558,14 @@ tilo_test_env::scenario! {
         let binding = component.callback_binding();
         let inputs = crate::application::ComponentRunnerInputs {
             theme: Theme::dark(),
-            text_renderer: crate::font_catalog::fixture_renderer(),
+            text_renderer: tilo_ui_base::font_catalog::fixture_renderer(),
         };
         let mut app = App::from_component_using(component, inputs, |_, _| {
             AppConstructionInputs::controlled()
         })
         .unwrap();
         app.collaboration.manager = CollaborationManager::connected_for_lifecycle_test();
-        app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
+        app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
             route: binding.broker_route().unwrap(),
             epoch: uuid::Uuid::new_v4(),
         });
@@ -602,19 +604,19 @@ tilo_test_env::scenario! {
 
     phase hosted_pump_action_authority_revoke_refreshes_without_forced_sync;
     {
-        use crate::permissions::{PermissionContext, Role};
+        use tilo_ui_base::{permissions::PermissionContext, permissions::Role};
         use std::sync::{Arc, Mutex};
         let current = Arc::new(Mutex::new(Some(Role::Owner)));
         let sample = current.clone();
         let mut fixture = HostedPumpFixture::new(1);
         fixture.app.permission_ctx =
-            crate::permissions::PermissionContext::member(&crate::permissions::MemberId::person("fixture-user"), Role::Editor)
+            tilo_ui_base::permissions::PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("fixture-user"), Role::Editor)
                 .with_action_authority(
                     "test.directory".into(),
                     Arc::new(move || {
                         Ok(match *sample.lock().unwrap() {
-                            Some(role) => PermissionContext::member(&crate::permissions::MemberId::person("fixture-user"), role),
-                            None => PermissionContext::stranger(&crate::permissions::MemberId::person("fixture-user")),
+                            Some(role) => PermissionContext::member(&tilo_ui_base::permissions::MemberId::person("fixture-user"), role),
+                            None => PermissionContext::stranger(&tilo_ui_base::permissions::MemberId::person("fixture-user")),
                         })
                     }),
                 );
@@ -770,9 +772,9 @@ mod input_publication {
     }
 
     impl Widget for InputProbe {
-        crate::provides!(
-            dyn crate::widget::resources::PublishesResources,
-            dyn crate::widget::ResourceOperations
+        tilo_ui_base::provides!(
+            dyn tilo_ui_base::widget::resources::PublishesResources,
+            dyn tilo_ui_base::widget::ResourceOperations
         );
 
         crate::testing::inert_widget_methods!(
@@ -780,7 +782,11 @@ mod input_publication {
             name = "input-publication-probe"
         );
 
-        fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+        ) {
             match event {
                 WindowEvent::MouseInput { state, .. } => {
                     self.pressed = *state == ElementState::Pressed;
@@ -794,7 +800,7 @@ mod input_publication {
                     }
                     if position.x > 500.0 && !self.menu_open {
                         self.menu_open = true;
-                        crate::widget::note_resource_presentation_changed();
+                        tilo_ui_base::widget::note_resource_presentation_changed();
                     }
                     if position.y > 500.0 {
                         ctx.state.document_mut().put(ROOT, "hovered", true).unwrap();
@@ -815,13 +821,13 @@ mod input_publication {
         }
     }
 
-    impl crate::widget::ResourceOperations for InputProbe {
+    impl tilo_ui_base::widget::ResourceOperations for InputProbe {
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &[COUNTER_TYPE]
         }
     }
 
-    impl crate::widget::resources::PublishesResources for InputProbe {
+    impl tilo_ui_base::widget::resources::PublishesResources for InputProbe {
         fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
             self.calls.set(self.calls.get() + 1);
             let hovered = doc.get(ROOT, "hovered").unwrap().is_some();
@@ -878,13 +884,17 @@ mod input_publication {
     }
 
     fn move_to(app: &mut App, x: f64, y: f64) {
-        app.surface_input(&Surface, crate::synthetic_input::cursor_moved(x, y), false);
+        app.surface_input(
+            &Surface,
+            tilo_ui_base::synthetic_input::cursor_moved(x, y),
+            false,
+        );
     }
 
     fn button(app: &mut App, state: ElementState) {
         app.surface_input(
             &Surface,
-            crate::synthetic_input::mouse_input(state, MouseButton::Left),
+            tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left),
             false,
         );
     }
@@ -892,7 +902,7 @@ mod input_publication {
     fn release(app: &mut App, key: &str) {
         app.surface_input(
             &Surface,
-            crate::synthetic_input::key_input(
+            tilo_ui_base::synthetic_input::key_input(
                 &winit::keyboard::Key::Character(key.into()),
                 ElementState::Released,
             ),
@@ -982,7 +992,7 @@ mod input_publication {
 
 /// A part built in the update that sees its answer land, as a query's
 /// arriving view is: no model state moves, only the widgets shown change.
-struct AnswerPart(crate::widget::Element, std::rc::Rc<Cell<bool>>, bool);
+struct AnswerPart(tilo_ui_base::widget::Element, std::rc::Rc<Cell<bool>>, bool);
 impl Widget for AnswerPart {
     crate::testing::delegate_widget_methods!(
         0: sync, build_layout, apply_layout, draw, handle_event, get_rect

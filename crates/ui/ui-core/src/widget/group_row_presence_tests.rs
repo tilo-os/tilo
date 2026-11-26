@@ -16,19 +16,21 @@ struct Field {
 impl Field {
     fn new(field: &str, drawn: Rc<Cell<Rect>>) -> Self {
         let mut input =
-            crate::widget::TextInput::new(vec![crate::presence::PathSegment::Field(field.into())]);
+            crate::widget::TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field(
+                field.into(),
+            )]);
         input.set_text("the words a note holds");
         Self { input, drawn }
     }
 
-    fn key(field: &str) -> crate::presence::PresenceKey {
-        crate::presence::PresenceKey::Widget {
-            path: vec![crate::presence::PathSegment::Field(field.into())],
+    fn key(field: &str) -> tilo_ui_base::presence::PresenceKey {
+        tilo_ui_base::presence::PresenceKey::Widget {
+            path: vec![tilo_ui_base::presence::PathSegment::Field(field.into())],
         }
     }
 }
 
-impl crate::widget::Decorator for Field {
+impl tilo_ui_base::widget::Decorator for Field {
     type Inner = crate::widget::TextInput;
 
     fn inner(&self) -> &crate::widget::TextInput {
@@ -39,16 +41,16 @@ impl crate::widget::Decorator for Field {
         &mut self.input
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        crate::widget::Widget::draw(
+        tilo_ui_base::widget::Widget::draw(
             &mut self.input,
-            &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
         );
         self.drawn.set(self.input.caret_rect(theme, 0));
     }
@@ -100,8 +102,8 @@ fn strip(count: usize, field: &str, drawn: Rc<Cell<Rect>>) -> GroupRow {
 
 fn frame(
     row: &mut GroupRow,
-    text: &mut crate::text_render::TextRenderer,
-    presence: &crate::presence::PresenceCtx,
+    text: &mut tilo_ui_base::text_render::TextRenderer,
+    presence: &tilo_ui_base::presence::PresenceCtx,
     kind: PanFrame,
 ) {
     thread_local! {
@@ -117,7 +119,7 @@ fn frame(
     });
     let _frame = PanReplay::begin(kind, number);
     let mut scene = Scene::new();
-    row.draw(&mut crate::draw::DrawCtx::new(
+    row.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         text,
@@ -127,7 +129,7 @@ fn frame(
     row.mark_drawn();
 }
 
-fn mark(presence: &crate::presence::PresenceCtx) -> Rect {
+fn mark(presence: &tilo_ui_base::presence::PresenceCtx) -> Rect {
     let marks = presence.presence_marks();
     assert_eq!(marks.len(), 1, "one caret for one peer: {marks:?}");
     marks[0].rect
@@ -145,10 +147,10 @@ fn a_window_replayed_through_a_pan_tells_a_reader_where_its_caret_moved_to() {
     let drawn = Rc::new(Cell::new(Rect::ZERO));
     let mut row = strip(2, "second", Rc::clone(&drawn));
     let peer = tilo_action_policy::MemberId::person("claude");
-    let mut presence = crate::presence::PresenceCtx::empty();
+    let mut presence = tilo_ui_base::presence::PresenceCtx::empty();
     presence.set_display_name(peer.clone(), "Claude Code");
     presence.set_caret(&Field::key("second"), peer, 0);
-    let text = &mut crate::text_render::TextRenderer::new();
+    let text = &mut tilo_ui_base::text_render::TextRenderer::new();
 
     frame(&mut row, text, &presence, PanFrame::Drawn);
     let home = drawn.get();
@@ -192,7 +194,7 @@ fn mark_bounds(node: &crate::headless::InspectionNode) -> Option<Rect> {
             .semantics
             .as_ref()
             .and_then(|semantics| semantics.bounds)
-            .map(crate::a11y::AccessBounds::to_rect);
+            .map(tilo_ui_base::a11y::AccessBounds::to_rect);
     }
     node.children.iter().find_map(mark_bounds)
 }

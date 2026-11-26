@@ -90,12 +90,12 @@ impl View {
 /// What `root` shows, as a [`View`]: its scroll and view mode, and the record it has open. Only
 /// Tilo's model opens a record, so without it a view names none.
 pub(crate) fn capture_widget_view_bound(
-    root: &dyn crate::widget::Widget,
+    root: &dyn tilo_ui_base::widget::Widget,
     focus: Option<FocusView>,
     viewport: ViewRect,
 ) -> View {
     #[cfg(feature = "model")]
-    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(root) else {
+    let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(root) else {
         return View {
             focus,
             viewport,
@@ -128,9 +128,9 @@ pub(crate) fn capture_focus(
 }
 
 /// Restore `view`'s scroll and view mode onto `root`.
-pub(crate) fn restore_widget_view_bound(root: &mut dyn crate::widget::Widget, view: &View) {
+pub(crate) fn restore_widget_view_bound(root: &mut dyn tilo_ui_base::widget::Widget, view: &View) {
     #[cfg(feature = "model")]
-    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(root) else {
+    let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(root) else {
         return;
     };
     crate::view::capability::restore_view_state(
@@ -143,25 +143,30 @@ pub(crate) fn restore_widget_view_bound(root: &mut dyn crate::widget::Widget, vi
 }
 
 /// The caller resolves the saved ordinal in its current component's focus order.
-pub(crate) fn restore_focus_state_bound(widget: &mut dyn crate::widget::Widget, focus: &FocusView) {
-    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
+pub(crate) fn restore_focus_state_bound(
+    widget: &mut dyn tilo_ui_base::widget::Widget,
+    focus: &FocusView,
+) {
+    let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(widget) else {
         return;
     };
     if !focus.ephemeral.is_empty() {
-        crate::widget::undo_points::set_state(widget, &focus.ephemeral);
+        tilo_ui_base::widget::undo_points::set_state(widget, &focus.ephemeral);
     }
 }
 
 /// Prepared components have no runner node map yet.
-pub(crate) fn capture_tree_focus_bound(root: &dyn crate::widget::Widget) -> Option<FocusView> {
-    fn visit(root: &dyn crate::widget::Widget, ordinal: &mut usize) -> Option<FocusView> {
-        let _entry = crate::widget::bound_nodes::enter_widget(root).ok()?;
+pub(crate) fn capture_tree_focus_bound(
+    root: &dyn tilo_ui_base::widget::Widget,
+) -> Option<FocusView> {
+    fn visit(root: &dyn tilo_ui_base::widget::Widget, ordinal: &mut usize) -> Option<FocusView> {
+        let _entry = tilo_ui_base::widget::bound_nodes::enter_widget(root).ok()?;
         if root.is_focusable() && root.is_enabled() {
             let current = *ordinal;
             *ordinal = ordinal.saturating_add(1);
             if root.is_focused() {
                 return capture_focus(Some(current), || {
-                    crate::widget::undo_points::get_state(root)
+                    tilo_ui_base::widget::undo_points::get_state(root)
                 });
             }
         }
@@ -175,9 +180,12 @@ pub(crate) fn capture_tree_focus_bound(root: &dyn crate::widget::Widget) -> Opti
     visit(root, &mut 0)
 }
 
-pub(crate) fn restore_tree_focus_bound(root: &mut dyn crate::widget::Widget, focus: &FocusView) {
-    fn visit(root: &mut dyn crate::widget::Widget, ordinal: &mut usize, focus: &FocusView) {
-        let Ok(_entry) = crate::widget::bound_nodes::enter_widget(root) else {
+pub(crate) fn restore_tree_focus_bound(
+    root: &mut dyn tilo_ui_base::widget::Widget,
+    focus: &FocusView,
+) {
+    fn visit(root: &mut dyn tilo_ui_base::widget::Widget, ordinal: &mut usize, focus: &FocusView) {
+        let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(root) else {
             return;
         };
         if root.is_focusable() && root.is_enabled() {
@@ -193,8 +201,8 @@ pub(crate) fn restore_tree_focus_bound(root: &mut dyn crate::widget::Widget, foc
         }
     }
     // An ordinal absent from the current tree must leave existing focus alone.
-    fn count(root: &dyn crate::widget::Widget) -> usize {
-        let Ok(_entry) = crate::widget::bound_nodes::enter_widget(root) else {
+    fn count(root: &dyn tilo_ui_base::widget::Widget) -> usize {
+        let Ok(_entry) = tilo_ui_base::widget::bound_nodes::enter_widget(root) else {
             return 0;
         };
         root.children().iter().fold(
@@ -312,15 +320,15 @@ pub trait FreezeThaw {
 #[cfg(feature = "model")]
 mod tests {
     use super::*;
-    use crate::Theme;
     use crate::app::App;
     use crate::resource::{DocumentCheckout, DocumentId, ResourceType};
     use crate::state::State;
-    use crate::widget::TaffyTreeExt;
-    use crate::widget::Widget;
     use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, transaction::Transactable};
     use std::collections::HashMap;
     use taffy::TaffyTree;
+    use tilo_ui_base::Theme;
+    use tilo_ui_base::widget::TaffyTreeExt;
+    use tilo_ui_base::widget::Widget;
     use vello::kurbo::Rect as KurboRect;
 
     struct DocRoot {
@@ -346,10 +354,10 @@ mod tests {
     }
 
     impl Widget for DocRoot {
-        crate::provides!(
+        tilo_ui_base::provides!(
             dyn crate::resource::capability::ResourceScoped,
             dyn crate::view::capability::ViewState,
-            dyn crate::widget::undo_points::UndoPoints
+            dyn tilo_ui_base::widget::undo_points::UndoPoints
         );
 
         fn build_layout(
@@ -377,7 +385,7 @@ mod tests {
         }
     }
 
-    impl crate::widget::undo_points::UndoPoints for DocRoot {
+    impl tilo_ui_base::widget::undo_points::UndoPoints for DocRoot {
         fn get_state(&self) -> Option<String> {
             Some(self.caret.clone())
         }

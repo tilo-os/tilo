@@ -10,9 +10,9 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 use winit::event::WindowEvent;
 
-use crate::theme::Theme;
-use crate::tokens::Rhythm;
-use crate::widget::{TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::Rhythm;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum SurfaceLevel {
@@ -39,7 +39,7 @@ impl SurfaceLevel {
             Self::Window => s.content,
             Self::Region => s.sidebar,
             Self::Raised => s.raised,
-            Self::Floating => crate::chrome::panel_ground(theme),
+            Self::Floating => tilo_ui_base::chrome::panel_ground(theme),
         }
     }
 
@@ -60,8 +60,8 @@ impl SurfaceLevel {
     pub fn inner_radius(self, theme: &Theme, inset: f64) -> f64 {
         let radii = &theme.tokens.radii;
         f64::from(radii.concentric(
-            crate::num::f32_of_f64(self.radius(theme)),
-            crate::num::f32_of_f64(inset),
+            tilo_ui_base::num::f32_of_f64(self.radius(theme)),
+            tilo_ui_base::num::f32_of_f64(inset),
         ))
     }
 
@@ -106,7 +106,7 @@ pub fn paint_surface(
             );
         }
         SurfaceLevel::Raised => {
-            crate::surface::control_face(
+            tilo_ui_base::surface::control_face(
                 scene,
                 transform,
                 &RoundedRect::from_rect(rect, radius),
@@ -118,8 +118,8 @@ pub fn paint_surface(
             paint_window_card(scene, transform, rect, theme, |_, _| {});
         }
         SurfaceLevel::Floating => {
-            crate::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
-            crate::surface::panel(scene, transform, rect, radius, theme);
+            tilo_ui_base::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
+            tilo_ui_base::surface::panel(scene, transform, rect, radius, theme);
         }
     }
     theme.on_ground(fill)
@@ -142,18 +142,18 @@ pub fn paint_window_card(
     }
     let radius = SurfaceLevel::Window.radius(theme).min(rect.height() / 2.0);
     let body = RoundedRect::from_rect(rect, radius);
-    crate::surface::shadow(
+    tilo_ui_base::surface::shadow(
         scene,
         transform,
         rect,
         radius,
         &theme.tokens.elevation.window,
     );
-    crate::part_paint::backdrop::fill_role(
+    tilo_ui_base::part_paint::backdrop::fill_role(
         scene,
         transform,
         &body,
-        crate::tokens::SurfaceRole::Window,
+        tilo_ui_base::tokens::SurfaceRole::Window,
         theme,
         fill,
     );
@@ -166,8 +166,10 @@ pub fn paint_window_card(
     );
     content(scene, &on);
     scene.pop_layer();
-    if !crate::surface::paint_border(scene, transform, &body, theme)
-        && theme.finish(crate::tokens::SurfaceRole::Window).hairline()
+    if !tilo_ui_base::surface::paint_border(scene, transform, &body, theme)
+        && theme
+            .finish(tilo_ui_base::tokens::SurfaceRole::Window)
+            .hairline()
     {
         scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
@@ -245,12 +247,12 @@ pub fn paint_document_sheet(
         transform,
         sheet_edge(theme),
         None,
-        &crate::surface::edge_outline(rect, sheet.radii().top_left),
+        &tilo_ui_base::surface::edge_outline(rect, sheet.radii().top_left),
     );
 }
 
 fn sheet_edge(theme: &Theme) -> Color {
-    crate::surface::edge_on(SurfaceLevel::Window.color(theme))
+    tilo_ui_base::surface::edge_on(SurfaceLevel::Window.color(theme))
 }
 
 /// Paint the see-through material over `rect` at `radius`: half the panel ground over the
@@ -263,7 +265,7 @@ pub fn paint_see_through(
     radius: f64,
     theme: &Theme,
 ) -> Theme {
-    let ground = crate::chrome::panel_ground(theme);
+    let ground = tilo_ui_base::chrome::panel_ground(theme);
     if rect.width() <= 0.0 || rect.height() <= 0.0 {
         return theme.on_ground(ground);
     }
@@ -273,23 +275,23 @@ pub fn paint_see_through(
     );
     outside.extend(vello::kurbo::Shape::path_elements(&body, 0.1));
     scene.push_clip_layer(Fill::EvenOdd, transform, &outside);
-    crate::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
+    tilo_ui_base::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
     scene.pop_layer();
-    crate::part_paint::material::paint_material(
+    tilo_ui_base::part_paint::material::paint_material(
         scene,
         transform,
         &body,
-        crate::part_paint::material::Material::SeeThrough,
+        tilo_ui_base::part_paint::material::Material::SeeThrough,
         theme,
     );
-    crate::surface::floating_edge(scene, transform, rect, radius, theme);
+    tilo_ui_base::surface::floating_edge(scene, transform, rect, radius, theme);
     theme.on_ground(ground)
 }
 
 /// A retained surface of one level around one child, padded by the
 /// level's rhythm. A `Surface` inside a surface of the same level paints
 /// no ground of its own.
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     framework,
     "the framework paints each region's ground (HIG 9.2)"
 )]
@@ -346,21 +348,21 @@ impl Widget for Surface {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
             flex_shrink: 0.0,
-            padding: crate::widget::layout::insets_all(crate::num::f32_of_f64(pad)),
+            padding: tilo_ui_base::widget::layout::insets_all(tilo_ui_base::num::f32_of_f64(pad)),
             ..Default::default()
         };
         taffy.widget_node(style, &[child], node_map, self)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if let Some(&child) = taffy.children(node).unwrap_or_default().first() {
             self.child
                 .apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -374,7 +376,7 @@ impl Widget for Surface {
             theme.clone()
         };
         OPEN_LEVELS.with(|open| open.borrow_mut().push(self.level));
-        crate::widget::draw_child(
+        tilo_ui_base::widget::draw_child(
             self.child.as_mut(),
             scene,
             transform,
@@ -387,7 +389,7 @@ impl Widget for Surface {
         });
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let Some(&child) = ctx.taffy.children(ctx.node_id).unwrap_or_default().first() {
             self.child
                 .handle_event(event, &mut ctx.reborrow(ctx.path, child));
@@ -431,23 +433,23 @@ impl Widget for Surface {
     }
 }
 
-/// A region of a window laid out and drawn at another density ([`crate::tokens::Density`]): a
+/// A region of a window laid out and drawn at another density ([`tilo_ui_base::tokens::Density`]): a
 /// data-heavy sidebar or list at compact while the rest of the window stays comfortable.
-#[crate::component::not_a_component(framework, "the framework sets each region's density")]
+#[tilo_ui_base::component::not_a_component(framework, "the framework sets each region's density")]
 pub struct DensityRegion {
-    density: crate::tokens::Density,
+    density: tilo_ui_base::tokens::Density,
     child: Box<dyn Widget>,
 }
 
 impl DensityRegion {
     #[must_use]
-    pub fn new(density: crate::tokens::Density, child: Box<dyn Widget>) -> Self {
+    pub fn new(density: tilo_ui_base::tokens::Density, child: Box<dyn Widget>) -> Self {
         Self { density, child }
     }
 
     #[must_use]
     pub fn compact(child: Box<dyn Widget>) -> Self {
-        Self::new(crate::tokens::Density::Compact, child)
+        Self::new(tilo_ui_base::tokens::Density::Compact, child)
     }
 }
 
@@ -466,7 +468,7 @@ impl Widget for DensityRegion {
         self.child.apply_layout(taffy, node, origin);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -474,7 +476,7 @@ impl Widget for DensityRegion {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         let theme = theme.clone().with_density(self.density);
-        crate::widget::draw_child(
+        tilo_ui_base::widget::draw_child(
             self.child.as_mut(),
             scene,
             transform,
@@ -484,7 +486,7 @@ impl Widget for DensityRegion {
         );
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.child.handle_event(event, ctx);
     }
 

@@ -20,11 +20,11 @@ use tilo_actions::{
     ResourceSpec,
 };
 
-use crate::collaboration::CollabRequest;
 use crate::headless::Driver;
 use crate::state::State;
-use crate::theme::Theme;
-use crate::widget::{ResourceOperationStart, TaffyTreeExt as _, Widget};
+use tilo_ui_base::collaboration::CollabRequest;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::ResourceOperationStart, widget::TaffyTreeExt as _, widget::Widget};
 
 const COUNT: &str = "test.worker.count";
 const WAIT: &str = "test.worker.wait";
@@ -56,9 +56,9 @@ impl Worker {
 }
 
 impl Widget for Worker {
-    crate::provides!(
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
     fn build_layout(
         &mut self,
@@ -68,7 +68,7 @@ impl Widget for Worker {
     ) -> NodeId {
         taffy.widget_node(taffy::Style::default(), &[], node_map, self)
     }
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
     fn name(&self) -> &'static str {
         "Worker"
     }
@@ -93,7 +93,7 @@ fn job(id: &str, label: &str, type_id: &str, cancellable: bool) -> ActionSpec {
         .returns(tilo_actions::ResultSpec::Job)
 }
 
-impl crate::widget::resources::PublishesResources for Worker {
+impl tilo_ui_base::widget::resources::PublishesResources for Worker {
     fn resources(&self, _doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         let erase =
             ActionSpec::operation("erase", "Erase", OperationKind::Effect, ERASE, &()).unwrap();
@@ -124,7 +124,7 @@ impl crate::widget::resources::PublishesResources for Worker {
     }
 }
 
-impl crate::widget::ResourceOperations for Worker {
+impl tilo_ui_base::widget::ResourceOperations for Worker {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         // Opening another app is the host's to route to the broker, as it is for every app.
         &[
@@ -138,8 +138,8 @@ impl crate::widget::ResourceOperations for Worker {
 
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _doc: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        _doc: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &automerge::ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
         let request = op.request();
@@ -519,7 +519,7 @@ fn controls_list_what_a_person_can_press_with_their_name_bounds_and_focus() {
     assert_eq!(focused.len(), 1, "Tab focuses one control: {focused:?}");
 }
 
-fn button_for(role: crate::permissions::Role) -> Driver {
+fn button_for(role: tilo_ui_base::permissions::Role) -> Driver {
     // A press that reaches the workspace calls its typed action, which the workspace's grants
     // decide; a toolkit closure is never gated.
     let sends = crate::widget::effect_fixture::sends(|| {});
@@ -527,8 +527,8 @@ fn button_for(role: crate::permissions::Role) -> Driver {
     // The window's press reaches the workspace that grants its effects, as a window placed in
     // one does: without the stand-in for it, the effect would run at once and never be asked.
     driver.connect_peer();
-    driver.set_permission_ctx(crate::permissions::PermissionContext::member(
-        &crate::permissions::MemberId::person("ada"),
+    driver.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::member(
+        &tilo_ui_base::permissions::MemberId::person("ada"),
         role,
     ));
     driver.relayout();
@@ -564,7 +564,7 @@ fn a_control_naming_nothing_the_window_has_is_refused_said_and_kept_among_the_fa
 
 #[test]
 fn a_press_the_workspace_s_grants_ask_about_waits_for_the_person() {
-    let mut driver = button_for(crate::permissions::Role::Editor);
+    let mut driver = button_for(tilo_ui_base::permissions::Role::Editor);
     assert_eq!(driver.asking(), None, "nothing is asked before the press");
     driver.click_named("go").unwrap();
     driver.relayout();
@@ -845,7 +845,7 @@ fn the_window_s_session_opens_another_app_and_its_receipt_comes_back() {
     let workspace = uuid::Uuid::new_v4();
     let session = std::sync::Arc::new(tilo_actions::remote::TestProvider::new());
     driver.set_session_api(
-        crate::RemoteActions::with_provider(
+        tilo_ui_base::RemoteActions::with_provider(
             session.clone(),
             tilo_actions::remote::Caller::local_app("test.worker")
                 .in_workspace(workspace.to_string()),

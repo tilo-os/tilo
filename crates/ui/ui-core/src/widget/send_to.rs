@@ -20,19 +20,22 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use winit::event::{ElementState, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::a11y::{AccessNode, AccessState, Role};
 use crate::floating_surface::{Recipient, RecipientKind};
-use crate::motion::Appearing;
-use crate::paint::PaintCtx;
-use crate::platform::PlatformConventions;
-use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
 use crate::shared_selection::{SendToRequest, SharedSelection};
-pub use crate::shared_subject::subject_label;
-use crate::text_render::TextRenderer;
-use crate::text_selection::Selection;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::floating_surface as panel;
+use tilo_ui_base::motion::Appearing;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::platform::PlatformConventions;
+pub use tilo_ui_base::shared_subject::subject_label;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::text_selection::Selection;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use tilo_ui_base::{
+    query_text::QueryComposition, query_text::QueryEventChange, query_text::QueryInk,
+    query_text::QueryView,
+};
 
 /// The rows of the search shown at once: more than a person reads while
 /// typing, and few enough that the box stays where it was opened.
@@ -451,7 +454,7 @@ impl SendToBox {
         if !(width.is_finite() && width >= 1.0) {
             return least;
         }
-        let (_, height) = crate::text_render::with_layout_renderer(theme, |renderer| {
+        let (_, height) = tilo_ui_base::text_render::with_layout_renderer(theme, |renderer| {
             renderer.measure_style(&self.text, Some(width), &style)
         });
         (f64::from(height) + self.message_air() * 2.0).clamp(least, most)
@@ -513,7 +516,7 @@ impl SendToBox {
     fn text_width(&self, label: &str) -> f64 {
         let style = self.theme.text(TextRole::Body);
         let theme = &self.theme;
-        f64::from(crate::text_render::with_layout_renderer(
+        f64::from(tilo_ui_base::text_render::with_layout_renderer(
             theme,
             |renderer| renderer.measure_style(label, None, &style).0,
         ))
@@ -553,14 +556,14 @@ impl SendToBox {
     /// rows it held. A hint longer than the box is a hint the box is too narrow
     /// for, not one the person reads half of.
     fn search_ask(&self) -> f64 {
-        let hint = crate::i18n::I18nManager::lookup_plain("send-to-search-placeholder");
+        let hint = tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-search-placeholder");
         (self.row_height() * 5.0).max(self.text_width(&hint) + self.mark_inset())
     }
 
     /// The button that adds what is selected now to what the message is about,
     /// as it names itself.
     fn add_label(&self) -> String {
-        crate::i18n::I18nManager::lookup_plain("send-to-add-subject")
+        tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-add-subject")
     }
 
     /// What the button would add: what the person has selected now, when the
@@ -756,7 +759,7 @@ impl SendToBox {
     /// What the box is called: a report, when the one place reports go is on
     /// it, and a message it sends anywhere else.
     fn name(&self) -> String {
-        crate::i18n::I18nManager::lookup_plain(if self.reporting() {
+        tilo_ui_base::i18n::I18nManager::lookup_plain(if self.reporting() {
             "send-to-report-name"
         } else {
             "send-to-name"
@@ -766,7 +769,7 @@ impl SendToBox {
     /// What the box paints has changed, so the window draws another frame.
     fn changed(&mut self) {
         self.dirty = true;
-        crate::widget::note_resource_presentation_changed();
+        tilo_ui_base::widget::note_resource_presentation_changed();
     }
 
     /// Take a key, a press or a text event while the box is open. Whether it
@@ -774,7 +777,7 @@ impl SendToBox {
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         if !self.open {
             return false;
@@ -1187,12 +1190,15 @@ impl SendToBox {
     ) {
         let radius = panel::radius(theme);
         panel::paint_rounded(scene, transform, self.rect, radius, theme);
-        let ground = crate::chrome::panel_ground(theme);
+        let ground = tilo_ui_base::chrome::panel_ground(theme);
         let tokens = &theme.tokens;
         let style = theme.text(TextRole::Body);
         let dim = tokens
             .colors
-            .on_surface_at(ground, crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST)
+            .on_surface_at(
+                ground,
+                tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+            )
             .ink_dim;
         let ink = tokens.colors.text_primary;
         let inset = f64::from(tokens.spacing.s2);
@@ -1270,18 +1276,19 @@ impl SendToBox {
             );
             if let Some(remove) = remove {
                 let side = f64::from(tokens.metrics.icon_sm) * 0.8;
-                crate::icons::draw_icon(
+                tilo_ui_base::icons::draw_icon(
                     scene,
                     transform,
                     Rect::from_center_size(remove.center(), (side, side)),
-                    crate::icons::Icon::X,
+                    tilo_ui_base::icons::Icon::X,
                     dim,
-                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
             }
         }
         // The search field: what is typed, or what typing searches.
-        let placeholder = crate::i18n::I18nManager::lookup_plain("send-to-search-placeholder");
+        let placeholder =
+            tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-search-placeholder");
         {
             scene.fill(
                 vello::peniko::Fill::NonZero,
@@ -1377,7 +1384,7 @@ impl SendToBox {
             }
         }
         if self.found_nobody() {
-            let none = crate::i18n::I18nManager::lookup_plain("send-to-no-results");
+            let none = tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-no-results");
             let (_, height) = text_renderer.measure_style(&none, None, &style);
             let line = self.layout.nothing;
             text_renderer.draw_style(
@@ -1427,7 +1434,7 @@ impl SendToBox {
             );
             if let Some(subject) = self.subjects.get(index) {
                 let mark = self.mark_size();
-                crate::icons::draw_icon(
+                tilo_ui_base::icons::draw_icon(
                     scene,
                     transform,
                     Rect::from_center_size(
@@ -1436,7 +1443,7 @@ impl SendToBox {
                     ),
                     subject_glyph(subject),
                     dim,
-                    crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                    tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
                 );
                 // A chip too narrow for its label cuts the words, never the
                 // count of the blocks or items after them.
@@ -1478,16 +1485,16 @@ impl SendToBox {
                 None,
                 &RoundedRect::from_rect(plus, radius.min(plus.height() / 2.0)),
             );
-            crate::icons::draw_icon(
+            tilo_ui_base::icons::draw_icon(
                 scene,
                 transform,
                 Rect::from_center_size(
                     (plus.x0 + self.mark_lead(), plus.center().y),
                     (self.mark_size(), self.mark_size()),
                 ),
-                crate::icons::Icon::Plus,
+                tilo_ui_base::icons::Icon::Plus,
                 dim,
-                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
             let shown = text_renderer.elide_to_width_style(
                 &self.add_label(),
@@ -1517,11 +1524,12 @@ impl SendToBox {
             None,
             &RoundedRect::from_rect(self.layout.message, radius * 0.75),
         );
-        let message_placeholder = crate::i18n::I18nManager::lookup_plain(if self.reporting() {
-            "send-to-report-placeholder"
-        } else {
-            "send-to-message-placeholder"
-        });
+        let message_placeholder =
+            tilo_ui_base::i18n::I18nManager::lookup_plain(if self.reporting() {
+                "send-to-report-placeholder"
+            } else {
+                "send-to-message-placeholder"
+            });
         self.text_composition.draw_wrapped(
             &mut PaintCtx::new(scene, transform, text_renderer, theme),
             QueryView {
@@ -1557,7 +1565,7 @@ impl SendToBox {
                 radius.min(self.layout.send.height() / 2.0),
             ),
         );
-        let label = crate::i18n::I18nManager::lookup_plain("send-to-send");
+        let label = tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-send");
         let (width, height) = text_renderer.measure_style(&label, None, &style);
         text_renderer.draw_style(
             scene,
@@ -1617,7 +1625,7 @@ impl SendToBox {
         }
         children.push(action(
             AccessNode::new(Role::TextInput)
-                .with_name(crate::i18n::I18nManager::lookup_plain(
+                .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain(
                     "send-to-recipients-name",
                 ))
                 .with_optional_value(Some(self.search.clone()))
@@ -1679,7 +1687,7 @@ impl SendToBox {
         }
         children.push(action(
             AccessNode::new(Role::TextInput)
-                .with_name(crate::i18n::I18nManager::lookup_plain(
+                .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain(
                     "send-to-message-name",
                 ))
                 .with_optional_value(Some(self.text.clone()))
@@ -1693,7 +1701,9 @@ impl SendToBox {
         ));
         children.push(action(
             AccessNode::new(Role::Button)
-                .with_name(crate::i18n::I18nManager::lookup_plain("send-to-send"))
+                .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain(
+                    "send-to-send",
+                ))
                 .with_action_target("send-to:send".to_owned())
                 .with_bounds(self.layout.send)
                 .with_state(AccessState {
@@ -1711,13 +1721,17 @@ impl SendToBox {
     }
 
     /// Assistive technology pressed or wrote in one of the box's parts.
-    pub fn perform_semantic_action(&mut self, target: &str, action: &crate::a11y::Action) -> bool {
+    pub fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         if !self.open {
             return false;
         }
         match target {
             "send-to:recipients" => {
-                if let crate::a11y::Action::SetValue(text) = action {
+                if let tilo_ui_base::a11y::Action::SetValue(text) = action {
                     text.clone_into(&mut self.search);
                     self.search_selection = Selection::collapsed(self.search.len());
                     self.ask_search();
@@ -1727,7 +1741,7 @@ impl SendToBox {
                 false
             }
             "send-to:message" => {
-                if let crate::a11y::Action::SetValue(text) = action {
+                if let tilo_ui_base::a11y::Action::SetValue(text) = action {
                     text.clone_into(&mut self.text);
                     self.text_selection = Selection::collapsed(self.text.len());
                     self.changed();
@@ -1736,21 +1750,21 @@ impl SendToBox {
                 false
             }
             "send-to:add-subject" => {
-                if matches!(action, crate::a11y::Action::Activate) {
+                if matches!(action, tilo_ui_base::a11y::Action::Activate) {
                     self.add_subject();
                     return true;
                 }
                 false
             }
             "send-to:send" => {
-                if matches!(action, crate::a11y::Action::Activate) {
+                if matches!(action, tilo_ui_base::a11y::Action::Activate) {
                     self.send();
                     return true;
                 }
                 false
             }
             other => {
-                if !matches!(action, crate::a11y::Action::Activate) {
+                if !matches!(action, tilo_ui_base::a11y::Action::Activate) {
                     return false;
                 }
                 if let Some(index) = other
@@ -1805,14 +1819,14 @@ impl SendToBox {
 /// The glyph a subject chip leads with: the item's own where the app names one,
 /// else the app whose surface holds the resource the subject names.
 #[must_use]
-fn subject_glyph(subject: &SharedSelection) -> crate::icons::Icon {
+fn subject_glyph(subject: &SharedSelection) -> tilo_ui_base::icons::Icon {
     subject.icon.unwrap_or_else(|| {
         subject
             .resource_kind
             .as_deref()
             .and_then(|kind| kind.split('.').next())
-            .map_or(crate::icons::Icon::AppWindow, |app| {
-                crate::icons::app_glyph(app, None)
+            .map_or(tilo_ui_base::icons::Icon::AppWindow, |app| {
+                tilo_ui_base::icons::app_glyph(app, None)
             })
     })
 }
@@ -1822,25 +1836,25 @@ fn subject_glyph(subject: &SharedSelection) -> crate::icons::Icon {
 /// agent's own face, a person's avatar in their colour, and a conversation's
 /// or the report destination's glyph.
 fn paint_recipient_mark(ctx: &mut PaintCtx<'_>, recipient: &Recipient, rect: Rect) {
-    let face = crate::widget::avatar_face::AvatarFace::new(&recipient.name, &recipient.id);
+    let face = tilo_ui_base::widget::avatar_face::AvatarFace::new(&recipient.name, &recipient.id);
     match recipient.kind {
         RecipientKind::NewAgent => {
             let accent = ctx.theme.tokens.colors.intent.accent_ink;
-            crate::icons::draw_icon(
+            tilo_ui_base::icons::draw_icon(
                 ctx.scene,
                 ctx.transform,
                 rect,
-                crate::icons::Icon::Sparkles,
+                tilo_ui_base::icons::Icon::Sparkles,
                 accent,
-                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
         }
         RecipientKind::Agent => face.agent().paint(ctx, rect),
         RecipientKind::Person => face.paint(ctx, rect),
         RecipientKind::Conversation => face
-            .glyph(crate::icons::Icon::MessageCircle)
+            .glyph(tilo_ui_base::icons::Icon::MessageCircle)
             .paint(ctx, rect),
-        RecipientKind::Feedback => face.glyph(crate::icons::Icon::Flag).paint(ctx, rect),
+        RecipientKind::Feedback => face.glyph(tilo_ui_base::icons::Icon::Flag).paint(ctx, rect),
     }
 }
 
@@ -1848,7 +1862,7 @@ fn paint_recipient_mark(ctx: &mut PaintCtx<'_>, recipient: &Recipient, rect: Rec
 /// yet, that it is a new agent — the session names it by what it is asked.
 fn chip_name(recipient: &Recipient) -> String {
     if recipient.kind == RecipientKind::NewAgent && recipient.name.is_empty() {
-        crate::i18n::I18nManager::lookup_plain("send-to-new-agent")
+        tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-new-agent")
     } else {
         recipient.name.clone()
     }

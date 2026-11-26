@@ -5,9 +5,9 @@ use std::sync::Arc;
 use vello::kurbo::{Circle, Point, Rect};
 
 use crate::rich_text_line::RichTextLine;
-use ui::text_render::{TextRenderer, TextScaling, TextStyle};
-use ui::theme::Theme;
-use ui::tokens::TextRole;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextScaling, text_render::TextStyle};
 
 use super::CHECKBOX_SIZE_PX;
 
@@ -65,7 +65,7 @@ pub(crate) fn marker_width(blocks: &[super::Block]) -> Vec<f32> {
                 Some(estimated_label_em(&label) * block.kind.font_size())
             })
             .fold(0.0_f32, f32::max);
-        let extra = (widest - ui::num::f32_of_f64(super::CHECKBOX_SIZE_PX))
+        let extra = (widest - tilo_ui_base::num::f32_of_f64(super::CHECKBOX_SIZE_PX))
             .max(0.0)
             .ceil();
         for slot in spare.iter_mut().take(end).skip(start) {

@@ -4,8 +4,8 @@
 use automerge::{AutoCommit, ObjId};
 
 use crate::application_view::ApplicationViewState;
-use crate::widget::Widget;
-use crate::widget::capability::{capability, capability_mut};
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
 
 /// A widget that owns a document's History: its registration, restore readiness and presentation.
 pub trait DocumentHistory {

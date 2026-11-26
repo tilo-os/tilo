@@ -14,9 +14,9 @@ use std::rc::Rc;
 
 use crate::headless::Driver;
 use crate::part_row::WindowAction;
-use crate::widget::Widget;
 use crate::widget::tabs::TOOLBAR_ROW_HEIGHT;
 use crate::window_toolbar::{SearchOpening, ToolbarAction, ToolbarEvent, WindowToolbar};
+use tilo_ui_base::widget::Widget;
 
 const MUTE: &str = "window-toolbar-action:call-mute";
 
@@ -28,7 +28,7 @@ struct CallApp {
     heard: Rc<RefCell<Vec<ToolbarEvent>>>,
 }
 
-impl crate::widget::Decorator for CallApp {
+impl tilo_ui_base::widget::Decorator for CallApp {
     type Inner = crate::widget::Column;
 
     fn inner(&self) -> &Self::Inner {
@@ -39,7 +39,11 @@ impl crate::widget::Decorator for CallApp {
         &mut self.content
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         for event in crate::window_toolbar::take_events() {
             if event
                 == (ToolbarEvent::Action {
@@ -75,7 +79,7 @@ fn call_app() -> (Driver, Rc<RefCell<Vec<ToolbarEvent>>>) {
         crate::State::new(),
         app,
         (900, 600),
-        crate::theme::Theme::dark().with_reduce_motion(true),
+        tilo_ui_base::theme::Theme::dark().with_reduce_motion(true),
     );
     driver.present_in_window_bar();
     driver.relayout();
@@ -83,8 +87,11 @@ fn call_app() -> (Driver, Rc<RefCell<Vec<ToolbarEvent>>>) {
 }
 
 /// The bar's part whose target is `target`.
-fn part(driver: &Driver, target: &str) -> Option<crate::a11y::AccessNode> {
-    fn find(nodes: &[crate::a11y::AccessNode], target: &str) -> Option<crate::a11y::AccessNode> {
+fn part(driver: &Driver, target: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
+    fn find(
+        nodes: &[tilo_ui_base::a11y::AccessNode],
+        target: &str,
+    ) -> Option<tilo_ui_base::a11y::AccessNode> {
         nodes.iter().find_map(|node| {
             if node.action_target.as_deref() == Some(target) {
                 Some(node.clone())
@@ -98,7 +105,7 @@ fn part(driver: &Driver, target: &str) -> Option<crate::a11y::AccessNode> {
 
 /// Every name the bar's parts carry.
 fn names(driver: &Driver) -> Vec<String> {
-    fn walk(nodes: &[crate::a11y::AccessNode], out: &mut Vec<String>) {
+    fn walk(nodes: &[tilo_ui_base::a11y::AccessNode], out: &mut Vec<String>) {
         for node in nodes {
             out.extend(node.name.clone());
             walk(&node.children, out);
@@ -109,7 +116,7 @@ fn names(driver: &Driver) -> Vec<String> {
     out
 }
 
-fn click(driver: &mut Driver, bounds: crate::a11y::AccessBounds) {
+fn click(driver: &mut Driver, bounds: tilo_ui_base::a11y::AccessBounds) {
     let (x, y) = ((bounds.x0 + bounds.x1) / 2.0, (bounds.y0 + bounds.y1) / 2.0);
     driver.click_at(x, y);
 }
@@ -149,7 +156,7 @@ fn the_window_shows_the_apps_parts_in_a_row_above_its_frame() {
 fn activating_a_part_reaches_the_app_and_the_row_shows_its_outcome() {
     let (mut driver, heard) = call_app();
     driver
-        .perform_window_part(MUTE, &crate::a11y::Action::Activate)
+        .perform_window_part(MUTE, &tilo_ui_base::a11y::Action::Activate)
         .expect("the part runs");
     assert_eq!(
         heard.borrow().as_slice(),
@@ -166,7 +173,7 @@ fn activating_a_part_reaches_the_app_and_the_row_shows_its_outcome() {
         driver
             .perform_window_part(
                 "window-toolbar-action:missing",
-                &crate::a11y::Action::Activate
+                &tilo_ui_base::a11y::Action::Activate
             )
             .is_err(),
         "a part the app does not declare runs nothing"
@@ -200,7 +207,7 @@ fn a_pointer_press_and_a_readers_action_on_a_part_reach_the_app() {
         .a11y_node_named("Mute")
         .expect("the part is in the window's tree");
     driver
-        .perform_a11y_action(node, &crate::a11y::Action::Activate)
+        .perform_a11y_action(node, &tilo_ui_base::a11y::Action::Activate)
         .expect("a reader presses it");
     assert_eq!(heard.borrow().len(), 2, "{:?}", heard.borrow());
 }
@@ -231,7 +238,10 @@ fn a_window_that_draws_its_frame_has_one_bar_with_the_windows_controls() {
         );
     }
     driver
-        .perform_window_part("window-control-maximize", &crate::a11y::Action::Activate)
+        .perform_window_part(
+            "window-control-maximize",
+            &tilo_ui_base::a11y::Action::Activate,
+        )
         .expect("the control runs");
     assert!(driver.window_maximized(), "the window maximizes");
     assert_eq!(
@@ -266,7 +276,7 @@ fn a_press_on_the_rows_own_label_runs_nothing() {
         .a11y_node_named("Call")
         .expect("the label is in the window's tree");
     driver
-        .perform_a11y_action(label, &crate::a11y::Action::Activate)
+        .perform_a11y_action(label, &tilo_ui_base::a11y::Action::Activate)
         .expect("a press on the row's own label is not refused");
     assert!(
         heard.borrow().is_empty(),
@@ -283,7 +293,7 @@ struct SortApp {
     heard: Rc<RefCell<Vec<ToolbarEvent>>>,
 }
 
-impl crate::widget::Decorator for SortApp {
+impl tilo_ui_base::widget::Decorator for SortApp {
     type Inner = crate::widget::Column;
 
     fn inner(&self) -> &Self::Inner {
@@ -294,7 +304,11 @@ impl crate::widget::Decorator for SortApp {
         &mut self.content
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         for event in crate::window_toolbar::take_events() {
             self.heard.borrow_mut().push(event);
         }
@@ -325,7 +339,7 @@ fn a_menu_in_the_bar_opens_on_one_click_stays_open_and_runs_its_rows() {
         crate::State::new(),
         app,
         (900, 600),
-        crate::theme::Theme::dark().with_reduce_motion(true),
+        tilo_ui_base::theme::Theme::dark().with_reduce_motion(true),
     );
     driver.present_in_window_bar();
     let button = part(&driver, "window-toolbar-action:sort")
@@ -384,7 +398,7 @@ fn the_windows_search_finds_in_the_apps_list_in_place() {
         crate::State::new(),
         settings_like_list(),
         (800, 600),
-        crate::theme::Theme::dark().with_reduce_motion(true),
+        tilo_ui_base::theme::Theme::dark().with_reduce_motion(true),
     );
     driver.present_in_window_bar();
     let filter = |driver: &Driver| driver.root::<crate::widget::NavList>().filter().to_owned();
@@ -398,7 +412,7 @@ fn the_windows_search_finds_in_the_apps_list_in_place() {
     assert!(!driver.window_search_replaces(), "a list offers no Replace");
     assert!(!driver.replace_in_window("x", false));
     driver
-        .perform_window_part("window-search-close", &crate::a11y::Action::Activate)
+        .perform_window_part("window-search-close", &tilo_ui_base::a11y::Action::Activate)
         .expect("the search closes");
     assert_eq!(
         filter(&driver),
@@ -414,18 +428,17 @@ fn a_part_of_an_unpresented_bar_is_refused_legibly() {
         crate::State::new(),
         settings_like_list(),
         (800, 600),
-        crate::theme::Theme::dark(),
+        tilo_ui_base::theme::Theme::dark(),
     );
     assert!(!driver.presents_window_bar());
     let error = driver
-        .perform_window_part(MUTE, &crate::a11y::Action::Activate)
+        .perform_window_part(MUTE, &tilo_ui_base::a11y::Action::Activate)
         .expect_err("no bar, no part");
     assert!(error.contains("present_in_window_bar"), "{error}");
 }
 
 // ---- every part of the bar gets its own place at every width ----
 
-use crate::a11y::AccessNode;
 use crate::widget::window_toolbar_row::{
     ACTION_TARGET_PREFIX, LEADING_TARGET_PREFIX, LOCATION_TARGET, OVERFLOW_TARGET,
     SEGMENT_TARGET_PREFIX, SIDEBAR_TARGET, VIEW_TARGET_PREFIX, VIEWS_MENU_TARGET,
@@ -433,6 +446,7 @@ use crate::widget::window_toolbar_row::{
 use crate::window_toolbar::{
     LocationSegment, ToolbarLocation, ToolbarNavigation, ToolbarView, ToolbarViews,
 };
+use tilo_ui_base::a11y::AccessNode;
 
 const BAR_WIDTHS: [u32; 12] = [
     320, 360, 390, 420, 480, 560, 640, 720, 840, 1024, 1280, 1440,
@@ -449,17 +463,17 @@ impl Widget for NamedApp {
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        _: &crate::theme::Theme,
+        _: &tilo_ui_base::theme::Theme,
         nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        use crate::widget::TaffyTreeExt as _;
+        use tilo_ui_base::widget::TaffyTreeExt as _;
         taffy.widget_leaf(taffy::Style::default(), nodes, self)
     }
 }
 
 impl crate::widget::AppWidget for NamedApp {
     fn app_kind(&self) -> crate::widget::AppKind {
-        crate::widget::AppKind::App(crate::icons::Icon::Calendar)
+        crate::widget::AppKind::App(tilo_ui_base::icons::Icon::Calendar)
     }
 
     fn app_title(&self) -> &str {
@@ -540,9 +554,9 @@ fn files() -> WindowToolbar {
 }
 
 /// A week across a month, as Calendar names it: Monday, June 29 to Sunday, July 5, 2026.
-fn week_across_a_month() -> crate::format::Period {
+fn week_across_a_month() -> tilo_ui_base::format::Period {
     let day = |m, d| jiff::civil::Date::new(2026, m, d).ok().unwrap_or_default();
-    crate::format::Period::Days(day(6, 29), day(7, 5))
+    tilo_ui_base::format::Period::Days(day(6, 29), day(7, 5))
 }
 
 /// Calendar's bar: previous and next as a pair, Today, the week as its period, and New event.
@@ -581,7 +595,7 @@ fn bar_driver(toolbar: &WindowToolbar, width: u32) -> Driver {
         crate::State::new(),
         NamedApp,
         (width, 800),
-        crate::theme::Theme::dark().with_reduce_motion(true),
+        tilo_ui_base::theme::Theme::dark().with_reduce_motion(true),
     );
     driver.present_in_window_bar();
     driver
@@ -603,7 +617,7 @@ fn offered(nodes: &[AccessNode], out: &mut std::collections::BTreeSet<String>) {
 struct ShownPart {
     target: Option<String>,
     name: Option<String>,
-    role: crate::a11y::Role,
+    role: tilo_ui_base::a11y::Role,
     rect: vello::kurbo::Rect,
 }
 
@@ -637,7 +651,7 @@ fn location_part<'a>(placed: &'a [ShownPart], toolbar: &WindowToolbar) -> Option
             let location = toolbar.location.as_ref()?;
             placed.iter().find(|part| {
                 part.target.is_none()
-                    && part.role == crate::a11y::Role::StaticText
+                    && part.role == tilo_ui_base::a11y::Role::StaticText
                     && part.name.as_deref().is_some_and(|name| {
                         name == location.label.as_str()
                             || location
@@ -701,7 +715,7 @@ fn every_bar_gives_every_part_its_own_place_at_every_width() {
         ("de-DE", calendar),
     ];
     for (locale, make) in bars {
-        crate::format::speak_locale(locale);
+        tilo_ui_base::format::speak_locale(locale);
         let toolbar = make();
         let declared = declared(&toolbar);
         for width in BAR_WIDTHS {

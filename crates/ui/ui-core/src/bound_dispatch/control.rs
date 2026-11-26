@@ -2,8 +2,8 @@
 //! an address still names, the spec it declares, and the identity, label and
 //! continuation arguments the history and palette read back.
 
-use crate::widget::Widget;
 use tilo_actions::ResourceSpec;
+use tilo_ui_base::widget::Widget;
 
 use super::{
     AutoCommit, BoundActionError, DeferredIntent, PreparedActionIntent, collect_unbound_resources,

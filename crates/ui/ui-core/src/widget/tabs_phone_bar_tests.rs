@@ -17,14 +17,14 @@ tilo_test_env::scenario! {
     // and the strip's "+" in the same row): every tab stays a tab a person can read and press, the
     // active one keeps its ×, and the window keeps its maximize and close.
     {
-        let _settled = crate::motion::testing::settled();
-        let theme = crate::theme::Theme::dark().with_reduce_motion(true);
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let theme = tilo_ui_base::theme::Theme::dark().with_reduce_motion(true);
         for width in [326.0, 400.0, 636.0] {
             let mut b = TabBar::new(
                 "g1",
                 [
                     (1, "Projects", AppKind::Editor),
-                    (2, "Sheets", AppKind::App(crate::icons::Icon::Table)),
+                    (2, "Sheets", AppKind::App(tilo_ui_base::icons::Icon::Table)),
                     (3, "Files", AppKind::Files),
                 ]
                 .into_iter()

@@ -548,7 +548,7 @@ mod tests {
         const WORKSPACE: &str = "3b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5f";
         let line =
             "session.place_found(text: \"Displays\", view: .none, x: .some(40), y: .some(40))";
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
         let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
@@ -592,7 +592,7 @@ mod tests {
     #[test]
     fn a_line_that_does_not_parse_is_answered_with_its_place() {
         const WORKSPACE: &str = "4b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b50";
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
         let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
@@ -621,7 +621,7 @@ mod tests {
         const WORKSPACE: &str = "5b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b51";
         /// A workspace this device holds nothing of: the person at it is no member there.
         const ELSEWHERE: &str = "5b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b59";
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
         let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
@@ -658,7 +658,7 @@ mod tests {
     #[test]
     fn a_line_the_person_stops_ends_cancelled_and_makes_no_change() {
         const WORKSPACE: &str = "6b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b52";
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
         let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve the broker in");
@@ -709,7 +709,7 @@ mod tests {
     #[test]
     fn the_sessions_own_actions_are_the_devices() {
         const WORKSPACE: &str = "7b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b53";
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
         let (_env, _identity_root, me) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve the actions in");
@@ -1095,7 +1095,7 @@ mod tests {
         use tilo_system_service::model::PowerMode;
 
         const WORKSPACE: &str = "1b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5d";
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
         let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve actions in");
@@ -1203,7 +1203,7 @@ mod tests {
 
         const WORKSPACE: &str = "2b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5e";
 
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
         let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve headless actions in");
@@ -1286,7 +1286,7 @@ mod tests {
     fn a_daemon_profile_change_reaches_power_without_polling() {
         const WORKSPACE: &str = "3b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b5f";
 
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
         let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve live power actions in");
@@ -1348,7 +1348,7 @@ mod tests {
 
         const WORKSPACE: &str = "4b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b60";
 
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
         let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve live mode-list actions in");
@@ -1444,7 +1444,7 @@ mod tests {
 
         const WORKSPACE: &str = "5b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b61";
 
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
         let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve unattached power actions");
@@ -1504,7 +1504,7 @@ mod tests {
     fn on_the_live_path_the_first_reading_after_set_power_mode_lands_carries_the_new_mode() {
         const WORKSPACE: &str = "6b6a8f2c-3d4e-4f5a-8b9c-0d1e2f3a4b62";
 
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let state = tempfile::tempdir().expect("a state directory");
         let (_env, _identity_root, person_id) = listed_workspace(state.path(), WORKSPACE);
         let app_wire = tempfile::tempdir().expect("a directory to serve live mode actions");

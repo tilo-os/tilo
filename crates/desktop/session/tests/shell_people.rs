@@ -158,7 +158,7 @@ fn rows_named_with(session: &Session, prefix: &str) -> usize {
 /// says of its person, and the keyboard stays in the roster while it is open.
 #[test]
 fn who_is_here_is_reachable_by_keyboard_and_says_what_each_row_shows() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_over(WIDTH, HEIGHT);
     set_here(
         &session,
@@ -276,7 +276,7 @@ fn who_is_here_is_reachable_by_keyboard_and_says_what_each_row_shows() {
 /// faces are under the pointer it landed on.
 #[test]
 fn a_press_off_who_is_here_closes_it_and_does_not_reopen_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_over(WIDTH, HEIGHT);
     set_here(&session, &[("Mia Clayton", None, None)]);
     open_who_is_here(&mut session);
@@ -316,7 +316,7 @@ fn a_press_off_who_is_here_closes_it_and_does_not_reopen_it() {
 /// above it puts it away.
 #[test]
 fn a_phones_who_is_here_is_a_sheet_a_press_above_puts_away() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_over(390, 844);
     // A phone's bar gives who is here away (the person's own menu opens them), so the shell is
     // up when its bell is.
@@ -370,7 +370,7 @@ fn a_phones_who_is_here_is_a_sheet_a_press_above_puts_away() {
 /// ten-thousand case is held in the toolkit's `a_list_held_to_its_most_height_builds_only_what_it_shows`.)
 #[test]
 fn a_workspace_of_thousands_opens_only_the_rows_who_is_here_shows() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_over(WIDTH, HEIGHT);
     let thousands = 2_000usize;
     // The first of them wears a name no row holds: what a row does with a name longer than it is

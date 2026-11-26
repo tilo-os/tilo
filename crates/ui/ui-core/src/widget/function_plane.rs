@@ -5,10 +5,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use vello::peniko::{BlendMode, Color, Fill};
 
-use crate::surface::edge_on_with;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::surface::edge_on_with;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
 const MINOR_DIVISIONS: u8 = 5;
 const MINOR_ALPHA: u8 = 18;

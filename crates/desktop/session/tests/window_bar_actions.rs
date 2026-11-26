@@ -159,7 +159,7 @@ fn press_shown(session: &mut Session, name: &str) {
         },
     );
     assert!(
-        session.a11y_perform(place, node, &ui::a11y::Action::Activate),
+        session.a11y_perform(place, node, &tilo_ui_base::a11y::Action::Activate),
         "the shell takes the press on {name:?}"
     );
     session
@@ -263,7 +263,7 @@ fn press_window_menu(session: &mut Session, window: &str) {
         },
     );
     assert!(
-        session.a11y_perform(place, node, &ui::a11y::Action::Activate),
+        session.a11y_perform(place, node, &tilo_ui_base::a11y::Action::Activate),
         "the shell takes the press on {window:?}'s window menu"
     );
     until(
@@ -279,7 +279,7 @@ fn press_window_menu(session: &mut Session, window: &str) {
 /// window whenever the shell's bar listed no commands (`lists` false), which is Strips' way.
 #[test]
 fn only_a_window_behind_offers_bring_to_front_in_strips() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let (mut session, notes) = session(root.path());
     let one = notes.first().expect("a note").clone();
@@ -336,7 +336,7 @@ fn only_a_window_behind_offers_bring_to_front_in_strips() {
 /// each keep that one list of what the window can do now.
 #[test]
 fn every_shells_window_bar_lists_the_notes_actions_and_runs_one() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let (mut session, notes) = session(root.path());
     let note = notes.first().expect("a note").clone();

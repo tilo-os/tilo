@@ -4,8 +4,8 @@
 
 use tilo_cpu_raster::{CANVAS_THREADS, CpuRasterizer, Options, Region, Target};
 
-use crate::damage::bounded_present_damage;
 use crate::retained_raster::FrameContent;
+use tilo_ui_base::damage::bounded_present_damage;
 
 pub(crate) struct CpuCanvas {
     rasterizer: CpuRasterizer,
@@ -77,7 +77,7 @@ impl CpuCanvas {
         // is rasterized; a copy that cannot be made repaints everything.
         let copied = !frame.full_redraw
             && self.valid
-            && crate::scroll_copy::copy_pixels(
+            && tilo_ui_base::scroll_copy::copy_pixels(
                 &mut self.pixels,
                 (frame.width, frame.height, stride as usize),
                 frame.scroll_copies,
@@ -210,7 +210,7 @@ mod tests {
                 damage_regions: damage,
                 scroll_copies: &[],
                 full_redraw: full,
-                backdrop: &crate::part_paint::backdrop::BackdropFrame::default(),
+                backdrop: &tilo_ui_base::part_paint::backdrop::BackdropFrame::default(),
             })
             .expect("valid CPU frame");
     }

@@ -4,7 +4,7 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use crate::rich_text_line::RichTextLine;
-use ui::presence::PresenceKey;
+use tilo_ui_base::presence::PresenceKey;
 use ui::widget::marks::MarkSpan;
 
 use super::{Block, BlockEditor, BlockKind, DocumentPosition, DocumentSelection};
@@ -16,7 +16,7 @@ use super::{Block, BlockEditor, BlockKind, DocumentPosition, DocumentSelection};
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct ParagraphStyle {
     /// Where its lines stand: the editor's own alignment when unset.
-    pub align: Option<ui::richtext::TextAlign>,
+    pub align: Option<tilo_ui_base::richtext::TextAlign>,
     /// The space above it, in points, where the document sets one.
     pub space_before: Option<f32>,
     /// The space below it, in points.
@@ -593,10 +593,10 @@ mod tests {
     /// of text, the tag covers neither: it hangs below the caret's line.
     #[test]
     fn a_caret_tag_on_the_first_line_hangs_below_it() {
-        use ui::widget::Widget as _;
+        use tilo_ui_base::widget::Widget as _;
         use vello::kurbo::{Affine, Point};
         const TOP: f64 = 120.0;
-        let theme = ui::theme::Theme::dark();
+        let theme = tilo_ui_base::theme::Theme::dark();
         let mut editor = editor_with(vec![
             BlockContent::paragraph("a", "Hello from A"),
             BlockContent::paragraph("b", "and more"),
@@ -615,23 +615,23 @@ mod tests {
             .expect("block editor layout");
         editor.apply_layout(&taffy, node, Point::ZERO);
         let render = |editor: &mut BlockEditor, caret_in: Option<&str>| {
-            let mut presence = ui::presence::PresenceCtx::empty();
+            let mut presence = tilo_ui_base::presence::PresenceCtx::empty();
             if let Some(block) = caret_in {
                 presence.carets.insert(
                     crate::block_editor::block_presence_key(block),
-                    vec![(ui::permissions::MemberId::person("ada"), 5)],
+                    vec![(tilo_ui_base::permissions::MemberId::person("ada"), 5)],
                 );
             }
-            let mut text = ui::text_render::TextRenderer::new();
+            let mut text = tilo_ui_base::text_render::TextRenderer::new();
             let mut scene = vello::Scene::new();
-            editor.draw(&mut tilo_ui::DrawCtx::new(
+            editor.draw(&mut tilo_ui_base::DrawCtx::new(
                 &mut scene,
                 Affine::translate((0.0, TOP)),
                 &mut text,
                 &theme,
                 presence.draw_env(),
             ));
-            ui::offscreen::OffscreenRenderer::new(400, 400)
+            tilo_ui_base::offscreen::OffscreenRenderer::new(400, 400)
                 .render(&scene, vello::peniko::Color::BLACK)
         };
         let plain = render(&mut editor, None);
@@ -669,7 +669,7 @@ mod tests {
     /// block, yet what is sent, and what its chip reads, is all of it.
     #[test]
     fn a_selection_across_resource_blocks_sends_every_block() {
-        use ui::presence::capability::PublishesPresence as _;
+        use tilo_ui_base::presence::capability::PublishesPresence as _;
         let mut editor = editor_with(vec![
             BlockContent::paragraph("a", "Friday plan for the offsite"),
             BlockContent::paragraph("b", "Book the room"),

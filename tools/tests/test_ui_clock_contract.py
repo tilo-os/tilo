@@ -170,7 +170,7 @@ class UiClockContractTests(unittest.TestCase):
                         "pub fn t(now: Instant) -> Duration { ui::time::now() - now }\n"
                         "pub fn w() -> ui::time::SystemTime { ui::time::wall() }\n"
                     ),
-                    "crates/ui/ui-core/src/clock.rs": (
+                    "crates/ui/ui-base/src/clock.rs": (
                         "use crate::time::Instant;\n"
                         "pub fn t(now: Instant) -> crate::time::Instant { crate::time::now() }\n"
                     ),

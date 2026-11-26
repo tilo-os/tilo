@@ -6,8 +6,8 @@ use std::collections::{HashMap, HashSet};
 
 use super::{ListKey, VirtualRows};
 use super::{MountedRow, MountedRowState, RowBuild, RowSelection, groups};
-use crate::collection_transition::ListModelChange;
-use crate::virtual_viewport::SparseAnchor;
+use tilo_ui_base::collection_transition::ListModelChange;
+use tilo_ui_base::virtual_viewport::SparseAnchor;
 
 impl VirtualRows {
     /// Follow a model replaced in place ([`VirtualList::update_model`]), from where the
@@ -67,8 +67,8 @@ impl VirtualRows {
         // The frame's instant, as everything the frame reads: a change that lands while one is
         // built is made by hand as that frame reads the input before it, not at the clock it is
         // late by.
-        let source = crate::collection_transition::RowMotions::<ListKey>::caused_by_hand(
-            crate::motion::frame_now(),
+        let source = tilo_ui_base::collection_transition::RowMotions::<ListKey>::caused_by_hand(
+            tilo_ui_base::motion::frame_now(),
             self.reduce_motion,
         )
         .filter(|_| structural && !resets);
@@ -83,15 +83,15 @@ impl VirtualRows {
     }
 
     /// Start the glide of a change noted before this frame, at the instant the frame draws it at
-    /// ([`crate::motion::frame_now`] inside one): on the clock, a row on its way from an earlier
+    /// ([`tilo_ui_base::motion::frame_now`] inside one): on the clock, a row on its way from an earlier
     /// frame was read past where this frame had mounted it, and a read during layout failed.
-    pub(super) fn start_row_motion(&mut self, motion: crate::tokens::EffectiveMotion) {
+    pub(super) fn start_row_motion(&mut self, motion: tilo_ui_base::tokens::EffectiveMotion) {
         let shown = self
             .mounted
             .iter()
             .filter_map(|row| Some((row.key.clone(), self.viewport.item_view_top(row.index)?)));
         self.row_motion
-            .start(shown, motion, crate::motion::frame_now());
+            .start(shown, motion, tilo_ui_base::motion::frame_now());
     }
 
     fn apply_model_changes(&mut self, changes: &[ListModelChange<ListKey>]) {
@@ -292,7 +292,7 @@ impl VirtualRows {
         let mut seen = HashSet::new();
         let mut mounted = Vec::with_capacity(range.len());
         let mut replaced = false;
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         for index in range {
             let Some(key) = self.model.key_at(index) else {
                 continue;
@@ -354,9 +354,9 @@ impl VirtualRows {
                             .as_any()
                             .is_some_and(|any| any.is::<crate::widget::ListRow>())
                         || (self.delegate_selection
-                            && crate::widget::capability::capability::<dyn super::RowSelectionSink>(
-                                row.widget.as_ref(),
-                            )
+                            && tilo_ui_base::widget::capability::capability::<
+                                dyn super::RowSelectionSink,
+                            >(row.widget.as_ref())
                             .is_some()))
             });
             let mut row = match previous {
@@ -383,8 +383,8 @@ impl VirtualRows {
                             RowBuild {
                                 selection,
                                 expanded: self.open.as_ref() == Some(&key),
-                                nest: crate::num::f32_of_f64(self.disclosure),
-                                chevron_column: crate::num::f32_of_f64(self.chevron_column),
+                                nest: tilo_ui_base::num::f32_of_f64(self.disclosure),
+                                chevron_column: tilo_ui_base::num::f32_of_f64(self.chevron_column),
                             },
                         ),
                         state => self.arriving_row(index, state),
@@ -442,8 +442,8 @@ impl VirtualRows {
 /// A tree's word to the row a mounted row is: the row stands as an outline's, at the tree's own
 /// height and name size, whatever decorators the app's view wrapped it in — a swipe or a hover
 /// toolbar keeps the row inside it.
-pub(super) fn outline_row(widget: &mut dyn crate::widget::Widget, chevron_column: f64) {
-    if let Some(row) = crate::widget::find_mut::<crate::widget::ListRow>(widget) {
+pub(super) fn outline_row(widget: &mut dyn tilo_ui_base::widget::Widget, chevron_column: f64) {
+    if let Some(row) = tilo_ui_base::widget::find_mut::<crate::widget::ListRow>(widget) {
         row.set_outline(chevron_column);
     }
 }

@@ -5,9 +5,9 @@
     reason = "private implementation module shares its enclosing host types"
 )]
 use super::*;
-use crate::{widget::Widget, widget::bound_nodes::BoundNodeMap};
 use std::collections::{HashMap, HashSet};
 use taffy::{NodeId, TaffyTree};
+use tilo_ui_base::{widget::Widget, widget::bound_nodes::BoundNodeMap};
 use winit::event::{ElementState, WindowEvent};
 
 pub(crate) use crate::focus_navigation::FocusRestrictions;
@@ -284,8 +284,8 @@ pub(crate) fn has_review(root: &dyn Widget) -> bool {
 pub(crate) fn service_reviews(
     root: &mut dyn Widget,
     state: &mut crate::State,
-    authority: &crate::permissions::PermissionContext,
-    author: &crate::permissions::MemberId,
+    authority: &tilo_ui_base::permissions::PermissionContext,
+    author: &tilo_ui_base::permissions::MemberId,
 ) -> Vec<HistorySourceRegistration> {
     let mut restored = vec![];
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, live| {
@@ -305,8 +305,9 @@ pub(crate) unsafe fn move_focus(
     bindings: &BoundNodeMap,
     tree: &TaffyTree<()>,
 ) -> bool {
-    let mut captured =
-        unsafe { crate::widget::layout::CompositionFocus::capture(current, nodes, bindings) };
+    let mut captured = unsafe {
+        tilo_ui_base::widget::layout::CompositionFocus::capture(current, nodes, bindings)
+    };
     let mut suspended = false;
     let mut resumed = false;
     crate::history_mode::capability::visit_framework_history_mut(root, &mut |history, _| {
@@ -333,7 +334,7 @@ pub(crate) unsafe fn move_focus(
         for &node in nodes.keys() {
             if Some(node) != target
                 && unsafe {
-                    crate::widget::bound_nodes::inspect_bound_node(
+                    tilo_ui_base::widget::bound_nodes::inspect_bound_node(
                         bindings,
                         nodes,
                         node,
@@ -343,9 +344,14 @@ pub(crate) unsafe fn move_focus(
                 .unwrap_or(false)
             {
                 let _ = unsafe {
-                    crate::widget::bound_nodes::mutate_bound_node(bindings, nodes, node, |widget| {
-                        widget.set_focus(false);
-                    })
+                    tilo_ui_base::widget::bound_nodes::mutate_bound_node(
+                        bindings,
+                        nodes,
+                        node,
+                        |widget| {
+                            widget.set_focus(false);
+                        },
+                    )
                 };
             }
         }

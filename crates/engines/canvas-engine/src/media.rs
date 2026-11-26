@@ -2,7 +2,7 @@
 //! and the presets saved in this artwork, which travel with it.
 
 use std::collections::BTreeMap;
-use tilo_ui::num::f32_of_f64;
+use tilo_ui_base::num::f32_of_f64;
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::{self, JsonSchema};

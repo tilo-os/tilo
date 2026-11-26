@@ -4,8 +4,8 @@
 //! matches as well, so a confined Tilo app sorts first; choosing one starts
 //! it through the host ([`HOST_APP_PREFIX`] on the launch).
 
+use tilo_ui_base::text_match::FieldWeight;
 use ui::search::system::{MAX_PROVIDER_SCORE, ResourceKind};
-use ui::text_match::FieldWeight;
 
 use crate::model::{Hit, LaunchPlace, Source, Target};
 use crate::preferences::SearchPreferences;
@@ -83,7 +83,7 @@ pub fn launched(app: &str) -> Option<&str> {
 pub struct HostApps {
     entries: Vec<HostAppEntry>,
     fields: Vec<Vec<(String, FieldWeight)>>,
-    ranker: ui::text_match::ListIndex,
+    ranker: tilo_ui_base::text_match::ListIndex,
 }
 
 impl HostApps {
@@ -118,7 +118,7 @@ impl HostApps {
         Self {
             entries,
             fields,
-            ranker: ui::text_match::ListIndex::default()
+            ranker: tilo_ui_base::text_match::ListIndex::default()
                 .with_ranks(ui::search::system::application_ranks),
         }
     }

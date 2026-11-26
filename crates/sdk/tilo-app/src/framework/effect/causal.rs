@@ -10,7 +10,7 @@ use std::any::Any;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::{Rc, Weak};
-use ui_core::widget::document_effects::AppliedDocument;
+use tilo_ui_base::widget::document_effects::AppliedDocument;
 
 const MAX_CAUSES: usize = 256;
 const MAX_INVOCATIONS: usize = 128;

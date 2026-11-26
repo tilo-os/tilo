@@ -1,43 +1,53 @@
 //! Text input: a field for single-line or wrapping text, with a caret, selection,
 //! completion and spelling. Its edits splice the text it shows.
 
-use crate::i18n::widget_text;
 use crate::time::Instant;
-use crate::widget::{AppModel, ModelPath};
 use std::collections::HashSet;
 use std::ops::Range;
 use std::sync::{Arc, Mutex};
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use crate::color_compat::ColorCompat;
-use crate::gesture::{DragSelect, Granularity};
-use crate::ime::{Capitalization, InputContent, InputPurpose};
-use crate::paint::PaintCtx;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::richtext::{RichSpan, RichTextLayout, TextAlign};
-use crate::text_break::line_break_opportunities;
-use crate::text_break::{grapheme_indices, graphemes};
-use crate::text_edit::{CaretWord, Edit, EditCore, Motion, TypingRun};
-use crate::text_render::{FontChoice, TextKind, TextRenderer, TextScaling, TextStyle, TextWeight};
-use crate::text_selection::{
-    TextAffinity, TextPosition, clipboard_copy, clipboard_copy_primary, clipboard_paste_primary,
-    extend_span_drag, grapheme_boundary_at_or_before, line_boundaries, word_boundaries,
-};
-use crate::theme::Theme;
-use crate::tokens::{SyntaxPalette, TextRole};
-use crate::widget::DrawChild;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
 use crate::widget::code_editor::{Highlighter, Span};
 use crate::widget::context_menu::ContextMenu;
 use crate::widget::control_size::ControlSize;
 use crate::widget::mention_picker::MentionCandidate;
 use crate::widget::text_completion::{CompletionKey, CompletionList, TextCompletion};
-use crate::widget::{ActionEmitter, ControlBindingKind, ControlBindingMetadata};
 use automerge::{AutoCommit, ObjId, ReadDoc};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 #[cfg(feature = "model")]
 use tilo_resource::{TextEdit, text::splice_between};
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_break::line_break_opportunities;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{gesture::DragSelect, gesture::Granularity};
+use tilo_ui_base::{ime::Capitalization, ime::InputContent, ime::InputPurpose};
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
+use tilo_ui_base::{richtext::RichSpan, richtext::RichTextLayout, richtext::TextAlign};
+use tilo_ui_base::{text_break::grapheme_indices, text_break::graphemes};
+use tilo_ui_base::{
+    text_edit::CaretWord, text_edit::Edit, text_edit::EditCore, text_edit::Motion,
+    text_edit::TypingRun,
+};
+use tilo_ui_base::{
+    text_render::FontChoice, text_render::TextKind, text_render::TextRenderer,
+    text_render::TextScaling, text_render::TextStyle, text_render::TextWeight,
+};
+use tilo_ui_base::{
+    text_selection::TextAffinity, text_selection::TextPosition, text_selection::clipboard_copy,
+    text_selection::clipboard_copy_primary, text_selection::clipboard_paste_primary,
+    text_selection::extend_span_drag, text_selection::grapheme_boundary_at_or_before,
+    text_selection::line_boundaries, text_selection::word_boundaries,
+};
+use tilo_ui_base::{tokens::SyntaxPalette, tokens::TextRole};
+use tilo_ui_base::{
+    widget::ActionEmitter, widget::ControlBindingKind, widget::ControlBindingMetadata,
+};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::BlendMode;
@@ -99,7 +109,7 @@ pub fn paint_invalid_edge(scene: &mut Scene, transform: Affine, field: Rect, the
         None,
         &vello::kurbo::RoundedRect::from_rect(
             field,
-            crate::chrome::ChromeRole::Control.radius(theme, field.height()),
+            tilo_ui_base::chrome::ChromeRole::Control.radius(theme, field.height()),
         ),
     );
 }
@@ -108,7 +118,7 @@ pub fn paint_preedit_underline(
     scene: &mut Scene,
     transform: Affine,
     segment: vello::kurbo::Line,
-    theme: &crate::Theme,
+    theme: &tilo_ui_base::Theme,
 ) {
     scene.stroke(
         &Stroke::new(theme.caret_width / 2.0),
@@ -294,7 +304,7 @@ pub struct TextInput {
     rect: Rect,
     is_hovered: bool,
     invalid: bool,
-    change: Option<(crate::component::Person, String)>,
+    change: Option<(tilo_ui_base::component::Person, String)>,
     is_focused: bool,
     caret_paint_suppressed: bool,
     host_shows_text: bool,
@@ -328,7 +338,7 @@ pub struct TextInput {
     on_change: Option<TextChangeCallback>,
     action: Option<ActionEmitter<Edited>>,
     last_notified_text: String,
-    local_state: Option<crate::local_state::LocalBinding<String>>,
+    local_state: Option<tilo_ui_base::local_state::LocalBinding<String>>,
     layout_dirty: bool,
     /// How tall each line of multiline text stands, as a multiple of the type's size: the
     /// default leading (1.25) until a document asks for single, 1.5 or double spacing.
@@ -357,7 +367,7 @@ pub struct TextInput {
     alternate_layouts: Vec<AlternateLayout>,
     /// The bands a floating picture leaves beside this field's rows, if any: rows standing in one
     /// wrap to the width it leaves and start past the picture.
-    row_bands: crate::text_render::RowBands,
+    row_bands: tilo_ui_base::text_render::RowBands,
     rich_spans: Option<Vec<RichSpan>>,
     scroll_x: f64,
     compact_multiline: bool,
@@ -388,7 +398,7 @@ pub struct TextInput {
     secret: bool,
     disabled: bool,
     kind: TextInputKind,
-    autofill: Option<crate::a11y::Autofill>,
+    autofill: Option<tilo_ui_base::a11y::Autofill>,
     autofill_said: bool,
     completion: CompletionList,
     completion_setting: Option<TextCompletion>,
@@ -404,7 +414,7 @@ pub struct TextInput {
     /// Cached by (language, text), so drawing idle fields never starts work.
     spell_cache_key: Option<(String, String)>,
     spell_spans: Vec<(usize, usize)>,
-    shown: crate::scroll_copy::ShownFrames<damage::FieldShown>,
+    shown: tilo_ui_base::scroll_copy::ShownFrames<damage::FieldShown>,
     /// `spell_spans` were cleared while idle and no longer describe the
     /// cached text, so the next check cannot splice into them.
     spell_spans_stale: bool,
@@ -440,7 +450,7 @@ pub struct TextInput {
     family: Option<FontChoice>,
     multiline: bool,
     multiline_shaped: bool,
-    wheel_glide: crate::virtual_viewport::ScrollMomentum,
+    wheel_glide: tilo_ui_base::virtual_viewport::ScrollMomentum,
     reduce_motion: bool,
     /// Plain `Enter` submits instead of inserting a newline; multiline keeps
     /// `Shift+Enter` for a real newline (chat-composer pattern).
@@ -468,7 +478,7 @@ pub struct TextInput {
     hl_text: Option<Arc<str>>,
     last_scroll_caret: Option<usize>,
     last_caret_width: f64,
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     control_size: ControlSize,
     /// A wrapping field is at least this many lines tall.
     min_lines: usize,
@@ -493,19 +503,19 @@ pub struct TextInput {
     on_submit: Option<TextChangeCallback>,
     /// The selection settled ([`Self::with_selection_event`]): what a read-only field's reader
     /// gets of the run someone chose, as `<start>:<end>` bytes, or nothing on a collapse.
-    selection_event: Option<crate::component::Event>,
+    selection_event: Option<tilo_ui_base::component::Event>,
     /// Escape let go of what was being typed ([`Self::set_cancel_event`]): the field clears, and
     /// what holds it is told, so a caret on a canvas goes away with it.
-    cancel_event: crate::component::Event,
+    cancel_event: tilo_ui_base::component::Event,
     /// The field's text went from empty to non-empty ([`Self::set_begin_event`]): the first
     /// change, which makes the item a list entry names. Carries the text it now holds.
-    begin_event: crate::component::Event,
+    begin_event: tilo_ui_base::component::Event,
     /// The field's text changed as the person typed ([`Self::set_changed_event`]): what redraws
     /// what the words are for, as they are typed, such as a window's search.
-    changed_event: crate::component::Event,
+    changed_event: tilo_ui_base::component::Event,
     /// The field lost the keyboard ([`Self::set_blur_event`]): a list's entry that was left
     /// empty is taken away by what listens.
-    blur_event: crate::component::Event,
+    blur_event: tilo_ui_base::component::Event,
     submit_action: Option<ActionEmitter<String>>,
     accessory: Option<Accessory>,
     /// `font_size_override` is a document-space size, never grown by the text
@@ -539,8 +549,8 @@ pub type MistakeMarker = Box<dyn Fn(&str) -> Vec<std::ops::Range<usize>>>;
 /// Where a detected address opens: a web link as it is (a bare host gets
 /// `https://`), an email address as `mailto:`; mentions and workspace
 /// aliases are not links.
-fn link_target(what: crate::text_detect::Detected, text: &str) -> Option<String> {
-    use crate::text_detect::Detected;
+fn link_target(what: tilo_ui_base::text_detect::Detected, text: &str) -> Option<String> {
+    use tilo_ui_base::text_detect::Detected;
     match what {
         Detected::Url => {
             let text = text.trim_end_matches(['.', ',', ';', ':', '!', '?', ')', ']', '>']);
@@ -589,7 +599,7 @@ pub enum AccessoryAction {
 const ACCESSORY_TARGET: &str = "text-input-accessory";
 
 struct Accessory {
-    icon: crate::icons::Icon,
+    icon: tilo_ui_base::icons::Icon,
     name: String,
     action: AccessoryAction,
     hovered: bool,
@@ -689,7 +699,7 @@ impl TextInput {
             shaped_layout_epoch: None,
             layout_syntax: None,
             alternate_layouts: Vec::new(),
-            row_bands: crate::text_render::RowBands::default(),
+            row_bands: tilo_ui_base::text_render::RowBands::default(),
             rich_spans: None,
             scroll_x: 0.0,
             compact_multiline: false,
@@ -736,7 +746,7 @@ impl TextInput {
             spell_language,
             spell_cache_key: None,
             spell_spans: Vec::new(),
-            shown: crate::scroll_copy::ShownFrames::default(),
+            shown: tilo_ui_base::scroll_copy::ShownFrames::default(),
             spell_spans_stale: false,
             spell_dictionary: None,
             personal_spelling: None,
@@ -761,7 +771,7 @@ impl TextInput {
             family: None,
             multiline: false,
             multiline_shaped: false,
-            wheel_glide: crate::virtual_viewport::ScrollMomentum::new(),
+            wheel_glide: tilo_ui_base::virtual_viewport::ScrollMomentum::new(),
             reduce_motion: false,
             enter_submits: false,
             submit_requested: false,
@@ -784,22 +794,22 @@ impl TextInput {
             hl_text: None,
             last_scroll_caret: None,
             last_caret_width: 2.0,
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             control_size: ControlSize::Regular,
             min_lines: 0,
-            field_pad_x: f64::from(crate::tokens::Spacing::BASE.s3),
-            band_height: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
-            own_width: crate::tokens::Metrics::BASE.field_min_width,
+            field_pad_x: f64::from(tilo_ui_base::tokens::Spacing::BASE.s3),
+            band_height: f64::from(tilo_ui_base::tokens::Metrics::BASE.min_pointer_target),
+            own_width: tilo_ui_base::tokens::Metrics::BASE.field_min_width,
             prompt_fit: None,
             document_inset: false,
             caret: false,
             caret_measured: None,
             on_submit: None,
             selection_event: None,
-            cancel_event: crate::component::Event::None,
-            begin_event: crate::component::Event::None,
-            changed_event: crate::component::Event::None,
-            blur_event: crate::component::Event::None,
+            cancel_event: tilo_ui_base::component::Event::None,
+            begin_event: tilo_ui_base::component::Event::None,
+            changed_event: tilo_ui_base::component::Event::None,
+            blur_event: tilo_ui_base::component::Event::None,
             submit_action: None,
             accessory: None,
             content_sized: false,
@@ -1419,27 +1429,30 @@ impl TextInput {
         Self::with_language(Vec::new(), language.to_owned())
     }
 
-    pub fn from_state(state: &crate::LocalState<String>) -> Self {
-        let (value, binding) = crate::local_state::LocalBinding::new(state);
+    pub fn from_state(state: &tilo_ui_base::LocalState<String>) -> Self {
+        let (value, binding) = tilo_ui_base::local_state::LocalBinding::new(state);
         let mut input = Self::local().with_initial_value(&value);
         input.local_state = Some(binding);
         input
     }
 
-    pub(crate) fn follows(&self, state: &crate::LocalState<String>) -> bool {
+    pub(crate) fn follows(&self, state: &tilo_ui_base::LocalState<String>) -> bool {
         self.local_state
             .as_ref()
             .is_some_and(|binding| binding.follows(state))
     }
 
-    pub(crate) fn follow(&mut self, state: &crate::LocalState<String>) {
-        let (value, binding) = crate::local_state::LocalBinding::new(state);
+    pub(crate) fn follow(&mut self, state: &tilo_ui_base::LocalState<String>) {
+        let (value, binding) = tilo_ui_base::local_state::LocalBinding::new(state);
         self.local_state = Some(binding);
         self.set_text(&value);
     }
 
     #[must_use]
-    pub fn with_change(mut self, change: Option<(crate::component::Person, String)>) -> Self {
+    pub fn with_change(
+        mut self,
+        change: Option<(tilo_ui_base::component::Person, String)>,
+    ) -> Self {
         self.change = change;
         self
     }
@@ -1862,7 +1875,7 @@ impl TextInput {
             self.themed_role_size
                 .filter(|(role, _)| *role == self.text_role)
                 .map_or_else(
-                    || crate::tokens::typography::stock().size(self.text_role),
+                    || tilo_ui_base::tokens::typography::stock().size(self.text_role),
                     |(_, size)| size,
                 )
         })
@@ -2404,7 +2417,7 @@ impl TextInput {
         style.scaling = TextScaling::Resolved;
         style.kind = self.kind.text_kind();
         if self.kind == TextInputKind::Code {
-            style.wrap_mode = crate::text_render::TextWrapMode::Indented;
+            style.wrap_mode = tilo_ui_base::text_render::TextWrapMode::Indented;
         }
         style
     }
@@ -2528,7 +2541,7 @@ impl TextInput {
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            crate::surface::edge_on(theme.tokens.colors.surfaces.raised),
+            tilo_ui_base::surface::edge_on(theme.tokens.colors.surfaces.raised),
             None,
             &vello::kurbo::Line::new((edge, self.rect.y0), (edge, self.rect.y1)),
         );
@@ -2588,7 +2601,7 @@ impl TextInput {
         (caret_position, shape): (TextPosition, &RoundedRect),
     ) {
         self.ml_caret = None;
-        if !self.is_focused || !crate::caret_owner::shown() || self.effectively_disabled() {
+        if !self.is_focused || !tilo_ui_base::caret_owner::shown() || self.effectively_disabled() {
             return;
         }
         let Some(layout) = self.single_layout.as_ref() else {
@@ -2627,7 +2640,7 @@ impl TextInput {
         transform: Affine,
         theme: &Theme,
     ) -> Option<Rect> {
-        if !crate::caret_owner::shown() {
+        if !tilo_ui_base::caret_owner::shown() {
             self.ml_caret = None;
             return None;
         }
@@ -2738,7 +2751,7 @@ impl TextInput {
         self.draw_current_line_band(scene, transform, theme, caret_byte, gutter_width);
 
         // What a copy keeps on screen is not encoded again (`draw_cull`).
-        let _kept = crate::draw_cull::keep_scope(scene, self.field_keep(transform, theme));
+        let _kept = tilo_ui_base::draw_cull::keep_scope(scene, self.field_keep(transform, theme));
         let leave_out = self.paint_selection_keeping_lines(
             (scene, transform),
             tr,
@@ -3054,7 +3067,7 @@ impl TextInput {
 
         if !self.caret_paint_suppressed
             && self.is_focused
-            && crate::caret_owner::shown()
+            && tilo_ui_base::caret_owner::shown()
             && !self.effectively_disabled()
         {
             let caret = self.caret_rect_ml(self.core.caret(), theme.caret_width);
@@ -3324,7 +3337,7 @@ impl TextInput {
     /// The bands a floating picture leaves beside the field's rows. A band narrows the rows whose
     /// top stands in it and starts them past the picture, so the words flow beside the picture and
     /// take the whole width again once they pass its bottom.
-    pub(super) fn set_row_bands(&mut self, bands: crate::text_render::RowBands) {
+    pub(super) fn set_row_bands(&mut self, bands: tilo_ui_base::text_render::RowBands) {
         if self.row_bands == bands {
             return;
         }
@@ -3595,7 +3608,7 @@ impl TextInput {
     }
 
     #[must_use]
-    pub fn with_placeholder(mut self, hint: impl Into<crate::i18n::LabelKey>) -> Self {
+    pub fn with_placeholder(mut self, hint: impl Into<tilo_ui_base::i18n::LabelKey>) -> Self {
         self.placeholder = hint.into().into();
         self
     }
@@ -3705,13 +3718,17 @@ impl TextInput {
 
     #[must_use]
     pub fn with_clear_button(self) -> Self {
-        self.with_trailing_accessory(crate::icons::Icon::X, "Clear", AccessoryAction::Clear)
+        self.with_trailing_accessory(
+            tilo_ui_base::icons::Icon::X,
+            "Clear",
+            AccessoryAction::Clear,
+        )
     }
 
     #[must_use]
     pub fn with_trailing_accessory(
         mut self,
-        icon: crate::icons::Icon,
+        icon: tilo_ui_base::icons::Icon,
         name: &str,
         action: AccessoryAction,
     ) -> Self {
@@ -3866,7 +3883,7 @@ impl TextInput {
             })
             .cloned()
             .collect();
-        for span in crate::text_detect::identifier_spans(&self.text) {
+        for span in tilo_ui_base::text_detect::identifier_spans(&self.text) {
             let covered = found
                 .iter()
                 .any(|(range, _)| range.start < span.range.end && span.range.start < range.end);
@@ -3976,13 +3993,13 @@ impl TextInput {
             theme.text_dim
         };
         let edge = f64::from(theme.tokens.metrics.icon_sm);
-        crate::icons::draw_icon(
+        tilo_ui_base::icons::draw_icon(
             scene,
             transform,
             Rect::from_center_size(rect.center(), (edge, edge)),
             accessory.icon,
             ink,
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
         if !enabled {
             scene.pop_layer();
@@ -4146,7 +4163,7 @@ impl TextInput {
     }
 
     #[must_use]
-    pub fn interaction(&self) -> crate::interaction::InteractionEnvironment {
+    pub fn interaction(&self) -> tilo_ui_base::interaction::InteractionEnvironment {
         self.interaction
     }
 
@@ -4179,7 +4196,8 @@ impl TextInput {
 
     #[must_use]
     pub fn own_width_in(theme: &Theme) -> f32 {
-        theme.tokens.metrics.field_min_width * crate::tokens::Metrics::text_growth(theme.text_scale)
+        theme.tokens.metrics.field_min_width
+            * tilo_ui_base::tokens::Metrics::text_growth(theme.text_scale)
     }
 
     fn band(&self) -> f64 {
@@ -4468,7 +4486,7 @@ impl TextInput {
             let owned = s.to_string();
             // Delete only once the text is on a clipboard; a failed copy
             // must not lose the selection.
-            if crate::text_selection::clipboard_copy_accepted(&owned) {
+            if tilo_ui_base::text_selection::clipboard_copy_accepted(&owned) {
                 self.delete_selection();
             }
         }
@@ -4476,7 +4494,7 @@ impl TextInput {
 
     fn do_paste(&mut self) {
         self.pending_paste = Some(PendingPaste {
-            result: crate::text_selection::request_clipboard_paste(),
+            result: tilo_ui_base::text_selection::request_clipboard_paste(),
             text: zeroize::Zeroizing::new(self.text.clone()),
             caret: self.core.caret_position(),
             anchor: self.core.anchor(),
@@ -4630,7 +4648,7 @@ fn paint_field_chrome(
     if disabled {
         crate::widget::paint_disabled(scene, transform, shape);
     }
-    let bordered = crate::surface::control_face(scene, transform, shape, bg_color, theme);
+    let bordered = tilo_ui_base::surface::control_face(scene, transform, shape, bg_color, theme);
     // A field is a raised well: no edge at rest (the level step separates
     // it), and no ring when focused (the caret is the focus). A value the
     // form rejected edges the field in danger ink, the one status colour a
@@ -4642,7 +4660,7 @@ fn paint_field_chrome(
             colors.ink_on_any(
                 &[bg_color, colors.surfaces.content],
                 colors.semantic.danger,
-                crate::tokens::colors::NON_TEXT_MIN_CONTRAST,
+                tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST,
             ),
         ))
     } else if theme.colors_are_forced() && !bordered {
@@ -4668,7 +4686,7 @@ fn paint_field_chrome(
             transform,
             border_color,
             None,
-            &crate::surface::edge_outline(shape.rect(), shape.radii().top_left),
+            &tilo_ui_base::surface::edge_outline(shape.rect(), shape.radii().top_left),
         );
     }
     if disabled {
@@ -4796,7 +4814,7 @@ impl Drop for TextInput {
     }
 }
 
-impl crate::widget::ResourceOperations for TextInput {}
+impl tilo_ui_base::widget::ResourceOperations for TextInput {}
 
 impl PlaceholderFit for TextInput {
     fn placeholder_fit(&self) -> Option<PromptFit> {
@@ -4820,11 +4838,11 @@ impl Widget for TextInput {
             .then(|| self.test_id().unwrap_or_default().to_owned())
     }
 
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::widget::undo_points::UndoPoints,
-        dyn crate::widget::ResourceOperations,
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        dyn tilo_ui_base::presence::capability::PublishesPresence,
+        dyn tilo_ui_base::widget::undo_points::UndoPoints,
+        dyn tilo_ui_base::widget::ResourceOperations,
         dyn crate::widget::PlaceholderFit
     );
 
@@ -4834,7 +4852,7 @@ impl Widget for TextInput {
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.interaction = environment;
         self.is_hovered &= environment.supports_hover();
@@ -4849,11 +4867,11 @@ impl Widget for TextInput {
         if self.poll_pending_paste() {
             self.notify_user_change(false);
         }
-        let (state, _) = crate::doc::document_ref(state, root);
+        let (state, _) = tilo_ui_base::doc::document_ref(state, root);
         let local_value = self
             .local_state
             .as_mut()
-            .and_then(crate::local_state::LocalBinding::poll);
+            .and_then(tilo_ui_base::local_state::LocalBinding::poll);
         if let Some(value) = local_value {
             self.set_text(&value);
         }
@@ -4942,7 +4960,7 @@ impl Widget for TextInput {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
+        self.apply_layout_external(tilo_ui_base::widget::layout_rect(taffy, node, origin));
     }
 
     /// Single-line keeps its fixed row height from `build_layout` (0 here)
@@ -5066,7 +5084,7 @@ impl Widget for TextInput {
         taffy::Size { width, height }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -5094,7 +5112,7 @@ impl Widget for TextInput {
         }
         self.refresh_completion();
         if self.holds_secret() && (!self.text.is_empty() || self.core.has_preedit()) {
-            crate::secret_paint::note_secret_painted();
+            tilo_ui_base::secret_paint::note_secret_painted();
         }
         let shape = RoundedRect::from_rect(self.rect, f64::from(theme.tokens.radii.control));
         if !self.plain {
@@ -5125,7 +5143,7 @@ impl Widget for TextInput {
             self.draw_pending_token(scene, transform, theme);
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
-            self.draw_peers_and_permission_scrim(&mut crate::draw::DrawCtx::new(
+            self.draw_peers_and_permission_scrim(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -5230,7 +5248,7 @@ impl Widget for TextInput {
             self.draw_autocorrection(scene, transform, theme);
             self.draw_autocorrection_preview(scene, transform, text_renderer, theme);
         }
-        self.draw_peers_and_permission_scrim(&mut crate::draw::DrawCtx::new(
+        self.draw_peers_and_permission_scrim(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -5239,7 +5257,7 @@ impl Widget for TextInput {
         ));
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         // One whose action the person may not run still takes their typing: what they type is
         // sent to be refused with why, and the field keeps what it held ([`Self::report_change`]).
         if self.disabled {
@@ -5325,7 +5343,7 @@ impl Widget for TextInput {
             Widget::handle_event(
                 &mut *self.context_menu,
                 event,
-                &mut crate::widget::EventCtx {
+                &mut tilo_ui_base::widget::EventCtx {
                     handled: &mut taken,
                     ..ctx.reborrow(ctx.path, ctx.node_id)
                 },
@@ -5468,7 +5486,7 @@ impl Widget for TextInput {
     ///
     /// The band is read from the field's layout, never from a painted frame: a window laid out
     /// and never drawn reports the same line a drawn one does.
-    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
+    fn layout_info(&self) -> Option<tilo_ui_base::widget::LayoutInfo> {
         if self.rect == Rect::ZERO {
             return None;
         }
@@ -5482,14 +5500,16 @@ impl Widget for TextInput {
         } else {
             self.rect.y0 + (self.rect.height() - line) / 2.0
         };
-        Some(crate::widget::LayoutInfo::Text(crate::widget::TextLayout {
-            top: crate::num::f32_of_f64(top),
-            line: crate::num::f32_of_f64(line),
-            rows: self.content_rows(),
-            lines: u32::try_from(self.min_lines).unwrap_or(u32::MAX),
-            band: crate::num::f32_of_f64(self.band()),
-            document: self.plain,
-        }))
+        Some(tilo_ui_base::widget::LayoutInfo::Text(
+            tilo_ui_base::widget::TextLayout {
+                top: tilo_ui_base::num::f32_of_f64(top),
+                line: tilo_ui_base::num::f32_of_f64(line),
+                rows: self.content_rows(),
+                lines: u32::try_from(self.min_lines).unwrap_or(u32::MAX),
+                band: tilo_ui_base::num::f32_of_f64(self.band()),
+                document: self.plain,
+            },
+        ))
     }
 
     fn cursor_shape(&self, point: Point) -> Option<winit::window::CursorIcon> {
@@ -5568,7 +5588,7 @@ impl Widget for TextInput {
         self.repaint = false;
         self.moved = false;
         self.mark_shown();
-        super::defaults::mark_drawn(self.children_mut());
+        tilo_ui_base::widget::defaults::mark_drawn(self.children_mut());
     }
 
     fn is_focusable(&self) -> bool {
@@ -5666,12 +5686,17 @@ impl Widget for TextInput {
 
     fn ime_edit_fingerprint(&self, key: &[u8; 32]) -> Option<[u8; 32]> {
         (!self.holds_secret() && !self.core.has_preedit()).then(|| {
-            crate::ime::edit_fingerprint(&self.text, self.core.anchor(), self.core.caret(), key)
+            tilo_ui_base::ime::edit_fingerprint(
+                &self.text,
+                self.core.anchor(),
+                self.core.caret(),
+                key,
+            )
         })
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         // A secret (password or key) input never leaks its value into the a11y
         // tree — it reports `protected` and a `None` value instead.
         let secret = self.holds_secret();
@@ -5755,8 +5780,8 @@ impl Widget for TextInput {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
         if self.semantic_target().as_deref() == Some(target)
@@ -5765,7 +5790,7 @@ impl Widget for TextInput {
             return self.perform_action(action, &[], state, root);
         }
         if target != ACCESSORY_TARGET
-            || !matches!(action, crate::a11y::Action::Activate)
+            || !matches!(action, tilo_ui_base::a11y::Action::Activate)
             || !self.accessory_ready()
             || self.accessory_rect().is_none()
         {
@@ -5776,12 +5801,12 @@ impl Widget for TextInput {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
 
         if self.effectively_disabled() {
             return false;
@@ -5838,18 +5863,18 @@ impl Widget for TextInput {
     /// dragged up or down scrolls what holds the field (or the lines of a
     /// field that scrolls itself), so a swipe that begins on a field neither
     /// focuses it nor brings up the keyboard. A tap is a click where it lifts.
-    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
+    fn touch_claim(&self, point: Point) -> tilo_ui_base::interaction::TouchClaim {
         if !self.disabled && self.rect.contains(point) {
-            crate::interaction::TouchClaim::DragAcross
+            tilo_ui_base::interaction::TouchClaim::DragAcross
         } else {
-            crate::interaction::TouchClaim::Pointer
+            tilo_ui_base::interaction::TouchClaim::Pointer
         }
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         self.repaint = true;
         self.advance_wheel_glide();
-        super::defaults::update(self.children_mut(), state, path)
+        tilo_ui_base::widget::defaults::update(self.children_mut(), state, path)
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -5857,8 +5882,10 @@ impl Widget for TextInput {
             || self.wheel_glide.is_active()
             || self
                 .wheel_glide
-                .give_needs_frame(crate::motion::frame_now())
-            || super::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+                .give_needs_frame(tilo_ui_base::motion::frame_now())
+            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
+                self.for_each_child(visit)
+            })
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
@@ -5888,7 +5915,7 @@ impl Widget for TextInput {
         Some((self.core.caret(), self.text.clone()))
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -5897,9 +5924,15 @@ impl Widget for TextInput {
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         Widget::draw_overlay(
             &mut *self.context_menu,
-            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
-        self.paint_completion(&mut crate::draw::DrawCtx::new(
+        self.paint_completion(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -5909,7 +5942,7 @@ impl Widget for TextInput {
     }
 }
 
-impl crate::widget::undo_points::UndoPoints for TextInput {
+impl tilo_ui_base::widget::undo_points::UndoPoints for TextInput {
     fn get_state(&self) -> Option<String> {
         if self.core.has_selection() {
             let anchor = self.core.anchor();
@@ -5946,7 +5979,7 @@ impl crate::widget::undo_points::UndoPoints for TextInput {
     }
 }
 
-impl crate::presence::capability::PublishesPresence for TextInput {
+impl tilo_ui_base::presence::capability::PublishesPresence for TextInput {
     fn presence_key(&self) -> Option<PresenceKey> {
         (!self.path.is_empty()).then(|| PresenceKey::Widget {
             path: self.path.clone(),
@@ -5987,18 +6020,20 @@ impl crate::presence::capability::PublishesPresence for TextInput {
     }
 
     #[cfg(feature = "model")]
-    fn shared_selection(&self) -> Option<crate::shared_subject::SharedSelection> {
+    fn shared_selection(&self) -> Option<tilo_ui_base::shared_subject::SharedSelection> {
         self.is_focused
             .then(|| self.shareable_selection())
             .flatten()
-            .map(|text| crate::shared_subject::SharedSelection::of_text(text).within(self.rect))
+            .map(|text| {
+                tilo_ui_base::shared_subject::SharedSelection::of_text(text).within(self.rect)
+            })
     }
 
     fn presence_range_rects(
         &self,
         theme: &Theme,
         key: &PresenceKey,
-        range: crate::presence::SelectionRange,
+        range: tilo_ui_base::presence::SelectionRange,
     ) -> Vec<Rect> {
         if self.presence_key().as_ref() != Some(key) || self.holds_secret() {
             return Vec::new();
@@ -6017,12 +6052,12 @@ impl crate::presence::capability::PublishesPresence for TextInput {
     fn written_place<'a>(
         &'a self,
         theme: &'a Theme,
-    ) -> Option<crate::presence::capability::WrittenPlace<'a>> {
+    ) -> Option<tilo_ui_base::presence::capability::WrittenPlace<'a>> {
         let (region, block) = self.edits.as_ref().filter(|_| !self.holds_secret())?;
         let selected = self
             .is_focused
             .then(|| self.selection_anchor_focus_or_caret());
-        Some(crate::presence::capability::WrittenPlace {
+        Some(tilo_ui_base::presence::capability::WrittenPlace {
             region: Some(region.as_str()),
             block: block.as_str(),
             text: std::borrow::Cow::Borrowed(self.text.as_str()),
@@ -6033,7 +6068,7 @@ impl crate::presence::capability::PublishesPresence for TextInput {
                 (
                     self.selection_rects(theme, start, end),
                     Some(
-                        crate::presence::LabeledCaret::within(
+                        tilo_ui_base::presence::LabeledCaret::within(
                             self.caret_rect(theme, end),
                             self.rect.y0,
                         )
@@ -6048,11 +6083,11 @@ impl crate::presence::capability::PublishesPresence for TextInput {
     }
 }
 
-impl crate::widget::controls::ActionControls for TextInput {
+impl tilo_ui_base::widget::controls::ActionControls for TextInput {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         if let Some(action) = &mut self.action {
             let _ = action.attach(domain, attachment);
@@ -6089,14 +6124,14 @@ impl crate::widget::controls::ActionControls for TextInput {
 
 impl TextInput {
     pub(crate) fn paint_changed(&self) -> bool {
-        self.repaint || self.layout_dirty || crate::widget::redraw_or_children(false, self)
+        self.repaint || self.layout_dirty || tilo_ui_base::widget::redraw_or_children(false, self)
     }
 
     /// Whether anyone else is shown in this field now (a peer's caret, their
     /// selection, what they are typing): what a host that keeps the drawing
     /// it made of the field asks before keeping it.
 
-    fn draw_peers_and_permission_scrim(&self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_peers_and_permission_scrim(&self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         if !ctx.env.permits_widget(self) {
             let r = self.rect;
             ctx.scene.fill(
@@ -6156,7 +6191,7 @@ impl TextInput {
 
 impl TextInput {
     pub(crate) const PERMISSION_DENIED_OVERLAY: vello::peniko::Color =
-        crate::tokens::colors::PERMISSION_DENIED_SCRIM;
+        tilo_ui_base::tokens::colors::PERMISSION_DENIED_SCRIM;
 }
 
 #[cfg(test)]

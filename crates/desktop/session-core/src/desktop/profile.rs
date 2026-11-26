@@ -2,7 +2,7 @@
 //! with the groups of actions the card offers and the choices a person makes on it. The shell's
 //! card draws this; nothing here measures or paints.
 
-use ui::icons::Icon;
+use tilo_ui_base::icons::Icon;
 
 use crate::desktop::launchpad::AgentAsk;
 use ui::vello::peniko::Color;

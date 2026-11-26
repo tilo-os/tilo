@@ -2,8 +2,10 @@
 
 use std::path::PathBuf;
 
-use crate::component::{Component, Described, Event, Value};
-use crate::icons::Icon;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Value,
+};
 
 use super::{Button, DropZone};
 
@@ -22,7 +24,7 @@ pub struct DropZoneProps {
     pub action: Option<String>,
     /// Files were dropped: each as a `File` — its name, its media type, its size and where its
     /// bytes are — kept by the window, which is what an app reads of it.
-    #[component(event(value = Vec<crate::component::File>))]
+    #[component(event(value = Vec<tilo_ui_base::component::File>))]
     pub drop: Event,
     /// The action's button was pressed: the view asks for the files its own way.
     #[component(event(press))]

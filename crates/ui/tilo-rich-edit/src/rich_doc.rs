@@ -162,29 +162,29 @@ pub fn is_resource_link(target: &str) -> bool {
 
 /// The face a stored `font` mark names: the three the toolkit sets, or a CSS
 /// stack a codec brought in, read as the family it names first.
-pub fn family_of(family: &str) -> Option<ui::richtext::FontFamily> {
+pub fn family_of(family: &str) -> Option<tilo_ui_base::richtext::FontFamily> {
     let name = family.trim().to_lowercase();
     if name == "mono" || name.contains("mono") || name.contains("courier") {
-        Some(ui::richtext::FontFamily::Mono)
+        Some(tilo_ui_base::richtext::FontFamily::Mono)
     } else if name == "serif"
         || name.contains("serif") && !name.contains("sans")
         || name.contains("times")
         || name.contains("georgia")
     {
-        Some(ui::richtext::FontFamily::Serif)
+        Some(tilo_ui_base::richtext::FontFamily::Serif)
     } else if name.is_empty() {
         None
     } else {
-        Some(ui::richtext::FontFamily::Sans)
+        Some(tilo_ui_base::richtext::FontFamily::Sans)
     }
 }
 
 /// The face's stored name: the one a `font` mark holds.
-pub fn family_name(family: ui::richtext::FontFamily) -> &'static str {
+pub fn family_name(family: tilo_ui_base::richtext::FontFamily) -> &'static str {
     match family {
-        ui::richtext::FontFamily::Sans => "sans",
-        ui::richtext::FontFamily::Serif => "serif",
-        ui::richtext::FontFamily::Mono => "mono",
+        tilo_ui_base::richtext::FontFamily::Sans => "sans",
+        tilo_ui_base::richtext::FontFamily::Serif => "serif",
+        tilo_ui_base::richtext::FontFamily::Mono => "mono",
     }
 }
 
@@ -204,23 +204,23 @@ pub fn hex_of(rgb: [u8; 3]) -> String {
 }
 
 /// The alignment a paragraph attribute names, as the document codecs write it.
-pub fn align_of(name: &str) -> Option<ui::richtext::TextAlign> {
+pub fn align_of(name: &str) -> Option<tilo_ui_base::richtext::TextAlign> {
     match name.trim().to_lowercase().as_str() {
-        "left" => Some(ui::richtext::TextAlign::Left),
-        "center" | "centre" => Some(ui::richtext::TextAlign::Center),
-        "right" => Some(ui::richtext::TextAlign::Right),
-        "justify" | "justified" => Some(ui::richtext::TextAlign::Justified),
+        "left" => Some(tilo_ui_base::richtext::TextAlign::Left),
+        "center" | "centre" => Some(tilo_ui_base::richtext::TextAlign::Center),
+        "right" => Some(tilo_ui_base::richtext::TextAlign::Right),
+        "justify" | "justified" => Some(tilo_ui_base::richtext::TextAlign::Justified),
         _ => None,
     }
 }
 
 /// The name a paragraph's alignment is stored as: [`align_of`]'s inverse.
-pub fn align_name(align: ui::richtext::TextAlign) -> &'static str {
+pub fn align_name(align: tilo_ui_base::richtext::TextAlign) -> &'static str {
     match align {
-        ui::richtext::TextAlign::Left => "left",
-        ui::richtext::TextAlign::Center => "center",
-        ui::richtext::TextAlign::Right => "right",
-        ui::richtext::TextAlign::Justified => "justify",
+        tilo_ui_base::richtext::TextAlign::Left => "left",
+        tilo_ui_base::richtext::TextAlign::Center => "center",
+        tilo_ui_base::richtext::TextAlign::Right => "right",
+        tilo_ui_base::richtext::TextAlign::Justified => "justify",
     }
 }
 
@@ -582,7 +582,7 @@ pub fn reference_label(view: &tilo_ui_graph::rich::InlineView, run: &str) -> Str
 /// How a reference the reader cannot read reads: as being there, without anything of it.
 #[must_use]
 pub fn unreadable_phrase() -> String {
-    ui::i18n::widget_text("rich-text-reference-unreadable")
+    tilo_ui_base::i18n::widget_text("rich-text-reference-unreadable")
 }
 
 pub const TIME_MARK: &str = tilo_doc::inline_time::MARK;
@@ -637,17 +637,19 @@ impl InlineTime {
 pub fn time_label(
     time: &InlineTime,
     now: jiff::Timestamp,
-    zone: &ui::clock::Zone,
-    formats: ui::format::Formats,
+    zone: &tilo_ui_base::clock::Zone,
+    formats: tilo_ui_base::format::Formats,
 ) -> String {
     let ahead = time.at.duration_since(now).as_secs();
     match time.show {
         TimeShow::Absolute => formats.timestamp(zone.at(time.at).datetime()),
         TimeShow::Countdown if ahead > 0 && ahead < 86_400 => {
-            ui::format::timecode(u64::try_from(ahead).unwrap_or_default())
+            tilo_ui_base::format::timecode(u64::try_from(ahead).unwrap_or_default())
         }
-        TimeShow::Relative | TimeShow::Countdown if ahead > 0 => ui::format::relative_ahead(ahead),
-        TimeShow::Relative | TimeShow::Countdown => ui::format::relative(-ahead),
+        TimeShow::Relative | TimeShow::Countdown if ahead > 0 => {
+            tilo_ui_base::format::relative_ahead(ahead)
+        }
+        TimeShow::Relative | TimeShow::Countdown => tilo_ui_base::format::relative(-ahead),
     }
 }
 
@@ -655,16 +657,16 @@ pub fn time_label(
 #[derive(Clone, Debug)]
 pub struct Reading {
     pub now: jiff::Timestamp,
-    pub zone: ui::clock::Zone,
-    pub formats: ui::format::Formats,
+    pub zone: tilo_ui_base::clock::Zone,
+    pub formats: tilo_ui_base::format::Formats,
 }
 
 #[must_use]
 pub fn reading_here() -> Reading {
     Reading {
-        now: ui::clock::local_now().timestamp(),
-        zone: ui::clock::Zone::here(),
-        formats: ui::format::Formats::current(),
+        now: tilo_ui_base::clock::local_now().timestamp(),
+        zone: tilo_ui_base::clock::Zone::here(),
+        formats: tilo_ui_base::format::Formats::current(),
     }
 }
 
@@ -790,9 +792,9 @@ fn relabel(view: &mut BlockView, label: impl Fn(&str, &str, &str) -> Option<Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tilo_ui_base::clock::TimeStyle;
+    use tilo_ui_base::{format::DateStyle, format::Formats, format::RegionFormats};
     use tilo_ui_graph::rich::{Attr, Block, Mark as RichMark, RichText};
-    use ui::clock::TimeStyle;
-    use ui::format::{DateStyle, Formats, RegionFormats};
 
     fn at(text: &str) -> jiff::Timestamp {
         text.parse().expect("a moment")
@@ -835,7 +837,7 @@ mod tests {
         }
     }
 
-    fn reading(zone: ui::clock::Zone) -> Reading {
+    fn reading(zone: tilo_ui_base::clock::Zone) -> Reading {
         Reading {
             now: at("2026-10-29T10:00:00Z"),
             zone,
@@ -865,11 +867,11 @@ mod tests {
         );
         let utc = blocks_at(
             &rich,
-            &reading(ui::clock::Zone::of(jiff::tz::TimeZone::UTC)),
+            &reading(tilo_ui_base::clock::Zone::of(jiff::tz::TimeZone::UTC)),
         );
         let tokyo = blocks_at(
             &rich,
-            &reading(ui::clock::Zone::of(jiff::tz::TimeZone::fixed(
+            &reading(tilo_ui_base::clock::Zone::of(jiff::tz::TimeZone::fixed(
                 jiff::tz::offset(9),
             ))),
         );
@@ -886,7 +888,7 @@ mod tests {
             "nobody reads the writer's words for it"
         );
 
-        let mut later = reading(ui::clock::Zone::of(jiff::tz::TimeZone::UTC));
+        let mut later = reading(tilo_ui_base::clock::Zone::of(jiff::tz::TimeZone::UTC));
         later.now = at("2026-10-29T11:08:00Z");
         assert!(
             blocks_at(&rich, &later)[0]
@@ -908,7 +910,7 @@ mod tests {
 
     #[test]
     fn a_time_reads_in_the_readers_language() {
-        use ui::i18n::I18nManager;
+        use tilo_ui_base::i18n::I18nManager;
         let rich = three_times();
         I18nManager::init("en-US");
         I18nManager::add_resource("de-DE", "window = Fenster".to_owned());
@@ -916,7 +918,7 @@ mod tests {
         I18nManager::set_locale("de-DE");
         let german = blocks_at(
             &rich,
-            &reading(ui::clock::Zone::of(jiff::tz::TimeZone::UTC)),
+            &reading(tilo_ui_base::clock::Zone::of(jiff::tz::TimeZone::UTC)),
         )[0]
         .text
         .clone();

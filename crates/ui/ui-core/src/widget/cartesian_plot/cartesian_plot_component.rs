@@ -3,8 +3,9 @@
 
 use tilo_ui_graph::component::{CaseDescription, EnumDescription};
 
-use crate::component::{
-    Component, Described, PropType, Type, Value, case_field, case_field_description,
+use tilo_ui_base::{
+    component::Component, component::Described, component::PropType, component::Type,
+    component::Value, component::case_field, component::case_field_description,
 };
 
 use super::{CartesianPlot, MarkerShape, PlotDatum, PlotSeries, SeriesKind};
@@ -28,7 +29,7 @@ impl PropType for PlotPoints {
 
     fn from_value(value: &Value) -> Result<Self, String> {
         let Value::Case { case, fields } = value else {
-            return Err(crate::component::wrong(&Self::ty(), value));
+            return Err(tilo_ui_base::component::wrong(&Self::ty(), value));
         };
         if case != "points" {
             return Err(format!("a plot's series is `points`, not `{case}`"));
@@ -126,14 +127,14 @@ impl Curve {
             Self::Scatter => SeriesKind::Scatter,
             Self::Bubble => SeriesKind::Bubble,
             Self::Bar => SeriesKind::Bar {
-                width: f64::from(crate::tokens::Spacing::default().s4),
+                width: f64::from(tilo_ui_base::tokens::Spacing::default().s4),
             },
             Self::Lollipop => SeriesKind::Lollipop,
         }
     }
 }
 
-crate::component::choice!(Curve, "Curve", {
+tilo_ui_base::choice!(Curve, "Curve", {
     Line => "line",
     Smooth => "smooth",
     Step => "step",
@@ -165,7 +166,7 @@ impl Marker {
     }
 }
 
-crate::component::choice!(Marker, "Marker", {
+tilo_ui_base::choice!(Marker, "Marker", {
     Circle => "circle", Square => "square", Diamond => "diamond",
 });
 
@@ -258,8 +259,8 @@ mod tests {
     )]
 
     use super::*;
-    use crate::chart_palette::ChartPalette;
-    use crate::theme::Theme;
+    use tilo_ui_base::chart_palette::ChartPalette;
+    use tilo_ui_base::theme::Theme;
 
     fn points(label: &str, x: &[f64], y: &[f64]) -> Value {
         Value::Case {

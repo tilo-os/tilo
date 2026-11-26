@@ -75,7 +75,7 @@ impl Widget for Hatching {
         );
     }
 
-    fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,

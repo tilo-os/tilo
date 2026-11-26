@@ -7,7 +7,7 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::ContextMenu;
-use crate::widget::EventCtx;
+use tilo_ui_base::widget::EventCtx;
 
 impl ContextMenu {
     /// The box, as it stands.
@@ -24,7 +24,7 @@ impl ContextMenu {
     /// Only the native window stands it ([`crate::app`]).
     pub(crate) fn open_window_box(
         &mut self,
-        about: Option<crate::shared_subject::SharedSelection>,
+        about: Option<tilo_ui_base::shared_subject::SharedSelection>,
         anchor: Option<Rect>,
         draft: Option<&str>,
         to: &[crate::floating_surface::Recipient],

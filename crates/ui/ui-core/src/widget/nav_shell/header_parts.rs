@@ -2,17 +2,17 @@
 //! (with its count). The actions that do not fit overflow into the toolkit's
 //! one button ([`crate::widget::OverflowButton`]).
 
-use crate::num::f32_of_f64;
 use std::collections::HashMap;
+use tilo_ui_base::num::f32_of_f64;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::Rect;
 
 use crate::widget::window_header::header_row;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::{TaffyTreeExt, Widget};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 /// A column's title in the header row: `Heading`, and an optional count in
 /// a quiet pill after it. Measured by the host, so the actions after it
@@ -149,9 +149,9 @@ impl Widget for HeaderTitle {
         }
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -210,8 +210,8 @@ impl Widget for HeaderTitle {
             })
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         if self.covered && self.edited.is_none() {
             return None;
         }

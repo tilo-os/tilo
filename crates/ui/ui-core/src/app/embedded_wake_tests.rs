@@ -2,12 +2,13 @@
 
 use super::theme_repaint_tests::{layout, paint};
 use super::*;
-use crate::collaboration::{
-    CollabEvent, CollabRequest, CollaborationManager, PeerTransport, PresencePayload,
-};
-use crate::presence::{PathSegment, PresenceKey};
 use std::rc::Rc;
 use std::sync::atomic::Ordering;
+use tilo_ui_base::{
+    collaboration::CollabEvent, collaboration::CollabRequest, collaboration::CollaborationManager,
+    collaboration::PeerTransport, collaboration::PresencePayload,
+};
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 
 struct QueuedTransport(Rc<RefCell<Vec<CollabEvent>>>);
 
@@ -160,7 +161,7 @@ tilo_test_env::scenario! {
                 .events
                 .borrow_mut()
                 .push(CollabEvent::RemotePresenceUpdate {
-                    member: crate::permissions::MemberId::person("peer"),
+                    member: tilo_ui_base::permissions::MemberId::person("peer"),
                     key: PresenceKey::Widget {
                         path: vec![PathSegment::Field("probe".into())],
                     },

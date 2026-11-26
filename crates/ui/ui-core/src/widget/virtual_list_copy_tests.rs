@@ -18,10 +18,10 @@ use vello::Scene;
 
 use super::*;
 use crate::app::{App, AppSurface, SurfaceDamage};
-use crate::collection_transition::ListModelChange;
-use crate::offscreen::OffscreenRenderer;
 use std::cell::RefCell;
 use std::rc::Rc;
+use tilo_ui_base::collection_transition::ListModelChange;
+use tilo_ui_base::offscreen::OffscreenRenderer;
 use vello::kurbo::RoundedRect;
 use winit::event::MouseScrollDelta;
 
@@ -50,9 +50,9 @@ impl Widget for Message {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -163,7 +163,7 @@ fn scroll(theme: &Theme, scale: f64, runs: &[(f64, usize)]) -> Vec<Run> {
         if at == 3 {
             app.surface_input(
                 &window,
-                crate::synthetic_input::cursor_moved(200.0 * scale, 200.0 * scale),
+                tilo_ui_base::synthetic_input::cursor_moved(200.0 * scale, 200.0 * scale),
                 false,
             );
         }

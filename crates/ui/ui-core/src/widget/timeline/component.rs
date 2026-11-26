@@ -1,7 +1,10 @@
 //! [`Timeline`] as a described component: what a view hands it, and the changes it reports back.
 
-use crate::component::{Component, Described, Event, Moment, ResourceId};
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Moment,
+    component::ResourceId,
+};
 
 use super::widget::{ItemEvents, Timeline};
 use super::{TimelineItem, TimelineMode, TimelineTone, local_day_minute};
@@ -97,7 +100,7 @@ pub struct TimelineItemProps {
     pub resized: Event,
 }
 
-crate::component::part_type!(TimelineItemProps);
+tilo_ui_base::part_type!(TimelineItemProps);
 
 /// The grid's items and each item's own handlers, in order.
 fn place(props: Vec<TimelineItemProps>, theme: &Theme) -> (Vec<TimelineItem>, Vec<ItemEvents>) {

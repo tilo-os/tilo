@@ -1,0 +1,567 @@
+//! Unicode line-break opportunities shared by shaping-adjacent layout code.
+//! `RichTextLayout` receives UAX #14 behavior from cosmic-text. Components that must
+//! build matching row metadata or return individually clamped lines use this module
+//! instead of guessing at ASCII spaces.
+
+use tilo_sort::CompactSort as _;
+
+// What may break between and where a word may be hyphenated is the document engine's, so the
+// word processor, PDF export and the reader take it from one place.
+pub use tilo_doc::breaks::{
+    LineBreakKind, discretionary_hyphen_breaks, hyphenate, line_break_opportunities,
+    unicode_word_ranges,
+};
+
+pub(crate) const VIRTUAL_BREAK: char = '\u{200b}';
+
+/// Paragraphs longer than this are shaped in chunks (see
+/// [`OffsetMap::add_paragraph_chunks`]). Ordinary documents never reach it.
+pub(crate) const HUGE_PARAGRAPH_BYTES: usize = 16 * 1024;
+const CHUNK_MIN_BYTES: usize = 2 * 1024;
+const CHUNK_MAX_BYTES: usize = 8 * 1024;
+
+/// Content-defined chunk boundaries (source byte offsets, each the start of a chunk) for
+/// paragraphs longer than [`HUGE_PARAGRAPH_BYTES`].
+pub(crate) fn paragraph_chunk_boundaries(text: &str) -> Vec<usize> {
+    const WINDOW: usize = 16;
+    let bytes = text.as_bytes();
+    let mut boundaries = Vec::new();
+    let mut paragraph_start = 0;
+    while paragraph_start < bytes.len() {
+        let paragraph_end = bytes[paragraph_start..]
+            .iter()
+            .position(|&b| b == b'\n')
+            .map_or(bytes.len(), |i| paragraph_start + i);
+        if paragraph_end - paragraph_start > HUGE_PARAGRAPH_BYTES {
+            let mut last = paragraph_start;
+            let mut position = paragraph_start + CHUNK_MIN_BYTES;
+            while position < paragraph_end.saturating_sub(CHUNK_MIN_BYTES) {
+                let since = position - last;
+                let anchor = if bytes[position - 1] == b' ' && text.is_char_boundary(position) {
+                    let window = &bytes[position.saturating_sub(WINDOW).max(last)..position];
+                    let hash = window.iter().fold(0x811c_9dc5_u32, |h, &b| {
+                        (h ^ u32::from(b)).wrapping_mul(0x0100_0193)
+                    });
+                    since >= CHUNK_MAX_BYTES || hash % 512 == 0
+                } else {
+                    since >= 2 * CHUNK_MAX_BYTES && text.is_char_boundary(position)
+                };
+                if anchor {
+                    boundaries.push(position);
+                    last = position;
+                    position += CHUNK_MIN_BYTES;
+                } else {
+                    position += 1;
+                }
+            }
+        }
+        paragraph_start = paragraph_end + 1;
+    }
+    boundaries
+}
+
+/// The whole lines (line-feed-delimited paragraphs) an edit touched:
+/// `old[start..old_end]` became `new[start..new_end]`; both end before a line feed or at
+/// the end.
+#[derive(Debug, PartialEq, Eq)]
+pub struct LineEdit {
+    pub start: usize,
+    pub old_end: usize,
+    pub new_end: usize,
+}
+
+impl LineEdit {
+    pub fn between(old: &str, new: &str) -> Self {
+        let (old_bytes, new_bytes) = (old.as_bytes(), new.as_bytes());
+        let prefix = old_bytes
+            .iter()
+            .zip(new_bytes)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let spare = old.len().min(new.len()).saturating_sub(prefix);
+        let suffix = old_bytes
+            .iter()
+            .rev()
+            .zip(new_bytes.iter().rev())
+            .take(spare)
+            .take_while(|(a, b)| a == b)
+            .count();
+        let start = old_bytes[..prefix]
+            .iter()
+            .rposition(|&byte| byte == b'\n')
+            .map_or(0, |at| at.saturating_add(1));
+        // The first byte of the common suffix lies in the last changed paragraph; it ends
+        // at the next line feed of that suffix.
+        let changed_end = old.len().saturating_sub(suffix);
+        let old_end = old_bytes[changed_end..]
+            .iter()
+            .position(|&byte| byte == b'\n')
+            .map_or(old.len(), |at| changed_end.saturating_add(at));
+        let new_end = old_end.saturating_add(new.len()).saturating_sub(old.len());
+        Self {
+            start,
+            old_end,
+            new_end,
+        }
+    }
+
+    /// Index of the first touched line.
+    pub(crate) fn first_line(&self, new: &str) -> usize {
+        count_line_feeds(new.as_bytes().get(..self.start).unwrap_or_default())
+    }
+
+    /// Line feeds inside the old touched lines (their count less one).
+    pub(crate) fn old_line_breaks(&self, old: &str) -> usize {
+        count_line_feeds(
+            old.as_bytes()
+                .get(self.start..self.old_end)
+                .unwrap_or_default(),
+        )
+    }
+}
+
+pub(crate) fn count_line_feeds(bytes: &[u8]) -> usize {
+    bytes.iter().map(|&byte| usize::from(byte == b'\n')).sum()
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct VirtualInsertion {
+    pub(crate) source: usize,
+    pub(crate) ch: char,
+}
+
+/// Maps the zero-width break hints used by cosmic-text back onto the application's
+/// unchanged UTF-8 byte space.
+#[derive(Clone, Debug, Default)]
+pub struct OffsetMap {
+    /// Virtual shaping characters inserted before source byte positions.
+    pub(crate) insertions: Vec<VirtualInsertion>,
+}
+
+impl OffsetMap {
+    pub(crate) fn for_text_with_hyphenation(text: &str, lang: Option<hypher::Lang>) -> Self {
+        Self::for_text_with_breaks(text, lang, &[])
+    }
+
+    pub(crate) fn for_text_with_breaks(
+        text: &str,
+        lang: Option<hypher::Lang>,
+        discretionary_breaks: &[usize],
+    ) -> Self {
+        use std::collections::HashSet;
+
+        // cosmic-text already consumes unicode-linebreak's UAX #14 table. Only add the
+        // ICU dictionary/LSTM opportunities which that table cannot express for
+        // complex-context scripts.
+        let native: HashSet<usize> = unicode_linebreak::linebreaks(text)
+            .map(|(byte, _)| byte)
+            .collect();
+        let mut insertions: Vec<_> = line_break_opportunities(text)
+            .map(|(byte, _)| byte)
+            .filter(|&byte| byte > 0 && byte < text.len() && !native.contains(&byte))
+            .map(|source| VirtualInsertion {
+                source,
+                ch: VIRTUAL_BREAK,
+            })
+            .collect();
+        if let Some(lang) = lang {
+            let hyphen = lang.hyphenation_character().unwrap_or(VIRTUAL_BREAK);
+            for range in unicode_word_ranges(text) {
+                let Some(word) = text.get(range.clone()) else {
+                    continue;
+                };
+                hyphenate(word, lang, &mut |end| {
+                    insertions.push(VirtualInsertion {
+                        source: range.start.saturating_add(end),
+                        ch: hyphen,
+                    });
+                });
+            }
+        }
+        insertions.extend(
+            discretionary_breaks
+                .iter()
+                .copied()
+                .filter(|byte| *byte > 0 && *byte < text.len() && text.is_char_boundary(*byte))
+                .map(|source| VirtualInsertion {
+                    source,
+                    ch: '\u{ad}',
+                }),
+        );
+        insertions.compact_sort_by_key(|insertion| insertion.source);
+        insertions.dedup_by(|a, b| {
+            if a.source != b.source {
+                return false;
+            }
+            if a.ch == VIRTUAL_BREAK && b.ch != VIRTUAL_BREAK {
+                a.ch = b.ch;
+            }
+            true
+        });
+        Self { insertions }
+    }
+
+    /// Add `extra` insertions; each goes after any already at its source position.
+    pub(crate) fn add_insertions(&mut self, extra: &[VirtualInsertion]) {
+        self.insertions.extend_from_slice(extra);
+        self.insertions
+            .compact_sort_by_key(|insertion| insertion.source);
+    }
+
+    /// Whether the shaped byte `shaped` lies inside a virtual `ch`.
+    pub(crate) fn is_virtual(&self, shaped: usize, ch: char) -> bool {
+        let mut added = 0usize;
+        for insertion in &self.insertions {
+            let at = insertion.source.saturating_add(added);
+            if shaped < at {
+                return false;
+            }
+            let len = insertion.ch.len_utf8();
+            if shaped < at.saturating_add(len) {
+                return insertion.ch == ch;
+            }
+            added = added.saturating_add(len);
+        }
+        false
+    }
+
+    pub(crate) fn is_identity(&self) -> bool {
+        self.insertions.is_empty()
+    }
+
+    /// Split paragraphs longer than [`HUGE_PARAGRAPH_BYTES`] into shaping chunks with
+    /// virtual line feeds. cosmic-text shapes, wraps and caches one paragraph as a unit,
+    /// so a pasted page of text without paragraph breaks was reshaped completely on every
+    /// keystroke and every frame that relaid it (and grew without bound).
+    pub(crate) fn add_paragraph_chunks(&mut self, text: &str) {
+        let boundaries = paragraph_chunk_boundaries(text);
+        if boundaries.is_empty() {
+            return;
+        }
+        let taken: std::collections::HashSet<usize> = self
+            .insertions
+            .iter()
+            .map(|insertion| insertion.source)
+            .collect();
+        self.insertions.extend(
+            boundaries
+                .into_iter()
+                .filter(|source| !taken.contains(source))
+                .map(|source| VirtualInsertion { source, ch: '\n' }),
+        );
+        self.insertions
+            .compact_sort_by_key(|insertion| insertion.source);
+    }
+
+    pub(crate) fn has_discretionary_hyphens(&self) -> bool {
+        self.insertions
+            .iter()
+            .any(|insertion| insertion.ch == '\u{ad}')
+    }
+
+    pub(crate) fn source_to_shaped(&self, byte: usize) -> usize {
+        let inserted: usize = self
+            .insertions
+            .iter()
+            .take_while(|insertion| insertion.source <= byte)
+            .map(|insertion| insertion.ch.len_utf8())
+            .sum();
+        byte.saturating_add(inserted)
+    }
+
+    pub(crate) fn shaped_to_source(&self, byte: usize) -> usize {
+        let mut added = 0;
+        for insertion in &self.insertions {
+            let source = insertion.source;
+            let len = insertion.ch.len_utf8();
+            let shaped = source.saturating_add(added);
+            if byte <= shaped {
+                return byte.saturating_sub(added);
+            }
+            if byte <= shaped.saturating_add(len) {
+                return source;
+            }
+            added = added.saturating_add(len);
+        }
+        byte.saturating_sub(added)
+    }
+
+    pub fn shape_text<'a>(&self, text: &'a str) -> std::borrow::Cow<'a, str> {
+        if self.is_identity() {
+            return std::borrow::Cow::Borrowed(text);
+        }
+        let extra = self
+            .insertions
+            .iter()
+            .map(|insertion| insertion.ch.len_utf8())
+            .sum::<usize>();
+        let mut shaped = String::with_capacity(text.len().saturating_add(extra));
+        let mut start = 0;
+        for insertion in &self.insertions {
+            let at = insertion.source;
+            if let Some(chunk) = text.get(start..at) {
+                shaped.push_str(chunk);
+            }
+            shaped.push(insertion.ch);
+            start = at;
+        }
+        if let Some(chunk) = text.get(start..) {
+            shaped.push_str(chunk);
+        }
+        std::borrow::Cow::Owned(shaped)
+    }
+
+    pub(crate) fn shape_fragment<'a>(
+        &self,
+        text: &'a str,
+        source_start: usize,
+    ) -> std::borrow::Cow<'a, str> {
+        let source_end = source_start.saturating_add(text.len());
+        if self
+            .insertions
+            .iter()
+            .all(|insertion| insertion.source <= source_start || insertion.source > source_end)
+        {
+            return std::borrow::Cow::Borrowed(text);
+        }
+        let mut shaped = String::with_capacity(text.len());
+        let mut local_start = 0;
+        for insertion in &self.insertions {
+            let at = insertion.source;
+            // A boundary shared by two attributed spans belongs to the span on its left.
+            if at <= source_start || at > source_end {
+                continue;
+            }
+            let local = at.saturating_sub(source_start);
+            if let Some(chunk) = text.get(local_start..local) {
+                shaped.push_str(chunk);
+            }
+            shaped.push(insertion.ch);
+            local_start = local;
+        }
+        if let Some(chunk) = text.get(local_start..) {
+            shaped.push_str(chunk);
+        }
+        std::borrow::Cow::Owned(shaped)
+    }
+}
+
+/// Extended grapheme clusters (UAX #29) paired with their starting byte offset, so
+/// combining marks, emoji modifiers, flags and ZWJ sequences stay whole.
+pub fn grapheme_indices(text: &str) -> impl Iterator<Item = (usize, &str)> {
+    use icu_segmenter::{GraphemeClusterSegmenter, GraphemeClusterSegmenterBorrowed};
+    const SEGMENTER: GraphemeClusterSegmenterBorrowed<'static> = GraphemeClusterSegmenter::new();
+    let mut start = 0;
+    SEGMENTER
+        .segment_str(text)
+        .filter(|&end| end > 0)
+        .map(move |end| {
+            let cluster = (start, text.get(start..end).unwrap_or_default());
+            start = end;
+            cluster
+        })
+}
+
+/// Extended grapheme clusters (UAX #29) of `text`, in order.
+pub fn graphemes(text: &str) -> impl Iterator<Item = &str> {
+    grapheme_indices(text).map(|(_, cluster)| cluster)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    tilo_test_env::scenario! {
+        /// Paragraph chunking and the offsets it keeps.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn paragraph_chunks_are_content_defined_and_map_back_to_source;
+
+        phase huge_paragraphs_get_stable_content_defined_chunks;
+        {
+            let words: Vec<String> = (0..9000)
+                .map(|i| format!("w{:x}{}", i * 7919 % 4093, "ab".repeat(i % 5)))
+                .collect();
+            let text = words.join(" ");
+            assert!(text.len() > 3 * HUGE_PARAGRAPH_BYTES);
+            assert!(paragraph_chunk_boundaries("short paragraph").is_empty());
+            assert!(paragraph_chunk_boundaries(&"x ".repeat(HUGE_PARAGRAPH_BYTES / 2)).is_empty());
+            let boundaries = paragraph_chunk_boundaries(&text);
+            assert!(boundaries.len() >= text.len() / CHUNK_MAX_BYTES - 1);
+            let mut last = 0;
+            for &b in &boundaries {
+                assert!(text.is_char_boundary(b));
+                assert_eq!(text.as_bytes()[b - 1], b' ', "boundaries follow a space");
+                assert!(b - last >= CHUNK_MIN_BYTES && b - last <= CHUNK_MAX_BYTES + 64);
+                last = b;
+            }
+            // An edit near the start moves only nearby boundaries.
+            let edited = format!("{}inserted {}", &text[..100], &text[100..]);
+            let shift = "inserted ".len();
+            let moved: Vec<usize> = paragraph_chunk_boundaries(&edited)
+                .into_iter()
+                .map(|b| b - shift)
+                .collect();
+            let unchanged = boundaries.iter().filter(|b| moved.contains(b)).count();
+            assert!(
+                unchanged + 2 >= boundaries.len(),
+                "{unchanged} of {}",
+                boundaries.len()
+            );
+            let solid = "x".repeat(5 * CHUNK_MAX_BYTES + HUGE_PARAGRAPH_BYTES);
+            assert!(!paragraph_chunk_boundaries(&solid).is_empty());
+            let two = format!(
+                "{}\n{}",
+                &text[..HUGE_PARAGRAPH_BYTES - 10],
+                &text[..HUGE_PARAGRAPH_BYTES - 10]
+            );
+            assert!(paragraph_chunk_boundaries(&two).is_empty());
+        }
+
+        phase paragraph_chunks_map_offsets_back_to_source;
+        {
+            let text = (0..6000)
+                .map(|i| format!("word{i}"))
+                .collect::<Vec<_>>()
+                .join(" ");
+            let mut map = OffsetMap::default();
+            map.add_paragraph_chunks(&text);
+            assert!(!map.is_identity());
+            let shaped = map.shape_text(&text);
+            assert_eq!(shaped.replace('\n', ""), text);
+            for byte in (0..=text.len())
+                .step_by(97)
+                .filter(|b| text.is_char_boundary(*b))
+            {
+                assert_eq!(map.shaped_to_source(map.source_to_shaped(byte)), byte);
+            }
+        }
+    }
+
+    tilo_test_env::scenario! {
+        /// Words, graphemes, line breaks and discretionary hyphens.
+        /// Each phase was a test of its own and builds its own fixture.
+        fn segmentation_follows_unicode_and_script_rules;
+
+        phase word_and_grapheme_segmentation_keeps_clusters_whole;
+        {
+            {
+                for (text, expected) in [
+                    ("test\u{301}", vec!["test\u{301}"]),
+                    ("test\u{301} ", vec!["test\u{301}"]),
+                    (
+                        "e\u{301}test test\u{301} 123\u{301}",
+                        vec!["e\u{301}test", "test\u{301}", "123\u{301}"],
+                    ),
+                ] {
+                    let words: Vec<_> = unicode_word_ranges(text)
+                        .map(|range| text.get(range).expect("UTF-8 word range"))
+                        .collect();
+                    assert_eq!(
+                        words, expected,
+                        "the complete source word remains word-like"
+                    );
+                }
+                assert!(unicode_word_ranges("\u{301} , .").next().is_none());
+            }
+
+            {
+                let text = "e\u{301}👨‍👩‍👧🇳🇱a";
+                let clusters: Vec<_> = grapheme_indices(text).collect();
+                assert_eq!(
+                    clusters,
+                    vec![(0, "e\u{301}"), (3, "👨‍👩‍👧"), (21, "🇳🇱"), (29, "a"),]
+                );
+                assert_eq!(graphemes("").count(), 0);
+            }
+        }
+
+        phase line_break_opportunities_follow_script_rules;
+        {
+            {
+                let text = "東京京都";
+                let breaks: Vec<_> = line_break_opportunities(text).collect();
+                assert_eq!(breaks.last(), Some(&(text.len(), LineBreakKind::Mandatory)));
+                assert!(breaks.iter().any(|(byte, _)| *byte < text.len()));
+            }
+
+            {
+                let text = "10\u{a0}km away";
+                let protected_end = "10\u{a0}".len();
+                assert!(
+                    line_break_opportunities(text).all(|(byte, _)| byte != protected_end),
+                    "NBSP keeps its adjacent words together"
+                );
+            }
+
+            {
+                let family = "👨‍👩‍👧‍👦";
+                assert_eq!(
+                    line_break_opportunities(family).collect::<Vec<_>>(),
+                    vec![(family.len(), LineBreakKind::Mandatory)]
+                );
+            }
+
+            {
+                let text = "ทุกสองสัปดาห์";
+                let breaks: Vec<_> = line_break_opportunities(text)
+                    .map(|(byte, _)| byte)
+                    .collect();
+                assert_eq!(breaks, vec![9, 18, text.len()]);
+            }
+        }
+
+        phase discretionary_hyphens_map_to_word_like_source_offsets;
+        {
+            {
+                let text = "extensive";
+                let map = OffsetMap::for_text_with_hyphenation(text, Some(hypher::Lang::English));
+                let insertions: Vec<_> = map
+                    .insertions
+                    .iter()
+                    .map(|insertion| (insertion.source, insertion.ch))
+                    .collect();
+                assert_eq!(insertions, vec![(2, '\u{ad}'), (5, '\u{ad}')]);
+                assert_eq!(map.shape_text(text), "ex\u{ad}ten\u{ad}sive");
+                for source in 0..=text.len() {
+                    assert_eq!(map.shaped_to_source(map.source_to_shaped(source)), source);
+                }
+            }
+
+            {
+                let text = "extensive, 123";
+                let map = OffsetMap::for_text_with_hyphenation(text, Some(hypher::Lang::English));
+                assert!(map.insertions.iter().all(|insertion| insertion.source < 9));
+                assert_eq!(
+                    map.shaped_to_source(map.source_to_shaped(text.len())),
+                    text.len()
+                );
+            }
+
+            {
+                let text = "éclair";
+                let map =
+                    OffsetMap::for_text_with_breaks(text, None, &[0, 1, 2, text.len(), usize::MAX]);
+                assert_eq!(map.shape_text(text), "é\u{ad}clair");
+                assert_eq!(map.insertions.len(), 1);
+                assert_eq!(map.insertions[0].source, 2);
+            }
+
+            {
+                let text = "typography";
+                let breaks = discretionary_hyphen_breaks(text, "en-US");
+                assert!(!breaks.is_empty());
+                assert!(breaks.iter().all(|&byte| text.is_char_boundary(byte)));
+                assert!(discretionary_hyphen_breaks(text, "und").is_empty());
+            }
+        }
+    }
+}
+
+/// The Unicode Bidirectional Algorithm (UAX #9) run over `text` with its paragraph
+/// direction taken from its first strong character: the embedding level of every byte and
+/// the paragraphs, for code that orders a line's runs itself.
+#[inline(never)]
+#[must_use]
+pub fn bidi_info(text: &str) -> unicode_bidi::BidiInfo<'_> {
+    unicode_bidi::BidiInfo::new(text, None)
+}

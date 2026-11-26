@@ -32,10 +32,10 @@ use std::sync::mpsc::{self, Receiver, Sender};
 
 use tilo_service::Wake;
 use tilo_session_core::surfaces::{Shared, Surfaces};
+use tilo_ui_base::accesskit_bridge::accesskit_action_to_ours;
 use ui::accesskit::{
     ActionHandler, ActionRequest, ActivationHandler, DeactivationHandler, TreeUpdate,
 };
-use ui::accesskit_bridge::accesskit_action_to_ours;
 use ui::window_targets::TargetAction;
 
 use crate::Session;
@@ -366,7 +366,7 @@ impl Accessibility {
         surfaces: &Surfaces,
         place: usize,
         target: ui::accesskit::NodeId,
-        action: &ui::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> bool {
         surfaces
             .surface(place)
@@ -383,7 +383,7 @@ impl Accessibility {
     fn window_of(surface: &Shared) -> Option<(String, TreeUpdate)> {
         let name = surface.borrow().a11y_name()?;
         let mut tree = surface.borrow_mut().a11y_tree()?;
-        ui::accesskit_bridge::name_window(&mut tree, &name);
+        tilo_ui_base::accesskit_bridge::name_window(&mut tree, &name);
         Some((name, tree))
     }
 
@@ -471,7 +471,7 @@ impl Accessibility {
                 continue;
             }
             let mut tree = window.tree.clone();
-            ui::accesskit_bridge::name_window(&mut tree, &window.name);
+            tilo_ui_base::accesskit_bridge::name_window(&mut tree, &window.name);
             let exported = self.apps.entry(*instance).or_insert_with(|| {
                 let mailbox = Mailbox {
                     place: Place::App(*instance),
@@ -550,7 +550,7 @@ mod tests {
             address: &ui::tilo_actions::ActionAddress,
             _arguments: &serde_json::Map<String, serde_json::Value>,
             _look: &mut tilo_session_core::surfaces::Look<'_>,
-        ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError>
+        ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError>
         {
             Err(ui::tilo_actions::ApiError::Unknown(address.clone()))
         }

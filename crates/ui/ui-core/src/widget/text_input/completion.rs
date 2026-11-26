@@ -6,7 +6,7 @@ use vello::kurbo::Affine;
 
 use super::{MentionCandidate, TextCompletion, TextInput};
 use crate::color_compat::ColorCompat as _;
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
 
 impl TextInput {
     #[must_use]
@@ -143,7 +143,7 @@ impl TextInput {
         }
         self.set_cursor_pos(token.start.saturating_add(value.len()));
         if token.trigger == ':' {
-            crate::emoji_catalogue::record_used(&candidate.insert);
+            tilo_ui_base::emoji_catalogue::record_used(&candidate.insert);
         }
         if let Some(inserted) = self.on_reference_inserted.as_mut()
             && let Some(reference) = &candidate.reference
@@ -187,7 +187,7 @@ impl TextInput {
         }
     }
 
-    pub(super) fn paint_completion(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub(super) fn paint_completion(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,

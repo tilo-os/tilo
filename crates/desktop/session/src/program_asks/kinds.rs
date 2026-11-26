@@ -544,7 +544,7 @@ fn reach(who: &str, details: Value) -> Kind {
 #[cfg(target_os = "linux")]
 fn delete_workspace(details: Value) -> Kind {
     let asked: crate::workspace_delete::DeleteQuestion = serde_json::from_value(details).ok()?;
-    let name = [("name", ui::i18n::ArgValue::Text(asked.name))];
+    let name = [("name", tilo_ui_base::i18n::ArgValue::Text(asked.name))];
     let mut facts = asking(
         crate::i18n::t_args("workspace-delete-title", &name),
         Some(crate::i18n::t("workspace-delete-body")),
@@ -579,7 +579,10 @@ fn add_app(details: Value) -> Kind {
     let mut facts = asking(
         t_args(
             "add-app-title",
-            &[("name", ui::i18n::ArgValue::Text(asked.name.clone()))],
+            &[(
+                "name",
+                tilo_ui_base::i18n::ArgValue::Text(asked.name.clone()),
+            )],
         ),
         Some(asked.file_name()),
     );
@@ -639,11 +642,14 @@ fn uninstall(details: Value) -> Kind {
     let mut facts = asking(
         t_args(
             "uninstall-title",
-            &[("name", ui::i18n::ArgValue::Text(asked.name.clone()))],
+            &[(
+                "name",
+                tilo_ui_base::i18n::ArgValue::Text(asked.name.clone()),
+            )],
         ),
         Some(t_args(
             "uninstall-files",
-            &[("count", ui::i18n::ArgValue::Number(count))],
+            &[("count", tilo_ui_base::i18n::ArgValue::Number(count))],
         )),
     );
     let home = asked.home.as_deref().map(std::path::Path::new);
@@ -705,7 +711,7 @@ fn admitted(who: &str, details: Value) -> Kind {
 /// the file.
 #[cfg(target_os = "linux")]
 fn receiver(details: Value) -> Kind {
-    use ui::i18n::ArgValue;
+    use tilo_ui_base::i18n::ArgValue;
     let asked: tilo_app_host::nearby_send::VerifyQuestion = serde_json::from_value(details).ok()?;
     let mut facts = asking(
         crate::i18n::t("airdrop-verify-title"),
@@ -820,7 +826,7 @@ fn wallpaper(who: &str, details: Value) -> Kind {
 
 fn printing(who: &str, details: Value) -> Kind {
     let asked: PrintQuestion = serde_json::from_value(details).ok()?;
-    let copies = ui::i18n::ArgValue::Number(f64::from(asked.copies));
+    let copies = tilo_ui_base::i18n::ArgValue::Number(f64::from(asked.copies));
     let mut facts = asking(
         words(
             "portal-print-title",

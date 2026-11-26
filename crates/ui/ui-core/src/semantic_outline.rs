@@ -13,10 +13,10 @@
 
 use serde::Serialize;
 
-use crate::a11y::AccessNode;
-use crate::a11y_walk::HostedByIndex;
-use crate::a11y_walk::{A11yVisitor, Visit, walk_synthetic_children};
-use crate::widget::Widget;
+use tilo_ui_base::a11y::AccessNode;
+use tilo_ui_base::a11y_walk::HostedByIndex;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{a11y_walk::A11yVisitor, a11y_walk::Visit, a11y_walk::walk_synthetic_children};
 
 /// The most nodes one outline carries: enough for a whole window's page, with the rest
 /// counted rather than shown, so an answer stays in an agent's context.
@@ -100,7 +100,7 @@ pub fn outline(view: &dyn Widget) -> Outline {
         hidden: 0,
     };
     let mut tree = Vec::new();
-    crate::a11y_walk::walk::<true, _>(&mut walk, view, None, &mut tree);
+    tilo_ui_base::a11y_walk::walk::<true, _>(&mut walk, view, None, &mut tree);
     let mut text = String::new();
     // The tree carries what the text shows and no more: a long document's lines past what
     // the text holds are counted, not sent as a tree nobody reads.
@@ -179,13 +179,13 @@ impl A11yVisitor for Walk {
             return Visit::Skip;
         }
         let (mut access, shared) = match w.accessibility_shared() {
-            Some(crate::a11y::SharedAccessNode { node, children }) => (node, children),
+            Some(tilo_ui_base::a11y::SharedAccessNode { node, children }) => (node, children),
             None => match w.accessibility() {
                 Some(access) => (access, Vec::new()),
                 None => return Visit::Collapse,
             },
         };
-        crate::a11y_walk::with_slot_words(&mut access, parent_child.as_ref());
+        tilo_ui_base::a11y_walk::with_slot_words(&mut access, parent_child.as_ref());
         let synthetic = std::mem::take(&mut access.children)
             .into_iter()
             .map(std::sync::Arc::new)
@@ -243,8 +243,10 @@ impl A11yVisitor for Walk {
         // Where the node stands is asked of its owner only for a line the
         // outline shows.
         let line = self.fits().then(|| {
-            let rect = crate::a11y::synthetic_bounds(node, owner, path)
-                .map_or(vello::kurbo::Rect::ZERO, crate::a11y::AccessBounds::to_rect);
+            let rect = tilo_ui_base::a11y::synthetic_bounds(node, owner, path).map_or(
+                vello::kurbo::Rect::ZERO,
+                tilo_ui_base::a11y::AccessBounds::to_rect,
+            );
             node_line(node, rect)
         });
         ((line, false), Vec::new())
@@ -289,9 +291,11 @@ fn line_counts(node: &OutlineNode) -> bool {
 }
 
 fn node_line(node: &AccessNode, rect: vello::kurbo::Rect) -> OutlineNode {
-    let bounds = node.bounds.map_or(rect, crate::a11y::AccessBounds::to_rect);
+    let bounds = node
+        .bounds
+        .map_or(rect, tilo_ui_base::a11y::AccessBounds::to_rect);
     OutlineNode {
-        role: crate::a11y::role_name(node.role).to_owned(),
+        role: tilo_ui_base::a11y::role_name(node.role).to_owned(),
         name: words(node.name.as_deref()),
         value: if node.state.protected {
             None
@@ -441,8 +445,8 @@ fn write_line(node: &OutlineNode, depth: usize, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::a11y::Role;
     use crate::widget::Column;
+    use tilo_ui_base::a11y::Role;
 
     /// A document stating its paragraphs as nodes of its own, as an editor does.
     struct Document {
@@ -450,7 +454,7 @@ mod tests {
         root: AccessNode,
     }
 
-    impl crate::widget::Decorator for Document {
+    impl tilo_ui_base::widget::Decorator for Document {
         type Inner = Column;
         fn inner(&self) -> &Column {
             &self.inner

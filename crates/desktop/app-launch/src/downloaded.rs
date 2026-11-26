@@ -52,7 +52,7 @@ pub use effects::{DownloadedAppAction, DownloadedAppsAction};
 /// read or written here is named in, so a German machine with English chosen
 /// keeps English names.
 fn locales() -> Vec<String> {
-    desktop_entry::locale::language_candidates(ui::i18n::preferred_language().as_deref())
+    desktop_entry::locale::language_candidates(tilo_ui_base::i18n::preferred_language().as_deref())
 }
 
 /// The resource every app and offer of the person's is read from.

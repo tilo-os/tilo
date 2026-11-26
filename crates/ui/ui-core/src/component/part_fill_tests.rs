@@ -8,12 +8,13 @@
     reason = "in a test these are the assertion"
 )]
 
-use crate::component::testing::given;
-use crate::component::{Component, Described};
 use crate::headless::Driver;
-use crate::theme::Theme;
 use crate::widget::arrange::{Fit, Sizing};
-use crate::widget::{Card, CardProps, Element, Fitted};
+use crate::{widget::Card, widget::CardProps, widget::Fitted};
+use crate::component_testing::given;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::{component::Component, component::Described};
 
 const SUBJECT: &str = "subject";
 
@@ -23,7 +24,7 @@ fn subject() -> Element {
             .fill_width()
             .fill_height()
             .with_id(SUBJECT)
-            .push(Box::new(crate::widget::Spacer::fixed(20.0))),
+            .push(Box::new(tilo_ui_base::widget::Spacer::fixed(20.0))),
     )
 }
 
@@ -33,7 +34,7 @@ fn filling_view() -> Element {
 
 fn body_height(card: Card, height: u32) -> f64 {
     let harness = Driver::for_root(crate::State::new(), card, (600, height), Theme::light());
-    crate::widget::find_test_id(harness.root_widget(), SUBJECT)
+    tilo_ui_base::widget::find_test_id(harness.root_widget(), SUBJECT)
         .expect("the view in the body is laid out")
         .get_rect()
         .height()
@@ -87,7 +88,7 @@ tilo_test_env::scenario! {
         let props = CardProps::from_source(&mut node).expect("the card reads its body");
         let card = Card::from_props("card", props);
         let harness = Driver::for_root(crate::State::new(), card, (600, 800), Theme::light());
-        let rect = crate::widget::find_test_id(harness.root_widget(), SUBJECT)
+        let rect = tilo_ui_base::widget::find_test_id(harness.root_widget(), SUBJECT)
             .expect("the view in the body is laid out")
             .get_rect();
         let (width, height) = (rect.width(), rect.height());

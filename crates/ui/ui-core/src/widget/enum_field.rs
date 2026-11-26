@@ -4,9 +4,12 @@
 //! holds (a described component's field follows the value the host keeps in step), and an
 //! edit goes back through the binding as the case's name.
 
-use crate::component::{Bound, Value};
-use crate::widget::binding::{BoxedBinding, Pulled, derived};
-use crate::widget::{AppModel, Button, Decorator, MenuButton, MenuItem, ModelPath, Widget};
+use crate::{widget::Button, widget::MenuButton, widget::MenuItem};
+use tilo_ui_base::{component::Bound, component::Value};
+use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::ModelPath, widget::Widget};
+use tilo_ui_base::{
+    widget::binding::BoxedBinding, widget::binding::Pulled, widget::binding::derived,
+};
 
 #[path = "enum_field_component.rs"]
 mod component;
@@ -23,7 +26,7 @@ enum Waiting {
 pub struct EnumField {
     inner: MenuButton,
     id: String,
-    source: Option<crate::LocalState<String>>,
+    source: Option<tilo_ui_base::LocalState<String>>,
     cases: Vec<EnumOptionProps>,
     label: Option<String>,
     value: String,
@@ -60,7 +63,7 @@ impl EnumField {
     /// picked case through `edits`: a case set there shows in place.
     pub(super) fn from_state(
         id: &str,
-        state: &crate::LocalState<String>,
+        state: &tilo_ui_base::LocalState<String>,
         cases: Vec<EnumOptionProps>,
         label: Option<String>,
         edits: Bound<String>,
@@ -186,7 +189,7 @@ impl Decorator for EnumField {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::Tone;
+    use tilo_ui_base::widget::Tone;
 
     fn cases() -> (Vec<EnumOptionProps>, EnumOptionProps) {
         (
@@ -210,7 +213,7 @@ mod tests {
     #[test]
     fn the_case_the_binding_holds_is_the_case_it_shows() {
         let (cases, _) = cases();
-        let state = crate::LocalState::new("none".to_owned());
+        let state = tilo_ui_base::LocalState::new("none".to_owned());
         let mut field = EnumField::from_state(
             "priority",
             &state,

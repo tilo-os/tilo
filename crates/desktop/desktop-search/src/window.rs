@@ -36,8 +36,10 @@ pub const ACTIONS: &str = "window-actions";
 
 /// The picture `spec` declares for itself, when the toolkit draws it.
 #[must_use]
-pub fn action_icon(spec: &ActionSpec) -> Option<ui::icons::Icon> {
-    spec.icon.as_deref().and_then(ui::icons::Icon::from_name)
+pub fn action_icon(spec: &ActionSpec) -> Option<tilo_ui_base::icons::Icon> {
+    spec.icon
+        .as_deref()
+        .and_then(tilo_ui_base::icons::Icon::from_name)
 }
 
 /// Whether `spec` acts on what the person selected: its contract declares
@@ -363,7 +365,7 @@ mod tests {
                     .find(|hit| hit.title == title)
                     .map(|hit| hit.icon)
             };
-            assert_eq!(icon("New note"), Some(Some(ui::icons::Icon::FilePlus)));
+            assert_eq!(icon("New note"), Some(Some(tilo_ui_base::icons::Icon::FilePlus)));
             assert_eq!(icon("Bold"), Some(None), "one without wears its app's");
         }
 

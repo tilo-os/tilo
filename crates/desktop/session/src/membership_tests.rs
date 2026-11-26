@@ -714,7 +714,7 @@ fn press(
     id: &str,
 ) {
     app.harness()
-        .perform_named(id, &ui::a11y::Action::Activate)
+        .perform_named(id, &tilo_ui_base::a11y::Action::Activate)
         .unwrap_or_else(|error| panic!("press {id}: {error}"));
     app.settle();
 }
@@ -729,7 +729,7 @@ fn activate(
         .a11y_node_named(name)
         .unwrap_or_else(|| panic!("no element says {name:?}"));
     app.harness()
-        .perform_a11y_action(node, &ui::a11y::Action::Activate)
+        .perform_a11y_action(node, &tilo_ui_base::a11y::Action::Activate)
         .unwrap_or_else(|error| panic!("activate {name}: {error}"));
     app.settle();
 }
@@ -739,7 +739,7 @@ fn activate(
 /// device takes it as it takes every change of the workspace.
 #[test]
 fn a_role_the_people_tab_sets_reaches_the_other_members_device() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = a_listed_session();
     let mut app = settings_sheet(&mut session);
     let ada = session.ada.clone();
@@ -778,7 +778,7 @@ fn a_role_the_people_tab_sets_reaches_the_other_members_device() {
 /// role they had.
 #[test]
 fn a_refused_role_change_says_why_and_keeps_the_role() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = a_listed_session();
     let mut app = settings_sheet(&mut session);
     app.effect(
@@ -824,7 +824,7 @@ fn a_refused_role_change_says_why_and_keeps_the_role() {
 /// person asked to change.
 #[test]
 fn a_refused_grant_change_says_why_and_keeps_the_grant() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = a_listed_session();
     // The workspace grants an app the camera, as one of its devices wrote.
     let mut tree = session.session().handle().read(Clone::clone);

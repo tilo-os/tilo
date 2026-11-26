@@ -181,14 +181,14 @@ mod tests {
         phase key_metadata_is_content_free_and_text_count_has_a_strict_bound;
         {
             let key = winit::keyboard::Key::Character("private key text".into());
-            let mut event = crate::synthetic_input::char_key("private key text");
+            let mut event = tilo_ui_base::synthetic_input::char_key("private key text");
             let mut trace = Trace::default();
             let row = trace.begin(&event, None).unwrap();
             assert_eq!(row["key_category"], "printable");
             assert_eq!(row["text_present"], true);
             assert_eq!(row["text_scalar_count"], 16);
             assert!(!row.to_string().contains("private key text"));
-            let named = crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter);
+            let named = tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::Enter);
             assert_eq!(trace.begin(&named, None).unwrap()["key_category"], "named");
             if let WindowEvent::KeyboardInput { event, .. } = &mut event {
                 event.text = None;
@@ -202,7 +202,7 @@ mod tests {
             assert_eq!(row["text_scalar_count"], 4096);
             assert_eq!(row["text_count_truncated"], true);
             assert!(!row.to_string().contains('é'));
-            let released = crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            let released = tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
                 key,
                 None,
                 ElementState::Released,

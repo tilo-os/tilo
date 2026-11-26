@@ -7,7 +7,7 @@ use tilo_actions::{ActionAddress, ApiError, InvocationId, InvocationUpdate};
 
 use super::Driver;
 #[cfg(feature = "model")]
-use crate::widget::ResourceOperationStart;
+use tilo_ui_base::widget::ResourceOperationStart;
 
 impl Driver {
     #[cfg(feature = "model")]
@@ -292,9 +292,11 @@ impl Driver {
         };
         // A view operation that reads the laid-out view asks for that frame first, as the app's
         // own API answers: the call runs again on the view it then stands on.
-        let started = crate::widget::resource_operation::laying_out_first(|| invoke(self));
+        let started = tilo_ui_base::widget::resource_operation::laying_out_first(|| invoke(self));
         match started {
-            Err(error) if crate::widget::resource_operation::asks_to_lay_out_first(&error) => {
+            Err(error)
+                if tilo_ui_base::widget::resource_operation::asks_to_lay_out_first(&error) =>
+            {
                 self.relayout();
                 invoke(self)
             }

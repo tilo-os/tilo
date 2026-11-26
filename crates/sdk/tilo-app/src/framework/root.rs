@@ -6,26 +6,27 @@ use std::collections::HashSet;
 use std::rc::Rc;
 use std::sync::Arc;
 use tilo_actions::ResourceSpec;
-use ui_core::widget::{AppModel, ModelPath};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use crate::runner::{with_native_presentations, with_view_operations};
 use tilo_resource::{Resource, SearchEntry};
-use ui_core::PresencePayload;
+use tilo_ui_base::PresencePayload;
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart};
+use tilo_ui_base::presence::PresenceKey;
+use tilo_ui_base::{LocalState, Theme};
+use tilo_ui_base::{permissions::LivePermissions, permissions::PermissionScope};
+use tilo_ui_base::{widget::Element, widget::Widget};
+use tilo_ui_base::{widget::capability::capability, widget::capability::capability_mut};
 use ui_core::application_view::{
     ApplicationFocusRestore, ApplicationLocalView, ApplicationViewState,
 };
 use ui_core::automerge::AutoCommit;
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
-use ui_core::permissions::{LivePermissions, PermissionScope};
-use ui_core::presence::PresenceKey;
 use ui_core::resource::ResourceSaveStatus;
 use ui_core::search::SearchProvider;
 use ui_core::vello::Scene;
 use ui_core::vello::kurbo::Affine;
 use ui_core::view::ThawError;
-use ui_core::widget::capability::{capability, capability_mut};
-use ui_core::widget::{AppKind, AppWidget, Element, IconDescriptor, Widget};
-use ui_core::{LocalState, Theme};
+use ui_core::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
 
 use super::dispatch::DispatchCore;
 use super::rows::{find, join, outside_document};
@@ -33,7 +34,7 @@ use super::scenario::Run;
 use super::stage::Stages;
 use super::surface::SurfacePublication;
 use super::view::ViewCx;
-use ui_core::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 mod bindings;
 mod controls;
@@ -243,7 +244,7 @@ impl ui_core::component_lifecycle::WindowTitle for ResourceRoot {
 impl ui_core::widget::WindowHistory for ResourceRoot {
     fn set_window_presents_history(&mut self, tab_presents: bool) {
         with_app_view_mut(&mut self.content, |view| {
-            if let Some(history) = ui_core::widget::capability::capability_mut::<
+            if let Some(history) = tilo_ui_base::widget::capability::capability_mut::<
                 dyn ui_core::widget::WindowHistory,
             >(view)
             {
@@ -256,7 +257,7 @@ impl ui_core::widget::WindowHistory for ResourceRoot {
     /// tilolang host's instance) shows the system's history of what the window shows.
     fn window_history_control(&self) -> Option<ui_core::widget::HistoryControl> {
         let view = app_view_in(self.content.as_ref())?;
-        ui_core::widget::capability::capability::<dyn ui_core::widget::WindowHistory>(view)?
+        tilo_ui_base::widget::capability::capability::<dyn ui_core::widget::WindowHistory>(view)?
             .window_history_control()
     }
 
@@ -265,9 +266,11 @@ impl ui_core::widget::WindowHistory for ResourceRoot {
         control: ui_core::widget::HistoryControl,
     ) -> Result<(), String> {
         with_app_view_mut(&mut self.content, |view| {
-            ui_core::widget::capability::capability_mut::<dyn ui_core::widget::WindowHistory>(view)
-                .ok_or("History is unavailable")?
-                .invoke_window_history_control(control)
+            tilo_ui_base::widget::capability::capability_mut::<dyn ui_core::widget::WindowHistory>(
+                view,
+            )
+            .ok_or("History is unavailable")?
+            .invoke_window_history_control(control)
         })
     }
 }
@@ -491,10 +494,10 @@ impl ResourceRoot {
         else {
             return;
         };
-        let Some(mut answer) = arrival.take_answer(ui_core::motion::frame_now()) else {
+        let Some(mut answer) = arrival.take_answer(tilo_ui_base::motion::frame_now()) else {
             return;
         };
-        let empty = || -> Element { Box::new(ui_core::widget::Spacer::fixed(0.0)) };
+        let empty = || -> Element { Box::new(tilo_ui_base::widget::Spacer::fixed(0.0)) };
         self.content = match answer
             .as_any_mut()
             .and_then(|any| any.downcast_mut::<super::switch::Switch>())
@@ -522,7 +525,7 @@ impl ResourceRoot {
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-        env: &ui_core::DrawEnv<'_>,
+        env: &tilo_ui_base::DrawEnv<'_>,
     ) {
         self.native_presentation.track_theme(theme);
         if self.ground {
@@ -811,7 +814,7 @@ impl ResourceRoot {
             visit: &mut dyn FnMut(&dyn SurfacePublication),
         ) {
             if let Some(surface) =
-                ui_core::widget::capability::capability::<dyn SurfacePublication>(widget)
+                tilo_ui_base::widget::capability::capability::<dyn SurfacePublication>(widget)
                 && surface.resource() == resource
             {
                 visit(surface);
@@ -1089,7 +1092,7 @@ thread_local! {
 /// [`FrameworkSpecs`] at the current locale, built once per locale on
 /// each thread rather than on every publication.
 fn framework_specs() -> Rc<FrameworkSpecs> {
-    let locale = ui_core::i18n::I18nManager::revision();
+    let locale = tilo_ui_base::i18n::I18nManager::revision();
     FRAMEWORK_SPECS.with_borrow_mut(|kept| {
         if let Some((at, specs)) = kept.as_ref()
             && *at == locale
@@ -1132,20 +1135,20 @@ struct BindingHead {
 /// a test, or a host that mounted the app, reaching the surface between
 /// frames (`App::with_component_root` lends the root of a mounted one).
 /// `None` when `root` is not such a root or shows no `S`.
-pub fn with_surface<R: Resource, S: ui_core::widget::Widget + 'static, T>(
+pub fn with_surface<R: Resource, S: tilo_ui_base::widget::Widget + 'static, T>(
     root: &mut dyn std::any::Any,
     visit: impl FnOnce(&mut S) -> T,
 ) -> Option<T> {
     let root = root.downcast_mut::<ResourceRoot>()?;
-    ui_core::widget::find_mut::<S>(root.view_mut()).map(visit)
+    tilo_ui_base::widget::find_mut::<S>(root.view_mut()).map(visit)
 }
 
-impl ui_core::widget::document_effects::DocumentEffects for ResourceRoot {
+impl tilo_ui_base::widget::document_effects::DocumentEffects for ResourceRoot {
     fn start_document_effects(
         &mut self,
-        operation: &ui_core::host_operation::ResourceOperation<'_>,
-        applied: &ui_core::widget::document_effects::AppliedDocument<'_>,
-    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+        operation: &tilo_ui_base::host_operation::ResourceOperation<'_>,
+        applied: &tilo_ui_base::widget::document_effects::AppliedDocument<'_>,
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         self.typed.start_document_effects(operation, applied)
     }
 }
@@ -1392,7 +1395,7 @@ impl SearchCache {
 // Everything else — layout, input, traversal, operation admission — is the
 // view's own, forwarded by the decorator.
 impl RootModel for ResourceRoot {
-    ui_core::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn ui_core::widget::document_effects::DocumentEffects, dyn ui_core::widget::Collaborative, dyn ui_core::history_mode::capability::PresentsHistoryEntries, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowTitle, dyn ui_core::component_lifecycle::HearsElsewhere, dyn ui_core::widget::WindowHistory, dyn ui_core::widget::presence_topology::Presences; inner = content);
+    tilo_ui_base::provides!(dyn ui_core::undo::CommittedActions, dyn ui_core::history_mode::capability::DocumentHistory, dyn tilo_ui_base::widget::document_effects::DocumentEffects, dyn tilo_ui_base::widget::Collaborative, dyn ui_core::history_mode::capability::PresentsHistoryEntries, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowActivation, #[cfg(not(target_family = "wasm"))] dyn ui_core::component_lifecycle::WindowTitle, dyn ui_core::component_lifecycle::HearsElsewhere, dyn ui_core::widget::WindowHistory, dyn tilo_ui_base::widget::presence_topology::Presences; inner = content);
 
     fn view(&self) -> &(dyn Widget + 'static) {
         match &self.unreadable {
@@ -1425,10 +1428,10 @@ impl RootModel for ResourceRoot {
 
     // The root adds no structure of its own beyond swapping its view for
     // the unreadable state: a change its view can describe stays described.
-    fn take_structure_change(&mut self) -> ui_core::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         let change = self.view_mut().take_structure_change();
         if std::mem::take(&mut self.swapped) {
-            ui_core::widget::StructureChange::Rebuild
+            tilo_ui_base::widget::StructureChange::Rebuild
         } else {
             change
         }
@@ -1443,17 +1446,21 @@ impl RootModel for ResourceRoot {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, path) = ui_core::doc::document_ref(state, path);
+        let (state, path) = tilo_ui_base::doc::document_ref(state, path);
         self.sync_over(state, path);
     }
 
-    fn settle(&mut self, edits: &mut ui_core::widget::Edits<'_>, path: &ui_core::automerge::ObjId) {
+    fn settle(
+        &mut self,
+        edits: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &ui_core::automerge::ObjId,
+    ) {
         self.typed.apply_settlements(edits);
         self.content.settle(edits, path);
         self.storage.settle();
     }
 
-    fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1504,7 +1511,7 @@ impl RootModel for ResourceRoot {
     /// operation types must be in the retained handler table or publication
     /// withdraws the whole component surface.
     fn resource_operation_handlers(&self) -> HashSet<String> {
-        let mut handlers = ui_core::host_operation::resource_operation_handlers(self.view());
+        let mut handlers = tilo_ui_base::host_operation::resource_operation_handlers(self.view());
         handlers.extend(
             crate::runner::operation_types()
                 .iter()
@@ -1574,7 +1581,7 @@ impl RootModel for ResourceRoot {
             )
             .or_else(|| {
                 with_app_view_mut(&mut self.content, |view| {
-                    ui_core::host_operation::poll_resource_operation(
+                    tilo_ui_base::host_operation::poll_resource_operation(
                         view,
                         invocation,
                         cancellation_requested,
@@ -1587,10 +1594,10 @@ impl RootModel for ResourceRoot {
 
     fn start_operation(
         &mut self,
-        op: &ui_core::host_operation::ResourceOperation<'_>,
-        doc: &mut ui_core::widget::Edits<'_>,
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
-    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         self.start_operation_refused(op, doc, path)
             .map_err(tilo_resource::Refusal::into_reason)
     }
@@ -1601,7 +1608,7 @@ impl RootModel for ResourceRoot {
     fn start_operation_refused(
         &mut self,
         op: &ResourceOperation<'_>,
-        doc: &mut ui_core::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ResourceOperationStart>, tilo_resource::Refusal> {
         if let Some(started) = self.start_shown(op, doc, path)? {
@@ -1653,7 +1660,7 @@ impl RootModel for ResourceRoot {
             return Ok(Some(started));
         }
         if let Some(started) =
-            ui_core::host_operation::start_operation(self.view_mut(), op, doc, path)
+            tilo_ui_base::host_operation::start_operation(self.view_mut(), op, doc, path)
                 .map_err(tilo_resource::Refusal::new)?
         {
             return Ok(Some(started));
@@ -1673,7 +1680,7 @@ impl ResourceRoot {
     fn start_shown(
         &mut self,
         op: &ResourceOperation<'_>,
-        doc: &ui_core::widget::Edits<'_>,
+        doc: &tilo_ui_base::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
     ) -> Result<Option<ResourceOperationStart>, tilo_resource::Refusal> {
         let request = op.request();
@@ -1694,9 +1701,9 @@ impl ResourceRoot {
             // the view out first does so and starts the read again, which
             // then reads the item laid out; one that cannot gets the sync the
             // next frame would run.
-            if ui_core::host_operation::host_lays_out_first() {
+            if tilo_ui_base::host_operation::host_lays_out_first() {
                 self.shown_first = Some(anchor);
-                return Err(ui_core::host_operation::lay_out_first());
+                return Err(tilo_ui_base::host_operation::lay_out_first());
             }
             self.content.sync(doc.doc(), path);
         }
@@ -1714,7 +1721,7 @@ impl ResourceRoot {
     fn start_read(
         &mut self,
         op: &ResourceOperation<'_>,
-        doc: &ui_core::widget::Edits<'_>,
+        doc: &tilo_ui_base::widget::Edits<'_>,
     ) -> Result<Option<ResourceOperationStart>, tilo_resource::Refusal> {
         let completed = ResourceOperationStart::Completed;
         let request = op.request();
@@ -1777,8 +1784,8 @@ impl ResourceRoot {
     /// record kept beside its own.
     fn start_resource_operation(
         &self,
-        op: &ui_core::host_operation::ResourceOperation<'_>,
-        doc: &mut ui_core::widget::Edits<'_>,
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
     ) -> Result<Option<tilo_actions::ActionOutput>, tilo_resource::Refusal> {
         let request = op.request();
         let output = if request.type_id == super::history::VIEW_TYPE {
@@ -1911,8 +1918,8 @@ impl ResourceRoot {
 impl ResourceRoot {
     fn start_catalogue_view(
         &self,
-        op: &ui_core::host_operation::ResourceOperation<'_>,
-    ) -> Option<ui_core::host_operation::ResourceOperationStart> {
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
+    ) -> Option<tilo_ui_base::host_operation::ResourceOperationStart> {
         // View openers from the resource/presentation catalogue and from its
         // nested resources (e.g. a rich-text body's `tilo.rich-text.view`
         // editor/compact) are already mounted; accept them so agents and
@@ -1927,7 +1934,7 @@ impl ResourceRoot {
             .any(|spec| spec.operation_type.as_deref() == Some(request.type_id))
             || self.nested_views().contains(request.type_id);
         known.then(|| {
-            ui_core::host_operation::ResourceOperationStart::Completed(
+            tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )
         })
@@ -1938,7 +1945,7 @@ impl ResourceRoot {
         &mut self,
         invocation: tilo_actions::InvocationId,
         payload: &[u8],
-    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         let record = self
             .run
             .launched
@@ -1960,9 +1967,9 @@ impl ResourceRoot {
                     self.dispatch
                         .note_landed(tilo_resource::share::SHARE_LINK, &minted.output);
                 }
-                ui_core::host_operation::ResourceOperationStart::Completed(minted.output)
+                tilo_ui_base::host_operation::ResourceOperationStart::Completed(minted.output)
             }
-            None => ui_core::host_operation::ResourceOperationStart::Accepted,
+            None => tilo_ui_base::host_operation::ResourceOperationStart::Accepted,
         }))
     }
 }
@@ -1970,39 +1977,40 @@ impl ResourceRoot {
 // The root's own clients for the action API (minting links, opening
 // references) share the app's collaboration connection with whatever the
 // view keeps there.
-impl ui_core::widget::Collaborative for ResourceRoot {
-    fn take_collab_requests(&mut self) -> Vec<ui_core::collaboration::CollabRequest> {
+impl tilo_ui_base::widget::Collaborative for ResourceRoot {
+    fn take_collab_requests(&mut self) -> Vec<tilo_ui_base::collaboration::CollabRequest> {
         let mut requests =
-            ui_core::widget::Collaborative::take_collab_requests(self.share.remote_mut());
+            tilo_ui_base::widget::Collaborative::take_collab_requests(self.share.remote_mut());
         if let Some(actions) = self.shown_to_ask() {
-            requests.push(ui_core::collaboration::CollabRequest::DecideShownActions { actions });
+            requests
+                .push(tilo_ui_base::collaboration::CollabRequest::DecideShownActions { actions });
         }
         if let Some(mut api) = self.dispatch.opener.api() {
-            requests.extend(ui_core::widget::Collaborative::take_collab_requests(
+            requests.extend(tilo_ui_base::widget::Collaborative::take_collab_requests(
                 &mut api,
             ));
         }
         with_app_view_mut(&mut self.content, |view| {
-            if let Some(content) = capability_mut::<dyn ui_core::widget::Collaborative>(view) {
+            if let Some(content) = capability_mut::<dyn tilo_ui_base::widget::Collaborative>(view) {
                 requests.extend(content.take_collab_requests());
             }
         });
         requests
     }
 
-    fn handle_collab_event(&mut self, event: &ui_core::collaboration::CollabEvent) {
-        if let ui_core::collaboration::CollabEvent::ActionVerdicts { verdicts } = event
+    fn handle_collab_event(&mut self, event: &tilo_ui_base::collaboration::CollabEvent) {
+        if let tilo_ui_base::collaboration::CollabEvent::ActionVerdicts { verdicts } = event
             && let Some(permissions) = &self.permissions
         {
             permissions.decide_shown(verdicts);
             self.dispatch.refresh_permission_states();
         }
-        ui_core::widget::Collaborative::handle_collab_event(self.share.remote_mut(), event);
+        tilo_ui_base::widget::Collaborative::handle_collab_event(self.share.remote_mut(), event);
         if let Some(mut api) = self.dispatch.opener.api() {
-            ui_core::widget::Collaborative::handle_collab_event(&mut api, event);
+            tilo_ui_base::widget::Collaborative::handle_collab_event(&mut api, event);
         }
         with_app_view_mut(&mut self.content, |view| {
-            if let Some(content) = capability_mut::<dyn ui_core::widget::Collaborative>(view) {
+            if let Some(content) = capability_mut::<dyn tilo_ui_base::widget::Collaborative>(view) {
                 content.handle_collab_event(event);
             }
         });
@@ -2094,7 +2102,7 @@ impl RootSearch for ResourceRoot {
             self.resource.label,
             Some(generation),
             // `ResourceSearch` keeps the provider default.
-            ui_core::widget::ActionDirectoryInvocationDomain::Unsupported,
+            tilo_ui_base::widget::ActionDirectoryInvocationDomain::Unsupported,
         )]
     }
 
@@ -2141,7 +2149,7 @@ impl RootSearch for ResourceRoot {
     fn activate_search_result(
         &mut self,
         action_id: &str,
-        doc: &mut ui_core::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) {
         if self.stages.open(action_id).is_err() {
@@ -2160,7 +2168,7 @@ impl RootPublishes for ResourceRoot {
         &self,
         member: Option<&tilo_actions::PresenceId>,
         doc: &AutoCommit,
-    ) -> Option<Vec<ui_core::published::SharedResource>> {
+    ) -> Option<Vec<tilo_ui_base::published::SharedResource>> {
         self.shared_resources(member, doc)
     }
     fn resources_for(
@@ -2179,7 +2187,7 @@ impl RootPublishes for ResourceRoot {
         // never a document action: those are the resource's own. One naming
         // the resource joins it rather than publishing it twice.
         let mut extras = Vec::new();
-        for extra in ui_core::widget::resources::resources_for(self.app_view(), member, doc) {
+        for extra in tilo_ui_base::widget::resources::resources_for(self.app_view(), member, doc) {
             let extra = outside_document(extra);
             if extra.id == resource.id {
                 join(&mut resource, extra);
@@ -2333,7 +2341,7 @@ impl RootPublishes for ResourceRoot {
         // Last, what the content resolves by id beyond what it publishes (a
         // place, a record past the published page), without a document
         // action: those are the resource's own.
-        ui_core::widget::resources::resource_for(self.app_view(), None, doc, id)
+        tilo_ui_base::widget::resources::resource_for(self.app_view(), None, doc, id)
             .map(super::rows::resolved_outside_document)
     }
     fn published_action(
@@ -2380,7 +2388,7 @@ impl RootPublishes for ResourceRoot {
                 .typed
                 .answer(doc, &address.action, changes)
                 .or_else(|| {
-                    ui_core::widget::resources::document_action_result(
+                    tilo_ui_base::widget::resources::document_action_result(
                         self.app_view(),
                         doc,
                         address,
@@ -2397,7 +2405,12 @@ impl RootPublishes for ResourceRoot {
                 None => Some(serde_json::json!({ "minted": minted })),
             };
         }
-        ui_core::widget::resources::document_action_result(self.app_view(), doc, address, changes)
+        tilo_ui_base::widget::resources::document_action_result(
+            self.app_view(),
+            doc,
+            address,
+            changes,
+        )
     }
 }
 
@@ -2451,7 +2464,7 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
     }
 
     fn history_restore_readiness(&self, scope: &str) -> Result<(), String> {
-        ui_core::widget::capability::capability::<
+        tilo_ui_base::widget::capability::capability::<
             dyn ui_core::history_mode::capability::DocumentHistory,
         >(self.app_view())
         .map_or(Ok(()), |content| content.history_restore_readiness(scope))
@@ -2484,7 +2497,7 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
             self.typed.note_applied(&member, action);
         }
         with_app_view_mut(&mut self.content, |view| {
-            if let Some(content) = ui_core::widget::capability::capability_mut::<
+            if let Some(content) = tilo_ui_base::widget::capability::capability_mut::<
                 dyn ui_core::history_mode::capability::DocumentHistory,
             >(view)
             {
@@ -2497,18 +2510,18 @@ impl ui_core::history_mode::capability::DocumentHistory for ResourceRoot {
 /// The view's own presences, and every other presence where its last action
 /// left it: a presence answered in its own view (an agent shown a row) is seen
 /// there by the person at this window.
-impl ui_core::widget::presence_topology::Presences for ResourceRoot {
+impl tilo_ui_base::widget::presence_topology::Presences for ResourceRoot {
     fn join_presence(&mut self, presence: &tilo_actions::PresenceId) -> bool {
-        ui_core::widget::presence_topology::join_presence(self.content.as_mut(), presence)
+        tilo_ui_base::widget::presence_topology::join_presence(self.content.as_mut(), presence)
     }
 
     fn leave_presence(&mut self, presence: &tilo_actions::PresenceId) {
         self.typed.forget(presence);
-        ui_core::widget::presence_topology::leave_presence(self.content.as_mut(), presence);
+        tilo_ui_base::widget::presence_topology::leave_presence(self.content.as_mut(), presence);
     }
 
     fn set_presence_label(&mut self, presence: &tilo_actions::PresenceId, label: &str) {
-        ui_core::widget::presence_topology::set_presence_label(
+        tilo_ui_base::widget::presence_topology::set_presence_label(
             self.content.as_mut(),
             presence,
             label,
@@ -2518,8 +2531,9 @@ impl ui_core::widget::presence_topology::Presences for ResourceRoot {
     fn presences(
         &self,
         doc: &ui_core::automerge::AutoCommit,
-    ) -> Vec<ui_core::widget::ViewPresence> {
-        let mut shown = ui_core::widget::presence_topology::presences(self.content.as_ref(), doc);
+    ) -> Vec<tilo_ui_base::widget::ViewPresence> {
+        let mut shown =
+            tilo_ui_base::widget::presence_topology::presences(self.content.as_ref(), doc);
         for landed in self.typed.landed_presences(self.dispatch.app_id()) {
             if !shown.iter().any(|view| view.presence == landed.presence) {
                 shown.push(landed);
@@ -2529,7 +2543,10 @@ impl ui_core::widget::presence_topology::Presences for ResourceRoot {
     }
 
     fn set_remote_only(&mut self, remote_only: bool) {
-        ui_core::widget::presence_topology::set_remote_only(self.content.as_mut(), remote_only);
+        tilo_ui_base::widget::presence_topology::set_remote_only(
+            self.content.as_mut(),
+            remote_only,
+        );
     }
 }
 
@@ -2688,9 +2705,9 @@ mod search_tests;
 /// words, with the reason the record was refused (a path and a missing
 /// value) behind the state's "Details".
 fn unreadable_state(reason: &str) -> ui_core::widget::EmptyState {
-    ui_core::widget::EmptyState::new(ui_core::i18n::widget_text("framework-unreadable"))
-        .with_icon(ui_core::icons::Icon::CircleAlert)
-        .with_message(ui_core::i18n::widget_text("framework-unreadable-hint"))
+    ui_core::widget::EmptyState::new(tilo_ui_base::i18n::widget_text("framework-unreadable"))
+        .with_icon(tilo_ui_base::icons::Icon::CircleAlert)
+        .with_message(tilo_ui_base::i18n::widget_text("framework-unreadable-hint"))
         .with_details(reason)
 }
 

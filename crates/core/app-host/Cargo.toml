@@ -14,9 +14,9 @@ path = "src/lib.rs"
 # The fixtures the app host's tests and its embedders' tests build on, over the service's own.
 test-support = ["tilo-workspace-service/test-support", "tilo-peer-state/test-support", "dep:tilo-test-env", "dep:tilo-surface-compile", "dep:rustls", "tilo-identity/test-support"]
 # The agents a device runs for its workspaces ([`agents`]), and the triggers that start their turns.
-agents = ["tilo-workspace-service/agents", "dep:tilo-agent-session", "dep:ui", "dep:tilo-recurrence", "dep:tilo-model-gateway", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:tilo-web-search", "dep:feed-rs", "tilo-clock/local"]
+agents = ["tilo-workspace-service/agents", "dep:tilo-agent-session", "dep:ui", "dep:tilo-ui-base", "dep:tilo-recurrence", "dep:tilo-model-gateway", "dep:tilo-mcp", "dep:tilo-agent-turn", "dep:tilo-web-search", "dep:feed-rs", "tilo-clock/local"]
 # A workspace's file tree, held in the device's own service.
-files = ["tilo-workspace-service/files", "dep:fs-protocol", "dep:ui"]
+files = ["tilo-workspace-service/files", "dep:fs-protocol", "dep:ui", "dep:tilo-ui-base"]
 # The web tools' tests ask a server on this machine instead of the public engines and pages.
 fixture-servers = ["tilo-web-search?/fixture-servers"]
 
@@ -69,6 +69,7 @@ tilo-agent-session = { path = "../agent-session", optional = true }
 # A person's own provider, asked through the gateway's transport with the key
 # their vault keeps: the wires, the stream reading and the price table are its.
 tilo-model-gateway = { path = "../../integrations/model-gateway", default-features = false, features = ["host-backend"], optional = true }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false, optional = true }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", optional = true, features = ["model"] }
 # Shortcuts and the events they fire on: what a saved shortcut holds, as its triggers and steps.
 tilo-automation = { path = "../automation" }
@@ -189,6 +190,7 @@ test-http = { package = "tilo-test-http", path = "../../../tools/test-http" }
 # host opens without waiting out the probe of an endpoint that reaches none.
 tilo-test-env = { path = "../../../tools/test-env" }
 tilo-files = { path = "../../platform/tilo-files", features = ["test-support"] }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
 
 # The apps the device serves, tested against.

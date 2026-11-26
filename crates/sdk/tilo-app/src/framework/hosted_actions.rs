@@ -17,15 +17,16 @@ use std::collections::{HashMap, VecDeque};
 use std::rc::Rc;
 
 use tilo_actions::{ActionInvoker, InvocationId, InvocationUpdate, ResourceSpec};
-use ui_core::automerge::{AutoCommit, ObjId};
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
-use ui_core::taffy::{NodeId, Style, TaffyTree};
-use ui_core::theme::Theme;
-use ui_core::vello::kurbo::{Point, Rect};
-use ui_core::widget::resources::PublishesResources;
-use ui_core::widget::{
-    AppKind, AppModel, AppWidget, Edits, IconDescriptor, ModelPath, TaffyTreeExt as _, Widget,
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::resources::PublishesResources;
+use tilo_ui_base::{
+    widget::AppModel, widget::Edits, widget::ModelPath, widget::TaffyTreeExt as _, widget::Widget,
 };
+use ui_core::automerge::{AutoCommit, ObjId};
+use ui_core::taffy::{NodeId, Style, TaffyTree};
+use ui_core::vello::kurbo::{Point, Rect};
+use ui_core::{widget::AppKind, widget::AppWidget, widget::IconDescriptor};
 
 /// One invocation the API admitted, for the host to run.
 #[derive(Debug)]
@@ -123,7 +124,7 @@ impl HostedActions {
 }
 
 impl Widget for HostedActions {
-    ui_core::provides!(dyn ResourceOperations, dyn PublishesResources);
+    tilo_ui_base::provides!(dyn ResourceOperations, dyn PublishesResources);
 
     fn build_layout(
         &mut self,

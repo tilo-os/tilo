@@ -850,7 +850,8 @@ impl tilo_session_core::surfaces::Published for PartView {
         address: &ui::tilo_actions::ActionAddress,
         _arguments: &serde_json::Map<String, serde_json::Value>,
         _look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError>
+    {
         Err(ui::tilo_actions::ApiError::Unknown(address.clone()))
     }
 
@@ -887,7 +888,11 @@ impl tilo_session_core::surfaces::Published for PartView {
         self.open.as_ref().map(|_| self.part.to_owned())
     }
 
-    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+    fn a11y_action(
+        &mut self,
+        target: ui::accesskit::NodeId,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         self.open.as_mut().is_some_and(|open| {
             open.took_press();
             tilo_session_core::surfaces::Published::a11y_action(&mut open.widgets, target, action)

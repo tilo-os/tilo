@@ -9,10 +9,10 @@ use vello::peniko::Color;
 use winit::dpi::PhysicalPosition;
 use winit::event::{Modifiers, WindowEvent};
 
-use super::Widget;
-use crate::widget::DrawChild;
-use crate::widget::bound_nodes::BoundNodeMap;
-use crate::{Theme, text_render::TextRenderer};
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
+use tilo_ui_base::{Theme, text_render::TextRenderer};
 
 /// A widget laid out and driven by the widget that owns it.
 pub struct Embedded<W: Widget> {
@@ -172,7 +172,7 @@ impl<W: Widget + 'static> Embedded<W> {
         // SAFETY: the tree, node map and bindings were built from this exact
         // boxed widget, which nothing else borrows while the layout runs.
         let solved = unsafe {
-            super::compute_widget_layout(
+            tilo_ui_base::widget::compute_widget_layout(
                 &mut self.tree,
                 root,
                 available,
@@ -197,7 +197,7 @@ impl<W: Widget + 'static> Embedded<W> {
     }
 
     /// Paint the widget where it was last laid out.
-    pub fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -225,7 +225,7 @@ impl<W: Widget + 'static> Embedded<W> {
     }
 
     /// Paint what the widget floats over everything (its menus, a link's popover).
-    pub fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -243,13 +243,14 @@ impl<W: Widget + 'static> Embedded<W> {
                 owner.map(|viewport| self.transform.inverse().transform_rect_bbox(viewport));
         }
         let placed = self.overlay_transform().unwrap_or(self.transform);
-        self.widget.draw_overlay(&mut crate::draw::DrawCtx::new(
-            scene,
-            transform * placed,
-            text,
-            theme,
-            child_env,
-        ));
+        self.widget
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform * placed,
+                text,
+                theme,
+                child_env,
+            ));
     }
 
     fn overlay_transform(&self) -> Option<Affine> {
@@ -294,7 +295,7 @@ impl<W: Widget + 'static> Embedded<W> {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: &Modifiers,
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
         handled: &mut bool,
     ) {
@@ -328,7 +329,7 @@ impl<W: Widget + 'static> Embedded<W> {
         let mut focus = None;
         self.widget.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor,
                 modifiers,
                 state: state.reborrow(),
@@ -359,7 +360,7 @@ impl<W: Widget + 'static> Embedded<W> {
     /// closed, a toolbar's change made outside an input event. Call from
     /// the owner's own `settle`, which the host runs every frame; a child
     /// that is never settled writes those only with its next event.
-    pub fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, path: &ObjId) {
+    pub fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, path: &ObjId) {
         self.widget.settle(edits, path);
     }
 
@@ -381,7 +382,7 @@ impl<W: Widget + 'static> Embedded<W> {
     }
 
     /// What the child holds for the input method ([`Widget::ime_content`]).
-    pub fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    pub fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         self.widget.ime_content()
     }
 
@@ -403,8 +404,8 @@ impl<W: Widget + 'static> Embedded<W> {
     /// technology then reads and edits the child as it would anywhere else.
     /// The child's own node is given its rectangle, since it has no widget
     /// of the owner's tree to take one from.
-    pub fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        fn map(node: &mut crate::a11y::AccessNode, transform: Affine) {
+    pub fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        fn map(node: &mut tilo_ui_base::a11y::AccessNode, transform: Affine) {
             if let Some(bounds) = node.bounds {
                 node.bounds = Some(transform.transform_rect_bbox(bounds.to_rect()).into());
             }
@@ -423,10 +424,10 @@ impl<W: Widget + 'static> Embedded<W> {
     /// relative to the child's own node ([`Widget::perform_action`]).
     pub fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        edits: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        edits: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         self.widget.perform_action(action, key_path, edits, path)
     }
@@ -436,30 +437,30 @@ impl<W: Widget + 'static> Embedded<W> {
     pub fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        edits: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        edits: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         self.widget
             .perform_semantic_action(target, action, edits, path)
     }
 
     /// Where the person is in the child (a caret, a selection), for the owner to publish to
-    /// members as its own ([`crate::presence::capability::PublishesPresence`]).
+    /// members as its own ([`tilo_ui_base::presence::capability::PublishesPresence`]).
     #[cfg(feature = "model")]
     pub fn presence_payload(
         &self,
     ) -> Option<(
-        crate::presence::PresenceKey,
+        tilo_ui_base::presence::PresenceKey,
         ::collaboration::PresencePayload,
     )> {
-        crate::presence::capability::presence_payload(&*self.widget)
+        tilo_ui_base::presence::capability::presence_payload(&*self.widget)
     }
 
     /// What the person has selected in the child, for asking an agent about it
-    /// ([`crate::presence::capability::PublishesPresence::shared_selection`]).
+    /// ([`tilo_ui_base::presence::capability::PublishesPresence::shared_selection`]).
     #[cfg(feature = "model")]
-    pub fn shared_selection(&self) -> Option<crate::shared_subject::SharedSelection> {
+    pub fn shared_selection(&self) -> Option<tilo_ui_base::shared_subject::SharedSelection> {
         crate::shared_selection::selection_of(&*self.widget)
     }
 
@@ -472,7 +473,7 @@ impl<W: Widget + 'static> Embedded<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::TaffyTreeExt;
+    use tilo_ui_base::widget::TaffyTreeExt;
     use vello::Scene;
 
     struct PanelChild {
@@ -501,13 +502,13 @@ mod tests {
         fn name(&self) -> &str {
             "panel-child"
         }
-        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
             self.viewport.set(ctx.env.viewport);
         }
         fn modal_capture(&self) -> Option<Rect> {
             Some(self.panel)
         }
-        fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
             self.viewport.set(ctx.env.viewport);
             let (scene, transform, _, _, _) = ctx.parts();
             scene.fill(
@@ -564,20 +565,20 @@ mod tests {
     fn an_embedded_widgets_panel_stands_where_its_owner_places_it() {
         let fill = Color::from_rgb8(0xff, 0x40, 0x00);
         let mut host = panel_child(fill);
-        let mut text = crate::font_catalog::fixture_renderer();
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         let theme = Theme::dark();
         host.layout(Rect::new(0.0, 0.0, 200.0, 100.0), &theme, &mut text);
         host.set_transform(Affine::translate((40.0, 25.0)));
         let mut scene = Scene::new();
-        host.draw_overlay(&mut crate::draw::DrawCtx::new(
+        host.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
             &theme,
-            crate::presence::PresenceCtx::empty().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
         ));
         let (width, height) = (240_u32, 140_u32);
-        let mut renderer = crate::offscreen::OffscreenRenderer::new(width, height);
+        let mut renderer = tilo_ui_base::offscreen::OffscreenRenderer::new(width, height);
         let rgba = renderer.render(&scene, vello::peniko::Color::TRANSPARENT);
         let bounds = filled_bounds(&rgba, width, height, fill);
         let panel = host.widget().panel;
@@ -594,17 +595,17 @@ mod tests {
     #[test]
     fn an_embedded_widget_scaled_to_nothing_keeps_its_owners_viewport() {
         let mut host = panel_child(Color::BLACK);
-        let mut text = crate::font_catalog::fixture_renderer();
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         let theme = Theme::dark();
         host.layout(Rect::new(0.0, 0.0, 200.0, 100.0), &theme, &mut text);
         host.set_transform(Affine::scale(0.0));
         let owner = Rect::new(0.0, 0.0, 640.0, 400.0);
-        let presence = crate::presence::PresenceCtx::empty();
+        let presence = tilo_ui_base::presence::PresenceCtx::empty();
         let mut env = presence.draw_env();
         env.viewport = Some(owner);
         let seen = host.widget().viewport.clone();
         let mut scene = Scene::new();
-        host.draw(&mut crate::draw::DrawCtx::new(
+        host.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
@@ -617,7 +618,7 @@ mod tests {
             "a widget scaled to nothing draws with its owner's viewport, not an inverse of a singular one"
         );
         let mut scene = Scene::new();
-        host.draw_overlay(&mut crate::draw::DrawCtx::new(
+        host.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut text,

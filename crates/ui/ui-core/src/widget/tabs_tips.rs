@@ -38,7 +38,7 @@ impl TabBar {
         if self.history_action.area() > 0.0 && self.history_action.contains(point) {
             return Some((
                 self.history_action,
-                crate::i18n::I18nManager::lookup_plain("history-mode-title"),
+                tilo_ui_base::i18n::I18nManager::lookup_plain("history-mode-title"),
             ));
         }
         let control = self.controls.hit(point)?;
@@ -49,7 +49,7 @@ impl TabBar {
         };
         Some((
             rect,
-            crate::i18n::I18nManager::lookup_plain(control.name_key(self.resize)),
+            tilo_ui_base::i18n::I18nManager::lookup_plain(control.name_key(self.resize)),
         ))
     }
 }

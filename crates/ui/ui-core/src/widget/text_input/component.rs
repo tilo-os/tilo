@@ -1,7 +1,10 @@
 //! [`TextInput`] as a described component.
 
-use crate::component::{Bound, Component, Described, Event, Person, Value};
-use crate::tokens::TextRole;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+    component::Person, component::Value,
+};
 
 use super::TextInput;
 
@@ -119,14 +122,16 @@ fn written_at(value: &Bound<String>) -> Option<(String, String)> {
 /// What a field changed by someone else says on hover: who changed it, and what it held.
 fn change_note(by: &Person, previous: Option<&str>) -> String {
     match previous {
-        Some(before) => crate::i18n::widget_format(
+        Some(before) => tilo_ui_base::i18n::widget_format(
             "change-field-before",
             &[
                 ("who", by.name.clone().into()),
                 ("before", before.to_owned().into()),
             ],
         ),
-        None => crate::i18n::widget_format("change-field", &[("who", by.name.clone().into())]),
+        None => {
+            tilo_ui_base::i18n::widget_format("change-field", &[("who", by.name.clone().into())])
+        }
     }
 }
 
@@ -303,7 +308,7 @@ impl Described for TextInput {
 mod tests {
     use super::*;
     use crate::testing::Dispatch;
-    use crate::widget::Widget;
+    use tilo_ui_base::widget::Widget;
     use vello::kurbo::Rect;
     use winit::event::WindowEvent;
 
@@ -349,8 +354,8 @@ mod tests {
     /// carry hears the words as they are typed, as the one it was made with did.
     #[test]
     fn a_field_given_new_props_still_tells_every_change() {
-        use crate::component::{Event, Fired, Intent};
-        let queue: crate::Intents<Fired> = crate::Intents::default();
+        use tilo_ui_base::{component::Event, component::Fired, component::Intent};
+        let queue: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
         let mut field = TextInput::from_props("search", TextInputProps::default());
         assert!(field.set_props(TextInputProps {
             changed: Event::View(Intent::new(&queue, "search", "changed")),
@@ -365,7 +370,7 @@ mod tests {
         let fired = queue.take();
         assert_eq!(fired.len(), 1, "the change is told: {fired:?}");
         assert_eq!(fired[0].event, "changed");
-        assert_eq!(fired[0].value, Some(crate::component::testing::text("a")));
+        assert_eq!(fired[0].value, Some(crate::component_testing::text("a")));
     }
 
     /// A field built as a secret masks what it holds, marks it protected, and keeps the value
@@ -391,11 +396,11 @@ mod tests {
 
     /// The width a caret field is laid out at, given a wide room.
     fn caret_width(field: &mut TextInput) -> f64 {
-        let mut text = crate::font_catalog::fixture_renderer();
-        crate::widget::layout::lay_out_detached(
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+        tilo_ui_base::widget::layout::lay_out_detached(
             field,
             Rect::new(0.0, 0.0, 800.0, 100.0),
-            &crate::Theme::dark(),
+            &tilo_ui_base::Theme::dark(),
             &mut text,
         )
         .expect("the caret lays out");

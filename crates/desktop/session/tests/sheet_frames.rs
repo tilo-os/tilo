@@ -83,7 +83,7 @@ fn differed(before: &image::RgbaImage, after: &image::RgbaImage) -> (u32, u32, u
 
 #[test]
 fn a_sheet_the_person_opened_is_in_the_snapshot_and_its_controls_are_listed() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let socket = root.path().join("test-control.sock");
     let mut session = session(&socket);
@@ -146,7 +146,7 @@ fn a_sheet_the_person_opened_is_in_the_snapshot_and_its_controls_are_listed() {
 
 #[test]
 fn the_invite_sheet_the_launchpad_opens_is_drawn_and_listed() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let socket = root.path().join("test-control.sock");
     let mut session = session(&socket);

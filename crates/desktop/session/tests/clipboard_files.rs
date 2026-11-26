@@ -23,7 +23,7 @@ use tilo_compositor::{OutputConfig, Selection};
 use tilo_session::{CLIPBOARD_RESOURCE, Options, Session};
 use tilo_session_client::device_records::DeviceRecords;
 use tilo_test_env::TestHome;
-use ui::dnd::{COPIED_FILES_MIME, copied_files_list};
+use tilo_ui_base::{dnd::COPIED_FILES_MIME, dnd::copied_files_list};
 
 /// The name a paste stages its copies under, inside the receiving folder.
 const STAGING_PREFIX: &str = ".tilo-transfer-";

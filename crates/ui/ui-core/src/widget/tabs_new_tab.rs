@@ -5,16 +5,16 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
 use super::NEW_TAB_TARGET;
-use crate::icons;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::icons;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 
 /// The catalogue key naming the strip's new-tab API: a "+" needs no words in the row, so the name
 /// is what assistive technology reads and the tip of its glyph, in the shell's language.
 const NEW_TAB_KEY: &str = "window-toolbar-new-tab";
 
 pub(crate) fn new_tab_name() -> String {
-    crate::i18n::I18nManager::lookup_plain(NEW_TAB_KEY)
+    tilo_ui_base::i18n::I18nManager::lookup_plain(NEW_TAB_KEY)
 }
 
 /// The window's own API to another application, as a bar reads it at `rect`: the "+" every

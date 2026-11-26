@@ -1,12 +1,12 @@
 use super::*;
 use crate::view::{FreezeThaw, ViewContribution};
 use crate::wake::{WakeEvent, WakeHandle, WakeScope};
-use crate::widget::TaffyTreeExt;
-use crate::widget::{AppModel, ModelPath};
-use crate::{LatestRequest, LocalState};
 use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::mpsc::{self, Receiver, TryRecvError};
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{LatestRequest, LocalState};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 fn bound_scope() -> (WakeScope, Receiver<WakeEvent>) {
     let (tx, rx) = mpsc::channel();
@@ -40,7 +40,7 @@ impl Drop for CaptureRoot {
 }
 
 impl Widget for CaptureRoot {
-    crate::provides!(dyn crate::view::capability::ViewState);
+    tilo_ui_base::provides!(dyn crate::view::capability::ViewState);
 
     fn sync(&mut self, _: &AppModel, _: &ModelPath) {
         self.capture("sync");
@@ -56,7 +56,7 @@ impl Widget for CaptureRoot {
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
 
-    fn handle_event(&mut self, _: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, _: &WindowEvent, _ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.capture("event");
     }
 

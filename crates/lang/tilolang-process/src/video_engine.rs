@@ -277,12 +277,12 @@ fn measure_blocks(
     let mut source = video_edit::audio::CachedSource::new(cut, cache);
     let meters = video_edit::audio::MixMeters::new();
     let block = video_edit::audio::MONITOR_BLOCK;
-    let step = ui_core::num::f64_of_usize(block) / f64::from(video_edit::audio::SAMPLE_RATE);
+    let step = tilo_ui_base::num::f64_of_usize(block) / f64::from(video_edit::audio::SAMPLE_RATE);
     let end = cut.duration().max(0.0);
     let mut index = 0u64;
     loop {
         // Each block's start is counted, not accumulated: a mix's length never drifts.
-        let at = ui_core::num::f64_of_u64(index) * step;
+        let at = tilo_ui_base::num::f64_of_u64(index) * step;
         if at >= end {
             break;
         }
@@ -335,7 +335,7 @@ fn sample(store: &ContentStore, input: &str) -> Result<String, String> {
 /// the axis.
 fn axis_index(fraction: f64, extent: u32) -> usize {
     let last = extent.saturating_sub(1);
-    let at = ui_core::num::usize_of_f64((fraction.clamp(0.0, 1.0) * f64::from(last)).round());
+    let at = tilo_ui_base::num::usize_of_f64((fraction.clamp(0.0, 1.0) * f64::from(last)).round());
     at.min(usize::try_from(last).unwrap_or(usize::MAX))
 }
 
@@ -707,7 +707,7 @@ fn play_word(at: f64, meters: &video_edit::audio::MixMeters) -> String {
 /// Waits until frame `frames` is due, so a play runs at the cut's rate rather than as fast as the
 /// device can draw.
 fn frames_due(began: std::time::Instant, period: f64, frames: u64) {
-    let wait = std::time::Duration::from_secs_f64(period * ui_core::num::f64_of_u64(frames));
+    let wait = std::time::Duration::from_secs_f64(period * tilo_ui_base::num::f64_of_u64(frames));
     let due = began.checked_add(wait).unwrap_or(began);
     std::thread::sleep(due.saturating_duration_since(std::time::Instant::now()));
 }
@@ -834,7 +834,7 @@ fn open_scrubbing() -> Result<Scrubbing, String> {
                     pcm = Some((mix, video_edit::audio::DecodedPcm::new(&ask.project)));
                 }
                 if let Some((_, source)) = pcm.as_mut() {
-                    let frames = ui_core::num::usize_of_f64(
+                    let frames = tilo_ui_base::num::usize_of_f64(
                         (ask.seconds.clamp(0.02, 0.4) * f64::from(video_edit::audio::SAMPLE_RATE))
                             .round(),
                     )

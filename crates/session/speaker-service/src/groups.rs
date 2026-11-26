@@ -1724,7 +1724,7 @@ pub struct SpeakerMembershipView {
 }
 
 impl SpeakerConsentView {
-    fn args(&self) -> Vec<(&'static str, ui::i18n::ArgValue)> {
+    fn args(&self) -> Vec<(&'static str, tilo_ui_base::i18n::ArgValue)> {
         let mut args = vec![
             ("group", self.name.as_str().into()),
             ("leader", self.leader_label.as_str().into()),
@@ -1837,7 +1837,10 @@ impl SpeakerMembershipView {
         self.key("qs-devices-action-leave", "qs-devices-action-stop")
     }
 
-    fn args(&self, sentence: impl Fn(&str) -> String) -> Vec<(&'static str, ui::i18n::ArgValue)> {
+    fn args(
+        &self,
+        sentence: impl Fn(&str) -> String,
+    ) -> Vec<(&'static str, tilo_ui_base::i18n::ArgValue)> {
         let mut args = vec![
             ("group", self.name.as_str().into()),
             ("leader", self.leader_label.as_str().into()),

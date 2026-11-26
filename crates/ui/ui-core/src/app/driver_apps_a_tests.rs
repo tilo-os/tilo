@@ -12,11 +12,11 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::app::driver::Driver;
-use crate::permissions::MemberId;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::Widget as _;
 use crate::window_toolbar::{ToolbarAction, ToolbarEvent, ToolbarNotice, WindowToolbar};
+use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget as _;
 
 /// An app whose window's bar carries a notice with one button, and that hears what a press on it
 /// runs.
@@ -26,7 +26,7 @@ struct NoticeApp {
     notice: bool,
 }
 
-impl crate::widget::Decorator for NoticeApp {
+impl tilo_ui_base::widget::Decorator for NoticeApp {
     type Inner = crate::widget::Column;
 
     fn inner(&self) -> &Self::Inner {
@@ -37,7 +37,11 @@ impl crate::widget::Decorator for NoticeApp {
         &mut self.content
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         // A notice's button is its poster's, never one of the app's part events: the app polls
         // for its press as the save status does.
         if crate::window_toolbar::take_notice_press("try-again") {
@@ -121,10 +125,10 @@ fn a_bar_with_no_notice_reads_none() {
 /// and the document and keyboard focus do not move.
 #[test]
 fn a_late_browser_font_lays_out_again_without_moving_the_document_or_focus() {
-    let root = crate::font_catalog::checkout_root();
-    let catalog = crate::font_catalog::FontCatalog::product("", "en-US");
+    let root = tilo_ui_base::font_catalog::checkout_root();
+    let catalog = tilo_ui_base::font_catalog::FontCatalog::product("", "en-US");
     let fonts = catalog
-        .load_browser_startup_bytes(crate::font_catalog::test_font_files(&root))
+        .load_browser_startup_bytes(tilo_ui_base::font_catalog::test_font_files(&root))
         .unwrap();
     let mut driver = Driver::new_with_controlled_inputs(
         crate::State::new(),
@@ -147,7 +151,7 @@ fn a_late_browser_font_lays_out_again_without_moving_the_document_or_focus() {
             .install_browser_font(
                 "NotoSansArabic[wght].ttf",
                 bytes.clone(),
-                &crate::font_catalog::test_sha256(&bytes)
+                &tilo_ui_base::font_catalog::test_sha256(&bytes)
             )
             .unwrap(),
         "the font is installed"

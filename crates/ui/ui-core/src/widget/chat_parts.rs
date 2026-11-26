@@ -11,14 +11,19 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use winit::event::WindowEvent;
 
-use crate::component::{Component, Described, Event, Person, Value};
-
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::{
-    Button, Decorator, EmojiPicker, EventCtx, PickerEvent, Popover, ReactionStripWidget, Widget,
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Person,
+    component::Value,
 };
+
+use crate::{
+    widget::Button, widget::EmojiPicker, widget::PickerEvent, widget::Popover,
+    widget::ReactionStripWidget,
+};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
+use tilo_ui_base::{widget::Decorator, widget::EventCtx, widget::Widget};
 
 /// The reactions on something: a pill per emoji with how many reacted, yours drawn on; pressing one
 /// adds or takes back your reaction, and the add button opens the emoji picker for another.
@@ -222,13 +227,14 @@ impl EmojiPickerButton {
     pub fn new(key: &str, label: &str, pick: Event) -> Self {
         let pressed = Rc::new(Cell::new(false));
         let press = Rc::clone(&pressed);
-        let button = Button::icon_only(key, crate::icons::Icon::SmilePlus, label)
+        let button = Button::icon_only(key, tilo_ui_base::icons::Icon::SmilePlus, label)
             .on_open(move || press.set(true));
         Self {
             key: key.to_owned(),
             button,
-            picker: Popover::with_content(EmojiPicker::new())
-                .with_label(crate::i18n::widget_format("emoji-chooser-title", &[])),
+            picker: Popover::with_content(EmojiPicker::new()).with_label(
+                tilo_ui_base::i18n::widget_format("emoji-chooser-title", &[]),
+            ),
             pressed,
             pick,
         }
@@ -255,7 +261,7 @@ impl Described for EmojiPickerButton {
         self.pick = pick;
         self.button.take_words(&Button::icon_only(
             &self.key,
-            crate::icons::Icon::SmilePlus,
+            tilo_ui_base::icons::Icon::SmilePlus,
             &label,
         ))
     }
@@ -265,9 +271,9 @@ impl Described for EmojiPickerButton {
 /// they name it.
 fn labelled(props: EmojiPickerProps) -> (String, Event) {
     (
-        props
-            .label
-            .unwrap_or_else(|| crate::i18n::I18nManager::lookup_plain("emoji-picker-add-reaction")),
+        props.label.unwrap_or_else(|| {
+            tilo_ui_base::i18n::I18nManager::lookup_plain("emoji-picker-add-reaction")
+        }),
         props.pick,
     )
 }
@@ -305,7 +311,7 @@ impl Decorator for EmojiPickerButton {
         // The button publishes its press; this widget hosts it, so the
         // press is answered here, before the picker is opened from it.
         let path = ctx.path;
-        crate::widget::controls::start_pending_control_invocations(
+        tilo_ui_base::widget::controls::start_pending_control_invocations(
             &mut self.button,
             &mut ctx.edits(),
             path,
@@ -318,27 +324,29 @@ impl Decorator for EmojiPickerButton {
         }
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.button.draw_overlay(&mut crate::draw::DrawCtx::new(
-            scene,
-            transform,
-            text,
-            theme,
-            env.clone(),
-        ));
-        self.picker.draw_overlay(&mut crate::draw::DrawCtx::new(
-            scene,
-            transform,
-            text,
-            theme,
-            env.clone(),
-        ));
+        self.button
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
+        self.picker
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text,
+                theme,
+                env.clone(),
+            ));
     }
 
     fn modal_capture(&self) -> Option<Rect> {
@@ -394,8 +402,8 @@ impl Described for Quote {
     type Props = QuoteProps;
 
     fn from_props(key: &str, props: QuoteProps) -> Self {
-        use crate::tokens::Rhythm;
         use crate::widget::arrange::{Fit, Row};
+        use tilo_ui_base::tokens::Rhythm;
         let QuoteProps {
             excerpt,
             author,
@@ -418,11 +426,11 @@ impl Described for Quote {
             .push_fit(Box::new(said), Fit::fill(1.0));
         if let Some(close) = dismiss.handler() {
             let mut close = close;
-            let label = crate::i18n::I18nManager::lookup_plain("quote-dismiss");
+            let label = tilo_ui_base::i18n::I18nManager::lookup_plain("quote-dismiss");
             row = row.push(Box::new(
                 crate::widget::Button::icon_only(
                     &format!("{key}/dismiss"),
-                    crate::icons::Icon::X,
+                    tilo_ui_base::icons::Icon::X,
                     &label,
                 )
                 .on_click(move || close()),
@@ -542,7 +550,7 @@ fn draw_line(
     at: (f64, f64),
     right: f64,
 ) -> f64 {
-    let spare = crate::num::f32_of_f64((right - at.0).max(0.0));
+    let spare = tilo_ui_base::num::f32_of_f64((right - at.0).max(0.0));
     let shown = text.elide_to_width_style(s, spare, style);
     text.draw_style(
         scene,
@@ -562,7 +570,7 @@ impl Widget for QuoteLines {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        use crate::widget::TaffyTreeExt as _;
+        use tilo_ui_base::widget::TaffyTreeExt as _;
         if self.layout_theme != *theme {
             self.layout_theme = theme.clone();
             self.dirty = true;
@@ -587,7 +595,7 @@ impl Widget for QuoteLines {
         text: &mut TextRenderer,
     ) -> taffy::Size<f32> {
         let theme = self.layout_theme.clone();
-        let natural = crate::num::f32_of_f64(self.natural_width(text, &theme));
+        let natural = tilo_ui_base::num::f32_of_f64(self.natural_width(text, &theme));
         let width = match available.width {
             taffy::AvailableSpace::Definite(w) => natural.min(w),
             _ => natural,
@@ -596,13 +604,13 @@ impl Widget for QuoteLines {
             width: known.width.unwrap_or(width),
             height: known
                 .height
-                .unwrap_or(crate::num::f32_of_f64(self.height(text, &theme))),
+                .unwrap_or(tilo_ui_base::num::f32_of_f64(self.height(text, &theme))),
         }
     }
 
-    crate::rect_geometry!(measured);
+    tilo_ui_base::rect_geometry!(measured);
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -682,14 +690,14 @@ impl Widget for QuoteLines {
         }
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 
     fn name(&self) -> &'static str {
         "QuoteLines"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         Some(AccessNode::new(Role::StaticText).with_name(self.spoken()))
     }
 }
@@ -725,7 +733,7 @@ impl Decorator for Quote {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         Widget::handle_event(&mut self.row, event, ctx);
         if *ctx.handled || !self.activation.is_bound() {

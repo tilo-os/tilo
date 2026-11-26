@@ -1,4 +1,4 @@
-//! What a component at rest compares with what its last pass read ([`crate::component_inputs`]): its
+//! What a component at rest compares with what its last pass read ([`tilo_ui_base::component_inputs`]): its
 //! record's save, and what its host still has to take from it.
 
 use super::AppComponent;

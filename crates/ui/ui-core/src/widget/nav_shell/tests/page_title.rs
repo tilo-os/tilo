@@ -15,7 +15,7 @@ fn page(title: &str, content: Element) -> NavShell {
         .content_header(title, Vec::new())
 }
 
-fn heading(words: &str, role: crate::TextRole) -> Element {
+fn heading(words: &str, role: tilo_ui_base::TextRole) -> Element {
     Box::new(Text::new(words).with_role(role))
 }
 
@@ -39,7 +39,7 @@ tilo_test_env::scenario! {
                 "the page shows the same words as its large title",
                 Box::new(crate::widget::Column::new().push(heading(
                     "Call the landlord about the boiler",
-                    crate::TextRole::LargeTitle,
+                    tilo_ui_base::TextRole::LargeTitle,
                 ))) as Element,
                 false,
             ),
@@ -47,7 +47,7 @@ tilo_test_env::scenario! {
                 "the page shows other words",
                 Box::new(
                     crate::widget::Column::new()
-                        .push(heading("Call the plumber", crate::TextRole::LargeTitle)),
+                        .push(heading("Call the plumber", tilo_ui_base::TextRole::LargeTitle)),
                 ),
                 true,
             ),
@@ -55,7 +55,7 @@ tilo_test_env::scenario! {
                 "the page says the words as a paragraph",
                 Box::new(crate::widget::Column::new().push(heading(
                     "Call the landlord about the boiler",
-                    crate::TextRole::Body,
+                    tilo_ui_base::TextRole::Body,
                 ))),
                 true,
             ),
@@ -87,11 +87,11 @@ tilo_test_env::scenario! {
             crate::widget::Column::new()
                 .push(heading(
                     "Call the landlord about the boiler",
-                    crate::TextRole::LargeTitle,
+                    tilo_ui_base::TextRole::LargeTitle,
                 ))
-                .push(Box::new(crate::widget::Spacer::fixed(1200.0))),
+                .push(Box::new(tilo_ui_base::widget::Spacer::fixed(1200.0))),
         ) as Element;
-        let scrolled = crate::widget::Scrollable::new(crate::widget::ScrollAxis::Vertical)
+        let scrolled = crate::widget::Scrollable::new(tilo_ui_base::widget::ScrollAxis::Vertical)
             .fill_parent_height()
             .with_child(tall);
         let mut h = harness(
@@ -133,7 +133,7 @@ tilo_test_env::scenario! {
             crate::widget::Column::new().push(Box::new(
                 crate::widget::TextInput::local()
                     .with_initial_value(words)
-                    .with_text_role(crate::TextRole::LargeTitle),
+                    .with_text_role(tilo_ui_base::TextRole::LargeTitle),
             )),
         ) as Element;
         let mut h = harness(page(words, field), 390, 844, Theme::dark());
@@ -165,7 +165,7 @@ tilo_test_env::scenario! {
     phase an_item_opened_among_a_lists_rows_leaves_the_column_its_title;
     {
         let row =
-            ListRow(crate::widget::Column::new().push(heading("Today", crate::TextRole::LargeTitle)));
+            ListRow(crate::widget::Column::new().push(heading("Today", tilo_ui_base::TextRole::LargeTitle)));
         let mut h = harness(
             page(
                 "Today",
@@ -185,7 +185,7 @@ tilo_test_env::scenario! {
 
 struct ListRow(crate::widget::Column);
 
-impl crate::widget::Decorator for ListRow {
+impl tilo_ui_base::widget::Decorator for ListRow {
     type Inner = crate::widget::Column;
 
     fn inner(&self) -> &crate::widget::Column {

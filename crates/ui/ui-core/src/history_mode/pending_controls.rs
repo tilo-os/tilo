@@ -44,35 +44,33 @@ pub struct ContinuationToken {
     nonce: Uuid,
 }
 
-pub(crate) use crate::control_domain::PendingControlOrigin;
+pub(crate) use tilo_ui_base::control_domain::PendingControlOrigin;
 
-impl PendingControlOrigin {
-    fn lifetime_id(&self) -> Uuid {
-        match self {
-            Self::Outer { root_lifetime } => *root_lifetime,
-            Self::Component(control) => {
-                crate::bound_dispatch::callback_binding_of(&*control.binding).lifetime_id
-            }
+fn origin_lifetime_id(origin: &PendingControlOrigin) -> Uuid {
+    match origin {
+        PendingControlOrigin::Outer { root_lifetime } => *root_lifetime,
+        PendingControlOrigin::Component(control) => {
+            crate::bound_dispatch::callback_binding_of(&*control.binding).lifetime_id
         }
     }
+}
 
-    pub(crate) fn target(&self) -> LocalResourceTarget {
-        match self {
-            Self::Outer { .. } => LocalResourceTarget::Outer,
-            Self::Component(control) => {
-                LocalResourceTarget::Component(crate::bound_dispatch::bound_target(control))
-            }
+pub(crate) fn origin_target(origin: &PendingControlOrigin) -> LocalResourceTarget {
+    match origin {
+        PendingControlOrigin::Outer { .. } => LocalResourceTarget::Outer,
+        PendingControlOrigin::Component(control) => {
+            LocalResourceTarget::Component(crate::bound_dispatch::bound_target(control))
         }
     }
+}
 
-    fn description(&self) -> String {
-        match self {
-            Self::Outer { root_lifetime } => format!("outer root {root_lifetime}"),
-            Self::Component(control) => format!(
-                "component {}",
-                crate::bound_dispatch::callback_binding_of(&*control.binding).lifetime_id
-            ),
-        }
+fn origin_description(origin: &PendingControlOrigin) -> String {
+    match origin {
+        PendingControlOrigin::Outer { root_lifetime } => format!("outer root {root_lifetime}"),
+        PendingControlOrigin::Component(control) => format!(
+            "component {}",
+            crate::bound_dispatch::callback_binding_of(&*control.binding).lifetime_id
+        ),
     }
 }
 
@@ -91,7 +89,7 @@ struct PendingControl {
     observation: Result<crate::bound_dispatch::ControlObservation, String>,
     status: PendingControlStatus,
     outstanding_nonce: Option<Uuid>,
-    control_domain: Option<crate::control_domain::WeakControlDomain>,
+    control_domain: Option<tilo_ui_base::control_domain::WeakControlDomain>,
     label: Option<String>,
 }
 
@@ -189,7 +187,7 @@ impl SuspendedLocalControls {
 
     pub(crate) fn capture_registered(
         &mut self,
-        control: crate::control_domain::OwnedControl,
+        control: tilo_ui_base::control_domain::OwnedControl,
         observation: Result<crate::bound_dispatch::ControlObservation, String>,
     ) {
         self.capture(control.origin, control.invocation, observation);
@@ -248,13 +246,13 @@ impl SuspendedLocalControls {
                         .as_ref()
                         .is_some_and(|domain| domain.upgrade().is_none_or(|domain| domain.closed()))
                 {
-                    PendingControlStatus::Refused(crate::i18n::I18nManager::lookup_plain(
+                    PendingControlStatus::Refused(tilo_ui_base::i18n::I18nManager::lookup_plain(
                         "history-mode-control-owner-closed",
                     ))
                 } else {
                     item.status.clone()
                 },
-                owner: item.origin.description(),
+                owner: origin_description(&item.origin),
                 label: item.label.clone().or_else(|| {
                     item.observation
                         .as_ref()
@@ -274,7 +272,7 @@ impl SuspendedLocalControls {
         if item.status != PendingControlStatus::Ready {
             return None;
         }
-        let owner_lifetime = item.origin.lifetime_id();
+        let owner_lifetime = origin_lifetime_id(&item.origin);
         let nonce = Uuid::new_v4();
         item.outstanding_nonce = Some(nonce);
         Some(ContinuationToken {
@@ -299,7 +297,7 @@ impl SuspendedLocalControls {
             .position(|item| item.id == token.item_id)?;
         let item = self.items.get_mut(index)?;
         if item.outstanding_nonce != Some(token.nonce)
-            || item.origin.lifetime_id() != token.owner_lifetime
+            || origin_lifetime_id(&item.origin) != token.owner_lifetime
         {
             return None;
         }
@@ -326,7 +324,7 @@ impl SuspendedLocalControls {
         Some(PreparedContinuation {
             id: item.id,
             invocation: item.invocation.clone(),
-            target: item.origin.target(),
+            target: origin_target(&item.origin),
             observation: item.observation.clone(),
         })
     }

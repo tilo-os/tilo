@@ -8,7 +8,7 @@ use std::ops::Range;
 
 use vello::peniko::Color;
 
-use crate::icons::AppImage;
+use tilo_ui_base::icons::AppImage;
 
 /// The shape of one search hit's row.
 #[derive(Clone, Debug, PartialEq)]
@@ -89,8 +89,8 @@ impl RowFace {
     /// The face this row states for its member: the same face and colour, dimmed while they
     /// are away.
     #[must_use]
-    pub fn face(&self) -> crate::presence::Face<'_> {
-        crate::presence::Face {
+    pub fn face(&self) -> tilo_ui_base::presence::Face<'_> {
+        tilo_ui_base::presence::Face {
             avatar: self.avatar(),
             colour: self.colour,
             dimmed: self.dimmed,
@@ -101,12 +101,12 @@ impl RowFace {
     }
 
     /// A member an app knows by name and identity alone, in the colour the one rule gives
-    /// them ([`crate::presence::identity_colour_of`]).
+    /// them ([`tilo_ui_base::presence::identity_colour_of`]).
     #[must_use]
     pub fn of_member(name: impl Into<String>, identity: impl Into<String>, is_agent: bool) -> Self {
         let identity = identity.into();
         Self {
-            colour: crate::presence::identity_colour_of(&identity, is_agent),
+            colour: tilo_ui_base::presence::identity_colour_of(&identity, is_agent),
             name: name.into(),
             identity,
             is_agent,
@@ -115,10 +115,11 @@ impl RowFace {
     }
 
     /// The face itself, as the bar's stack, a chip and history draw this member
-    /// ([`crate::widget::AvatarFace`]): their colour, an agent's mark for software.
+    /// ([`tilo_ui_base::widget::AvatarFace`]): their colour, an agent's mark for software.
     #[must_use]
-    pub fn avatar(&self) -> crate::widget::AvatarFace<'_> {
-        let face = crate::widget::AvatarFace::new(&self.name, &self.identity).presence(self.colour);
+    pub fn avatar(&self) -> tilo_ui_base::widget::AvatarFace<'_> {
+        let face =
+            tilo_ui_base::widget::AvatarFace::new(&self.name, &self.identity).presence(self.colour);
         if self.is_agent { face.agent() } else { face }
     }
 }

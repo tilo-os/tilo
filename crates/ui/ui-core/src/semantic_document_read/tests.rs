@@ -218,7 +218,7 @@ fn the_loaned_record_reads_at_committed_heads_and_nothing_else_discloses() {
             document.put(ROOT, "text", "committed content").unwrap();
             document.commit();
             let heads = document.base_heads();
-            let route = crate::collaboration::RouteSpec::document(
+            let route = tilo_ui_base::collaboration::RouteSpec::document(
                 "fixture.app",
                 uuid::Uuid::new_v4(),
                 fixture.checkout.id.as_str(),
@@ -264,8 +264,10 @@ fn the_mounted_primary_document_reads_on_its_route_only() {
     let selected = select(&READERS, &resource, &resource.actions[0], &encoded)
         .unwrap()
         .unwrap();
-    let route =
-        crate::collaboration::RouteSpec::app("fixture.app".to_string(), uuid::Uuid::from_u128(7));
+    let route = tilo_ui_base::collaboration::RouteSpec::app(
+        "fixture.app".to_string(),
+        uuid::Uuid::from_u128(7),
+    );
     let mut mounted = AutoCommit::new();
     mounted.put(ROOT, "text", "primary").unwrap();
     mounted.commit();

@@ -19,8 +19,9 @@ use winit::event::{ElementState, WindowEvent};
 
 use crate::headless::{Driver, Framed};
 use crate::state::State;
-use crate::theme::Theme;
-use crate::widget::{Column, TaffyTreeExt as _, Text, Widget};
+use crate::{widget::Column, widget::Text};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::TaffyTreeExt as _, widget::Widget};
 
 // ---- frames a capture waits for ----
 
@@ -41,7 +42,7 @@ impl Widget for CountedFrames {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -81,7 +82,7 @@ impl Widget for FinalFrameWork {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -171,14 +172,14 @@ struct SecretMark;
 
 impl Widget for SecretMark {
     crate::testing::inert_widget_methods!(leaf_layout, name = "secret-mark");
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, _, theme, mut env) = ctx.parts();
-        crate::secret_paint::note_secret_painted();
+        tilo_ui_base::secret_paint::note_secret_painted();
         let rect = Rect::new(0.0, 0.0, 100.0, 50.0);
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -209,7 +210,7 @@ fn a_written_capture_leaves_out_a_secret() {
 
     let blank = Driver::new(
         State::new(),
-        Box::new(crate::widget::Spacer::new()),
+        Box::new(tilo_ui_base::widget::Spacer::new()),
         (200, 100),
     );
     let ground = temp.path().join("ground.png");
@@ -243,7 +244,11 @@ impl Probe {
 }
 
 impl Widget for Probe {
-    fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.syncs = self.syncs.saturating_add(1);
     }
 
@@ -260,9 +265,9 @@ impl Widget for Probe {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if matches!(
             event,
             WindowEvent::MouseInput {
@@ -338,8 +343,8 @@ fn recompose_rebuilds_an_unchanged_tree() {
 #[test]
 fn dispatch_to_root_reaches_the_root_and_keeps_the_retained_tree() {
     let mut probe = Framed::new(State::new(), Probe::new(120.0), (400, 200), Theme::dark());
-    let handled =
-        Framed::harness_mut(&mut probe).dispatch_to_root(&crate::synthetic_input::mouse_press());
+    let handled = Framed::harness_mut(&mut probe)
+        .dispatch_to_root(&tilo_ui_base::synthetic_input::mouse_press());
     assert!(handled);
     assert_eq!(probe.presses, 1);
 
@@ -438,7 +443,7 @@ impl Widget for Pane {
         taffy.fill_leaf(node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
     fn tooltip(&self) -> Option<std::borrow::Cow<'_, str>> {
         Some(std::borrow::Cow::Borrowed(
@@ -520,7 +525,7 @@ impl Widget for HiddenPart {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         let children = taffy.children(node).unwrap_or_default();
         let origin = self.rect.origin();
         if let [shown, hidden] = children.as_slice() {
@@ -529,14 +534,14 @@ impl Widget for HiddenPart {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.shown.draw(&mut crate::draw::DrawCtx::new(
+        self.shown.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -566,7 +571,7 @@ impl Widget for HiddenPart {
 /// not paint asks once for the change it measures, not on every frame after.
 #[test]
 fn a_part_laid_out_and_never_drawn_asks_once_for_its_measure() {
-    let label = crate::LocalState::new(String::from("Draft"));
+    let label = tilo_ui_base::LocalState::new(String::from("Draft"));
     let mut driver = Driver::new(
         State::new(),
         Box::new(HiddenPart {

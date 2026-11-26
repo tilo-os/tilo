@@ -27,21 +27,28 @@ fn an_unresolved_tile_only_refuses_events_meant_for_it() {
             .send(host, event)
             .handled
     };
-    let key = crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
-        Key::Character("a".into()),
-        None,
-        ElementState::Pressed,
+    let key =
+        tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
+            Key::Character("a".into()),
+            None,
+            ElementState::Pressed,
+        ));
+    assert!(!send(
+        &mut host,
+        &tilo_ui_base::synthetic_input::cursor_moved(250.0, 50.0)
     ));
     assert!(!send(
         &mut host,
-        &crate::synthetic_input::cursor_moved(250.0, 50.0)
+        &tilo_ui_base::synthetic_input::mouse_press()
     ));
-    assert!(!send(&mut host, &crate::synthetic_input::mouse_press()));
     assert!(send(
         &mut host,
-        &crate::synthetic_input::cursor_moved(50.0, 50.0)
+        &tilo_ui_base::synthetic_input::cursor_moved(50.0, 50.0)
     ));
-    assert!(send(&mut host, &crate::synthetic_input::mouse_press()));
+    assert!(send(
+        &mut host,
+        &tilo_ui_base::synthetic_input::mouse_press()
+    ));
     assert!(!send(&mut host, &key));
     host.set_focused(true);
     assert!(send(&mut host, &key));
@@ -50,7 +57,7 @@ fn an_unresolved_tile_only_refuses_events_meant_for_it() {
 struct OwnHistoryProbe(std::rc::Rc<std::cell::Cell<Option<bool>>>);
 
 impl Widget for OwnHistoryProbe {
-    crate::provides!(dyn crate::widget::WindowHistory);
+    tilo_ui_base::provides!(dyn crate::widget::WindowHistory);
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
@@ -182,7 +189,7 @@ impl Widget for Starting {
     ) -> NodeId {
         taffy.leaf_node(Style::default())
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -235,7 +242,7 @@ impl Widget for TransformProbe {
     ) -> NodeId {
         taffy.leaf_node(Style::default())
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -311,12 +318,12 @@ pub(super) fn starting_host(presented: bool) -> (TileHost, std::rc::Rc<std::cell
 pub(super) fn paint(host: &mut TileHost, theme: &Theme) -> Scene {
     let mut tr = TextRenderer::new();
     let mut scene = Scene::new();
-    host.draw(&mut crate::draw::DrawCtx::new(
+    host.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
         theme,
-        crate::presence::PresenceCtx::empty().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
     ));
     scene
 }
@@ -447,7 +454,7 @@ fn a_tile_holds_its_place_opaquely_until_the_app_can_be_shown() {
     }
 
     {
-        use crate::offscreen::OffscreenRenderer;
+        use tilo_ui_base::offscreen::OffscreenRenderer;
         let theme = Theme::default();
         let (mut host, _) = starting_host(false);
         let scene = paint(&mut host, &theme);
@@ -476,13 +483,13 @@ fn harness(root: Box<dyn Widget>) -> crate::app::driver::Driver {
         root,
         (900, 600),
         Theme::dark(),
-        crate::font_catalog::fixture_renderer(),
+        tilo_ui_base::font_catalog::fixture_renderer(),
         tilo_action_policy::MemberId::person("reader"),
     )
 }
 
 fn window_history_control(driver: &crate::app::driver::Driver) -> Option<bool> {
-    fn find(node: &crate::a11y::AccessNode, target: &str) -> Option<bool> {
+    fn find(node: &tilo_ui_base::a11y::AccessNode, target: &str) -> Option<bool> {
         if node.action_target.as_deref() == Some(target) {
             return Some(node.state.checked == Some(true));
         }
@@ -547,7 +554,7 @@ fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
         .perform_semantic_named(
             "tabs",
             Some(crate::widget::tabs::WINDOW_HISTORY_TARGET),
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
         )
         .unwrap();
     driver.relayout();
@@ -563,7 +570,7 @@ fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
             .perform_semantic_named(
                 "tabs",
                 Some(crate::widget::tabs::WINDOW_HISTORY_TARGET),
-                &crate::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
             )
             .unwrap();
         driver.relayout();
@@ -575,7 +582,7 @@ fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
     press_tab(&mut driver);
     assert!(driver.targets().contains_key("activity_timeline"));
     driver.click_named("activity_timeline").unwrap();
-    driver.send(&crate::synthetic_input::named_key(
+    driver.send(&tilo_ui_base::synthetic_input::named_key(
         winit::keyboard::NamedKey::Escape,
     ));
     driver.relayout();
@@ -594,7 +601,7 @@ impl Widget for Restless {
     ) -> NodeId {
         taffy.widget_leaf(Style::default(), node_map, self)
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -608,8 +615,8 @@ impl Widget for Restless {
     fn get_rect(&self) -> Rect {
         Rect::ZERO
     }
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-        crate::widget::StructureChange::Children
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
+        tilo_ui_base::widget::StructureChange::Children
     }
 }
 
@@ -645,7 +652,7 @@ fn a_tile_whose_history_shows_a_version_leaves_the_hidden_apps_change_with_it() 
     for turn in 0..3 {
         assert_eq!(
             tile.take_structure_change(),
-            crate::widget::StructureChange::None,
+            tilo_ui_base::widget::StructureChange::None,
             "the History lays a version out in the app's place, so nothing builds the \
              app (turn {turn}): a change taken from it asks for a composition the host \
              never builds the app into, pass after pass"

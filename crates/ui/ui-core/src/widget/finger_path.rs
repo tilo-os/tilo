@@ -15,7 +15,7 @@ const MAX_REPORT_GAP: Duration = Duration::from_millis(20);
 const MIN_REPORT_INTERVAL: Duration = Duration::from_millis(8);
 pub(crate) const SAMPLE_WINDOW: Duration = Duration::from_millis(100);
 /// Release velocity (px/s) below which lifted fingers throw nothing.
-const FLING_MIN_VELOCITY: f64 = crate::tokens::motion::FLING_MIN_VELOCITY;
+const FLING_MIN_VELOCITY: f64 = tilo_ui_base::tokens::motion::FLING_MIN_VELOCITY;
 /// Ceiling on a release velocity (px/s): a bad timestamp must not throw the
 /// surface across the whole canvas.
 const FLING_MAX_VELOCITY: f64 = 6_000.0;

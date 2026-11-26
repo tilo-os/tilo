@@ -4,9 +4,9 @@
 use vello::Scene;
 use vello::kurbo::Affine;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
 pub(super) struct LocationLabel {
     pub(super) line: String,
@@ -103,12 +103,12 @@ impl LocationLabel {
 }
 
 pub(super) fn edited_word() -> String {
-    crate::i18n::I18nManager::lookup_plain("window-toolbar-edited")
+    tilo_ui_base::i18n::I18nManager::lookup_plain("window-toolbar-edited")
 }
 
 pub(crate) fn trailing_word(location: &crate::window_toolbar::ToolbarLocation) -> Option<String> {
     if location.view_only {
-        Some(crate::i18n::I18nManager::lookup_plain(
+        Some(tilo_ui_base::i18n::I18nManager::lookup_plain(
             "window-toolbar-view-only",
         ))
     } else {

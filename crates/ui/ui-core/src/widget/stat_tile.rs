@@ -8,15 +8,16 @@ use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
 
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::DrawChild;
 use crate::widget::activation::{Activation, Interaction, activation_controls};
-use crate::widget::{Element, TaffyTreeExt, Tone, Widget, card_column_width};
+use crate::widget::card_column_width;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::{widget::Element, widget::TaffyTreeExt, widget::Tone, widget::Widget};
 
 #[path = "stat_tile_component.rs"]
 mod component;
@@ -264,9 +265,11 @@ impl<'a> StatTileFace<'a> {
         let width = (rect.x1 - x).max(0.0);
         let mut y = content.y0;
 
-        let label =
-            ctx.text
-                .elide_to_width_style(self.label, crate::num::f32_of_f64(width), &m.label);
+        let label = ctx.text.elide_to_width_style(
+            self.label,
+            tilo_ui_base::num::f32_of_f64(width),
+            &m.label,
+        );
         ctx.text(&label, &m.label, theme.text_dim, Point::new(x, y), None);
         y += TileMetrics::line(ctx.text, &m.label) + m.tight;
 
@@ -277,7 +280,7 @@ impl<'a> StatTileFace<'a> {
         });
         let value = ctx.text.elide_to_width_style(
             self.value,
-            crate::num::f32_of_f64((width - unit_w).max(1.0)),
+            tilo_ui_base::num::f32_of_f64((width - unit_w).max(1.0)),
             &value_style,
         );
         let (value_w, _) = ctx.text.measure_style(&value, None, &value_style);
@@ -311,7 +314,7 @@ impl<'a> StatTileFace<'a> {
         if let Some(note) = self.note {
             let note = ctx.text.elide_to_width_style(
                 note,
-                crate::num::f32_of_f64(width.max(1.0)),
+                tilo_ui_base::num::f32_of_f64(width.max(1.0)),
                 &m.unit,
             );
             ctx.text(&note, &m.unit, theme.text_dim, Point::new(x, y), None);
@@ -335,7 +338,7 @@ impl<'a> StatTileFace<'a> {
             }
             let change = ctx.text.elide_to_width_style(
                 change,
-                crate::num::f32_of_f64((x + width - cx).max(1.0)),
+                tilo_ui_base::num::f32_of_f64((x + width - cx).max(1.0)),
                 &m.change,
             );
             ctx.text(&change, &m.change, theme.text_dim, Point::new(cx, y), None);
@@ -370,8 +373,8 @@ impl<'a> StatTileFace<'a> {
 
     /// The tile's node for assistive technology, at `rect`: its label as
     /// the name and its value, unit, note and change as one spoken value.
-    pub fn accessibility(&self, rect: Rect) -> crate::a11y::AccessNode {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    pub fn accessibility(&self, rect: Rect) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let role = if self.pressable {
             Role::Button
         } else {
@@ -573,7 +576,7 @@ impl StatTile {
 }
 
 impl Widget for StatTile {
-    crate::provides!(dyn crate::widget::controls::ActionControls,);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls,);
 
     fn build_layout(
         &mut self,
@@ -594,7 +597,7 @@ impl Widget for StatTile {
             flex_shrink: 0.0,
             ..Default::default()
         };
-        let style = crate::widget::layout::filling(style, 1.0);
+        let style = tilo_ui_base::widget::layout::filling(style, 1.0);
         taffy.widget_leaf(style, node_map, self)
     }
 
@@ -614,23 +617,23 @@ impl Widget for StatTile {
         }
         let width = known.width.unwrap_or(match available.width {
             taffy::AvailableSpace::Definite(w) => w,
-            _ => crate::num::f32_of_f64(TileMetrics::line(text_renderer, &m.value) * 6.0),
+            _ => tilo_ui_base::num::f32_of_f64(TileMetrics::line(text_renderer, &m.value) * 6.0),
         });
         taffy::Size {
             width,
-            height: crate::num::f32_of_f64(height),
+            height: tilo_ui_base::num::f32_of_f64(height),
         }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.dirty = true;
         }
         self.rect = rect;
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -647,16 +650,16 @@ impl Widget for StatTile {
         );
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if self.activation.is_bound() && self.activation.handle_pointer(event, ctx, self.rect, &[])
         {
             self.dirty = true;
         }
     }
 
-    crate::widget::pressable!(rect);
+    tilo_ui_base::pressable!(rect);
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 
     fn is_layout_dirty(&self) -> bool {
         self.layout_dirty || self.rect == Rect::ZERO
@@ -686,7 +689,7 @@ impl Widget for StatTile {
         self.rect
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let mut node = self.face().accessibility(self.rect);
         node.bounds = None;
         Some(node)
@@ -743,7 +746,8 @@ impl StatGroup {
     /// How many columns the group uses at `width`, and how wide each is.
     fn tracks_at(&self, width: f64) -> (usize, f32) {
         let columns = self.columns_for_width(width);
-        let column = crate::num::f32_of_f64(card_column_width(width, columns, self.column_gap));
+        let column =
+            tilo_ui_base::num::f32_of_f64(card_column_width(width, columns, self.column_gap));
         (columns, column)
     }
 }
@@ -758,7 +762,7 @@ fn columns_for(count: usize, width: f64, min_tile: f64, gap: f64) -> usize {
 }
 
 impl Widget for StatGroup {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -790,8 +794,8 @@ impl Widget for StatGroup {
             grid_template_columns,
             grid_auto_rows: vec![taffy::style_helpers::min_content()],
             gap: taffy::Size {
-                width: length(crate::num::f32_of_f64(self.column_gap)),
-                height: length(crate::num::f32_of_f64(self.row_gap)),
+                width: length(tilo_ui_base::num::f32_of_f64(self.column_gap)),
+                height: length(tilo_ui_base::num::f32_of_f64(self.row_gap)),
             },
             size: taffy::Size {
                 width: percent(1.0_f32),
@@ -815,7 +819,7 @@ impl Widget for StatGroup {
         &mut self,
         styles: &mut taffy::Restyle<'_>,
         width: taffy::AvailableSpace,
-        _text: &mut crate::text_render::TextRenderer,
+        _text: &mut tilo_ui_base::text_render::TextRenderer,
     ) {
         let tracks = match width {
             taffy::AvailableSpace::Definite(width) => {
@@ -831,14 +835,14 @@ impl Widget for StatGroup {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         let origin = self.rect.origin();
         for (tile, &child) in self.tiles.iter_mut().zip(&self.nodes) {
             tile.apply_layout(taffy, child, origin);
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -850,7 +854,7 @@ impl Widget for StatGroup {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         for (tile, &node) in self.tiles.iter_mut().zip(&self.nodes) {
             tile.handle_event(event, &mut ctx.reborrow(ctx.path, node));
             if *ctx.handled {
@@ -1010,9 +1014,9 @@ mod tests {
             let mut doc = automerge::AutoCommit::new();
             assert!(Widget::perform_action(
                 &mut tile,
-                &crate::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
                 &[],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert_eq!(hits.get(), 1);
@@ -1092,7 +1096,7 @@ mod tests {
         harness.click_at(target.center().x, target.center().y);
         assert_eq!(calls.get(), 1);
         harness
-            .perform_named("cpu.detail", &crate::a11y::Action::Activate)
+            .perform_named("cpu.detail", &tilo_ui_base::a11y::Action::Activate)
             .unwrap();
         assert_eq!(calls.get(), 2);
     }

@@ -23,6 +23,7 @@ tilo-content = { path = "../../core/content" }
 tilo-wake = { path = "../../platform/tilo-wake" }
 # The resource model an artwork, a layer and a mark are kept as.
 tilo-resource = { path = "../../core/tilo-resource" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The drawing layer under the components: colour, geometry, pictures, text.
 tilo-ui = { path = "../../ui/ui-core", default-features = false, features = ["model"] }
 # An SVG is imported by reading its shape tree, and its pictures are embedded base64.
@@ -44,6 +45,7 @@ tracing.workspace = true
 [dev-dependencies]
 # Scenarios build their fixtures through the resource's own actions.
 tilo-test-env = { path = "../../../tools/test-env" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The harness lends a content store, which only the native host owns; the engine the app process
 # links stays portable.
 tilo-ui = { path = "../../ui/ui-core", features = ["native", "model"] }

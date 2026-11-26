@@ -10,7 +10,7 @@ use tilo_app::application_view::{
 };
 use tilo_app::prelude::*;
 use tilo_app::view::ThawError;
-use ui_core::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Shelf {
@@ -88,7 +88,7 @@ impl Widget for OpenBook {
         self.inner.sync(state, path);
     }
 
-    fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,

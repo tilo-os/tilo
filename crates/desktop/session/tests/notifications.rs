@@ -51,7 +51,7 @@ fn session() -> (Session, ServiceNotifier, tilo_test_env::TestHome) {
 
 #[test]
 fn an_apps_notification_is_a_banner_and_the_persons_choice_comes_back() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, app, _home) = session();
     let (chosen, answers) = std::sync::mpsc::channel();
     tilo_notify::set_activation_handler("tilo-notify-session-test", move |uri| {

@@ -9,14 +9,14 @@ use taffy::{NodeId, Style, TaffyTree};
 use tilo_component_scan as component_scan;
 use vello::kurbo::{Point, Rect};
 
-use super::testing::given;
-use super::tests::{given_with_views, sample};
-use super::{Registry, Value};
 use crate::component_catalogue::TOOLKIT;
+use crate::component_tests::{given_with_views, sample};
 use crate::headless::Driver;
-use crate::theme::Theme;
-use crate::widget::counts::asking_for_layout;
-use crate::widget::{Element, TaffyTreeExt as _, Widget};
+use crate::component_testing::given;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::counts::asking_for_layout;
+use tilo_ui_base::{component::Registry, component::Value};
+use tilo_ui_base::{widget::Element, widget::TaffyTreeExt as _, widget::Widget};
 
 fn scan() -> component_scan::Scan {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -78,7 +78,7 @@ fn every_public_widget_is_a_component_or_says_why_not() {
     assert!(
         missing.is_empty(),
         "{} public widgets are neither described nor say why not. Describe each \
-         (`#[derive(Component)]` props and `impl Described`, see `tilo_ui::component`), and \
+         (`#[derive(Component)]` props and `impl Described`, see `tilo_ui_base::component`), and \
          tilolang reaches it as `ui.<Name>`; or mark it `#[not_a_component(kind, \"why\")]`:\n{}",
         missing.len(),
         missing.join("\n")
@@ -117,7 +117,7 @@ tilo_test_env::scenario! {
             );
         }
         assert!(scan.is_described("Button"));
-        let catalogue = crate::component::Registry::of(&[&TOOLKIT]).catalogue();
+        let catalogue = tilo_ui_base::component::Registry::of(&[&TOOLKIT]).catalogue();
         let mut generated: Vec<&str> = catalogue.names();
         generated.sort_unstable();
         let mut declared: Vec<String> = scan
@@ -142,13 +142,13 @@ tilo_test_env::scenario! {
     phase the_gallery_shows_every_described_component;
     {
         let sources = gallery_sources();
-        let catalogue = crate::component::Registry::of(&[&TOOLKIT]).catalogue();
-        let coverage = super::gallery::coverage(&catalogue, &sources);
+        let catalogue = tilo_ui_base::component::Registry::of(&[&TOOLKIT]).catalogue();
+        let coverage = tilo_ui_base::component::gallery::coverage(&catalogue, &sources);
         let problems = coverage.problems();
         assert!(problems.is_empty(), "{}", problems.join("\n"));
         for name in ["Button", "Section", "Text"] {
             assert!(
-                super::gallery::names(&sources, name),
+                tilo_ui_base::component::gallery::names(&sources, name),
                 "the gallery's sources are read: `ui.{name}` is found in them"
             );
         }
@@ -183,7 +183,7 @@ impl Widget for Mounted {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if let Ok(held) = taffy.child_at_index(node, 0) {
             self.0.apply_layout(taffy, held, rect.origin());
         }

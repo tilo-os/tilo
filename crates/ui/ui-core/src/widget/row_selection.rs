@@ -2,11 +2,11 @@
 
 use vello::kurbo::Rect;
 
-use super::Widget;
+use tilo_ui_base::widget::Widget;
 
 /// A row's selection with its neighbours', for a delegate that paints its
 /// own selection: a run of selected rows is one lift
-/// ([`crate::chrome::RowJoin`]), with no rule between rows.
+/// ([`tilo_ui_base::chrome::RowJoin`]), with no rule between rows.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RowSelection {
     pub selected: bool,
@@ -15,8 +15,8 @@ pub struct RowSelection {
 }
 
 impl RowSelection {
-    pub fn join(self) -> crate::chrome::RowJoin {
-        crate::chrome::RowJoin::new(self.above, self.below)
+    pub fn join(self) -> tilo_ui_base::chrome::RowJoin {
+        tilo_ui_base::chrome::RowJoin::new(self.above, self.below)
     }
 }
 
@@ -51,7 +51,7 @@ pub trait PaintedRowChevrons {
 }
 
 /// A row that paints the selection the list holds for it, asked for through
-/// [`capability_mut`](crate::widget::capability::capability_mut): a view wraps the row it
+/// [`capability_mut`](tilo_ui_base::widget::capability::capability_mut): a view wraps the row it
 /// places in its swipe and its hover toolbar, and the list reaches the row through them.
 pub trait RowSelectionSink {
     fn take_selection(&mut self, selection: RowSelection);
@@ -62,7 +62,7 @@ pub trait RowSelectionSink {
 pub(super) fn selection_sink<'a>(
     widget: &'a mut dyn Widget,
 ) -> Option<&'a mut (dyn RowSelectionSink + 'static)> {
-    use crate::widget::capability::capability_mut;
+    use tilo_ui_base::widget::capability::capability_mut;
     if capability_mut::<dyn RowSelectionSink>(widget).is_some() {
         return capability_mut::<dyn RowSelectionSink>(widget);
     }
@@ -79,7 +79,7 @@ pub trait RowContentBox {
 /// The box `widget` — or the first of its children — shows its content in: what a list asks a
 /// row's view for before it paints the row's selection.
 pub fn row_content_box(widget: &dyn Widget) -> Option<Rect> {
-    use crate::widget::capability::capability;
+    use tilo_ui_base::widget::capability::capability;
     if let Some(declared) = capability::<dyn RowContentBox>(widget) {
         return declared.row_content_box();
     }
@@ -97,7 +97,7 @@ pub struct RowLift {
 }
 
 /// A list that paints its rows' selection, asked for through
-/// [`capability`](crate::widget::capability::capability): the lifts it painted last frame, in
+/// [`capability`](tilo_ui_base::widget::capability::capability): the lifts it painted last frame, in
 /// window space.
 pub trait PaintedRowLifts {
     fn painted_row_lifts(&self) -> Vec<RowLift>;

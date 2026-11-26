@@ -1,8 +1,8 @@
 //! Units, sizing and the width classes the layout primitives share.
 
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::{Length, WidthClass};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{widget::Length, widget::WidthClass};
 
 #[must_use]
 pub fn rem_of(theme: &Theme) -> f32 {
@@ -395,7 +395,7 @@ pub fn page_content_width(width: f32, measure: Option<f32>, gutter: f32) -> f32 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::{COMPACT_BELOW, EXPANDED_BELOW, MEDIUM_BELOW};
+    use tilo_ui_base::{widget::COMPACT_BELOW, widget::EXPANDED_BELOW, widget::MEDIUM_BELOW};
 
     tilo_test_env::scenario! {
         /// The pure arithmetic of layout: lengths, classes, orientation, columns, splits, pages and direction.

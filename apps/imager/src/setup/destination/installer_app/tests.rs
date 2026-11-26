@@ -3,7 +3,7 @@ use automerge::AutoCommit;
 use automerge::ReadDoc;
 use imager_backend::destination::disks::{DiskPartition, EFI_SYSTEM_GUID, LINUX_FILESYSTEM_GUID};
 use serde_json::Value;
-use ui::widget::find_test_id;
+use tilo_ui_base::widget::find_test_id;
 
 fn find_test_id_mut<'a>(widget: &'a mut dyn Widget, id: &str) -> Option<&'a mut dyn Widget> {
     if widget.test_id() == Some(id) {
@@ -15,7 +15,12 @@ fn find_test_id_mut<'a>(widget: &'a mut dyn Widget, id: &str) -> Option<&'a mut 
         .find_map(|child| find_test_id_mut(child, id))
 }
 
-fn perform(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str, action: &ui::a11y::Action) {
+fn perform(
+    app: &mut InstallerApp,
+    doc: &mut AutoCommit,
+    id: &str,
+    action: &tilo_ui_base::a11y::Action,
+) {
     let _ = build(app);
     let composed = app.composed.element_mut().expect("composed step");
     let control = find_test_id_mut(composed, id).unwrap_or_else(|| panic!("no control {id}"));
@@ -23,15 +28,15 @@ fn perform(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str, action: &ui::
         control.perform_action(
             action,
             &[],
-            &mut ui::widget::Edits::lend(doc),
+            &mut tilo_ui_base::widget::Edits::lend(doc),
             &automerge::ROOT
         ),
         "{id} refused {action:?}"
     );
     let composed = app.composed.element_mut().expect("composed step");
-    ui::widget::controls::start_pending_control_invocations(
+    tilo_ui_base::widget::controls::start_pending_control_invocations(
         composed,
-        &mut ui::widget::Edits::lend(doc),
+        &mut tilo_ui_base::widget::Edits::lend(doc),
         &automerge::ROOT,
     );
     app.sync(doc, &automerge::ROOT);
@@ -43,7 +48,7 @@ fn perform(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str, action: &ui::
 }
 
 pub(super) fn activate(app: &mut InstallerApp, doc: &mut AutoCommit, id: &str) {
-    perform(app, doc, id, &ui::a11y::Action::Activate);
+    perform(app, doc, id, &tilo_ui_base::a11y::Action::Activate);
 }
 
 fn run(app: &mut InstallerApp, doc: &AutoCommit, effect: DestinationEffect) {
@@ -102,7 +107,10 @@ fn find_named<'a>(widget: &'a dyn Widget, name: &str) -> Option<&'a dyn Widget> 
         .find_map(|child| find_named(child, name))
 }
 
-fn reading(node: ui::a11y::AccessNode, text: &str) -> Option<ui::a11y::AccessNode> {
+fn reading(
+    node: tilo_ui_base::a11y::AccessNode,
+    text: &str,
+) -> Option<tilo_ui_base::a11y::AccessNode> {
     if node.name.as_deref() == Some(text) || node.value.as_deref() == Some(text) {
         return Some(node);
     }
@@ -111,7 +119,7 @@ fn reading(node: ui::a11y::AccessNode, text: &str) -> Option<ui::a11y::AccessNod
         .find_map(|child| reading(child, text))
 }
 
-fn find_accessible(widget: &dyn Widget, name: &str) -> Option<ui::a11y::AccessNode> {
+fn find_accessible(widget: &dyn Widget, name: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
     if let Some(node) = widget.accessibility().and_then(|node| reading(node, name)) {
         return Some(node);
     }
@@ -124,8 +132,8 @@ fn find_accessible(widget: &dyn Widget, name: &str) -> Option<ui::a11y::AccessNo
 fn find_accessible_role(
     widget: &dyn Widget,
     name: &str,
-    role: ui::a11y::Role,
-) -> Option<ui::a11y::AccessNode> {
+    role: tilo_ui_base::a11y::Role,
+) -> Option<tilo_ui_base::a11y::AccessNode> {
     if let Some(node) = widget.accessibility()
         && node.name.as_deref() == Some(name)
         && node.role == role
@@ -173,7 +181,7 @@ fn layout_with_theme(
         )
         .expect("viewport node");
     let measure_map = node_map.clone();
-    let mut text_renderer = ui::text_render::TextRenderer::new();
+    let mut text_renderer = tilo_ui_base::text_render::TextRenderer::new();
     taffy
         .compute_layout_with_measure(
             viewport,
@@ -527,11 +535,11 @@ tilo_test_env::scenario! {
             assert_eq!(plan.free_size_bytes, expected_bytes);
             let capacity = app.alongside_allocation_summary(&plan);
             assert!(
-                capacity.contains(&ui::format::memory(expected_bytes)),
+                capacity.contains(&tilo_ui_base::format::memory(expected_bytes)),
                 "missing selected capacity: {capacity}"
             );
             assert!(
-                capacity.contains(&ui::format::memory(full.free_size_bytes - expected_bytes)),
+                capacity.contains(&tilo_ui_base::format::memory(full.free_size_bytes - expected_bytes)),
                 "missing unused space: {capacity}"
             );
             assert!(capacity.contains("remains unused"), "{capacity}");
@@ -1269,7 +1277,7 @@ tilo_test_env::scenario! {
                 &mut app,
                 &mut doc,
                 "installer.keymap",
-                &ui::a11y::Action::SetValue("Dvorak".into()),
+                &tilo_ui_base::a11y::Action::SetValue("Dvorak".into()),
             );
             assert_eq!(app.keymap(), "Dvorak");
             let opts = app.install_options();
@@ -1598,7 +1606,7 @@ tilo_test_env::scenario! {
                 &mut app,
                 &mut doc,
                 "recovery_ack",
-                &ui::a11y::Action::ToggleCheck,
+                &tilo_ui_base::a11y::Action::ToggleCheck,
             );
             assert!(app.recovery_ack, "ack flips on");
 
@@ -1932,7 +1940,7 @@ tilo_test_env::scenario! {
 
             activate(&mut app, &mut doc, "recovery_key_copy");
             assert!(app.recovery_key_copied);
-            assert_eq!(ui::clipboard_paste().as_deref(), Some(key));
+            assert_eq!(tilo_ui_base::clipboard_paste().as_deref(), Some(key));
             assert_eq!(
                 recorder.secret_copies(),
                 [key],
@@ -2131,7 +2139,7 @@ tilo_test_env::scenario! {
             let success = find_accessible(&done, "Tilo is installed").expect("success title");
             assert_eq!(success.live, Some(Politeness::Polite));
             let reboot = find_accessible(&done, "Reboot now").expect("reboot action");
-            assert_eq!(reboot.role, ui::a11y::Role::Button);
+            assert_eq!(reboot.role, tilo_ui_base::a11y::Role::Button);
             assert!(
                 !reboot.state.focusable,
                 "power stays guarded until the key is saved"
@@ -2168,7 +2176,7 @@ tilo_test_env::scenario! {
 
             let ack = find_accessible(&app, "I will save my recovery key")
                 .expect("recovery acknowledgement");
-            assert_eq!(ack.role, ui::a11y::Role::Checkbox);
+            assert_eq!(ack.role, tilo_ui_base::a11y::Role::Checkbox);
             assert_eq!(ack.state.checked, Some(false));
             assert!(ack.state.focusable);
         }
@@ -2637,7 +2645,7 @@ tilo_test_env::scenario! {
             assert_eq!(app.step, Step::Options);
             let _ = build(&mut app);
             assert!(
-                find_accessible_role(&app, "Language & locale", ui::a11y::Role::ComboBox).is_some(),
+                find_accessible_role(&app, "Language & locale", tilo_ui_base::a11y::Role::ComboBox).is_some(),
                 "locale repair must be a bounded chooser"
             );
             assert!(find_accessible(&app, "Hostname").is_none());

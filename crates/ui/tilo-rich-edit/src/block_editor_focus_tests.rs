@@ -3,18 +3,20 @@
 
 use super::*;
 use automerge::AutoCommit;
-use ui::component::Described;
+use tilo_ui_base::component::Described;
 use ui::testing::Dispatch;
 
 /// An editor the view bound to a field, as a slide's text box is.
 fn bound_editor(focus: bool) -> BlockEditor {
-    let queue = ui::Intents::<ui::component::Fired>::default();
+    let queue = tilo_ui_base::Intents::<tilo_ui_base::component::Fired>::default();
     BlockEditor::from_props(
         "box",
         crate::BlockEditorProps {
-            rich: ui::component::Bound {
-                edits: Some(ui::component::Intent::new(&queue, "box", "richtext")),
-                ..ui::component::Bound::default()
+            rich: tilo_ui_base::component::Bound {
+                edits: Some(tilo_ui_base::component::Intent::new(
+                    &queue, "box", "richtext",
+                )),
+                ..tilo_ui_base::component::Bound::default()
             },
             focus: Some(focus),
             ..crate::BlockEditorProps::default()
@@ -43,14 +45,17 @@ fn the_box_the_view_opens_for_editing_takes_the_keyboard() {
     opened.set_focus(true);
     assert!(opened.is_focused(), "the box holds the keyboard");
     let mut doc = AutoCommit::new();
-    let typed = ui::synthetic_input::key_event(
+    let typed = tilo_ui_base::synthetic_input::key_event(
         Key::Character("!".into()),
         Some("!".into()),
         ElementState::Pressed,
     );
     let handled = Dispatch::new()
         .doc(&mut doc)
-        .send(&mut opened, &ui::synthetic_input::keyboard_input(typed))
+        .send(
+            &mut opened,
+            &tilo_ui_base::synthetic_input::keyboard_input(typed),
+        )
         .handled;
     assert!(handled, "the typing reached the box the view opened");
 

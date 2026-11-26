@@ -16,9 +16,10 @@ use tilo_compositor::policy::{LayoutPoint, LayoutRect};
 use tilo_compositor::{WindowInfo, WindowPolicy as _};
 
 use tilo_session::platform::surfaces::{WellPolicy, desktop};
+use tilo_ui_base::widget::Element;
 use ui::headless::Driver;
 use ui::widget::Column;
-use ui::widget::{Element, Map, PinPlace, Wells, WindowWell, window_well};
+use ui::{widget::Map, widget::PinPlace, widget::Wells, widget::WindowWell, widget::window_well};
 
 /// The desktop a shell's windows are placed on: a window of 640×480 across a 1280×800 output.
 const VIEWPORT: (u32, u32) = (640, 480);
@@ -61,7 +62,7 @@ impl Frame {
         let frame: Element = Box::new(
             Column::new()
                 .with_no_padding()
-                .push(Box::new(ui::widget::Spacer::fixed(bar)))
+                .push(Box::new(tilo_ui_base::widget::Spacer::fixed(bar)))
                 .push(Box::new(WindowWell::new(place))),
         );
         let mut harness = Driver::new(ui::State::new(), frame, viewport);
@@ -86,7 +87,7 @@ fn mapped(policy: &mut WellPolicy, id: u64, app: &str) -> (WindowInfo, String) {
 
 #[test]
 fn a_window_opens_at_exactly_its_wells_rectangle() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut policy = desktop(7).well_policy();
     let outputs = output();
     let (window, key) = mapped(&mut policy, 41, "org.example.App");
@@ -133,7 +134,7 @@ fn a_window_opens_at_exactly_its_wells_rectangle() {
 
 #[test]
 fn a_well_that_moves_moves_its_window_in_the_same_frame_without_running_the_view() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut policy = desktop(7).well_policy();
     let outputs = output();
     let (window, key) = mapped(&mut policy, 42, "org.example.App");
@@ -198,7 +199,7 @@ fn a_well_that_moves_moves_its_window_in_the_same_frame_without_running_the_view
 
 #[test]
 fn a_place_with_no_well_on_screen_waits_off_the_output() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut policy = desktop(7).well_policy();
     let outputs = output();
     let (window, key) = mapped(&mut policy, 43, "org.example.App");
@@ -220,7 +221,7 @@ fn a_place_with_no_well_on_screen_waits_off_the_output() {
 
 #[test]
 fn a_well_that_leaves_the_screen_leaves_its_window_off_the_output() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut policy = desktop(7).well_policy();
     let outputs = output();
     let (window, key) = mapped(&mut policy, 44, "org.example.App");
@@ -238,7 +239,7 @@ fn a_well_that_leaves_the_screen_leaves_its_window_off_the_output() {
 
 #[test]
 fn with_nothing_changing_no_client_is_configured_and_no_well_reported_twice() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut policy = desktop(7).well_policy();
     let outputs = output();
     let (window, key) = mapped(&mut policy, 45, "org.example.App");
@@ -301,7 +302,7 @@ impl Cells {
 /// size it configured a client to: what a click on a window must never add to.
 #[test]
 fn a_client_that_rounds_its_commit_to_a_cell_grid_is_never_configured_again_by_a_click() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut policy = desktop(7).well_policy();
     let outputs = output();
     let (window, key) = mapped(&mut policy, 46, "org.example.Terminal");

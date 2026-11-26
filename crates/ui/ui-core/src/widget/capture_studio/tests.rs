@@ -249,9 +249,9 @@ tilo_test_env::scenario! {
                 "the capture chrome's material lets the screen show through"
             );
             assert!((opacity - 0.5).abs() < 1e-6, "half-transparent: {opacity}");
-            let ground = crate::chrome::panel_ground(&theme);
+            let ground = tilo_ui_base::chrome::panel_ground(&theme);
             assert!(
-                crate::part_paint::backdrop::see_through_fill(&theme, ground).components[3] < 1.0,
+                tilo_ui_base::part_paint::backdrop::see_through_fill(&theme, ground).components[3] < 1.0,
                 "the bar's fill is translucent"
             );
         }

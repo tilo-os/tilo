@@ -13,13 +13,13 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 
 use super::GroupRow;
-use crate::num::f32_of_f64;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::Spacing;
-use crate::widget::Widget as _;
 use crate::widget::floating_surface::card_radius;
 use crate::widget::primitives::paint_floating_window_card;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::Spacing;
+use tilo_ui_base::widget::Widget as _;
 
 pub const FLOAT_SIZE: (f64, f64) = (640.0, 480.0);
 pub const FLOAT_CARD_SIZE: (f64, f64) = (360.0, 520.0);
@@ -52,15 +52,15 @@ impl GroupRow {
         if self.floats == floats {
             return;
         }
-        let now = crate::motion::frame_now();
-        let motion = crate::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
+        let now = tilo_ui_base::motion::frame_now();
+        let motion = tilo_ui_base::tokens::EffectiveMotion::new(self.motion, self.reduce_motion);
         self.float_fade.retain(|id, _| floats.contains_key(id));
         for id in floats.keys() {
             self.float_fade.entry(*id).or_insert_with(|| {
-                let mut fade = crate::motion::Presence::closed();
+                let mut fade = tilo_ui_base::motion::Presence::closed();
                 fade.show(
                     true,
-                    crate::motion::WindowMotion::SIBLINGS,
+                    tilo_ui_base::motion::WindowMotion::SIBLINGS,
                     motion,
                     self.motion_source,
                     now,
@@ -93,7 +93,7 @@ impl GroupRow {
 
     /// Each floating window the row just drew whole over what is under it: the card it shows,
     /// its bar and its body as one opaque rounded rect ([`card_radius`]), in the surface's
-    /// coordinates. The shadow that lifts it ([`crate::surface::floating_lift`]) lies outside it.
+    /// coordinates. The shadow that lifts it ([`tilo_ui_base::surface::floating_lift`]) lies outside it.
     #[must_use]
     pub fn drawn_covers(&self) -> &[(u64, Rect)] {
         &self.drawn_covers
@@ -306,7 +306,7 @@ impl GroupRow {
 
     /// Whether a floating window's fading in asks for another frame.
     pub(super) fn float_fade_needs_frame(&self) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.float_fade
             .values()
             .any(|fade| fade.is_moving(now) && fade.is_open())
@@ -318,15 +318,15 @@ impl GroupRow {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
+        (tr, theme, env): (&mut TextRenderer, &Theme, &tilo_ui_base::draw::DrawEnv<'_>),
     ) {
         self.drawn_covers.clear();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let floated: Vec<(usize, f32)> = (0..self.groups.len())
             .filter_map(|i| {
                 let id = self.groups.get(i)?.id;
                 let fade = self.float_fade.get(&id)?;
-                Some((i, crate::motion::unit_opacity(fade.progress(now))))
+                Some((i, tilo_ui_base::motion::unit_opacity(fade.progress(now))))
             })
             .collect();
         for (i, alpha) in floated {

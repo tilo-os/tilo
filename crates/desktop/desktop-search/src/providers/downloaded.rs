@@ -20,9 +20,9 @@ use std::collections::BTreeMap;
 
 use tilo_actions::ActionDescriptor;
 use tilo_actions::remote::downloaded_apps::{self as wire, DownloadedApp, DownloadedKind};
-use ui::icons::Icon;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::text_match::FieldWeight;
 use ui::search::system::ResourceKind;
-use ui::text_match::FieldWeight;
 
 use crate::i18n::{t, t_args};
 use crate::model::{DESKTOP_APP, Hit, InvokeTarget, LaunchPlace, Source, Target};
@@ -56,7 +56,7 @@ pub struct Downloaded {
     /// How far below its rank each row ranks ([`ACTION_STEP`] for an action
     /// on an app, nothing for the app).
     steps: Vec<i32>,
-    ranker: ui::text_match::ListIndex,
+    ranker: tilo_ui_base::text_match::ListIndex,
 }
 
 /// What kind of download an app is, in the desktop's language.
@@ -109,7 +109,7 @@ impl Downloaded {
             fields,
             hits,
             steps,
-            ranker: ui::text_match::ListIndex::default()
+            ranker: tilo_ui_base::text_match::ListIndex::default()
                 .with_ranks(ui::search::system::application_ranks),
         }
     }

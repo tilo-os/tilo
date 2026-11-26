@@ -9,8 +9,8 @@
 )]
 
 use crate::headless::Driver;
-use crate::theme::Theme;
 use crate::widget::{NavShell, SidebarPlacement};
+use tilo_ui_base::theme::Theme;
 
 /// A mail window: mailboxes in the sidebar, a mailbox's messages beside them and the message
 /// read, each column titled in its header row.
@@ -30,7 +30,7 @@ struct MailApp {
     shell: NavShell,
 }
 
-impl crate::widget::Decorator for MailApp {
+impl tilo_ui_base::widget::Decorator for MailApp {
     type Inner = NavShell;
 
     fn inner(&self) -> &Self::Inner {
@@ -41,12 +41,16 @@ impl crate::widget::Decorator for MailApp {
         &mut self.shell
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         for event in crate::window_toolbar::take_events() {
             self.shell.window_toolbar_event(&event);
         }
         crate::window_toolbar::declare(Some(self.shell.window_toolbar()));
-        crate::widget::Widget::sync(&mut self.shell, state, path);
+        tilo_ui_base::widget::Widget::sync(&mut self.shell, state, path);
     }
 }
 
@@ -54,7 +58,7 @@ fn driven(shell: NavShell, width: u32) -> Driver {
     driven_root(shell, width)
 }
 
-fn driven_root<W: crate::widget::Widget + 'static>(root: W, width: u32) -> Driver {
+fn driven_root<W: tilo_ui_base::widget::Widget + 'static>(root: W, width: u32) -> Driver {
     let mut driver = Driver::for_root(
         crate::State::new(),
         root,
@@ -67,7 +71,7 @@ fn driven_root<W: crate::widget::Widget + 'static>(root: W, width: u32) -> Drive
 
 #[test]
 fn a_wide_mail_window_reads_each_columns_title_left_to_right_across_one_header_row() {
-    let _landed = crate::motion::testing::settled();
+    let _landed = tilo_ui_base::motion::testing::settled();
     let driver = driven(mail_shell(), 1280);
 
     let names = driver.header_row_names();
@@ -115,7 +119,7 @@ fn a_wide_mail_window_reads_each_columns_title_left_to_right_across_one_header_r
 
 #[test]
 fn a_window_with_no_header_titles_reads_no_header_row() {
-    let _landed = crate::motion::testing::settled();
+    let _landed = tilo_ui_base::motion::testing::settled();
     let driver = driven(
         NavShell::new()
             .content(Box::new(crate::widget::Column::new()))
@@ -136,7 +140,7 @@ fn a_window_with_no_header_titles_reads_no_header_row() {
 
 #[test]
 fn the_header_rows_sidebar_button_hides_and_shows_a_docked_sidebar_and_all_three_agree() {
-    let _landed = crate::motion::testing::settled();
+    let _landed = tilo_ui_base::motion::testing::settled();
     let mut driver = driven(mail_shell(), 1280);
     assert_eq!(
         driver.root::<NavShell>().geometry().sidebar,
@@ -165,7 +169,7 @@ fn the_header_rows_sidebar_button_hides_and_shows_a_docked_sidebar_and_all_three
 
 #[test]
 fn the_window_bars_sidebar_button_flips_the_sidebar_of_an_app_whose_header_is_its_parts() {
-    let _landed = crate::motion::testing::settled();
+    let _landed = tilo_ui_base::motion::testing::settled();
     let mut driver = driven_root(
         MailApp {
             shell: mail_shell().with_window_toolbar(),
@@ -225,7 +229,7 @@ fn framed_mail(width: u32) -> Driver {
 
 #[test]
 fn a_window_frame_hands_its_bar_to_the_mail_header_row_and_wears_no_second_bar() {
-    let _landed = crate::motion::testing::settled();
+    let _landed = tilo_ui_base::motion::testing::settled();
     let driver = framed_mail(1280);
     assert!(
         !driver.presents_window_bar(),
@@ -257,7 +261,7 @@ fn a_window_frame_hands_its_bar_to_the_mail_header_row_and_wears_no_second_bar()
 
 #[test]
 fn the_sidebar_button_in_a_framed_windows_header_row_flips_the_sidebar() {
-    let _landed = crate::motion::testing::settled();
+    let _landed = tilo_ui_base::motion::testing::settled();
     let mut driver = framed_mail(1280);
     assert_eq!(driver.window_sidebar_shown().unwrap().agreed(), Some(true));
     driver.click_window_sidebar_button().unwrap();

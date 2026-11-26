@@ -43,8 +43,8 @@ impl Driver {
         id: &str,
         input: &crate::headless::ControlInput,
     ) -> Result<(), String> {
-        use crate::a11y::Action;
         use crate::headless::ControlInput;
+        use tilo_ui_base::a11y::Action;
         let control = self
             .control(id)
             .ok_or_else(|| format!("no control {id:?} in the current frame"))?;
@@ -139,15 +139,15 @@ impl Driver {
         id: &str,
         node: accesskit::NodeId,
         centre: &Result<Point, String>,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> Result<(), String> {
         match self.perform_a11y_action(node, action) {
             Err(error) if error.starts_with("no accessibility node") => {
                 if !matches!(
                     action,
-                    crate::a11y::Action::Activate
-                        | crate::a11y::Action::ToggleCheck
-                        | crate::a11y::Action::Focus
+                    tilo_ui_base::a11y::Action::Activate
+                        | tilo_ui_base::a11y::Action::ToggleCheck
+                        | tilo_ui_base::a11y::Action::Focus
                 ) {
                     return Err(format!(
                         "control {id:?} is reachable only by pointer, which cannot {action:?}"
@@ -187,7 +187,7 @@ impl Driver {
     /// selection stands: what a frame paints over the widgets is no widget of the tree, and a
     /// reader is told where it is all the same.
     pub(super) fn presence_inspection(&self) -> Vec<crate::headless::InspectionNode> {
-        let mut drawn: Vec<crate::presence::PresenceMark> = Vec::new();
+        let mut drawn: Vec<tilo_ui_base::presence::PresenceMark> = Vec::new();
         for mark in self.app.presence_ctx.presence_marks() {
             match drawn.iter().position(|drawn| drawn.user == mark.user) {
                 Some(index) => {
@@ -206,7 +206,7 @@ impl Driver {
             .into_iter()
             .filter(|mark| mark.rect.width() > 0.0 && mark.rect.height() > 0.0)
             .map(|mark| {
-                let spoken = crate::a11y::AccessNode::new(crate::a11y::Role::Image)
+                let spoken = tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Image)
                     .with_name(self.app.presence_ctx.mark_words(&mark))
                     .with_bounds(mark.rect);
                 crate::headless::InspectionNode {

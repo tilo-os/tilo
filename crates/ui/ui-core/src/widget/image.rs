@@ -11,15 +11,15 @@
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
-use crate::widget::TaffyTreeExt;
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Blob, Color, Fill, ImageBrush, ImageData as PenikoImage};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::Widget;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 use winit::event::{ElementState, Ime, MouseButton as WMouseButton, WindowEvent};
 use winit::keyboard::Key as WKey;
 
@@ -57,17 +57,17 @@ impl PictureSource {
     }
 }
 
-impl crate::component::PropType for PictureSource {
-    fn ty() -> crate::component::Type {
-        crate::component::Type::Picture
+impl tilo_ui_base::component::PropType for PictureSource {
+    fn ty() -> tilo_ui_base::component::Type {
+        tilo_ui_base::component::Type::Picture
     }
 
-    fn from_value(value: &crate::component::Value) -> Result<Self, String> {
+    fn from_value(value: &tilo_ui_base::component::Value) -> Result<Self, String> {
         match value {
-            crate::component::Value::Picture(picture) => Ok(Self {
+            tilo_ui_base::component::Value::Picture(picture) => Ok(Self {
                 src: picture.src.clone(),
             }),
-            other => Err(crate::component::wrong(&Self::ty(), other)),
+            other => Err(tilo_ui_base::component::wrong(&Self::ty(), other)),
         }
     }
 }
@@ -131,7 +131,7 @@ pub struct Image {
     /// The destination a person's pointer and keys go to, when the picture is one they point and
     /// type into; nothing when it is only looked at.
     input: Option<String>,
-    keys: Option<Arc<dyn crate::key_input::Keys>>,
+    keys: Option<Arc<dyn tilo_ui_base::key_input::Keys>>,
     /// Where the pointer last stood over the picture, in the widget's own coordinates.
     pointer: Option<Point>,
     focused: bool,
@@ -162,7 +162,7 @@ impl Image {
             keys: None,
             pointer: None,
             focused: false,
-            wheel_line: f64::from(crate::tokens::metrics::Metrics::BASE.wheel_line),
+            wheel_line: f64::from(tilo_ui_base::tokens::metrics::Metrics::BASE.wheel_line),
         }
     }
 
@@ -191,7 +191,7 @@ impl Image {
             keys: None,
             pointer: None,
             focused: false,
-            wheel_line: f64::from(crate::tokens::metrics::Metrics::BASE.wheel_line),
+            wheel_line: f64::from(tilo_ui_base::tokens::metrics::Metrics::BASE.wheel_line),
         }
     }
 
@@ -260,7 +260,7 @@ impl Image {
             keys: None,
             pointer: None,
             focused: false,
-            wheel_line: f64::from(crate::tokens::metrics::Metrics::BASE.wheel_line),
+            wheel_line: f64::from(tilo_ui_base::tokens::metrics::Metrics::BASE.wheel_line),
         })
     }
 
@@ -285,7 +285,7 @@ impl Image {
             keys: None,
             pointer: None,
             focused: false,
-            wheel_line: f64::from(crate::tokens::metrics::Metrics::BASE.wheel_line),
+            wheel_line: f64::from(tilo_ui_base::tokens::metrics::Metrics::BASE.wheel_line),
         }
     }
 
@@ -394,10 +394,10 @@ impl Image {
     }
 
     /// What takes the pointer and keys now, looked up where the window or the engine keeps it.
-    fn keys(&self) -> Option<Arc<dyn crate::key_input::Keys>> {
+    fn keys(&self) -> Option<Arc<dyn tilo_ui_base::key_input::Keys>> {
         self.keys
             .clone()
-            .or_else(|| crate::key_input::window_input(self.input.as_deref()?))
+            .or_else(|| tilo_ui_base::key_input::window_input(self.input.as_deref()?))
     }
 
     /// The rect the picture is actually painted in, as the fit places it: a `contain`ed one
@@ -731,8 +731,8 @@ impl Widget for Image {
 
     fn update(
         &mut self,
-        _state: &crate::widget::AppModel,
-        _path: &crate::widget::ModelPath,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         self.follow_picture()
     }
@@ -762,8 +762,8 @@ impl Widget for Image {
         });
         let style = Style {
             aspect_ratio: (self.intrinsic_size.1 > 0).then(|| {
-                crate::num::f32_of_u32(self.intrinsic_size.0)
-                    / crate::num::f32_of_u32(self.intrinsic_size.1)
+                tilo_ui_base::num::f32_of_u32(self.intrinsic_size.0)
+                    / tilo_ui_base::num::f32_of_u32(self.intrinsic_size.1)
             }),
             size: Size {
                 width: if self.fill_parent {
@@ -797,8 +797,8 @@ impl Widget for Image {
         available: Size<taffy::AvailableSpace>,
         _text_renderer: &mut TextRenderer,
     ) -> Size<f32> {
-        let width = crate::num::f32_of_u32(self.intrinsic_size.0) * self.layout_scale;
-        let height = crate::num::f32_of_u32(self.intrinsic_size.1) * self.layout_scale;
+        let width = tilo_ui_base::num::f32_of_u32(self.intrinsic_size.0) * self.layout_scale;
+        let height = tilo_ui_base::num::f32_of_u32(self.intrinsic_size.1) * self.layout_scale;
         match (known.width, known.height) {
             (Some(width), Some(height)) => Size { width, height },
             (Some(w), None) if width > 0.0 => Size {
@@ -826,7 +826,7 @@ impl Widget for Image {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.laid_out = Some(self.box_shown());
     }
 
@@ -834,7 +834,7 @@ impl Widget for Image {
         self.rect
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -845,7 +845,7 @@ impl Widget for Image {
             let radius = theme.tokens.radii.item;
             self.corner_radius = Some(radius);
             if self.fit == ImageFit::Contain && self.cached.is_some() {
-                crate::surface::card(
+                tilo_ui_base::surface::card(
                     scene,
                     transform,
                     self.rect,
@@ -897,11 +897,11 @@ impl Widget for Image {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if self.input.is_none() {
             return;
         }
-        let held = crate::key_input::held(&ctx.modifiers.state());
+        let held = tilo_ui_base::key_input::held(&ctx.modifiers.state());
         match event {
             WindowEvent::Focused(focused) => {
                 self.set_focus(*focused);
@@ -923,9 +923,9 @@ impl Widget for Image {
                     return;
                 }
                 let Some(mapped) = (match button {
-                    WMouseButton::Left => Some(crate::key_input::Button::Left),
-                    WMouseButton::Middle => Some(crate::key_input::Button::Middle),
-                    WMouseButton::Right => Some(crate::key_input::Button::Right),
+                    WMouseButton::Left => Some(tilo_ui_base::key_input::Button::Left),
+                    WMouseButton::Middle => Some(tilo_ui_base::key_input::Button::Middle),
+                    WMouseButton::Right => Some(tilo_ui_base::key_input::Button::Right),
                     _ => None,
                 }) else {
                     return;
@@ -962,7 +962,7 @@ impl Widget for Image {
                 }
             }
             WindowEvent::KeyboardInput { event: key, .. } if self.focused => {
-                if let Some(mapped) = crate::key_input::map_key(&key.logical_key) {
+                if let Some(mapped) = tilo_ui_base::key_input::map_key(&key.logical_key) {
                     let Some(keys) = self.keys() else {
                         return;
                     };
@@ -985,8 +985,8 @@ impl Widget for Image {
         }
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         Some(AccessNode::new(Role::Image).with_optional_name(self.alt.clone()))
     }
 }
@@ -1124,7 +1124,7 @@ mod tests {
         phase image_accessible_name_comes_from_alt_text;
         {
             fn accessibility_without_alt_has_no_name() {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 let img = Image::from_rgba(Arc::from(vec![255u8; 16 * 16 * 4]), 16, 16);
                 assert_eq!(img.alt(), None, "an image defaults to no alt text");
                 let node = Widget::accessibility(&img).unwrap();
@@ -1151,12 +1151,12 @@ mod tests {
         }
     }
 
-    impl crate::key_input::Keys for Heard {
+    impl tilo_ui_base::key_input::Keys for Heard {
         fn key(
             &self,
-            key: crate::key_input::Key,
+            key: tilo_ui_base::key_input::Key,
             text: Option<&str>,
-            held: crate::key_input::Held,
+            held: tilo_ui_base::key_input::Held,
         ) {
             let _ = held;
             self.0
@@ -1178,16 +1178,16 @@ mod tests {
 
         fn mouse(
             &self,
-            _button: crate::key_input::Button,
+            _button: tilo_ui_base::key_input::Button,
             _pressed: bool,
-            _held: crate::key_input::Held,
+            _held: tilo_ui_base::key_input::Held,
             _column: usize,
             _row: usize,
         ) -> bool {
             false
         }
 
-        fn pointer(&self, x: f64, y: f64, _held: crate::key_input::Held) {
+        fn pointer(&self, x: f64, y: f64, _held: tilo_ui_base::key_input::Held) {
             self.0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1196,9 +1196,9 @@ mod tests {
 
         fn button(
             &self,
-            button: crate::key_input::Button,
+            button: tilo_ui_base::key_input::Button,
             pressed: bool,
-            _held: crate::key_input::Held,
+            _held: tilo_ui_base::key_input::Held,
         ) {
             self.0
                 .lock()
@@ -1213,7 +1213,7 @@ mod tests {
                 .push(format!("wheel {across} {down}"));
         }
 
-        fn key_up(&self, key: crate::key_input::Key) {
+        fn key_up(&self, key: tilo_ui_base::key_input::Key) {
             self.0
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -1263,10 +1263,10 @@ mod tests {
         let mut focus_target = None;
         picture.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: crate::widget::Edits::lend(&mut doc),
+                state: tilo_ui_base::widget::Edits::lend(&mut doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -1283,10 +1283,10 @@ mod tests {
         phase a_point_over_the_picture_reaches_its_destination_in_fractions;
         {
             let heard = std::sync::Arc::new(Heard::default());
-            crate::key_input::provide("remote-screen", heard.clone());
+            tilo_ui_base::key_input::provide("remote-screen", heard.clone());
             use crate::widget::Container;
             let heard = std::sync::Arc::new(Heard::default());
-            crate::key_input::provide("remote-screen", heard.clone());
+            tilo_ui_base::key_input::provide("remote-screen", heard.clone());
             let picture = Image::from_rgba(Arc::from(vec![0u8; 16 * 16 * 4]), 16, 16)
                 .with_fit(ImageFit::Contain)
                 .filling()
@@ -1413,7 +1413,7 @@ mod tests {
                 said.iter().any(|said| said == "key up Char('a')"),
                 "and so does its release: {said:?}"
             );
-            crate::key_input::withdraw("remote-screen");
+            tilo_ui_base::key_input::withdraw("remote-screen");
         }
 
         phase a_picture_without_a_destination_keeps_its_events_to_itself;

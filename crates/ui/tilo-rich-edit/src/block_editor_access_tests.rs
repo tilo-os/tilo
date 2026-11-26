@@ -20,7 +20,7 @@ fn block_rows_are_named_items_a_reader_opens_and_a_checklist_it_ticks() {
             .expect("the block's row")
     };
     let first = row(&first_id);
-    assert_eq!(first.role, ui::a11y::Role::ListItem);
+    assert_eq!(first.role, tilo_ui_base::a11y::Role::ListItem);
     assert_eq!(first.name.as_deref(), Some("Send the launch notes"));
     assert_eq!(first.pos_in_set, Some(1));
     assert_eq!(
@@ -32,8 +32,8 @@ fn block_rows_are_named_items_a_reader_opens_and_a_checklist_it_ticks() {
     assert!(Widget::perform_semantic_action(
         &mut editor,
         &format!("notes.block:{first_id}"),
-        &ui::a11y::Action::Activate,
-        &mut ui::widget::Edits::lend(&mut doc),
+        &tilo_ui_base::a11y::Action::Activate,
+        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
     assert_eq!(
@@ -43,19 +43,19 @@ fn block_rows_are_named_items_a_reader_opens_and_a_checklist_it_ticks() {
     );
 
     let second = row(&second_id);
-    assert_eq!(second.role, ui::a11y::Role::ListItem);
+    assert_eq!(second.role, tilo_ui_base::a11y::Role::ListItem);
     let box_ = second
         .children
         .iter()
-        .find(|child| child.role == ui::a11y::Role::Checkbox)
+        .find(|child| child.role == tilo_ui_base::a11y::Role::Checkbox)
         .expect("the checklist's box is a control of its own");
     assert_eq!(box_.state.checked, Some(false));
     assert_eq!(box_.name.as_deref(), Some("Book the area"));
     assert!(Widget::perform_semantic_action(
         &mut editor,
         &format!("notes.block-check:{second_id}"),
-        &ui::a11y::Action::Activate,
-        &mut ui::widget::Edits::lend(&mut doc),
+        &tilo_ui_base::a11y::Action::Activate,
+        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
     assert_eq!(

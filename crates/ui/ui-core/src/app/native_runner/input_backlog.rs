@@ -162,7 +162,8 @@ mod tests {
 
     use super::*;
     use crate::headless::Driver;
-    use crate::widget::{TextInput, Widget as _};
+    use crate::widget::TextInput;
+    use tilo_ui_base::widget::Widget as _;
     use winit::dpi::PhysicalPosition;
     use winit::event::{DeviceId, ElementState};
     use winit::keyboard::Key;
@@ -258,7 +259,7 @@ mod tests {
             assert!(!backlog.answered_since_frame(), "nothing typed yet");
             backlog.push(
                 WindowId::dummy(),
-                crate::synthetic_input::key_input(
+                tilo_ui_base::synthetic_input::key_input(
                     &Key::Character("a".into()),
                     ElementState::Pressed,
                 ),
@@ -296,7 +297,7 @@ mod tests {
                 crate::State::new(),
                 TextInput::local(),
                 (400, 80),
-                crate::Theme::dark(),
+                tilo_ui_base::Theme::dark(),
             ));
             frame.borrow_mut().set_coalesce_input_frames(true);
             frame.borrow_mut().root_mut::<TextInput>().set_focus(true);
@@ -314,7 +315,7 @@ mod tests {
                     let key = Key::Character(letter.to_string().into());
                     backlog.push(
                         WindowId::dummy(),
-                        crate::synthetic_input::key_input(&key, state),
+                        tilo_ui_base::synthetic_input::key_input(&key, state),
                         None,
                     );
                     backlog.route(budget, false, now, route);

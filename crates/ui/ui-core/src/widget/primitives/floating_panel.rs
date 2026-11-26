@@ -8,8 +8,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::theme::Theme;
-use crate::widget::{TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 use super::SurfaceLevel;
 
@@ -157,7 +157,7 @@ impl FloatingPanelFace {
         let radius = SurfaceLevel::Floating
             .radius(theme)
             .min(panel.height() / 2.0);
-        crate::surface::floating_shadow(scene, transform, panel, radius, shadow, theme);
+        tilo_ui_base::surface::floating_shadow(scene, transform, panel, radius, shadow, theme);
         self.paint_body(scene, transform, panel, theme)
     }
 
@@ -174,13 +174,13 @@ impl FloatingPanelFace {
         let radius = SurfaceLevel::Floating
             .radius(theme)
             .min(panel.height() / 2.0);
-        crate::surface::panel(scene, transform, panel, radius, theme);
+        tilo_ui_base::surface::panel(scene, transform, panel, radius, theme);
         let ground = SurfaceLevel::Floating.color(theme);
         if let Some(rule) = layout.rule {
             scene.fill(
                 vello::peniko::Fill::NonZero,
                 transform,
-                crate::surface::edge_on(ground),
+                tilo_ui_base::surface::edge_on(ground),
                 None,
                 &rule,
             );
@@ -189,7 +189,7 @@ impl FloatingPanelFace {
     }
 }
 
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "the panel `ui.FloatingPanel` is built from, around the view's header, body and footer"
 )]
@@ -218,7 +218,7 @@ pub struct FloatingPanel {
     body_rect: Rect,
     /// The panel arriving where it stands (`motion::Placed`): a panel a view places because the
     /// person asked for it comes in, and one the window's first paint shows rests.
-    placed: crate::motion::Placed,
+    placed: tilo_ui_base::motion::Placed,
     /// Where the person left it, from the top-leading corner of what holds it, in logical pixels:
     /// it stands there, out of the flow its siblings make. `None` stands where they put it.
     place: Option<Point>,
@@ -266,7 +266,7 @@ struct PanelDrag {
 #[derive(Default)]
 struct Fit {
     wanted: f64,
-    extent: crate::motion::Extent,
+    extent: tilo_ui_base::motion::Extent,
 }
 
 fn embed(widget: &mut dyn Widget) {
@@ -283,10 +283,10 @@ impl FloatingPanel {
     /// A panel around `body`.
     #[must_use]
     pub fn new(body: Box<dyn Widget>) -> Self {
-        let placed = if crate::motion::window_has_shown() {
-            crate::motion::Placed::closed()
+        let placed = if tilo_ui_base::motion::window_has_shown() {
+            tilo_ui_base::motion::Placed::closed()
         } else {
-            crate::motion::Placed::opened()
+            tilo_ui_base::motion::Placed::opened()
         };
         Self {
             header: None,
@@ -339,7 +339,11 @@ impl FloatingPanel {
 
     /// A drag of the trailing edge: taken by a press on it, followed while it moves, and told
     /// where it let go. Whether the event was the edge's.
-    fn resize_event(&mut self, event: &WindowEvent, ctx: &crate::widget::EventCtx<'_>) -> bool {
+    fn resize_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         use winit::event::{ElementState, MouseButton};
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -352,7 +356,7 @@ impl FloatingPanel {
                     .clamp(RESIZE_MIN, RESIZE_MAX)
                     .round();
                 if self.width.map(f64::from) != Some(wanted) {
-                    self.width = Some(crate::num::f32_of_f64(wanted));
+                    self.width = Some(tilo_ui_base::num::f32_of_f64(wanted));
                     self.width_changed = true;
                 }
                 true
@@ -565,9 +569,9 @@ impl FloatingPanel {
     }
 
     /// How its body's page is drawn taller than laid out, while a band opens or closes in it
-    /// ([`crate::widget::Disclosing`]); the body's scroll view keeps its own box, so the page is
+    /// ([`tilo_ui_base::widget::Disclosing`]); the body's scroll view keeps its own box, so the page is
     /// asked through it.
-    fn body_growth(&self) -> Option<crate::widget::Disclosing> {
+    fn body_growth(&self) -> Option<tilo_ui_base::widget::Disclosing> {
         match self
             .body
             .as_any()
@@ -583,7 +587,7 @@ impl FloatingPanel {
     }
 
     fn moving(&self) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.placed.is_moving(now) || self.refitting(now)
     }
 
@@ -646,7 +650,7 @@ impl FloatingPanel {
 
     /// The panel itself, drawn where `rect` says: what [`Widget::draw`] draws once the panel is
     /// posed where its arrival has reached.
-    fn paint_panel(&mut self, card: Rect, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn paint_panel(&mut self, card: Rect, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -673,14 +677,18 @@ impl FloatingPanel {
             } else {
                 transform
             };
-            crate::widget::draw_child(slot.as_mut(), scene, at, text_renderer, &inner, &env);
+            tilo_ui_base::widget::draw_child(slot.as_mut(), scene, at, text_renderer, &inner, &env);
         }
     }
 }
 
 impl FloatingPanel {
     /// A drag of the header, as `event` takes it on: whether the event was the drag's.
-    fn drag_event(&mut self, event: &WindowEvent, ctx: &crate::widget::EventCtx<'_>) -> bool {
+    fn drag_event(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         use winit::event::{ElementState, MouseButton};
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -740,9 +748,9 @@ impl FloatingPanel {
 
 impl FloatingPanel {
     /// `event` to the header, the body and the footer, in turn, until one takes it.
-    fn slots_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn slots_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let wrappers = ctx.taffy.children(ctx.node_id).unwrap_or_default();
-        let shift = self.footer_shift(self.card(crate::motion::frame_now()));
+        let shift = self.footer_shift(self.card(tilo_ui_base::motion::frame_now()));
         let footer = self.footer.is_some();
         let slots = wrappers.len();
         for (index, (slot, wrapper)) in self.slots_mut().zip(wrappers).enumerate() {
@@ -751,7 +759,7 @@ impl FloatingPanel {
             }
             if let Some(&child) = ctx.taffy.children(wrapper).unwrap_or_default().first() {
                 let event = if footer && index + 1 == slots {
-                    crate::widget::disclosing::event_offset(
+                    tilo_ui_base::widget::disclosing::event_offset(
                         event,
                         vello::kurbo::Vec2::new(0.0, shift),
                         ctx.scale_factor,
@@ -772,14 +780,14 @@ impl Widget for FloatingPanel {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let slot = crate::num::f32_of_f64(FloatingPanelFace::slot_inset(theme));
-        let inset = crate::num::f32_of_f64(FloatingPanelFace::body_inset(theme));
+        let slot = tilo_ui_base::num::f32_of_f64(FloatingPanelFace::slot_inset(theme));
+        let inset = tilo_ui_base::num::f32_of_f64(FloatingPanelFace::body_inset(theme));
         let wrap = |taffy: &mut TaffyTree<()>, child: NodeId, pad: f32, grow: f32| {
             taffy.parent_node(
                 Style {
                     display: taffy::Display::Flex,
                     flex_direction: taffy::FlexDirection::Column,
-                    padding: crate::widget::layout::insets_all(pad),
+                    padding: tilo_ui_base::widget::layout::insets_all(pad),
                     flex_shrink: 0.0,
                     flex_grow: grow,
                     ..Default::default()
@@ -826,8 +834,12 @@ impl Widget for FloatingPanel {
             Some(place) => Style {
                 position: taffy::Position::Absolute,
                 inset: taffy::Rect {
-                    left: taffy::LengthPercentageAuto::length(crate::num::f32_of_f64(place.x)),
-                    top: taffy::LengthPercentageAuto::length(crate::num::f32_of_f64(place.y)),
+                    left: taffy::LengthPercentageAuto::length(tilo_ui_base::num::f32_of_f64(
+                        place.x,
+                    )),
+                    top: taffy::LengthPercentageAuto::length(tilo_ui_base::num::f32_of_f64(
+                        place.y,
+                    )),
                     right: taffy::LengthPercentageAuto::auto(),
                     bottom: taffy::LengthPercentageAuto::auto(),
                 },
@@ -839,7 +851,7 @@ impl Widget for FloatingPanel {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.room = taffy
             .parent(node)
             .and_then(|parent| taffy.layout(parent).ok())
@@ -854,7 +866,7 @@ impl Widget for FloatingPanel {
         let origin = Point::new(self.rect.x0, self.rect.y0);
         let mut rects = Vec::new();
         for (slot, wrapper) in self.slots_mut().zip(wrappers) {
-            let wrap_rect = crate::widget::layout_rect(taffy, wrapper, origin);
+            let wrap_rect = tilo_ui_base::widget::layout_rect(taffy, wrapper, origin);
             if let Some(&child) = taffy.children(wrapper).unwrap_or_default().first() {
                 slot.apply_layout(taffy, child, Point::new(wrap_rect.x0, wrap_rect.y0));
                 rects.push(slot.get_rect());
@@ -875,14 +887,14 @@ impl Widget for FloatingPanel {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let arriving = self.placed.is_moving(now);
         // A section opening or closing in the page is drawn taller or shorter than it is laid
         // out, on its own motion: the card goes with its edge, so what follows it moves down
@@ -895,7 +907,7 @@ impl Widget for FloatingPanel {
                 fit.extent.follow(
                     fit.wanted,
                     theme.motion(),
-                    crate::motion::input_source(),
+                    tilo_ui_base::motion::input_source(),
                     now,
                 );
             }
@@ -908,16 +920,16 @@ impl Widget for FloatingPanel {
         // A banner's card rises from the edge it stands by, on the panel slide; a panel a view
         // places elsewhere arrives from its own centre.
         let spec = if self.slide {
-            crate::motion::PanelSlide::SPEC
+            tilo_ui_base::motion::PanelSlide::SPEC
         } else {
-            crate::motion::WindowMotion::OPEN
+            tilo_ui_base::motion::WindowMotion::OPEN
         };
         self.placed.follow_with(
             self.rect,
             true,
             spec,
             theme.motion(),
-            crate::motion::input_source(),
+            tilo_ui_base::motion::input_source(),
             now,
         );
         // A panel the person drags stands under the pointer until it is let go.
@@ -928,7 +940,7 @@ impl Widget for FloatingPanel {
         // A card arriving rises from the edge it stands by; one that only moved (a newer banner
         // above it) glides to its new place, and the rest stand still.
         let pose = if self.slide && !self.placed.is_gliding(now) {
-            crate::motion::PanelSlide::sheet_pose(
+            tilo_ui_base::motion::PanelSlide::sheet_pose(
                 self.placed.progress(now),
                 card.width(),
                 true,
@@ -941,13 +953,19 @@ impl Widget for FloatingPanel {
         if self.modal
             && let Some(ground) = env.viewport
         {
-            crate::overlay::scrim::modal(scene, transform, ground, pose.opacity, theme);
+            tilo_ui_base::overlay::scrim::modal(scene, transform, ground, pose.opacity, theme);
         }
         let bounds = card.union(pose.drawn_rect(card));
         pose.paint(scene, transform, bounds, |scene, transform| {
             self.paint_panel(
                 card,
-                &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+                &mut tilo_ui_base::draw::DrawCtx::new(
+                    scene,
+                    transform,
+                    text_renderer,
+                    theme,
+                    env.clone(),
+                ),
             );
         });
     }
@@ -964,7 +982,7 @@ impl Widget for FloatingPanel {
 
     fn preferred_window_size(&self) -> Option<(f64, f64)> {
         let fit = self.fit.as_ref()?;
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         // While the card refits, the window stands at the taller of where it comes from and
         // where it goes, in one step: a window resized each frame would trail the card (a size
         // is a round trip to the shell and a frame drawn whole), cutting off what follows a
@@ -984,7 +1002,7 @@ impl Widget for FloatingPanel {
             .then(|| (self.rect.width(), height.max(1.0).round()))
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let press = matches!(
             event,
             WindowEvent::MouseInput {
@@ -1036,7 +1054,7 @@ impl Widget for FloatingPanel {
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         // A card refitting inside its window changes its own edge and moves its footer.
-        if self.refitting(crate::motion::frame_now()) {
+        if self.refitting(tilo_ui_base::motion::frame_now()) {
             regions.push(self.rect);
         }
         for child in self.children() {
@@ -1073,13 +1091,15 @@ impl Widget for FloatingPanel {
 
     fn is_layout_dirty(&self) -> bool {
         self.width_changed
-            || crate::widget::defaults::is_layout_dirty(&|visit| self.for_each_child(visit))
+            || tilo_ui_base::widget::defaults::is_layout_dirty(&|visit| self.for_each_child(visit))
     }
 
     fn layout_needs_measure(&self) -> bool {
         self.width_changed || {
-            crate::widget::defaults::layout_needs_measure(&|visit| self.for_each_child(visit))
-                .unwrap_or_else(|| self.is_layout_dirty())
+            tilo_ui_base::widget::defaults::layout_needs_measure(&|visit| {
+                self.for_each_child(visit)
+            })
+            .unwrap_or_else(|| self.is_layout_dirty())
         }
     }
 
@@ -1089,8 +1109,8 @@ impl Widget for FloatingPanel {
 
     /// A panel that names itself reads as the thing it is: a modal panel is a dialog, holding the
     /// screen, and either is named with the line said after its name.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         if self.label.is_none() && self.description.is_none() && !self.modal {
             return None;
         }
@@ -1133,7 +1153,7 @@ mod tests {
         phase a_field_in_the_header_slot_is_embedded;
         {
             let field = crate::widget::TextInput::local();
-            let panel = FloatingPanel::new(Box::new(crate::widget::Spacer::fixed(20.0)))
+            let panel = FloatingPanel::new(Box::new(tilo_ui_base::widget::Spacer::fixed(20.0)))
                 .header(Box::new(field));
             let header = panel.header.as_ref().map(|h| h.as_ref());
             let plain = header
@@ -1152,7 +1172,8 @@ mod tests {
     fn a_shrinking_card_moves_inside_a_window_resized_once() {
         let start = crate::time::now();
         let spare = Rect::new(0.0, 0.0, 380.0, 436.0);
-        let mut panel = FloatingPanel::new(Box::new(crate::widget::Spacer::new())).fit_height();
+        let mut panel =
+            FloatingPanel::new(Box::new(tilo_ui_base::widget::Spacer::new())).fit_height();
         panel.rect = spare;
         panel.placed.snap(spare, false);
         let fit = panel.fit.as_mut().expect("it fits its page");
@@ -1161,14 +1182,15 @@ mod tests {
         fit.extent.follow(
             344.0,
             Theme::dark().motion(),
-            crate::tokens::MotionSource::Pointer,
+            tilo_ui_base::tokens::MotionSource::Pointer,
             start,
         );
         let mut heights = Vec::new();
         for frame in 1..=60 {
-            let _frame =
-                crate::motion::pin_frame_at(start + std::time::Duration::from_millis(16 * frame));
-            let card = panel.card(crate::motion::frame_now());
+            let _frame = tilo_ui_base::motion::pin_frame_at(
+                start + std::time::Duration::from_millis(16 * frame),
+            );
+            let card = panel.card(tilo_ui_base::motion::frame_now());
             let window = Widget::preferred_window_size(&panel).map(|(_, height)| height);
             assert!(
                 card.height() <= spare.height(),

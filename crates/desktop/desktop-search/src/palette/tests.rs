@@ -93,7 +93,7 @@ tilo_test_env::scenario! {
             id: "session-host-leave-workspace".into(),
             title: "Leave workspace".into(),
             subtitle: None,
-            icon: Some(ui::icons::Icon::ArrowUpRight),
+            icon: Some(tilo_ui_base::icons::Icon::ArrowUpRight),
             unasked: false,
         });
         data.sources
@@ -880,7 +880,7 @@ tilo_test_env::scenario! {
         let entries = search.palette().visible_entries();
         assert_eq!(entries[0].badge.as_deref(), Some("Off"));
         assert_eq!(
-            entries[0].keybinding_label(ui::PlatformConventions::new(ui::Platform::Linux)),
+            entries[0].keybinding_label(tilo_ui_base::PlatformConventions::new(tilo_ui_base::Platform::Linux)),
             Some(painted),
             "the keymap's chord, painted as the platform's keycaps"
         );
@@ -1078,7 +1078,7 @@ tilo_test_env::scenario! {
         for (app, entry) in &apps {
             assert_eq!(
                 entry.icon,
-                Some(ui::icons::app_glyph(
+                Some(tilo_ui_base::icons::app_glyph(
                     app,
                     crate::availability::category_for(app)
                 )),
@@ -1095,7 +1095,7 @@ tilo_test_env::scenario! {
         assert_eq!(notes.1.label, "Notes");
         assert_ne!(
             notes.1.icon,
-            Some(ui::icons::Icon::LayoutGrid),
+            Some(tilo_ui_base::icons::Icon::LayoutGrid),
             "not the generic grid"
         );
         // A window wears its app's glyph, not the search glass.
@@ -1161,8 +1161,8 @@ fn bound_keys(action: ShortcutAction) -> (String, String) {
         .get(&action)
         .unwrap_or_else(|| panic!("{action:?} is bound"))
         .clone();
-    let painted =
-        ui::keycaps::active().chord(chord.modifiers.iter().map(String::as_str), &chord.key);
+    let painted = tilo_ui_base::keycaps::active()
+        .chord(chord.modifiers.iter().map(String::as_str), &chord.key);
     (chord.display(), painted)
 }
 

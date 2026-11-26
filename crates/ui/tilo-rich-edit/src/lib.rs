@@ -104,7 +104,7 @@ include!(concat!(env!("OUT_DIR"), "/component_registry.rs"));
 
 /// The rich-text widgets a window builds by name, beside the toolkit's
 /// (`ui::component_catalogue::TOOLKIT`).
-pub static COMPONENTS: ui::component::Set = ui::component::Set {
+pub static COMPONENTS: tilo_ui_base::component::Set = tilo_ui_base::component::Set {
     entries: generated_entries,
     parts: GENERATED_PARTS,
     enums: Vec::new,

@@ -1,8 +1,8 @@
 //! The window's own furniture in the row its app draws, as widgets of the window.
 use super::WindowGroup;
-use crate::widget::Widget;
 use crate::widget::window_header::RowControl;
 use taffy::{NodeId, TaffyTree};
+use tilo_ui_base::widget::Widget;
 use vello::kurbo::Rect;
 
 pub(crate) struct HeldControl {
@@ -64,10 +64,10 @@ impl Widget for HeldControl {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &crate::theme::Theme,
+        _theme: &tilo_ui_base::theme::Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        use crate::widget::TaffyTreeExt;
+        use tilo_ui_base::widget::TaffyTreeExt;
         let style = taffy::Style {
             position: taffy::Position::Absolute,
             ..Default::default()
@@ -101,8 +101,8 @@ impl Widget for HeldControl {
     /// What it shows, as assistive technology reads it: named and targeted as the bar's own
     /// control for the same function, so a window shows one set of functions whether its row holds
     /// the bar or stands as its slots. A control the row cannot fit is not there.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         self.placed().then(|| {
             AccessNode::new(Role::Button)
                 .with_name(self.kind.name(self.resize))
@@ -114,12 +114,12 @@ impl Widget for HeldControl {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _root: &crate::widget::ModelPath,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _root: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        if !self.placed() || !matches!(action, crate::a11y::Action::Activate) {
+        if !self.placed() || !matches!(action, tilo_ui_base::a11y::Action::Activate) {
             return false;
         }
         self.pressed = true;
@@ -155,7 +155,7 @@ impl WindowGroup {
     pub(super) fn build_held_controls(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        theme: &crate::theme::Theme,
+        theme: &tilo_ui_base::theme::Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
         nodes: &mut Vec<NodeId>,
     ) {
@@ -207,7 +207,8 @@ impl WindowGroup {
                 continue;
             }
             let target = self.held_controls[index].kind().target();
-            ran |= self.perform_held_furniture_action(target, &crate::a11y::Action::Activate)
+            ran |= self
+                .perform_held_furniture_action(target, &tilo_ui_base::a11y::Action::Activate)
                 == Some(true);
         }
         ran

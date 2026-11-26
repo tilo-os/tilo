@@ -60,14 +60,14 @@ pub(super) fn asked(askers: Vec<String>) {
             for (asker, count) in &window.asks {
                 line.push_str(&format!(" {asker}={count}"));
             }
-            crate::diag!("{line}");
+            tilo_ui_base::diag!("{line}");
         }
     });
 }
 
 /// A frame was handed to the render thread, repainting its whole window
 /// for `full` or only its damage.
-pub(super) fn submitted(full: Option<crate::input_frame::RepaintWhy>) {
+pub(super) fn submitted(full: Option<tilo_ui_base::input_frame::RepaintWhy>) {
     if !enabled() {
         return;
     }

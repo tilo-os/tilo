@@ -3,12 +3,12 @@ pub use imager_backend::imager_model::*;
 
 /// Icon presentation is deliberately not part of the native data contract.
 pub trait TargetDriveIcon {
-    fn icon(&self) -> ui::icons::Icon;
+    fn icon(&self) -> tilo_ui_base::icons::Icon;
 }
 
 impl TargetDriveIcon for TargetDrive {
-    fn icon(&self) -> ui::icons::Icon {
-        use ui::icons::Icon;
+    fn icon(&self) -> tilo_ui_base::icons::Icon {
+        use tilo_ui_base::icons::Icon;
         match self.tran.as_deref() {
             Some("usb") => Icon::Usb,
             Some("mmc" | "sd") => Icon::SdCard,

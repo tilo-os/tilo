@@ -26,12 +26,17 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::component::{Component, Described, Event, PartType, PartViews, Source, Value};
-use crate::theme::Theme;
-use crate::widget::composition_parts::Parts;
+use crate::widget::MenuPart;
 use crate::widget::context_menu::{ContextMenu, MenuItem};
-use crate::widget::{
-    DrawChild, Element, Manual, MeasureConstraint, MenuPart, Widget, WidgetLayoutError,
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::composition_parts::Parts;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PartItem,
+    component::PartViews, component::Source, component::Value,
+};
+use tilo_ui_base::{
+    widget::DrawChild, widget::Element, widget::Manual, widget::MeasureConstraint, widget::Widget,
+    widget::WidgetLayoutError,
 };
 
 /// How close to a place's trailing or bottom edge a press grabs it, in logical pixels: the same
@@ -158,20 +163,18 @@ pub struct StageProps {
     /// page that was shown laid out while it fades out and fades the new one in over it, for a
     /// stage that presents one page at a time. A change of the same page (a moved place, a zoom)
     /// is reconciled in place and never swaps.
-    pub transition: Option<crate::motion::Swap>,
+    pub transition: Option<tilo_ui_base::motion::Swap>,
     /// The pace a page swap plays at: `.standard` (the theme's, and what the stage does anyway),
     /// `.brisk`, `.calm`, or `.still`, whose swaps land at once.
-    pub motion: Option<crate::motion::Feel>,
+    pub motion: Option<tilo_ui_base::motion::Feel>,
 }
 
-impl PartType for Vec<StagePinProps> {
-    const MANY: bool = true;
-
-    fn accepts() -> crate::component::Accepts {
-        crate::component::Accepts::Component(StagePinProps::NAME.into())
+impl PartItem for StagePinProps {
+    fn accepts() -> tilo_ui_base::component::Accepts {
+        tilo_ui_base::component::Accepts::Component(StagePinProps::NAME.into())
     }
 
-    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+    fn read_all(source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
         let mut out = Vec::new();
         let mut failed: Option<String> = None;
         source.components(part, &mut |child| match StagePinProps::from_source(child) {
@@ -187,8 +190,7 @@ impl PartType for Vec<StagePinProps> {
         if let Some(error) = failed {
             return Err(error);
         }
-        *self = out;
-        Ok(())
+        Ok(out)
     }
 }
 
@@ -265,7 +267,7 @@ pub struct Stage {
     /// edges allow.
     chosen_pan: Vec2,
     /// The platform whose command modifier zooms: the Ctrl of a PC, the ⌘ of a Mac.
-    platform: crate::platform::PlatformConventions,
+    platform: tilo_ui_base::platform::PlatformConventions,
     /// The keyboard is in the page, for the keys that zoom it.
     focused: bool,
     background: Option<vello::peniko::Color>,
@@ -274,7 +276,7 @@ pub struct Stage {
     laid: Rc<RefCell<Vec<Rect>>>,
     /// Where the places stand, read by the region at each solve.
     places: Rc<RefCell<Vec<Place>>>,
-    invalidation: crate::widget::ManualInvalidation,
+    invalidation: tilo_ui_base::widget::ManualInvalidation,
     /// The stage's own box, in the window's coordinates.
     rect: Rect,
     /// What one page coordinate takes on screen, and where the page's origin stands inside the
@@ -304,7 +306,7 @@ pub struct Stage {
     /// The pin whose view a change inside it is patching, by its index.
     editing: Option<usize>,
     /// What a place being dragged lines up with, while it moves: drawn across the page.
-    guides: RefCell<Vec<crate::snap::Guide>>,
+    guides: RefCell<Vec<tilo_ui_base::snap::Guide>>,
     /// The page stands where the view puts it, taking no zoom, pan or keys of its own.
     still: bool,
     /// The clicks on a place, so a second one on the same place opens it: a double click's, or a
@@ -314,7 +316,7 @@ pub struct Stage {
 
 impl Stage {
     fn no_body() -> Element {
-        Box::new(crate::widget::Spacer::new())
+        Box::new(tilo_ui_base::widget::Spacer::new())
     }
 
     fn item_of(&self, index: usize) -> String {
@@ -337,7 +339,7 @@ impl Stage {
     fn place_event(
         &self,
         event: &WindowEvent,
-        ctx: &crate::widget::EventCtx<'_>,
+        ctx: &tilo_ui_base::widget::EventCtx<'_>,
     ) -> Option<WindowEvent> {
         let on_page = |at: winit::dpi::PhysicalPosition<f64>| {
             let at = self.page_point(ctx.logical(at));
@@ -722,7 +724,7 @@ impl Stage {
             (moving.x0.round(), moving.y0.round())
         } else {
             let reach = SNAP_REACH / self.scale.max(f64::EPSILON);
-            let snap = crate::snap::snap_rect(moving, &self.snap_targets(grab.index), reach);
+            let snap = tilo_ui_base::snap::snap_rect(moving, &self.snap_targets(grab.index), reach);
             *self.guides.borrow_mut() = snap.guides;
             (
                 (moving.x0 + snap.offset.x).round(),
@@ -777,7 +779,10 @@ impl Stage {
         if menu.items().is_empty() {
             return false;
         }
-        menu.open_at([crate::num::f32_of_f64(at.x), crate::num::f32_of_f64(at.y)]);
+        menu.open_at([
+            tilo_ui_base::num::f32_of_f64(at.x),
+            tilo_ui_base::num::f32_of_f64(at.y),
+        ]);
         self.menu = menu;
         self.menu_pin = Some(index);
         self.dirty = true;
@@ -786,14 +791,18 @@ impl Stage {
 
     /// Route `event` to the open menu. Returns whether it consumed it; a press outside closes
     /// the menu and falls through to the places.
-    fn route_menu(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
+    fn route_menu(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         if !self.menu.is_open() {
             return false;
         }
         let mut consumed = false;
         self.menu.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 handled: &mut consumed,
                 ..ctx.reborrow(ctx.path, ctx.node_id)
             },
@@ -824,7 +833,7 @@ impl Stage {
     }
 
     /// The semantics of the open menu, its targets namespaced into the stage's.
-    fn menu_node(&self) -> Option<crate::a11y::AccessNode> {
+    fn menu_node(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         if !self.menu.is_open() {
             return None;
         }
@@ -879,13 +888,13 @@ impl Described for Stage {
                     pan.get(1).copied().unwrap_or(0.0),
                 )
             }),
-            platform: crate::platform::PlatformConventions::default(),
+            platform: tilo_ui_base::platform::PlatformConventions::default(),
             focused: false,
             background: background.as_deref().and_then(crate::color::parse_hex),
             chosen: chosen.filter(|chosen| !chosen.is_empty()),
             laid: Rc::default(),
             places: Rc::default(),
-            invalidation: crate::widget::ManualInvalidation::default(),
+            invalidation: tilo_ui_base::widget::ManualInvalidation::default(),
             rect: Rect::ZERO,
             scale: 1.0,
             offset: Vec2::ZERO,
@@ -1132,7 +1141,7 @@ impl PartViews for Stage {
 }
 
 impl Widget for Stage {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn name(&self) -> &'static str {
         "Stage"
@@ -1142,7 +1151,11 @@ impl Widget for Stage {
         self.name.as_deref()
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let mut changed = false;
         for child in &mut self.parts.children {
             changed |= child.update(state, path);
@@ -1150,7 +1163,11 @@ impl Widget for Stage {
         changed
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         for child in &mut self.parts.children {
             child.sync(state, path);
         }
@@ -1205,7 +1222,7 @@ impl Widget for Stage {
 
     fn apply_layout(&mut self, tree: &TaffyTree<()>, node: NodeId, origin: Point) {
         self.parts.apply_layout(tree, node, origin);
-        let rect = crate::widget::layout_rect(tree, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(tree, node, origin);
         if rect != self.rect {
             self.rect = rect;
         }
@@ -1228,14 +1245,14 @@ impl Widget for Stage {
                 .any(|child| child.layout_needs_measure())
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        crate::scene_parts::picture();
+        tilo_ui_base::scene_parts::picture();
         let viewport = self.rect;
         let clips = viewport.width() > 0.0 && viewport.height() > 0.0;
         if clips {
@@ -1337,7 +1354,7 @@ impl Widget for Stage {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty || self.menu_needs_redraw(), self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty || self.menu_needs_redraw(), self)
     }
 
     fn mark_drawn(&mut self) {
@@ -1349,7 +1366,7 @@ impl Widget for Stage {
     }
 
     /// The menu a place opened paints in the top layer, above every place and the page itself.
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1390,7 +1407,7 @@ impl Widget for Stage {
                     });
                     Affine::translate(offset + nudge)
                 });
-                child.draw_overlay(&mut crate::draw::DrawCtx::new(
+                child.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                     scene,
                     transform * placed,
                     text,
@@ -1401,13 +1418,14 @@ impl Widget for Stage {
         }
         // The stage's own open menu stands above the places, in the window's own pixels.
         if self.menu.is_open() {
-            self.menu.draw_overlay(&mut crate::draw::DrawCtx::new(
-                scene, transform, text, theme, env,
-            ));
+            self.menu
+                .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                    scene, transform, text, theme, env,
+                ));
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         // The menu a place opened hears the event first, above the places and the page.
         if self.route_menu(event, ctx) {
             return;
@@ -1747,8 +1765,8 @@ impl Widget for Stage {
     /// A finger on a place that moves drags it, as a pointer does: a tap clicks, a held finger is
     /// the right press that opens the place's menu, and a drag moves the place past the tap's
     /// slop. Elsewhere the page is ordinary content: a tap clicks and a drag scrolls.
-    fn touch_claim(&self, point: Point) -> crate::interaction::TouchClaim {
-        use crate::interaction::TouchClaim;
+    fn touch_claim(&self, point: Point) -> tilo_ui_base::interaction::TouchClaim {
+        use tilo_ui_base::interaction::TouchClaim;
         if !self.rect.contains(point) {
             return TouchClaim::Pointer;
         }
@@ -1769,9 +1787,9 @@ impl Widget for Stage {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         let Some(target) = target.strip_prefix(MENU_TARGET) else {
             return false;
@@ -1801,7 +1819,10 @@ impl Widget for Stage {
         !self.still && !self.pins.is_empty()
     }
 
-    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+    fn set_platform_conventions(
+        &mut self,
+        conventions: tilo_ui_base::platform::PlatformConventions,
+    ) {
         self.platform = conventions;
     }
 
@@ -1832,8 +1853,8 @@ impl Widget for Stage {
         None
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        let mut node = crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        let mut node = tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
             .with_optional_name(self.name.clone());
         if let Some(menu) = self.menu_node() {
             node.children.push(menu);
@@ -1845,7 +1866,7 @@ impl Widget for Stage {
 /// The prefix a place's menu targets carry, namespacing them into the stage's own semantics.
 const MENU_TARGET: &str = "pin-menu:";
 
-fn namespace_menu_targets(node: &mut crate::a11y::AccessNode) {
+fn namespace_menu_targets(node: &mut tilo_ui_base::a11y::AccessNode) {
     if let Some(target) = node.action_target.take() {
         let target = format!("{MENU_TARGET}{target}");
         node.semantic_key = Some(target.clone());

@@ -265,7 +265,7 @@ impl PeopleDevice {
             colour_slot: u32::try_from(Self::worn_colour(&identity)).ok(),
             given,
             chat: (self.chat)(),
-            identity_generation: ui::local_identity::generation(),
+            identity_generation: tilo_ui_base::local_identity::generation(),
             record_generation: crate::identity::record_generation(),
         }
     }
@@ -280,7 +280,7 @@ impl PeopleDevice {
     /// rather than holding the words said in place of it.
     fn given() -> String {
         crate::platform::person::given_name(
-            ui::local_identity::load().map(|identity| identity.display_name),
+            tilo_ui_base::local_identity::load().map(|identity| identity.display_name),
         )
         .unwrap_or_default()
     }
@@ -291,8 +291,8 @@ impl PeopleDevice {
         settings_store::identity::COLOUR
             .get()
             .as_deref()
-            .and_then(ui::tokens::PresenceHue::from_id)
-            .unwrap_or_else(|| ui::tokens::PresenceHue::of_identity(identity))
+            .and_then(tilo_ui_base::tokens::PresenceHue::from_id)
+            .unwrap_or_else(|| tilo_ui_base::tokens::PresenceHue::of_identity(identity))
             .slot()
     }
 
@@ -327,7 +327,7 @@ impl PeopleDevice {
                 title: action.title,
                 icon: action
                     .icon
-                    .unwrap_or_else(|| ui::icons::Icon::Fingerprint.name().to_owned()),
+                    .unwrap_or_else(|| tilo_ui_base::icons::Icon::Fingerprint.name().to_owned()),
                 group: "identity".to_owned(),
             })
             .collect();
@@ -337,21 +337,23 @@ impl PeopleDevice {
             PersonAction {
                 id: OPEN_SETTINGS.to_owned(),
                 title: crate::i18n::t("profile-action-settings"),
-                icon: ui::icons::Icon::Settings.name().to_owned(),
+                icon: tilo_ui_base::icons::Icon::Settings.name().to_owned(),
                 group: "settings".to_owned(),
             },
         );
         actions.push(PersonAction {
             id: PAIR_DEVICE.to_owned(),
             title: crate::i18n::t("profile-action-pair-device"),
-            icon: ui::icons::Icon::MonitorSmartphone.name().to_owned(),
+            icon: tilo_ui_base::icons::Icon::MonitorSmartphone
+                .name()
+                .to_owned(),
             group: "devices".to_owned(),
         });
         // Everything that acts as the person, and taking any of it back.
         actions.push(PersonAction {
             id: DEVICES_ACCESS.to_owned(),
             title: crate::i18n::t("profile-action-devices-access"),
-            icon: ui::icons::Icon::Shield.name().to_owned(),
+            icon: tilo_ui_base::icons::Icon::Shield.name().to_owned(),
             group: "devices".to_owned(),
         });
         actions
@@ -360,8 +362,8 @@ impl PeopleDevice {
     /// The presence colours a person may wear, in the order their card offers them, painted in the
     /// dark presence palette identity colours are defined at.
     fn colours() -> Vec<PresenceColour> {
-        let palette = ui::theme::Theme::dark().tokens.colors.presence;
-        ui::tokens::PresenceHue::ALL
+        let palette = tilo_ui_base::theme::Theme::dark().tokens.colors.presence;
+        tilo_ui_base::tokens::PresenceHue::ALL
             .into_iter()
             .map(|hue| {
                 let colour = palette.hue(hue).to_rgba8();
@@ -400,7 +402,7 @@ impl PeopleDevice {
                 let mut person = person_of(workspace, member, present);
                 let agent = person.agent;
                 person.agent_client = if agent {
-                    ui::presence::agent_client(&member.name).to_owned()
+                    tilo_ui_base::presence::agent_client(&member.name).to_owned()
                 } else {
                     String::new()
                 };
@@ -851,8 +853,8 @@ impl PeopleDevice {
     fn choose_colour(&self, slot: u32) -> Result<(), ApiError> {
         let hue = usize::try_from(slot)
             .ok()
-            .filter(|slot| *slot < ui::tokens::PresenceHue::ALL.len())
-            .map(ui::tokens::PresenceHue::from_slot)
+            .filter(|slot| *slot < tilo_ui_base::tokens::PresenceHue::ALL.len())
+            .map(tilo_ui_base::tokens::PresenceHue::from_slot)
             .ok_or_else(|| {
                 ApiError::InvalidArguments(format!(
                     "`{slot}` is not one of the presence colours the card offers"
@@ -967,7 +969,7 @@ impl PeopleDevice {
     /// field has just asked to keep.
     fn name_says_more(&self, name: &str) -> bool {
         let name = name.trim();
-        !ui::presence::is_unnamed_person(name)
+        !tilo_ui_base::presence::is_unnamed_person(name)
             && name != Self::given()
             && name != self.kept.borrow().0
     }
@@ -1072,12 +1074,12 @@ fn name_the_unnamed(rows: &mut [(Person, Option<u64>)]) {
     let joined: Vec<(usize, u64)> = rows
         .iter()
         .enumerate()
-        .filter(|(_, (row, _))| ui::presence::is_unnamed_person(&row.name))
+        .filter(|(_, (row, _))| tilo_ui_base::presence::is_unnamed_person(&row.name))
         .filter_map(|(index, (_, at))| Some((index, (*at)?)))
         .collect();
     let seconds: Vec<String> = joined
         .iter()
-        .map(|(_, at)| clock(*at, ui::format::time_of_with_seconds))
+        .map(|(_, at)| clock(*at, tilo_ui_base::format::time_of_with_seconds))
         .collect();
     let mut counts: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for text in &seconds {
@@ -1100,9 +1102,9 @@ fn name_the_unnamed(rows: &mut [(Person, Option<u64>)]) {
 
 /// The local clock `at` (Unix milliseconds) reads by, to the second, through the person's own
 /// time format.
-fn clock(at: u64, read: fn(&ui::format::UnixSecs) -> String) -> String {
+fn clock(at: u64, read: fn(&tilo_ui_base::format::UnixSecs) -> String) -> String {
     i64::try_from(at / 1000)
-        .map(|seconds| read(&ui::format::UnixSecs(seconds)))
+        .map(|seconds| read(&tilo_ui_base::format::UnixSecs(seconds)))
         .unwrap_or_default()
 }
 
@@ -1110,7 +1112,9 @@ fn clock(at: u64, read: fn(&ui::format::UnixSecs) -> String) -> String {
 /// second apart.
 fn clock_millis(at: u64) -> String {
     i64::try_from(at)
-        .map(|millis| ui::format::time_of_with_millis(&ui::format::UnixMillis(millis)))
+        .map(|millis| {
+            tilo_ui_base::format::time_of_with_millis(&tilo_ui_base::format::UnixMillis(millis))
+        })
         .unwrap_or_default()
 }
 
@@ -1396,8 +1400,8 @@ mod tests {
     /// within one second say the millisecond as well, and a named person's row says none of it.
     #[test]
     fn a_row_nobody_named_says_when_they_joined() {
-        ui::i18n::I18nManager::init("en-US");
-        let unnamed = ui::presence::unnamed_person_label();
+        tilo_ui_base::i18n::I18nManager::init("en-US");
+        let unnamed = tilo_ui_base::presence::unnamed_person_label();
         let mut rows = vec![
             (
                 person("early", &unnamed, false),

@@ -4,10 +4,14 @@ use std::collections::BTreeMap;
 
 use media::Source;
 
-use crate::component::{Component, Described, Event, Value};
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Value,
+};
 
 use super::{NowPlaying, PlaybackState, PlayerSetting, PlayerSettingEvent, VideoPlayer};
-use crate::widget::{DrawChild, PictureInPictureAsk, PictureInPictureProvider};
+use tilo_ui_base::{
+    widget::DrawChild, widget::PictureInPictureAsk, widget::PictureInPictureProvider,
+};
 
 /// The speeds the settings menu offers, from a quarter to three times.
 pub const PLAYBACK_RATES: [f64; 8] = [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 2.0, 3.0];
@@ -232,7 +236,7 @@ impl DeclaredVideo {
         let mut player = VideoPlayer::new();
         player.set_live(live);
         if let Some(rate) = rate {
-            player.set_rate(crate::num::f32_of_f64(rate));
+            player.set_rate(tilo_ui_base::num::f32_of_f64(rate));
         }
         if let Some(vtt) = captions.as_deref() {
             player.set_captions(Some(vtt));
@@ -244,8 +248,8 @@ impl DeclaredVideo {
         // offered to every view that draws a player, so an app never builds one itself.
         player.set_setting(PlayerSetting::button(
             PICTURE_IN_PICTURE,
-            crate::icons::Icon::PictureInPicture2,
-            crate::i18n::widget_format("media-picture-in-picture", &[]),
+            tilo_ui_base::icons::Icon::PictureInPicture2,
+            tilo_ui_base::i18n::widget_format("media-picture-in-picture", &[]),
             0,
         ));
         if let Some(address) = &source {
@@ -274,7 +278,7 @@ impl DeclaredVideo {
             player.set_poster(Some(crate::widget::MediaSource::Url { store, url: poster }));
         }
         if let Some(volume) = volume {
-            player.set_volume(crate::num::f32_of_f64(volume));
+            player.set_volume(tilo_ui_base::num::f32_of_f64(volume));
         }
         if muted {
             player.toggle_mute();
@@ -353,8 +357,8 @@ impl DeclaredVideo {
             .unwrap_or(3);
         self.player.set_setting(PlayerSetting::choice(
             "playback-rate",
-            crate::icons::Icon::Gauge,
-            crate::i18n::widget_format("media-playback-speed", &[]),
+            tilo_ui_base::icons::Icon::Gauge,
+            tilo_ui_base::i18n::widget_format("media-playback-speed", &[]),
             0,
             PLAYBACK_RATES
                 .iter()
@@ -372,8 +376,8 @@ impl DeclaredVideo {
                 .unwrap_or(0);
             self.player.set_setting(PlayerSetting::choice(
                 "quality",
-                crate::icons::Icon::Monitor,
-                crate::i18n::widget_format("media-quality", &[]),
+                tilo_ui_base::icons::Icon::Monitor,
+                tilo_ui_base::i18n::widget_format("media-quality", &[]),
                 0,
                 qualities.to_vec(),
                 selected,
@@ -385,7 +389,7 @@ impl DeclaredVideo {
             self.player.remove_setting("captions");
             self.caption_keys.clear();
         } else {
-            let mut options = vec![crate::i18n::widget_format("media-captions-off", &[])];
+            let mut options = vec![tilo_ui_base::i18n::widget_format("media-captions-off", &[])];
             let mut keys = vec![String::new()];
             for (language, label) in caption_tracks {
                 options.push(label.clone());
@@ -396,8 +400,8 @@ impl DeclaredVideo {
                 .unwrap_or(0);
             self.player.set_setting(PlayerSetting::choice(
                 "captions",
-                crate::icons::Icon::Captions,
-                crate::i18n::widget_format("media-captions", &[]),
+                tilo_ui_base::icons::Icon::Captions,
+                tilo_ui_base::i18n::widget_format("media-captions", &[]),
                 0,
                 options,
                 selected,
@@ -445,7 +449,7 @@ impl DeclaredVideo {
         // player's failure instead of a picture that never came.
         for event in self.player.take_media_events() {
             if let Some(reason) = failure_of(&event) {
-                let position = crate::num::f64_of_u64(self.player.position_ms()) / 1000.0;
+                let position = tilo_ui_base::num::f64_of_u64(self.player.position_ms()) / 1000.0;
                 self.fail.fire(Some(Value::List(vec![
                     Value::Text(reason),
                     Value::Float(position),
@@ -461,7 +465,7 @@ impl DeclaredVideo {
         if self.reported.duration_ms != Some(duration_ms) {
             self.reported.duration_ms = Some(duration_ms);
             self.length.fire(Some(Value::Float(
-                crate::num::f64_of_u64(duration_ms) / 1000.0,
+                tilo_ui_base::num::f64_of_u64(duration_ms) / 1000.0,
             )));
         }
         // After the length went to the view, so the share it reads names a place in a video it
@@ -521,7 +525,7 @@ impl DeclaredVideo {
         if let Some(engine) = self.player.engine_mut() {
             if self.wanted.rate != self.applied.rate {
                 if let Some(rate) = self.wanted.rate {
-                    engine.set_rate(crate::num::f32_of_f64(rate));
+                    engine.set_rate(tilo_ui_base::num::f32_of_f64(rate));
                 }
                 self.applied.rate = self.wanted.rate;
             }
@@ -583,7 +587,8 @@ impl DeclaredVideo {
             return;
         }
         self.reported.progress_ms = Some(position);
-        let share = crate::num::f64_of_u64(position) / crate::num::f64_of_u64(duration);
+        let share =
+            tilo_ui_base::num::f64_of_u64(position) / tilo_ui_base::num::f64_of_u64(duration);
         self.progress
             .fire(Some(Value::Float(share.clamp(0.0, 1.0))));
     }
@@ -594,13 +599,14 @@ impl DeclaredVideo {
 fn failure_of(event: &media::MediaEvent) -> Option<String> {
     match event {
         media::MediaEvent::Error(reason) => Some(reason.clone()),
-        media::MediaEvent::MissingDecoder { codec } => Some(crate::i18n::widget_format(
+        media::MediaEvent::MissingDecoder { codec } => Some(tilo_ui_base::i18n::widget_format(
             "media-missing-decoder",
             &[("codec", codec.as_str().into())],
         )),
-        media::MediaEvent::LimitReached => {
-            Some(crate::i18n::widget_format("media-playback-limit", &[]))
-        }
+        media::MediaEvent::LimitReached => Some(tilo_ui_base::i18n::widget_format(
+            "media-playback-limit",
+            &[],
+        )),
         _ => None,
     }
 }
@@ -632,7 +638,7 @@ impl PictureInPictureProvider for DeclaredVideo {
         if !self.pip.replace(false) {
             return None;
         }
-        let region = crate::widget::Widget::get_rect(&self.player);
+        let region = tilo_ui_base::widget::Widget::get_rect(&self.player);
         if region.width() < 1.0 || region.height() < 1.0 {
             return None;
         }
@@ -660,7 +666,7 @@ impl PictureInPictureProvider for DeclaredVideo {
         if !self.floating.get() {
             return None;
         }
-        let region = crate::widget::Widget::get_rect(&self.player);
+        let region = tilo_ui_base::widget::Widget::get_rect(&self.player);
         (region.width() >= 1.0 && region.height() >= 1.0).then_some(region)
     }
 
@@ -670,7 +676,7 @@ impl PictureInPictureProvider for DeclaredVideo {
         &mut self,
         source: crate::kurbo::Rect,
         target: crate::kurbo::Rect,
-        ctx: &mut crate::draw::DrawCtx<'_>,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
     ) -> bool {
         if source.width() < 1.0
             || source.height() < 1.0
@@ -691,12 +697,19 @@ impl PictureInPictureProvider for DeclaredVideo {
                 target.height() / source.height(),
             )
             .pre_translate(-source.origin().to_vec2());
-        crate::widget::draw_child(&mut self.player, scene, transform * onto, text, theme, &env);
+        tilo_ui_base::widget::draw_child(
+            &mut self.player,
+            scene,
+            transform * onto,
+            text,
+            theme,
+            &env,
+        );
         true
     }
 }
 
-impl crate::widget::AudioTapProvider for DeclaredVideo {
+impl tilo_ui_base::widget::AudioTapProvider for DeclaredVideo {
     /// The sound the player decoded since the host last asked, for the host to play in every
     /// place the session's outputs name. One pipeline decodes it; the host fans it out.
     fn take_audio(&self) -> Vec<i16> {
@@ -704,12 +717,12 @@ impl crate::widget::AudioTapProvider for DeclaredVideo {
     }
 }
 
-impl crate::widget::Widget for DeclaredVideo {
+impl tilo_ui_base::widget::Widget for DeclaredVideo {
     // A view's player offers picture-in-picture, and its sound to the host; the host walks the
     // tree it draws to find it.
-    crate::provides!(
+    tilo_ui_base::provides!(
         dyn PictureInPictureProvider,
-        dyn crate::widget::AudioTapProvider
+        dyn tilo_ui_base::widget::AudioTapProvider
     );
 
     fn needs_redraw(&self) -> bool {
@@ -725,7 +738,7 @@ impl crate::widget::Widget for DeclaredVideo {
     }
 
     fn is_layout_dirty(&self) -> bool {
-        crate::widget::Widget::is_layout_dirty(&self.player)
+        tilo_ui_base::widget::Widget::is_layout_dirty(&self.player)
     }
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -736,12 +749,20 @@ impl crate::widget::Widget for DeclaredVideo {
         Some(self)
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.player.sync(state, path);
         self.report();
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let changed = self.player.update(state, path);
         self.report();
         changed
@@ -750,13 +771,19 @@ impl crate::widget::Widget for DeclaredVideo {
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        theme: &crate::theme::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+        theme: &tilo_ui_base::theme::Theme,
+        node_map: &mut std::collections::HashMap<
+            taffy::NodeId,
+            *mut dyn tilo_ui_base::widget::Widget,
+        >,
     ) -> taffy::NodeId {
         // The player's own leaf, measured as the player is: a view's player is the leaf the
         // layout asks for its size, so a column that grows with what it holds grows to hold it.
         let node = self.player.build_layout(taffy, theme, node_map);
-        node_map.insert(node, std::ptr::from_mut::<dyn crate::widget::Widget>(self));
+        node_map.insert(
+            node,
+            std::ptr::from_mut::<dyn tilo_ui_base::widget::Widget>(self),
+        );
         node
     }
 
@@ -764,9 +791,9 @@ impl crate::widget::Widget for DeclaredVideo {
         &mut self,
         known: taffy::Size<Option<f32>>,
         available: taffy::Size<taffy::AvailableSpace>,
-        text_renderer: &mut crate::text_render::TextRenderer,
+        text_renderer: &mut tilo_ui_base::text_render::TextRenderer,
     ) -> taffy::Size<f32> {
-        crate::widget::Widget::measure(&mut self.player, known, available, text_renderer)
+        tilo_ui_base::widget::Widget::measure(&mut self.player, known, available, text_renderer)
     }
 
     fn apply_layout(
@@ -778,7 +805,7 @@ impl crate::widget::Widget for DeclaredVideo {
         self.player.apply_layout(taffy, node, origin);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -791,7 +818,7 @@ impl crate::widget::Widget for DeclaredVideo {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.player.handle_event(event, ctx);
     }
@@ -804,7 +831,7 @@ impl crate::widget::Widget for DeclaredVideo {
         "VideoPlayer"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.player.accessibility()
     }
 }
@@ -873,10 +900,11 @@ impl Described for DeclaredVideo {
             self.player.pause();
         }
         if let Some(volume) = volume {
-            self.player.set_volume(crate::num::f32_of_f64(volume));
+            self.player
+                .set_volume(tilo_ui_base::num::f32_of_f64(volume));
         }
         if let Some(rate) = rate {
-            self.player.set_rate(crate::num::f32_of_f64(rate));
+            self.player.set_rate(tilo_ui_base::num::f32_of_f64(rate));
         }
         if captions.as_deref() != self.captions_text.as_deref() {
             self.player.set_captions(captions.as_deref());

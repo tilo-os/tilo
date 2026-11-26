@@ -1,7 +1,7 @@
 //! The rows of a [`super::VirtualList`] laid out where they stand, and the rows a scroll brings
 //! near mounted in place: each entering row's layout is built alone and the rows already there keep
 //! theirs, so a row coming into view costs its own layout, not the list's
-//! ([`crate::widget::Widget::remount_children`]).
+//! ([`tilo_ui_base::widget::Widget::remount_children`]).
 use std::ops::Range;
 
 use taffy::style_helpers::length;
@@ -9,8 +9,8 @@ use taffy::{Dimension, NodeId};
 
 use super::px;
 use super::{ListKey, VirtualRows};
-use crate::widget::Remount;
-use crate::widget::layout::Styles;
+use tilo_ui_base::widget::Remount;
+use tilo_ui_base::widget::layout::Styles;
 
 /// How far the view may scroll from where the rows' layout was placed
 /// before they are placed again from where it stands: taffy lays out in
@@ -47,7 +47,7 @@ impl VirtualRows {
     }
 
     pub(super) fn mounted_near(&self) -> Range<usize> {
-        let reach = crate::scroll_copy::EFFECT_REACH + self.give().abs();
+        let reach = tilo_ui_base::scroll_copy::EFFECT_REACH + self.give().abs();
         let height = self.rect.height();
         let start = self.mounted.partition_point(|row| {
             let Some(top) = self.viewport.item_view_top(row.index) else {
@@ -148,7 +148,8 @@ impl VirtualRows {
             };
             // The list's own offset is snapped where it places them; a row's top within it
             // stands on a device pixel too, whatever offset the rows were laid out from.
-            let top = crate::widget::layout::snap_to_device_pixels(top + self.band_gap(index));
+            let top =
+                tilo_ui_base::widget::layout::snap_to_device_pixels(top + self.band_gap(index));
             let Some(current) = taffy.style_of(child) else {
                 continue;
             };
@@ -215,24 +216,27 @@ impl VirtualRows {
 }
 
 impl VirtualRows {
-    pub(super) fn pending_shape(&self) -> crate::widget::SkeletonShape {
+    pub(super) fn pending_shape(&self) -> tilo_ui_base::widget::SkeletonShape {
         self.mounted
             .iter()
             .filter(|row| matches!(row.state, super::MountedRowState::Ready))
             .find_map(|row| {
-                crate::widget::capability::capability::<dyn crate::widget::ReservedShape>(
+                tilo_ui_base::widget::capability::capability::<dyn crate::widget::ReservedShape>(
                     row.widget.as_ref(),
                 )
                 .map(crate::widget::ReservedShape::reserved_shape)
             })
-            .unwrap_or(crate::widget::SkeletonShape::Text { lines: 1 })
+            .unwrap_or(tilo_ui_base::widget::SkeletonShape::Text { lines: 1 })
     }
 
     /// The mounted rows `event` may reach. Rows far from the box may stand
     /// where an earlier placement put them: a pointer meets only those near
     /// it, unless one holds it.
     pub(super) fn rows_reached(&self, event: &winit::event::WindowEvent) -> Range<usize> {
-        match (&self.placed, crate::widget::layout::at_a_place(event)) {
+        match (
+            &self.placed,
+            tilo_ui_base::widget::layout::at_a_place(event),
+        ) {
             (Some(_), true)
                 if !self
                     .mounted
@@ -252,7 +256,7 @@ impl VirtualRows {
     pub(super) fn pointer_reaches_rows(
         &self,
         event: &winit::event::WindowEvent,
-        ctx: &crate::widget::EventCtx<'_>,
+        ctx: &tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         use winit::event::WindowEvent;
         let at = match event {
@@ -274,7 +278,7 @@ impl VirtualRows {
         transform: vello::kurbo::Affine,
         opacity: f32,
         now: crate::time::Instant,
-    ) -> Option<crate::draw_cull::Keep> {
+    ) -> Option<tilo_ui_base::draw_cull::Keep> {
         let keep = self
             .shown
             .keep()
@@ -301,11 +305,11 @@ impl VirtualRows {
 pub(super) fn row_kept(
     scene: &vello::Scene,
     transform: vello::kurbo::Affine,
-    row: &dyn crate::widget::Widget,
+    row: &dyn tilo_ui_base::widget::Widget,
     lift: Option<vello::kurbo::Rect>,
 ) -> bool {
     let paints = lift.map_or_else(|| row.paint_bounds(), |lift| lift.union(row.paint_bounds()));
     !row.needs_redraw()
         && !row.needs_animation_frame()
-        && crate::draw_cull::kept(scene, transform, paints)
+        && tilo_ui_base::draw_cull::kept(scene, transform, paints)
 }

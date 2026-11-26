@@ -140,7 +140,7 @@ mod tests {
 
         phase empty_or_non_web_links_are_not_offered;
         {
-            ui::i18n::I18nManager::init("en-US");
+            tilo_ui_base::i18n::I18nManager::init("en-US");
             let links = AboutLinks::new(" https://example.org/notify ", "", "javascript:alert(1)");
             assert_eq!(links.notify.as_deref(), Some("https://example.org/notify"));
             assert_eq!(links.source, None);
@@ -157,7 +157,7 @@ mod tests {
 
         phase the_browser_says_it_runs_in_the_browser;
         {
-            ui::i18n::I18nManager::init("en-US");
+            tilo_ui_base::i18n::I18nManager::init("en-US");
             let browser = about_copy(AboutVariant::Browser);
             let native = about_copy(AboutVariant::Native);
             let body = browser.body.clone().unwrap_or_default();

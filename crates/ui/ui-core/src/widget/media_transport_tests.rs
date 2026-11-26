@@ -3,7 +3,8 @@
 use super::*;
 use crate::app::driver::Driver;
 use crate::state::State;
-use crate::widget::{ContentKind, NavShell, Text};
+use crate::{widget::NavShell, widget::Text};
+use tilo_ui_base::widget::ContentKind;
 use vello::kurbo::Point;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
@@ -126,8 +127,8 @@ fn press(h: &mut Driver, id: &str) {
     h.click_at(rect.center().x, rect.center().y);
 }
 
-fn bindings(h: &Driver) -> HashMap<String, crate::widget::ControlBindingKind> {
-    crate::widget::controls::control_action_bindings(band_transport(h))
+fn bindings(h: &Driver) -> HashMap<String, tilo_ui_base::widget::ControlBindingKind> {
+    tilo_ui_base::widget::controls::control_action_bindings(band_transport(h))
         .into_iter()
         .map(|binding| (binding.control_id, binding.kind))
         .collect()
@@ -150,7 +151,7 @@ fn each_control_invokes_the_action_the_app_handed_it() {
     ] {
         assert_eq!(
             bindings.get(control),
-            Some(&crate::widget::ControlBindingKind::Action(
+            Some(&tilo_ui_base::widget::ControlBindingKind::Action(
                 tilo_actions::ActionAddress::new(PLAYER, action)
             )),
             "{control}"
@@ -289,12 +290,12 @@ fn a_finger_on_the_band_swipes() {
     let transport = band_transport(&h);
     assert_eq!(
         Widget::touch_claim(transport, art.center()),
-        crate::interaction::TouchClaim::Drag
+        tilo_ui_base::interaction::TouchClaim::Drag
     );
     let play = control(&h, "transport.play").expect("play is there");
     assert_ne!(
         Widget::touch_claim(transport, play.center()),
-        crate::interaction::TouchClaim::Drag,
+        tilo_ui_base::interaction::TouchClaim::Drag,
         "a control is pressed, not swiped"
     );
 }
@@ -320,7 +321,7 @@ fn the_volume_is_reachable_at_every_width() {
             .unwrap_or_else(|| panic!("the popover holds the slider at {width}"));
         assert_eq!(
             bindings(&h).get("transport.volume-menu.slider"),
-            Some(&crate::widget::ControlBindingKind::Action(
+            Some(&tilo_ui_base::widget::ControlBindingKind::Action(
                 tilo_actions::ActionAddress::new(PLAYER, "set-volume")
             )),
             "the slider sets the volume at {width}"
@@ -426,11 +427,12 @@ fn a_declared_transport_hands_the_window_its_bands_layout() {
     };
     let transport = DeclaredTransport::new(playing(), triggers);
     assert!(
-        crate::widget::Widget::manual_layout_policy(&transport).is_some(),
+        tilo_ui_base::widget::Widget::manual_layout_policy(&transport).is_some(),
         "the band's region reaches the window through the component"
     );
     let mut visited = 0;
-    let walked = crate::widget::Widget::for_each_layout_child(&transport, &mut |_| visited += 1);
+    let walked =
+        tilo_ui_base::widget::Widget::for_each_layout_child(&transport, &mut |_| visited += 1);
     assert!(
         walked && visited == 1,
         "the band itself is the layout child"
@@ -469,8 +471,8 @@ fn a_declared_transport_hands_the_window_its_bands_layout() {
 /// length — never a clock the view has to keep in step with.
 #[test]
 fn a_declared_transport_plays_its_source_and_shows_the_engines_place() {
-    use crate::component::Described;
     use crate::widget::{DeclaredTransport, MediaTransportProps};
+    use tilo_ui_base::component::Described;
 
     let engine = media::MediaEngine::new_synthesized();
     let props = MediaTransportProps {
@@ -482,7 +484,7 @@ fn a_declared_transport_plays_its_source_and_shows_the_engines_place() {
         ..MediaTransportProps::default()
     };
     let mut transport = DeclaredTransport::from_props("root/0", props);
-    crate::widget::Widget::sync(&mut transport, &(), &());
+    tilo_ui_base::widget::Widget::sync(&mut transport, &(), &());
     let shown = transport.shown();
     assert!(shown.playing, "the engine plays what the view asked for");
     assert!(
@@ -499,7 +501,7 @@ fn a_declared_transport_plays_its_source_and_shows_the_engines_place() {
         ..MediaTransportProps::default()
     };
     assert!(Described::set_props(&mut transport, paused));
-    crate::widget::Widget::sync(&mut transport, &(), &());
+    tilo_ui_base::widget::Widget::sync(&mut transport, &(), &());
     assert!(!transport.shown().playing, "a paused view stops the sound");
 
     let sought = MediaTransportProps {
@@ -511,7 +513,7 @@ fn a_declared_transport_plays_its_source_and_shows_the_engines_place() {
         ..MediaTransportProps::default()
     };
     assert!(Described::set_props(&mut transport, sought));
-    crate::widget::Widget::sync(&mut transport, &(), &());
+    tilo_ui_base::widget::Widget::sync(&mut transport, &(), &());
     assert_eq!(
         transport.shown().position_ms,
         1_000.0,

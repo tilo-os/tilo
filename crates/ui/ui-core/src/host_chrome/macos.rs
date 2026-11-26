@@ -17,8 +17,8 @@ use tilo_actions::ControlInvocation;
 
 use super::menus::{self, Entry, MenuKind};
 use super::model::{CommandGroup, HostCommand};
-use crate::i18n::I18nManager;
-use crate::platform::Shortcut;
+use tilo_ui_base::i18n::I18nManager;
+use tilo_ui_base::platform::Shortcut;
 
 /// What a person asked of the app through the host chrome.
 pub(crate) enum ChromeRequest {
@@ -484,7 +484,7 @@ mod tests {
         };
         assert_eq!(query, "notes");
         assert!(
-            app.invoke_host_shortcut(crate::platform::HostShortcut::Search),
+            app.invoke_host_shortcut(tilo_ui_base::platform::HostShortcut::Search),
             "the palette opens"
         );
     }

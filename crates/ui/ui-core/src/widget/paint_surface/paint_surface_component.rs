@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use tilo_paint_strokes::{Brush, Preset};
 use vello::peniko::Color;
 
-use crate::component::{Component, Described, Event, Value};
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Value,
+};
 
 use super::{MAX_SIZE, PaintSurface};
 use crate::pictures::Pictures;

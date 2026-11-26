@@ -200,7 +200,7 @@ fn uninstall(session: &mut Session) {
 
 #[test]
 fn uninstalling_an_app_takes_every_copy_to_the_trash_and_says_so() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = tilo_test_env::TestHome::new().expect("a home");
     let applications = home.home().join("Applications/Tilo Imager.AppImage");
     let downloads = home.home().join("Downloads/tilo-imager.AppImage");
@@ -264,7 +264,7 @@ fn uninstalling_an_app_takes_every_copy_to_the_trash_and_says_so() {
 
 #[test]
 fn uninstalling_the_only_copy_says_its_file_is_in_the_trash() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = tilo_test_env::TestHome::new().expect("a home");
     let file = home.home().join("Applications/Dropped.AppImage");
     let desktop_id = app(&home, "Dropped", "Dropped Tool", &[&file]);
@@ -298,7 +298,7 @@ fn uninstalling_the_only_copy_says_its_file_is_in_the_trash() {
 
 #[test]
 fn keeping_an_app_leaves_it_and_its_file_alone() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = tilo_test_env::TestHome::new().expect("a home");
     let file = home.home().join("Applications/Tilo Imager.AppImage");
     let desktop_id = app(&home, "tilo-imager", "Tilo Imager", &[&file]);
@@ -326,7 +326,7 @@ fn keeping_an_app_leaves_it_and_its_file_alone() {
 
 #[test]
 fn asking_about_an_app_that_is_not_there_any_more_says_so() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().expect("a home");
     let mut session = session();
     session.ask_uninstall("tilo-downloaded-not-here");
@@ -351,7 +351,7 @@ fn asking_about_an_app_that_is_not_there_any_more_says_so() {
 /// question on the shell, and answering it uninstalls the app.
 #[test]
 fn the_uninstall_row_of_a_downloaded_app_asks_the_question() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = tilo_test_env::TestHome::new().expect("a home");
     let file = home.home().join("Applications/Tilo Imager.AppImage");
     let desktop_id = app(&home, "tilo-imager", "Tilo Imager", &[&file]);
@@ -400,7 +400,7 @@ fn the_uninstall_row_of_a_downloaded_app_asks_the_question() {
 fn the_uninstall_question_takes_the_app_by_name() {
     use tilo_desktop_search::providers::downloaded::{APP_PARAM, APPS_RESOURCE, ASK_UNINSTALL};
 
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = tilo_test_env::TestHome::new().expect("a home");
     let file = home.home().join("Applications/Tilo Imager.AppImage");
     let desktop_id = app(&home, "tilo-imager", "Tilo Imager", &[&file]);
@@ -422,7 +422,7 @@ fn the_uninstall_question_takes_the_app_by_name() {
 /// were.
 #[test]
 fn an_uninstall_that_cannot_trash_the_file_says_so() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = tilo_test_env::TestHome::new().expect("a home");
     let file = home.home().join("Applications/Dropped.AppImage");
     let desktop_id = app(&home, "Dropped", "Dropped Tool", &[&file]);
@@ -485,7 +485,7 @@ impl tilo_service::Service for NotReadBack {
 
 #[test]
 fn a_registry_that_does_not_read_back_says_nothing_was_removed() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().expect("a home");
     // A registry of theirs this build cannot read: their apps would simply be gone from the
     // launcher, so they are told once instead.

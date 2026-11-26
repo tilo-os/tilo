@@ -9,8 +9,10 @@ use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::theme::Theme;
-use crate::widget::{AppModel, EventCtx, ModelPath, TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{
+    widget::AppModel, widget::EventCtx, widget::ModelPath, widget::TaffyTreeExt, widget::Widget,
+};
 
 const REACHED: &str = "a replaced widget was reached through a layout map that was not rebuilt";
 
@@ -45,10 +47,13 @@ impl Tripwire {
 }
 
 impl Widget for Tripwire {
-    fn provide<'a>(&'a self, _request: &mut crate::widget::capability::Request<'a, '_>) {
+    fn provide<'a>(&'a self, _request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
         self.check();
     }
-    fn provide_mut<'a>(&'a mut self, _request: &mut crate::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(
+        &'a mut self,
+        _request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
         self.check();
     }
     fn build_layout(
@@ -64,7 +69,7 @@ impl Widget for Tripwire {
     fn apply_layout(&mut self, _taffy: &TaffyTree<()>, _node: NodeId, origin: Point) {
         self.rect = Rect::from_origin_size(origin, (80.0, 24.0));
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -98,17 +103,20 @@ impl Widget for Tripwire {
         self.check();
         Some("tripwire")
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.check();
-        Some(crate::a11y::AccessNode::new(crate::a11y::Role::Button).with_name("Tripwire"))
+        Some(
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button)
+                .with_name("Tripwire"),
+        )
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
         "Tripwire"
@@ -184,7 +192,7 @@ impl Widget for Replacing {
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.replace_if(ReplaceAt::Sync);
     }
-    fn settle(&mut self, _edits: &mut crate::widget::Edits<'_>, _path: &automerge::ObjId) {
+    fn settle(&mut self, _edits: &mut tilo_ui_base::widget::Edits<'_>, _path: &automerge::ObjId) {
         self.replace_if(ReplaceAt::Settle);
     }
     fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut EventCtx<'_>) {
@@ -210,14 +218,14 @@ impl Widget for Replacing {
             self.child.apply_layout(taffy, *child, origin);
         }
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.child.draw(&mut crate::draw::DrawCtx::new(
+        self.child.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -233,11 +241,11 @@ impl Widget for Replacing {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.repaint, self)
+        tilo_ui_base::widget::redraw_or_children(self.repaint, self)
     }
     fn mark_drawn(&mut self) {
         self.repaint = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &'static str {
         "Replacing"

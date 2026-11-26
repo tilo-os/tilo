@@ -5,12 +5,12 @@ use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect, RoundedRect};
 
 #[cfg(feature = "model")]
-use crate::permissions::PermissionScope;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::permissions::PermissionScope;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 
 #[path = "progress_bar_component.rs"]
 mod component;
@@ -31,7 +31,7 @@ enum BarFill {
     /// A measured level that turns warning and danger past its thresholds.
     Level(crate::widget::GaugeThresholds),
     /// A status.
-    Tone(crate::widget::Tone),
+    Tone(tilo_ui_base::widget::Tone),
 }
 
 /// Immediate-mode progress bar, for a host that paints into a `Scene`.
@@ -69,7 +69,7 @@ impl ProgressBarFace {
     }
 
     #[must_use]
-    pub fn tone(mut self, tone: crate::widget::Tone) -> Self {
+    pub fn tone(mut self, tone: tilo_ui_base::widget::Tone) -> Self {
         self.fill = BarFill::Tone(tone);
         self
     }
@@ -100,10 +100,11 @@ impl ProgressBarFace {
     /// clock.
     fn phase(&self, theme: &Theme) -> f64 {
         match self.started {
-            // In indicator steps (`crate::animation::indicator`): the
+            // In indicator steps (`tilo_ui_base::animation::indicator`): the
             // segment moves 30 times a second, not at every refresh.
             Some(started) if theme.motion().loops() && !crate::time::wall_frozen() => f64::from(
-                (crate::animation::indicator_elapsed(started, crate::time::now()).as_secs_f32()
+                (tilo_ui_base::animation::indicator_elapsed(started, crate::time::now())
+                    .as_secs_f32()
                     % INDETERMINATE_PERIOD_SECS)
                     / INDETERMINATE_PERIOD_SECS,
             ),
@@ -113,7 +114,7 @@ impl ProgressBarFace {
 
     /// Paint the bar into `rect` (its track spans the rect). Returns the
     /// painted fill or segment, `Rect::ZERO` when nothing is filled.
-    pub fn paint(&self, ctx: &mut crate::paint::PaintCtx<'_>, rect: Rect) -> Rect {
+    pub fn paint(&self, ctx: &mut tilo_ui_base::paint::PaintCtx<'_>, rect: Rect) -> Rect {
         let theme = ctx.theme;
         let transform = ctx.transform;
         let radius = f64::from(theme.tokens.radii.detail).min(rect.height() / 2.0);
@@ -190,7 +191,7 @@ pub struct ProgressBar {
     label_shown: bool,
     /// The shown label's style, the gap under it and the track's height, from the theme the
     /// bar was laid out in.
-    label_style: Option<crate::text_render::TextStyle>,
+    label_style: Option<tilo_ui_base::text_render::TextStyle>,
     label_gap: f64,
     track_h: f64,
 }
@@ -199,7 +200,7 @@ impl ProgressBar {
     /// Box this widget in the SDK so thin apps reuse its shared implementation.
     /// This keeps the widget's vtable instantiation out of the app.
     #[must_use]
-    pub fn into_widget(self) -> Box<dyn crate::widget::Widget> {
+    pub fn into_widget(self) -> Box<dyn tilo_ui_base::widget::Widget> {
         Box::new(self)
     }
 
@@ -265,7 +266,7 @@ impl ProgressBar {
     }
 
     #[must_use]
-    pub fn tone(mut self, tone: crate::widget::Tone) -> Self {
+    pub fn tone(mut self, tone: tilo_ui_base::widget::Tone) -> Self {
         self.fill = BarFill::Tone(tone);
         self
     }
@@ -281,7 +282,7 @@ impl ProgressBar {
     fn segment_moves(&self) -> bool {
         self.stepped
             || self.drawn_step
-                != Some(crate::animation::indicator_step(
+                != Some(tilo_ui_base::animation::indicator_step(
                     self.start,
                     crate::time::now(),
                 ))
@@ -378,12 +379,12 @@ fn pct_to_i64(pct: f32) -> i64 {
 }
 
 impl Widget for ProgressBar {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(
+    tilo_ui_base::provides!(
         #[cfg(feature = "model")]
-        dyn crate::widget::permission::PermissionGuarded,
-        dyn crate::presence::capability::PublishesPresence
+        dyn tilo_ui_base::widget::permission::PermissionGuarded,
+        dyn tilo_ui_base::presence::capability::PublishesPresence
     );
 
     fn build_layout(
@@ -392,13 +393,13 @@ impl Widget for ProgressBar {
         theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        self.label_style = Some(theme.text(crate::tokens::TextRole::Label));
+        self.label_style = Some(theme.text(tilo_ui_base::tokens::TextRole::Label));
         self.label_gap = f64::from(theme.tokens.spacing.rhythm.tight);
         self.track_h = ProgressBarFace::height(theme);
         let height = if self.shown_label().is_some() {
             Dimension::auto()
         } else {
-            Dimension::length(crate::num::f32_of_f64(self.track_h))
+            Dimension::length(tilo_ui_base::num::f32_of_f64(self.track_h))
         };
         let style = Style {
             size: Size {
@@ -429,16 +430,16 @@ impl Widget for ProgressBar {
         };
         Size {
             width,
-            height: crate::num::f32_of_f64((label + self.track_h).ceil()),
+            height: tilo_ui_base::num::f32_of_f64((label + self.track_h).ceil()),
         }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.dirty = true;
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -448,8 +449,8 @@ impl Widget for ProgressBar {
         self.reduce_motion = theme.reduce_motion || crate::time::wall_frozen();
         let segment_width = self.rect.width() * INDETERMINATE_SEGMENT_FRAC;
         if let Some(label) = self.shown_label() {
-            let style = theme.text(crate::tokens::TextRole::Label);
-            let width = crate::num::f32_of_f64(self.rect.width().max(1.0));
+            let style = theme.text(tilo_ui_base::tokens::TextRole::Label);
+            let width = tilo_ui_base::num::f32_of_f64(self.rect.width().max(1.0));
             let label = text_renderer.elide_to_width_style(label, width, &style);
             text_renderer.draw_style(
                 scene,
@@ -462,11 +463,11 @@ impl Widget for ProgressBar {
         }
         let track = self.track_rect(theme);
         let current_segment = self.face().paint(
-            &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+            &mut tilo_ui_base::paint::PaintCtx::new(scene, transform, text_renderer, theme),
             track,
         );
         if self.indeterminate {
-            let step = Some(crate::animation::indicator_step(
+            let step = Some(tilo_ui_base::animation::indicator_step(
                 self.start,
                 crate::time::now(),
             ));
@@ -489,9 +490,15 @@ impl Widget for ProgressBar {
             };
             self.last_segment = current_segment;
         }
-        crate::widget::draw_over(
+        tilo_ui_base::widget::draw_over(
             self,
-            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
     }
 
@@ -503,8 +510,8 @@ impl Widget for ProgressBar {
         self.rect
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Politeness, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Politeness, a11y::Role};
         let mut node = if self.indeterminate {
             AccessNode::new(Role::ProgressBar).with_state(AccessState::new().busy(true))
         } else {
@@ -559,14 +566,14 @@ impl Widget for ProgressBar {
     }
 }
 
-impl crate::presence::capability::PublishesPresence for ProgressBar {
+impl tilo_ui_base::presence::capability::PublishesPresence for ProgressBar {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
     }
 }
 
 #[cfg(feature = "model")]
-impl crate::widget::permission::PermissionGuarded for ProgressBar {
+impl tilo_ui_base::widget::permission::PermissionGuarded for ProgressBar {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }
@@ -575,7 +582,7 @@ impl crate::widget::permission::PermissionGuarded for ProgressBar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
+    use tilo_ui_base::presence::PresenceCtx;
     use vello::Scene;
     use vello::kurbo::Affine;
 
@@ -610,7 +617,7 @@ mod tests {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        bar.draw(&mut crate::draw::DrawCtx::new(
+        bar.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
@@ -686,7 +693,7 @@ mod tests {
             }
 
             {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 let half = ProgressBar::new(0.5);
                 let node = Widget::accessibility(&half).expect("progress bar is not presentational");
                 assert_eq!(node.role, Role::ProgressBar);
@@ -742,7 +749,7 @@ mod tests {
                     bar.rect = Rect::new(0.0, 0.0, 200.0, 8.0);
                     let _ = render(&mut bar);
                     bar.mark_drawn();
-                    let next = crate::animation::next_indicator_step(bar.start, crate::time::now());
+                    let next = tilo_ui_base::animation::next_indicator_step(bar.start, crate::time::now());
                     crate::time::testing::with_monotonic_time(next, || {
                         let _ = render(&mut bar);
                     });
@@ -774,7 +781,7 @@ mod tests {
                     // The frame owner must collect immediately after `draw`, before it
                     // clears dirty flags. `draw` is what records this frame's outgoing
                     // and incoming segment geometry.
-                    bar.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+                    bar.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
 
                     let mut regions = Vec::new();
                     bar.collect_damage(&mut regions);
@@ -847,7 +854,7 @@ mod tests {
                 )
                 .height
             };
-            let track = crate::num::f32_of_f64(ProgressBarFace::height(&theme));
+            let track = tilo_ui_base::num::f32_of_f64(ProgressBarFace::height(&theme));
             let mut shown = ProgressBar::new(0.6).with_shown_label("Uploading");
             let mut spoken = ProgressBar::new(0.6).with_label("Uploading");
             let shown_h = lay_out(&mut shown);

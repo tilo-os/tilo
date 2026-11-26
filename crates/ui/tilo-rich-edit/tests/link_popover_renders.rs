@@ -18,7 +18,7 @@ use tilo_ui::widget::marks::Mark;
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, NamedKey, SmolStr};
 
-use tilo_ui::synthetic_input::key_press;
+use tilo_ui_base::synthetic_input::key_press;
 
 fn char_press(c: &str) -> WindowEvent {
     key_press(Key::Character(SmolStr::new(c)), Some(c))
@@ -35,7 +35,7 @@ fn seed_pages() -> Vec<PageEntry> {
 #[test]
 fn link_popover_filters_and_commits_page_links() {
     // Motion reads at its end: this test checks the resting frame.
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     {
         let mut p = tilo_ui::widget::link_popover::LinkPopover::new();
         p.set_items(seed_pages());

@@ -161,7 +161,7 @@ fn two_tabs(session: &mut Session, notes: &[String]) -> (u64, u64, u64) {
 /// tabs, in the record's order, with the tab that came in the one the window shows.
 #[test]
 fn a_note_tabbed_into_a_window_stands_as_its_tab() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let (first, second, strip) = two_tabs(&mut session, &notes);
     assert_eq!(
@@ -194,7 +194,7 @@ fn a_note_tabbed_into_a_window_stands_as_its_tab() {
 /// that, as a window's tabs do.
 #[test]
 fn choosing_a_tab_shows_its_place() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let (first, second, strip) = two_tabs(&mut session, &notes);
     let first_name = shown_as(&session, TITLES[0]);
@@ -215,7 +215,7 @@ fn choosing_a_tab_shows_its_place() {
 /// as the one chosen.
 #[test]
 fn the_arrow_keys_walk_a_windows_tabs() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let (first, second, strip) = two_tabs(&mut session, &notes);
     let second_name = shown_as(&session, TITLES[1]);
@@ -240,7 +240,7 @@ fn the_arrow_keys_walk_a_windows_tabs() {
 /// the place that was behind it.
 #[test]
 fn closing_a_tab_takes_its_place_out() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let (first, second, strip) = two_tabs(&mut session, &notes);
     // The tab in front's close chip closes it. The window's own Close closes the place in front,
@@ -297,7 +297,7 @@ fn drag(session: &mut Session, from: (f64, f64), to: (f64, f64)) {
 /// for the place it carried, so the place leaves the window into one of its own, right after it.
 #[test]
 fn dragging_a_tab_out_gives_it_its_own_window() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let (first, second, strip) = two_tabs(&mut session, &notes);
     let second_name = shown_as(&session, TITLES[1]);
@@ -338,7 +338,7 @@ fn dragging_a_tab_out_gives_it_its_own_window() {
 /// go. The two windows must stand apart on the shell, so each bar is a target of its own.
 #[test]
 fn dragging_a_windows_bar_onto_another_tabs_it_in() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     until(&mut session, "the strips", |session| {
         on_screen(session, "Showing Strips").is_some()

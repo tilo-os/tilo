@@ -5,13 +5,13 @@
 //! Two records, both written when a row is chosen:
 //!
 //! - which rows were chosen, how often and how recently
-//!   ([`ui::text_match::Frecency`]). It orders equally good matches and leads
+//!   ([`tilo_ui_base::text_match::Frecency`]). It orders equally good matches and leads
 //!   short queries, where launchers live ("t" is the Terminal opened every
 //!   day);
 //! - which row was chosen for which typed text: what "te" was for last time
 //!   is what it is for next time.
 
-use ui::text_match::Frecency;
+use tilo_ui_base::text_match::Frecency;
 
 use crate::model::Hit;
 
@@ -40,7 +40,7 @@ fn key(hit: &Hit) -> String {
 /// up to [`CHOICE_PREFIX_SCALARS`], folded. Choosing Terminal after "term"
 /// makes it the answer to "t", "te", "ter" and "term".
 fn texts(query: &str) -> Vec<String> {
-    let folded = ui::text_match::fold_search_text(query.trim());
+    let folded = tilo_ui_base::text_match::fold_search_text(query.trim());
     let scalars: Vec<char> = folded.chars().collect();
     (1..=scalars.len().min(CHOICE_PREFIX_SCALARS))
         .map(|end| scalars.iter().take(end).collect())

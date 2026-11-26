@@ -9,21 +9,21 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use super::Widget;
 use super::autocomplete::{Suggestion, SuggestionList};
 use super::breadcrumb::Breadcrumb;
 use super::context_menu::{ContextMenu, MenuItem};
 use super::text_input::{AccessoryAction, FieldFace, TextInput};
 use super::toggle_group::{SegmentedFace, ToggleGroup};
 use super::window_controls::{ButtonFace, CONTROL_GAP, CONTROL_PX, paint_icon_button};
-use crate::icons::Icon;
-use crate::motion::CrossFade;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::motion::CrossFade;
+use tilo_ui_base::widget::Widget;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use crate::time::Instant;
-use crate::tokens::{MotionSource, TextRole};
 use crate::window_toolbar::{ToolbarEvent, WindowToolbar};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{tokens::MotionSource, tokens::TextRole};
 
 mod access;
 mod layout;
@@ -61,12 +61,14 @@ pub const NOTICE_TARGET_PREFIX: &str = "window-toolbar-notice:";
 
 const VIEWS_SIZE: super::ControlSize = super::ControlSize::Small;
 
-const SECTION_GAP: f64 = crate::tokens::Spacing::BASE.s2 as f64;
-const LOCATION_ICON_PX: f64 = crate::tokens::Metrics::BASE.icon_control as f64;
+const SECTION_GAP: f64 = tilo_ui_base::tokens::Spacing::BASE.s2 as f64;
+const LOCATION_ICON_PX: f64 = tilo_ui_base::tokens::Metrics::BASE.icon_control as f64;
 /// The least a location that names nothing takes: below it the bar keeps its buttons.
-pub(crate) const MIN_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_min_width as f64;
+pub(crate) const MIN_LOCATION_PX: f64 =
+    tilo_ui_base::tokens::Metrics::BASE.location_min_width as f64;
 /// The width a location's edited field measures its text in, so its padding stays its own.
-const FIELD_LOCATION_PX: f64 = crate::tokens::Metrics::BASE.location_comfortable_width as f64;
+const FIELD_LOCATION_PX: f64 =
+    tilo_ui_base::tokens::Metrics::BASE.location_comfortable_width as f64;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 enum MenuEntry {
@@ -257,7 +259,7 @@ impl ToolbarRow {
         &mut self,
         tab: u64,
         toolbar: Option<&WindowToolbar>,
-        theme_motion: crate::tokens::EffectiveMotion,
+        theme_motion: tilo_ui_base::tokens::EffectiveMotion,
         now: Instant,
     ) {
         // A notice stands in the location's place, unless the location is
@@ -494,7 +496,7 @@ impl ToolbarRow {
         {
             return false;
         }
-        let measured = crate::text_render::with_layout_renderer(theme, |text| {
+        let measured = tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
             let labels: Vec<&str> = key.labels.iter().map(String::as_str).collect();
             let tabs = SegmentedFace::tab_widths(&labels, VIEWS_SIZE, text, theme);
             let actions = key
@@ -832,7 +834,7 @@ impl ToolbarRow {
             return false;
         }
         let go_name = if location.go_name.is_empty() {
-            crate::i18n::I18nManager::lookup_plain("window-toolbar-go")
+            tilo_ui_base::i18n::I18nManager::lookup_plain("window-toolbar-go")
         } else {
             location.go_name.clone()
         };
@@ -1050,7 +1052,7 @@ impl ToolbarRow {
 
     fn navigation_item(&self, entry: MenuEntry) -> Option<MenuItem> {
         let toolbar = self.toolbar()?;
-        let lookup = crate::i18n::I18nManager::lookup_plain;
+        let lookup = tilo_ui_base::i18n::I18nManager::lookup_plain;
         match entry {
             MenuEntry::Sidebar => Some(
                 MenuItem::selection(lookup(sidebar_key(toolbar)))
@@ -1332,7 +1334,7 @@ impl ToolbarRow {
 
     pub(crate) fn tooltip_at(&self, p: Point) -> Option<(Rect, String)> {
         let toolbar = self.toolbar()?;
-        let lookup = crate::i18n::I18nManager::lookup_plain;
+        let lookup = tilo_ui_base::i18n::I18nManager::lookup_plain;
         match self.hit_part(p)? {
             Part::Sidebar => Some((self.parts.sidebar, lookup(sidebar_key(toolbar)))),
             Part::Back => Some((self.parts.back, lookup("window-toolbar-back"))),
@@ -1392,7 +1394,7 @@ impl ToolbarRow {
     pub(crate) fn popup_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         if self.picking() {
             return self.picker_event(event, ctx);
@@ -1408,7 +1410,7 @@ impl ToolbarRow {
             let mut handled = false;
             self.menu.handle_event(
                 event,
-                &mut crate::widget::EventCtx {
+                &mut tilo_ui_base::widget::EventCtx {
                     handled: &mut handled,
                     ..ctx.reborrow(ctx.path, ctx.node_id)
                 },
@@ -1432,7 +1434,7 @@ impl ToolbarRow {
     fn suggestions_pointer(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         use winit::event::{MouseButton, MouseScrollDelta, TouchPhase};
         let over = |row: &Self, p: Point| row.suggestions_rect().is_some_and(|r| r.contains(p));
@@ -1614,7 +1616,7 @@ impl ToolbarRow {
     pub(crate) fn field_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         if self.field.is_none() {
             return false;
@@ -1653,7 +1655,7 @@ impl ToolbarRow {
         let mut handled = false;
         field.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 handled: &mut handled,
                 ..ctx.reborrow(ctx.path, ctx.node_id)
             },
@@ -1681,7 +1683,7 @@ impl ToolbarRow {
     /// the frame's instant: asked while a frame is laid out, the live clock
     /// would read the motions at an instant the frame's passes never saw.
     pub(crate) fn needs_animation_frame(&self) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.fade.is_moving(now)
             || self.strip.needs_frame()
             || self.part_changes.is_moving(now)
@@ -1712,7 +1714,7 @@ impl ToolbarRow {
     }
 
     fn part_at(&self, p: Point) -> Option<Part> {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let Some(toolbar) = self.toolbar().filter(|_| self.part_changes.glides(now)) else {
             return self.parts.hit(p);
         };

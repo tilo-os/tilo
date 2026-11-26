@@ -5,12 +5,13 @@
 
 use super::*;
 use crate::search::SearchResult;
-use crate::widget::TaffyTreeExt;
+use crate::widget::Button;
 use crate::widget::search_request::{ScopeDecl, SearchRequest, search_button};
-use crate::widget::{Button, Widget};
 use automerge::AutoCommit;
 use std::collections::HashMap;
 use tilo_actions::{ActionSpec, ResourceSpec};
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 /// Mail stand-in: anchors are paths under their folder.
 struct Mailbox;
@@ -43,8 +44,8 @@ struct MailRoot {
 }
 
 impl Widget for MailRoot {
-    crate::provides!(
-        dyn crate::widget::resources::PublishesResources,
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource
     );
 
@@ -78,7 +79,7 @@ impl crate::search::capability::SearchSource for MailRoot {
     }
 }
 
-impl crate::widget::resources::PublishesResources for MailRoot {
+impl tilo_ui_base::widget::resources::PublishesResources for MailRoot {
     fn resources(&self, _doc: &AutoCommit) -> Vec<ResourceSpec> {
         let archive = |id: &str, label: &str| {
             ResourceSpec::new(id, "mail.folder", label).with_action(
@@ -114,9 +115,9 @@ fn mail_app(request: SearchRequest) -> App {
 fn press_launcher(app: &mut App) {
     let launcher = app.root_widget.children_mut().into_iter().next().unwrap();
     assert!(launcher.perform_action(
-        &crate::a11y::Action::Activate,
+        &tilo_ui_base::a11y::Action::Activate,
         &[],
-        &mut crate::widget::Edits::lend(&mut app.state.doc),
+        &mut tilo_ui_base::widget::Edits::lend(&mut app.state.doc),
         &app.state.root
     ));
 }
@@ -184,7 +185,7 @@ fn slash_opens_search_only_when_nothing_takes_the_text() {
     use winit::event::{ElementState, KeyEvent};
     use winit::keyboard::{Key, KeyLocation, NativeKeyCode, PhysicalKey};
 
-    let slash = crate::synthetic_input::keyboard_input(KeyEvent::synthetic(
+    let slash = tilo_ui_base::synthetic_input::keyboard_input(KeyEvent::synthetic(
         winit::event::RawKeyEvent {
             physical_key: PhysicalKey::Unidentified(NativeKeyCode::Unidentified),
             state: ElementState::Pressed,

@@ -2,7 +2,7 @@
 use std::rc::Rc;
 
 struct HostedModelTransport(Rc<RefCell<Vec<CollabRequest>>>);
-impl crate::collaboration::PeerTransport for HostedModelTransport {
+impl tilo_ui_base::collaboration::PeerTransport for HostedModelTransport {
     fn is_connected(&self) -> bool {
         true
     }
@@ -16,14 +16,14 @@ impl crate::collaboration::PeerTransport for HostedModelTransport {
     // Legacy owner-route delivery is explicit; no native capture is synthesized.
     fn join_route(
         &mut self,
-        _: crate::collaboration::RouteSpec,
+        _: tilo_ui_base::collaboration::RouteSpec,
         _: crate::resource::ResourceType,
     ) -> Result<(), String> {
         Ok(())
     }
     fn send_to_route(
         &mut self,
-        _: crate::collaboration::RouteSpec,
+        _: tilo_ui_base::collaboration::RouteSpec,
         request: CollabRequest,
     ) -> Result<(), String> {
         self.send(request)
@@ -128,9 +128,9 @@ tilo_test_env::scenario! {
 fn an_app_with_no_window_hears_its_workspace_and_publishes_its_view() {
     use std::io::Write as _;
     let (app_side, mut shell_side) = std::os::unix::net::UnixStream::pair().unwrap();
-    crate::workspace_sync::hosted_by_shell();
-    let view = crate::widget::ArrivingView::new(&crate::workspace_sync::holdings(), |()| {
-        Box::new(CounterCard::with_async_post_bump_reset()) as crate::widget::Element
+    tilo_ui_base::workspace_sync::hosted_by_shell();
+    let view = crate::widget::ArrivingView::new(&tilo_ui_base::workspace_sync::holdings(), |()| {
+        Box::new(CounterCard::with_async_post_bump_reset()) as tilo_ui_base::widget::Element
     });
     let mut app = App::new_with_controlled_inputs(State::new(), Box::new(view));
     app.action_registry_mut()
@@ -153,7 +153,7 @@ fn an_app_with_no_window_hears_its_workspace_and_publishes_its_view() {
     );
     let mut told = serde_json::to_vec(
         &crate::floating_surface::FloatingSurfaceHostMessage::appearance(
-            &crate::theme::WindowAppearance::default(),
+            &tilo_ui_base::theme::WindowAppearance::default(),
         ),
     )
     .unwrap();
@@ -243,11 +243,13 @@ impl crate::search::SearchProvider for DirectoryDomainProvider {
     fn action_directory_generation(&self) -> Option<u64> {
         Some(0)
     }
-    fn action_directory_invocation_domain(&self) -> crate::widget::ActionDirectoryInvocationDomain {
+    fn action_directory_invocation_domain(
+        &self,
+    ) -> tilo_ui_base::widget::ActionDirectoryInvocationDomain {
         if !self.supported.get() {
-            return crate::widget::ActionDirectoryInvocationDomain::Unsupported;
+            return tilo_ui_base::widget::ActionDirectoryInvocationDomain::Unsupported;
         }
-        crate::widget::ActionDirectoryInvocationDomain::versioned(
+        tilo_ui_base::widget::ActionDirectoryInvocationDomain::versioned(
             &tilo_actions::ContinuationEvidence::Draft {
                 resolution_domain: tilo_actions::ContinuationKey::new(
                     "lazy-domain",
@@ -288,7 +290,7 @@ struct HostedDirectoryNotificationTransport {
     events: Rc<RefCell<Vec<CollabEvent>>>,
     before_poll: Option<Box<dyn FnOnce()>>,
 }
-impl crate::collaboration::PeerTransport for HostedDirectoryNotificationTransport {
+impl tilo_ui_base::collaboration::PeerTransport for HostedDirectoryNotificationTransport {
     fn is_connected(&self) -> bool {
         true
     }
@@ -382,7 +384,7 @@ tilo_test_env::scenario! {
                         tilo_actions::ActionAddress::new("test.item:1", "open"),
                     ),
                 )
-                .field("New record", crate::text_match::FieldWeight::UNRANKED),
+                .field("New record", tilo_ui_base::text_match::FieldWeight::UNRANKED),
             )
             .unwrap();
         app.pump_hosted_model();
@@ -444,10 +446,10 @@ tilo_test_env::scenario! {
                 views,
                 device_id: "D".into(),
                 instance_id: 81,
-                permissions: crate::permissions::SharedPermissions::new(
-                    crate::permissions::PermissionContext::permissive(),
+                permissions: tilo_ui_base::permissions::SharedPermissions::new(
+                    tilo_ui_base::permissions::PermissionContext::permissive(),
                 ),
-                author: crate::permissions::MemberId::person("fixture-user"),
+                author: tilo_ui_base::permissions::MemberId::person("fixture-user"),
                 action_context: tilo_actions::ActionContext::default(),
             },
             &LaunchTarget::New,
@@ -459,14 +461,14 @@ tilo_test_env::scenario! {
         let binding = component.callback_binding();
         let inputs = crate::application::ComponentRunnerInputs {
             theme: Theme::dark(),
-            text_renderer: crate::font_catalog::fixture_renderer(),
+            text_renderer: tilo_ui_base::font_catalog::fixture_renderer(),
         };
         let mut app = App::from_component_using(component, inputs, |_, _| {
             AppConstructionInputs::controlled()
         })
         .unwrap();
         app.collaboration.manager = admitted_delivery_manager();
-        app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
+        app.actions.bound_broker_route_for_test = Some(tilo_ui_base::collaboration::AcceptedRoute {
             route: binding.broker_route().unwrap(),
             epoch: uuid::Uuid::new_v4(),
         });
@@ -678,10 +680,10 @@ tilo_test_env::scenario! {
             let failed = Arc::new(AtomicBool::new(false));
             let sample_time = time.clone();
             let sample_failed = failed.clone();
-            app.permission_ctx = crate::permissions::PermissionContext::granted(
-                &crate::permissions::MemberId::person("fixture-user"),
-                &crate::permissions::TreePath::root(),
-                crate::permissions::policy::KindSet::ALL,
+            app.permission_ctx = tilo_ui_base::permissions::PermissionContext::granted(
+                &tilo_ui_base::permissions::MemberId::person("fixture-user"),
+                &tilo_ui_base::permissions::TreePath::root(),
+                tilo_ui_base::permissions::policy::KindSet::ALL,
                 Some(110),
             )
             .at_unix_time(100)
@@ -771,7 +773,7 @@ tilo_test_env::scenario! {
     {
         use tilo_actions::Actor;
         let mut app = hosted_directory_fixture();
-        let helper = crate::permissions::MemberId::agent("build-helper", "original-caller");
+        let helper = tilo_ui_base::permissions::MemberId::agent("build-helper", "original-caller");
         let me = Actor::Member(app.local_author().clone());
         let helper_actor = Actor::Member(helper.clone());
         app.apply_members_answer(&members_answer(&[
@@ -819,7 +821,7 @@ tilo_test_env::scenario! {
                 let who = if n == 0 {
                     Actor::Member(me.clone())
                 } else {
-                    Actor::Member(crate::permissions::MemberId::person(format!("p{n:05}")))
+                    Actor::Member(tilo_ui_base::permissions::MemberId::person(format!("p{n:05}")))
                 };
                 serde_json::json!({
                     "actor": serde_json::to_value(&who).expect("an actor encodes"),
@@ -863,7 +865,7 @@ impl Widget for OwingCounter {
         {
             self.taken.set(Some(reply));
         }
-        let (doc, _) = crate::doc::document_ref(s, p);
+        let (doc, _) = tilo_ui_base::doc::document_ref(s, p);
         let count = counter_in_doc(doc);
         if count == self.seen {
             return;
@@ -880,7 +882,7 @@ impl Widget for OwingCounter {
             self.replies = Some(replies);
         }
     }
-    fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, p: &automerge::ObjId) {
+    fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, p: &automerge::ObjId) {
         self.card.settle(edits, p);
     }
     fn build_layout(

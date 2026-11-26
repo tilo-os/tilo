@@ -1,10 +1,10 @@
 use super::*;
-use crate::tokens::TextRole;
 use automerge::AutoCommit;
+use tilo_ui_base::tokens::TextRole;
 
-use crate::widget::Widget;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use tilo_ui_base::widget::Widget;
 
 /// An effect on the person's own device runs for a guest (an Editor) and
 /// even a Viewer without asking anyone; a Viewer's click on one reaching
@@ -14,7 +14,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[test]
 fn own_device_effects_run_for_guests_and_refusals_are_said() {
     use ::collaboration::permissions::{PermissionContext, Role};
-    let click = |root: crate::widget::Element, role: Role| {
+    let click = |root: tilo_ui_base::widget::Element, role: Role| {
         let mut harness = crate::app::driver::Driver::new_with_theme(
             crate::State::new(),
             root,
@@ -123,10 +123,10 @@ fn layout_fit_host(
         style.align_items = Some(alignment);
     }
     tree.set_style(root, style).unwrap();
-    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
+    let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::new();
     unsafe {
         bindings.rebuild(host, &tree, root, &map);
-        crate::widget::compute_widget_layout(
+        tilo_ui_base::widget::compute_widget_layout(
             &mut tree,
             root,
             Size {
@@ -143,7 +143,7 @@ fn layout_fit_host(
     host.children()[0].get_rect()
 }
 
-fn fit_host(kind: usize, button: Button) -> crate::widget::Element {
+fn fit_host(kind: usize, button: Button) -> tilo_ui_base::widget::Element {
     match kind {
         0 => Box::new(
             crate::widget::Column::new()
@@ -287,7 +287,7 @@ fn intrinsic_buttons_remeasure_and_size_from_their_control_size() {
     }
 
     fn icon_only_buttons_are_square_named_and_plain() {
-        let button = Button::icon_only("close", crate::icons::Icon::X, "Close");
+        let button = Button::icon_only("close", tilo_ui_base::icons::Icon::X, "Close");
         assert_eq!(button.role, ButtonRole::Plain);
         assert_eq!(Widget::tooltip(&button).as_deref(), Some("Close"));
         assert_eq!(
@@ -299,17 +299,17 @@ fn intrinsic_buttons_remeasure_and_size_from_their_control_size() {
     }
 
     fn a_shortcut_hint_widens_the_button_and_paints_after_the_label() {
-        let shortcut = crate::platform::Shortcut::command("Enter");
+        let shortcut = tilo_ui_base::platform::Shortcut::command("Enter");
         let plain = measured_button_rect(Button::new("run", "Run query"), 1.0);
         let hinted = measured_button_rect(
             Button::new("run", "Run query").shortcut_hint(shortcut.clone()),
             1.0,
         );
         assert!(hinted.width() > plain.width(), "{plain:?} -> {hinted:?}");
-        let label = shortcut.label(crate::platform::PlatformConventions::new(
-            crate::platform::Platform::current(),
+        let label = shortcut.label(tilo_ui_base::platform::PlatformConventions::new(
+            tilo_ui_base::platform::Platform::current(),
         ));
-        if crate::platform::Platform::current() == crate::platform::Platform::Linux {
+        if tilo_ui_base::platform::Platform::current() == tilo_ui_base::platform::Platform::Linux {
             assert!(!label.contains('⌘'), "no Apple legend on Linux: {label}");
         }
         let theme = Theme::dark();
@@ -317,7 +317,7 @@ fn intrinsic_buttons_remeasure_and_size_from_their_control_size() {
         let face = ButtonFace::new(Rect::ZERO, "Run query").shortcut_hint(shortcut);
         let width = face.intrinsic_width(&mut text, &theme);
         let face = ButtonFace::new(Rect::new(0.0, 0.0, width, 32.0), "Run query")
-            .shortcut_hint(crate::platform::Shortcut::command("Enter"));
+            .shortcut_hint(tilo_ui_base::platform::Shortcut::command("Enter"));
         let mut scene = Scene::new();
         Button::paint(&mut scene, Affine::IDENTITY, &mut text, &theme, &face);
         let origins = glyph_origins(&scene);
@@ -329,7 +329,7 @@ fn intrinsic_buttons_remeasure_and_size_from_their_control_size() {
         let theme = Theme::dark();
         let face = ButtonFace::icon_only(
             Rect::new(10.0, 10.0, 30.0, 30.0),
-            crate::icons::Icon::X,
+            tilo_ui_base::icons::Icon::X,
             "Close",
         );
         let hit = face.hit_rect(&theme);
@@ -365,7 +365,7 @@ tilo_test_env::scenario! {
 
     phase face_colors_per_role_track_state_and_stay_readable;
     {
-        use crate::a11y::contrast_ratio;
+        use tilo_ui_base::a11y::contrast_ratio;
         let hover = Interaction {
             hovered: true,
             ..Default::default()
@@ -395,7 +395,7 @@ tilo_test_env::scenario! {
             let (press_fill, _, press_ink) = face_colors(&theme, ButtonRole::Primary, press);
             assert_eq!(press_fill, colors.intent.accent_pressed, "{}", theme.name);
             assert_ne!(press_fill, hover_fill, "{}", theme.name);
-            let step = |a, b| crate::chrome::shell::lightness_step(a, b);
+            let step = |a, b| tilo_ui_base::chrome::shell::lightness_step(a, b);
             assert!(
                 step(press_fill, fill) > step(hover_fill, fill),
                 "{}: press must move further from rest than hover",
@@ -470,7 +470,7 @@ tilo_test_env::scenario! {
     phase only_the_confirmation_step_fills_a_destructive_button;
     // The filled danger face exists only in a confirmation step.
     {
-        use crate::a11y::contrast_ratio;
+        use tilo_ui_base::a11y::contrast_ratio;
         for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
             let rect = Rect::new(0.0, 0.0, 120.0, 32.0);
             let plain = ButtonFace::new(rect, "Delete").role(ButtonRole::Destructive);
@@ -509,7 +509,7 @@ tilo_test_env::scenario! {
 #[test]
 fn disabled_faces_are_neutral_and_reject_input() {
     fn disabled_faces_are_neutral_bordered_and_readable_in_every_theme() {
-        use crate::a11y::contrast_ratio;
+        use tilo_ui_base::a11y::contrast_ratio;
 
         let disabled = Interaction {
             hovered: true,
@@ -531,7 +531,9 @@ fn disabled_faces_are_neutral_and_reject_input() {
                 );
                 assert_eq!(
                     border,
-                    Some(crate::surface::edge_on(theme.tokens.colors.surfaces.raised)),
+                    Some(tilo_ui_base::surface::edge_on(
+                        theme.tokens.colors.surfaces.raised
+                    )),
                     "{name} {style:?}: disabled face keeps the derived rest edge, no semantic fill"
                 );
                 let ratio = contrast_ratio(fg, bg);
@@ -623,7 +625,7 @@ fn disabled_faces_are_neutral_and_reject_input() {
 fn button_face_builder_paints_fill_label_and_icon_only_faces() {
     fn icon_only_face_spoken_name_falls_back_to_accessible_name() {
         let f = ButtonFace::new(Rect::new(0.0, 0.0, 32.0, 32.0), "")
-            .icon(crate::icons::Icon::Plus)
+            .icon(tilo_ui_base::icons::Icon::Plus)
             .accessible_name("Add page");
         assert_eq!(f.spoken_name(), "Add page");
     }
@@ -632,7 +634,7 @@ fn button_face_builder_paints_fill_label_and_icon_only_faces() {
     /// pseudo-locale `widget_text("")` came back as `⟦⟧`, painting a bracket pair
     /// beside the glyph; the resolved label must stay empty.
     fn icon_only_face_paints_no_label_under_the_pseudo_locale() {
-        use crate::i18n::{I18nManager, PseudoLocale};
+        use tilo_ui_base::{i18n::I18nManager, i18n::PseudoLocale};
         I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
         let theme = Theme::dark();
         let mut text = TextRenderer::new();
@@ -644,7 +646,7 @@ fn button_face_builder_paints_fill_label_and_icon_only_faces() {
             Affine::IDENTITY,
             &mut text,
             &theme,
-            &ButtonFace::new(rect, "").icon(crate::icons::Icon::X),
+            &ButtonFace::new(rect, "").icon(tilo_ui_base::icons::Icon::X),
         );
         let icon_only_runs = glyph_origins(&icon_only).len();
 
@@ -654,7 +656,7 @@ fn button_face_builder_paints_fill_label_and_icon_only_faces() {
             Affine::IDENTITY,
             &mut text,
             &theme,
-            &ButtonFace::new(rect, "Go").icon(crate::icons::Icon::X),
+            &ButtonFace::new(rect, "Go").icon(tilo_ui_base::icons::Icon::X),
         );
         let labelled_runs = glyph_origins(&labelled).len();
         I18nManager::set_pseudo_locale(PseudoLocale::Off);
@@ -669,10 +671,10 @@ fn button_face_builder_paints_fill_label_and_icon_only_faces() {
     /// The same defect in the accessibility tree: `⟦⟧` is not empty, so the
     /// icon-only button lost its tooltip fallback and was spoken as brackets.
     fn icon_only_button_speaks_its_tooltip_under_the_pseudo_locale() {
-        use crate::i18n::{I18nManager, PseudoLocale};
+        use tilo_ui_base::{i18n::I18nManager, i18n::PseudoLocale};
         I18nManager::set_pseudo_locale(PseudoLocale::Expanded);
         let button = Button::new("close", "")
-            .with_icon(crate::icons::Icon::X)
+            .with_icon(tilo_ui_base::icons::Icon::X)
             .tooltip("Close");
         let name = Widget::accessibility(&button).and_then(|node| node.name);
         I18nManager::set_pseudo_locale(PseudoLocale::Off);
@@ -746,12 +748,12 @@ tilo_test_env::scenario! {
     // the new one: it never saw the press. The ring still follows the
     // input that focused it, so a clicked button stays ringless.
     {
-        crate::focus_visible::note(&crate::synthetic_input::mouse_press());
+        tilo_ui_base::focus_visible::note(&tilo_ui_base::synthetic_input::mouse_press());
         let mut rebuilt = Button::new("wp.bold", "Bold");
         rebuilt.set_focus(true);
         assert!(!rebuilt.focus_visible(), "a click never rings the button");
-        crate::focus_visible::note(&crate::synthetic_input::keyboard_input(
-            crate::synthetic_input::key_event(
+        tilo_ui_base::focus_visible::note(&tilo_ui_base::synthetic_input::keyboard_input(
+            tilo_ui_base::synthetic_input::key_event(
                 winit::keyboard::Key::Named(winit::keyboard::NamedKey::Tab),
                 None,
                 winit::event::ElementState::Pressed,
@@ -774,7 +776,7 @@ tilo_test_env::scenario! {
         let mut harness =
             crate::app::driver::Driver::new(crate::State::new(), Box::new(column), (400, 120));
         harness
-            .perform_named("files.retry", &crate::a11y::Action::Activate)
+            .perform_named("files.retry", &tilo_ui_base::a11y::Action::Activate)
             .expect("the press reaches the button through its container");
 
         assert_eq!(clicks.load(Ordering::SeqCst), 1);
@@ -875,7 +877,7 @@ tilo_test_env::scenario! {
     phase accessibility_reports_role_name_state_and_icon_only_naming;
     {
         fn accessibility_reports_button_role_name_and_state() {
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let b = Button::new("id", "Save");
             let node = Widget::accessibility(&b).expect("button is not presentational");
             assert_eq!(node.role, Role::Button);
@@ -895,14 +897,14 @@ tilo_test_env::scenario! {
         }
 
         fn accessibility_icon_only_button_without_name_is_silent() {
-            let b = Button::new("id", "").with_icon(crate::icons::Icon::Check);
+            let b = Button::new("id", "").with_icon(tilo_ui_base::icons::Icon::Check);
             let node = Widget::accessibility(&b).unwrap();
             assert_eq!(node.name, None);
         }
 
         fn accessibility_icon_only_button_uses_accessible_name() {
             let b = Button::new("id", "")
-                .with_icon(crate::icons::Icon::Check)
+                .with_icon(tilo_ui_base::icons::Icon::Check)
                 .with_accessible_name("Confirm");
             let node = Widget::accessibility(&b).unwrap();
             assert_eq!(node.name.as_deref(), Some("Confirm"));
@@ -925,7 +927,7 @@ tilo_test_env::scenario! {
     {
         fn tooltip_is_exposed_to_the_host() {
             let b = Button::new("id", "")
-                .with_icon(crate::icons::Icon::Search)
+                .with_icon(tilo_ui_base::icons::Icon::Search)
                 .tooltip("Search");
             assert_eq!(Widget::tooltip(&b).as_deref(), Some("Search"));
             let plain = Button::new("id", "Save");
@@ -934,7 +936,7 @@ tilo_test_env::scenario! {
 
         fn compact_toolbar_presentation_round_trips_authored_semantics() {
             let mut button = Button::new("publish", "Publish")
-                .with_icon(crate::icons::Icon::CloudDownload)
+                .with_icon(tilo_ui_base::icons::Icon::CloudDownload)
                 .with_accessible_name("Publish document")
                 .tooltip("Publish this document now");
 
@@ -971,7 +973,7 @@ tilo_test_env::scenario! {
 
         fn icon_only_tooltip_doubles_as_accessible_name() {
             let b = Button::new("id", "")
-                .with_icon(crate::icons::Icon::Search)
+                .with_icon(tilo_ui_base::icons::Icon::Search)
                 .tooltip("Search");
             let node = Widget::accessibility(&b).unwrap();
             assert_eq!(node.name.as_deref(), Some("Search"));
@@ -979,7 +981,7 @@ tilo_test_env::scenario! {
 
         fn explicit_accessible_name_wins_over_tooltip() {
             let b = Button::new("id", "")
-                .with_icon(crate::icons::Icon::MoreHorizontal)
+                .with_icon(tilo_ui_base::icons::Icon::MoreHorizontal)
                 .with_accessible_name("View options")
                 .tooltip("More");
             let node = Widget::accessibility(&b).unwrap();
@@ -1026,11 +1028,11 @@ tilo_test_env::scenario! {
 
         fn icon_only_effect_publishes_its_spoken_name() {
             let named = Button::new("private", "")
-                .with_icon(crate::icons::Icon::Shield)
+                .with_icon(tilo_ui_base::icons::Icon::Shield)
                 .with_accessible_name("New Private Window")
                 .on_click(|| {});
             let tooltip_after = Button::new("search", "")
-                .with_icon(crate::icons::Icon::Search)
+                .with_icon(tilo_ui_base::icons::Icon::Search)
                 .on_click(|| {})
                 .tooltip("Search");
             // What a screen reader says, and what an agent shown the window finds the press by.
@@ -1107,9 +1109,9 @@ tilo_test_env::scenario! {
         }
 
         fn closed_glyphs_fill_when_on() {
-            assert!(fills_when_on(crate::icons::Icon::Star));
-            assert!(fills_when_on(crate::icons::Icon::Pin));
-            assert!(!fills_when_on(crate::icons::Icon::Refresh));
+            assert!(fills_when_on(tilo_ui_base::icons::Icon::Star));
+            assert!(fills_when_on(tilo_ui_base::icons::Icon::Pin));
+            assert!(!fills_when_on(tilo_ui_base::icons::Icon::Refresh));
         }
 
         fn icons_grow_with_the_text_scale() {
@@ -1120,7 +1122,7 @@ tilo_test_env::scenario! {
         }
 
         fn enabled_follows_its_state_and_bounds_are_spoken() {
-            let can_save = crate::LocalState::new(false);
+            let can_save = tilo_ui_base::LocalState::new(false);
             let mut button = Button::new("save", "Save").enabled_from(&can_save);
             assert!(!Widget::is_enabled(&button));
             can_save.set(true);
@@ -1142,13 +1144,13 @@ tilo_test_env::scenario! {
     // A button's visible label may say less than its name: the charge reads "61%" beside the
     // charging glyph, and assistive technology hears the charging too.
     {
-        use crate::widget::Widget as _;
+        use tilo_ui_base::widget::Widget as _;
         let named = Button::new("charge", "61%").with_accessible_name("61%, charging");
         let heard = named.accessibility().expect("a button is announced");
         assert_eq!(heard.name.as_deref(), Some("61%, charging"));
         let shown = Button::new("charge", "61%");
         assert_eq!(shown.accessibility().unwrap().name.as_deref(), Some("61%"));
-        let glyph = Button::icon_only("charge", crate::icons::Icon::Battery, "61%, charging");
+        let glyph = Button::icon_only("charge", tilo_ui_base::icons::Icon::Battery, "61%, charging");
         assert_eq!(
             glyph.accessibility().unwrap().name.as_deref(),
             Some("61%, charging"),
@@ -1160,7 +1162,7 @@ tilo_test_env::scenario! {
 #[test]
 fn a_view_declared_key_shows_as_the_buttons_shortcut_hint() {
     use super::component::ButtonProps;
-    use crate::component::Described;
+    use tilo_ui_base::component::Described;
     let button = Button::from_props(
         "go",
         ButtonProps {
@@ -1171,7 +1173,7 @@ fn a_view_declared_key_shows_as_the_buttons_shortcut_hint() {
     );
     assert_eq!(
         button.declared_key(),
-        Some(crate::platform::Shortcut::from("Ctrl+Enter")),
+        Some(tilo_ui_base::platform::Shortcut::from("Ctrl+Enter")),
         "the prop the view set is the hint the face draws"
     );
     let none = Button::from_props(
@@ -1192,12 +1194,12 @@ fn a_view_declared_key_shows_as_the_buttons_shortcut_hint() {
 #[test]
 fn an_icon_only_button_without_words_is_named_by_its_accessible_name() {
     use super::component::ButtonProps;
-    use crate::component::Described;
+    use tilo_ui_base::component::Described;
     let button = Button::from_props(
         "sync",
         ButtonProps {
             label: String::new(),
-            icon: Some(crate::icons::Icon::Plus),
+            icon: Some(tilo_ui_base::icons::Icon::Plus),
             icon_only: true,
             accessible_name: Some("Sync calendars".into()),
             ..ButtonProps::default()
@@ -1258,9 +1260,9 @@ fn a_button_that_opens_later_counts_down_and_opens_by_itself() {
 
 #[test]
 fn the_focus_ring_stands_apart_from_every_face() {
-    use crate::offscreen::OffscreenRenderer;
-    use crate::tokens::PresenceHue;
-    use crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+    use tilo_ui_base::offscreen::OffscreenRenderer;
+    use tilo_ui_base::tokens::PresenceHue;
+    use tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST;
     let pixel = |rgba: &[u8], y: u32| {
         let (r, g, b, a) = OffscreenRenderer::sample(rgba, 128, 64, y);
         vello::peniko::Color::from_rgba8(r, g, b, a)
@@ -1284,7 +1286,7 @@ fn the_focus_ring_stands_apart_from_every_face() {
                 let rgba = OffscreenRenderer::new(128, 64)
                     .render(&scene, theme.tokens.colors.surfaces.content);
                 let (ring, inside, fill) = (pixel(&rgba, 9), pixel(&rgba, 10), pixel(&rgba, 12));
-                let contrast = crate::a11y::contrast_ratio;
+                let contrast = tilo_ui_base::a11y::contrast_ratio;
                 assert!(
                     contrast(ring, inside) >= NON_TEXT_MIN_CONTRAST,
                     "{} {hue:?} {role:?}: the ring blends into what it rings",

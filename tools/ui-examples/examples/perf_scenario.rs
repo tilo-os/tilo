@@ -18,7 +18,8 @@ use std::rc::Rc;
 use tilo_ui::headless::Driver;
 use tilo_ui::profiling::{FRAME_BUDGET_US, PerfReport, PerfScenario, PerfStep, run_scenario_on};
 use tilo_ui::state::State;
-use tilo_ui::widget::{Column, Scrollable, Text, Widget};
+use tilo_ui::{widget::Column, widget::Scrollable, widget::Text};
+use tilo_ui_base::widget::Widget;
 use winit::dpi::PhysicalPosition;
 use winit::event::{DeviceId, WindowEvent};
 
@@ -113,7 +114,7 @@ fn verified_list_scroll(count: usize) -> Result<PerfReport, String> {
     reason = "invalid benchmark workloads must fail without a timing report"
 )]
 pub fn run(args: &[String]) {
-    tilo_ui::i18n::I18nManager::init("en-US");
+    tilo_ui_base::i18n::I18nManager::init("en-US");
     let count = arg_value(args, "--count")
         .and_then(|v| v.parse().ok())
         .unwrap_or(120usize);
@@ -188,7 +189,7 @@ mod tests {
         }
         // phase: outside_pointer_scroll_cannot_return_a_successful_measurement
         {
-            tilo_ui::i18n::I18nManager::init("en-US");
+            tilo_ui_base::i18n::I18nManager::init("en-US");
             let offset = Rc::new(Cell::new((0.0, 256.0)));
             let (state, root) = list_app(200, Rc::clone(&offset));
             let mut driver = Driver::new(state, root, tilo_ui::headless::DEFAULT_VIEWPORT);
@@ -200,7 +201,7 @@ mod tests {
         }
         // phase: repeated_direction_reversals_produce_one_moving_frame_per_step
         {
-            tilo_ui::i18n::I18nManager::init("en-US");
+            tilo_ui_base::i18n::I18nManager::init("en-US");
             let report = verified_list_scroll(40).expect("verified scrolling");
             assert_eq!(report.frames, 40);
         }

@@ -13,9 +13,9 @@ use taffy::prelude::*;
 
 use crate::app::driver::{Driver, FrameOptions, Framed};
 use crate::state::State;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::{TaffyTreeExt as _, Widget};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::TaffyTreeExt as _, widget::Widget};
 use vello::kurbo::Rect;
 
 /// A leaf `width` wide and 40 tall, which records nothing but where it was placed.
@@ -38,7 +38,7 @@ impl Widget for Probe {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
     fn name(&self) -> &'static str {
         "Probe"
@@ -94,7 +94,7 @@ impl Widget for Tall {
         }
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
     fn name(&self) -> &'static str {
         "Tall"

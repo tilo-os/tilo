@@ -5,17 +5,25 @@ use vello::kurbo::{Rect, RoundedRect};
 use vello::peniko::Fill;
 
 use super::{ListRow, ListRowFace, RowLeading, RowMetrics, RowValue};
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use crate::widget::MediaArt;
 use crate::widget::skeleton::{LAST_LINE_SHARE, TITLE_SHARE, paint_bar};
-use crate::widget::{AvatarFace, MediaArt};
-use crate::widget::{RowLeadingShape, RowShape};
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::AvatarFace;
+use tilo_ui_base::{widget::RowLeadingShape, widget::RowShape};
 
-impl RowShape {
+/// What a row of a kind shows, as a list row's face.
+pub trait RowShapeFace {
     /// A face of this kind that says nothing: the geometry of the row.
-    #[must_use]
-    pub fn face(&self) -> ListRowFace<'static> {
+    fn face(&self) -> ListRowFace<'static>;
+
+    /// The height a row of this kind takes.
+    fn height(&self, text: &mut TextRenderer, theme: &Theme) -> f64;
+}
+
+impl RowShapeFace for RowShape {
+    fn face(&self) -> ListRowFace<'static> {
         let mut face = ListRowFace::new(" ");
         if self.title_lines > 1 {
             face = face.two_line_title();
@@ -31,7 +39,9 @@ impl RowShape {
         }
         match self.leading {
             RowLeadingShape::None => face,
-            RowLeadingShape::Mark => face.leading(RowLeading::Icon(crate::icons::Icon::Circle)),
+            RowLeadingShape::Mark => {
+                face.leading(RowLeading::Icon(tilo_ui_base::icons::Icon::Circle))
+            }
             RowLeadingShape::Avatar => face.leading(RowLeading::Avatar(AvatarFace::new("", ""))),
             RowLeadingShape::Tile => {
                 face.leading(RowLeading::Avatar(AvatarFace::new("", "").square()))
@@ -42,8 +52,7 @@ impl RowShape {
         }
     }
 
-    /// The height a row of this kind takes.
-    pub fn height(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
+    fn height(&self, text: &mut TextRenderer, theme: &Theme) -> f64 {
         self.face().height(text, theme)
     }
 }

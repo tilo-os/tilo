@@ -49,17 +49,17 @@ impl HistoricalAssetResponse {
     pub fn complete(self, assets: Result<BTreeMap<String, Arc<[u8]>>, String>) {
         let admitted = assets.and_then(|assets| {
             if assets.len() > 4096 {
-                return Err(crate::i18n::I18nManager::lookup_plain(
+                return Err(tilo_ui_base::i18n::I18nManager::lookup_plain(
                     "history-media-too-many",
                 ));
             }
             let mut total = 0usize;
             for (hash, bytes) in &assets {
                 total = total.checked_add(bytes.len()).ok_or_else(|| {
-                    crate::i18n::I18nManager::lookup_plain("history-media-too-large")
+                    tilo_ui_base::i18n::I18nManager::lookup_plain("history-media-too-large")
                 })?;
                 if total > 128 * 1024 * 1024 {
-                    return Err(crate::i18n::I18nManager::lookup_plain(
+                    return Err(tilo_ui_base::i18n::I18nManager::lookup_plain(
                         "history-media-over-limit",
                     ));
                 }
@@ -75,7 +75,7 @@ impl HistoricalAssetResponse {
                     || !recorded.bytes().all(|b| b.is_ascii_hexdigit())
                     || recorded != digest
                 {
-                    return Err(crate::i18n::I18nManager::lookup_plain(
+                    return Err(tilo_ui_base::i18n::I18nManager::lookup_plain(
                         "history-media-hash-mismatch",
                     ));
                 }

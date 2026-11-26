@@ -4,7 +4,7 @@ use super::App;
 #[cfg(feature = "model")]
 use super::{BrokerReply, ResourceInvocation};
 use crate::close_admission::{Choice, Command, OPERATION};
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 // Compile the actual native Quit routing state in portable host tests. The
 // AppKit delegate itself still requires macOS qualification.
@@ -14,8 +14,8 @@ mod native_quit_request;
 
 #[cfg(feature = "model")]
 /// Why the workspace did not take what a window published, in words a person reads.
-fn barrier_failure(error: &crate::collaboration::DocumentPublicationError) -> String {
-    use crate::collaboration::DocumentPublicationError;
+fn barrier_failure(error: &tilo_ui_base::collaboration::DocumentPublicationError) -> String {
+    use tilo_ui_base::collaboration::DocumentPublicationError;
     match error {
         DocumentPublicationError::Refused(reason) | DocumentPublicationError::Failed(reason) => {
             reason.clone()
@@ -24,7 +24,7 @@ fn barrier_failure(error: &crate::collaboration::DocumentPublicationError) -> St
         | DocumentPublicationError::Unsupported
         | DocumentPublicationError::Unavailable
         | DocumentPublicationError::WorkerStopped => {
-            crate::i18n::I18nManager::lookup_plain("close-broker-disconnected")
+            tilo_ui_base::i18n::I18nManager::lookup_plain("close-broker-disconnected")
         }
     }
 }
@@ -174,7 +174,7 @@ impl App {
         }
         self.publish_owned_documents();
         if let Err(reason) = self.watch_barrier() {
-            return Keeping::NotKept(crate::i18n::I18nManager::format(
+            return Keeping::NotKept(tilo_ui_base::i18n::I18nManager::format(
                 "close-not-kept",
                 &[("reason", reason.into())],
             ));
@@ -187,7 +187,7 @@ impl App {
         let settling = crate::component_lifecycle::close_settling(self.root_widget.as_mut());
         self.close_admission.settling = settling.waiting && settling.refused.is_empty();
         if !settling.refused.is_empty() {
-            return Keeping::NotKept(crate::i18n::I18nManager::format(
+            return Keeping::NotKept(tilo_ui_base::i18n::I18nManager::format(
                 "close-not-kept",
                 &[("reason", settling.refused.join("\n").into())],
             ));
@@ -209,7 +209,7 @@ impl App {
             let (store, checkout) = owner.store_checkout();
             match store.save_status(&checkout.id) {
                 Ok(ResourceSaveStatus::Failed(reason)) => {
-                    return Keeping::NotKept(crate::i18n::I18nManager::format(
+                    return Keeping::NotKept(tilo_ui_base::i18n::I18nManager::format(
                         "close-not-kept",
                         &[("reason", reason.into())],
                     ));
@@ -225,7 +225,7 @@ impl App {
         if !unkept {
             return Keeping::Kept;
         }
-        Keeping::NotKept(crate::i18n::I18nManager::lookup_plain(
+        Keeping::NotKept(tilo_ui_base::i18n::I18nManager::lookup_plain(
             if manager.is_connected() {
                 "close-not-published"
             } else {
@@ -271,7 +271,7 @@ impl App {
     /// The workspace did not take what the window published, said in plain words; each record
     /// the barrier covered shows it failed.
     pub(super) fn watch_barrier(&mut self) -> Result<(), String> {
-        use crate::collaboration::DocumentPublicationError;
+        use tilo_ui_base::collaboration::DocumentPublicationError;
         let barrier = &mut self.close_admission.barrier;
         if let Some((receipt, _)) = &barrier.pending {
             let answer = match receipt.try_complete() {
@@ -299,7 +299,7 @@ impl App {
                 }
             }
         }
-        let live: Vec<&crate::collaboration::RouteSpec> = self
+        let live: Vec<&tilo_ui_base::collaboration::RouteSpec> = self
             .document_routes
             .owners
             .iter()
@@ -555,10 +555,10 @@ impl App {
         // ordinary local canonical action API, including permissions/effects.
         let result = self.invoke_resource_action(ResourceInvocation::new(&document.save, &actor));
         match result {
-            Ok(crate::widget::ResourceOperationStart::Completed(_)) => {
+            Ok(tilo_ui_base::widget::ResourceOperationStart::Completed(_)) => {
                 self.close_admission.save_result = Some(Ok(()));
             }
-            Ok(crate::widget::ResourceOperationStart::Accepted) => {
+            Ok(tilo_ui_base::widget::ResourceOperationStart::Accepted) => {
                 self.close_admission.save_local = self
                     .actions
                     .local_invocations
@@ -591,7 +591,7 @@ impl App {
             tilo_actions::InvocationUpdate::Succeeded { .. } => Ok(()),
             tilo_actions::InvocationUpdate::Failed { error, .. } => Err(error.message.clone()),
             tilo_actions::InvocationUpdate::Cancelled { .. } => Err(
-                crate::i18n::I18nManager::lookup_plain("close-save-cancelled"),
+                tilo_ui_base::i18n::I18nManager::lookup_plain("close-save-cancelled"),
             ),
             _ => return,
         });
@@ -638,16 +638,14 @@ impl App {
         {
             self.request_close();
         }
-        while let Some(intent) =
-            self.close_admission.dialog.as_mut().and_then(|dialog| {
-                crate::widget::controls::take_control_invocation(dialog.as_mut())
-            })
-        {
+        while let Some(intent) = self.close_admission.dialog.as_mut().and_then(|dialog| {
+            tilo_ui_base::widget::controls::take_control_invocation(dialog.as_mut())
+        }) {
             let result = self
                 .invoke_history_address_local(&intent.address, None)
                 .unwrap_or_else(|| Err(tilo_actions::ApiError::Unknown(intent.address.clone())));
             if let Some(dialog) = self.close_admission.dialog.as_mut() {
-                crate::widget::controls::on_control_invocation_result(
+                tilo_ui_base::widget::controls::on_control_invocation_result(
                     dialog.as_mut(),
                     &intent.address,
                     &result,
@@ -658,9 +656,9 @@ impl App {
             && self.close_admission.save_broker_request.is_some()
             && !self.collaboration.manager.is_connected()
         {
-            self.close_admission.save_result = Some(Err(crate::i18n::I18nManager::lookup_plain(
-                "close-broker-disconnected",
-            )));
+            self.close_admission.save_result = Some(Err(
+                tilo_ui_base::i18n::I18nManager::lookup_plain("close-broker-disconnected"),
+            ));
         }
         if let Some(result) = self.close_admission.save_result.take() {
             self.close_admission.save_waiting = false;
@@ -701,7 +699,7 @@ impl App {
                     .broker_requests
                     .insert(BrokerReply::Update(id), request_id);
                 self.collaboration.manager.send(
-                    crate::collaboration::CollabRequest::RemoteAction {
+                    tilo_ui_base::collaboration::CollabRequest::RemoteAction {
                         message: tilo_actions::remote::RemoteActionMessage::observe(id),
                         press: None,
                     },
@@ -737,7 +735,8 @@ impl App {
                 }
                 Key::Named(NamedKey::Enter | NamedKey::Space) => {
                     if let Some(node) = self.focused_node {
-                        let _ = self.perform_node_action(node, &crate::a11y::Action::Activate);
+                        let _ =
+                            self.perform_node_action(node, &tilo_ui_base::a11y::Action::Activate);
                         handled = true;
                     }
                 }
@@ -766,10 +765,10 @@ impl App {
             let mut focus = None;
             dialog.handle_event(
                 event,
-                &mut crate::widget::EventCtx {
+                &mut tilo_ui_base::widget::EventCtx {
                     scale_factor: scale,
                     modifiers: &self.input.modifiers,
-                    state: crate::widget::Edits::lend(&mut self.state.doc),
+                    state: tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
                     path: &self.state.root,
                     handled: &mut handled,
                     focus_target: &mut focus,
@@ -790,7 +789,7 @@ impl App {
         let Some(root) = self.layout.root_node else {
             return;
         };
-        let _ = crate::widget::layout::solve_layout(
+        let _ = tilo_ui_base::widget::layout::solve_layout(
             &mut self.layout.taffy,
             root,
             taffy::Size {
@@ -828,19 +827,23 @@ mod tests {
         save_allowed: bool,
     }
     impl Widget for OwnedRoot {
-        crate::provides!(
-            dyn crate::widget::resources::PublishesResources,
+        tilo_ui_base::provides!(
+            dyn tilo_ui_base::widget::resources::PublishesResources,
             dyn crate::component_lifecycle::ComponentLifecycle,
-            dyn crate::widget::ResourceOperations
+            dyn tilo_ui_base::widget::ResourceOperations
         );
 
-        fn sync(&mut self, doc: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+        fn sync(
+            &mut self,
+            doc: &tilo_ui_base::widget::AppModel,
+            path: &tilo_ui_base::widget::ModelPath,
+        ) {
             self.text.sync(doc, path);
         }
         fn build_layout(
             &mut self,
             t: &mut taffy::TaffyTree<()>,
-            theme: &crate::Theme,
+            theme: &tilo_ui_base::Theme,
             map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
             self.text.build_layout(t, theme, map)
@@ -853,14 +856,14 @@ mod tests {
         ) {
             self.text.apply_layout(t, n, p);
         }
-        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
             #[allow(
                 unused_variables,
                 unused_mut,
                 reason = "a draw binds only the parts it uses"
             )]
             let (scene, transform, text, theme, mut env) = ctx.parts();
-            self.text.draw(&mut crate::draw::DrawCtx::new(
+            self.text.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text,
@@ -871,7 +874,7 @@ mod tests {
         fn handle_event(
             &mut self,
             event: &winit::event::WindowEvent,
-            ctx: &mut crate::widget::EventCtx<'_>,
+            ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
         ) {
             self.text.handle_event(event, ctx);
         }
@@ -883,17 +886,17 @@ mod tests {
         }
     }
 
-    impl crate::widget::ResourceOperations for OwnedRoot {
+    impl tilo_ui_base::widget::ResourceOperations for OwnedRoot {
         fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
             &[crate::widget::resource_actions::OPERATION_TYPE]
         }
 
         fn start_operation(
             &mut self,
-            op: &crate::widget::ResourceOperation<'_>,
-            _: &mut crate::widget::Edits<'_>,
+            op: &tilo_ui_base::widget::ResourceOperation<'_>,
+            _: &mut tilo_ui_base::widget::Edits<'_>,
             _: &automerge::ObjId,
-        ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+        ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
             let request = op.request();
             if request.type_id != crate::widget::resource_actions::OPERATION_TYPE {
                 return Ok(None);
@@ -902,9 +905,11 @@ mod tests {
                 return Err("Save dialog cancelled".into());
             }
             self.document.as_ref().unwrap().set(false);
-            Ok(Some(crate::widget::ResourceOperationStart::Completed(
-                tilo_actions::ActionOutput::default(),
-            )))
+            Ok(Some(
+                tilo_ui_base::widget::ResourceOperationStart::Completed(
+                    tilo_actions::ActionOutput::default(),
+                ),
+            ))
         }
     }
 
@@ -942,7 +947,7 @@ mod tests {
         }
     }
 
-    impl crate::widget::resources::PublishesResources for OwnedRoot {
+    impl tilo_ui_base::widget::resources::PublishesResources for OwnedRoot {
         fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
             vec![crate::widget::resource_actions::resource(
                 "test.quit",
@@ -974,7 +979,10 @@ mod tests {
             .clone();
         assert!(
             tilo_actions::api::resolve(
-                &crate::widget::resources::resources(app.root_widget.as_ref(), &app.state.doc),
+                &tilo_ui_base::widget::resources::resources(
+                    app.root_widget.as_ref(),
+                    &app.state.doc
+                ),
                 &document.save,
             )
             .is_some(),
@@ -993,24 +1001,24 @@ mod tests {
         resumed: std::sync::Arc<std::sync::atomic::AtomicBool>,
     }
 
-    impl crate::collaboration::CollabTransport for Invocations {
-        fn status(&self) -> crate::collaboration::TransportStatus {
-            crate::collaboration::TransportStatus::Ready
+    impl tilo_ui_base::collaboration::CollabTransport for Invocations {
+        fn status(&self) -> tilo_ui_base::collaboration::TransportStatus {
+            tilo_ui_base::collaboration::TransportStatus::Ready
         }
         fn submit(
             &mut self,
-            command: crate::collaboration::TransportCommand,
-        ) -> Result<(), crate::collaboration::TransportError> {
-            if let crate::collaboration::TransportCommand::Primary(
-                crate::collaboration::CollabRequest::UpdateInvocation { id, .. },
+            command: tilo_ui_base::collaboration::TransportCommand,
+        ) -> Result<(), tilo_ui_base::collaboration::TransportError> {
+            if let tilo_ui_base::collaboration::TransportCommand::Primary(
+                tilo_ui_base::collaboration::CollabRequest::UpdateInvocation { id, .. },
             ) = command
             {
                 self.answered.lock().unwrap().push(id);
             }
             Ok(())
         }
-        fn drain(&mut self, _: &mut Vec<crate::collaboration::CollabEvent>) {}
-        fn stop_invocations(&mut self) -> Result<(), crate::collaboration::TransportError> {
+        fn drain(&mut self, _: &mut Vec<tilo_ui_base::collaboration::CollabEvent>) {}
+        fn stop_invocations(&mut self) -> Result<(), tilo_ui_base::collaboration::TransportError> {
             self.stopping
                 .store(true, std::sync::atomic::Ordering::SeqCst);
             Ok(())
@@ -1019,7 +1027,9 @@ mod tests {
             self.stopping.load(std::sync::atomic::Ordering::SeqCst)
                 && self.handed_over.load(std::sync::atomic::Ordering::SeqCst)
         }
-        fn resume_invocations(&mut self) -> Result<(), crate::collaboration::TransportError> {
+        fn resume_invocations(
+            &mut self,
+        ) -> Result<(), tilo_ui_base::collaboration::TransportError> {
             self.stopping
                 .store(false, std::sync::atomic::Ordering::SeqCst);
             self.resumed
@@ -1028,12 +1038,12 @@ mod tests {
         }
         fn take_primary_route_result(
             &mut self,
-        ) -> Option<Result<crate::collaboration::RouteSpec, String>> {
+        ) -> Option<Result<tilo_ui_base::collaboration::RouteSpec, String>> {
             None
         }
         fn take_action_directory_requests(
             &mut self,
-            _: &mut Vec<crate::collaboration::ActionDirectoryRequest>,
+            _: &mut Vec<tilo_ui_base::collaboration::ActionDirectoryRequest>,
         ) {
         }
     }
@@ -1060,12 +1070,14 @@ mod tests {
         let mut app = App::new_with_controlled_inputs(crate::State::new(), Box::new(root));
         let ends: Ends = Default::default();
         app.collaboration.manager =
-            crate::collaboration::CollaborationManager::with_transport(Box::new(Invocations {
-                stopping: ends.0.clone(),
-                handed_over: ends.1.clone(),
-                answered: ends.2.clone(),
-                resumed: std::sync::Arc::default(),
-            }));
+            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(
+                Invocations {
+                    stopping: ends.0.clone(),
+                    handed_over: ends.1.clone(),
+                    answered: ends.2.clone(),
+                    resumed: std::sync::Arc::default(),
+                },
+            ));
         assert!(app.collaboration.manager.is_connected());
         (app, saves, ends)
     }
@@ -1306,12 +1318,14 @@ mod tests {
         let handed_over = std::sync::Arc::new(AtomicBool::new(false));
         let resumed = std::sync::Arc::new(AtomicBool::new(false));
         app.collaboration.manager =
-            crate::collaboration::CollaborationManager::with_transport(Box::new(Invocations {
-                stopping: stopping.clone(),
-                handed_over: handed_over.clone(),
-                answered: std::sync::Arc::default(),
-                resumed: resumed.clone(),
-            }));
+            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(
+                Invocations {
+                    stopping: stopping.clone(),
+                    handed_over: handed_over.clone(),
+                    answered: std::sync::Arc::default(),
+                    resumed: resumed.clone(),
+                },
+            ));
         // The broker holds nothing more for this window: stopping ends its invocations.
         handed_over.store(true, SeqCst);
 
@@ -1371,7 +1385,7 @@ mod tests {
         owner: crate::history_mode::HistoryOwner,
     }
 
-    impl crate::widget::Decorator for Shows {
+    impl tilo_ui_base::widget::Decorator for Shows {
         type Inner = crate::widget::Text;
         fn inner(&self) -> &crate::widget::Text {
             &self.text
@@ -1379,19 +1393,19 @@ mod tests {
         fn inner_mut(&mut self) -> &mut crate::widget::Text {
             &mut self.text
         }
-        fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+        fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
             if request.wants::<dyn crate::bound_dispatch::BoundWidget>() {
                 request.provide::<dyn crate::bound_dispatch::BoundWidget>(self);
-            } else if request.wants::<dyn crate::widget::Decorated>() {
-                request.provide::<dyn crate::widget::Decorated>(self);
+            } else if request.wants::<dyn tilo_ui_base::widget::Decorated>() {
+                request.provide::<dyn tilo_ui_base::widget::Decorated>(self);
             } else {
                 self.text.provide(request);
             }
         }
     }
 
-    impl crate::widget::component_walk::ComponentBoundary for Shows {
-        fn component_scope(&self) -> Option<crate::widget::component_walk::Binding> {
+    impl tilo_ui_base::widget::component_walk::ComponentBoundary for Shows {
+        fn component_scope(&self) -> Option<tilo_ui_base::widget::component_walk::Binding> {
             None
         }
     }
@@ -1407,12 +1421,12 @@ mod tests {
     /// refused) what was sent before the barrier.
     #[derive(Clone, Default)]
     struct Workspace {
-        published: std::sync::Arc<std::sync::Mutex<Vec<crate::collaboration::RouteSpec>>>,
+        published: std::sync::Arc<std::sync::Mutex<Vec<tilo_ui_base::collaboration::RouteSpec>>>,
         barriers: std::sync::Arc<
             std::sync::Mutex<
                 Vec<
                     std::sync::mpsc::SyncSender<
-                        Result<(), crate::collaboration::DocumentPublicationError>,
+                        Result<(), tilo_ui_base::collaboration::DocumentPublicationError>,
                     >,
                 >,
             >,
@@ -1423,7 +1437,7 @@ mod tests {
         /// Answer every barrier asked for so far with `answer`; how many there were.
         fn answer(
             &self,
-            answer: &Result<(), crate::collaboration::DocumentPublicationError>,
+            answer: &Result<(), tilo_ui_base::collaboration::DocumentPublicationError>,
         ) -> usize {
             let barriers = std::mem::take(&mut *self.barriers.lock().unwrap());
             for barrier in &barriers {
@@ -1433,45 +1447,43 @@ mod tests {
         }
     }
 
-    impl crate::collaboration::CollabTransport for Workspace {
-        fn status(&self) -> crate::collaboration::TransportStatus {
-            crate::collaboration::TransportStatus::Ready
+    impl tilo_ui_base::collaboration::CollabTransport for Workspace {
+        fn status(&self) -> tilo_ui_base::collaboration::TransportStatus {
+            tilo_ui_base::collaboration::TransportStatus::Ready
         }
         fn submit(
             &mut self,
-            command: crate::collaboration::TransportCommand,
-        ) -> Result<(), crate::collaboration::TransportError> {
-            if let crate::collaboration::TransportCommand::ToRoute(
+            command: tilo_ui_base::collaboration::TransportCommand,
+        ) -> Result<(), tilo_ui_base::collaboration::TransportError> {
+            if let tilo_ui_base::collaboration::TransportCommand::ToRoute(
                 route,
-                crate::collaboration::CollabRequest::Document { .. },
+                tilo_ui_base::collaboration::CollabRequest::Document { .. },
             ) = command
             {
                 self.published.lock().unwrap().push(route);
             }
             Ok(())
         }
-        fn drain(&mut self, _: &mut Vec<crate::collaboration::CollabEvent>) {}
+        fn drain(&mut self, _: &mut Vec<tilo_ui_base::collaboration::CollabEvent>) {}
         fn take_primary_route_result(
             &mut self,
-        ) -> Option<Result<crate::collaboration::RouteSpec, String>> {
+        ) -> Option<Result<tilo_ui_base::collaboration::RouteSpec, String>> {
             None
         }
         fn take_action_directory_requests(
             &mut self,
-            _: &mut Vec<crate::collaboration::ActionDirectoryRequest>,
+            _: &mut Vec<tilo_ui_base::collaboration::ActionDirectoryRequest>,
         ) {
         }
         fn publication_barrier(
             &mut self,
         ) -> Result<
-            crate::collaboration::DocumentPublicationReceipt,
-            crate::collaboration::DocumentPublicationError,
+            tilo_ui_base::collaboration::DocumentPublicationReceipt,
+            tilo_ui_base::collaboration::DocumentPublicationError,
         > {
             let (answer, receipt) = std::sync::mpsc::sync_channel(1);
             self.barriers.lock().unwrap().push(answer);
-            Ok(crate::collaboration::DocumentPublicationReceipt::new(
-                receipt,
-            ))
+            Ok(tilo_ui_base::collaboration::DocumentPublicationReceipt::new(receipt))
         }
         fn document_publishable(&self, _: Option<&str>) -> bool {
             true
@@ -1481,7 +1493,7 @@ mod tests {
     /// A window showing a record the workspace holds, on `manager`: the record, its store and
     /// what keeps its owner alive.
     fn window_on_record(
-        manager: crate::collaboration::CollaborationManager,
+        manager: tilo_ui_base::collaboration::CollaborationManager,
     ) -> (
         App,
         crate::resource::ResourceStore,
@@ -1520,10 +1532,13 @@ mod tests {
             }),
         );
         app.collaboration.manager = manager;
-        app.actions.bound_broker_route_for_test = Some(crate::collaboration::AcceptedRoute {
-            route: crate::collaboration::RouteSpec::document(KEPT_APP, workspace, "shown"),
-            epoch: uuid::Uuid::new_v4(),
-        });
+        app.actions.bound_broker_route_for_test =
+            Some(tilo_ui_base::collaboration::AcceptedRoute {
+                route: tilo_ui_base::collaboration::RouteSpec::document(
+                    KEPT_APP, workspace, "shown",
+                ),
+                epoch: uuid::Uuid::new_v4(),
+            });
         app.refresh_document_routes();
         (app, store, record, lifetime)
     }
@@ -1557,7 +1572,9 @@ mod tests {
         use crate::resource::ResourceSaveStatus::{Saved, Saving};
         let workspace = Workspace::default();
         let (mut app, store, record, _lifetime) = window_on_record(
-            crate::collaboration::CollaborationManager::with_transport(Box::new(workspace.clone())),
+            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(
+                workspace.clone(),
+            )),
         );
         assert_eq!(
             status(&store, &record),
@@ -1599,11 +1616,13 @@ mod tests {
     /// workspace took it.
     #[test]
     fn a_close_the_workspace_refused_keeps_the_window_and_its_edit() {
-        use crate::collaboration::DocumentPublicationError::Refused;
         use crate::resource::ResourceSaveStatus::{Failed, Saved};
+        use tilo_ui_base::collaboration::DocumentPublicationError::Refused;
         let workspace = Workspace::default();
         let (mut app, store, record, _lifetime) = window_on_record(
-            crate::collaboration::CollaborationManager::with_transport(Box::new(workspace.clone())),
+            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(
+                workspace.clone(),
+            )),
         );
         type_into(&store, &record, "typed before closing");
         app.pump_document_routes();
@@ -1666,7 +1685,7 @@ mod tests {
     #[test]
     fn a_window_without_a_connection_closes_at_once_unless_it_holds_an_unsent_edit() {
         let (mut kept, _store, _record, _lifetime) =
-            window_on_record(crate::collaboration::CollaborationManager::disabled());
+            window_on_record(tilo_ui_base::collaboration::CollaborationManager::disabled());
         assert!(
             kept.request_close(),
             "nothing to lose: the window goes at once"
@@ -1674,7 +1693,7 @@ mod tests {
         assert!(kept.close_admission.dialog.is_none());
 
         let (mut app, store, record, _lifetime) =
-            window_on_record(crate::collaboration::CollaborationManager::disabled());
+            window_on_record(tilo_ui_base::collaboration::CollaborationManager::disabled());
         type_into(&store, &record, "typed while offline");
         app.pump_document_routes();
         assert!(!app.request_close(), "the edit never reached the workspace");
@@ -1696,7 +1715,9 @@ mod tests {
         use std::sync::atomic::{AtomicBool, Ordering};
         let workspace = Workspace::default();
         let (mut app, store, record, _lifetime) = window_on_record(
-            crate::collaboration::CollaborationManager::with_transport(Box::new(workspace.clone())),
+            tilo_ui_base::collaboration::CollaborationManager::with_transport(Box::new(
+                workspace.clone(),
+            )),
         );
         type_into(&store, &record, "written with no window");
         let ended = std::sync::Arc::new(AtomicBool::new(false));
@@ -1727,7 +1748,7 @@ mod tests {
         );
 
         let (mut offline, store, record, _lifetime) =
-            window_on_record(crate::collaboration::CollaborationManager::disabled());
+            window_on_record(tilo_ui_base::collaboration::CollaborationManager::disabled());
         type_into(&store, &record, "written with no connection");
         let (_wake, wakes) = std::sync::mpsc::channel();
         offline.keep_last_writes(&wakes);

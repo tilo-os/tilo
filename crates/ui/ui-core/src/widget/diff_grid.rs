@@ -12,14 +12,14 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
-use crate::paint::with_alpha_scaled;
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::ScrollMetrics;
 use crate::widget::code_editor::{HlState, Language, LineSpans};
 use crate::widget::scrollbar::{PressOutcome, Scrollbar};
-use crate::widget::{TaffyTreeExt, Widget};
+use tilo_ui_base::paint::with_alpha_scaled;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::ScrollMetrics;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[path = "diff_grid/diff_grid_component.rs"]
 mod component;
@@ -401,7 +401,7 @@ impl DiffGrid {
 }
 
 impl Widget for DiffGrid {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn name(&self) -> &'static str {
         "DiffGrid"
@@ -438,14 +438,14 @@ impl Widget for DiffGrid {
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.rect = rect;
             self.dirty = true;
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(unused_variables, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, _env) = ctx.parts();
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
@@ -499,7 +499,7 @@ impl Widget for DiffGrid {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let point = ctx.logical(position);
@@ -562,10 +562,10 @@ impl Widget for DiffGrid {
         }
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::Role;
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::a11y::Role;
         Some(
-            crate::a11y::AccessNode::new(Role::Table)
+            tilo_ui_base::a11y::AccessNode::new(Role::Table)
                 .with_optional_name(self.label.clone())
                 .with_hashed_key("diff_grid"),
         )

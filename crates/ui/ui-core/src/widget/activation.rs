@@ -6,7 +6,7 @@ use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::pointer_replay::{HeldPress, PressAt, Release};
-use crate::widget::{ActionEmitter, ControlBindingMetadata};
+use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingMetadata};
 
 /// Hover, press and focus of one pressable surface. Faces take this so an
 /// immediate-mode caller and the retained widget paint the same states.
@@ -27,10 +27,10 @@ pub fn paint_focus_ring(
     transform: Affine,
     rect: Rect,
     radius: f64,
-    theme: &crate::theme::Theme,
+    theme: &tilo_ui_base::theme::Theme,
 ) {
     // Keyboard focus only: a click that focused the surface shows nothing.
-    if !crate::focus_visible::shown() {
+    if !tilo_ui_base::focus_visible::shown() {
         return;
     }
     scene.stroke(
@@ -50,7 +50,7 @@ pub fn paint_disabled(scene: &mut Scene, transform: Affine, bounds: &impl vello:
     scene.push_layer(
         vello::peniko::Fill::NonZero,
         vello::peniko::BlendMode::default(),
-        crate::widget::DISABLED_ALPHA,
+        tilo_ui_base::widget::DISABLED_ALPHA,
         transform,
         bounds,
     );
@@ -119,11 +119,13 @@ impl Activation {
         self.opens = true;
     }
 
-    pub(crate) fn set_event(&mut self, event: crate::component::Event) {
+    pub(crate) fn set_event(&mut self, event: tilo_ui_base::component::Event) {
         match event {
-            crate::component::Event::None => self.clear_event(),
-            crate::component::Event::Action(binding) => self.set_action(binding),
-            crate::component::Event::View(intent) => self.set_open(Box::new(intent.sender())),
+            tilo_ui_base::component::Event::None => self.clear_event(),
+            tilo_ui_base::component::Event::Action(binding) => self.set_action(binding),
+            tilo_ui_base::component::Event::View(intent) => {
+                self.set_open(Box::new(intent.sender()))
+            }
         }
     }
 
@@ -189,7 +191,7 @@ impl Activation {
     pub(crate) fn handle_pointer(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
         rect: Rect,
         exclude: &[Rect],
     ) -> bool {
@@ -246,8 +248,8 @@ impl Activation {
                 && last.as_ref().is_some_and(|(in_window, id, at, place)| {
                     in_window == window
                         && *id == self.id
-                        && now.duration_since(*at) < crate::gesture::multi_click_interval()
-                        && place.distance(self.cursor) < crate::gesture::MULTI_CLICK_DIST
+                        && now.duration_since(*at) < tilo_ui_base::gesture::multi_click_interval()
+                        && place.distance(self.cursor) < tilo_ui_base::gesture::MULTI_CLICK_DIST
                 });
             *last = Some((window.clone(), self.id.clone(), now, self.cursor));
             repeats
@@ -274,8 +276,8 @@ impl Activation {
 
     pub(crate) fn attach(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         if let Some(action) = &mut self.action {
             let _ = action.attach(domain, attachment);
@@ -614,7 +616,7 @@ impl PaintedTargets {
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         let mut pointer_handled = false;
         let changed = self.handle_pointer_event(event, ctx.scale_factor, &mut pointer_handled);
@@ -674,7 +676,7 @@ impl PaintedTargets {
         scene: &mut Scene,
         transform: Affine,
         radius: f64,
-        theme: &crate::theme::Theme,
+        theme: &tilo_ui_base::theme::Theme,
     ) {
         if !self.host_focused {
             return;
@@ -691,8 +693,8 @@ impl PaintedTargets {
     /// The targets as accessible buttons, for the host's
     /// `Widget::accessibility` node, each routed back by its id.
     #[must_use]
-    pub fn accessibility_children(&self) -> Vec<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    pub fn accessibility_children(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         self.targets
             .iter()
             .map(|target| {
@@ -713,14 +715,18 @@ impl PaintedTargets {
             .collect()
     }
 
-    pub fn perform_action(&mut self, action: &crate::a11y::Action, key_path: &[u64]) -> bool {
+    pub fn perform_action(
+        &mut self,
+        action: &tilo_ui_base::a11y::Action,
+        key_path: &[u64],
+    ) -> bool {
         let Some(&key) = key_path.first() else {
             return false;
         };
         let Some(id) = self
             .targets
             .iter()
-            .find(|target| crate::a11y::hash_key(&target.id) == key)
+            .find(|target| tilo_ui_base::a11y::hash_key(&target.id) == key)
             .map(|target| target.id.clone())
         else {
             return false;
@@ -728,10 +734,14 @@ impl PaintedTargets {
         self.perform_semantic_action(action, &id)
     }
 
-    pub fn perform_semantic_action(&mut self, action: &crate::a11y::Action, target: &str) -> bool {
+    pub fn perform_semantic_action(
+        &mut self,
+        action: &tilo_ui_base::a11y::Action,
+        target: &str,
+    ) -> bool {
         match action {
-            crate::a11y::Action::Activate => self.activate(target),
-            crate::a11y::Action::Focus => {
+            tilo_ui_base::a11y::Action::Activate => self.activate(target),
+            tilo_ui_base::a11y::Action::Focus => {
                 self.focus(target);
                 self.focused.as_deref() == Some(target)
             }
@@ -740,33 +750,33 @@ impl PaintedTargets {
     }
 }
 
-/// Implement [`ActionControls`](crate::widget::controls::ActionControls) for
+/// Implement [`ActionControls`](tilo_ui_base::widget::controls::ActionControls) for
 /// a widget whose own press is an [`Activation`] at `self.$field` and whose
 /// children (if any) are reached through the default walks.
 macro_rules! activation_controls {
     ($ty:ty, $($field:tt).+) => {
-        impl crate::widget::controls::ActionControls for $ty {
+        impl tilo_ui_base::widget::controls::ActionControls for $ty {
             fn attach_controls(
                 &mut self,
-                domain: &crate::ControlDomain,
-                attachment: crate::control_domain::DomainAttachment,
+                domain: &tilo_ui_base::ControlDomain,
+                attachment: tilo_ui_base::control_domain::DomainAttachment,
             ) {
                 self.$($field).+.attach(domain, attachment);
-                for child in crate::widget::Widget::children_mut(self) {
-                    crate::widget::controls::attach_controls(child, domain, attachment);
+                for child in tilo_ui_base::widget::Widget::children_mut(self) {
+                    tilo_ui_base::widget::controls::attach_controls(child, domain, attachment);
                 }
             }
             fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
                 self.$($field).+.take_invocation().or_else(|| {
-                    crate::widget::Widget::children_mut(self)
+                    tilo_ui_base::widget::Widget::children_mut(self)
                         .into_iter()
-                        .find_map(crate::widget::controls::take_control_invocation)
+                        .find_map(tilo_ui_base::widget::controls::take_control_invocation)
                 })
             }
-            fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+            fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
                 let mut bindings = self.$($field).+.bindings();
-                for child in crate::widget::Widget::children(self) {
-                    bindings.extend(crate::widget::controls::control_action_bindings(child));
+                for child in tilo_ui_base::widget::Widget::children(self) {
+                    bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(child));
                 }
                 bindings
             }
@@ -775,8 +785,8 @@ macro_rules! activation_controls {
                 allowed: &std::collections::HashSet<tilo_actions::ActionAddress>,
             ) {
                 self.$($field).+.refresh_availability(allowed);
-                for child in crate::widget::Widget::children_mut(self) {
-                    crate::widget::controls::refresh_control_action_availability(child, allowed);
+                for child in tilo_ui_base::widget::Widget::children_mut(self) {
+                    tilo_ui_base::widget::controls::refresh_control_action_availability(child, allowed);
                 }
             }
         }
@@ -791,17 +801,18 @@ mod tests {
 
     fn send(targets: &mut PaintedTargets, event: &WindowEvent) -> bool {
         let mut tree = taffy::TaffyTree::<()>::new();
-        let node = crate::widget::TaffyTreeExt::leaf_node(&mut tree, taffy::Style::default());
+        let node =
+            tilo_ui_base::widget::TaffyTreeExt::leaf_node(&mut tree, taffy::Style::default());
         let mut handled = false;
         let mut focus_target = None;
         let mut doc = automerge::AutoCommit::new();
         let root = automerge::ROOT;
         targets.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &winit::event::Modifiers::default(),
-                state: crate::widget::Edits::lend(&mut doc),
+                state: tilo_ui_base::widget::Edits::lend(&mut doc),
                 path: &root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -812,10 +823,10 @@ mod tests {
         handled
     }
 
-    use crate::synthetic_input::cursor_moved;
+    use tilo_ui_base::synthetic_input::cursor_moved;
 
     fn button(state: ElementState) -> WindowEvent {
-        crate::synthetic_input::mouse_input(state, MouseButton::Left)
+        tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left)
     }
 
     fn keys() -> PaintedTargets {
@@ -837,7 +848,7 @@ mod tests {
             let mut targets = keys();
             targets.set_host_focus(true);
             let mut enter =
-                crate::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
+                tilo_ui_base::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
             assert!(send(&mut targets, &enter));
             assert_eq!(targets.take_activated(), vec!["seven"]);
             if let WindowEvent::KeyboardInput { event, .. } = &mut enter {
@@ -891,7 +902,7 @@ mod tests {
             send(&mut targets, &cursor_moved(10.0, 10.0));
             send(&mut targets, &button(ElementState::Pressed));
             let escape =
-                crate::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
+                tilo_ui_base::synthetic_input::key_input(&Key::Named(NamedKey::Escape), ElementState::Pressed);
             assert!(send(&mut targets, &escape));
             assert!(send(&mut targets, &button(ElementState::Released)));
             assert!(targets.take_activated().is_empty());
@@ -929,7 +940,7 @@ mod tests {
                 "Tab stays inside before the last target"
             );
             let tab =
-                crate::synthetic_input::key_input(&Key::Named(NamedKey::Tab), ElementState::Pressed);
+                tilo_ui_base::synthetic_input::key_input(&Key::Named(NamedKey::Tab), ElementState::Pressed);
             assert!(send(&mut targets, &tab));
             assert_eq!(targets.focused(), Some("eight"));
             assert!(
@@ -937,7 +948,7 @@ mod tests {
                 "the disabled target is skipped; Tab leaves"
             );
             let enter =
-                crate::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
+                tilo_ui_base::synthetic_input::key_input(&Key::Named(NamedKey::Enter), ElementState::Pressed);
             assert!(send(&mut targets, &enter));
             assert_eq!(targets.take_activated(), vec!["eight".to_string()]);
         }
@@ -947,14 +958,14 @@ mod tests {
             let mut targets = keys();
             let nodes = targets.accessibility_children();
             assert_eq!(nodes.len(), 3);
-            assert_eq!(nodes[1].role, crate::a11y::Role::Button);
+            assert_eq!(nodes[1].role, tilo_ui_base::a11y::Role::Button);
             assert_eq!(nodes[1].name.as_deref(), Some("8"));
             assert!(nodes[2].state.disabled);
             let key = nodes[1].key.expect("keyed by id");
-            assert!(targets.perform_action(&crate::a11y::Action::Activate, &[key]));
+            assert!(targets.perform_action(&tilo_ui_base::a11y::Action::Activate, &[key]));
             assert_eq!(targets.take_activated(), vec!["eight".to_string()]);
-            assert!(!targets.perform_action(&crate::a11y::Action::Activate, &[key ^ 1]));
-            assert!(!targets.perform_semantic_action(&crate::a11y::Action::Activate, "nine"));
+            assert!(!targets.perform_action(&tilo_ui_base::a11y::Action::Activate, &[key ^ 1]));
+            assert!(!targets.perform_semantic_action(&tilo_ui_base::a11y::Action::Activate, "nine"));
         }
     }
 }

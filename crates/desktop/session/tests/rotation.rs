@@ -176,7 +176,7 @@ fn panel(session: &mut Session) -> (i32, i32, i32, i32) {
 
 #[test]
 fn the_lock_turns_the_outputs_and_the_shell_follows() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let sensor = sensor();
     settings();
     let mut session = session(sensor.path());

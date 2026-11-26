@@ -2,9 +2,11 @@
 //! the bar's, it reports what the person did with them as the view's own events,
 //! and it draws nothing of its own.
 
-use tilo_ui::component::{Described, Event, Person, ResourceId};
-use tilo_ui::tokens::PresenceHue;
 use tilo_ui::widget::{TabItemProps, TabStrip, TabStripProps};
+use tilo_ui_base::tokens::PresenceHue;
+use tilo_ui_base::{
+    component::Described, component::Event, component::Person, component::ResourceId,
+};
 
 fn tab(key: &str, title: &str) -> TabItemProps {
     TabItemProps {
@@ -12,7 +14,7 @@ fn tab(key: &str, title: &str) -> TabItemProps {
         item: Some(ResourceId(format!("@notes.Note:{key}"))),
         title: Some(title.to_owned()),
         name: None,
-        icon: Some(tilo_ui::icons::Icon::FileText),
+        icon: Some(tilo_ui_base::icons::Icon::FileText),
         attention: false,
         modified: false,
         busy: false,
@@ -106,10 +108,11 @@ tilo_test_env::scenario! {
 /// its bar marked, so a view hears the pill it was pressed for without asking for reports.
 #[test]
 fn a_press_on_a_pill_is_the_views_event_in_the_same_pass() {
-    use tilo_ui::component::{Fired, Intent, Value};
-    use tilo_ui::widget::{Column, Element};
+    use tilo_ui::widget::Column;
+    use tilo_ui_base::widget::Element;
+    use tilo_ui_base::{component::Fired, component::Intent, component::Value};
 
-    let queue: tilo_ui::Intents<Fired> = tilo_ui::Intents::default();
+    let queue: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
     let mut given = props(vec![tab("a", "A"), tab("b", "B")], 0);
     given.activate = Event::View(Intent::new(&queue, "frame", "activate"));
     let strip = TabStrip::from_props("frame", given);
@@ -118,7 +121,7 @@ fn a_press_on_a_pill_is_the_views_event_in_the_same_pass() {
         tilo_ui::State::new(),
         Box::new(column),
         (400, 200),
-        tilo_ui::Theme::light(),
+        tilo_ui_base::Theme::light(),
     );
     harness.relayout();
     let pill = {

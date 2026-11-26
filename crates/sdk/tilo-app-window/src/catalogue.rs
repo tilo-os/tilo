@@ -13,10 +13,12 @@ use tilo_actions::{
     ActionAddress, ActionArgs, ActionDescriptor, ActionOutput, ActionParam, ActionSpec,
     EncodedAction, ExecutionLocus, InputSpec, OperationKind, ParamType, ResourceSpec,
 };
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
+use tilo_ui_base::widget::resources::PublishesResources;
+use tilo_ui_base::{
+    collaboration::SurfaceDelta, collaboration::SurfacePublication, collaboration::SurfaceTable,
+};
 use ui::automerge::AutoCommit;
-use ui::collaboration::{SurfaceDelta, SurfacePublication, SurfaceTable};
-use ui::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
-use ui::widget::resources::PublishesResources;
 
 use crate::window::AppWindow;
 
@@ -249,7 +251,10 @@ fn offered(descriptor: &ActionDescriptor) -> ActionSpec {
 
 impl PublishesResources for AppWindow {
     fn resources(&self, doc: &AutoCommit) -> Vec<ResourceSpec> {
-        let mut all = ui::widget::resources::resources(ui::widget::Decorator::inner(self), doc);
+        let mut all = tilo_ui_base::widget::resources::resources(
+            tilo_ui_base::widget::Decorator::inner(self),
+            doc,
+        );
         let moved = self.moved_now();
         all.extend(
             self.catalogue()
@@ -292,10 +297,11 @@ impl ResourceOperations for AppWindow {
     fn start_operation(
         &mut self,
         op: &ResourceOperation<'_>,
-        doc: &mut ui::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ui::automerge::ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        if let Some(started) = ui::host_operation::start_in_children(self, op, doc, path)? {
+        if let Some(started) = tilo_ui_base::host_operation::start_in_children(self, op, doc, path)?
+        {
             return Ok(Some(started));
         }
         let request = op.request();

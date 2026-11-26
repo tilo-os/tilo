@@ -1,6 +1,6 @@
 //! Who draws the entry points to History and Search on this host.
 
-use crate::platform::{Platform, PlatformConventions};
+use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
 
 /// Who presents the entry points to History and Search.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

@@ -17,13 +17,16 @@
 
 use std::path::{Path, PathBuf};
 
-use tilo_ui::chrome::{SelectionState, selection_tier_on};
-use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::part_paint::backdrop::{BackdropFrame, BackdropRecording, fill_role, layer_scene};
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::{Theme, ThemeDocument};
-use tilo_ui::tokens::SurfaceRole;
 use tilo_ui::widget::{Button, ButtonRole, Column, Row, Toggle};
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::tokens::SurfaceRole;
+use tilo_ui_base::{chrome::SelectionState, chrome::selection_tier_on};
+use tilo_ui_base::{
+    part_paint::backdrop::BackdropFrame, part_paint::backdrop::BackdropRecording,
+    part_paint::backdrop::fill_role, part_paint::backdrop::layer_scene,
+};
+use tilo_ui_base::{theme::Theme, theme::ThemeDocument};
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
@@ -83,7 +86,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 /// The view: the four button roles and two switches.
-fn view_of() -> Box<dyn tilo_ui::widget::Widget> {
+fn view_of() -> Box<dyn tilo_ui_base::widget::Widget> {
     let buttons = Row::new()
         .with_gap(8.0)
         .push(Box::new(
@@ -172,10 +175,10 @@ fn shoot_backdrop(theme: &Theme, below: Below, out: &Path) {
         } else {
             colors.surfaces.raised
         };
-        tilo_ui::surface::control_face(&mut scene, scaled, &body, fill, theme);
+        tilo_ui_base::surface::control_face(&mut scene, scaled, &body, fill, theme);
     }
     let panel = Rect::new(300.0, 160.0, 660.0, 360.0);
-    tilo_ui::surface::panel(
+    tilo_ui_base::surface::panel(
         &mut scene,
         Affine::IDENTITY,
         panel,

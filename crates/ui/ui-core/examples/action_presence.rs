@@ -4,7 +4,8 @@
 
 use std::{cell::Cell, path::Path, rc::Rc};
 use tilo_ui::widget::{Button, Column, resource_actions};
-use tilo_ui::{headless::Driver, state::State, theme::Theme};
+use tilo_ui::{headless::Driver, state::State};
+use tilo_ui_base::theme::Theme;
 
 type CaptureResult<T> = Result<T, Box<dyn std::error::Error>>;
 
@@ -72,9 +73,10 @@ fn capture(out: &Path, theme: Theme, viewport: (u32, u32)) -> CaptureResult<()> 
         anchor: tilo_actions::InteractionAnchor::Resource,
         group: None,
     };
-    frame
-        .presence_mut()
-        .set_display_name(tilo_ui::permissions::MemberId::person("scribe"), "Scribe");
+    frame.presence_mut().set_display_name(
+        tilo_ui_base::permissions::MemberId::person("scribe"),
+        "Scribe",
+    );
     let changed = frame.presence_mut().apply_interaction(interaction)?;
     frame.update_presence(|_| changed);
     if !frame.poll_frame()? {

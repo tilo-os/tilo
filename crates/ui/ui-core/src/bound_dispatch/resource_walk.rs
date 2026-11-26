@@ -2,13 +2,15 @@
 //! the items past a page, search providers, an action directory's pages),
 //! each read under the component the widget belongs to.
 
-#[cfg(feature = "model")]
-use crate::widget::ActionDirectoryResourcePage;
-use crate::widget::Widget;
-use crate::widget::component_walk::{
-    Binding, Entry, binding_of, enter, has_separate_document_owner,
-};
 use automerge::AutoCommit;
+#[cfg(feature = "model")]
+use tilo_ui_base::widget::ActionDirectoryResourcePage;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    widget::component_walk::Binding, widget::component_walk::Entry,
+    widget::component_walk::binding_of, widget::component_walk::enter,
+    widget::component_walk::has_separate_document_owner,
+};
 
 /// Where a walk stands at one widget: whether the widget is a component's
 /// boundary, the component it reads under, and that component's scope held.
@@ -85,21 +87,23 @@ pub(crate) fn collect_widget_resources(
         inherited: Option<Binding>,
         root: bool,
         resources: &mut Vec<tilo_actions::ResourceSpec>,
-        taken: &mut crate::widget::resources::TakenResources,
+        taken: &mut tilo_ui_base::widget::resources::TakenResources,
     ) {
         let Some(crossing) = cross(widget, inherited) else {
             return;
         };
         if !crossing.boundary {
             let found = crossing
-                .read(doc, |doc| crate::widget::resources::resources(widget, doc))
+                .read(doc, |doc| {
+                    tilo_ui_base::widget::resources::resources(widget, doc)
+                })
                 .unwrap_or_default();
             let found = if root || crossing.binding.is_none() {
                 found
             } else {
                 found
                     .into_iter()
-                    .map(crate::widget::resources::outside_document)
+                    .map(tilo_ui_base::widget::resources::outside_document)
                     .collect()
             };
             let fresh: Vec<_> = found
@@ -129,7 +133,7 @@ pub(crate) fn collect_widget_resources(
         None,
         true,
         resources,
-        &mut crate::widget::resources::TakenResources::default(),
+        &mut tilo_ui_base::widget::resources::TakenResources::default(),
     );
 }
 
@@ -153,14 +157,14 @@ pub fn find_resource(
         if !crossing.boundary {
             let found = crossing
                 .read(doc, |doc| {
-                    crate::widget::resources::resource(widget, doc, id)
+                    tilo_ui_base::widget::resources::resource(widget, doc, id)
                 })
                 .flatten();
             if let Some(found) = found {
                 return Some(if root || crossing.binding.is_none() {
                     found
                 } else {
-                    crate::widget::resources::outside_document(found)
+                    tilo_ui_base::widget::resources::outside_document(found)
                 });
             }
         }
@@ -178,7 +182,7 @@ pub fn find_resource(
 
 /// The item resources `widget`'s subtree leaves out of what it publishes
 /// past each collection's published page
-/// ([`crate::widget::resources::PublishesResources::resources_past_page`]): those of
+/// ([`tilo_ui_base::widget::resources::PublishesResources::resources_past_page`]): those of
 /// the first widget that names any, read as [`find_resource`] reads them.
 pub fn resources_past_page(
     widget: &dyn Widget,
@@ -195,7 +199,7 @@ pub fn resources_past_page(
         if !crossing.boundary {
             let found = crossing
                 .read(doc, |doc| {
-                    crate::widget::resources::resources_past_page(widget, doc)
+                    tilo_ui_base::widget::resources::resources_past_page(widget, doc)
                 })
                 .unwrap_or_default();
             if !found.is_empty() {
@@ -213,27 +217,27 @@ pub fn resources_past_page(
     visit(widget, doc, None)
 }
 
-/// [`crate::widget::resources::past_page_len`] of `widget`'s subtree: how many items
+/// [`tilo_ui_base::widget::resources::past_page_len`] of `widget`'s subtree: how many items
 /// the published pages leave out, counted without building them.
 pub fn past_page_len(widget: &dyn Widget, doc: &AutoCommit) -> usize {
     visit_past_page(widget, doc, None, &mut |widget, doc| {
-        let len = crate::widget::resources::past_page_len(widget, doc);
+        let len = tilo_ui_base::widget::resources::past_page_len(widget, doc);
         (len > 0).then_some(len)
     })
     .unwrap_or(0)
 }
 
-/// [`crate::widget::resources::past_page_labels`] of `widget`'s subtree: the items the
+/// [`tilo_ui_base::widget::resources::past_page_labels`] of `widget`'s subtree: the items the
 /// published pages leave out, by id and label, without building them.
 pub fn past_page_labels(widget: &dyn Widget, doc: &AutoCommit) -> Vec<(String, String)> {
     visit_past_page(widget, doc, None, &mut |widget, doc| {
-        let labels = crate::widget::resources::past_page_labels(widget, doc);
+        let labels = tilo_ui_base::widget::resources::past_page_labels(widget, doc);
         (!labels.is_empty()).then_some(labels)
     })
     .unwrap_or_default()
 }
 
-/// [`crate::widget::resources::past_page_range`] of `widget`'s subtree: the items the
+/// [`tilo_ui_base::widget::resources::past_page_range`] of `widget`'s subtree: the items the
 /// published pages leave out from `offset` on, built alone.
 pub fn past_page_range(
     widget: &dyn Widget,
@@ -242,10 +246,10 @@ pub fn past_page_range(
     take: usize,
 ) -> Vec<tilo_actions::ResourceSpec> {
     visit_past_page(widget, doc, None, &mut |widget, doc| {
-        if crate::widget::resources::past_page_len(widget, doc) == 0 {
+        if tilo_ui_base::widget::resources::past_page_len(widget, doc) == 0 {
             return None;
         }
-        Some(crate::widget::resources::past_page_range(
+        Some(tilo_ui_base::widget::resources::past_page_range(
             widget, doc, offset, take,
         ))
     })
@@ -307,7 +311,7 @@ pub(crate) fn resolve_widget_resource(
     id: &str,
 ) -> Option<tilo_actions::ResourceSpec> {
     resolve_bound_resource(widget, doc, None, &mut |widget, doc| {
-        crate::widget::resources::resource(widget, doc, id)
+        tilo_ui_base::widget::resources::resource(widget, doc, id)
     })
 }
 
@@ -393,7 +397,7 @@ pub(crate) fn action_directory_page_at(
                 (if let Some(binding) = &binding {
                     binding
                         .read_document(doc, |doc, _| {
-                            crate::widget::resources::action_directory_resource_page(
+                            tilo_ui_base::widget::resources::action_directory_resource_page(
                                 widget,
                                 doc,
                                 cursor,
@@ -403,7 +407,7 @@ pub(crate) fn action_directory_page_at(
                         .ok()
                         .flatten()
                 } else {
-                    crate::widget::resources::action_directory_resource_page(
+                    tilo_ui_base::widget::resources::action_directory_resource_page(
                         widget,
                         doc,
                         cursor,

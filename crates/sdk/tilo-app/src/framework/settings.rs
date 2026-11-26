@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use std::rc::{Rc, Weak};
 
 use settings_model::SettingsSchema;
-use ui_core::LocalState;
+use tilo_ui_base::LocalState;
 use ui_core::storage::{AppStorage, Settings, SettingsRevision};
 
 use super::resources::{Held, ResourceApi};
@@ -147,7 +147,7 @@ pub(crate) struct ViewStorage {
     emoji: Option<Rc<super::workspace_emoji::WindowEmoji>>,
     /// The window's own route to the session, where it runs in one: taken while the window is
     /// constructed, the only time it can be, and handed to views built any time after.
-    session: Option<ui_core::collaboration::browser_service_sessions::Client>,
+    session: Option<tilo_ui_base::collaboration::browser_service_sessions::Client>,
 }
 
 /// What the host gives a live window beside its record: the person's own
@@ -161,7 +161,7 @@ pub(crate) struct Hosted {
     pub(crate) records: Option<(
         ui_core::resource::ResourceStore,
         tilo_resource::MemberId,
-        Option<ui_core::permissions::LivePermissions>,
+        Option<tilo_ui_base::permissions::LivePermissions>,
     )>,
     /// The records every app of the workspace opens, and the window's wake
     /// scope, against which the workspace's emoji are registered.
@@ -232,7 +232,7 @@ impl ViewStorage {
         if let Some(records) = &mut hosted.records {
             records.device_queue = Some(storage.settings::<super::chain::QueuedWrites>());
         }
-        let session = ui_core::collaboration::browser_service_sessions::Client::capture_kept(
+        let session = tilo_ui_base::collaboration::browser_service_sessions::Client::capture_kept(
             hosted
                 .records
                 .as_ref()
@@ -260,10 +260,10 @@ impl ViewStorage {
     /// The window's own route to the session, where it runs in one.
     pub(crate) fn session(
         &self,
-    ) -> Option<ui_core::collaboration::browser_service_sessions::Client> {
+    ) -> Option<tilo_ui_base::collaboration::browser_service_sessions::Client> {
         self.session
             .as_ref()
-            .map(ui_core::collaboration::browser_service_sessions::Client::another)
+            .map(tilo_ui_base::collaboration::browser_service_sessions::Client::another)
     }
 
     /// The chain of `P` the app keeps beside its record, opened on first
@@ -309,7 +309,7 @@ impl ViewStorage {
         &self,
         me: Option<&tilo_resource::MemberId>,
         payload: &[u8],
-        live: &mut ui_core::widget::Edits<'_>,
+        live: &mut tilo_ui_base::widget::Edits<'_>,
     ) -> Result<tilo_actions::ActionOutput, tilo_resource::Refusal> {
         self.chains.answer(me, payload, live)
     }
@@ -540,7 +540,10 @@ impl ViewStorage {
     /// built again only for a part that changed, without the frame of the view or the rest of
     /// what it publishes. `None` for a chain the views did not open, or one another provider
     /// keeps, which is built whole for that provider to name on every action.
-    pub(crate) fn chain_published(&self, id: &str) -> Option<ui_core::published::SharedResource> {
+    pub(crate) fn chain_published(
+        &self,
+        id: &str,
+    ) -> Option<tilo_ui_base::published::SharedResource> {
         if self.kept_by.borrow().contains_key(id) {
             return None;
         }
@@ -689,13 +692,15 @@ impl ViewStorage {
 
     /// [`Self::resource_resources`] as shared trees: a chain's items are the nodes its last
     /// publication carried wherever its parts are unchanged.
-    pub(crate) fn resource_resources_shared(&self) -> Vec<ui_core::published::SharedResource> {
+    pub(crate) fn resource_resources_shared(&self) -> Vec<tilo_ui_base::published::SharedResource> {
         let kept_by = self.kept_by.borrow();
         let owned = |resource: tilo_actions::ResourceSpec| {
             let owner = resource.id.as_str().to_owned();
-            ui_core::published::SharedResource::from_resource(self.kept_where(&owner, resource))
+            tilo_ui_base::published::SharedResource::from_resource(
+                self.kept_where(&owner, resource),
+            )
         };
-        let mut resources: Vec<ui_core::published::SharedResource> =
+        let mut resources: Vec<tilo_ui_base::published::SharedResource> =
             self.own_resources().into_iter().map(owned).collect();
         resources.extend(self.chains.apis().iter().map(|api| {
             // A chain run by another provider names it on every action, so it is built whole.
@@ -789,7 +794,8 @@ impl ViewStorage {
     /// are still on their way ([`super::workspace::WorkspaceState::declared_arriving`]).
     pub(crate) fn declared_arriving(
         &self,
-    ) -> Option<ui_core::arriving::Arriving<(), ui_core::workspace_sync::RecordNotHere>> {
+    ) -> Option<tilo_ui_base::arriving::Arriving<(), tilo_ui_base::workspace_sync::RecordNotHere>>
+    {
         self.workspace.as_ref()?.declared_arriving()
     }
 

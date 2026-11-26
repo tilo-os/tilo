@@ -4,9 +4,9 @@
 use super::App;
 use crate::host_chrome::edit::{EDIT_OPERATION, EDIT_RESOURCE, edit_resource};
 use crate::host_chrome::model::{self, HostCommand, RecentChange};
-use crate::platform::HostShortcut;
 #[cfg(feature = "model")]
 use crate::state::StateHistory as _;
+use tilo_ui_base::platform::HostShortcut;
 
 /// Changes whenever a host command's label, enabled state or presence may
 /// have, so the host chrome rebuilds only then.
@@ -46,7 +46,7 @@ impl App {
 
     fn focused_edit_resource(&mut self) -> tilo_actions::ResourceSpec {
         let mut resource = edit_resource(&self.focused_undo_status());
-        if crate::widget::undo_access::local_undo_is_deferred(self.root_widget.as_ref()) {
+        if tilo_ui_base::widget::undo_access::local_undo_is_deferred(self.root_widget.as_ref()) {
             for action in &mut resource.actions {
                 let ty = action.type_mut();
                 ty.contract.execution =
@@ -54,19 +54,19 @@ impl App {
                 ty.contract.result = tilo_actions::ResultSpec::Job;
                 // The page's own editing history on this device.
                 ty.contract.tags.push(tilo_actions::OWN_DEVICE_SCOPE.into());
-                ty.description = Some(crate::i18n::I18nManager::lookup_plain(
+                ty.description = Some(tilo_ui_base::i18n::I18nManager::lookup_plain(
                     "host-native-page-history-scope",
                 ));
             }
         }
         if matches!(
-            crate::widget::undo_access::local_undo_status(self.root_widget.as_ref()),
-            Some(crate::widget::undo_access::LocalUndoStatus::Pending)
+            tilo_ui_base::widget::undo_access::local_undo_status(self.root_widget.as_ref()),
+            Some(tilo_ui_base::widget::undo_access::LocalUndoStatus::Pending)
         ) {
             for action in &mut resource.actions {
                 action.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
                     code: "native_history_unobserved".into(),
-                    reason: crate::i18n::I18nManager::lookup_plain(
+                    reason: tilo_ui_base::i18n::I18nManager::lookup_plain(
                         "host-native-history-unobserved",
                     ),
                 };
@@ -76,8 +76,9 @@ impl App {
     }
 
     pub(super) fn refresh_local_undo_discovery(&mut self) -> bool {
-        let status = crate::widget::undo_access::local_undo_status(self.root_widget.as_ref())
-            .map(|s| s.key());
+        let status =
+            tilo_ui_base::widget::undo_access::local_undo_status(self.root_widget.as_ref())
+                .map(|s| s.key());
         if status == self.actions.local_history_status {
             return false;
         }
@@ -92,10 +93,12 @@ impl App {
     /// Whether it moved anything.
     pub(crate) fn perform_undo_request(
         &mut self,
-        request: crate::widget::undo_access::UndoRequest,
+        request: tilo_ui_base::widget::undo_access::UndoRequest,
     ) -> bool {
-        if crate::widget::undo_access::handle_local_undo_request(self.root_widget.as_mut(), request)
-        {
+        if tilo_ui_base::widget::undo_access::handle_local_undo_request(
+            self.root_widget.as_mut(),
+            request,
+        ) {
             self.needs_sync = true;
             return true;
         }
@@ -109,9 +112,12 @@ impl App {
 
     /// Undo or redo in the focused document, for the local author.
     #[cfg(feature = "model")]
-    fn perform_document_undo(&mut self, request: crate::widget::undo_access::UndoRequest) -> bool {
+    fn perform_document_undo(
+        &mut self,
+        request: tilo_ui_base::widget::undo_access::UndoRequest,
+    ) -> bool {
         // Otherwise round-tripping document undo/redo loses caret position.
-        let current_meta = crate::widget::undo_points::get_state(self.root_widget.as_ref());
+        let current_meta = tilo_ui_base::widget::undo_points::get_state(self.root_widget.as_ref());
         let current_focus_idx = self
             .focused_node
             .and_then(|id| self.focusable_order.iter().position(|x| *x == id));
@@ -136,10 +142,10 @@ impl App {
             .is_some_and(|node| self.bindings.owns_document(node));
         let author = Some(&self.local_author);
         let entry = match request {
-            crate::widget::undo_access::UndoRequest::Undo => {
+            tilo_ui_base::widget::undo_access::UndoRequest::Undo => {
                 self.state.undo_as(author, current_focus_idx, current_meta)
             }
-            crate::widget::undo_access::UndoRequest::Redo => {
+            tilo_ui_base::widget::undo_access::UndoRequest::Redo => {
                 self.state.redo_as(author, current_focus_idx, current_meta)
             }
         };
@@ -163,7 +169,7 @@ impl App {
     pub(super) fn move_bound_history(
         &mut self,
         binding: &crate::bound_dispatch::CallbackBinding,
-        request: crate::widget::undo_access::UndoRequest,
+        request: tilo_ui_base::widget::undo_access::UndoRequest,
     ) -> bool {
         if self.collaboration.manager.is_connected() {
             match binding.history_uses_compensation(&mut self.state.doc) {
@@ -192,24 +198,24 @@ impl App {
 
     /// What Undo would do for the target the keyboard would undo in. Reads a
     /// snapshot, so a pending edit keeps its undo step open.
-    pub(super) fn focused_undo_status(&mut self) -> crate::widget::undo_access::UndoStatus {
+    pub(super) fn focused_undo_status(&mut self) -> tilo_ui_base::widget::undo_access::UndoStatus {
         if let Some(local) =
-            crate::widget::undo_access::local_undo_status(self.root_widget.as_ref())
+            tilo_ui_base::widget::undo_access::local_undo_status(self.root_widget.as_ref())
         {
             return match local {
-                crate::widget::undo_access::LocalUndoStatus::Ready(status) => status,
-                crate::widget::undo_access::LocalUndoStatus::Pending => Default::default(),
+                tilo_ui_base::widget::undo_access::LocalUndoStatus::Ready(status) => status,
+                tilo_ui_base::widget::undo_access::LocalUndoStatus::Pending => Default::default(),
             };
         }
         #[cfg(feature = "model")]
         let status = self.focused_document_undo_status();
         #[cfg(not(feature = "model"))]
-        let status = crate::widget::undo_access::UndoStatus::default();
+        let status = tilo_ui_base::widget::undo_access::UndoStatus::default();
         status
     }
 
     #[cfg(feature = "model")]
-    fn focused_document_undo_status(&mut self) -> crate::widget::undo_access::UndoStatus {
+    fn focused_document_undo_status(&mut self) -> tilo_ui_base::widget::undo_access::UndoStatus {
         let focused = self.focused_node;
         if let Some(binding) = focused
             .and_then(|node| {
@@ -240,7 +246,7 @@ impl App {
             for action in &mut search.actions {
                 action.type_mut().contract.availability = tilo_actions::Availability::Unavailable {
                     code: "search_open".into(),
-                    reason: crate::i18n::I18nManager::lookup_plain("host-search"),
+                    reason: tilo_ui_base::i18n::I18nManager::lookup_plain("host-search"),
                 };
             }
         }
@@ -276,8 +282,10 @@ impl App {
             framework_history_open: self.history_open(),
             palette: self.palette_presented(),
             focus: self.focused_node,
-            local_history: crate::widget::undo_access::local_undo_status(self.root_widget.as_ref())
-                .map(|s| s.key()),
+            local_history: tilo_ui_base::widget::undo_access::local_undo_status(
+                self.root_widget.as_ref(),
+            )
+            .map(|s| s.key()),
             resources: (
                 self.actions.resource_generation.get(),
                 self.actions.permission_generation.get(),

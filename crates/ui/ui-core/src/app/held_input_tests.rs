@@ -6,8 +6,8 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use super::*;
-use crate::arriving::{Arrival, Arriving, Source};
 use crate::widget::ArrivingView;
+use tilo_ui_base::{arriving::Arrival, arriving::Arriving, arriving::Source};
 use winit::event::{ElementState, Modifiers};
 use winit::keyboard::{Key, ModifiersState};
 
@@ -34,7 +34,7 @@ struct Content {
 
 impl Widget for Content {
     crate::testing::inert_widget_methods!(leaf_layout);
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let WindowEvent::KeyboardInput { event: key, .. } = event
             && key.state == ElementState::Pressed
             && let Key::Character(text) = &key.logical_key
@@ -54,7 +54,7 @@ impl Widget for Content {
 fn window(arriving: &Arriving<(), String>) -> (App, Took) {
     let took = Took::default();
     let shown = Rc::clone(&took);
-    let view = ArrivingView::new(arriving, move |()| -> crate::widget::Element {
+    let view = ArrivingView::new(arriving, move |()| -> tilo_ui_base::widget::Element {
         Box::new(Content {
             took: Rc::clone(&shown),
         })
@@ -77,12 +77,12 @@ fn ctrl_n(app: &mut App) {
     app.set_surface_modifiers(Modifiers::from(ModifiersState::CONTROL));
     app.surface_input(
         &Window,
-        crate::synthetic_input::key_input(&n, ElementState::Pressed),
+        tilo_ui_base::synthetic_input::key_input(&n, ElementState::Pressed),
         false,
     );
     app.surface_input(
         &Window,
-        crate::synthetic_input::key_input(&n, ElementState::Released),
+        tilo_ui_base::synthetic_input::key_input(&n, ElementState::Released),
         false,
     );
     app.set_surface_modifiers(Modifiers::default());

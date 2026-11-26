@@ -2,8 +2,8 @@
 //! not cover. Read from what the content tells assistive technology, which names exactly the text
 //! a person reads and the controls they use, each with its bounds.
 
-use crate::a11y::{AccessNode, Role};
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 use vello::kurbo::Rect;
 
 /// The most places one window's content is read for: content that shows more counts whole.
@@ -70,7 +70,7 @@ const fn container(role: Role) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::a11y::AccessNode;
+    use tilo_ui_base::a11y::AccessNode;
 
     #[test]
     fn a_pane_is_ink_only_where_its_text_and_controls_are() {

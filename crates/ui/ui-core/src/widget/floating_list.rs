@@ -8,16 +8,16 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::WindowEvent;
 
-use crate::motion::Extent;
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::DrawChild;
 use crate::widget::floating_surface;
 use crate::widget::scroll_region::ScrollRegion;
 use crate::widget::spinner::Spinner;
 use crate::widget::{PanelAlign, PopoverSide};
+use tilo_ui_base::motion::Extent;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
 
 const DEFAULT_MAX_VISIBLE: usize = 8;
 
@@ -95,8 +95,8 @@ impl FloatingMetrics {
     /// The stock geometry, for hit-testing before the first paint.
     #[must_use]
     pub fn stock() -> Self {
-        let spacing = crate::tokens::Spacing::BASE;
-        let metrics = crate::tokens::Metrics::BASE;
+        let spacing = tilo_ui_base::tokens::Spacing::BASE;
+        let metrics = tilo_ui_base::tokens::Metrics::BASE;
         Self {
             row: f64::from(metrics.menu_row_height),
             inset: f64::from(spacing.s2),
@@ -192,7 +192,7 @@ pub struct RowState<'a, C> {
 }
 
 struct WidthKey {
-    style: crate::text_render::TextStyle,
+    style: tilo_ui_base::text_render::TextStyle,
     metrics: FloatingMetrics,
     epoch: std::sync::Arc<()>,
     text_scale: f32,
@@ -204,7 +204,7 @@ impl WidthKey {
     #[inline(never)]
     fn holds(
         &self,
-        style: &crate::text_render::TextStyle,
+        style: &tilo_ui_base::text_render::TextStyle,
         metrics: &FloatingMetrics,
         text: &TextRenderer,
     ) -> bool {
@@ -226,7 +226,7 @@ impl WidthKey {
 /// than fit scroll, the armed row always in view; a list taller than the height
 /// beside its anchor shrinks to it. While rows are on their way the
 /// framework's placeholder stands where the first will be
-/// ([`crate::arriving`]); a status line stands in for rows when there are
+/// ([`tilo_ui_base::arriving`]); a status line stands in for rows when there are
 /// none.
 pub struct FloatingList<R: FloatingRow> {
     rows: Vec<R>,
@@ -244,8 +244,8 @@ pub struct FloatingList<R: FloatingRow> {
     min_row: f64,
     pinned_row: Option<f64>,
     status: Option<String>,
-    arriving: Option<crate::arriving::ArrivalClock>,
-    drawn_step: Option<crate::arriving::Step>,
+    arriving: Option<tilo_ui_base::arriving::ArrivalClock>,
+    drawn_step: Option<tilo_ui_base::arriving::Step>,
     anchor: Rect,
     viewport: Option<Rect>,
     role: TextRole,
@@ -642,13 +642,13 @@ impl<R: FloatingRow> FloatingList<R> {
     /// Rows are on their way, with `clock`'s timing (asked when, from
     /// where): the framework's placeholder stands where the first will be.
     /// `None` once they are in, or nothing is asked.
-    pub fn set_arriving(&mut self, clock: Option<crate::arriving::ArrivalClock>) {
+    pub fn set_arriving(&mut self, clock: Option<tilo_ui_base::arriving::ArrivalClock>) {
         self.arriving = clock;
     }
 
     /// The timing of the rows on their way, for an owner that names them.
     #[must_use]
-    pub fn arriving(&self) -> Option<&crate::arriving::ArrivalClock> {
+    pub fn arriving(&self) -> Option<&tilo_ui_base::arriving::ArrivalClock> {
         self.arriving.as_ref()
     }
 
@@ -658,7 +658,7 @@ impl<R: FloatingRow> FloatingList<R> {
         self.arriving.is_some()
     }
 
-    fn arriving_step(&self, now: crate::time::Instant) -> Option<crate::arriving::Step> {
+    fn arriving_step(&self, now: crate::time::Instant) -> Option<tilo_ui_base::arriving::Step> {
         self.rows
             .is_empty()
             .then_some(self.arriving.as_ref())
@@ -676,7 +676,7 @@ impl<R: FloatingRow> FloatingList<R> {
 
     /// Whether the placeholder stepped on since the last paint.
     pub fn arriving_moved(&self) -> bool {
-        self.arriving_step(crate::motion::frame_now()) != self.drawn_step
+        self.arriving_step(tilo_ui_base::motion::frame_now()) != self.drawn_step
     }
 
     /// The rect the list opens from (a field, or the caret's line).
@@ -764,7 +764,7 @@ impl<R: FloatingRow> FloatingList<R> {
         }
         let mut height = self
             .content_height()
-            .min(crate::num::f64_of_usize(self.max_visible) * m.row);
+            .min(tilo_ui_base::num::f64_of_usize(self.max_visible) * m.row);
         if let Some(max) = self.max_height {
             height = height.min(max.max(m.row));
         }
@@ -1018,7 +1018,7 @@ impl<R: FloatingRow> FloatingList<R> {
     pub fn press_bar(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
         on_bar: &mut bool,
     ) -> bool {
         self.place_scroll();
@@ -1038,7 +1038,7 @@ impl<R: FloatingRow> FloatingList<R> {
     pub fn scroll_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         if self.rect().is_none() {
             return false;
@@ -1138,32 +1138,38 @@ impl<R: FloatingRow> FloatingList<R> {
         text: &mut TextRenderer,
         theme: &Theme,
     ) {
-        self.paint_holding(scene, transform, text, theme, crate::motion::Pose::REST);
+        self.paint_holding(
+            scene,
+            transform,
+            text,
+            theme,
+            tilo_ui_base::motion::Pose::REST,
+        );
     }
 
     /// [`Self::paint`], its rows drawn under `rows` over the panel: an arriving menu's rows come
-    /// in once its panel is opaque ([`crate::motion::Appear::contents`]).
+    /// in once its panel is opaque ([`tilo_ui_base::motion::Appear::contents`]).
     pub fn paint_holding(
         &mut self,
         scene: &mut Scene,
         transform: Affine,
         text: &mut TextRenderer,
         theme: &Theme,
-        rows: crate::motion::Pose,
+        rows: tilo_ui_base::motion::Pose,
     ) {
         self.measure(text, theme);
         let Some(target) = self.rect() else {
             return;
         };
         self.place_scroll();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let shown = if self.placed.is_some() {
             target.height()
         } else {
             self.height.follow(
                 target.height(),
                 theme.motion(),
-                crate::motion::input_source(),
+                tilo_ui_base::motion::input_source(),
                 now,
             );
             self.height.get(now).clamp(0.0, target.height())
@@ -1175,7 +1181,7 @@ impl<R: FloatingRow> FloatingList<R> {
             Rect::new(target.x0, target.y0, target.x1, target.y0 + shown)
         };
         if let Some(settles) = self.height.settles_at() {
-            crate::motion::want_frames_until(settles);
+            tilo_ui_base::motion::want_frames_until(settles);
         }
         let radius = self.panel_radius(theme);
         floating_surface::paint_rounded(scene, transform, panel, radius, theme);
@@ -1209,7 +1215,7 @@ impl<R: FloatingRow> FloatingList<R> {
         theme: &Theme,
         panel: Rect,
     ) {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let m = self.metrics;
         let radius = self.panel_radius(theme);
         self.drawn_step = self.arriving_step(now);
@@ -1260,10 +1266,12 @@ impl<R: FloatingRow> FloatingList<R> {
                 content,
                 text,
                 theme,
-                &crate::presence::PresenceCtx::default().draw_env(),
+                &tilo_ui_base::presence::PresenceCtx::default().draw_env(),
             );
             if theme.motion().loops() {
-                crate::motion::want_frames_until(now + crate::time::Duration::from_millis(100));
+                tilo_ui_base::motion::want_frames_until(
+                    now + crate::time::Duration::from_millis(100),
+                );
             }
         }
         scene.pop_layer();
@@ -1292,9 +1300,9 @@ impl<R: FloatingRow> FloatingList<R> {
                 area.center().y + line / 2.0,
             );
             crate::widget::ArrivalFace::new(
-                crate::widget::SkeletonShape::Text { lines: 1 },
+                tilo_ui_base::widget::SkeletonShape::Text { lines: 1 },
                 clock,
-                crate::motion::frame_now(),
+                tilo_ui_base::motion::frame_now(),
             )
             .paint(&mut ctx, slot);
             return;
@@ -1305,7 +1313,7 @@ impl<R: FloatingRow> FloatingList<R> {
         let style = theme.text(self.role);
         let shown = text.elide_to_width_style(
             status,
-            crate::num::f32_of_f64((area.x1 - m.pad - x).max(0.0)),
+            tilo_ui_base::num::f32_of_f64((area.x1 - m.pad - x).max(0.0)),
             &style,
         );
         let (_, h) = text.measure_style(&shown, None, &style);

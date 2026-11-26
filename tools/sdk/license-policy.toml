@@ -204,6 +204,7 @@ toolkit_reaches = [
     "tilo-paint-strokes",               # crates/engines/paint-strokes
     "tilo-paths",                       # crates/platform/tilo-paths
     "tilo-platform-caps",               # crates/platform/tilo-platform-caps
+    "tilo-presence",                    # crates/platform/tilo-presence
     "tilo-presentation",                # crates/platform/tilo-presentation
     "tilo-process",                     # crates/platform/tilo-process
     "tilo-process-services",            # crates/sdk/tilo-process-services
@@ -233,6 +234,7 @@ toolkit_reaches = [
     "tilo-theme-painter-wasm",          # crates/ui/theme-painter-wasm
     "tilo-theme-sdk",                   # crates/ui/theme-sdk
     "tilo-tts",                         # crates/engines/tts
+    "tilo-ui-base",                     # crates/ui/ui-base
     "tilo-ui-graph",                    # crates/ui/ui-graph
     "tilo-ui-macros",                   # crates/ui/ui-macros
     "tilo-ui-paint",                    # crates/ui/ui-paint

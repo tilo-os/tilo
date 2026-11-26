@@ -323,8 +323,9 @@ fn read_resources(driver: &Driver) -> Vec<serde_json::Value> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::State;
     use crate::headless::parse_spec;
-    use crate::{State, Theme};
+    use tilo_ui_base::Theme;
 
     fn field(value: &str) -> Driver {
         Driver::new_with_controlled_inputs(
@@ -336,8 +337,8 @@ mod tests {
             ),
             (400, 200),
             Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::MemberId::person("fixture-user"),
+            tilo_ui_base::font_catalog::fixture_renderer(),
+            tilo_ui_base::permissions::MemberId::person("fixture-user"),
         )
     }
 

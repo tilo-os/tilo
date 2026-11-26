@@ -4,9 +4,12 @@
 
 use winit::keyboard::{Key, NamedKey};
 
-use crate::selection::KeySelection;
 use crate::time::Instant;
-use crate::virtual_viewport::{ScrollAlignment, ScrollMomentum, SparseVirtualViewport};
+use tilo_ui_base::selection::KeySelection;
+use tilo_ui_base::{
+    virtual_viewport::ScrollAlignment, virtual_viewport::ScrollMomentum,
+    virtual_viewport::SparseVirtualViewport,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum RowStep {
@@ -88,7 +91,7 @@ impl<K: PartialEq> Clicks<K> {
         self.last.as_ref().is_some_and(|(last, at)| {
             last == key
                 && crate::time::now().saturating_duration_since(*at)
-                    < crate::gesture::multi_click_interval()
+                    < tilo_ui_base::gesture::multi_click_interval()
         })
     }
 
@@ -119,7 +122,7 @@ impl<K: PartialEq> Clicks<K> {
 /// brings its rows in with.
 pub(crate) struct RowScroll {
     pub(crate) momentum: ScrollMomentum,
-    pub(crate) to: crate::motion::ScrollTo,
+    pub(crate) to: tilo_ui_base::motion::ScrollTo,
     pub(crate) device_scale: f64,
     /// The rows' opacity in the latest draw and in the frame on screen:
     /// below 1 while they fade in after a long reveal.
@@ -131,7 +134,7 @@ impl Default for RowScroll {
     fn default() -> Self {
         Self {
             momentum: ScrollMomentum::new(),
-            to: crate::motion::ScrollTo::new(),
+            to: tilo_ui_base::motion::ScrollTo::new(),
             device_scale: 1.0,
             fade_drawn: 1.0,
             fade_shown: 1.0,
@@ -146,7 +149,7 @@ impl RowScroll {
         viewport: &mut SparseVirtualViewport<K>,
         index: usize,
         width: f64,
-        motion: crate::tokens::EffectiveMotion,
+        motion: tilo_ui_base::tokens::EffectiveMotion,
         now: Instant,
     ) -> Option<f64> {
         let drawn = viewport.offset();
@@ -164,7 +167,7 @@ impl RowScroll {
             motion,
             now,
         );
-        (jump != crate::motion::ScrollJump::Glide).then_some(target)
+        (jump != tilo_ui_base::motion::ScrollJump::Glide).then_some(target)
     }
 
     /// Where a reveal in progress is drawn at `now`, if one is.
@@ -175,7 +178,9 @@ impl RowScroll {
     }
 
     pub(crate) fn in_progress(&self) -> bool {
-        self.to.target().is_some() || self.to.is_moving(crate::motion::frame_now()) || self.fading()
+        self.to.target().is_some()
+            || self.to.is_moving(tilo_ui_base::motion::frame_now())
+            || self.fading()
     }
 
     pub(crate) fn fading(&self) -> bool {

@@ -6,11 +6,11 @@ use super::body::{BodyIndex, SearchBody};
 use super::ordinals;
 use super::query::{Facet, SearchQuery};
 use super::row::SearchRow;
-use crate::icons::Icon;
-use crate::text_match::FieldWeight;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use tilo_search::{Document, Page, SearchIndex};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::text_match::FieldWeight;
 
 /// Maximum number of rows a provider should return from the legacy, unbudgeted
 /// [`SearchProvider::search`] entry point. Interactive callers use `search_limited`; this
@@ -896,8 +896,10 @@ pub trait SearchProvider {
 
     /// Versions this actual provider's complete lazy invocation domain, including hidden
     /// targets and argument/handler semantics omitted from search rows.
-    fn action_directory_invocation_domain(&self) -> crate::widget::ActionDirectoryInvocationDomain {
-        crate::widget::ActionDirectoryInvocationDomain::Unsupported
+    fn action_directory_invocation_domain(
+        &self,
+    ) -> tilo_ui_base::widget::ActionDirectoryInvocationDomain {
+        tilo_ui_base::widget::ActionDirectoryInvocationDomain::Unsupported
     }
 
     /// Validate a continuation token before it is used by a remote pull directory.
@@ -1100,7 +1102,7 @@ impl CatalogSearchProvider for SearchCatalog {
 mod tests {
     use super::*;
     use crate::search::{SearchBody, SearchBodySource};
-    use crate::text_match::FieldWeight;
+    use tilo_ui_base::text_match::FieldWeight;
 
     fn text_resource(
         resource_id: impl Into<String>,

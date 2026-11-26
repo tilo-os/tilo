@@ -296,7 +296,7 @@ pub mod playing {
         let TransportArt::Image(image) = art else {
             return String::new();
         };
-        ui::held_images::cover(image, EDGE)
+        tilo_ui_base::held_images::cover(image, EDGE)
     }
 
     /// Where `player`'s playhead stands at `now`: where `media` published it,

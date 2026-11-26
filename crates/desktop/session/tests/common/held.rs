@@ -449,13 +449,13 @@ pub fn this_computer_with_an_identity(
         .expect("an identity")
         .public_key;
     // The name they go by, which the site's entry learns of them: never their device's.
-    ui::local_identity::install_source(Some(Arc::new(ui::local_identity::FixedIdentity(
-        ui::local_identity::LocalIdentity {
+    tilo_ui_base::local_identity::install_source(Some(Arc::new(
+        tilo_ui_base::local_identity::FixedIdentity(tilo_ui_base::local_identity::LocalIdentity {
             group_public_key: person,
             display_name: "Ada".to_owned(),
             avatar_color: [40, 80, 120],
             device_public_key: None,
-        },
-    ))));
+        }),
+    )));
     (root, person)
 }

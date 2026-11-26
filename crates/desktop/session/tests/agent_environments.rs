@@ -496,7 +496,7 @@ fn an_agent_in_an_environment_works_in_its_workspace_alone() {
     let _one = ONE_SESSION
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let (mut session, questions, socket) = session(root.path());
 
@@ -586,7 +586,7 @@ fn an_environments_socket_serves_its_own_programs_alone() {
     let _one = ONE_SESSION
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let (mut session, questions, socket) = session(root.path());
 
@@ -634,7 +634,7 @@ fn always_allow_is_remembered_per_environment() {
     let _one = ONE_SESSION
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let (mut session, questions, socket) = session(root.path());
 
@@ -695,7 +695,7 @@ fn two_programs_of_one_name_are_two_agents() {
     let _one = ONE_SESSION
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let (mut session, questions, socket) = session(root.path());
 
@@ -740,7 +740,7 @@ fn a_program_asks_for_a_workspace_the_person_may_grant() {
     let _one = ONE_SESSION
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let (mut session, questions, socket) = session(root.path());
 

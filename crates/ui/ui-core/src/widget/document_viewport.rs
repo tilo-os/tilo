@@ -6,7 +6,7 @@
 //! the buttons write what they want, the viewport writes back the factor it shows, and the
 //! level a person reads is never a frame behind the canvas it names.
 
-use crate::widget::{AppModel, ModelPath};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use std::cell::Cell;
 use std::collections::HashMap;
@@ -19,13 +19,13 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::DrawChild;
-use crate::widget::ScrollMetrics;
-use crate::widget::TaffyTreeExt;
 use crate::widget::scrollbar::{PressOutcome, Scrollbar};
-use crate::widget::{Element, Widget};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::ScrollMetrics;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{widget::Element, widget::Widget};
 
 pub const DEFAULT_MIN_ZOOM: f64 = 0.25;
 pub const DEFAULT_MAX_ZOOM: f64 = 6.0;
@@ -75,7 +75,7 @@ pub enum ViewportZoom {
 
 impl ViewportZoom {
     /// The level as a whole percentage, for the label beside the buttons
-    /// (`crate::format::percent`), or `None` for [`Self::Fit`].
+    /// (`tilo_ui_base::format::percent`), or `None` for [`Self::Fit`].
     #[must_use]
     pub fn percent(self) -> Option<f64> {
         match self {
@@ -812,7 +812,7 @@ enum Content {
     Draw(ContentDraw),
 }
 
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     framework,
     "the viewport around a painted document's Rust drawing code"
 )]
@@ -825,9 +825,9 @@ pub struct DocumentViewport {
     rect: Rect,
     dirty: bool,
     layout_theme: Theme,
-    shown: crate::scroll_copy::ShownFrames<ViewShown>,
+    shown: tilo_ui_base::scroll_copy::ShownFrames<ViewShown>,
     repaint: bool,
-    zoom_state: Option<crate::LocalState<ViewportZoom>>,
+    zoom_state: Option<tilo_ui_base::LocalState<ViewportZoom>>,
     /// Where the scroll stands, kept across the rebuilds an app's view takes
     /// when something else on screen changes (a selection, an inspector
     /// opening): a canvas a person panned must stay panned.
@@ -844,7 +844,7 @@ struct ViewShown {
     tracks: [Option<Rect>; 2],
 }
 
-impl crate::scroll_copy::Shown for ViewShown {
+impl tilo_ui_base::scroll_copy::Shown for ViewShown {
     fn scroll(&self) -> Vec2 {
         -self.origin.to_vec2()
     }
@@ -886,7 +886,7 @@ impl DocumentViewport {
             rect: Rect::ZERO,
             dirty: true,
             layout_theme: Theme::dark(),
-            shown: crate::scroll_copy::ShownFrames::default(),
+            shown: tilo_ui_base::scroll_copy::ShownFrames::default(),
             repaint: true,
             zoom_state: None,
             scroll_cell: None,
@@ -909,7 +909,7 @@ impl DocumentViewport {
             rect: Rect::ZERO,
             dirty: true,
             layout_theme: Theme::dark(),
-            shown: crate::scroll_copy::ShownFrames::default(),
+            shown: tilo_ui_base::scroll_copy::ShownFrames::default(),
             repaint: true,
             zoom_state: None,
             scroll_cell: None,
@@ -923,7 +923,7 @@ impl DocumentViewport {
     /// the same way, so the level a person reads never disagrees with the
     /// canvas.
     #[must_use]
-    pub fn with_zoom(mut self, zoom: &crate::LocalState<ViewportZoom>) -> Self {
+    pub fn with_zoom(mut self, zoom: &tilo_ui_base::LocalState<ViewportZoom>) -> Self {
         self.zoom_state = Some(zoom.clone());
         self
     }
@@ -1070,12 +1070,12 @@ impl DocumentViewport {
                 reason = "narrowing content-space layout dimensions for taffy; never near f32::MAX"
             )]
             let (w, h) = (cw as f32, ch as f32);
-            let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
+            let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::new();
             // SAFETY: `child`, `taffy` and `nodes` come from the build above
             // and stay exclusively borrowed until layout has been applied.
             unsafe {
                 bindings.rebuild(child.as_ref(), &taffy, node, &nodes);
-                let _ = super::layout::compute_widget_layout(
+                let _ = tilo_ui_base::widget::layout::compute_widget_layout(
                     &mut taffy,
                     node,
                     Size {
@@ -1115,7 +1115,7 @@ fn content_extent(w: &dyn Widget) -> (f64, f64) {
 }
 
 impl Widget for DocumentViewport {
-    crate::provides!(dyn crate::content_zoom::ContentZoom);
+    tilo_ui_base::provides!(dyn crate::content_zoom::ContentZoom);
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -1149,16 +1149,16 @@ impl Widget for DocumentViewport {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.state.set_rect(self.rect);
         self.dirty = true;
         let theme = self.layout_theme.clone();
-        crate::text_render::with_layout_renderer(&theme, |tr| self.place_child(&theme, tr));
+        tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| self.place_child(&theme, tr));
         self.apply_requested_zoom();
         self.publish_zoom();
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1181,7 +1181,7 @@ impl Widget for DocumentViewport {
             zoom: self.state.zoom(),
             rect: self.rect,
             content: self.state.content_size(),
-            transform: crate::scroll_copy::on_screen(transform),
+            transform: tilo_ui_base::scroll_copy::on_screen(transform),
             tracks: [self.state.v_track(), self.state.h_track()],
         });
         let pan = self.state.pan();
@@ -1202,7 +1202,7 @@ impl Widget for DocumentViewport {
         self.dirty = false;
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
@@ -1346,7 +1346,7 @@ impl Widget for DocumentViewport {
         // only a wrapped widget offers its pans.
         if let Content::Widget(child) = &self.content {
             let mut overlays = Vec::new();
-            if self.shown.compare(self, &mut overlays) == crate::scroll_copy::Since::Copied {
+            if self.shown.compare(self, &mut overlays) == tilo_ui_base::scroll_copy::Since::Copied {
                 regions.extend(overlays);
                 let mut changed = Vec::new();
                 child.collect_damage(&mut changed);
@@ -1396,7 +1396,11 @@ impl crate::content_zoom::ContentZoom for DocumentViewport {
 }
 
 impl DocumentViewport {
-    fn route_to_child(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn route_to_child(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) {
         let (Content::Widget(c), Some(taffy), Some(node)) = (
             &mut self.content,
             self.inner_taffy.as_ref(),
@@ -1439,7 +1443,7 @@ impl DocumentViewport {
             };
         c.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 taffy,
                 ..ctx.reborrow(ctx.path, node)
             },
@@ -1465,13 +1469,13 @@ mod tests {
             let counter = Rc::clone(&presses);
             let button = crate::widget::Button::new("canvas-button", "Inspect")
                 .on_click(move || counter.set(counter.get() + 1));
-            let manual = crate::widget::Manual::new(|cx| {
+            let manual = tilo_ui_base::widget::Manual::new(|cx| {
                 let size = cx
                     .measure_child(
                         0,
                         Size {
-                            width: crate::widget::MeasureConstraint::Intrinsic,
-                            height: crate::widget::MeasureConstraint::Intrinsic,
+                            width: tilo_ui_base::widget::MeasureConstraint::Intrinsic,
+                            height: tilo_ui_base::widget::MeasureConstraint::Intrinsic,
                         },
                     )?
                     .size;
@@ -1494,7 +1498,7 @@ mod tests {
             let mut harness =
                 crate::app::driver::Driver::new(crate::State::new(), Box::new(viewport), (800, 900));
             let content = canvas_rect(&harness, "canvas-button");
-            let pad = f64::from(crate::tokens::Spacing::default().s6);
+            let pad = f64::from(tilo_ui_base::tokens::Spacing::default().s6);
             let drawn = Point::new(
                 pad + content.center().x * 2.0,
                 pad + content.center().y * 2.0,
@@ -1516,7 +1520,7 @@ mod tests {
         phase a_toolbar_sets_the_zoom_and_the_viewport_answers_with_the_factor_it_shows;
         {
             let (content, _, _) = canvas_with_button("Inspect", 0.0, 0.0);
-            let zoom = crate::LocalState::new(ViewportZoom::Fit);
+            let zoom = tilo_ui_base::LocalState::new(ViewportZoom::Fit);
             let mut viewport = DocumentViewport::new(content).with_zoom(&zoom);
             viewport.set_content_size(600.0, 600.0);
             let mut harness =
@@ -1552,11 +1556,11 @@ mod tests {
         {
             use crate::content_zoom::{ContentZoom, ZoomStep};
             let (content, _, _) = canvas_with_button("Inspect", 0.0, 0.0);
-            let zoom = crate::LocalState::new(ViewportZoom::Fit);
+            let zoom = tilo_ui_base::LocalState::new(ViewportZoom::Fit);
             let mut viewport = DocumentViewport::new(content).with_zoom(&zoom);
             viewport.set_content_size(600.0, 600.0);
             let mut text = TextRenderer::new();
-            crate::widget::layout::lay_out_detached(
+            tilo_ui_base::widget::layout::lay_out_detached(
                 &mut viewport,
                 Rect::new(0.0, 0.0, 800.0, 900.0),
                 &Theme::dark(),
@@ -1831,13 +1835,13 @@ mod tests {
 
     fn canvas_with_button(label: &str, x: f64, y: f64) -> (Element, f64, f64) {
         let button = crate::widget::Button::new("canvas-button", label);
-        let manual = crate::widget::Manual::new(move |cx| {
+        let manual = tilo_ui_base::widget::Manual::new(move |cx| {
             let size = cx
                 .measure_child(
                     0,
                     Size {
-                        width: crate::widget::MeasureConstraint::Intrinsic,
-                        height: crate::widget::MeasureConstraint::Intrinsic,
+                        width: tilo_ui_base::widget::MeasureConstraint::Intrinsic,
+                        height: tilo_ui_base::widget::MeasureConstraint::Intrinsic,
                     },
                 )?
                 .size;

@@ -29,7 +29,7 @@ pub struct Composed {
     /// action targets of what it holds, with the nodes it publishes that have no widget of their
     /// own (a list's rows, a document's blocks) and where they stand.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub semantics: Option<crate::a11y::AccessNode>,
+    pub semantics: Option<tilo_ui_base::a11y::AccessNode>,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub focusable: bool,
     /// Its children stand where its layout node's style puts them, so a
@@ -38,7 +38,7 @@ pub struct Composed {
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub flows: bool,
     /// A surface over the window appears from this point (`[x, y]`, absolute): the control that
-    /// summoned it, the caret, a context menu's pointer ([`crate::widget::Widget::appears_from`]).
+    /// summoned it, the caret, a context menu's pointer ([`tilo_ui_base::widget::Widget::appears_from`]).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub appears_from: Option<[f64; 2]>,
     /// It shows as a picture of its paint ([`page::shows_paint`]). The host that draws it hands

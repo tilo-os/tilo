@@ -187,7 +187,7 @@ fn row_of(session: &Session, strip: u64) -> u64 {
 // attributed to them, and undo puts it back.
 #[test]
 fn the_persons_drag_is_in_their_record_attributed_and_undone() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let window = open_window(&mut session, "org.example.Notes");
@@ -277,7 +277,7 @@ fn float_of(session: &Session, tab: u64) -> Option<tilo_desktop_model::FloatPlac
 // returns it exactly where it was.
 #[test]
 fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let window = open_window(&mut session, "org.example.Notes");
@@ -365,7 +365,7 @@ fn a_float_is_one_step_and_snapping_back_returns_it_exactly() {
 // next start shows it floating.
 #[test]
 fn a_float_is_in_the_workspaces_layout_so_the_next_start_shows_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // This computer's device, holding its workspaces: its sessions are its daemon's shells, and
     // the layout they show is the workspace's.
     let state = tempfile::tempdir().expect("a state directory");
@@ -435,7 +435,7 @@ fn strip_resource(key: u64) -> String {
 // (2) An agent moves a window through the published action, attributed to the agent and undoable.
 #[test]
 fn an_agents_move_through_the_action_is_attributed_and_undone() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let window = open_window(&mut session, "org.example.Notes");
@@ -486,7 +486,7 @@ fn an_agents_move_through_the_action_is_attributed_and_undone() {
 // Nothing is kept beside it, and a computer that holds none of those workspaces reads none of it.
 #[test]
 fn the_layout_is_the_shells_own_and_no_record_beside_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // This computer's device, holding its workspaces: its sessions are its daemon's shells, and
     // the layout they show is the workspace's.
     let state = tempfile::tempdir().expect("a state directory");
@@ -535,7 +535,7 @@ fn the_layout_is_the_shells_own_and_no_record_beside_it() {
 // with the layout — and nothing is kept beside it.
 #[test]
 fn a_places_view_and_pin_are_kept_with_the_shell_across_a_restart() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // This computer's device, holding its workspaces: its sessions are its daemon's shells, and
     // the layout they show is the workspace's.
     let state = tempfile::tempdir().expect("a state directory");
@@ -584,7 +584,7 @@ fn a_places_view_and_pin_are_kept_with_the_shell_across_a_restart() {
 // next start does not bring it back, and the layout is exactly what was open.
 #[test]
 fn a_launch_that_left_no_window_is_gone_after_a_restart() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // This computer's device, holding its workspaces: its sessions are its daemon's shells, and
     // the layout they show is the workspace's.
     let state = tempfile::tempdir().expect("a state directory");
@@ -654,7 +654,7 @@ fn a_launch_that_left_no_window_is_gone_after_a_restart() {
 // gesture ends (shell.md §1).
 #[test]
 fn an_agents_move_waits_while_the_person_types_and_applies_after() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let window = open_window(&mut session, "org.example.Notes");
@@ -724,7 +724,7 @@ fn an_agents_move_waits_while_the_person_types_and_applies_after() {
 // An agent's layout leaves a place the person pinned where it is (shell.md §5's default).
 #[test]
 fn a_pinned_place_stays_where_the_person_put_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let window = open_window(&mut session, "org.example.Notes");
@@ -755,7 +755,7 @@ fn a_pinned_place_stays_where_the_person_put_it() {
 // history: undo takes it back.
 #[test]
 fn a_pin_through_the_published_action_is_undone() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let window = open_window(&mut session, "org.example.Notes");
@@ -786,7 +786,7 @@ fn invoke_as(session: &mut Session, resource: &str, action: &str, arguments: &se
 // session publishes it for the shell's views. Which way it is shown is not the layout's.
 #[test]
 fn the_layout_reads_out_by_key_for_the_shells_views() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let window = open_window(&mut session, "org.example.Notes");
@@ -824,7 +824,7 @@ fn the_layout_reads_out_by_key_for_the_shells_views() {
 // name, never an app id, and the app's name alone for a window that has no title.
 #[test]
 fn a_place_reads_out_named_by_its_window_and_its_app_never_an_id() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let window = open_window_called(&mut session, "org.example.TextEditor", "Groceries");
@@ -881,7 +881,7 @@ fn a_place_reads_out_named_by_its_window_and_its_app_never_an_id() {
 // strip makes a strip there; undo takes the place back to the strip it came from.
 #[test]
 fn a_move_the_reading_shows_is_undone_to_where_it_was() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let window = open_window(&mut session, "org.example.Notes");
@@ -921,7 +921,7 @@ fn a_move_the_reading_shows_is_undone_to_where_it_was() {
 // A strip's width is resized through the published action, one step the person undoes.
 #[test]
 fn resizing_a_strip_is_one_step_and_undone() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let window = open_window(&mut session, "org.example.Notes");
@@ -952,7 +952,7 @@ fn resizing_a_strip_is_one_step_and_undone() {
 // step of its own, so undo takes back the second and then the first.
 #[test]
 fn two_width_changes_before_the_view_is_written_are_two_steps() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let window = open_window(&mut session, "org.example.Notes");
@@ -985,7 +985,7 @@ fn two_width_changes_before_the_view_is_written_are_two_steps() {
 // and one undo brings the others back beside it.
 #[test]
 fn maximizing_a_window_is_one_step_and_undone() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     step(&mut session);
     let window = open_window(&mut session, "org.example.Notes");
@@ -1035,7 +1035,7 @@ fn salted_session() -> Session {
 // strip's width all land on the thing they name, and on nothing else.
 #[test]
 fn every_arranging_press_reaches_the_record_on_a_salted_device() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = salted_session();
     step(&mut session);
     let window = open_window(&mut session, "org.example.Notes");

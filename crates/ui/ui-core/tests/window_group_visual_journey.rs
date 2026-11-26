@@ -12,17 +12,19 @@
 
 use std::collections::HashMap;
 use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
-use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui_base::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
 use crate::support::render::{pixel_hash, write_png};
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
-use tilo_ui::widget::{
-    AppKind, TabDescriptor, TaffyTreeExt, TileContent, Widget, WindowGroup, WindowWidth,
+use tilo_ui::{
+    widget::AppKind, widget::TabDescriptor, widget::TileContent, widget::WindowGroup,
+    widget::WindowWidth,
 };
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 fn make_window_group() -> WindowGroup {
     let tabs: Vec<(TabDescriptor, TileContent)> = vec![
@@ -137,7 +139,7 @@ fn render_group_themed(
 
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    group.draw(&mut tilo_ui::draw::DrawCtx::new(
+    group.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
@@ -258,7 +260,7 @@ fn window_group_journey_is_deterministic_and_distinguishes_states_in_both_themes
     // This is the invariant the journey test relies on — without it, its
     // pixel-hash comparisons are meaningless. Compared with
     // [`OffscreenRenderer::pixels_differing_beyond_aa`], not byte equality:
-    // see the `tilo_ui::offscreen` module docs for why GPU rasterisation isn't
+    // see the `tilo_ui_base::offscreen` module docs for why GPU rasterisation isn't
     // bit-identical between runs.
     {
         fn window_group_fresh_render_is_deterministic() {

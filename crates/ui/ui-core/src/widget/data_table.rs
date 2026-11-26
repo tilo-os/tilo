@@ -3,8 +3,6 @@
 //! [`DataTable::sort_by_with`] re-applies the remembered comparator whenever local rows change, while
 //! [`DataTable::from_model`] delegates order and paging to [`TableModel`].
 
-use crate::num::f32_of_f64;
-use crate::widget::{AppModel, ModelPath};
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::ops::Range;
@@ -12,32 +10,36 @@ use std::sync::Arc;
 use taffy::style_helpers::{length, percent};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::Color;
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
 
-use crate::arriving::Arrival;
-use crate::paint::PaintCtx;
+use tilo_ui_base::arriving::Arrival;
+use tilo_ui_base::paint::PaintCtx;
 
-use crate::text_render::{TextKind, TextRenderer};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextKind, text_render::TextRenderer};
 
-use crate::virtual_viewport::{
-    DragScroller, ScrollAlignment, SparseAnchor, SparseVirtualViewport, WheelStep,
-};
-use crate::widget::DrawChild;
-use crate::widget::ScrollMetrics;
 use crate::widget::scrollbar::{PressOutcome, Scrollbar};
-use crate::widget::{Element, SkeletonShape, TaffyTreeExt, Widget};
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::ScrollMetrics;
+use tilo_ui_base::{
+    virtual_viewport::DragScroller, virtual_viewport::ScrollAlignment,
+    virtual_viewport::SparseAnchor, virtual_viewport::SparseVirtualViewport,
+    virtual_viewport::WheelStep,
+};
+use tilo_ui_base::{widget::Element, widget::SkeletonShape, widget::TaffyTreeExt, widget::Widget};
 
 /// One line of `role` as the renderer will lay it out: the role's resolved size times its leading,
 /// so a band sized from this at layout time agrees with the line the widget measures and centres at
 /// paint time.
 pub fn type_line_height(
-    typography: &crate::tokens::Typography,
-    role: crate::tokens::TextRole,
+    typography: &tilo_ui_base::tokens::Typography,
+    role: tilo_ui_base::tokens::TextRole,
 ) -> f64 {
     f64::from(typography.style(role).line_height_px())
 }
@@ -118,7 +120,7 @@ impl TableSort {
 }
 
 /// A cell's badge: a short label and the tone it carries (a status, a level).
-pub type CellBadge<Row> = Arc<dyn Fn(&Row) -> (String, crate::widget::Tone) + Send + Sync>;
+pub type CellBadge<Row> = Arc<dyn Fn(&Row) -> (String, tilo_ui_base::widget::Tone) + Send + Sync>;
 
 /// Whether a checkbox column's box is ticked for a row.
 pub type CellChecked<Row> = Arc<dyn Fn(&Row) -> bool + Send + Sync>;
@@ -239,7 +241,7 @@ impl<Row: 'static> ColumnDef<Row> {
             widget: self.widget.map(|mut build| -> CellWidgetBuilder<AnyRow> {
                 Box::new(move |row, index| match typed::<Row>(row) {
                     Some(row) => build(row, index),
-                    None => Box::new(crate::widget::Spacer::new()),
+                    None => Box::new(tilo_ui_base::widget::Spacer::new()),
                 })
             }),
             reveal_on_hover: self.reveal_on_hover,
@@ -370,7 +372,7 @@ impl<Row: ?Sized> ColumnDef<Row> {
     #[must_use]
     pub fn with_badge(
         mut self,
-        badge: impl Fn(&Row) -> (String, crate::widget::Tone) + Send + Sync + 'static,
+        badge: impl Fn(&Row) -> (String, tilo_ui_base::widget::Tone) + Send + Sync + 'static,
     ) -> Self
     where
         Row: 'static,
@@ -520,8 +522,8 @@ impl<Row: ?Sized> ColumnDef<Row> {
 pub type SortCmp<Row> = Box<dyn Fn(&Row, &Row) -> Ordering + Send + Sync>;
 
 /// One model notification batch consumed after the backing data has changed: a list's change
-/// ([`crate::collection_transition::ListModelChange`]) over the table's row keys.
-pub type TableModelChange = crate::collection_transition::ListModelChange<u64>;
+/// ([`tilo_ui_base::collection_transition::ListModelChange`]) over the table's row keys.
+pub type TableModelChange = tilo_ui_base::collection_transition::ListModelChange<u64>;
 
 /// Unopinionated backing model for very large or asynchronously populated tables.
 pub trait TableModel {
@@ -655,7 +657,7 @@ struct AddRow {
     clippy::struct_excessive_bools,
     reason = "focus, selection, scrolling, and invalidation are independent table states"
 )]
-#[crate::component::not_a_component(part, "the body of a data table")]
+#[tilo_ui_base::component::not_a_component(part, "the body of a data table")]
 pub struct DataTableCore {
     test_id: String,
     /// Choosing a row ([`DataTableCore::on_choose`]).
@@ -691,15 +693,15 @@ pub struct DataTableCore {
     mounted_cells: Vec<MountedCell>,
     structure_dirty: bool,
     layout_dirty: bool,
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     /// Clicks update [`selection`], rows render a selection fill, and keyboard Up/Down/Enter/Ctrl-A are
     /// honoured while focused.
     selectable: bool,
     /// Indices into `view`. Seeded by the owner each frame for stateless hosts; mutated in place on
     /// click.
-    selection: crate::selection::SelectionModel,
+    selection: tilo_ui_base::selection::SelectionModel,
     /// Model-backed tables attach selection to stable keys.
-    model_selection: crate::selection::KeySelection<u64>,
+    model_selection: tilo_ui_base::selection::KeySelection<u64>,
     /// Row clicks ([`DataTableCore::on_row_click`]).
     row_click: Option<Box<dyn FnMut(usize, bool, bool)>>,
     on_activate: Option<Box<dyn FnMut(usize)>>,
@@ -715,12 +717,12 @@ pub struct DataTableCore {
     drag_scroll: DragScroller,
     scroll: super::rows::RowScroll,
     /// The motion the theme allows, sampled by the latest draw.
-    motion: crate::tokens::EffectiveMotion,
+    motion: tilo_ui_base::tokens::EffectiveMotion,
     /// What the rows, the bar over them and the chrome painted this frame and the last: a scroll that
     /// only moved the rows is offered to the host as a copy, and a row that changed repaints alone.
-    shown: crate::scroll_copy::PaintedFrames,
+    shown: tilo_ui_base::scroll_copy::PaintedFrames,
     /// A scroll or the pointer brought other cells near since the last rebuild: mounting them is
-    /// described by the frame's damage ([`crate::widget::StructureChange::Described`]).
+    /// described by the frame's damage ([`tilo_ui_base::widget::StructureChange::Described`]).
     remount: bool,
     reduce_motion: bool,
     /// The placeholders of a model's rows on their way, by row key.
@@ -773,7 +775,7 @@ pub struct DataTableCore {
     /// A sort shown on a header without the table reordering its rows.
     sort_indicator: Option<(String, bool)>,
     /// Where the order a person chose is kept across rebuilds.
-    sort_state: Option<crate::LocalState<Option<TableSort>>>,
+    sort_state: Option<tilo_ui_base::LocalState<Option<TableSort>>>,
     add_row: Option<AddRow>,
     /// Check box turns ([`DataTableCore::on_check`]).
     check: Option<Box<dyn FnMut(usize, bool)>>,
@@ -795,7 +797,7 @@ pub type AnyRow = dyn std::any::Any;
 
 /// A table of `Row`s: the [`DataTableCore`] that does the work (everything a table does, compiled
 /// once into the toolkit for rows of any type) and the row type its callers read and write.
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "`ui.DataTable` (`DescribedTable`) is its described form, over rows of its own"
 )]
@@ -963,7 +965,7 @@ impl<Row: 'static> DataTable<Row> {
 
     /// [`DataTableCore::with_sort_state`].
     #[must_use]
-    pub fn with_sort_state(self, state: &crate::LocalState<Option<TableSort>>) -> Self {
+    pub fn with_sort_state(self, state: &tilo_ui_base::LocalState<Option<TableSort>>) -> Self {
         Self::of(self.core.with_sort_state(state))
     }
 
@@ -1005,13 +1007,16 @@ impl<Row: 'static> DataTable<Row> {
 
     /// [`DataTableCore::with_model_selection`].
     #[must_use]
-    pub fn with_model_selection(self, selection: crate::selection::KeySelection<u64>) -> Self {
+    pub fn with_model_selection(
+        self,
+        selection: tilo_ui_base::selection::KeySelection<u64>,
+    ) -> Self {
         Self::of(self.core.with_model_selection(selection))
     }
 
     /// [`DataTableCore::with_selection`].
     #[must_use]
-    pub fn with_selection(self, sel: crate::selection::SelectionModel) -> Self {
+    pub fn with_selection(self, sel: tilo_ui_base::selection::SelectionModel) -> Self {
         Self::of(self.core.with_selection(sel))
     }
 
@@ -1140,10 +1145,10 @@ impl DataTableCore {
             mounted_cells: Vec::new(),
             structure_dirty: true,
             layout_dirty: true,
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             selectable: false,
-            selection: crate::selection::SelectionModel::new(),
-            model_selection: crate::selection::KeySelection::new(),
+            selection: tilo_ui_base::selection::SelectionModel::new(),
+            model_selection: tilo_ui_base::selection::KeySelection::new(),
             row_click: None,
             on_activate: None,
             on_header_click: None,
@@ -1151,8 +1156,8 @@ impl DataTableCore {
             vbar: Scrollbar::vertical(),
             drag_scroll: DragScroller::new(),
             scroll: super::rows::RowScroll::default(),
-            motion: crate::tokens::EffectiveMotion::default(),
-            shown: crate::scroll_copy::PaintedFrames::default(),
+            motion: tilo_ui_base::tokens::EffectiveMotion::default(),
+            shown: tilo_ui_base::scroll_copy::PaintedFrames::default(),
             remount: false,
             reduce_motion: false,
             arrivals: crate::widget::ArrivingRows::new(),
@@ -1164,9 +1169,9 @@ impl DataTableCore {
             measure_theme: None,
             compact: false,
             default_row_h: ROW_HEIGHT,
-            gutter: f64::from(crate::tokens::Metrics::BASE.scrollbar_gutter),
+            gutter: f64::from(tilo_ui_base::tokens::Metrics::BASE.scrollbar_gutter),
             corners: crate::widget::scrollbar::SurfaceCorners::default(),
-            bleed: f64::from(crate::tokens::Spacing::BASE.s2),
+            bleed: f64::from(tilo_ui_base::tokens::Spacing::BASE.s2),
             drag_scroll_enabled: false,
             on_row_context: None,
             on_row_drag_begin: None,
@@ -1372,7 +1377,7 @@ impl DataTableCore {
     /// Sort by the column `state` names, and keep the order a person picks from the headers in `state`,
     /// so it survives the view being built again.
     #[must_use]
-    pub fn with_sort_state(mut self, state: &crate::LocalState<Option<TableSort>>) -> Self {
+    pub fn with_sort_state(mut self, state: &tilo_ui_base::LocalState<Option<TableSort>>) -> Self {
         if let Some(sort) = state.with(Clone::clone) {
             self.sort_by_column(&sort.key, sort.ascending);
         }
@@ -1466,7 +1471,7 @@ impl DataTableCore {
         if index >= self.display_len() {
             return;
         }
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let drawn = self.viewport.offset();
         let width = self.rect.width();
         match self
@@ -1530,26 +1535,26 @@ impl DataTableCore {
         self
     }
 
-    pub fn set_selection(&mut self, sel: crate::selection::SelectionModel) {
+    pub fn set_selection(&mut self, sel: tilo_ui_base::selection::SelectionModel) {
         self.selection = sel;
     }
 
-    pub fn selection(&self) -> &crate::selection::SelectionModel {
+    pub fn selection(&self) -> &tilo_ui_base::selection::SelectionModel {
         &self.selection
     }
 
-    pub fn selection_mut(&mut self) -> &mut crate::selection::SelectionModel {
+    pub fn selection_mut(&mut self) -> &mut tilo_ui_base::selection::SelectionModel {
         &mut self.selection
     }
 
     /// Stable-key selection used by model-backed tables.
     #[must_use]
-    pub fn model_selection(&self) -> &crate::selection::KeySelection<u64> {
+    pub fn model_selection(&self) -> &tilo_ui_base::selection::KeySelection<u64> {
         &self.model_selection
     }
 
     /// Mutable stable-key selection used by model-backed tables.
-    pub fn model_selection_mut(&mut self) -> &mut crate::selection::KeySelection<u64> {
+    pub fn model_selection_mut(&mut self) -> &mut tilo_ui_base::selection::KeySelection<u64> {
         &mut self.model_selection
     }
 
@@ -1558,7 +1563,7 @@ impl DataTableCore {
     #[must_use]
     pub fn with_model_selection(
         mut self,
-        mut selection: crate::selection::KeySelection<u64>,
+        mut selection: tilo_ui_base::selection::KeySelection<u64>,
     ) -> Self {
         if let Some(model) = self.model.as_deref() {
             selection.reconcile(|key| model.index_of(*key).is_some());
@@ -1568,7 +1573,7 @@ impl DataTableCore {
     }
 
     #[must_use]
-    pub fn with_selection(mut self, sel: crate::selection::SelectionModel) -> Self {
+    pub fn with_selection(mut self, sel: tilo_ui_base::selection::SelectionModel) -> Self {
         self.selection = sel;
         self
     }
@@ -2187,7 +2192,7 @@ impl DataTableCore {
         });
         self.default_row_h = table_row_floor(theme, self.compact);
         self.gutter = f64::from(tokens.metrics.scrollbar_gutter);
-        self.bleed = crate::chrome::row_bleed(theme);
+        self.bleed = tilo_ui_base::chrome::row_bleed(theme);
         self.refresh_row_estimate();
     }
 
@@ -2326,7 +2331,7 @@ impl DataTableCore {
 
     /// Live when an explicit viewport was set and the rows overflow it.
     fn give(&self) -> f64 {
-        self.scroll.momentum.give(crate::motion::frame_now())
+        self.scroll.momentum.give(tilo_ui_base::motion::frame_now())
     }
 
     fn internal_scroll(&self) -> bool {
@@ -2649,7 +2654,7 @@ impl DataTableCore {
         let tokens = &theme.tokens;
         let band = self.columns_band();
         let header_rect = Rect::new(band.x0, self.rect.y0, band.x1, self.rect.y0 + self.header_h);
-        crate::surface::separator(
+        tilo_ui_base::surface::separator(
             scene,
             transform,
             header_rect.x0,
@@ -2670,7 +2675,7 @@ impl DataTableCore {
             let Some(cr) = self.col_rects.get(i) else {
                 continue;
             };
-            let header = crate::i18n::I18nManager::lookup_plain(&col.header);
+            let header = tilo_ui_base::i18n::I18nManager::lookup_plain(&col.header);
             let sorted = self
                 .sort
                 .as_ref()
@@ -2684,7 +2689,7 @@ impl DataTableCore {
                         .map(|(_, ascending)| *ascending)
                 });
             paint_header_label(
-                &mut crate::paint::PaintCtx::new(scene, transform, text_renderer, theme),
+                &mut tilo_ui_base::paint::PaintCtx::new(scene, transform, text_renderer, theme),
                 Rect::new(cr.x0, header_rect.y0, cr.x1, header_rect.y1),
                 &header,
                 col.alignment(),
@@ -2700,7 +2705,7 @@ impl DataTableCore {
 
     /// Vertical rules between columns, through the header and the body, from the ground they sit on.
     fn draw_column_rules(&self, scene: &mut Scene, transform: Affine, theme: &Theme) {
-        let rule = crate::surface::edge_on(theme.tokens.colors.surfaces.content);
+        let rule = tilo_ui_base::surface::edge_on(theme.tokens.colors.surfaces.content);
         let y1 = self.rect.y0 + self.header_h + self.body_viewport_h();
         let band = self.columns_band();
         for cr in self.col_rects.iter().skip(1) {
@@ -2720,21 +2725,21 @@ impl DataTableCore {
 
     /// Row backgrounds (selection fill, zebra stripe) and per-column cell content, windowed to
     /// [`Self::visible_row_range`] plus overscan: each row (and the add row) a part of the scrolled
-    /// body, drawn where it stands in the rows as if unscrolled ([`crate::scroll_copy::Painted`]), so a
+    /// body, drawn where it stands in the rows as if unscrolled ([`tilo_ui_base::scroll_copy::Painted`]), so a
     /// row a scroll only moved encodes the same and a host copies it.
     fn draw_rows(
         &self,
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-    ) -> Vec<crate::scroll_copy::Piece<crate::scroll_copy::Painted>> {
+    ) -> Vec<tilo_ui_base::scroll_copy::Piece<tilo_ui_base::scroll_copy::Painted>> {
         let tokens = &theme.tokens;
         let (vis_start, vis_end) = self.visible_row_range();
         let body_bottom = self.rect.y0 + self.header_h + self.body_viewport_h();
         let band = self.columns_band();
         let ground = tokens.colors.surfaces.content;
         let pressable = self.rows_pressable();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let offset = self.viewport.offset();
         let mut parts = Vec::with_capacity(vis_end.saturating_sub(vis_start).saturating_add(1));
         for ri in vis_start..vis_end {
@@ -2786,11 +2791,11 @@ impl DataTableCore {
             // takes precedence over the zebra stripe; the stripe is a
             // fraction of the same lift, so selection always reads past it.
             if selected || hovered {
-                crate::chrome::paint_row_selection(
+                tilo_ui_base::chrome::paint_row_selection(
                     scene,
                     transform,
                     row_band,
-                    crate::chrome::SelectionState::new(selected, hovered, false),
+                    tilo_ui_base::chrome::SelectionState::new(selected, hovered, false),
                     ground,
                     theme,
                 );
@@ -2832,9 +2837,9 @@ impl DataTableCore {
                                         cell_rect.center().y + icon / 2.0,
                                     );
                                     let chevron = if (tree.expanded)(row) {
-                                        crate::icons::Icon::ChevronDown
+                                        tilo_ui_base::icons::Icon::ChevronDown
                                     } else {
-                                        crate::icons::Icon::ChevronRight
+                                        tilo_ui_base::icons::Icon::ChevronRight
                                     };
                                     chevron.draw(scene, transform, glyph, tokens.colors.text_dim);
                                 }
@@ -2927,10 +2932,10 @@ impl DataTableCore {
                 || format!("#{ri}"),
                 |id| format!("{}:{}", id.value, id.occurrence),
             );
-            parts.push(crate::scroll_copy::Piece {
-                key: crate::scroll_copy::piece_key(key),
+            parts.push(tilo_ui_base::scroll_copy::Piece {
+                key: tilo_ui_base::scroll_copy::piece_key(key),
                 rect: shown,
-                paint: crate::scroll_copy::Painted(row_scene),
+                paint: tilo_ui_base::scroll_copy::Painted(row_scene),
             });
         }
         if let (Some(add), Some(shown)) = (&self.add_row, self.add_row_rect())
@@ -2952,7 +2957,12 @@ impl DataTableCore {
                 x + icon,
                 rect.center().y + icon / 2.0,
             );
-            crate::icons::Icon::Plus.draw(scene, transform, glyph, tokens.colors.text_tertiary);
+            tilo_ui_base::icons::Icon::Plus.draw(
+                scene,
+                transform,
+                glyph,
+                tokens.colors.text_tertiary,
+            );
             let (_, h) = text_renderer.measure_style(&add.label, None, &style);
             text_renderer.draw_style(
                 scene,
@@ -2968,10 +2978,10 @@ impl DataTableCore {
                 None,
                 &style,
             );
-            parts.push(crate::scroll_copy::Piece {
-                key: crate::scroll_copy::piece_key("add"),
+            parts.push(tilo_ui_base::scroll_copy::Piece {
+                key: tilo_ui_base::scroll_copy::piece_key("add"),
                 rect: shown,
-                paint: crate::scroll_copy::Painted(add_scene),
+                paint: tilo_ui_base::scroll_copy::Painted(add_scene),
             });
         }
         parts
@@ -3421,12 +3431,12 @@ const DRAG_SLOP: f64 = 4.0;
 const ROW_HEIGHT: f64 = 40.0;
 
 /// A column header: `Caption` in its strong weight, sentence case.
-fn header_style(theme: &Theme) -> crate::text_render::TextStyle {
+fn header_style(theme: &Theme) -> tilo_ui_base::text_render::TextStyle {
     theme.text(TextRole::Caption).strong()
 }
 
 /// A cell's text style: `Caption`, set for the column's [`TextKind`].
-fn cell_style(theme: &Theme, kind: TextKind) -> crate::text_render::TextStyle {
+fn cell_style(theme: &Theme, kind: TextKind) -> tilo_ui_base::text_render::TextStyle {
     theme.text(TextRole::Caption).with_kind(kind)
 }
 
@@ -3492,7 +3502,7 @@ fn paint_cell_badge(
     cell: Rect,
     align: CellAlign,
     label: &str,
-    tone: crate::widget::Tone,
+    tone: tilo_ui_base::widget::Tone,
 ) {
     if label.is_empty() {
         return;
@@ -3502,7 +3512,7 @@ fn paint_cell_badge(
         .min((cell.width() - 2.0 * pad).max(0.0));
     let h = crate::widget::BadgeFace::height(theme);
     let x = align.place(cell, w, pad);
-    let style = if tone == crate::widget::Tone::Neutral {
+    let style = if tone == tilo_ui_base::widget::Tone::Neutral {
         crate::widget::ChipStyle::Neutral
     } else {
         crate::widget::ChipStyle::Tinted(tone)
@@ -3520,11 +3530,11 @@ fn paint_cell_badge(
     .paint(scene, transform, text, theme);
 }
 
-/// Row-stacking variant of [`crate::text_metrics::centered_text_top`]: text taller than the band
+/// Row-stacking variant of [`tilo_ui_base::text_metrics::centered_text_top`]: text taller than the band
 /// starts at the band's top rather than bleeding into the row above, which the unclamped rule would
 /// let it do.
 pub(crate) fn centered_text_top(band_y0: f64, band_h: f64, text_h: f32) -> f64 {
-    crate::text_metrics::centered_text_top(band_y0, band_h, f64::from(text_h)).max(band_y0)
+    tilo_ui_base::text_metrics::centered_text_top(band_y0, band_h, f64::from(text_h)).max(band_y0)
 }
 
 fn accessible_sort_description<Row: ?Sized>(
@@ -3534,7 +3544,7 @@ fn accessible_sort_description<Row: ?Sized>(
     sort.map(|(key, ascending)| {
         let header = columns.iter().find(|column| column.key == key).map_or_else(
             || key.to_owned(),
-            |column| crate::i18n::I18nManager::lookup_plain(&column.header),
+            |column| tilo_ui_base::i18n::I18nManager::lookup_plain(&column.header),
         );
         let direction = if ascending { "ascending" } else { "descending" };
         format!("sorted by {header} {direction}")
@@ -3557,7 +3567,7 @@ impl DataTableCore {
             if col.width != ColumnWidth::Auto {
                 continue;
             }
-            let label = crate::i18n::I18nManager::lookup_plain(&col.header);
+            let label = tilo_ui_base::i18n::I18nManager::lookup_plain(&col.header);
             let mut width = f64::from(text.measure_style(&label, None, &header).0)
                 + if col.sortable { sort_width } else { 0.0 };
             if col.checked.is_some() {
@@ -3708,9 +3718,14 @@ impl Widget for DataTableCore {
             || self
                 .scroll
                 .momentum
-                .give_needs_frame(crate::motion::frame_now())
-            || self.moving.rows.is_moving(crate::motion::frame_now())
-            || self.arrivals.needs_redraw(crate::motion::frame_now())
+                .give_needs_frame(tilo_ui_base::motion::frame_now())
+            || self
+                .moving
+                .rows
+                .is_moving(tilo_ui_base::motion::frame_now())
+            || self
+                .arrivals
+                .needs_redraw(tilo_ui_base::motion::frame_now())
             || self
                 .mounted_cells
                 .iter()
@@ -3718,7 +3733,7 @@ impl Widget for DataTableCore {
     }
 
     /// What the draw changed: the rows that changed, and a scroll offered as a copy of the rows that
-    /// only moved ([`crate::scroll_copy::PaintedFrames`]); the cells say what changed in them.
+    /// only moved ([`tilo_ui_base::scroll_copy::PaintedFrames`]); the cells say what changed in them.
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         self.collect_damage_of(self, regions);
     }
@@ -3740,8 +3755,8 @@ impl Widget for DataTableCore {
 
     /// Mounting the cells a scroll or the pointer brought near is described: they come and go inside
     /// the rows the table repaints or a host copies, and a mounted cell draws itself whole.
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-        use crate::widget::StructureChange;
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
+        use tilo_ui_base::widget::StructureChange;
         let mut change = if std::mem::take(&mut self.structure_dirty) {
             std::mem::take(&mut self.remount);
             StructureChange::Rebuild
@@ -3758,7 +3773,7 @@ impl Widget for DataTableCore {
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         if self.interaction == environment {
             return;
@@ -3784,7 +3799,7 @@ impl Widget for DataTableCore {
             self.notify_model_changes(&model_changes);
         }
         // A glide steps on the frame's instant, the one its layout and paint read the table at.
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.observe_arrivals(now);
         let mut children_changed = false;
         for cell in &mut self.mounted_cells {
@@ -3796,7 +3811,7 @@ impl Widget for DataTableCore {
         // layout's rebuild. It is no change of the model, so it does not
         // report one (as `Scrollable::update`).
         let offset = self.viewport.offset();
-        self.follow_scroll_to(crate::motion::frame_now());
+        self.follow_scroll_to(tilo_ui_base::motion::frame_now());
         if self.scroll.momentum.is_active() {
             let delta = self.scroll.momentum.advance(now);
             let before = self.viewport.offset();
@@ -3808,7 +3823,7 @@ impl Widget for DataTableCore {
         if self.viewport.offset().to_bits() != offset.to_bits()
             && (self.remount || !self.mounted_cells.is_empty())
         {
-            crate::widget::note_layout_moved();
+            tilo_ui_base::widget::note_layout_moved();
         }
         self.refresh_view_anchor();
         received_changes || children_changed
@@ -3917,7 +3932,8 @@ impl Widget for DataTableCore {
         // A table that fills its parent's height takes that height, the rows
         // scrolling inside it. Its header and one row remain the least it
         // shows, which `filling` leaves as written.
-        let style = crate::widget::layout::filling(style, if self.fill_height { 1.0 } else { 0.0 });
+        let style =
+            tilo_ui_base::widget::layout::filling(style, if self.fill_height { 1.0 } else { 0.0 });
         let node = taffy.parent_node(style, &child_nodes);
         let _ = taffy.set_restyled_for_width(node, true);
         node_map.insert(node, std::ptr::from_mut::<dyn Widget>(self));
@@ -3964,7 +3980,7 @@ impl Widget for DataTableCore {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if self.fill_height {
             let body = (self.rect.height() - self.header_h - self.h_reserve).max(0.0);
             if (body - self.viewport.viewport()).abs() > 0.5 {
@@ -4074,7 +4090,7 @@ impl Widget for DataTableCore {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -4092,7 +4108,7 @@ impl Widget for DataTableCore {
         if self.reduce_motion {
             self.scroll.momentum.stop();
         }
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.observe_arrivals(now);
         self.arrivals.mark_drawn(now);
         self.scroll.fade_drawn = self.scroll.to.opacity(now);
@@ -4118,7 +4134,7 @@ impl Widget for DataTableCore {
             &body,
         );
         // Each row is drawn unscrolled and lands scrolled.
-        let pieces = self.draw_moving_rows(&mut crate::draw::DrawCtx::new(
+        let pieces = self.draw_moving_rows(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -4146,20 +4162,20 @@ impl Widget for DataTableCore {
             let mut bar = Scene::new();
             self.draw_bar(&mut bar, transform, theme, true);
             scene.append(&bar, None);
-            fixed.push(crate::scroll_copy::Piece {
-                key: crate::scroll_copy::piece_key("bar"),
+            fixed.push(tilo_ui_base::scroll_copy::Piece {
+                key: tilo_ui_base::scroll_copy::piece_key("bar"),
                 rect: track,
-                paint: crate::scroll_copy::Painted(bar),
+                paint: tilo_ui_base::scroll_copy::Painted(bar),
             });
         }
         let offset = self.viewport.offset() + self.give();
-        if let Some(frame) = crate::scroll_copy::Showing::painted(
+        if let Some(frame) = tilo_ui_base::scroll_copy::Showing::painted(
             vello::kurbo::Vec2::new(0.0, offset),
             body,
-            crate::scroll_copy::on_screen(transform),
-            crate::scroll_copy::Around {
+            tilo_ui_base::scroll_copy::on_screen(transform),
+            tilo_ui_base::scroll_copy::Around {
                 bounds: self.paint_bounds(),
-                outside: crate::scroll_copy::Painted(outside),
+                outside: tilo_ui_base::scroll_copy::Painted(outside),
             },
             pieces,
             fixed,
@@ -4169,7 +4185,7 @@ impl Widget for DataTableCore {
         self.refresh_view_anchor();
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.scroll.momentum.set_device_scale(ctx.scale_factor);
         self.scroll.device_scale = ctx.scale_factor;
         if matches!(
@@ -4182,7 +4198,7 @@ impl Widget for DataTableCore {
                     ..
                 }
         ) {
-            self.scroll.to.take_over(crate::motion::frame_now());
+            self.scroll.to.take_over(tilo_ui_base::motion::frame_now());
         }
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -4194,7 +4210,7 @@ impl Widget for DataTableCore {
             _ => {}
         }
         if self.resize.is_none() && !self.vbar.is_dragging() && !self.drag_scroll.is_tracking() {
-            crate::widget::route_to_mounted(
+            tilo_ui_base::widget::route_to_mounted(
                 &mut self.mounted_cells,
                 |mounted| (&mut mounted.widget, mounted.node),
                 event,
@@ -4231,7 +4247,7 @@ impl Widget for DataTableCore {
                 self.on_wheel(delta, *phase, sideways, ctx.handled);
                 // It moved only this table's view: nothing the app publishes.
                 if *ctx.handled && !before {
-                    crate::widget::note_view_only_pan();
+                    tilo_ui_base::widget::note_view_only_pan();
                 }
             }
             WindowEvent::MouseInput {
@@ -4274,10 +4290,13 @@ impl Widget for DataTableCore {
             || self
                 .scroll
                 .momentum
-                .give_needs_frame(crate::motion::frame_now())
-            || self.moving.rows.is_moving(crate::motion::frame_now())
+                .give_needs_frame(tilo_ui_base::motion::frame_now())
+            || self
+                .moving
+                .rows
+                .is_moving(tilo_ui_base::motion::frame_now())
             || self.scroll.in_progress()
-            || self.arrivals.is_moving(crate::motion::frame_now())
+            || self.arrivals.is_moving(tilo_ui_base::motion::frame_now())
             || self.model.as_deref().is_some_and(TableModel::needs_poll)
             || self
                 .mounted_cells
@@ -4289,9 +4308,11 @@ impl Widget for DataTableCore {
         self.arrivals
             .next_wake_deadline(crate::time::now())
             .into_iter()
-            .chain(super::defaults::next_wake_deadline(&|visit| {
-                self.for_each_child(visit);
-            }))
+            .chain(tilo_ui_base::widget::defaults::next_wake_deadline(
+                &|visit| {
+                    self.for_each_child(visit);
+                },
+            ))
             .min()
     }
 
@@ -4368,8 +4389,8 @@ impl Widget for DataTableCore {
         self.is_focused
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let selected_pos = self.primary_index();
         // Human header, not the internal key, so the announcement reads naturally.
         let description = accessible_sort_description(&self.columns, self.sort_state());
@@ -4379,7 +4400,7 @@ impl Widget for DataTableCore {
                 .focused(self.is_focused()),
         );
         if let Some(name) = &self.accessible_name {
-            node = node.with_name(crate::i18n::I18nManager::lookup_plain(name));
+            node = node.with_name(tilo_ui_base::i18n::I18nManager::lookup_plain(name));
         }
         if let Some(i) = selected_pos {
             node = node.with_position(i.saturating_add(1), self.display_len());
@@ -4435,7 +4456,7 @@ impl Widget for DataTableCore {
                             Role::Cell
                         };
                         let mut cell = AccessNode::new(role)
-                            .with_name(crate::i18n::I18nManager::lookup_plain(&col.header))
+                            .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain(&col.header))
                             .with_position(ci.saturating_add(1), col_count)
                             .with_key(ci as u64);
                         if col.checked.is_some()
@@ -4480,9 +4501,9 @@ impl Widget for DataTableCore {
                     .with_key(ri as u64)
                     .with_children(cells);
                 row = match row_state {
-                    Some(Arrival::Pending { .. }) => {
-                        row.with_name(crate::i18n::I18nManager::lookup_plain("arriving-loading"))
-                    }
+                    Some(Arrival::Pending { .. }) => row.with_name(
+                        tilo_ui_base::i18n::I18nManager::lookup_plain("arriving-loading"),
+                    ),
                     Some(Arrival::Failed(message)) => row.with_name(message),
                     Some(Arrival::Ready(data)) => {
                         match self
@@ -4530,12 +4551,12 @@ impl Widget for DataTableCore {
     /// Route an assistive technology's action to the **row** it was aimed at.
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         let Some(&row_key) = key_path.first() else {
             return false;
         };
@@ -4605,11 +4626,11 @@ impl Widget for DataTableCore {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
 
         if let Some(cell) = target.strip_prefix("cell:") {
             let mut parts = cell.splitn(3, ':');
@@ -4682,17 +4703,20 @@ impl Widget for DataTableCore {
 
 /// The table's widget is its core's: a `DataTable<Row>` names its rows' type, and nothing else.
 impl<Row: 'static> Widget for DataTable<Row> {
-    fn provide<'a>(&'a self, request: &mut crate::widget::capability::Request<'a, '_>) {
+    fn provide<'a>(&'a self, request: &mut tilo_ui_base::widget::capability::Request<'a, '_>) {
         self.core.provide(request);
     }
 
-    fn provide_mut<'a>(&'a mut self, request: &mut crate::widget::capability::RequestMut<'a, '_>) {
+    fn provide_mut<'a>(
+        &'a mut self,
+        request: &mut tilo_ui_base::widget::capability::RequestMut<'a, '_>,
+    ) {
         self.core.provide_mut(request);
     }
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         Widget::set_interaction_environment(&mut self.core, environment);
     }
@@ -4745,7 +4769,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         Widget::apply_layout(&mut self.core, taffy, node, origin);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -4755,7 +4779,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         DrawChild::draw_child(&mut self.core, scene, transform, text_renderer, theme, &env);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         Widget::handle_event(&mut self.core, event, ctx);
     }
 
@@ -4791,7 +4815,7 @@ impl<Row: 'static> Widget for DataTable<Row> {
         Widget::take_structure_dirty(&mut self.core)
     }
 
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         Widget::take_structure_change(&mut self.core)
     }
 
@@ -4839,15 +4863,15 @@ impl<Row: 'static> Widget for DataTable<Row> {
         Widget::is_focused(&self.core)
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         Widget::accessibility(&self.core)
     }
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         Widget::perform_action(&mut self.core, action, key_path, state, path)
@@ -4856,8 +4880,8 @@ impl<Row: 'static> Widget for DataTable<Row> {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         Widget::perform_semantic_action(&mut self.core, target, action, state, path)
@@ -5055,7 +5079,7 @@ fn compute_column_rects<Row: ?Sized>(
 /// in secondary ink, placed by the column's alignment, with the sort direction as a chevron beside
 /// it.
 fn paint_header_label(
-    ctx: &mut crate::paint::PaintCtx<'_>,
+    ctx: &mut tilo_ui_base::paint::PaintCtx<'_>,
     cell: Rect,
     label: &str,
     align: CellAlign,
@@ -5105,9 +5129,9 @@ fn paint_header_label(
         let glyph =
             Rect::from_center_size(Point::new(x0 + icon / 2.0, cell.center().y), (icon, icon));
         let arrow = if ascending {
-            crate::icons::Icon::ChevronUp
+            tilo_ui_base::icons::Icon::ChevronUp
         } else {
-            crate::icons::Icon::ChevronDown
+            tilo_ui_base::icons::Icon::ChevronDown
         };
         let ink = if sorted.is_some() {
             tokens.colors.text_dim
@@ -5275,7 +5299,7 @@ impl<'a> DataTableFace<'a> {
     /// Each column's rect in `rect`, at the header's height: the band runs the bleed past the content
     /// edges, `Auto` columns measured from their header and cells.
     pub fn column_rects(&self, rect: Rect, text: &mut TextRenderer, theme: &Theme) -> Vec<Rect> {
-        let bleed = crate::chrome::row_bleed(theme);
+        let bleed = tilo_ui_base::chrome::row_bleed(theme);
         let pad = 2.0 * f64::from(theme.tokens.spacing.s2);
         let mut auto = HashMap::new();
         let defs: Vec<ColumnDef<()>> = self
@@ -5308,7 +5332,7 @@ impl<'a> DataTableFace<'a> {
 
     /// Row `index`'s lift rect in a table painted into `rect`.
     pub fn row_rect(&self, rect: Rect, index: usize, theme: &Theme) -> Rect {
-        let bleed = crate::chrome::row_bleed(theme);
+        let bleed = tilo_ui_base::chrome::row_bleed(theme);
         let h = self.row_height(theme);
         let y0 = rect.y0 + self.header_band(theme) + h * index as f64;
         Rect::new(rect.x0 - bleed, y0, rect.x1 + bleed, y0 + h)
@@ -5324,15 +5348,15 @@ impl<'a> DataTableFace<'a> {
     }
 
     /// Paint the header and the rows into `rect`.
-    pub fn paint(&self, ctx: &mut crate::paint::PaintCtx<'_>, rect: Rect) {
+    pub fn paint(&self, ctx: &mut tilo_ui_base::paint::PaintCtx<'_>, rect: Rect) {
         let theme = ctx.theme;
         let tokens = &theme.tokens;
         let ground = tokens.colors.surfaces.content;
         let columns = self.column_rects(rect, ctx.text, theme);
         let header_h = Self::header_height(theme);
-        let bleed = crate::chrome::row_bleed(theme);
+        let bleed = tilo_ui_base::chrome::row_bleed(theme);
         if self.header {
-            crate::surface::separator(
+            tilo_ui_base::surface::separator(
                 ctx.scene,
                 ctx.transform,
                 rect.x0 - bleed,
@@ -5370,11 +5394,11 @@ impl<'a> DataTableFace<'a> {
             let selected = self.selected == Some(index);
             let hovered = self.hovered == Some(index);
             if selected || hovered {
-                crate::chrome::paint_row_selection(
+                tilo_ui_base::chrome::paint_row_selection(
                     ctx.scene,
                     ctx.transform,
                     band,
-                    crate::chrome::SelectionState::new(selected, hovered, false),
+                    tilo_ui_base::chrome::SelectionState::new(selected, hovered, false),
                     ground,
                     theme,
                 );
@@ -5411,28 +5435,30 @@ pub(crate) const ZEBRA_SHARE: f32 = 0.25;
 /// A zebra stripe on `ground`: [`ZEBRA_SHARE`] of the way to the selection lift.
 #[must_use]
 pub(crate) fn zebra_on(theme: &Theme, ground: Color) -> Color {
-    let selected = crate::chrome::selection_tier_on(
+    let selected = tilo_ui_base::chrome::selection_tier_on(
         theme,
-        crate::chrome::SelectionState::active(true),
+        tilo_ui_base::chrome::SelectionState::active(true),
         ground,
     )
     .fill;
-    crate::tokens::colors::mix8(ground, selected, ZEBRA_SHARE)
+    tilo_ui_base::tokens::colors::mix8(ground, selected, ZEBRA_SHARE)
 }
 
 #[cfg(test)]
 mod tier_tests {
     use super::*;
-    use crate::surface::edge_delta;
-    use crate::tokens::colors::HAIRLINE_MIN_DELTA;
-    use crate::tokens::colors::{Colors, NEAR_BLACK_TIER_FLOOR, tier_on};
+    use tilo_ui_base::surface::edge_delta;
+    use tilo_ui_base::tokens::colors::HAIRLINE_MIN_DELTA;
+    use tilo_ui_base::{
+        tokens::colors::Colors, tokens::colors::NEAR_BLACK_TIER_FLOOR, tokens::colors::tier_on,
+    };
 
     /// The faintest derived tier these tests exercise.
     const ZEBRA_ALPHA: u8 = 13;
 
     /// CIE L* of a colour.
     fn lightness(c: Color) -> f64 {
-        let y = crate::a11y::relative_luminance(c);
+        let y = tilo_ui_base::a11y::relative_luminance(c);
         let f = if y > 216.0 / 24389.0 {
             y.cbrt()
         } else {
@@ -5461,9 +5487,9 @@ mod tier_tests {
                     ("raised", s.raised),
                 ] {
                     let zebra = zebra_on(&theme, ground);
-                    let selected = crate::chrome::selection_tier_on(
+                    let selected = tilo_ui_base::chrome::selection_tier_on(
                         &theme,
-                        crate::chrome::SelectionState::active(true),
+                        tilo_ui_base::chrome::SelectionState::active(true),
                         ground,
                     )
                     .fill;
@@ -5494,7 +5520,7 @@ mod tier_tests {
                 for theme in [Theme::dark(), Theme::light()] {
                     let s = &theme.tokens.colors.surfaces;
                     for ground in [s.content, s.raised] {
-                        for alpha in [ZEBRA_ALPHA, crate::chrome::HAIRLINE_ALPHA, 40, 72] {
+                        for alpha in [ZEBRA_ALPHA, tilo_ui_base::chrome::HAIRLINE_ALPHA, 40, 72] {
                             assert_eq!(tier_on(ground, alpha), Colors::hairline_on(ground, alpha));
                         }
                     }
@@ -5507,7 +5533,7 @@ mod tier_tests {
                 for theme in presets() {
                     let raised = theme.tokens.colors.surfaces.raised;
                     let zebra = edge_delta(tier_on(raised, ZEBRA_ALPHA), raised);
-                    let band = edge_delta(tier_on(raised, crate::chrome::HAIRLINE_ALPHA), raised);
+                    let band = edge_delta(tier_on(raised, tilo_ui_base::chrome::HAIRLINE_ALPHA), raised);
                     assert!(
                         zebra < band,
                         "{}: zebra {zebra:.4} vs band {band:.4}",
@@ -5536,9 +5562,9 @@ mod tier_tests {
 /// density, `tokens::Density`).
 fn table_row_floor(theme: &Theme, compact: bool) -> f64 {
     let metrics = &theme.tokens.metrics;
-    if compact && theme.tokens.density == crate::tokens::Density::Comfortable {
-        let rows = crate::tokens::Density::Compact.rows();
-        let comfy = crate::tokens::Density::Comfortable.rows();
+    if compact && theme.tokens.density == tilo_ui_base::tokens::Density::Comfortable {
+        let rows = tilo_ui_base::tokens::Density::Compact.rows();
+        let comfy = tilo_ui_base::tokens::Density::Comfortable.rows();
         f64::from(metrics.row_single / comfy.single * rows.single)
     } else {
         f64::from(metrics.row_single)

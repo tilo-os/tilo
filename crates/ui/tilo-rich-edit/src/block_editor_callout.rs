@@ -1,15 +1,15 @@
 //! Callout blocks: a paragraph set apart as a note, a tip, something important, a warning or a caution.
 
-use ui::i18n::widget_text;
+use tilo_ui_base::i18n::widget_text;
 use vello::kurbo::Rect;
 
-use ui::icons::Icon;
-use ui::tokens::TextRole;
-use ui::tokens::colors::WashStrength;
-use ui::widget::{Tone, Widget};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::tokens::colors::WashStrength;
+use tilo_ui_base::{widget::Tone, widget::Widget};
 
 use super::{Block, BlockDrawCtx};
-use ui::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 /// The five alerts GitHub-flavoured Markdown defines, in its order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
@@ -101,8 +101,8 @@ impl CalloutKind {
 /// Height of the band above a callout's text that holds its icon and name,
 /// at 1× text: one body line and a tight gap on either side.
 pub(super) fn callout_header_height() -> f64 {
-    let body = ui::tokens::typography::stock().style(TextRole::Body);
-    let tight = ui::tokens::spacing::RhythmScale::BASE.tight;
+    let body = tilo_ui_base::tokens::typography::stock().style(TextRole::Body);
+    let tight = tilo_ui_base::tokens::spacing::RhythmScale::BASE.tight;
     f64::from(body.size * body.line_height + 2.0 * tight)
 }
 
@@ -138,13 +138,13 @@ pub(super) fn draw_callout(b: &mut Block, kind: CalloutKind, x0: f64, ctx: &mut 
         text_x + icon_side,
         label_y + (label_h + icon_side) / 2.0,
     );
-    ui::icons::draw_icon(
+    tilo_ui_base::icons::draw_icon(
         ctx.scene,
         ctx.transform,
         icon_rect,
         kind.icon(),
         wash.mark,
-        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
     );
     ctx.text_renderer.draw_style(
         ctx.scene,

@@ -1,6 +1,6 @@
 //! The window sizes, display scales and text scales every view is laid out at.
 
-use ui::interaction::InteractionEnvironment;
+use tilo_ui_base::interaction::InteractionEnvironment;
 
 /// A window size people use, in logical pixels, and whether it is held in the hand.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -76,8 +76,8 @@ impl std::fmt::Display for Layout {
 
 impl Layout {
     #[must_use]
-    pub fn theme(&self) -> ui::Theme {
-        ui::Theme::light().with_text_scale(self.text_scale)
+    pub fn theme(&self) -> tilo_ui_base::Theme {
+        tilo_ui_base::Theme::light().with_text_scale(self.text_scale)
     }
 
     #[must_use]

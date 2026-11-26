@@ -3,8 +3,8 @@
 //! up to the room it was asked in, and what arrives grows out of where the person pointed.
 
 use super::*;
-use crate::Theme;
-use crate::component::{Fired, Intent};
+use tilo_ui_base::Theme;
+use tilo_ui_base::{component::Fired, component::Intent};
 
 /// The key the map reports its pointing under.
 const CANVAS: &str = "canvas";
@@ -24,8 +24,8 @@ fn place(x: f64, y: f64, width: f64, height: f64, hug: bool) -> PinPlace {
 
 /// `map` laid out over an 800 by 600 viewport.
 fn laid(map: &mut Map) {
-    let mut text = crate::font_catalog::fixture_renderer();
-    crate::widget::layout::lay_out_detached(
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+    tilo_ui_base::widget::layout::lay_out_detached(
         map,
         Rect::new(0.0, 0.0, 800.0, 600.0),
         &Theme::dark(),
@@ -38,11 +38,11 @@ fn laid(map: &mut Map) {
 /// at; over a place, what the place holds says, and outside the map the map says nothing.
 #[test]
 fn free_space_shows_a_text_cursor() {
-    let queue = crate::Intents::<Fired>::default();
+    let queue = tilo_ui_base::Intents::<Fired>::default();
     let mut map = Map::new().pin(
         "note",
         place(100.0, 100.0, 200.0, 150.0, false),
-        Box::new(crate::widget::Spacer::new()),
+        Box::new(tilo_ui_base::widget::Spacer::new()),
     );
     map.press = Event::View(Intent::new(&queue, CANVAS, "press"));
     laid(&mut map);
@@ -93,7 +93,7 @@ fn the_empty_canvas_says_once_what_it_is_for() {
     .pin(
         "note",
         place(0.0, 0.0, 200.0, 100.0, false),
-        Box::new(crate::widget::Spacer::new()),
+        Box::new(tilo_ui_base::widget::Spacer::new()),
     );
     laid(&mut held);
     assert!(
@@ -156,7 +156,7 @@ fn an_answer_hugs_its_words_up_to_its_room() {
 /// the dragged rectangle's corner.
 #[test]
 fn pointing_marks_where_an_answer_grows_from() {
-    let queue = crate::Intents::<Fired>::default();
+    let queue = tilo_ui_base::Intents::<Fired>::default();
     let mut map = Map::new();
     map.press = Event::View(Intent::new(&queue, CANVAS, "press"));
     map.frame = Event::View(Intent::new(&queue, CANVAS, "frame"));
@@ -167,9 +167,9 @@ fn pointing_marks_where_an_answer_grows_from() {
     let mut host =
         crate::app::driver::Driver::for_root(crate::State::new(), map, (800, 600), Theme::dark());
     host.relayout();
-    host.send(&crate::synthetic_input::cursor_moved(300.0, 200.0));
+    host.send(&tilo_ui_base::synthetic_input::cursor_moved(300.0, 200.0));
     for state in [ElementState::Pressed, ElementState::Released] {
-        host.send(&crate::synthetic_input::mouse_input(
+        host.send(&tilo_ui_base::synthetic_input::mouse_input(
             state,
             winit::event::MouseButton::Left,
         ));
@@ -193,8 +193,8 @@ fn pointing_marks_where_an_answer_grows_from() {
 fn an_answer_grows_out_of_where_it_was_asked() {
     let rect = Rect::new(400.0, 300.0, 800.0, 500.0);
     let from = Point::new(100.0, 80.0);
-    let motion = crate::tokens::EffectiveMotion::default();
-    let start = crate::motion::WindowMotion::grown_pose(0.0, rect, from, motion);
+    let motion = tilo_ui_base::tokens::EffectiveMotion::default();
+    let start = tilo_ui_base::motion::WindowMotion::grown_pose(0.0, rect, from, motion);
     let drawn = start.drawn_rect(rect);
     assert!(
         (drawn.x0 - from.x).abs() < 0.5 && (drawn.y0 - from.y).abs() < 0.5,
@@ -205,7 +205,7 @@ fn an_answer_grows_out_of_where_it_was_asked() {
         "half its size: {drawn:?}"
     );
     assert!(start.opacity < 0.01, "unseen at first");
-    let halfway = crate::motion::WindowMotion::grown_pose(0.5, rect, from, motion);
+    let halfway = tilo_ui_base::motion::WindowMotion::grown_pose(0.5, rect, from, motion);
     let mid = halfway.drawn_rect(rect);
     assert!(
         (from.x..rect.x0).contains(&mid.x0),
@@ -215,10 +215,11 @@ fn an_answer_grows_out_of_where_it_was_asked() {
         mid.width() > drawn.width() && mid.width() < rect.width(),
         "growing on its way: {mid:?}"
     );
-    let end = crate::motion::WindowMotion::grown_pose(1.0, rect, from, motion);
+    let end = tilo_ui_base::motion::WindowMotion::grown_pose(1.0, rect, from, motion);
     assert!(end.is_rest(), "it rests at its place");
-    let reduced = crate::tokens::EffectiveMotion::new(crate::tokens::Motion::default(), true);
-    let still = crate::motion::WindowMotion::grown_pose(0.3, rect, from, reduced);
+    let reduced =
+        tilo_ui_base::tokens::EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), true);
+    let still = tilo_ui_base::motion::WindowMotion::grown_pose(0.3, rect, from, reduced);
     assert_eq!(
         still.transform,
         Affine::IDENTITY,
@@ -233,7 +234,7 @@ fn a_view_with_no_height_of_its_own_fills_its_most() {
     let mut map = Map::new().pin(
         "list",
         place(0.0, 0.0, 400.0, 300.0, true),
-        Box::new(crate::widget::Spacer::new()),
+        Box::new(tilo_ui_base::widget::Spacer::new()),
     );
     laid(&mut map);
     let list = map.laid.borrow()["list"];
@@ -304,7 +305,7 @@ fn a_leaving_place_takes_no_press_and_sizes_nothing() {
                     height: Some(150),
                     leaving,
                     item: Some("gone".into()),
-                    body: vec![Box::new(crate::widget::Spacer::new())],
+                    body: vec![Box::new(tilo_ui_base::widget::Spacer::new())],
                     ..MapPinProps::default()
                 }],
                 ..MapProps::default()

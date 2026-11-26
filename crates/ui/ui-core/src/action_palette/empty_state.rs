@@ -2,7 +2,7 @@
 //! that nothing matches what was — the last naming the query and saying what to try instead.
 
 use super::ActionPalette;
-use crate::i18n::{widget_format, widget_text};
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 
 impl ActionPalette {
     /// What the empty result list says now, as a person reads it.

@@ -5,10 +5,11 @@ use std::cell::Cell;
 
 use jiff::civil::DateTime;
 
-use crate::component::{Component, Described, Moment};
 use crate::time::{Duration, Instant};
-use crate::tokens::TextRole;
-use crate::widget::{AppModel, Decorator, ModelPath, Text, Widget};
+use crate::widget::Text;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{component::Component, component::Described, component::Moment};
+use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::ModelPath, widget::Widget};
 
 const MINUTE: i64 = 60;
 const HOUR: i64 = 60 * MINUTE;
@@ -18,12 +19,12 @@ const DAY: i64 = 24 * HOUR;
 fn local(secs: i64) -> Option<DateTime> {
     jiff::Timestamp::from_second(secs)
         .ok()
-        .map(|at| crate::clock::at(at).datetime())
+        .map(|at| tilo_ui_base::clock::at(at).datetime())
 }
 
 fn next_midnight(secs: i64) -> Option<i64> {
     let day = local(secs)?.date().tomorrow().ok()?;
-    crate::clock::instant_of(day.to_datetime(jiff::civil::Time::midnight()))
+    tilo_ui_base::clock::instant_of(day.to_datetime(jiff::civil::Time::midnight()))
         .map(jiff::Timestamp::as_second)
 }
 
@@ -33,7 +34,7 @@ fn next_new_year(secs: i64) -> Option<i64> {
     let midnight = jiff::civil::Date::new(year, 1, 1)
         .ok()?
         .to_datetime(jiff::civil::Time::midnight());
-    crate::clock::instant_of(midnight).map(jiff::Timestamp::as_second)
+    tilo_ui_base::clock::instant_of(midnight).map(jiff::Timestamp::as_second)
 }
 
 /// `at` (seconds since 1970) as the clock the person reads shows it: the time of day in their
@@ -43,7 +44,7 @@ pub fn clock_text(at: i64) -> String {
     let Some(local) = local(at) else {
         return String::new();
     };
-    crate::clock::hour_minute(
+    tilo_ui_base::clock::hour_minute(
         u32::from(local.hour().unsigned_abs()),
         u32::from(local.minute().unsigned_abs()),
     )
@@ -54,15 +55,15 @@ pub fn clock_text(at: i64) -> String {
 pub fn relative_text(at: i64, now: i64) -> String {
     let ago = now.saturating_sub(at);
     if ago < 0 {
-        return crate::format::relative_ahead(ago.saturating_neg());
+        return tilo_ui_base::format::relative_ahead(ago.saturating_neg());
     }
     let (Some(then), Some(today)) = (local(at), local(now)) else {
-        return crate::format::relative(ago);
+        return tilo_ui_base::format::relative(ago);
     };
     if ago < HOUR || then.date() == today.date() {
-        crate::format::relative(ago)
+        tilo_ui_base::format::relative(ago)
     } else {
-        crate::format::Formats::current().list_date(then, today)
+        tilo_ui_base::format::Formats::current().list_date(then, today)
     }
 }
 
@@ -303,7 +304,7 @@ mod tests {
 
     /// The local wall clock at `hour:minute:second` on `day` of June 2026, as seconds since 1970.
     fn local_secs(day: i8, (hour, minute, second): (i8, i8, i8)) -> i64 {
-        crate::clock::instant_of(jiff::civil::date(2026, 6, day).at(hour, minute, second, 0))
+        tilo_ui_base::clock::instant_of(jiff::civil::date(2026, 6, day).at(hour, minute, second, 0))
             .expect("the time exists where the test runs")
             .as_second()
     }

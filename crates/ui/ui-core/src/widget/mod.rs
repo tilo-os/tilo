@@ -1,1503 +1,36 @@
-mod contract;
-#[cfg(feature = "model")]
-pub use contract::AppActivation;
-pub use contract::{
-    COMPACT_BELOW, EXPANDED_BELOW, FIT_EPS, HYSTERESIS, Length, MEDIUM_BELOW, MediaAspect,
-    PAGE_FRACTION, PrimaryScrollAction, PrimaryScrollRegion, PrimaryScrollResult, RowLeadingShape,
-    RowShape, ScrollAxis, ScrollMetrics, SkeletonShape, TooltipSide, Widget, WidthClass,
-};
-mod action_directory_identity;
-pub mod bound_nodes;
-pub mod component_walk;
-pub(crate) mod input_provenance;
-pub mod undo_access;
-pub mod undo_points;
-mod wheel;
-pub use wheel::{PhaselessWheel, WHEEL_GESTURE_GAP, line_of_wheel, sideways_travel};
-mod action_emitter;
-mod disclosing;
-pub use action_directory_identity::ActionDirectoryInvocationDomain;
-pub use action_emitter::ActionEmitter;
-pub(crate) use disclosing::{
-    BandMotion, Ghosts, content_box, follower_shifts, place_bands, route_to_shifted_children,
-};
-pub use disclosing::{Disclosing, Placement, event_offset};
-pub(crate) mod resource_operation;
-// The raw operation protocol between the host and the toolkit's own widgets,
-// reached from outside the toolkit only through `crate::host_operation`.
-pub use resource_operation::resource_operation_handlers;
-#[cfg(feature = "model")]
-pub(crate) use resource_operation::start_operation_refused;
-pub(crate) use resource_operation::{
-    ResourceOperation, ResourceOperationStart, ResourceOperations,
-    local_resource_operation_handlers, poll_resource_operation, start_in_children, start_operation,
-};
+//! The toolkit's widgets above its base: each one's module, and what it exports.
 
-use crate::draw::{DrawCtx, DrawEnv};
-#[cfg(feature = "model")]
-use crate::presence::PresenceKey;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use automerge::{AutoCommit, ObjId};
-use taffy::{NodeId, TaffyTree};
-use vello::Scene;
-use vello::kurbo::Affine;
-use winit::event::WindowEvent;
-
-use crate::time::Instant;
-use std::collections::HashMap;
-#[cfg(feature = "model")]
-use std::collections::HashSet;
-
-/// Private foreground feedback, stripped of logical keys and typed text.
-/// Observers cannot consume the input or obtain a document edit context.
-#[derive(Clone, PartialEq, Eq)]
-pub enum PhysicalInput {
-    Key {
-        key: winit::keyboard::PhysicalKey,
-        state: winit::event::ElementState,
-    },
-    Focused(bool),
-    Layout(Option<std::sync::Arc<winit::keyboard::KeyboardLayout>>),
-}
-
-impl PhysicalInput {
-    pub fn from_window_event(event: &WindowEvent) -> Option<Self> {
-        match event {
-            WindowEvent::KeyboardInput {
-                event,
-                is_synthetic: false,
-                ..
-            } => Some(Self::Key {
-                key: event.physical_key,
-                state: event.state,
-            }),
-            WindowEvent::Focused(focused) => Some(Self::Focused(*focused)),
-            WindowEvent::KeyboardLayoutChanged(layout) => Some(Self::Layout(layout.clone())),
-            _ => None,
-        }
-    }
-}
-
-/// The app's model, lent to a widget pass. The toolkit only passes it on to
-/// children; the layer that owns the model reads it (the document runtime
-/// through [`crate::doc::document`]). A host passes its model by reference
-/// and it coerces: `widget.sync(&mut doc, &root)`.
-pub type AppModel = dyn std::any::Any;
-
-/// Where in the [`AppModel`] a widget is bound, forwarded alongside it.
-pub type ModelPath = dyn std::any::Any;
-
-/// Shared disabled-state opacity: wrap draw output in
-/// `scene.push_layer(.., DISABLED_ALPHA, ..)` / `pop_layer()`.
-pub const DISABLED_ALPHA: f32 = 0.45;
-
-/// Machine-readable classification of a control's activation path.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ControlBindingKind {
-    Action(tilo_actions::ActionAddress),
-    CollaborativeDocument(String),
-    SemanticAction(String),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct ControlBindingMetadata {
-    pub control_id: String,
-    pub kind: ControlBindingKind,
-}
-
-impl ControlBindingMetadata {
-    /// Declare that a custom control's stable semantic target is its native
-    /// action route. The host publishes supported accessibility verbs through
-    /// the resource/action API, so no parallel callback registry is needed.
-    pub fn semantic(control_id: impl Into<String>) -> Self {
-        let control_id = control_id.into();
-        Self {
-            kind: ControlBindingKind::SemanticAction(control_id.clone()),
-            control_id,
-        }
-    }
-}
-
-/// Derive native semantic-action provenance for actionable synthetic nodes in
-/// a custom widget's accessibility tree. This is the intended low-level escape
-/// hatch: authors draw anything they want, provide stable semantic targets,
-/// and opt those targets into the shared action route with one method call.
-pub fn semantic_action_bindings(
-    semantics: Option<crate::a11y::AccessNode>,
-) -> Vec<ControlBindingMetadata> {
-    let mut bindings = Vec::new();
-    if let Some(semantics) = semantics {
-        semantic_action_bindings_into(&semantics, &mut bindings);
-    }
-    bindings
-}
-
-/// [`semantic_action_bindings`] of `node`, appended to `out`: read in place, so a widget's
-/// kept rows are listed without copying them.
-pub(crate) fn semantic_action_bindings_into(
-    node: &crate::a11y::AccessNode,
-    out: &mut Vec<ControlBindingMetadata>,
-) {
-    fn is_effect_role(role: crate::a11y::Role) -> bool {
-        use crate::a11y::Role;
-        matches!(
-            role,
-            Role::Button
-                | Role::Tab
-                | Role::ToggleButton
-                | Role::Checkbox
-                | Role::RadioButton
-                | Role::Switch
-                | Role::ComboBox
-                | Role::Slider
-                | Role::SpinButton
-                | Role::TextInput
-                | Role::MultilineTextInput
-        )
-    }
-
-    if is_effect_role(node.role)
-        && let Some(target) = &node.action_target
-    {
-        out.push(ControlBindingMetadata::semantic(target.clone()));
-    }
-    for child in &node.children {
-        semantic_action_bindings_into(child, out);
-    }
-}
-
-/// Where `widget` stands in the widget tree, under `parent_path`: the name its parent calls it by
-/// ([`Widget::child_path_name`]), else its kind numbered among the siblings of that kind before it.
-/// With its kind and that number, which a path's bare form (`parent/Kind`, the first of its kind)
-/// reads. `counts` holds the numbering of one parent's children.
-pub(crate) fn widget_path(
-    widget: &dyn Widget,
-    parent_path: &str,
-    called: Option<String>,
-    counts: &mut std::collections::HashMap<String, usize>,
-) -> (String, String, usize) {
-    let name = widget.name().to_string();
-    let index = counts.entry(name.clone()).or_insert(0);
-    let current = *index;
-    // Bounded by siblings under one parent; saturating makes that explicit.
-    *index = index.saturating_add(1);
-    let part = called.unwrap_or_else(|| format!("{name}[{current}]"));
-    let path = if parent_path.is_empty() {
-        part
-    } else {
-        format!("{parent_path}/{part}")
-    };
-    (name, path, current)
-}
-
-/// How readily `widget` takes the keyboard when its app does without a control of its own choosing:
-/// its default keyboard control first (`Some(0)`), else the main answer of the panel it stands in
-/// beside one that takes typing — a field, an editor, a terminal (`Some(1)`) — never a button merely
-/// for being first (`None`): Enter would press it.
-pub(crate) fn keyboard_entry_rank(widget: &dyn Widget) -> Option<u8> {
-    if widget.is_default_keyboard_focus() {
-        return Some(0);
-    }
-    if widget.is_main_answer() {
-        return Some(1);
-    }
-    // The widget's own node is enough to read its role: the whole subtree of a
-    // document (every block of a long note) would be built on every relayout.
-    widget
-        .accessibility_root()
-        .is_some_and(|access| {
-            matches!(
-                access.role,
-                crate::a11y::Role::TextInput
-                    | crate::a11y::Role::MultilineTextInput
-                    | crate::a11y::Role::Document
-                    | crate::a11y::Role::Terminal
-            )
-        })
-        .then_some(1)
-}
-
-/// Offer the focused control under `widget` the activation the window gives on Space, or on Enter
-/// (`buttons_only`) only when it is a button; whether it took it. A surface that holds the
-/// keyboard itself — a dialog, a panel — presses the answer the keyboard is on with this, as the
-/// window would otherwise do behind it.
-pub(crate) fn activate_focused(
-    widget: &mut dyn Widget,
-    state: &mut crate::widget::Edits<'_>,
-    path: &ModelPath,
-    buttons_only: bool,
-) -> bool {
-    if widget.is_focused() && widget.is_focusable() {
-        let button = widget
-            .accessibility()
-            .is_some_and(|node| node.role == crate::a11y::Role::Button);
-        return (button || !buttons_only)
-            && widget.perform_action(&crate::a11y::Action::Activate, &[], state, path);
-    }
-    widget
-        .children_mut()
-        .into_iter()
-        .any(|child| activate_focused(child, state, path, buttons_only))
-}
-
-/// A laid-out box placed at `origin`, in absolute coordinates.
-pub fn placed(layout: &taffy::Layout, origin: vello::kurbo::Point) -> vello::kurbo::Rect {
-    vello::kurbo::Rect::from_origin_size(
-        (
-            origin.x + f64::from(layout.location.x),
-            origin.y + f64::from(layout.location.y),
-        ),
-        (f64::from(layout.size.width), f64::from(layout.size.height)),
-    )
-}
-
-pub(crate) const SETTLE_FRAMES: usize = 3;
-
-/// `node`'s laid-out box placed at `origin`: what `apply_layout` stores as a leaf's rect.
-pub fn layout_rect(
-    taffy: &TaffyTree<()>,
-    node: NodeId,
-    origin: vello::kurbo::Point,
-) -> vello::kurbo::Rect {
-    placed(&taffy.layout(node).copied().unwrap_or_default(), origin)
-}
-
-/// Solve the layout of the tree under `root` within `available`: what
-/// `TaffyTree::compute_layout` does, for a widget or an app that lays a
-/// panel out in a tree of its own.
-///
-/// Call this rather than the tree's own method. That method is generic, so
-/// every app calling it compiled Taffy's flexbox, grid and block solvers
-/// again (about 110 KB); this one is compiled once, into the toolkit.
-///
-/// # Errors
-///
-/// Returns the solver's error when Taffy rejects the tree.
-pub fn solve_layout(
-    taffy: &mut TaffyTree<()>,
-    root: NodeId,
-    available: taffy::Size<taffy::AvailableSpace>,
-) -> Result<(), taffy::TaffyError> {
-    layout::solve_layout(taffy, root, available, &mut |_, _, _| taffy::Size::ZERO)
-}
-
-#[macro_export]
-macro_rules! rect_geometry {
-    () => {
-        fn apply_layout(
-            &mut self,
-            taffy: &$crate::taffy::TaffyTree<()>,
-            node: $crate::taffy::NodeId,
-            origin: $crate::kurbo::Point,
-        ) {
-            self.rect = $crate::widget::layout_rect(taffy, node, origin);
-        }
-
-        fn get_rect(&self) -> $crate::kurbo::Rect {
-            self.rect
-        }
-    };
-    (measured) => {
-        $crate::rect_geometry!();
-
-        fn is_layout_dirty(&self) -> bool {
-            self.rect == $crate::kurbo::Rect::ZERO || self.layout_dirty
-        }
-
-        fn layout_measured(&mut self) {
-            self.layout_dirty = false;
-        }
-    };
-}
-
-macro_rules! pressable {
-    ($($rect:ident).+) => {
-        fn cursor_shape(
-            &self,
-            point: $crate::kurbo::Point,
-        ) -> Option<winit::window::CursorIcon> {
-            (self.activation.is_bound() && self.$($rect).+.contains(point))
-                .then_some(winit::window::CursorIcon::Pointer)
-        }
-
-        fn is_focusable(&self) -> bool {
-            self.activation.is_bound()
-        }
-
-        fn set_focus(&mut self, focused: bool) {
-            if self.activation.state.focused != focused {
-                self.activation.state.focused = focused;
-                self.dirty = true;
-            }
-        }
-
-        fn is_focused(&self) -> bool {
-            self.activation.state.focused
-        }
-
-        fn perform_action(
-            &mut self,
-            action: &$crate::a11y::Action,
-            _key_path: &[u64],
-            _state: &mut $crate::widget::Edits<'_>,
-            _root: &$crate::widget::ModelPath,
-        ) -> bool {
-            matches!(action, $crate::a11y::Action::Activate) && self.activation.activate()
-        }
-    };
-}
-pub(crate) use pressable;
-
-#[macro_export]
-macro_rules! redraw_flag {
-    () => {
-        fn needs_redraw(&self) -> bool {
-            self.dirty
-        }
-
-        fn mark_drawn(&mut self) {
-            self.dirty = false;
-        }
-    };
-}
-
-/// Let `node` share its row's main axis with its siblings by `grow`: it grows and shrinks
-/// from a zero basis instead of keeping its own width.
-pub fn share_row(taffy: &mut TaffyTree<()>, node: NodeId, grow: f32) {
-    if let Ok(mut style) = taffy.style(node).cloned() {
-        style.flex_grow = grow;
-        style.flex_shrink = 1.0;
-        style.flex_basis = taffy::style::Dimension::length(0.0);
-        style.size.width = taffy::style::Dimension::auto();
-        let _ = taffy.set_style(node, style);
-    }
-}
-
-/// Whether `child` holds the pointer for its subtree: it latched a drag, or a menu or modal
-/// is open somewhere in it.
-#[must_use]
-pub fn holds_pointer(child: &dyn Widget) -> bool {
-    child.wants_pointer_capture() || child.modal_capture().is_some()
-}
-
-/// Whether `widget` paints this frame: it changed itself, or a child is dirty or on its way
-/// (`needs_animation_frame`) and paints other pixels.
-#[must_use]
-pub fn redraw_or_children(dirty: bool, widget: &dyn Widget) -> bool {
-    let mut dirty = dirty;
-    widget.for_each_child(&mut |child: &dyn Widget| {
-        dirty |= child.needs_redraw() || child.needs_animation_frame();
-    });
-    dirty
-}
-
-/// Route `event` through a container's children, first handler wins. A child latching a drag gets
-/// it exclusively, so the drag survives the cursor crossing a peer that would claim it first; a
-/// child holding an open modal owns input the same way.
-pub fn route_to_children(
-    children: &mut [Box<dyn Widget>],
-    nodes: &[NodeId],
-    event: &WindowEvent,
-    ctx: &mut EventCtx<'_>,
-) {
-    let owner = children
-        .iter()
-        .position(|c| c.wants_pointer_capture())
-        .or_else(|| children.iter().position(|c| c.modal_capture().is_some()));
-    if let Some(idx) = owner {
-        if let (Some(child), Some(&node)) = (children.get_mut(idx), nodes.get(idx)) {
-            child.handle_event(event, &mut ctx.reborrow(ctx.path, node));
-        }
-        return;
-    }
-    for (child, &node) in children.iter_mut().zip(nodes) {
-        child.handle_event(event, &mut ctx.reborrow(ctx.path, node));
-        if *ctx.handled {
-            break;
-        }
-    }
-}
-
-/// Draw `child` unless what it paints misses the viewport. Off-viewport widgets stay dirty, so they
-/// re-emit when scrolled back in. A widget ends every layer it begins: the render service refuses a
-/// scene that leaves a clip open, and with it the whole frame; debug builds check that here, naming
-/// the widget.
-pub fn draw_child(
-    child: &mut (impl Widget + ?Sized),
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    env: &DrawEnv<'_>,
-) {
-    draw_child_at(child, None, scene, transform, text_renderer, theme, env);
-}
-
-/// Draw `paint` at `opacity`, in a layer only while it is part-way, and draw nothing at all once
-/// it is gone: the one way a view drawn translucent (one fading in or out over another) reaches
-/// the scene.
-pub(crate) fn in_opacity_layer(
-    scene: &mut Scene,
-    transform: Affine,
-    clip: vello::kurbo::Rect,
-    opacity: f32,
-    paint: impl FnOnce(&mut Scene),
-) {
-    if opacity <= 0.0 {
-        return;
-    }
-    let part = opacity < 1.0;
-    if part {
-        scene.push_layer(
-            vello::peniko::Fill::NonZero,
-            vello::peniko::BlendMode::default(),
-            opacity,
-            transform,
-            &clip.inflate(2.0, 2.0),
-        );
-    }
-    paint(scene);
-    if part {
-        scene.pop_layer();
-    }
-}
-
-/// [`draw_child`] for a container that knows `child`'s place among its
-/// children (`index`), so a host that keys widgets
-/// ([`crate::scene_parts::key_widgets`]) keys it by that place even when the
-/// container leaves siblings before it undrawn.
-pub fn draw_child_at(
-    child: &mut (impl Widget + ?Sized),
-    index: Option<usize>,
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    env: &DrawEnv<'_>,
-) {
-    if env.should_cull(child.paint_bounds()) {
-        if index.is_none() {
-            crate::scene_parts::skip_widget();
-        }
-        return;
-    }
-    draw_child_unculled(child, index, scene, transform, text_renderer, theme, env);
-}
-
-/// Draw `child` with its key ([`draw_child_at`]) even where it misses the
-/// viewport: for a container that culls its children itself, draws one
-/// whose rect is not where it paints (a child moved by `transform`, a
-/// window's own content), or draws a root.
-pub fn draw_child_unculled(
-    child: &mut (impl Widget + ?Sized),
-    index: Option<usize>,
-    scene: &mut Scene,
-    transform: Affine,
-    text_renderer: &mut TextRenderer,
-    theme: &Theme,
-    env: &DrawEnv<'_>,
-) {
-    #[cfg(debug_assertions)]
-    let open = scene.encoding().n_open_clips;
-    #[cfg(debug_assertions)]
-    let _painting = paint_pass::Painting::enter();
-    let begun = crate::scene_parts::begin_widget(scene, child, index, transform);
-    {
-        let mut ctx = DrawCtx::new(scene, transform, text_renderer, theme, env.clone());
-        #[expect(
-            clippy::disallowed_methods,
-            reason = "the one keyed draw path a widget is drawn through"
-        )]
-        child.draw(&mut ctx);
-    }
-    crate::scene_parts::end_widget(scene, begun);
-    #[cfg(debug_assertions)]
-    debug_assert_eq!(
-        scene.encoding().n_open_clips,
-        open,
-        "{} left a layer open (or ended one it did not begin) in its draw",
-        child.concrete_type_name()
-    );
-}
-
-/// [`draw_child_unculled`] as a method, for a container that draws a child
-/// itself: `child.draw_child(scene, transform, text_renderer, theme, env)`
-/// takes the place of calling the child's [`Widget::draw`], and carries the
-/// child's key into the scene for a host that keys widgets.
-pub trait DrawChild {
-    fn draw_child(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        env: &DrawEnv<'_>,
-    );
-}
-
-// A widget type a container holds by value is drawn without making it a
-// trait object: a type that never was one gets no vtable (which would bring
-// every `Widget` method of the type into the program) for being keyed. One
-// copy per type, never inlined, so a call site is the one call it was.
-impl<W: Widget> DrawChild for W {
-    #[inline(never)]
-    fn draw_child(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        env: &DrawEnv<'_>,
-    ) {
-        #[cfg(debug_assertions)]
-        let _painting = paint_pass::Painting::enter();
-        let begun = crate::scene_parts::begin_widget(scene, self, None, transform);
-        {
-            let mut ctx = DrawCtx::new(scene, transform, text_renderer, theme, env.clone());
-            #[expect(
-                clippy::disallowed_methods,
-                reason = "the keyed draw path of a widget held by value"
-            )]
-            self.draw(&mut ctx);
-        }
-        crate::scene_parts::end_widget(scene, begun);
-    }
-}
-
-macro_rules! draw_child_of_dyn {
-    ($($object:path),* $(,)?) => {$(
-        impl DrawChild for dyn $object + '_ {
-            fn draw_child(
-                &mut self,
-                scene: &mut Scene,
-                transform: Affine,
-                text_renderer: &mut TextRenderer,
-                theme: &Theme,
-                env: &DrawEnv<'_>,
-            ) {
-                draw_child_unculled(self, None, scene, transform, text_renderer, theme, env);
-            }
-        }
-
-        impl DrawChild for Box<dyn $object + '_> {
-            fn draw_child(
-                &mut self,
-                scene: &mut Scene,
-                transform: Affine,
-                text_renderer: &mut TextRenderer,
-                theme: &Theme,
-                env: &DrawEnv<'_>,
-            ) {
-                draw_child_unculled(
-                    &mut **self,
-                    None,
-                    scene,
-                    transform,
-                    text_renderer,
-                    theme,
-                    env,
-                );
-            }
-        }
-    )*};
-}
-
-draw_child_of_dyn!(Widget, AppWidget,);
-
-/// What a widget draws over itself once drawn: the denied-permission scrim
-/// its authority forbids, then whatever the host paints over it — the focus
-/// ring of whoever else is on it, their caret and selection where the widget
-/// publishes the geometry for them.
-pub fn draw_over(widget: &dyn Widget, ctx: &mut DrawCtx<'_>) {
-    let rect = widget.get_rect();
-    if !ctx.env.permits_widget(widget) {
-        ctx.scene.fill(
-            vello::peniko::Fill::NonZero,
-            ctx.transform,
-            crate::tokens::colors::PERMISSION_DENIED_SCRIM,
-            None,
-            &rect,
-        );
-    }
-    if let Some(overlay) = ctx.env.overlay {
-        overlay.paint_over(
-            widget,
-            ctx.scene,
-            ctx.transform,
-            ctx.text_renderer,
-            ctx.theme,
-        );
-    }
-}
-
-/// Hand `event` to the widgets a virtualizing container has mounted: the
-/// first one holding pointer capture gets it alone, otherwise each laid-out
-/// widget sees it, topmost first, until one handles it.
-pub(crate) fn route_to_mounted<T>(
-    mounted: &mut [T],
-    parts: fn(&mut T) -> (&mut Element, Option<NodeId>),
-    event: &WindowEvent,
-    ctx: &mut EventCtx<'_>,
-) {
-    if let Some((widget, Some(node))) = mounted
-        .iter_mut()
-        .map(parts)
-        .find(|(widget, _)| widget.wants_pointer_capture())
-    {
-        widget.handle_event(event, &mut ctx.reborrow(ctx.path, node));
-        return;
-    }
-    for (widget, node) in mounted.iter_mut().rev().map(parts) {
-        let Some(node) = node else { continue };
-        widget.handle_event(event, &mut ctx.reborrow(ctx.path, node));
-        if *ctx.handled {
-            break;
-        }
-    }
-}
-
-/// The first widget of `root`'s subtree, `root` included, whose
-/// [`Widget::test_id`] is `id`.
-pub fn find_test_id<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
-    if root.test_id() == Some(id) {
-        return Some(root);
-    }
-    root.children()
-        .into_iter()
-        .find_map(|child| find_test_id(child, id))
-}
-
-/// [`find_test_id`] for a widget to change.
-pub fn find_test_id_mut<'a>(root: &'a mut dyn Widget, id: &str) -> Option<&'a mut dyn Widget> {
-    if root.test_id() == Some(id) {
-        return Some(root);
-    }
-    root.children_mut()
-        .into_iter()
-        .find_map(|child| find_test_id_mut(child, id))
-}
-
-/// One bounded page from a widget-owned remote root catalogue.  `next_cursor`
-/// is meaningful only while `exhausted` is false and is never interpreted by
-/// a different widget or document revision.
-pub struct ActionDirectoryResourcePage {
-    pub resources: Vec<tilo_actions::ResourceSpec>,
-    pub next_cursor: Vec<u8>,
-    pub exhausted: bool,
-}
-
-/// Last-resort accessible label for controls whose constructor already
-/// requires a stable id. Explicit localized names remain preferable, but a
-/// standard control should never become silent merely because an author did
-/// not repeat the same short label twice.
-pub(crate) fn humanize_control_id(id: &str) -> String {
-    let tail = id.rsplit('.').next().unwrap_or(id);
-    crate::format::capitalize_first(&tail.replace(['_', '-'], " "))
-}
+#[allow(
+    unused_imports,
+    clippy::wildcard_imports,
+    reason = "the base's widget contract, for the widgets declared here"
+)]
+use tilo_ui_base::widget::*;
 
 #[cfg(test)]
 mod test_controls;
 #[cfg(test)]
-pub(crate) use test_controls::{Unattached, test_value_action_binding};
-
-#[cfg(test)]
-fn test_action_binding<I>(spec: tilo_actions::ActionSpec) -> tilo_actions::ActionBinding<I>
-where
-    I: serde::Serialize,
-{
-    let resource =
-        tilo_actions::ResourceSpec::new("test:control", "test", "Test").with_action(spec.clone());
-    tilo_actions::ActionBinding::new(&resource, &spec, |value| {
-        serde_json::json!({"value": value})
-            .as_object()
-            .unwrap()
-            .clone()
-    })
-    .unwrap()
-}
-
-#[cfg(test)]
-pub(crate) fn test_bool_action_binding() -> tilo_actions::ActionBinding<bool> {
-    use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
-    test_action_binding(ActionSpec::typed_operation(
-        "set",
-        "Set",
-        "value",
-        OperationKind::Effect,
-        "test.set_bool",
-        vec![ActionParam::required("value", ParamType::Boolean, "Value")],
-        |args| EncodedAction::encode_operation("test.set_bool", &args.boolean("value")).unwrap(),
-    ))
-}
-
-#[cfg(test)]
-pub(crate) fn test_string_action_binding() -> tilo_actions::ActionBinding<String> {
-    use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
-    test_action_binding(ActionSpec::typed_operation(
-        "set",
-        "Set",
-        "value",
-        OperationKind::Effect,
-        "test.set_string",
-        vec![ActionParam::required("value", ParamType::Text, "Value")],
-        |args| EncodedAction::encode_operation("test.set_string", &args.text("value")).unwrap(),
-    ))
-}
-
-#[cfg(test)]
-pub(crate) fn test_number_action_binding() -> tilo_actions::ActionBinding<f64> {
-    use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
-    test_action_binding(ActionSpec::typed_operation(
-        "set",
-        "Set",
-        "value",
-        OperationKind::Effect,
-        "test.set_number",
-        vec![ActionParam::required("value", ParamType::Number, "Value")],
-        |args| EncodedAction::encode_operation("test.set_number", &args.number("value")).unwrap(),
-    ))
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum WindowCloseAdmission {
-    Allow,
-    Defer,
-}
-
-/// What a structural change a subtree reported ([`Widget::take_structure_change`]) asks of
-/// its host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default)]
-pub enum StructureChange {
-    #[default]
-    None,
-    /// The widgets that reported it mount and unmount children of their own, and every widget stays
-    /// alive: they carry it out in the retained tree in place ([`Widget::remount_children`]), and
-    /// their own damage covers every pixel that changed. A host that cannot rebuilds its tree, as
-    /// for [`Self::Described`].
-    Children,
-    /// The host rebuilds its tree, but the frame's damage still describes it:
-    /// the widget that reported it replaced only widgets of its own, and its
-    /// own damage this frame covers every pixel that changed with them.
-    Described,
-    Rebuild,
-}
-
-impl StructureChange {
-    /// A structural flag as a change: any change is a [`Self::Rebuild`].
-    #[must_use]
-    pub fn of(dirty: bool) -> Self {
-        if dirty { Self::Rebuild } else { Self::None }
-    }
-
-    /// Whether the host rebuilds its tree for it, or (for [`Self::Children`]) changes it in
-    /// place.
-    #[must_use]
-    pub fn rebuilds(self) -> bool {
-        self != Self::None
-    }
-
-    /// This change and `other`, as one.
-    #[must_use]
-    pub fn join(self, other: Self) -> Self {
-        self.max(other)
-    }
-
-    /// Every one of `children`'s changes, joined: for a container that adds no structure of
-    /// its own, so a change a child carries out in place ([`Self::Children`]) stays one.
-    #[must_use]
-    pub fn of_children(children: Vec<&mut (dyn Widget + '_)>) -> Self {
-        children.into_iter().fold(Self::None, |change, child| {
-            change.join(child.take_structure_change())
-        })
-    }
-}
-
-/// Optional cross-device continuation capability for an app root, deliberately separate
-/// from [`Widget`]: ordinary controls have no resumable app state, while roots that do expose it through
-/// [`Widget::provide`] without weakening their UI integration.
-#[cfg(feature = "model")]
-pub trait Continuable {
-    fn continuation_metadata(
-        &self,
-        state: &AutoCommit,
-        path: &ObjId,
-    ) -> Option<::collaboration::ContinuationMetadata>;
-
-    /// Apply a continuation projection after launch. Implementations must not
-    /// change focus or start media; malformed or unknown metadata is ignored.
-    fn restore_continuation_metadata(
-        &mut self,
-        metadata: &::collaboration::ContinuationMetadata,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> bool;
-}
-
-/// Optional session collaboration capability for widgets that own live broker-backed
-/// activity.
-#[cfg(feature = "model")]
-pub trait Collaborative {
-    fn take_collab_requests(&mut self) -> Vec<::collaboration::CollabRequest> {
-        Vec::new()
-    }
-
-    fn handle_collab_event(&mut self, _event: &::collaboration::CollabEvent) {}
-}
-
-/// Optional lifecycle for widgets backed by a platform-native child view.
-pub trait NativeViewLifecycle {
-    fn mount_native_view(&mut self, host: &crate::widget::native_view::NativeViewHost<'_>);
-
-    fn unmount_native_view(&mut self);
-
-    fn native_view_frame_start(&mut self);
-}
-
-/// Optional second-output presentation capability for app roots.
-pub trait AudiencePresentationProvider {
-    fn audience_presentation_request(
-        &self,
-    ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
-        None
-    }
-
-    fn on_audience_presentation_changed(&mut self, _active: bool) {}
-
-    /// Paint the audience-only projection of the app's existing state.
-    fn draw_audience_presentation(
-        &mut self,
-        _scene: &mut Scene,
-        _transform: Affine,
-        _text_renderer: &mut TextRenderer,
-        _theme: &Theme,
-        _rect: vello::kurbo::Rect,
-    ) -> bool {
-        false
-    }
-
-    fn handle_audience_presentation_event(
-        &mut self,
-        _event: &WindowEvent,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &ObjId,
-    ) -> bool {
-        false
-    }
-
-    fn on_audience_presentation_closed(&mut self) {}
-}
-
-/// Optional OS-fullscreen capability for roots and forwarding containers.
-pub trait FullscreenProvider {
-    /// `None` means no opinion; otherwise this is a level-triggered intent.
-    fn fullscreen_intent(&self) -> Option<bool> {
-        None
-    }
-
-    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
-        crate::fullscreen::FullscreenRequest::mirror(crate::fullscreen::FullscreenTarget::Largest)
-    }
-
-    fn on_fullscreen_changed(&mut self, _active: bool) {}
-}
-
-/// A player asking the host to float its picture above the window, as picture-in-picture does:
-/// the region it draws on, the picture's shape, and what the person calls it.
-#[derive(Clone, Debug, PartialEq)]
-pub struct PictureInPictureAsk {
-    /// The player's region in the window, which the floating surface mirrors.
-    pub region: vello::kurbo::Rect,
-    /// The picture's shape, width over height: the surface keeps it whatever its size.
-    pub aspect: f64,
-    /// What the floating surface is called, as the video's title.
-    pub title: String,
-}
-
-/// Optional picture-in-picture capability for a player a view declares. The person pressed the
-/// player's Picture-in-picture control; the host floats the picture with the region and shape the
-/// player gives. Read through `&self` because a host walks the tree it draws immutably to find
-/// the player, and takes the request once (a [`std::cell::Cell`] inside the player holds it).
-pub trait PictureInPictureProvider {
-    /// Whether a request waits to be taken, without taking it: a host asks this before it
-    /// offers itself as the one that answers for the tree.
-    fn wants_picture_in_picture(&self) -> bool {
-        false
-    }
-
-    fn take_picture_in_picture(&self) -> Option<PictureInPictureAsk> {
-        None
-    }
-
-    /// Whether the app floats this picture now: the host keeps the surface up while it does,
-    /// and returns the picture to where it stands once the app stops. A player whose one press
-    /// makes one surface has no lasting state, and answers nothing.
-    fn picture_in_picture_floating(&self) -> bool {
-        false
-    }
-
-    /// The picture stopped floating: the shell's window for it went away, or the person took it
-    /// back. What the picture kept of the float is done. A page's float is the app's own prop and
-    /// answers nothing.
-    fn picture_in_picture_returned(&mut self) {}
-
-    /// Where the picture stands in its window now, once it moved since the host last asked: the
-    /// floated surface mirrors that region, so a page that scrolls or a window that resizes
-    /// carries the picture with it.
-    fn floating_picture_in_picture_region(&self) -> Option<vello::kurbo::Rect> {
-        None
-    }
-
-    /// Draw the picture into the floating window: what stands at `source` in the window, drawn
-    /// over `target` on the shell. Whether it drew anything.
-    fn draw_picture_in_picture(
-        &mut self,
-        _source: vello::kurbo::Rect,
-        _target: vello::kurbo::Rect,
-        _ctx: &mut crate::draw::DrawCtx<'_>,
-    ) -> bool {
-        false
-    }
-}
-
-/// Optional sound capability for a player a view declares: the player decodes the sound but
-/// opens no device, and its host plays the one stream in every place the session's outputs name
-/// (a speaker in another room, a cast target). The samples are stereo 48 kHz interleaved S16,
-/// the shape every playback sink takes. Read through `&self` because a host walks the tree it
-/// draws immutably to find the player, and takes the sound once.
-pub trait AudioTapProvider {
-    fn take_audio(&self) -> Vec<i16> {
-        Vec::new()
-    }
-}
-
-/// Optional full-document/canvas capture capability.
-pub trait CompleteContentProvider {
-    fn complete_content_size(&self) -> Option<vello::kurbo::Size>;
-
-    fn draw_complete_content(&mut self, bounds: vello::kurbo::Rect, ctx: &mut DrawCtx<'_>) -> bool;
-}
-
-/// The document as a host lends it to one pass that may change it: read
-/// freely, changed only through a typed action the action host applies (a
-/// resource's dispatcher applies it), so every change is an action that is
-/// attributed, recorded in history and undone like any other.
-/// Direct CRDT mutation is rejected at the widget boundary:
-///
-/// ```compile_fail
-/// use automerge::{ROOT, transaction::Transactable};
-/// use tilo_ui::widget::Edits;
-/// fn bypass(edits: &mut Edits<'_>) {
-///     edits.put(ROOT, "bypass", true).unwrap();
-/// }
-/// ```
-pub struct Edits<'a> {
-    doc: &'a mut AutoCommit,
-}
-
-impl<'a> Edits<'a> {
-    /// Lend `doc` to one pass.
-    #[doc(hidden)]
-    pub fn lend(doc: &'a mut AutoCommit) -> Self {
-        Self { doc }
-    }
-
-    /// The document as it stands, with what this pass applied.
-    pub fn doc(&self) -> &AutoCommit {
-        self.doc
-    }
-
-    /// The same document, lent on to a part of the pass.
-    pub fn reborrow(&mut self) -> Edits<'_> {
-        Edits {
-            doc: &mut *self.doc,
-        }
-    }
-
-    /// The lent document, for the hosts that pass it on to a record of their own.
-    pub(crate) fn document_mut(&mut self) -> &mut AutoCommit {
-        self.doc
-    }
-}
-
-impl std::ops::Deref for Edits<'_> {
-    type Target = AutoCommit;
-
-    fn deref(&self) -> &Self::Target {
-        self.doc()
-    }
-}
-
-thread_local! {
-    static RESOURCE_PRESENTATION_EPOCH: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
-}
-
-/// Tell the host that what a widget presents to the resource surface (the
-/// resources, actions or semantic controls it declares) changed without the
-/// host seeing it: on input the widget did not mark handled (hovering a menu
-/// row that opens a nested menu), or as it paints (the bounds a control
-/// measured from what it drew). The host keeps the published resource tree
-/// across bare pointer motion, so such a widget must call this or the tree
-/// agents and assistive technology read would go stale. Clicks, keys and
-/// handled events outside the explicit view-only scroll contract republish.
-pub fn note_resource_presentation_changed() {
-    RESOURCE_PRESENTATION_EPOCH.with(|epoch| epoch.set(epoch.get().wrapping_add(1)));
-}
-
-/// How many times [`note_resource_presentation_changed`] ran on this thread.
-pub(crate) fn resource_presentation_epoch() -> u64 {
-    RESOURCE_PRESENTATION_EPOCH.with(std::cell::Cell::get)
-}
-
-thread_local! {
-    static VIEW_ONLY_PAN: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// Tell the host that the event being dispatched was consumed only to move
-/// what is laid out: a wheel every widget under the pointer refused that a
-/// scroll container took as a pan of its own offset, or a drag step that
-/// moved a pane's edge. The host then keeps the published resource tree and
-/// skips the full sync, exactly as for a root that declares
-/// [`Widget::view_only_scroll`], provided the dispatch changed no document,
-/// focus or declared presentation. A widget that does anything else with
-/// the event must not call this.
-pub fn note_view_only_pan() {
-    VIEW_ONLY_PAN.with(|pan| pan.set(true));
-}
-
-/// Whether [`note_view_only_pan`] ran since the last call, clearing it.
-pub(crate) fn take_view_only_pan() -> bool {
-    VIEW_ONLY_PAN.with(|pan| pan.replace(false))
-}
-
-/// The window holding `widget` lost the keyboard: every control in it that held the keyboard gives
-/// it up, as a native window's controls do when another window becomes active. What the person
-/// types next is the window they moved to, never the one they left. Whether anything let go.
-pub fn release_keyboard(widget: &mut dyn Widget) -> bool {
-    let mut released = widget.is_focusable() && widget.is_focused();
-    if released {
-        widget.set_focus(false);
-    }
-    for child in widget.children_mut() {
-        released |= release_keyboard(child);
-    }
-    released
-}
-
-thread_local! {
-    static LAYOUT_MOVED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-}
-
-/// From a widget's `update`: an animation of its own moved or resized what
-/// it lays out (a glide, a jump in progress, a give springing back, a pane
-/// gliding open, a reveal growing a pill), so the last layout no longer
-/// stands. The host lays the window out again in this frame; it is no
-/// change of the model, and nothing syncs.
-///
-/// A frame only an animation asked for is otherwise only drawn: an
-/// animation that moves nothing it lays out (a spinner, a fade, a pose
-/// applied as a draw transform) costs a paint, not a layout and a
-/// republication of the app's actions. A widget whose animation moves
-/// layout calls this on every frame it runs, including the one it lands on.
-pub fn note_layout_moved() {
-    LAYOUT_MOVED.with(|moved| moved.set(true));
-}
-
-/// Whether [`note_layout_moved`] ran since the last call, clearing it: a
-/// host asks after its widgets' update, and lays out again when it did.
-pub fn take_layout_moved() -> bool {
-    LAYOUT_MOVED.with(|moved| moved.replace(false))
-}
-
-/// Host services associated with one retained widget event dispatch.
-pub struct EventCtx<'a> {
-    pub scale_factor: f64,
-    pub modifiers: &'a winit::event::Modifiers,
-    pub state: Edits<'a>,
-    pub path: &'a ObjId,
-    pub handled: &'a mut bool,
-    pub focus_target: &'a mut Option<NodeId>,
-    pub node_id: NodeId,
-    pub taffy: &'a TaffyTree<()>,
-}
-
-impl EventCtx<'_> {
-    /// Reborrow this event for a retained child with its own document path and node.
-    pub fn reborrow<'b>(&'b mut self, path: &'b ObjId, node_id: NodeId) -> EventCtx<'b> {
-        EventCtx {
-            scale_factor: self.scale_factor,
-            modifiers: self.modifiers,
-            state: self.state.reborrow(),
-            path,
-            handled: &mut *self.handled,
-            focus_target: &mut *self.focus_target,
-            node_id,
-            taffy: self.taffy,
-        }
-    }
-
-    /// The document this event may change, through typed actions only.
-    pub fn edits(&mut self) -> Edits<'_> {
-        self.state.reborrow()
-    }
-
-    /// The stylus that made the `CursorMoved` or `MouseInput` being handled: its pressure, tilt and
-    /// whether the eraser end is in use. `None` for a mouse, a touch or any other event; a pen's
-    /// tip is the left button and its barrel buttons the right and middle, so a widget needs this
-    /// only for what a mouse cannot say.
-    #[must_use]
-    pub fn pen(&self) -> Option<PenSample> {
-        crate::pen::current()
-    }
-
-    /// `position`, a pointer position in physical pixels, in this event's logical
-    /// coordinates.
-    #[must_use]
-    pub fn logical(
-        &self,
-        position: impl std::borrow::Borrow<winit::dpi::PhysicalPosition<f64>>,
-    ) -> vello::kurbo::Point {
-        let position = position.borrow();
-        vello::kurbo::Point::new(
-            position.x / self.scale_factor,
-            position.y / self.scale_factor,
-        )
-    }
-}
-
-/// One remote presence's live presence (caret/selection), published by a multi-
-/// presence widget under that presence's identity.
-#[derive(Clone, Debug, PartialEq)]
-#[cfg(feature = "model")]
-pub struct ViewPresence {
-    pub presence: tilo_actions::PresenceId,
-    pub label: Option<String>,
-    pub key: PresenceKey,
-    pub payload: ::collaboration::PresencePayload,
-}
-
-/// Identity of one live node-map widget for once-per-widget host sweeps.
-///
-/// Several layout nodes may name the same widget, so sweeps deduplicate. The
-/// data address alone is not an identity: a struct shares it with its first
-/// field, and a `HashMap` sweep would then visit whichever of the two it meets
-/// first and silently skip the other (for example a component's committed
-/// action bracket). The concrete type keeps wrapper and first field distinct.
-///
-/// # Safety
-/// `pointer` must be live and not mutably borrowed for the duration of the call.
-pub(crate) unsafe fn node_sweep_identity(pointer: *const dyn Widget) -> (*const (), &'static str) {
-    // SAFETY: the caller guarantees a live, unaliased-for-writes widget.
-    let concrete = unsafe { (*pointer).concrete_type_name() };
-    (pointer.cast::<()>(), concrete)
-}
-
-/// Ergonomic host API for optional second-output presentation support.
-pub trait AudiencePresentationWidgetExt {
-    fn audience_presentation_request(
-        &self,
-    ) -> Option<crate::fullscreen::AudiencePresentationRequest>;
-    fn on_audience_presentation_changed(&mut self, active: bool);
-    fn draw_audience_presentation(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: vello::kurbo::Rect,
-    ) -> bool;
-    fn handle_audience_presentation_event(
-        &mut self,
-        event: &WindowEvent,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> bool;
-    fn on_audience_presentation_closed(&mut self);
-}
-
-impl<T: Widget + ?Sized> AudiencePresentationWidgetExt for T {
-    fn audience_presentation_request(
-        &self,
-    ) -> Option<crate::fullscreen::AudiencePresentationRequest> {
-        capability::capability::<dyn AudiencePresentationProvider>(self)
-            .and_then(AudiencePresentationProvider::audience_presentation_request)
-    }
-
-    fn on_audience_presentation_changed(&mut self, active: bool) {
-        if let Some(provider) = capability::capability_mut::<dyn AudiencePresentationProvider>(self)
-        {
-            provider.on_audience_presentation_changed(active);
-        }
-    }
-
-    fn draw_audience_presentation(
-        &mut self,
-        scene: &mut Scene,
-        transform: Affine,
-        text_renderer: &mut TextRenderer,
-        theme: &Theme,
-        rect: vello::kurbo::Rect,
-    ) -> bool {
-        capability::capability_mut::<dyn AudiencePresentationProvider>(self).is_some_and(
-            |provider| {
-                provider.draw_audience_presentation(scene, transform, text_renderer, theme, rect)
-            },
-        )
-    }
-
-    fn handle_audience_presentation_event(
-        &mut self,
-        event: &WindowEvent,
-        state: &mut crate::widget::Edits<'_>,
-        path: &ObjId,
-    ) -> bool {
-        capability::capability_mut::<dyn AudiencePresentationProvider>(self)
-            .is_some_and(|provider| provider.handle_audience_presentation_event(event, state, path))
-    }
-
-    fn on_audience_presentation_closed(&mut self) {
-        if let Some(provider) = capability::capability_mut::<dyn AudiencePresentationProvider>(self)
-        {
-            provider.on_audience_presentation_closed();
-        }
-    }
-}
-
-/// Ergonomic host API for optional fullscreen support.
-pub trait FullscreenWidgetExt {
-    fn fullscreen_intent(&self) -> Option<bool>;
-    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest;
-    fn on_fullscreen_changed(&mut self, active: bool);
-}
-
-impl<T: Widget + ?Sized> FullscreenWidgetExt for T {
-    fn fullscreen_intent(&self) -> Option<bool> {
-        capability::capability::<dyn FullscreenProvider>(self)
-            .and_then(FullscreenProvider::fullscreen_intent)
-    }
-
-    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
-        capability::capability::<dyn FullscreenProvider>(self).map_or_else(
-            || {
-                crate::fullscreen::FullscreenRequest::mirror(
-                    crate::fullscreen::FullscreenTarget::Largest,
-                )
-            },
-            FullscreenProvider::fullscreen_params,
-        )
-    }
-
-    fn on_fullscreen_changed(&mut self, active: bool) {
-        if let Some(provider) = capability::capability_mut::<dyn FullscreenProvider>(self) {
-            provider.on_fullscreen_changed(active);
-        }
-    }
-}
-
-/// Ergonomic host API for optional complete-content capture.
-pub trait CompleteContentWidgetExt {
-    fn complete_content_size(&self) -> Option<vello::kurbo::Size>;
-    fn draw_complete_content(&mut self, bounds: vello::kurbo::Rect, ctx: &mut DrawCtx<'_>) -> bool;
-}
-
-impl<T: Widget + ?Sized> CompleteContentWidgetExt for T {
-    fn complete_content_size(&self) -> Option<vello::kurbo::Size> {
-        capability::capability::<dyn CompleteContentProvider>(self)
-            .and_then(CompleteContentProvider::complete_content_size)
-    }
-
-    fn draw_complete_content(&mut self, bounds: vello::kurbo::Rect, ctx: &mut DrawCtx<'_>) -> bool {
-        capability::capability_mut::<dyn CompleteContentProvider>(self)
-            .is_some_and(|provider| provider.draw_complete_content(bounds, ctx))
-    }
-}
-
-/// Drain collaboration capabilities throughout a retained widget tree.
-#[cfg(feature = "model")]
-pub(crate) fn take_collab_requests(widget: &mut dyn Widget) -> Vec<::collaboration::CollabRequest> {
-    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
-        return Vec::new();
-    };
-    let mut requests = capability::capability_mut::<dyn Collaborative>(&mut *widget)
-        .map_or_else(Vec::new, Collaborative::take_collab_requests);
-    for child in crate::widget::presence_topology::collaboration_children(widget) {
-        requests.extend(take_collab_requests(child));
-    }
-    requests
-}
-
-/// Deliver one session event to each explicit collaboration capability once.
-/// Bound callback context remains entered for the complete descendant walk.
-#[cfg(feature = "model")]
-pub(crate) fn handle_collab_event(widget: &mut dyn Widget, event: &::collaboration::CollabEvent) {
-    let Ok(_entry) = crate::widget::bound_nodes::enter_widget(widget) else {
-        return;
-    };
-    if let Some(collaborative) = capability::capability_mut::<dyn Collaborative>(&mut *widget) {
-        collaborative.handle_collab_event(event);
-    }
-    for child in crate::widget::presence_topology::collaboration_children(widget) {
-        handle_collab_event(child, event);
-    }
-}
-
-/// Mount native views through each owner's retained lifecycle topology.
-pub(crate) fn mount_native_views(
-    widget: &mut dyn Widget,
-    host: &crate::widget::native_view::NativeViewHost<'_>,
-) {
-    widget.mount_native_views(host);
-}
-
-/// Unmount native views through each owner's retained lifecycle topology.
-pub(crate) fn unmount_native_views(widget: &mut dyn Widget) {
-    widget.unmount_native_views();
-}
-
-/// Begin a frame through each owner's retained lifecycle topology.
-pub(crate) fn native_view_frame_start(widget: &mut dyn Widget) {
-    widget.native_view_frame_start();
-}
-
-/// Panic-free node construction, used by every `build_layout` implementation
-/// in this module. `TaffyTree::new_leaf` and `new_with_children` are typed
-/// `-> TaffyResult<NodeId>` for API generality, but taffy 0.10's
-/// implementation shows neither can return `Err`: `new_leaf` always
-/// inserts and returns `Ok`, and `new_with_children` only fails for a child
-/// `NodeId` belonging to a *different* tree, which never happens here since
-/// every child passed in was just built in this same tree by the calls
-/// immediately above each call site. [`Widget::build_layout`] returns a bare
-/// `NodeId` (not a `Result`) across every implementor, so surfacing a
-/// theoretical error here would mean threading a `Result` through the whole
-/// toolkit for a branch that can't be taken.
-pub trait TaffyTreeExt {
-    fn leaf_node(&mut self, style: taffy::Style) -> NodeId;
-
-    fn parent_node(&mut self, style: taffy::Style, children: &[NodeId]) -> NodeId;
-
-    fn widget_leaf(
-        &mut self,
-        style: taffy::Style,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-        widget: &mut (dyn Widget + 'static),
-    ) -> NodeId {
-        let node = self.leaf_node(style);
-        node_map.insert(node, std::ptr::from_mut(widget));
-        node
-    }
-
-    fn fill_leaf(
-        &mut self,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-        widget: &mut (dyn Widget + 'static),
-    ) -> NodeId {
-        let style = taffy::Style {
-            size: taffy::Size::from_percent(1.0, 1.0),
-            ..Default::default()
-        };
-        self.widget_leaf(style, node_map, widget)
-    }
-
-    fn widget_node(
-        &mut self,
-        style: taffy::Style,
-        children: &[NodeId],
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-        widget: &mut (dyn Widget + 'static),
-    ) -> NodeId {
-        let node = self.parent_node(style, children);
-        node_map.insert(node, std::ptr::from_mut(widget));
-        node
-    }
-
-    fn fill_node(&mut self, child: NodeId) -> NodeId {
-        self.parent_node(
-            taffy::Style {
-                display: taffy::Display::Flex,
-                flex_grow: 1.0,
-                size: taffy::Size::from_percent(1.0, 1.0),
-                ..Default::default()
-            },
-            &[child],
-        )
-    }
-}
-
-impl TaffyTreeExt for TaffyTree<()> {
-    #[allow(
-        clippy::unwrap_used,
-        reason = "taffy only refuses a `NodeId` from another tree, which the toolkit never passes"
-    )]
-    fn leaf_node(&mut self, style: taffy::Style) -> NodeId {
-        self.new_leaf(style).unwrap()
-    }
-
-    #[allow(
-        clippy::unwrap_used,
-        reason = "taffy only refuses a `NodeId` from another tree, which the toolkit never passes"
-    )]
-    fn parent_node(&mut self, style: taffy::Style, children: &[NodeId]) -> NodeId {
-        self.new_with_children(style, children).unwrap()
-    }
-}
-
-pub type Element = Box<dyn Widget>;
-
+pub(crate) use {test_controls::Unattached, test_controls::test_value_action_binding};
 #[cfg(feature = "model")]
 pub mod action_proposal;
 #[cfg(feature = "model")]
-pub use action_proposal::{
-    ActionProposal, ActionProposalView, DiffLine, DiffTag, ProposalDecision, ProposalTarget,
+pub use {
+    action_proposal::ActionProposal, action_proposal::ActionProposalView,
+    action_proposal::DiffLine, action_proposal::DiffTag, action_proposal::ProposalDecision,
+    action_proposal::ProposalTarget,
 };
-pub mod binding;
-pub mod capability;
-mod content_kind;
-#[cfg(feature = "model")]
-pub mod permission;
-#[cfg(feature = "model")]
-pub mod presence_topology;
-pub mod resources;
-pub mod search_request;
-pub use content_kind::ContentKind;
 mod composed;
+pub mod search_request;
 pub use composed::Composed;
-pub mod controls;
 pub mod decorator;
-mod defaults;
-pub mod document_effects;
 pub mod document_offers;
-pub mod identity;
-pub use crate::pen::PenSample;
-pub use document_offers::{DocumentOffer, PaintedOffers};
-pub use identity::{Decorated, DecoratedMut, Decorator, Identified, register_node};
-
-pub(crate) mod layout;
-mod offered;
-pub use offered::offered_room;
-pub mod remount;
-pub use remount::Remount;
-mod reach;
-pub(crate) use reach::find;
-pub use reach::find_mut;
-#[cfg(debug_assertions)]
-mod paint_pass;
+pub use {document_offers::DocumentOffer, document_offers::PaintedOffers};
+mod button;
 #[cfg(test)]
 pub(crate) mod replaced_tripwire;
-pub use layout::counts;
-pub use layout::{
-    AuthoredExtent, DeviceScaleGuard, ExtentSizing, SkippedFrames, WidgetLayoutError,
-    compute_widget_layout, device_scale, enter_device_scale, insets, insets_all, insets_xy,
-    layout_clip, placing_again, solve_built_layout, take_unsettled_layout, take_unsettled_report,
-    text_control_height, with_layout_clip,
-};
-#[cfg(debug_assertions)]
-pub use paint_pass::painting;
-
-mod cached_paint;
-pub use cached_paint::CachedPaint;
-mod button;
-pub use button::{
-    Button, ButtonFace, ButtonProps, ButtonRole, REST_BORDER_WIDTH, face_colors, focus_ring_reach,
+pub use {
+    button::Button, button::ButtonFace, button::ButtonProps, button::ButtonRole,
+    button::REST_BORDER_WIDTH, button::face_colors, button::focus_ring_reach,
 };
 mod control_size;
 pub use control_size::ControlSize;
@@ -1506,735 +39,861 @@ pub(crate) use bool_control::BoolAction;
 mod checkbox;
 #[cfg(test)]
 mod control_hand_on_tests;
-pub use checkbox::{CheckGlyph, CheckMotion, CheckPose, Checkbox, CheckboxFace, CheckboxProps};
+pub use {
+    checkbox::CheckGlyph, checkbox::CheckMotion, checkbox::CheckPose, checkbox::Checkbox,
+    checkbox::CheckboxFace, checkbox::CheckboxProps,
+};
 mod column;
 pub use column::Column;
 mod composition;
-mod composition_parts;
 mod flow;
 mod form;
 mod form_composition;
-mod layout_info;
-pub use form::{CheckControl, FormControl, Labelled, LabelledProps, labeled_check, labeled_field};
-pub use form_composition::{Field, Form, FormPage, FormSection, Page};
-pub use layout_info::{
-    Density, Effective, FieldLayout, FormLayout, HeaderRowLayout, HeaderRows, LabelPlacement,
-    LayoutInfo, LayoutOrigin, ListLayout, ListPillLayout, ManualConflict, ManualLayout, PageLayout,
-    RowLayout, ScrollDirection, ScrollLayout, SectionLayout, ShellLayout, SidebarPosition,
-    TextLayout,
+pub use {
+    form::CheckControl, form::FormControl, form::Labelled, form::LabelledProps,
+    form::labeled_check, form::labeled_field,
+};
+pub use {
+    form_composition::Field, form_composition::Form, form_composition::FormPage,
+    form_composition::FormSection, form_composition::Page,
 };
 mod embedded;
 pub use embedded::Embedded;
-mod manual;
-pub use manual::{
-    ChildMeasurement, Manual, ManualContext, ManualInvalidation, ManualPolicy, MeasureConstraint,
-};
 mod row;
 pub use row::Row;
 mod face_motions;
 pub use face_motions::FaceMotions;
 mod toggle;
-pub use toggle::{
-    SwitchMotion, SwitchPose, Toggle, ToggleColors, ToggleFace, ToggleProps, toggle_accessibility,
-    toggle_face_colors,
+pub use {
+    toggle::SwitchMotion, toggle::SwitchPose, toggle::Toggle, toggle::ToggleColors,
+    toggle::ToggleFace, toggle::ToggleProps, toggle::toggle_accessibility,
+    toggle::toggle_face_colors,
 };
 mod stack;
 pub use stack::Stack;
 mod container;
 pub use container::Container;
-mod router;
-pub use router::{RouteError, RouteHandle, RouteSnapshot, Router};
 mod document_view;
 pub use document_view::ModelView;
 mod divider;
-pub use divider::{Divider, DividerAxis, RuleEdge, paint_rule};
+pub use {divider::Divider, divider::DividerAxis, divider::RuleEdge, divider::paint_rule};
 mod rule;
-pub use rule::{Rule, RuleProps};
+pub use {rule::Rule, rule::RuleProps};
 mod link;
-pub use link::{Link, LinkProps};
+pub use {link::Link, link::LinkProps};
 mod flap;
-pub use flap::{FlapState, SplitLayout};
+pub use {flap::FlapState, flap::SplitLayout};
 mod bottom_sheet;
-pub use bottom_sheet::{BottomSheet, SheetDetent, SheetFrame, SheetGeometry, SheetInput};
+pub use {
+    bottom_sheet::BottomSheet, bottom_sheet::SheetDetent, bottom_sheet::SheetFrame,
+    bottom_sheet::SheetGeometry, bottom_sheet::SheetInput,
+};
 mod page_slide;
-pub use page_slide::{PageSlide, PageSlideProps};
+pub use {page_slide::PageSlide, page_slide::PageSlideProps};
 mod fullscreen_view;
-pub use fullscreen_view::{Fullscreen, FullscreenProps, Screen};
+pub use {fullscreen_view::Fullscreen, fullscreen_view::FullscreenProps, fullscreen_view::Screen};
 mod stage;
-pub use stage::{Stage, StagePinProps, StageProps};
+pub use {stage::Stage, stage::StagePinProps, stage::StageProps};
 mod sidebar;
-pub use sidebar::{
-    DEFAULT_DRAWER_BREAKPOINT, DEFAULT_DRAWER_DOCKED_WIDTH, DEFAULT_DRAWER_WIDTH, SidebarDrawer,
-    SidebarSide,
+pub use {
+    sidebar::DEFAULT_DRAWER_BREAKPOINT, sidebar::DEFAULT_DRAWER_DOCKED_WIDTH,
+    sidebar::DEFAULT_DRAWER_WIDTH, sidebar::SidebarDrawer, sidebar::SidebarSide,
 };
 mod nav_shell;
 #[cfg(feature = "native")]
 pub(crate) use nav_shell::memory::remember_for_app as remember_sidebar_widths_for_app;
-
-/// The narrowest the window `root` lays out still works at
-/// ([`Widget::minimum_window_width`]): the first widget in the tree with an
-/// opinion, outermost first.
-pub fn minimum_window_width<W: Widget + ?Sized>(root: &W) -> Option<f64> {
-    first_window_answer(root, W::minimum_window_width, &|widget| {
-        widget.minimum_window_width()
-    })
-}
-
-/// The size the window `root` lays out wants to be ([`Widget::preferred_window_size`]): the first
-/// widget in the tree with an opinion, outermost first.
-pub fn preferred_window_size<W: Widget + ?Sized>(root: &W) -> Option<(f64, f64)> {
-    first_window_answer(root, W::preferred_window_size, &|widget| {
-        widget.preferred_window_size()
-    })
-}
-
-fn first_window_answer<W: Widget + ?Sized, T>(
-    root: &W,
-    own: impl FnOnce(&W) -> Option<T>,
-    ask: &dyn Fn(&dyn Widget) -> Option<T>,
-) -> Option<T> {
-    let _entry = component_walk::enter(component_walk::binding_of(root).as_ref())?;
-    if let Some(answer) = own(root) {
-        return Some(answer);
-    }
-    let mut found = None;
-    root.for_each_child(&mut |child| {
-        if found.is_none() {
-            found = first_answer_under(child, ask);
-        }
-    });
-    found
-}
-
-fn first_answer_under<T>(widget: &dyn Widget, ask: &dyn Fn(&dyn Widget) -> Option<T>) -> Option<T> {
-    first_window_answer(widget, |widget| ask(widget), ask)
-}
 pub mod window_controls;
 pub mod window_header;
 pub(crate) mod window_toolbar_row;
-pub use nav_shell::{
-    HeldNotice, InspectorFrame, InspectorLink, InspectorPlacement, NavGeometry, NavMode, NavPane,
-    NavShell, NavShellProps, OverviewPlacement, SidebarPlacement, WINDOW_BACK, WINDOW_SIDEBAR,
-    WindowBarLink,
+pub use {
+    nav_shell::HeldNotice, nav_shell::InspectorFrame, nav_shell::InspectorLink,
+    nav_shell::InspectorPlacement, nav_shell::NavGeometry, nav_shell::NavMode, nav_shell::NavPane,
+    nav_shell::NavShell, nav_shell::NavShellProps, nav_shell::OverviewPlacement,
+    nav_shell::SidebarPlacement, nav_shell::WINDOW_BACK, nav_shell::WINDOW_SIDEBAR,
+    nav_shell::WindowBarLink,
 };
-pub use window_header::{
-    ColumnFrame, HISTORY_CONTROL_ID, HeaderStatus, HistoryControl, HistoryOpener, STATUS_ACTION_ID,
-    StatusAction, WindowBar, WindowBarPart, WindowHeader, WindowHistory, WindowStatus,
-    merged_row_holds_search, merged_row_width, merged_row_width_in,
+pub use {
+    window_header::ColumnFrame, window_header::HISTORY_CONTROL_ID, window_header::HeaderStatus,
+    window_header::HistoryControl, window_header::HistoryOpener, window_header::STATUS_ACTION_ID,
+    window_header::StatusAction, window_header::WindowBar, window_header::WindowBarPart,
+    window_header::WindowHeader, window_header::WindowHistory, window_header::WindowStatus,
+    window_header::merged_row_holds_search, window_header::merged_row_width,
+    window_header::merged_row_width_in,
 };
 mod nav_list;
 pub use nav_list::nav_row;
-pub use nav_list::{
-    NavAction, NavArt, NavDrop, NavEntry, NavFeed, NavItem, NavItemProps, NavItemStatus, NavList,
-    NavListProps, NavPerson, NavSearchTerm, NavSection, NavSectionProps,
+pub use {
+    nav_list::NavAction, nav_list::NavArt, nav_list::NavDrop, nav_list::NavEntry,
+    nav_list::NavFeed, nav_list::NavItem, nav_list::NavItemProps, nav_list::NavItemStatus,
+    nav_list::NavList, nav_list::NavListProps, nav_list::NavPerson, nav_list::NavSearchTerm,
+    nav_list::NavSection, nav_list::NavSectionProps,
 };
 mod document_viewport;
-pub use document_viewport::{
-    ContentDraw, DEFAULT_MAX_ZOOM, DEFAULT_MIN_ZOOM, DEFAULT_PADDING, DEFAULT_PAN_STEP,
-    DocumentViewport, PAN_SLOP, SmallContentAlign, ViewportState, ViewportZoom,
+pub use {
+    document_viewport::ContentDraw, document_viewport::DEFAULT_MAX_ZOOM,
+    document_viewport::DEFAULT_MIN_ZOOM, document_viewport::DEFAULT_PADDING,
+    document_viewport::DEFAULT_PAN_STEP, document_viewport::DocumentViewport,
+    document_viewport::PAN_SLOP, document_viewport::SmallContentAlign,
+    document_viewport::ViewportState, document_viewport::ViewportZoom,
 };
 mod floating_window;
-pub use floating_window::{FloatingWindow, MIN_HEIGHT, MIN_WIDTH, TITLE_BAR_HEIGHT};
+pub use {
+    floating_window::FloatingWindow, floating_window::MIN_HEIGHT, floating_window::MIN_WIDTH,
+    floating_window::TITLE_BAR_HEIGHT,
+};
 mod text;
-pub use text::{Text, TextProps};
+pub use {text::Text, text::TextProps};
 mod relative_time;
-pub use relative_time::{RelativeTime, TimeProps, clock_text, next_change, relative_text};
+pub use {
+    relative_time::RelativeTime, relative_time::TimeProps, relative_time::clock_text,
+    relative_time::next_change, relative_time::relative_text,
+};
 mod money;
-pub use money::{Money, MoneyProps};
+pub use {money::Money, money::MoneyProps};
 mod clock;
-pub use clock::{ClockProps, ClockReading, WallClock, reading as clock_reading};
+pub use {
+    clock::ClockProps, clock::ClockReading, clock::WallClock, clock::reading as clock_reading,
+};
 mod countdown;
 mod timer;
-pub use countdown::{Countdown, CountdownProps, CountdownReading, reading as countdown_reading};
-pub use timer::{Timer, TimerProps, set_window_shown, window_shown};
-mod spacer;
-pub use spacer::Spacer;
+pub use {
+    countdown::Countdown, countdown::CountdownProps, countdown::CountdownReading,
+    countdown::reading as countdown_reading,
+};
+pub use {timer::Timer, timer::TimerProps, timer::set_window_shown, timer::window_shown};
 mod when;
-pub use when::{Absent, Fitted, When, optional};
+pub use {when::Absent, when::Fitted, when::When, when::optional};
 mod part;
-pub use part::{Part, PartHandle, Switch};
+pub use {part::Part, part::PartHandle, part::Switch};
 mod columns;
 pub use columns::Columns;
 /// The layout primitives: `Stack`, `Row`, `Grid`, `Split`, `Page`, `Layers`.
 pub mod arrange;
 mod image;
-pub use image::{Image, ImageDecodeError, ImageFit, ImageProps, PictureSource};
+pub use {
+    image::Image, image::ImageDecodeError, image::ImageFit, image::ImageProps, image::PictureSource,
+};
 mod image_crop;
-pub use image_crop::{CropEditor, CropSelection, ImageCropEditor, ImageCropEditorProps};
+pub use {
+    image_crop::CropEditor, image_crop::CropSelection, image_crop::ImageCropEditor,
+    image_crop::ImageCropEditorProps,
+};
 mod slider;
-pub use slider::{
-    Slider, SliderFace, SliderProps, SliderTouch, SliderTouchStep, paint_held_readout,
+pub use {
+    slider::Slider, slider::SliderFace, slider::SliderProps, slider::SliderTouch,
+    slider::SliderTouchStep, slider::paint_held_readout,
 };
 mod text_input;
-pub use text_input::{
-    AccessoryAction, FieldFace, PlaceholderFit, PromptFit, SpanHighlighter, SpellingMenu,
-    TextActionRequest, TextActionResult, TextInput, TextInputKind, TextInputProps,
-    paint_invalid_edge, paint_preedit_underline,
+pub use {
+    text_input::AccessoryAction, text_input::FieldFace, text_input::PlaceholderFit,
+    text_input::PromptFit, text_input::SpanHighlighter, text_input::SpellingMenu,
+    text_input::TextActionRequest, text_input::TextActionResult, text_input::TextInput,
+    text_input::TextInputKind, text_input::TextInputProps, text_input::paint_invalid_edge,
+    text_input::paint_preedit_underline,
 };
 pub mod code_editor;
-pub use code_editor::{
-    CodeEditor, CodeEditorProps, Highlighter, HlState, Language, LineSpans, Span, TokenKind,
+pub use {
+    code_editor::CodeEditor, code_editor::CodeEditorProps, code_editor::Highlighter,
+    code_editor::HlState, code_editor::Language, code_editor::LineSpans, code_editor::Span,
+    code_editor::TokenKind,
 };
 mod editable_label;
-pub use editable_label::{EditOutcome, EditableLabel, EditableLabelProps};
+pub use {
+    editable_label::EditOutcome, editable_label::EditableLabel, editable_label::EditableLabelProps,
+};
 pub mod autocomplete;
-pub use autocomplete::{
-    Autocomplete, AutocompleteOutcome, AutocompleteProps, CheckColumn, Suggester, Suggestion,
-    SuggestionList, SuggestionProps,
+pub use {
+    autocomplete::Autocomplete, autocomplete::AutocompleteOutcome, autocomplete::AutocompleteProps,
+    autocomplete::CheckColumn, autocomplete::Suggester, autocomplete::Suggestion,
+    autocomplete::SuggestionList, autocomplete::SuggestionProps,
 };
 pub mod mention_picker;
-pub use mention_picker::{MentionCandidate, MentionQuery};
+pub use {mention_picker::MentionCandidate, mention_picker::MentionQuery};
 pub mod completion;
 pub(crate) mod completion_card;
 pub mod text_completion;
-pub use text_completion::{EmojiQuery, TextCompletion};
+pub use {text_completion::EmojiQuery, text_completion::TextCompletion};
 mod number_input;
-pub use number_input::{NumberInput, NumberInputProps, NumberStepperFace, StepperPart};
+pub use {
+    number_input::NumberInput, number_input::NumberInputProps, number_input::NumberStepperFace,
+    number_input::StepperPart,
+};
 pub mod marks;
-pub use marks::{Mark, MarkSpan};
+pub use {marks::Mark, marks::MarkSpan};
 pub mod document_line;
 pub mod filter_menu;
 pub mod markdown_input;
 pub mod paint_damage;
 pub use filter_menu::FilterMenu;
 pub mod link_popover;
-pub use link_popover::{LinkPopover, PageEntry};
+pub use {link_popover::LinkPopover, link_popover::PageEntry};
 pub mod page_sidebar;
-pub use page_sidebar::{DeclaredRail, PageSidebar, PageSidebarEvent, PageSidebarProps};
+pub use {
+    page_sidebar::DeclaredRail, page_sidebar::PageSidebar, page_sidebar::PageSidebarEvent,
+    page_sidebar::PageSidebarProps,
+};
 mod dropdown;
-pub use dropdown::{Dropdown, DropdownFace, DropdownProps, FILTER_MIN_OPTIONS};
-pub mod aim;
-pub use aim::Trajectory;
-mod hover_intent;
-pub use hover_intent::EdgeAim;
+pub use {
+    dropdown::Dropdown, dropdown::DropdownFace, dropdown::DropdownProps,
+    dropdown::FILTER_MIN_OPTIONS,
+};
 pub mod tabs;
-pub use tabs::{
-    PresenceFaceProps, TabBar, TabDescriptor, TabFaceSpec, TabHolder, TabItemProps, TabMark,
-    TabStrip, TabStripProps, draw_app_mark, pack_point, unpack_point,
+pub use {
+    tabs::PresenceFaceProps, tabs::TabBar, tabs::TabDescriptor, tabs::TabFaceSpec, tabs::TabHolder,
+    tabs::TabItemProps, tabs::TabMark, tabs::TabStrip, tabs::TabStripProps, tabs::draw_app_mark,
+    tabs::pack_point, tabs::unpack_point,
 };
 pub mod scrollbar;
-pub use scrollbar::{PressOutcome, Scrollbar, TrackMark};
+pub use {scrollbar::PressOutcome, scrollbar::Scrollbar, scrollbar::TrackMark};
 pub mod board;
-pub use board::{Board, BoardCardProps, BoardDrop, BoardListProps, BoardProps};
-pub use drag_bus::{InFlight, Landed};
-pub use drag_run::{DragDrop, DragRun, RunAxis, RunGroup, RunItem};
-pub use drag_run_component::{DragItemProps, DragRunProps};
-pub use drag_source::{DragSource, DragSourceProps, RESOURCE_PAYLOAD};
-pub use drop_target::{DropTarget, DropTargetProps};
+pub use {
+    board::Board, board::BoardCardProps, board::BoardDrop, board::BoardListProps, board::BoardProps,
+};
+pub use {drag_bus::InFlight, drag_bus::Landed};
+pub use {
+    drag_run::DragDrop, drag_run::DragRun, drag_run::RunAxis, drag_run::RunGroup, drag_run::RunItem,
+};
+pub use {drag_run_component::DragItemProps, drag_run_component::DragRunProps};
+pub use {drag_source::DragSource, drag_source::DragSourceProps, drag_source::RESOURCE_PAYLOAD};
+pub use {drop_target::DropTarget, drop_target::DropTargetProps};
 pub mod drag;
 pub mod drag_bus;
 pub mod drag_run;
 pub mod drag_run_component;
 pub mod drag_source;
 pub mod drop_target;
-pub use drag::{Axis as DragAxis, DragController, ListMetrics, REORDER_THRESHOLD_PX};
+pub use {
+    drag::Axis as DragAxis, drag::DragController, drag::ListMetrics, drag::REORDER_THRESHOLD_PX,
+};
 mod scrollable;
-pub use scrollable::{ScrollProps, Scrollable};
+pub use {scrollable::ScrollProps, scrollable::Scrollable};
 mod scroll_region;
 pub use scroll_region::ScrollRegion;
 pub use scrollbar::BarFade;
 mod overlay_scrollbar;
 pub use overlay_scrollbar::OverlayScrollbar;
-pub mod panic_scope;
 #[cfg(feature = "model")]
 mod tile_host;
 #[cfg(feature = "model")]
-pub use tile_host::{
-    TileContent, TileHost, hold_windows, release_windows, resource_unavailable_title,
+pub use {
+    tile_host::TileContent, tile_host::TileHost, tile_host::hold_windows,
+    tile_host::release_windows, tile_host::resource_unavailable_title,
 };
 mod app_widget;
 #[cfg(feature = "model")]
 pub(crate) use app_widget::BoundAppWidget;
-pub use app_widget::{
-    AppCommand, AppKind, AppProcessIntent, AppWidget, HostShellAllow, IconDescriptor,
-    WindowPublication,
+pub use {
+    app_widget::AppCommand, app_widget::AppKind, app_widget::AppProcessIntent,
+    app_widget::AppWidget, app_widget::HostShellAllow, app_widget::IconDescriptor,
+    app_widget::WindowPublication,
 };
 pub mod input_hint;
 pub mod shortcut_recorder;
-pub use input_hint::{InputDeviceGlyph, InputHint, InputHintProps, LegendConventions};
+pub use {
+    input_hint::InputDeviceGlyph, input_hint::InputHint, input_hint::InputHintProps,
+    input_hint::LegendConventions,
+};
 pub mod canvas_navigation_hint;
-pub use canvas_navigation_hint::{CanvasNavigation, CanvasNavigationHint};
-pub use shortcut_recorder::{ShortcutRecorder, ShortcutRecorderProps};
+pub use {canvas_navigation_hint::CanvasNavigation, canvas_navigation_hint::CanvasNavigationHint};
+pub use {shortcut_recorder::ShortcutRecorder, shortcut_recorder::ShortcutRecorderProps};
 pub mod context_menu;
 pub mod floating_list;
-pub use floating_list::{FloatingList, FloatingMetrics, FloatingRow, RowState};
+pub use {
+    floating_list::FloatingList, floating_list::FloatingMetrics, floating_list::FloatingRow,
+    floating_list::RowState,
+};
 pub mod floating_surface;
 pub mod primitives;
-pub use context_menu::{
-    ContextMenu, MenuButton, MenuButtonProps, MenuItem, MenuItemProps, MenuPick, note_shift,
-    shift_held, shift_skips_confirmation,
+pub use {
+    context_menu::ContextMenu, context_menu::MenuButton, context_menu::MenuButtonProps,
+    context_menu::MenuItem, context_menu::MenuItemProps, context_menu::MenuPick,
+    context_menu::note_shift, context_menu::shift_held, context_menu::shift_skips_confirmation,
 };
 mod row_menu;
 pub use chrome_body::paint_bar_body;
-pub use primitives::{
-    BarChip, BarChipFace, BarChipLayout, BarChipProps, BarControlFace, DeclaredModal,
-    DeclaredPanel, DeclaredPopover, DeclaredPopoverButton, DensityRegion, DisclosureGroup,
-    DisclosureRow, DisclosureRowProps, DisclosureState, Fact, FactMark, FactProps, Facts,
-    FactsFace, FactsProps, FloatingPanel, FloatingPanelFace, FloatingPanelLayout,
-    FloatingPanelProps, IconButton, KeyHint, KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps,
-    LinkKind, LinkStatus, ModalProps, NotificationListControl, NotificationListLayout,
-    NotificationListRow, NotificationListView, NotificationRowControls, PopoverProps,
-    StatusCluster, StatusClusterFace, StatusClusterLayout, StatusPart, Surface, SurfaceLevel,
-    TextBlockFace, TextLineAlign, TextLineFace, TextStack, TextStackFace, TextStackProps,
-    badge_label, badge_size, control_fill, control_radius, paint_control_row, paint_see_through,
-    paint_severity_rail, paint_surface, paint_unread_badge, paint_window_card,
-};
 pub use row_menu::RowMenu;
+pub use {
+    primitives::BarChip, primitives::BarChipFace, primitives::BarChipLayout,
+    primitives::BarChipProps, primitives::BarControlFace, primitives::DeclaredModal,
+    primitives::DeclaredPanel, primitives::DeclaredPopover, primitives::DeclaredPopoverButton,
+    primitives::DensityRegion, primitives::DisclosureGroup, primitives::DisclosureRow,
+    primitives::DisclosureRowProps, primitives::DisclosureState, primitives::Fact,
+    primitives::FactMark, primitives::FactProps, primitives::Facts, primitives::FactsFace,
+    primitives::FactsProps, primitives::FloatingPanel, primitives::FloatingPanelFace,
+    primitives::FloatingPanelLayout, primitives::FloatingPanelProps, primitives::IconButton,
+    primitives::KeyHint, primitives::KeyHintProps, primitives::KeyHints, primitives::KeyHintsFace,
+    primitives::KeyHintsProps, primitives::LinkKind, primitives::LinkStatus,
+    primitives::ModalProps, primitives::NotificationListControl,
+    primitives::NotificationListLayout, primitives::NotificationListRow,
+    primitives::NotificationListView, primitives::NotificationRowControls,
+    primitives::PopoverProps, primitives::StatusCluster, primitives::StatusClusterFace,
+    primitives::StatusClusterLayout, primitives::StatusPart, primitives::Surface,
+    primitives::SurfaceLevel, primitives::TextBlockFace, primitives::TextLineAlign,
+    primitives::TextLineFace, primitives::TextStack, primitives::TextStackFace,
+    primitives::TextStackProps, primitives::badge_label, primitives::badge_size,
+    primitives::control_fill, primitives::control_radius, primitives::paint_control_row,
+    primitives::paint_see_through, primitives::paint_severity_rail, primitives::paint_surface,
+    primitives::paint_unread_badge, primitives::paint_window_card,
+};
 pub mod context_menu_area;
-pub use context_menu_area::{ContextMenuArea, MenuEntry};
+pub use {context_menu_area::ContextMenuArea, context_menu_area::MenuEntry};
 pub mod send_to;
-pub use send_to::{SendToBox, SendToFocus};
+pub use {send_to::SendToBox, send_to::SendToFocus};
 pub mod attached;
 mod hover_toolbar;
 pub use hover_toolbar::HoverToolbar;
 mod canvas_place;
-pub use canvas_place::{CanvasPlace, PLACE_BAND, PlaceProps};
+pub use {canvas_place::CanvasPlace, canvas_place::PLACE_BAND, canvas_place::PlaceProps};
 mod swipe_row;
-pub use attached::{
-    Attachments, ContextMenuProps, EmojiBarProps, HoverToolbarProps, MenuPart, MenuSeparatorProps,
-    SwipeProps,
+pub use {
+    attached::Attachments, attached::ContextMenuProps, attached::EmojiBarProps,
+    attached::HoverToolbarProps, attached::MenuPart, attached::MenuSeparatorProps,
+    attached::SwipeProps,
 };
 mod chat_parts;
-pub use chat_parts::{EmojiPickerButton, EmojiPickerProps, Quote, QuoteProps, ReactionsProps};
 pub use swipe_row::SwipeRow;
+pub use {
+    chat_parts::EmojiPickerButton, chat_parts::EmojiPickerProps, chat_parts::Quote,
+    chat_parts::QuoteProps, chat_parts::ReactionsProps,
+};
 mod pacer;
 pub use pacer::Pacer;
 pub mod data_table;
 pub mod sheet;
 pub(crate) mod sheet_component;
-pub use sheet::{Peer, Sheet, SheetCell, SheetSize};
 pub use sheet_component::SheetProps;
+pub use {sheet::Peer, sheet::Sheet, sheet::SheetCell, sheet::SheetSize};
 mod data_table_component;
-pub use data_table_component::{
-    DataTableCellProps, DataTableColumnProps, DataTableProps, DataTableRowProps, DescribedTable,
+pub use {
+    data_table_component::DataTableCellProps, data_table_component::DataTableColumnProps,
+    data_table_component::DataTableProps, data_table_component::DataTableRowProps,
+    data_table_component::DescribedTable,
 };
 // The shell's window groups and strips, laid out over the desktop model's geometry.
 #[cfg(feature = "model")]
 mod window_group;
 #[cfg(feature = "model")]
-pub use window_group::{
-    DEFAULT_STRIP_USABLE_PX, RESIZE_HANDLE_PX, WIDTH_FLOOR_PX, WIDTH_MAX_PERMILLE,
-    WIDTH_MIN_PERMILLE, WIDTH_NARROW_PERMILLE, WIDTH_NORMAL_PERMILLE, WIDTH_WIDE_PERMILLE,
-    WindowGroup, WindowGroupBounds, WindowWidth, max_group_px, min_group_px, permille_for_px,
+pub use {
+    window_group::DEFAULT_STRIP_USABLE_PX, window_group::RESIZE_HANDLE_PX,
+    window_group::WIDTH_FLOOR_PX, window_group::WIDTH_MAX_PERMILLE,
+    window_group::WIDTH_MIN_PERMILLE, window_group::WIDTH_NARROW_PERMILLE,
+    window_group::WIDTH_NORMAL_PERMILLE, window_group::WIDTH_WIDE_PERMILLE,
+    window_group::WindowGroup, window_group::WindowGroupBounds, window_group::WindowWidth,
+    window_group::max_group_px, window_group::min_group_px, window_group::permille_for_px,
 };
-pub mod cursor;
 pub mod edge_resize;
-pub use edge_resize::{EdgeGrab, ResizeMode, WidthLimits, WindowEdge};
+pub use {
+    edge_resize::EdgeGrab, edge_resize::ResizeMode, edge_resize::WidthLimits,
+    edge_resize::WindowEdge,
+};
 #[cfg(feature = "model")]
 mod resize_handle;
 #[cfg(feature = "model")]
-pub use resize_handle::{HANDLE_HIT_HALF_PX, HANDLE_SLOT_PX, HANDLE_VISIBLE_PX, ResizeHandle};
+pub use {
+    resize_handle::HANDLE_HIT_HALF_PX, resize_handle::HANDLE_SLOT_PX,
+    resize_handle::HANDLE_VISIBLE_PX, resize_handle::ResizeHandle,
+};
 mod overflow_button;
 pub(crate) use overflow_button::give_way;
-pub use overflow_button::{OverflowButton, plan as plan_overflow};
+pub use {overflow_button::OverflowButton, overflow_button::plan as plan_overflow};
 #[cfg(feature = "model")]
 mod group_row;
 #[cfg(feature = "model")]
-pub use group_row::{
-    CANVAS_ZOOM_MAX, CANVAS_ZOOM_MIN, CanvasView, CrossStripDetach, FLOAT_CARD_MARGIN,
-    FLOAT_CARD_SIZE, FLOAT_SIZE, FloatAsk, GroupRow, GroupTopology, JUMP_PX_PER_DETENT, OutputSpan,
-    Pan, STRIP_BOTTOM_GUTTER_PX, STRIP_EDGE_GUTTER_PX, STRIP_TOP_GAP_PX, StripSection,
-    TabDropTarget, WheelJumpAccum, keep_float_inside, pan_within_canvas, wheel_jump_detents,
+pub use {
+    group_row::CANVAS_ZOOM_MAX, group_row::CANVAS_ZOOM_MIN, group_row::CanvasView,
+    group_row::CrossStripDetach, group_row::FLOAT_CARD_MARGIN, group_row::FLOAT_CARD_SIZE,
+    group_row::FLOAT_SIZE, group_row::FloatAsk, group_row::GroupRow, group_row::GroupTopology,
+    group_row::JUMP_PX_PER_DETENT, group_row::OutputSpan, group_row::Pan,
+    group_row::STRIP_BOTTOM_GUTTER_PX, group_row::STRIP_EDGE_GUTTER_PX,
+    group_row::STRIP_TOP_GAP_PX, group_row::StripSection, group_row::TabDropTarget,
+    group_row::WheelJumpAccum, group_row::keep_float_inside, group_row::pan_within_canvas,
+    group_row::wheel_jump_detents,
 };
 mod finger_path;
 pub mod tooltip;
-pub use tooltip::{Tooltip, TooltipHost};
+pub use {tooltip::Tooltip, tooltip::TooltipHost};
 pub mod permission_prompt;
 pub mod toast;
-pub use permission_prompt::{PROMPT_HEIGHT, PermissionPrompt, PromptChoice};
+pub use {
+    permission_prompt::PROMPT_HEIGHT, permission_prompt::PermissionPrompt,
+    permission_prompt::PromptChoice,
+};
 pub mod file_picker;
 pub mod file_table;
-pub use file_picker::{FilePicker, FilePickerEntry, FilePickerMode, FilePickerOutcome};
-
+pub use {
+    file_picker::FilePicker, file_picker::FilePickerEntry, file_picker::FilePickerMode,
+    file_picker::FilePickerOutcome,
+};
 pub mod progress_bar;
-pub use progress_bar::{ProgressBar, ProgressBarFace, ProgressBarProps};
+pub use {
+    progress_bar::ProgressBar, progress_bar::ProgressBarFace, progress_bar::ProgressBarProps,
+};
 pub mod page_preview;
-pub use page_preview::{PagePreview, PagePreviewProps};
+pub use {page_preview::PagePreview, page_preview::PagePreviewProps};
 pub mod spinner;
-pub use spinner::{Spinner, SpinnerProps};
+pub use {spinner::Spinner, spinner::SpinnerProps};
 pub mod date_field;
 pub mod date_picker;
 pub mod enum_field;
 pub mod person_field;
-pub use date_field::{DateField, DateFieldProps};
-pub use date_picker::{DateFeed, DatePicker, DatePickerProps, DateShown, ExternalDatePickerHit};
-pub use enum_field::{EnumField, EnumFieldProps, EnumOptionProps};
-pub use person_field::{PersonField, PersonFieldProps};
+pub use {date_field::DateField, date_field::DateFieldProps};
+pub use {
+    date_picker::DateFeed, date_picker::DatePicker, date_picker::DatePickerProps,
+    date_picker::DateShown, date_picker::ExternalDatePickerHit,
+};
+pub use {enum_field::EnumField, enum_field::EnumFieldProps, enum_field::EnumOptionProps};
+pub use {person_field::PersonField, person_field::PersonFieldProps};
 pub mod time_field;
 pub mod time_picker;
 pub mod timeline_density;
-pub use time_field::{TimeField, TimeFieldProps};
-pub use time_picker::{TimePicker, TimePickerProps, TimeValue};
 pub use timeline_density::TimelineDensity;
+pub use {time_field::TimeField, time_field::TimeFieldProps};
+pub use {time_picker::TimePicker, time_picker::TimePickerProps, time_picker::TimeValue};
 pub mod timeline;
 pub mod track_timeline;
-pub use timeline::{
-    Ghost, MonthFace, MonthReport, MonthTarget, Timeline, TimelineFace, TimelineGeom, TimelineItem,
-    TimelineItemProps, TimelineMode, TimelineProps, TimelineReport, TimelineTarget, TimelineText,
-    TimelineTokens, TimelineTone,
+pub use {
+    timeline::Ghost, timeline::MonthFace, timeline::MonthReport, timeline::MonthTarget,
+    timeline::Timeline, timeline::TimelineFace, timeline::TimelineGeom, timeline::TimelineItem,
+    timeline::TimelineItemProps, timeline::TimelineMode, timeline::TimelineProps,
+    timeline::TimelineReport, timeline::TimelineTarget, timeline::TimelineText,
+    timeline::TimelineTokens, timeline::TimelineTone,
 };
-pub use track_timeline::{
-    TimelineMarkerProps, TimelineSpanProps, TimelineTrackProps, TrackTimeline, TrackTimelineProps,
+pub use {
+    track_timeline::TimelineMarkerProps, track_timeline::TimelineSpanProps,
+    track_timeline::TimelineTrackProps, track_timeline::TrackTimeline,
+    track_timeline::TrackTimelineProps,
 };
 pub mod color_picker;
 pub mod color_swatch;
 mod curve_editor;
-pub use color_picker::{ColorPicker, ColorPickerOutcome, ColorPickerProps};
-pub use color_swatch::{
-    ColorSwatch, ColorSwatchFace, ColorSwatchPicker, ColorSwatchPickerProps, SwatchPainter,
+pub use {
+    color_picker::ColorPicker, color_picker::ColorPickerOutcome, color_picker::ColorPickerProps,
 };
-pub use curve_editor::{CurveEditor, CurveEditorProps};
-pub use tilo_image_codec::curve::{
-    CurvePoint, normalised as curve_points, value_at as curve_value_at,
+pub use {
+    color_swatch::ColorSwatch, color_swatch::ColorSwatchFace, color_swatch::ColorSwatchPicker,
+    color_swatch::ColorSwatchPickerProps, color_swatch::SwatchPainter,
 };
+pub use {curve_editor::CurveEditor, curve_editor::CurveEditorProps};
 pub mod picture;
 pub mod picture_choice;
-pub use picture_choice::{
-    ColourFilter, Picture, PictureChoice, PictureChoiceProps, PictureKind, PictureOption,
-    PictureOptionProps, TouchpadGesture,
+pub use {
+    picture_choice::ColourFilter, picture_choice::Picture, picture_choice::PictureChoice,
+    picture_choice::PictureChoiceProps, picture_choice::PictureKind, picture_choice::PictureOption,
+    picture_choice::PictureOptionProps, picture_choice::TouchpadGesture,
 };
 pub mod radio_group;
-pub use radio_group::{RadioGroup, RadioGroupProps, RadioOption, RadioProps};
-pub mod shown;
-pub use shown::{InState, InStateProps};
-pub mod popover;
-pub use popover::{PanelAlign, Popover, PopoverButton, PopoverPrompt, PopoverSide};
-pub mod emoji_picker;
-pub use emoji_picker::{EmojiPicker, PickerEvent};
-mod emoji_pane_component;
-pub use emoji_pane_component::{EmojiPane, EmojiPaneProps};
-pub mod reaction_strip;
-pub use reaction_strip::{ReactionStrip, ReactionStripWidget, ReactionToggle, StripHit};
-pub mod modal_dialog;
-pub use modal_dialog::{
-    ModalAction, ModalDialog, ModalEmphasis, ModalHit, ModalLayout, ModalSheet, ModalSpec,
-    SheetResponse,
+pub use {
+    radio_group::RadioGroup, radio_group::RadioGroupProps, radio_group::RadioOption,
+    radio_group::RadioProps,
 };
-pub mod native_view;
-pub use native_view::{
-    NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
-    NativeViewInput,
+pub mod shown;
+pub use {shown::InState, shown::InStateProps};
+pub mod popover;
+pub use {
+    popover::PanelAlign, popover::Popover, popover::PopoverButton, popover::PopoverPrompt,
+    popover::PopoverSide,
+};
+pub mod emoji_picker;
+pub use {emoji_picker::EmojiPicker, emoji_picker::PickerEvent};
+mod emoji_pane_component;
+pub use {emoji_pane_component::EmojiPane, emoji_pane_component::EmojiPaneProps};
+pub mod reaction_strip;
+pub use {
+    reaction_strip::ReactionStrip, reaction_strip::ReactionStripWidget,
+    reaction_strip::ReactionToggle, reaction_strip::StripHit,
+};
+pub mod modal_dialog;
+pub use {
+    modal_dialog::ModalAction, modal_dialog::ModalDialog, modal_dialog::ModalEmphasis,
+    modal_dialog::ModalHit, modal_dialog::ModalLayout, modal_dialog::ModalSheet,
+    modal_dialog::ModalSpec, modal_dialog::SheetResponse,
 };
 pub mod secret_prompt;
-pub use secret_prompt::{
-    FieldRole, FieldSpec, NoticeTone, Presentation, PromptOutcome, SecretAnswer, SecretKind,
-    SecretPrompt,
+pub use {
+    secret_prompt::FieldRole, secret_prompt::FieldSpec, secret_prompt::NoticeTone,
+    secret_prompt::Presentation, secret_prompt::PromptOutcome, secret_prompt::SecretAnswer,
+    secret_prompt::SecretKind, secret_prompt::SecretPrompt,
 };
 pub mod toolbar;
-pub use toolbar::{
-    Toolbar, ToolbarButtonProps, ToolbarPart, ToolbarProps, ToolbarSeparatorProps,
-    ToolbarSpacerProps,
+pub use {
+    toolbar::Toolbar, toolbar::ToolbarButtonProps, toolbar::ToolbarPart, toolbar::ToolbarProps,
+    toolbar::ToolbarSeparatorProps, toolbar::ToolbarSpacerProps,
 };
 pub mod undo_button;
 pub use undo_button::UndoButton;
 pub mod breadcrumb;
-pub use breadcrumb::{Breadcrumb, BreadcrumbProps, BreadcrumbSegmentProps};
+pub use {breadcrumb::Breadcrumb, breadcrumb::BreadcrumbProps, breadcrumb::BreadcrumbSegmentProps};
 pub mod avatar;
-pub mod avatar_face;
-pub use avatar::{Avatar, AvatarProps};
-pub use avatar_face::{AvatarFace, AvatarSize, PresenceStatus, initials_for_name};
+pub use {avatar::Avatar, avatar::AvatarProps};
 pub mod badge;
-pub use badge::{Badge, BadgeContent, BadgeFace, BadgeProps};
+pub use {badge::Badge, badge::BadgeContent, badge::BadgeFace, badge::BadgeProps};
 pub mod icon;
-pub use icon::{IconProps, IconSize, IconWidget};
+pub use {icon::IconProps, icon::IconSize, icon::IconWidget};
 pub mod signal_meter;
-pub use signal_meter::{SIGNAL_BARS, SignalLevel, SignalMeter, SignalMeterFace, SignalMeterProps};
+pub use {
+    signal_meter::SIGNAL_BARS, signal_meter::SignalLevel, signal_meter::SignalMeter,
+    signal_meter::SignalMeterFace, signal_meter::SignalMeterProps,
+};
 pub mod stroke_preview;
-pub use stroke_preview::{BrushCharacter, StrokePreview, StrokePreviewFace, StrokePreviewProps};
+pub use {
+    stroke_preview::BrushCharacter, stroke_preview::StrokePreview,
+    stroke_preview::StrokePreviewFace, stroke_preview::StrokePreviewProps,
+};
 pub mod level_meter;
-pub use level_meter::{LevelMeter, LevelMeterFace, LevelMeterProps, MeterState};
+pub use {
+    level_meter::LevelMeter, level_meter::LevelMeterFace, level_meter::LevelMeterProps,
+    level_meter::MeterState,
+};
 pub mod drawing;
-pub use drawing::{Drawing, DrawingProps, Ink, Meaning, Shape, Weight};
-
+pub use {
+    drawing::Drawing, drawing::DrawingProps, drawing::Ink, drawing::Meaning, drawing::Shape,
+    drawing::Weight,
+};
 pub mod hex_grid;
-pub use hex_grid::{HexColumn, HexGrid, HexGridProps};
-
+pub use {hex_grid::HexColumn, hex_grid::HexGrid, hex_grid::HexGridProps};
 pub mod key_pad;
-pub use key_pad::{KeyPad, KeyPadProps, PadKey, PadSize, PadTone};
-
+pub use {
+    key_pad::KeyPad, key_pad::KeyPadProps, key_pad::PadKey, key_pad::PadSize, key_pad::PadTone,
+};
 pub mod diff_grid;
-pub use diff_grid::{DiffGrid, DiffGridProps, DiffSide};
-
+pub use {diff_grid::DiffGrid, diff_grid::DiffGridProps, diff_grid::DiffSide};
 pub mod paint_surface;
-pub use paint_surface::{PaintSurface, PaintSurfaceProps};
+pub use {paint_surface::PaintSurface, paint_surface::PaintSurfaceProps};
 pub mod chart;
-pub use chart::{
-    Chart, ChartStyle, RollingSeries, Series, Sparkline, TrendCurve, TrendFill, TrendMarks,
-    TrendRange, TrendStyle,
+pub use {
+    chart::Chart, chart::ChartStyle, chart::RollingSeries, chart::Series, chart::Sparkline,
+    chart::TrendCurve, chart::TrendFill, chart::TrendMarks, chart::TrendRange, chart::TrendStyle,
 };
 pub(crate) mod chart_data;
 pub(crate) mod chart_geometry;
 pub(crate) mod chart_labels;
 pub mod chart_readout;
-pub(crate) use chart_data::{
-    ChartBranch, hierarchy, link_description, node_description, part_description,
+pub(crate) use {
+    chart_data::ChartBranch, chart_data::hierarchy, chart_data::link_description,
+    chart_data::node_description, chart_data::part_description,
 };
-pub use chart_data::{ChartItem, ChartLink, ChartNode, ChartPart, GraphSelection};
+pub use {
+    chart_data::ChartItem, chart_data::ChartLink, chart_data::ChartNode, chart_data::ChartPart,
+    chart_data::GraphSelection,
+};
 pub mod chart_legend;
 pub mod chart_navigation;
-pub use chart_navigation::{
-    ChartNavAction, ChartTouchAction, ChartTouchTracker, chart_nav_action,
-    moved_index as move_chart_index, moved_item as move_chart_item,
+pub use {
+    chart_navigation::ChartNavAction, chart_navigation::ChartTouchAction,
+    chart_navigation::ChartTouchTracker, chart_navigation::chart_nav_action,
+    chart_navigation::moved_index as move_chart_index,
+    chart_navigation::moved_item as move_chart_item,
 };
 pub mod plot;
-pub use plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+pub use {plot::Plot, plot::PlotFrame, plot::PlotItem, plot::PlotMarks};
 pub mod cartesian_plot;
-pub use cartesian_plot::{
-    AxisLabelFormat, AxisRange, AxisScale, AxisTick, CartesianAnimationStyle, CartesianAnnotation,
-    CartesianAnnotationKind, CartesianBrush, CartesianBrushSelection, CartesianGesturePolicy,
-    CartesianPan, CartesianPlot, CartesianPlotProps, CartesianRenderingStyle, CartesianStyle,
-    CartesianTooltipAnchor, CartesianTooltipStyle, CartesianZoom, Curve, Marker, MarkerShape,
-    PlotAxis, PlotDatum, PlotPoints, PlotSeries, SeriesKind,
+pub use {
+    cartesian_plot::AxisLabelFormat, cartesian_plot::AxisRange, cartesian_plot::AxisScale,
+    cartesian_plot::AxisTick, cartesian_plot::CartesianAnimationStyle,
+    cartesian_plot::CartesianAnnotation, cartesian_plot::CartesianAnnotationKind,
+    cartesian_plot::CartesianBrush, cartesian_plot::CartesianBrushSelection,
+    cartesian_plot::CartesianGesturePolicy, cartesian_plot::CartesianPan,
+    cartesian_plot::CartesianPlot, cartesian_plot::CartesianPlotProps,
+    cartesian_plot::CartesianRenderingStyle, cartesian_plot::CartesianStyle,
+    cartesian_plot::CartesianTooltipAnchor, cartesian_plot::CartesianTooltipStyle,
+    cartesian_plot::CartesianZoom, cartesian_plot::Curve, cartesian_plot::Marker,
+    cartesian_plot::MarkerShape, cartesian_plot::PlotAxis, cartesian_plot::PlotDatum,
+    cartesian_plot::PlotPoints, cartesian_plot::PlotSeries, cartesian_plot::SeriesKind,
 };
 pub mod pie_chart;
-pub use pie_chart::{PieChart, PieSlice, PieStyle, PieTooltipAnchor};
+pub use {
+    pie_chart::PieChart, pie_chart::PieSlice, pie_chart::PieStyle, pie_chart::PieTooltipAnchor,
+};
 pub mod polar_area_chart;
-pub use polar_area_chart::{PolarAreaChart, PolarAreaStyle};
+pub use {polar_area_chart::PolarAreaChart, polar_area_chart::PolarAreaStyle};
 pub mod heatmap;
-pub use heatmap::{Heatmap, HeatmapCell, HeatmapStyle};
+pub use {heatmap::Heatmap, heatmap::HeatmapCell, heatmap::HeatmapStyle};
 pub mod histogram;
-pub use histogram::{
-    Histogram, HistogramChart, HistogramNormalization, HistogramProps, HistogramScale,
+pub use {
+    histogram::Histogram, histogram::HistogramChart, histogram::HistogramNormalization,
+    histogram::HistogramProps, histogram::HistogramScale,
 };
 pub mod candlestick_chart;
-pub use candlestick_chart::{
-    Candle, CandleObservation, CandlestickChart, CandlestickChartProps, CandlestickStyle,
+pub use {
+    candlestick_chart::Candle, candlestick_chart::CandleObservation,
+    candlestick_chart::CandlestickChart, candlestick_chart::CandlestickChartProps,
+    candlestick_chart::CandlestickStyle,
 };
 pub mod chord_chart;
-pub use chord_chart::{ChordChart, ChordChartProps, ChordSelection, ChordStyle};
+pub use {
+    chord_chart::ChordChart, chord_chart::ChordChartProps, chord_chart::ChordSelection,
+    chord_chart::ChordStyle,
+};
 pub mod treemap;
-pub use treemap::{Treemap, TreemapProps, TreemapStyle};
+pub use {treemap::Treemap, treemap::TreemapProps, treemap::TreemapStyle};
 pub mod radar_chart;
-pub use radar_chart::{RadarAxis, RadarChart, RadarLegendStyle, RadarSeries, RadarStyle};
+pub use {
+    radar_chart::RadarAxis, radar_chart::RadarChart, radar_chart::RadarLegendStyle,
+    radar_chart::RadarSeries, radar_chart::RadarStyle,
+};
 pub mod range_chart;
-pub use range_chart::{RangeBar, RangeChart, RangeChartProps, RangeKind, RangeSpan, RangeStyle};
+pub use {
+    range_chart::RangeBar, range_chart::RangeChart, range_chart::RangeChartProps,
+    range_chart::RangeKind, range_chart::RangeSpan, range_chart::RangeStyle,
+};
 pub mod category_chart;
-pub use category_chart::{
-    Category, CategoryChart, CategoryChartStyle, CategoryLayout, CategorySeries, CategoryValue,
+pub use {
+    category_chart::Category, category_chart::CategoryChart, category_chart::CategoryChartStyle,
+    category_chart::CategoryLayout, category_chart::CategorySeries, category_chart::CategoryValue,
 };
 pub mod distribution_chart;
-pub use distribution_chart::{
-    DistributionChart, DistributionKind, DistributionSeries, DistributionStyle,
+pub use {
+    distribution_chart::DistributionChart, distribution_chart::DistributionKind,
+    distribution_chart::DistributionSeries, distribution_chart::DistributionStyle,
 };
 pub mod sankey;
-pub use sankey::{SankeyChart, SankeyChartProps, SankeySelection, SankeyStyle};
+pub use {
+    sankey::SankeyChart, sankey::SankeyChartProps, sankey::SankeySelection, sankey::SankeyStyle,
+};
 pub mod sunburst;
-pub use sunburst::{SunburstChart, SunburstChartProps, SunburstNode, SunburstStyle};
+pub use {
+    sunburst::SunburstChart, sunburst::SunburstChartProps, sunburst::SunburstNode,
+    sunburst::SunburstStyle,
+};
 pub mod funnel_chart;
-pub use funnel_chart::{FunnelChart, FunnelDirection, FunnelStyle};
+pub use {funnel_chart::FunnelChart, funnel_chart::FunnelDirection, funnel_chart::FunnelStyle};
 pub mod gauge;
-pub use gauge::{
-    BarGauge, BarGaugeProps, GaugeReading, GaugeStyle, GaugeThresholds, ProgressRing,
-    ProgressRingFace, ProgressRingProps, ProgressRingSize, RingReading,
+pub use {
+    gauge::BarGauge, gauge::BarGaugeProps, gauge::GaugeReading, gauge::GaugeStyle,
+    gauge::GaugeThresholds, gauge::ProgressRing, gauge::ProgressRingFace, gauge::ProgressRingProps,
+    gauge::ProgressRingSize, gauge::RingReading,
 };
 pub mod function_plane;
 pub use function_plane::FunctionPlane;
 pub mod split_handle;
-pub use split_handle::{SplitHandle, SplitOrientation, SplitRatio};
+pub use {split_handle::SplitHandle, split_handle::SplitOrientation, split_handle::SplitRatio};
 pub mod video_player;
-pub use video_player::{DeclaredVideo, PLAYBACK_RATES, VideoPlayer, VideoPlayerProps};
+pub use {
+    video_player::DeclaredVideo, video_player::PLAYBACK_RATES, video_player::VideoPlayer,
+    video_player::VideoPlayerProps,
+};
 pub mod terminal;
-pub use terminal::{Terminal, TerminalProps};
+pub use {terminal::Terminal, terminal::TerminalProps};
 pub mod webview;
-pub use webview::{WebView, WebViewProps};
+pub use {webview::WebView, webview::WebViewProps};
 pub mod image_viewer;
 mod image_viewer_component;
 pub use image_viewer::ImageViewer;
-pub use image_viewer_component::{ImageViewerProps, ZoomableImage};
+pub use {image_viewer_component::ImageViewerProps, image_viewer_component::ZoomableImage};
 mod slideshow_component;
-
-pub use slideshow_component::{Slideshow, SlideshowProps};
+pub use {slideshow_component::Slideshow, slideshow_component::SlideshowProps};
 mod tree_component;
-pub use tree_component::{
-    DescribedTreeView, RemovedNodes, TREE_ROW_DOUBLE_HEIGHT, TREE_ROW_HEIGHT, TreeTone,
-    TreeViewNodeProps, TreeViewProps, TreeViewRowProps,
+pub use {
+    tree_component::DescribedTreeView, tree_component::RemovedNodes,
+    tree_component::TREE_ROW_DOUBLE_HEIGHT, tree_component::TREE_ROW_HEIGHT,
+    tree_component::TreeTone, tree_component::TreeViewNodeProps, tree_component::TreeViewProps,
+    tree_component::TreeViewRowProps,
 };
-/// A box a widget paints text into, whose own box cannot hold that text: the height the text
-/// takes at the width of its box, the width the box gives it, and what it says. Rows a box lays
-/// out and never paints read as a line that had nothing to say above space left empty, so
-/// an audit looks for them rather than trusting the geometry around them.
-#[derive(Clone, Debug, PartialEq)]
-pub struct CutText {
-    pub said: String,
-    pub needs: f32,
-    pub has: f32,
-}
-
-/// A widget that paints text into boxes of its own: a box that cannot hold its text is asked for
-/// through [`capability`](crate::widget::capability::capability).
-pub trait TextFits {
-    fn cut_text(&mut self, text: &mut crate::text_render::TextRenderer) -> Option<CutText>;
-}
-
 mod row_selection;
 mod rows;
 pub mod virtual_list;
-pub use virtual_list::{
-    AnyModel, DescribedList, DescribedRows, DuplicateListKey, ItemRow, ListEdges, ListItemProps,
-    ListKey, ListModel, PaintedRowLifts, RowActionRects, RowBuild, RowContentBox, RowGroup,
-    RowLift, RowRenameField, RowSelection, RowSelectionSink, TREE_INDENT, TreeMarks, TreeMove,
-    TreeRow, VecListModel, VirtualList, VirtualListProps, VirtualRows, row_content_box,
+pub use {
+    virtual_list::AnyModel, virtual_list::DescribedList, virtual_list::DescribedRows,
+    virtual_list::DuplicateListKey, virtual_list::ItemRow, virtual_list::ListEdges,
+    virtual_list::ListItemProps, virtual_list::ListKey, virtual_list::ListModel,
+    virtual_list::PaintedRowLifts, virtual_list::RowActionRects, virtual_list::RowBuild,
+    virtual_list::RowContentBox, virtual_list::RowGroup, virtual_list::RowLift,
+    virtual_list::RowRenameField, virtual_list::RowSelection, virtual_list::RowSelectionSink,
+    virtual_list::TREE_INDENT, virtual_list::TreeMarks, virtual_list::TreeMove,
+    virtual_list::TreeRow, virtual_list::VecListModel, virtual_list::VirtualList,
+    virtual_list::VirtualListProps, virtual_list::VirtualRows, virtual_list::row_content_box,
 };
-/// An action a widget offers as its own, beside the rows its owner offers where a context menu
-/// opens over it ([`Widget::own_actions`]): a link's copy, a picture's save.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct OwnAction {
-    /// What the row that runs it is called, in the person's language.
-    pub name: String,
-    /// Where [`Widget::perform_action`] runs it, relative to the widget.
-    pub key_path: Vec<u64>,
-}
-
-impl OwnAction {
-    /// The action called `name`, run at `key_path`.
-    #[must_use]
-    pub fn new(name: impl Into<String>, key_path: Vec<u64>) -> Self {
-        Self {
-            name: name.into(),
-            key_path,
-        }
-    }
-}
-
 mod activation;
-mod press;
-pub use press::Press;
 mod dismissal;
 #[cfg(feature = "model")]
 pub(crate) use activation::take_presses;
-pub use activation::{Interaction, PaintedTargets, paint_disabled, paint_focus_ring};
+pub use {
+    activation::Interaction, activation::PaintedTargets, activation::paint_disabled,
+    activation::paint_focus_ring,
+};
 pub mod media_card;
 mod media_grid_component;
-pub use media_card::{
-    ArtPainter, MediaArt, MediaBadge, MediaCard, MediaCardFace, MediaGrid, MediaSize, MediaSource,
-    OwnedBadge, justified_rows,
+pub use {
+    media_card::ArtPainter, media_card::MediaArt, media_card::MediaBadge, media_card::MediaCard,
+    media_card::MediaCardFace, media_card::MediaGrid, media_card::MediaSize,
+    media_card::MediaSource, media_card::OwnedBadge, media_card::justified_rows,
 };
-pub use media_grid_component::{DescribedCards, MediaCardProps, MediaGridProps};
+pub use {
+    media_grid_component::DescribedCards, media_grid_component::MediaCardProps,
+    media_grid_component::MediaGridProps,
+};
 pub mod capture_button;
-pub use capture_button::{CaptureButtonFace, CaptureKind};
+pub use {capture_button::CaptureButtonFace, capture_button::CaptureKind};
 pub mod call_tile;
-pub use call_tile::{CallSource, CallTile, CallTileProps, call_address, call_slot};
+pub use {
+    call_tile::CallSource, call_tile::CallTile, call_tile::CallTileProps, call_tile::call_address,
+    call_tile::call_slot,
+};
 pub mod transport;
-pub use transport::{TransportControl, TransportFace};
+pub use {transport::TransportControl, transport::TransportFace};
 pub mod media_transport;
 mod media_transport_component;
-pub use media_transport::{
-    MediaTransport, TransportActions, TransportArt, TransportEvent, TransportFeed, TransportRepeat,
-    TransportState, TransportTriggers,
+pub use {
+    media_transport::MediaTransport, media_transport::TransportActions,
+    media_transport::TransportArt, media_transport::TransportEvent, media_transport::TransportFeed,
+    media_transport::TransportRepeat, media_transport::TransportState,
+    media_transport::TransportTriggers,
 };
-pub use media_transport_component::{DeclaredTransport, MediaTransportProps};
+pub use {
+    media_transport_component::DeclaredTransport, media_transport_component::MediaTransportProps,
+};
 pub mod now_playing;
-pub use now_playing::{Scrub, Song, SongFace};
+pub use {now_playing::Scrub, now_playing::Song, now_playing::SongFace};
 pub mod drop_zone;
-pub use drop_zone::{DropZone, DropZoneFace, DropZoneProps};
+pub use {drop_zone::DropZone, drop_zone::DropZoneFace, drop_zone::DropZoneProps};
 pub mod file_open;
-pub use file_open::{FileOpenEvent, FileOpenSurface};
+pub use {file_open::FileOpenEvent, file_open::FileOpenSurface};
 pub mod skeleton;
-pub use skeleton::{Skeleton, SkeletonFace, SkeletonForm, SkeletonProps, skeleton_tone};
+pub use {
+    skeleton::Skeleton, skeleton::SkeletonFace, skeleton::SkeletonForm, skeleton::SkeletonProps,
+    skeleton::skeleton_tone,
+};
 pub mod backdrop;
-pub use backdrop::{Backdrop, BackdropProps};
+pub use {backdrop::Backdrop, backdrop::BackdropProps};
 pub mod arrival_failure;
-pub use arrival_failure::{WindowFailure, arrival_failure};
+pub use {arrival_failure::WindowFailure, arrival_failure::arrival_failure};
 pub mod arriving_rows;
 pub mod arriving_view;
-pub use arriving_rows::{ArrivingRows, RowFade};
-pub use arriving_view::{ArrivalFace, ArrivingView, AwaitsContent, ReservedShape, Showing};
+pub use {arriving_rows::ArrivingRows, arriving_rows::RowFade};
+pub use {
+    arriving_view::ArrivalFace, arriving_view::ArrivingView, arriving_view::ArrivingViewOf,
+    arriving_view::AwaitsContent, arriving_view::ReservedShape, arriving_view::Showing,
+};
 pub mod swapped;
 pub use swapped::Swapped;
 pub mod stepper;
-pub use stepper::{Stepper, StepperFace, StepperProps};
+pub use {stepper::Stepper, stepper::StepperFace, stepper::StepperProps};
 pub mod property_list;
-pub use property_list::{
-    Property, PropertyColumn, PropertyList, PropertyListFace, PropertyListProps, PropertyProps,
-    PropertyRow, PropertyValue, property_label_column,
+pub use {
+    property_list::Property, property_list::PropertyColumn, property_list::PropertyList,
+    property_list::PropertyListFace, property_list::PropertyListProps,
+    property_list::PropertyProps, property_list::PropertyRow, property_list::PropertyValue,
+    property_list::property_label_column,
 };
 pub mod list_row;
-pub use list_row::{
-    CARD_TITLE_LINES, CardBody, ControlRow, ControlRowProps, ListRow, ListRowFace, ListRowProps,
-    RowAction, RowAuthor, RowLeading, RowStatus, RowValue, RowWriter, ShownChange, SwipeAction,
-    SwipeActionProps, badge_column_width, mark_text_inset,
+pub use {
+    list_row::CARD_TITLE_LINES, list_row::CardBody, list_row::ControlRow,
+    list_row::ControlRowProps, list_row::ListRow, list_row::ListRowFace, list_row::ListRowProps,
+    list_row::RowAction, list_row::RowAuthor, list_row::RowLeading, list_row::RowShapeFace,
+    list_row::RowStatus, list_row::RowValue, list_row::RowWriter, list_row::ShownChange,
+    list_row::SwipeAction, list_row::SwipeActionProps, list_row::badge_column_width,
+    list_row::mark_text_inset,
 };
 pub mod toggle_group;
-pub use toggle_group::{
-    Segment, SegmentProps, SegmentedFace, SegmentedStyle, SegmentedTouch, SegmentedTouchGroup,
-    SegmentedTouchResult, ToggleGroup, ToggleGroupProps, ViewTabsProps, segment_colors,
+pub use {
+    toggle_group::Segment, toggle_group::SegmentProps, toggle_group::SegmentedFace,
+    toggle_group::SegmentedStyle, toggle_group::SegmentedTouch, toggle_group::SegmentedTouchGroup,
+    toggle_group::SegmentedTouchResult, toggle_group::ToggleGroup, toggle_group::ToggleGroupProps,
+    toggle_group::ViewTabsProps, toggle_group::segment_colors,
 };
 pub mod view_tabs;
 pub use view_tabs::ViewTabs;
-
 pub mod chrome_body;
-pub use chrome_body::{ChromeBody, ChromeEdge, ChromeProps, ChromeShape};
+pub use {
+    chrome_body::ChromeBody, chrome_body::ChromeEdge, chrome_body::ChromeProps,
+    chrome_body::ChromeShape,
+};
 pub mod docked;
-pub use docked::{Docked, DockedProps};
+pub use {docked::Docked, docked::DockedProps};
 pub mod map;
-pub use map::{
-    MAP_ZOOM_MAX, MAP_ZOOM_MIN, Map, MapCamera, MapMarkerKind, MapMarkerProps, MapPinProps,
-    MapProps, MapTrackProps, MapTrackTone, PinPlace,
+pub use {
+    map::MAP_ZOOM_MAX, map::MAP_ZOOM_MIN, map::Map, map::MapCamera, map::MapMarkerKind,
+    map::MapMarkerProps, map::MapPinProps, map::MapProps, map::MapTrackProps, map::MapTrackTone,
+    map::PinPlace,
 };
 pub mod window_well;
-pub use window_well::{Wells, WindowWell, WindowWellProps};
+pub use {window_well::Wells, window_well::WindowWell, window_well::WindowWellProps};
 pub mod window_preview;
-pub use window_preview::{Previews, WindowPreview, WindowPreviewProps};
+pub use {
+    window_preview::Previews, window_preview::WindowPreview, window_preview::WindowPreviewProps,
+};
 pub mod window_frame;
-pub use window_frame::{WindowFrame, WindowFrameProps};
+pub use {window_frame::WindowFrame, window_frame::WindowFrameProps};
 pub mod empty_state;
-pub use empty_state::{
-    EmptyState, EmptyStateContent, EmptyStateLayout, EmptyStateProps, PaintedStack,
+pub use {
+    empty_state::EmptyState, empty_state::EmptyStateContent, empty_state::EmptyStateLayout,
+    empty_state::EmptyStateProps, empty_state::PaintedStack,
 };
 pub mod find_bar;
-pub use find_bar::{
-    FindAbilities, FindBar, FindMatch, FindMode, FindOptions, FindScope, FindSession, Findable,
-    OwnFind, paint_find_match, with_findable,
+pub use {
+    find_bar::FindAbilities, find_bar::FindBar, find_bar::FindMatch, find_bar::FindMode,
+    find_bar::FindOptions, find_bar::FindScope, find_bar::FindSession, find_bar::Findable,
+    find_bar::OwnFind, find_bar::paint_find_match, find_bar::with_findable,
 };
 pub mod search_field;
-pub use search_field::{
-    FilterCount, Filterable, Filtered, SearchField, apply_filter, sync_filter, with_filterable,
+pub use {
+    search_field::FilterCount, search_field::Filterable, search_field::Filtered,
+    search_field::SearchField, search_field::apply_filter, search_field::sync_filter,
+    search_field::with_filterable,
 };
 pub mod window_search;
-pub use window_search::{
-    InPlace, QueryView, Queryable, SearchDriver, SearchHandoff, SearchReach, SearchableWindow,
-    WindowSearch, WindowSearchRequest, with_queryable,
+pub use {
+    window_search::InPlace, window_search::QueryView, window_search::Queryable,
+    window_search::SearchDriver, window_search::SearchHandoff, window_search::SearchReach,
+    window_search::SearchableWindow, window_search::WindowSearch,
+    window_search::WindowSearchRequest, window_search::with_queryable,
 };
 pub mod search_results;
 pub use search_results::SearchResultsView;
 pub mod stat_tile;
-pub use stat_tile::{StatGroup, StatGroupProps, StatTile, StatTileFace, StatTileProps, Trend};
+pub use {
+    stat_tile::StatGroup, stat_tile::StatGroupProps, stat_tile::StatTile, stat_tile::StatTileFace,
+    stat_tile::StatTileProps, stat_tile::Trend,
+};
 pub mod banner;
-pub use banner::{Banner, BannerContent, BannerHit, BannerKind, BannerNotice, BannerProps};
+pub use {
+    banner::Banner, banner::BannerContent, banner::BannerHit, banner::BannerKind,
+    banner::BannerNotice, banner::BannerProps,
+};
 mod disclosure_band;
-pub use disclosure_band::{DisclosureBand, DisclosureBandProps};
+pub use {disclosure_band::DisclosureBand, disclosure_band::DisclosureBandProps};
 pub mod chip;
-pub use chip::{Chip, ChipColors, ChipFace, ChipLead, ChipProps, ChipStyle, REFERENCE_LEAD};
+pub use {
+    chip::Chip, chip::ChipColors, chip::ChipFace, chip::ChipLead, chip::ChipProps, chip::ChipStyle,
+    chip::REFERENCE_LEAD,
+};
 pub mod change_mark;
-pub use change_mark::{ChangeMark, ChangeMarkProps};
+pub use {change_mark::ChangeMark, change_mark::ChangeMarkProps};
 pub mod conversation;
 pub use conversation::*;
 pub mod card;
-mod tone;
-pub use card::{
-    Actions, Card, CardFace, CardGrid, CardGridCardProps, CardGridProps, CardProps, CardWidth,
-    DescribedCardGrid, card_column_width, card_columns,
+pub use {
+    card::Actions, card::Card, card::CardFace, card::CardGrid, card::CardGridCardProps,
+    card::CardGridProps, card::CardProps, card::CardWidth, card::DescribedCardGrid,
+    card::card_column_width, card::card_columns,
 };
-pub use tone::Tone;
 mod section;
-pub use section::{
-    ObjectHeader, ObjectHeaderProps, Section, SectionHeader, SectionHeaderFace, SectionProps,
-    StatusLine, StatusLineProps, band_height, heading_count,
+pub use {
+    section::ObjectHeader, section::ObjectHeaderProps, section::Section, section::SectionHeader,
+    section::SectionHeaderFace, section::SectionProps, section::StatusLine,
+    section::StatusLineProps, section::band_height, section::heading_count,
 };
 pub mod capture_studio;
-pub use capture_studio::{
-    AudioCaptureMode, CaptureDestination, CaptureIntent, CaptureMode, CapturePreview,
-    CaptureStudio, CaptureTarget, LiveCapture, PipLayout, RecordingCommand, RegionAnchor,
-    ReplayCommand, ScreenshotCommand, ScreenshotKept, ScreenshotSendDevice, ScreenshotSendTarget,
-    SourceMode,
+pub use {
+    capture_studio::AudioCaptureMode, capture_studio::CaptureDestination,
+    capture_studio::CaptureIntent, capture_studio::CaptureMode, capture_studio::CapturePreview,
+    capture_studio::CaptureStudio, capture_studio::CaptureTarget, capture_studio::LiveCapture,
+    capture_studio::PipLayout, capture_studio::RecordingCommand, capture_studio::RegionAnchor,
+    capture_studio::ReplayCommand, capture_studio::ScreenshotCommand,
+    capture_studio::ScreenshotKept, capture_studio::ScreenshotSendDevice,
+    capture_studio::ScreenshotSendTarget, capture_studio::SourceMode,
 };
 pub mod screenshot_markup;
 pub mod selection_handles;
-pub use screenshot_markup::{
-    MarkupExport, MarkupStroke, MarkupTool, ScreenshotMarkup, ScreenshotMarkupCommand,
+pub use {
+    screenshot_markup::MarkupExport, screenshot_markup::MarkupStroke,
+    screenshot_markup::MarkupTool, screenshot_markup::ScreenshotMarkup,
+    screenshot_markup::ScreenshotMarkupCommand,
 };
-pub use selection_handles::{Handle as SelectionHandle, SelectionHandles, TextGrip, TextGrips};
-
+pub use {
+    selection_handles::Handle as SelectionHandle, selection_handles::SelectionHandles,
+    selection_handles::TextGrip, selection_handles::TextGrips,
+};
 // History's views: the timeline of a resource's changes, read from its history.
 #[cfg(feature = "model")]
 pub mod activity_timeline;
@@ -2248,73 +907,47 @@ pub mod history_face;
 pub mod history_group;
 pub mod name_field;
 #[cfg(feature = "model")]
-pub use activity_timeline::{ActivityTimeline, RowParts};
+pub use {activity_timeline::ActivityTimeline, activity_timeline::RowParts};
 #[cfg(feature = "model")]
-pub use activity_timeline_component::{
-    ActivityArtifact, ActivityEntryProps, ActivityTimelineProps, DescribedActivityTimeline,
+pub use {
+    activity_timeline_component::ActivityArtifact, activity_timeline_component::ActivityEntryProps,
+    activity_timeline_component::ActivityTimelineProps,
+    activity_timeline_component::DescribedActivityTimeline,
 };
 #[cfg(feature = "model")]
-pub use collab_types::ArtifactKind;
-#[cfg(feature = "model")]
-pub use history::{
-    AuthorRelation, EntryKind, EntryTarget, HistoryAttribution, HistoryAuthor,
-    HistoryClassification, HistoryEntry, HistoryFilter, RedactionDisplay, format_relative_time,
-    hue_to_rgb,
+pub use {
+    history::AuthorRelation, history::EntryKind, history::EntryTarget, history::HistoryAttribution,
+    history::HistoryAuthor, history::HistoryClassification, history::HistoryEntry,
+    history::HistoryFilter, history::RedactionDisplay, history::format_relative_time,
+    history::hue_to_rgb,
 };
 #[cfg(feature = "model")]
-pub use history_face::{EntryBody, EntryFace, HistoryEntryPresenter};
-pub use tilo_actions::HistoryEntryId;
-
+pub use {history_face::EntryBody, history_face::EntryFace, history_face::HistoryEntryPresenter};
 pub mod qr;
 mod qr_component;
 pub mod resource_actions;
 pub use qr::QrWidget;
 pub use qr_component::QrProps;
-
 #[cfg(test)]
 mod a11y_tree_tests;
-
+#[cfg(test)]
+pub(crate) mod control_result_probe;
 #[cfg(test)]
 #[path = "control_touch_tests.rs"]
 mod control_touch_tests;
-
-#[cfg(test)]
-pub(crate) mod control_result_probe;
-
 #[cfg(test)]
 pub(crate) mod effect_fixture;
+pub mod keyboard_map;
 #[cfg(test)]
 mod refused_press_tests;
-
-pub mod keyboard_map;
-pub use keyboard_map::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMapSelection};
+pub use {
+    keyboard_map::KeyboardMap, keyboard_map::KeyboardMapInput, keyboard_map::KeyboardMapKey,
+    keyboard_map::KeyboardMapSelection,
+};
 /// Logical screen topology canvas shared by local and native peer displays.
 mod graph_canvas;
-pub use graph_canvas::{
-    Connection, GraphCanvas, GraphCanvasConnection, GraphCanvasNode, GraphCanvasProps,
-    GraphNodeProps, connection_description,
+pub use {
+    graph_canvas::Connection, graph_canvas::GraphCanvas, graph_canvas::GraphCanvasConnection,
+    graph_canvas::GraphCanvasNode, graph_canvas::GraphCanvasProps, graph_canvas::GraphNodeProps,
+    graph_canvas::connection_description,
 };
-
-#[cfg(test)]
-mod keyboard_entry_tests {
-    use super::*;
-
-    /// An editor whose whole accessibility subtree (a node per block of a long
-    /// note) is too costly to build only to read its role.
-    struct Editor;
-
-    impl Widget for Editor {
-        crate::testing::inert_widget_methods!(leaf_layout, name = "Editor");
-        fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-            panic!("reading the keyboard entry built the editor's whole subtree")
-        }
-        fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
-            Some(crate::a11y::AccessNode::new(crate::a11y::Role::Document))
-        }
-    }
-
-    #[test]
-    fn the_keyboard_entry_reads_a_controls_own_node() {
-        assert_eq!(keyboard_entry_rank(&Editor), Some(1));
-    }
-}

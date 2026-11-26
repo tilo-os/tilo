@@ -1,0 +1,16 @@
+//! The native shell side of the toolkit, behind the default-on `native` feature. The host-service
+//! backends — the shell implementation of [`crate::process::ProcessServices`] ([`services`]), the location
+//! and screen-capture portals and MPRIS on the session bus — live in `tilo-host` and the platform
+//! crates, and are re-exported here under their usual paths.
+
+#[cfg(target_os = "android")]
+#[doc(inline)]
+pub use tilo_process_services::native::android;
+#[doc(inline)]
+pub use tilo_process_services::native::{capture, mpris, services};
+#[cfg(windows)]
+#[doc(inline)]
+pub use tilo_process_services::notify::windows_toasts as host_notifications;
+pub(crate) mod gpu_backends;
+pub mod standalone_instance;
+pub mod warmup;

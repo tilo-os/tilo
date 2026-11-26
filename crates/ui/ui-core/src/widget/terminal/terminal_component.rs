@@ -7,7 +7,7 @@
 //! or shows arrives as this component's events.
 use std::sync::Arc;
 
-use crate::component::{Component, Described, Event};
+use tilo_ui_base::{component::Component, component::Described, component::Event};
 
 use super::{Missing, Terminal};
 
@@ -70,7 +70,7 @@ impl Described for Terminal {
         let mut view = Self::new(handle)
             .with_copy_on_select(copy_on_select)
             .with_bell_flash(bell_flash);
-        if let Some(keys) = crate::key_input::window_input(&session) {
+        if let Some(keys) = tilo_ui_base::key_input::window_input(&session) {
             view.set_keys(keys);
         }
         view.session_id = session;

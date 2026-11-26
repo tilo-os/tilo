@@ -45,7 +45,7 @@ fn lay_out_and_draw(editor: &mut BlockEditor, theme: &Theme) -> (Scene, TextRend
     .unwrap();
     editor.apply_layout(&tree, node, Point::ORIGIN);
     let mut scene = Scene::new();
-    editor.draw(&mut tilo_ui::DrawCtx::new(
+    editor.draw(&mut tilo_ui_base::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut renderer,
@@ -78,7 +78,7 @@ fn scene_fills(scene: &Scene, color: vello::peniko::Color) -> bool {
     false
 }
 
-fn access_names(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
+fn access_names(node: &tilo_ui_base::a11y::AccessNode, out: &mut Vec<String>) {
     if let Some(name) = &node.name {
         out.push(name.clone());
     }
@@ -87,8 +87,8 @@ fn access_names(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
     }
 }
 
-fn role_descriptions(node: &ui::a11y::AccessNode, out: &mut Vec<String>) {
-    if node.role == ui::a11y::Role::ListItem
+fn role_descriptions(node: &tilo_ui_base::a11y::AccessNode, out: &mut Vec<String>) {
+    if node.role == tilo_ui_base::a11y::Role::ListItem
         && let Some(description) = &node.role_description
     {
         out.push(description.clone());
@@ -113,8 +113,8 @@ tilo_test_env::scenario! {
             .as_ref()
             .map(|(_, em)| *em)
             .expect("drawing a bullet measures the face's x-height");
-        let mut style = theme.text(ui::tokens::TextRole::Body);
-        style.scaling = ui::text_render::TextScaling::Resolved;
+        let mut style = theme.text(tilo_ui_base::tokens::TextRole::Body);
+        style.scaling = tilo_ui_base::text_render::TextScaling::Resolved;
         let outline = renderer.glyph_outlines("x", None, &style);
         let path_top = {
             use vello::kurbo::Shape as _;
@@ -324,8 +324,8 @@ tilo_test_env::scenario! {
         let colors = &theme.tokens.colors;
         let wash = colors.wash_on(
             colors.surfaces.content,
-            ui::widget::Tone::Warning,
-            ui::tokens::colors::WashStrength::Rest,
+            tilo_ui_base::widget::Tone::Warning,
+            tilo_ui_base::tokens::colors::WashStrength::Rest,
         );
         assert!(
             scene_fills(&scene, wash.fill),

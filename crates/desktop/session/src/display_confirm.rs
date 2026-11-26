@@ -27,7 +27,7 @@ use tilo_sheets::display_confirm::{self, ConfirmEffect, ConfirmState};
 use crate::display_settings::{self, Displays};
 use crate::i18n::{t, t_args};
 use crate::platform::notice::{Notice, Notices};
-use ui::i18n::ArgValue;
+use tilo_ui_base::i18n::ArgValue;
 
 /// The change the question stands for.
 enum Change {

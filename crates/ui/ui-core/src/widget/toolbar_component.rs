@@ -1,8 +1,11 @@
 //! [`Toolbar`] and its parts as described components.
 
-use crate::component::{Accepts, Component, Described, Event, PartType, Source};
-use crate::icons::Icon;
 use crate::widget::MenuItemProps;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::{
+    component::Accepts, component::Component, component::Described, component::Event,
+    component::PartItem, component::Source,
+};
 
 use super::{Orientation, Toolbar, ToolbarItem};
 
@@ -98,9 +101,7 @@ pub enum ToolbarPart {
 const TOOLBAR_PARTS: [&str; 3] = ["ToolbarButton", "ToolbarSeparator", "ToolbarSpacer"];
 
 /// A toolbar's parts, in order: commands, separators and spacers.
-impl PartType for Vec<ToolbarPart> {
-    const MANY: bool = true;
-
+impl PartItem for ToolbarPart {
     fn accepts() -> Accepts {
         Accepts::OneOf(
             TOOLBAR_PARTS
@@ -110,7 +111,7 @@ impl PartType for Vec<ToolbarPart> {
         )
     }
 
-    fn fill(&mut self, source: &mut dyn Source, part: &str) -> Result<(), String> {
+    fn read_all(source: &mut dyn Source, part: &str) -> Result<Vec<Self>, String> {
         let kinds = source.part_kinds(part);
         let mut parts = Vec::with_capacity(kinds.len());
         let mut index = 0usize;
@@ -132,8 +133,7 @@ impl PartType for Vec<ToolbarPart> {
             });
             Ok(())
         })?;
-        *self = parts;
-        Ok(())
+        Ok(parts)
     }
 }
 
@@ -278,8 +278,8 @@ mod tests {
                 key: "bold".into(),
                 label: "Bold".into(),
                 toggled: Some(on),
-                press: Event::View(crate::component::Intent::new(
-                    &crate::Intents::default(),
+                press: Event::View(tilo_ui_base::component::Intent::new(
+                    &tilo_ui_base::Intents::default(),
                     "bold",
                     "press",
                 )),
@@ -313,14 +313,14 @@ mod tests {
             },
         );
         // Lay it out in a wide row, so the command shows in it rather than in the More menu.
-        let theme = crate::theme::Theme::dark();
-        let mut text = crate::text_render::TextRenderer::new();
+        let theme = tilo_ui_base::theme::Theme::dark();
+        let mut text = tilo_ui_base::text_render::TextRenderer::new();
         toolbar.lay_out_in(
             vello::kurbo::Rect::new(0.0, 0.0, 400.0, 80.0),
             &mut text,
             &theme,
         );
-        let node = crate::widget::Widget::accessibility(&toolbar).expect("a toolbar speaks");
+        let node = tilo_ui_base::widget::Widget::accessibility(&toolbar).expect("a toolbar speaks");
         let command = node
             .children
             .iter()

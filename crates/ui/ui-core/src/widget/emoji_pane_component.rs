@@ -10,10 +10,12 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::component::{Component, Described, Event, Value};
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Value,
+};
 
-use crate::theme::Theme;
-use crate::widget::{DrawChild, EventCtx, TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::DrawChild, widget::EventCtx, widget::TaffyTreeExt, widget::Widget};
 
 use super::emoji_picker::{EmojiPicker, PickerEvent};
 
@@ -142,14 +144,14 @@ impl Widget for EmojiPane {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
     }
 
     fn get_rect(&self) -> Rect {
         self.rect
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -187,7 +189,7 @@ impl Widget for EmojiPane {
         true
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         if self.is_open() {
             self.picker.accessibility()
         } else {
@@ -219,5 +221,5 @@ impl Widget for EmojiPane {
         "EmojiPane"
     }
 
-    crate::described!();
+    tilo_ui_base::described!();
 }

@@ -6,7 +6,7 @@ use automerge::{AutoCommit, ChangeHash, ReadDoc};
 use tilo_automerge::ApplyIncoming;
 
 use crate::history_source::entry_id_from_hash;
-use crate::widget::HistoryEntryId;
+use tilo_ui_base::widget::HistoryEntryId;
 
 #[derive(Clone, Debug)]
 pub struct HistoryComparison {

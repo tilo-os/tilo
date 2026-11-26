@@ -1,13 +1,13 @@
 //! Where a scroll view whose content offers detents comes to rest: after a drag, a fling or a
 //! wheel gesture ends, a key moves the view, or anything asks it to show something, it settles
-//! on one of the offsets its content reports ([`crate::widget::Widget::snap_points`]) rather
+//! on one of the offsets its content reports ([`tilo_ui_base::widget::Widget::snap_points`]) rather
 //! than wherever the hand left it.
 
 use vello::kurbo::Vec2;
 
-use crate::motion::{ScrollJump, Snap};
-use crate::tokens::{EffectiveMotion, MotionSource};
 use crate::widget::Scrollable;
+use tilo_ui_base::{motion::ScrollJump, motion::Snap};
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 
 /// Two detents closer than this (logical px) are one: a list's leading edge
 /// and the end of the scrollable content are often the same place.
@@ -33,18 +33,18 @@ impl Scrollable {
                 rect.y0 - viewport.y0 + f64::from(self.offset_y),
             );
             if self.axis_has_horizontal() {
-                child.snap_points(crate::widget::ScrollAxis::Horizontal, &mut across);
+                child.snap_points(tilo_ui_base::widget::ScrollAxis::Horizontal, &mut across);
                 placed(
                     &mut across,
-                    crate::num::f32_of_f64(lead.x),
+                    tilo_ui_base::num::f32_of_f64(lead.x),
                     (self.content_w - self.viewport_w).max(0.0),
                 );
             }
             if self.axis_has_vertical() {
-                child.snap_points(crate::widget::ScrollAxis::Vertical, &mut down);
+                child.snap_points(tilo_ui_base::widget::ScrollAxis::Vertical, &mut down);
                 placed(
                     &mut down,
-                    crate::num::f32_of_f64(lead.y),
+                    tilo_ui_base::num::f32_of_f64(lead.y),
                     self.max_offset_y(),
                 );
             }
@@ -61,7 +61,7 @@ impl Scrollable {
             points.iter().map(|point| f64::from(*point)),
             f64::from(offset),
         )
-        .map_or(offset, crate::num::f32_of_f64)
+        .map_or(offset, tilo_ui_base::num::f32_of_f64)
     }
 
     /// `offset` taken to the detent nearest it, where that detent still shows the rect at `at`
@@ -90,7 +90,7 @@ impl Scrollable {
     /// settles on the detent the release heads for, along every axis the
     /// content offers them.
     pub(super) fn settle_snap(&mut self, velocity: (f64, f64), source: MotionSource) {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let drawn = Vec2::new(f64::from(self.offset_x), f64::from(self.offset_y));
         let across = settle_on(&self.snap_x, drawn.x, velocity.0, self.motion);
         let down = settle_on(&self.snap_y, drawn.y, velocity.1, self.motion);
@@ -109,7 +109,7 @@ impl Scrollable {
     /// leads to from where the view is going, so keys and wheel notches walk
     /// the detents one at a time.
     pub(super) fn settle_step(&mut self, dx: f32, dy: f32, source: MotionSource) {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let drawn = Vec2::new(f64::from(self.offset_x), f64::from(self.offset_y));
         let going = self.scroll_to.target().unwrap_or(drawn);
         let across = step_on(&self.snap_x, going.x, f64::from(dx))
@@ -123,7 +123,7 @@ impl Scrollable {
     }
 
     /// Move the content onto the detent at `target` by the motion a release
-    /// takes there ([`crate::motion::ScrollTo::settle`]).
+    /// takes there ([`tilo_ui_base::motion::ScrollTo::settle`]).
     fn settle_at(
         &mut self,
         target: Vec2,
@@ -142,8 +142,8 @@ impl Scrollable {
         {
             ScrollJump::Glide => self.follow_scroll_to(now),
             ScrollJump::Land | ScrollJump::FadeIn => self.move_by(
-                crate::num::f32_of_f64(target.x) - self.offset_x,
-                crate::num::f32_of_f64(target.y) - self.offset_y,
+                tilo_ui_base::num::f32_of_f64(target.x) - self.offset_x,
+                tilo_ui_base::num::f32_of_f64(target.y) - self.offset_y,
             ),
         }
         if self.scroll_to.is_moving(now) {
@@ -173,7 +173,7 @@ fn settle_on(points: &[f32], from: f64, velocity: f64, motion: EffectiveMotion) 
         return None;
     }
     let rest = Snap::rest_for(from, velocity, motion);
-    let flinging = f64::from(crate::virtual_viewport::KINETIC_MIN_VELOCITY);
+    let flinging = f64::from(tilo_ui_base::virtual_viewport::KINETIC_MIN_VELOCITY);
     let heads_for = points
         .iter()
         .map(|point| f64::from(*point))

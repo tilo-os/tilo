@@ -60,7 +60,7 @@ disallowed-methods = [
     # A widget drawn through the toolkit's draw paths carries its key into the
     # scene, so a page that shows the scene as HTML gives it an element of its
     # own. (Repeated from the root file.)
-    { path = "tilo_ui::widget::Widget::draw", reason = "draw a child with tilo_ui::widget::DrawChild::draw_child (or draw_child_at)", allow-invalid = true },
+    { path = "tilo_ui_base::widget::Widget::draw", reason = "draw a child with tilo_ui_base::widget::DrawChild::draw_child (or draw_child_at)", allow-invalid = true },
     { path = "std::time::Instant::now", reason = "read the clock through `ui::time::now()`" },
     { path = "std::time::SystemTime::now", reason = "read the clock through `ui::time::wall()`" },
     { path = "std::thread::spawn", reason = "run background work through `ui::background::Background::spawn`" },

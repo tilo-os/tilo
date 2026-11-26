@@ -10,7 +10,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{BlendMode, Fill};
 
-use crate::scene_parts::{PartKey, SectionParts};
+use tilo_ui_base::{scene_parts::PartKey, scene_parts::SectionParts};
 
 /// How a lifted part is drawn this frame instead of at rest.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -72,7 +72,7 @@ pub struct Lifted {
     pub pose: Pose,
     /// What it draws, at rest.
     pub scene: Box<Scene>,
-    /// Its damage parts, when the frame's were recorded ([`crate::scene_parts`]).
+    /// Its damage parts, when the frame's were recorded ([`tilo_ui_base::scene_parts`]).
     pub parts: Option<SectionParts>,
 }
 
@@ -143,8 +143,8 @@ pub fn lifted(
     }) && scene.encoding().draw_tags.is_empty();
     if lifts {
         let mut layer = Box::new(Scene::new());
-        if crate::scene_parts::is_tracked(scene) {
-            crate::scene_parts::track(&layer);
+        if tilo_ui_base::scene_parts::is_tracked(scene) {
+            tilo_ui_base::scene_parts::track(&layer);
         }
         draw(&mut layer, transform);
         let lifted = Lifted {

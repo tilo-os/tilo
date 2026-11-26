@@ -3,7 +3,7 @@ tilo_test_env::scenario! {
 
     phase listed_action_rows_read_as_outcomes_once_without_ids_glyphs_or_control_verbs;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let new_folder = || {
             ActionSpec::immediate(
                 "new-folder",
@@ -81,7 +81,7 @@ tilo_test_env::scenario! {
     // control mirrors.
     phase action_rows_carry_the_actions_picture_and_its_keys;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut new_task = ActionSpec::immediate(
             "new-task",
             "New task",
@@ -113,8 +113,8 @@ tilo_test_env::scenario! {
             ResourceSpec::new("tasks:internal", "tasks.Task", " ").with_action(internal_step),
         ];
         let mut palette = ActionPalette::new();
-        palette.set_platform_conventions(crate::platform::PlatformConventions::new(
-            crate::platform::Platform::Linux,
+        palette.set_platform_conventions(tilo_ui_base::platform::PlatformConventions::new(
+            tilo_ui_base::platform::Platform::Linux,
         ));
         palette.load_open_resources(&resources);
         palette.open();
@@ -127,7 +127,7 @@ tilo_test_env::scenario! {
         let titles: Vec<&str> = rows.iter().map(|row| row.title.as_str()).collect();
         assert_eq!(titles, vec!["New task"], "only the app's own action");
         let row = &rows[0];
-        assert_eq!(row.icon, Some(crate::icons::Icon::Plus));
+        assert_eq!(row.icon, Some(tilo_ui_base::icons::Icon::Plus));
         let Some(crate::search::SearchRow::Command(command)) = &row.row else {
             panic!("the action row is painted from the action's own state: {row:?}");
         };
@@ -140,7 +140,7 @@ tilo_test_env::scenario! {
 
     phase the_same_action_of_two_documents_is_two_rows_naming_each;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mark = || {
             ActionSpec::immediate(
                 "mark",

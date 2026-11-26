@@ -96,12 +96,12 @@ impl StillAnimation {
 
 /// Paths to the deepest widgets under `root` asking for animation frames:
 /// the ones actually holding the loop open, not every container above them,
-/// each with its box and [`crate::widget::Widget::animation_detail`]. `~`
+/// each with its box and [`tilo_ui_base::widget::Widget::animation_detail`]. `~`
 /// marks a widget that animates without asking to be redrawn: a retained
 /// parent cache then never reaches it again. Allocates, so only diagnostics
 /// call it.
-pub fn animating_leaves(root: &dyn crate::widget::Widget) -> Vec<String> {
-    fn walk(widget: &dyn crate::widget::Widget, path: &str, out: &mut Vec<String>) {
+pub fn animating_leaves(root: &dyn tilo_ui_base::widget::Widget) -> Vec<String> {
+    fn walk(widget: &dyn tilo_ui_base::widget::Widget, path: &str, out: &mut Vec<String>) {
         if !widget.needs_animation_frame() {
             return;
         }
@@ -139,8 +139,13 @@ pub fn animating_leaves(root: &dyn crate::widget::Widget) -> Vec<String> {
 /// Paths to the deepest widgets under `root` whose one-shot wake deadline
 /// is `due` or earlier: who wakes an otherwise idle loop next. Allocates, so
 /// only diagnostics call it.
-pub fn waking_leaves(root: &dyn crate::widget::Widget, due: Instant) -> Vec<String> {
-    fn walk(widget: &dyn crate::widget::Widget, due: Instant, path: &str, out: &mut Vec<String>) {
+pub fn waking_leaves(root: &dyn tilo_ui_base::widget::Widget, due: Instant) -> Vec<String> {
+    fn walk(
+        widget: &dyn tilo_ui_base::widget::Widget,
+        due: Instant,
+        path: &str,
+        out: &mut Vec<String>,
+    ) {
         if widget.next_wake_deadline().is_none_or(|at| at > due) {
             return;
         }

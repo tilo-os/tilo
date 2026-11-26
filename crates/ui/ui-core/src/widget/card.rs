@@ -1,7 +1,7 @@
 //! `Card` and `CardGrid`: objects in content.
 
-use crate::num::f64_of_usize;
 use std::collections::HashMap;
+use tilo_ui_base::num::f64_of_usize;
 
 use taffy::style_helpers::{auto, fr, length, max_content, min_content, minmax, percent, repeat};
 use taffy::{NodeId, Size, Style, TaffyTree};
@@ -10,15 +10,16 @@ use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use super::composition_parts::{Parts, retained_parts};
-use crate::paint::PaintCtx;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::widget::composition_parts::Parts;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::DrawChild;
 use crate::widget::activation::{Activation, Interaction, activation_controls};
-use crate::widget::{Button, Element, TaffyTreeExt, Text, Tone, Widget};
+use crate::{widget::Button, widget::Text};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{widget::Element, widget::TaffyTreeExt, widget::Tone, widget::Widget};
 
 /// How many columns of at least `min_card_w` fit in `avail_w` with `gap`
 /// between them. Always at least 1.
@@ -93,7 +94,7 @@ pub(crate) fn paint_surface(
     let theme = ctx.theme;
     let m = CardMetrics::new(theme);
     let fill = surface_fill(theme, interaction, pressable);
-    crate::surface::selectable_card(
+    tilo_ui_base::surface::selectable_card(
         ctx.scene,
         ctx.transform,
         (rect, m.radius),
@@ -192,7 +193,7 @@ impl<'a> CardFace<'a> {
             return 0.0;
         };
         let m = CardMetrics::new(theme);
-        let wrap = crate::num::f32_of_f64((width - 2.0 * m.padding).max(1.0));
+        let wrap = tilo_ui_base::num::f32_of_f64((width - 2.0 * m.padding).max(1.0));
         f64::from(
             text.measure_style(title, Some(wrap), &theme.text(TextRole::Subheading))
                 .1,
@@ -232,7 +233,7 @@ impl<'a> CardFace<'a> {
         if let Some(title) = self.title {
             let m = CardMetrics::new(ctx.theme);
             let style = ctx.theme.text(TextRole::Subheading);
-            let wrap = crate::num::f32_of_f64((rect.width() - 2.0 * m.padding).max(1.0));
+            let wrap = tilo_ui_base::num::f32_of_f64((rect.width() - 2.0 * m.padding).max(1.0));
             let ink = ctx.theme.text_primary;
             ctx.text(
                 title,
@@ -250,7 +251,7 @@ struct CardHeader {
 }
 
 impl Widget for CardHeader {
-    retained_parts!("CardHeader");
+    tilo_ui_base::retained_parts!("CardHeader");
 
     fn build_layout(
         &mut self,
@@ -294,14 +295,14 @@ impl Widget for CardHeader {
         node
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.parts.draw(&mut crate::draw::DrawCtx::new(
+        self.parts.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -320,7 +321,7 @@ pub struct Card {
     activation: Activation,
     /// What the pointer coming over the card does (`hover`): a view of what is under it, reported
     /// once each time it arrives.
-    hover: crate::component::Event,
+    hover: tilo_ui_base::component::Event,
     hovering: bool,
     cursor: Point,
     dirty: bool,
@@ -339,7 +340,7 @@ impl Card {
             has_footer: false,
             stripe: None,
             activation: Activation::new("card"),
-            hover: crate::component::Event::None,
+            hover: tilo_ui_base::component::Event::None,
             hovering: false,
             cursor: Point::ZERO,
             dirty: true,
@@ -362,7 +363,7 @@ impl Card {
     }
 
     /// The selected object among its peers: its edge heavier and in the
-    /// accent, in place of the rest edge ([`crate::surface::selected_edge`]),
+    /// accent, in place of the rest edge ([`tilo_ui_base::surface::selected_edge`]),
     /// announced as selected.
     #[must_use]
     pub fn selected(mut self, selected: bool) -> Self {
@@ -510,7 +511,7 @@ impl Widget for Card {
         Some(self)
     }
 
-    crate::provides!(dyn crate::widget::controls::ActionControls,);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls,);
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
         let before = self.parts.rect;
@@ -520,7 +521,11 @@ impl Widget for Card {
         }
     }
 
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let mut changed = false;
         for child in &mut self.parts.children {
             changed |= child.update(state, path);
@@ -528,7 +533,11 @@ impl Widget for Card {
         changed
     }
 
-    fn sync(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         for child in &mut self.parts.children {
             child.sync(state, path);
         }
@@ -567,9 +576,9 @@ impl Widget for Card {
         if self.has_footer {
             tracks.push(min_content());
         }
-        let pad = crate::num::f32_of_f64(m.padding);
+        let pad = tilo_ui_base::num::f32_of_f64(m.padding);
         let stripe_pad = if self.stripe.is_some() {
-            crate::num::f32_of_f64(m.stripe)
+            tilo_ui_base::num::f32_of_f64(m.stripe)
         } else {
             0.0
         };
@@ -594,8 +603,8 @@ impl Widget for Card {
                     bottom: length(pad),
                 },
                 gap: Size {
-                    width: length(crate::num::f32_of_f64(m.gap)),
-                    height: length(crate::num::f32_of_f64(m.gap)),
+                    width: length(tilo_ui_base::num::f32_of_f64(m.gap)),
+                    height: length(tilo_ui_base::num::f32_of_f64(m.gap)),
                 },
                 ..Default::default()
             },
@@ -607,7 +616,7 @@ impl Widget for Card {
         node
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -626,7 +635,7 @@ impl Widget for Card {
             self.selected,
         );
         let inner = CardFace::content_theme(theme);
-        self.parts.draw(&mut crate::draw::DrawCtx::new(
+        self.parts.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -638,7 +647,7 @@ impl Widget for Card {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         // The pointer coming over the card is the card's own, whether or not something in it takes
         // the same move: a view that shows what is under the pointer hears it once, on arrival.
@@ -720,8 +729,8 @@ impl Widget for Card {
         dirty
     }
 
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-        let mut change = crate::widget::StructureChange::None;
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
+        let mut change = tilo_ui_base::widget::StructureChange::None;
         for child in &mut self.parts.children {
             change = change.join(child.take_structure_change());
         }
@@ -743,7 +752,7 @@ impl Widget for Card {
         "Card"
     }
 
-    crate::widget::pressable!(parts.rect);
+    tilo_ui_base::pressable!(parts.rect);
 
     fn test_id(&self) -> Option<&str> {
         self.activation.is_bound().then(|| self.activation.id())
@@ -753,8 +762,8 @@ impl Widget for Card {
         self.activation.is_bound().then(|| self.activation.id())
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let name = self.accessible_name.clone().or_else(|| self.title.clone());
         if !self.activation.is_bound() {
             // An object that does not open still has a name and may be the
@@ -784,7 +793,7 @@ activation_controls!(Card, activation);
 /// Standard actions in declaration/focus order: secondaries, then primary.
 /// Unspecified buttons use measured content sizing; explicit sizes remain manual.
 /// Each wrapped line aligns to the trailing edge.
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "the action row of a card or a dialog, built from their actions"
 )]
@@ -808,7 +817,7 @@ impl Actions {
 }
 
 impl Widget for Actions {
-    retained_parts!("Actions");
+    tilo_ui_base::retained_parts!("Actions");
 
     fn build_layout(
         &mut self,
@@ -841,14 +850,14 @@ impl Widget for Actions {
         node
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.parts.draw(&mut crate::draw::DrawCtx::new(
+        self.parts.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -884,7 +893,7 @@ impl CardWidth {
 /// Reflows its cards into equal, aligned columns by width. Each row is as
 /// tall as its tallest card; cards share the row's height so their footers
 /// line up, and a row of short cards stays short.
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "`ui.CardGrid` (`DescribedCardGrid`) is its described form, over cards of its own"
 )]
@@ -899,7 +908,7 @@ pub struct CardGrid {
     /// Whether the cards were changed by the keyed operations ([`Self::insert_card`],
     /// [`Self::remove_card`], [`Self::move_card`], [`Self::replace_card`]) since the last frame:
     /// a change the frame's damage describes, rather than a rebuild of the grid.
-    structure: crate::widget::StructureChange,
+    structure: tilo_ui_base::widget::StructureChange,
     /// The card the keyboard is on: arrows move it, Home and End and the page keys reach its
     /// ends, Enter opens it, and edit and Delete act on it.
     cursor: Option<usize>,
@@ -934,7 +943,7 @@ impl CardGrid {
             rect: Rect::ZERO,
             child_nodes: Vec::new(),
             name: None,
-            structure: crate::widget::StructureChange::None,
+            structure: tilo_ui_base::widget::StructureChange::None,
             cursor: None,
             focused: false,
             viewport: None,
@@ -1111,7 +1120,7 @@ impl CardGrid {
         let slot = self.cards.get_mut(index)?;
         self.structure = self
             .structure
-            .join(crate::widget::StructureChange::Described);
+            .join(tilo_ui_base::widget::StructureChange::Described);
         Some(std::mem::replace(slot, card))
     }
 
@@ -1120,7 +1129,7 @@ impl CardGrid {
         self.cards.insert(index, card);
         self.structure = self
             .structure
-            .join(crate::widget::StructureChange::Described);
+            .join(tilo_ui_base::widget::StructureChange::Described);
     }
 
     pub fn remove_card(&mut self, index: usize) -> Option<Element> {
@@ -1129,7 +1138,7 @@ impl CardGrid {
         }
         self.structure = self
             .structure
-            .join(crate::widget::StructureChange::Described);
+            .join(tilo_ui_base::widget::StructureChange::Described);
         Some(self.cards.remove(index))
     }
 
@@ -1141,7 +1150,7 @@ impl CardGrid {
         self.cards.insert(to.min(self.cards.len()), card);
         self.structure = self
             .structure
-            .join(crate::widget::StructureChange::Described);
+            .join(tilo_ui_base::widget::StructureChange::Described);
     }
 
     #[must_use]
@@ -1157,7 +1166,7 @@ impl CardGrid {
     }
 
     fn grid_style(&self) -> Style {
-        let gap = crate::num::f32_of_f64(self.gap);
+        let gap = tilo_ui_base::num::f32_of_f64(self.gap);
         Style {
             display: taffy::Display::Grid,
             size: Size {
@@ -1174,7 +1183,7 @@ impl CardGrid {
             grid_template_columns: vec![repeat(
                 "auto-fit",
                 vec![minmax(
-                    length(crate::num::f32_of_f64(self.min_card_w)),
+                    length(tilo_ui_base::num::f32_of_f64(self.min_card_w)),
                     fr(1.0_f32),
                 )],
             )],
@@ -1189,7 +1198,11 @@ impl CardGrid {
 }
 
 impl Widget for CardGrid {
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let mut changed = false;
         for card in &mut self.cards {
             changed |= card.update(state, path);
@@ -1222,13 +1235,14 @@ impl Widget for CardGrid {
         &mut self,
         styles: &mut taffy::Restyle<'_>,
         width: taffy::AvailableSpace,
-        _text: &mut crate::text_render::TextRenderer,
+        _text: &mut tilo_ui_base::text_render::TextRenderer,
     ) {
         let tracks = match width {
             taffy::AvailableSpace::Definite(width) => {
                 let width = f64::from(width);
                 let columns = self.columns_for_width(width);
-                let column = crate::num::f32_of_f64(card_column_width(width, columns, self.gap));
+                let column =
+                    tilo_ui_base::num::f32_of_f64(card_column_width(width, columns, self.gap));
                 vec![length(column); columns]
             }
             // A question of how wide it could be keeps the tracks of the width it was last laid
@@ -1242,17 +1256,17 @@ impl Widget for CardGrid {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         // The box a scroll view around it clips the grid to, when one does: a page key moves the
         // keyboard over what a person can see.
-        self.viewport = crate::widget::layout_clip();
+        self.viewport = tilo_ui_base::widget::layout_clip();
         let origin = Point::new(self.rect.x0, self.rect.y0);
         for (card, &child) in self.cards.iter_mut().zip(&self.child_nodes) {
             card.apply_layout(taffy, child, origin);
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1279,7 +1293,7 @@ impl Widget for CardGrid {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         for (card, &node) in self.cards.iter_mut().zip(self.child_nodes.iter()) {
             card.handle_event(event, &mut ctx.reborrow(ctx.path, node));
@@ -1357,8 +1371,8 @@ impl Widget for CardGrid {
         "CardGrid"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessState, a11y::Role};
         self.name.as_ref().map(|name| {
             let mut children: Vec<_> = self
                 .cards
@@ -1371,7 +1385,7 @@ impl Widget for CardGrid {
                 node.state.selected = true;
                 node.state.active_descendant = self.focused;
             }
-            crate::a11y::AccessNode::new(Role::List)
+            tilo_ui_base::a11y::AccessNode::new(Role::List)
                 .with_name(name.clone())
                 .with_state(AccessState::new().focusable(true).focused(self.focused))
                 .with_children(children)
@@ -1411,7 +1425,7 @@ impl Widget for CardGrid {
         dirty
     }
 
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         let mut change = std::mem::take(&mut self.structure);
         for card in &mut self.cards {
             change = change.join(card.take_structure_change());

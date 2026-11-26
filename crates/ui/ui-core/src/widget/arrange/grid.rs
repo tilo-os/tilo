@@ -5,8 +5,8 @@ use taffy::{Size, Style};
 
 use super::arranged::{Arranged, Layout, Part, Resolved, lead_container, wrapper_style};
 use super::units::{Axis, columns_for};
-use crate::tokens::Rhythm;
-use crate::widget::Length;
+use tilo_ui_base::tokens::Rhythm;
+use tilo_ui_base::widget::Length;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Columns {
@@ -176,7 +176,7 @@ impl Arranged<GridLayout> {
     }
 
     #[must_use]
-    pub fn push_span(mut self, child: crate::widget::Element, span: u16) -> Self {
+    pub fn push_span(mut self, child: tilo_ui_base::widget::Element, span: u16) -> Self {
         let mut part = Part::new(child);
         part.span = span.max(1);
         self.parts.push(part);

@@ -8,7 +8,7 @@ use tilo_compositor::Compositor;
 
 use super::{ShellDesktop, WidgetSurface};
 use tilo_session_core::surfaces::Published;
-use ui::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 use super::{Heard, Layer, Placement, Shell, Surfaces};
 
@@ -17,7 +17,7 @@ use super::{Heard, Layer, Placement, Shell, Surfaces};
 pub struct Hosted<'a> {
     compositor: &'a mut Compositor,
     published: &'a mut tilo_session_core::surfaces::Surfaces,
-    theme: ui::Theme,
+    theme: tilo_ui_base::Theme,
 }
 
 impl<'a> Hosted<'a> {
@@ -25,7 +25,7 @@ impl<'a> Hosted<'a> {
     pub fn new(
         compositor: &'a mut Compositor,
         published: &'a mut tilo_session_core::surfaces::Surfaces,
-        theme: ui::Theme,
+        theme: tilo_ui_base::Theme,
     ) -> Self {
         Self {
             compositor,
@@ -64,7 +64,7 @@ impl Layer for RefCell<WidgetSurface> {
         self.borrow_mut().relayout();
     }
 
-    fn set_theme(&self, theme: ui::Theme) {
+    fn set_theme(&self, theme: tilo_ui_base::Theme) {
         self.borrow_mut().set_theme(theme);
     }
 
@@ -76,7 +76,11 @@ impl Layer for RefCell<WidgetSurface> {
         Published::a11y_tree(&mut *self.borrow_mut())
     }
 
-    fn a11y_action(&self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+    fn a11y_action(
+        &self,
+        target: ui::accesskit::NodeId,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         Published::a11y_action(&mut *self.borrow_mut(), target, action)
     }
 

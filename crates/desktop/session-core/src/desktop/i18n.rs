@@ -1,7 +1,7 @@
 //! The desktop's Fluent catalogue.
 //!
 //! Top bar and activity pane strings are keys resolved through the toolkit's
-//! [`mod@ui::i18n`] manager, never literals. The catalogues are embedded with
+//! [`mod@tilo_ui_base::i18n`] manager, never literals. The catalogues are embedded with
 //! `include_str!`, so the native shell, the browser runtime (which has no
 //! file system to read them from) and a unit test resolve the same copy. On a
 //! thread with no manager yet, the user's locale comes from the environment,
@@ -15,7 +15,7 @@ const CATALOGS: &[(&str, &str)] = &[
     ("de-DE", include_str!("../../locales/de-DE.ftl")),
 ];
 
-ui::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
+tilo_ui_base::embedded_catalog!(pub fn, ["en-US", "de-DE"]);
 
 /// Load the desktop's catalogue on this thread, so history entries the
 /// desktop records read in its words.
@@ -131,9 +131,9 @@ mod tests {
             )
         };
         let english = (opened(1), opened(3));
-        ui::i18n::I18nManager::set_locale("de-DE");
+        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
         let german = (opened(1), opened(3));
-        ui::i18n::I18nManager::set_locale("en-US");
+        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
         assert_eq!(english.0, "Opened 1 window");
         assert_eq!(english.1, "Opened 3 windows");
         assert_eq!(german.0, "1 Fenster geöffnet");
@@ -152,9 +152,9 @@ mod tests {
             )
         };
         let english = words();
-        ui::i18n::I18nManager::set_locale("de-DE");
+        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
         let german = words();
-        ui::i18n::I18nManager::set_locale("en-US");
+        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
         assert_eq!(english.0, "Share with workspace");
         assert_eq!(english.1, "Stop sharing with workspace");
         assert_eq!(english.2, "Stop sharing with workspace (2 watching)");
@@ -204,9 +204,9 @@ mod tests {
             ]
         };
         let english = [words(1), words(2)];
-        ui::i18n::I18nManager::set_locale("de-DE");
+        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
         let german = [words(1), words(2)];
-        ui::i18n::I18nManager::set_locale("en-US");
+        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
         assert_eq!(
             english[0],
             [
@@ -276,9 +276,9 @@ mod tests {
             })
         };
         let english = entries();
-        ui::i18n::I18nManager::set_locale("de-DE");
+        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
         let german = entries();
-        ui::i18n::I18nManager::set_locale("en-US");
+        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
         assert_eq!(
             english,
             [
@@ -323,9 +323,9 @@ mod tests {
             ]
         };
         let english = words();
-        ui::i18n::I18nManager::set_locale("de-DE");
+        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
         let german = words();
-        ui::i18n::I18nManager::set_locale("en-US");
+        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
         assert_eq!(
             english,
             [
@@ -372,9 +372,9 @@ mod tests {
             ]
         };
         let english = words();
-        ui::i18n::I18nManager::set_locale("de-DE");
+        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
         let german = words();
-        ui::i18n::I18nManager::set_locale("en-US");
+        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
         assert_eq!(
             english,
             [
@@ -408,9 +408,9 @@ mod tests {
     #[test]
     fn german_desktops_resolve_german_copy() {
         let english = t("workspace-menu-new-strip");
-        ui::i18n::I18nManager::set_locale("de-DE");
+        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
         let german = t("workspace-menu-new-strip");
-        ui::i18n::I18nManager::set_locale("en-US");
+        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
         assert_eq!(english, "New strip");
         assert_eq!(german, "Neue Leiste");
     }

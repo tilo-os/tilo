@@ -1,6 +1,6 @@
 //! The session's Fluent catalogue: what its notices say.
 //! Every notice the session shows the person is a catalogue key resolved through the toolkit's
-//! [`mod@ui::i18n`] manager, never a literal. The catalogues are embedded with `include_str!` , so
+//! [`mod@tilo_ui_base::i18n`] manager, never a literal. The catalogues are embedded with `include_str!` , so
 //! a release session and a unit test resolve the same copy; on a thread with no manager yet the
 //! user's locale comes from the environment, and a message a translation lacks falls back to
 //! `en-US` .
@@ -11,13 +11,13 @@ const CATALOGUES: &[(&str, &str)] = &[
     ("de-DE", include_str!("../locales/de-DE.ftl")),
 ];
 
-ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
+tilo_ui_base::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 
 /// The message `key` in the person's language with `args`, and `source` where the catalogue holds
 /// no such message: what a host says for a thing the catalogue has no word for.
 #[cfg(target_os = "linux")]
 pub(crate) fn word(key: &str, args: &[(&str, String)], source: &str) -> String {
-    let args: Vec<(&str, ui::i18n::ArgValue)> = args
+    let args: Vec<(&str, tilo_ui_base::i18n::ArgValue)> = args
         .iter()
         .map(|(name, value)| (*name, value.clone().into()))
         .collect();
@@ -76,11 +76,11 @@ impl tilolang_tilo::runtime::Words for SeededWords {
     }
 
     fn revision(&self) -> u64 {
-        ui::i18n::I18nManager::revision()
+        tilo_ui_base::i18n::I18nManager::revision()
     }
 
     fn language(&self) -> String {
-        ui::i18n::I18nManager::window_locale()
+        tilo_ui_base::i18n::I18nManager::window_locale()
     }
 }
 
@@ -109,9 +109,9 @@ impl Language {
             return false;
         }
         self.settings.set(settings);
-        let before = ui::I18nManager::revision();
-        ui::i18n::follow_configured_language();
-        ui::I18nManager::revision() != before
+        let before = tilo_ui_base::I18nManager::revision();
+        tilo_ui_base::i18n::follow_configured_language();
+        tilo_ui_base::I18nManager::revision() != before
     }
 }
 
@@ -170,9 +170,9 @@ mod tests {
     #[test]
     fn german_desktops_resolve_german_copy() {
         let english = t("storage-full-title");
-        ui::i18n::I18nManager::set_locale("de-DE");
+        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
         let german = t("storage-full-title");
-        ui::i18n::I18nManager::set_locale("en-US");
+        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
         assert_eq!(english, "Storage is full");
         assert_eq!(german, "Der Speicher ist voll");
     }
@@ -187,7 +187,7 @@ mod tests {
             word("session-resource-layout-history", &[], "Layout history"),
             "Layout history"
         );
-        ui::i18n::I18nManager::set_locale("de-DE");
+        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
         assert_eq!(
             word("session-resource-layout-history", &[], "Layout history"),
             "Layoutverlauf"
@@ -201,7 +201,7 @@ mod tests {
             "Leiste, 40 % breit"
         );
         assert_eq!(word("no-such-word", &[], "Source"), "Source");
-        ui::i18n::I18nManager::set_locale("en-US");
+        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
         assert_eq!(word("session-resource-layout", &[], "Layout"), "Layout");
     }
 
@@ -221,8 +221,8 @@ mod tests {
         assert_eq!(settings_store::stamp(), None);
 
         ensure();
-        let before = ui::i18n::I18nManager::current_locale();
-        let alternate = if ui::i18n::preferred_language()
+        let before = tilo_ui_base::i18n::I18nManager::current_locale();
+        let alternate = if tilo_ui_base::i18n::preferred_language()
             .as_deref()
             .is_some_and(|locale| locale.starts_with("de"))
         {
@@ -230,24 +230,24 @@ mod tests {
         } else {
             "de-DE"
         };
-        ui::i18n::I18nManager::set_locale(alternate);
-        assert_eq!(ui::i18n::I18nManager::current_locale(), alternate);
+        tilo_ui_base::i18n::I18nManager::set_locale(alternate);
+        assert_eq!(tilo_ui_base::i18n::I18nManager::current_locale(), alternate);
 
         let follow = Language::new();
         assert!(
             follow.follow(),
             "the first pass follows the language even without a settings store"
         );
-        assert_ne!(ui::i18n::I18nManager::current_locale(), alternate);
+        assert_ne!(tilo_ui_base::i18n::I18nManager::current_locale(), alternate);
 
-        ui::i18n::I18nManager::set_locale(alternate);
-        assert_eq!(ui::i18n::I18nManager::current_locale(), alternate);
+        tilo_ui_base::i18n::I18nManager::set_locale(alternate);
+        assert_eq!(tilo_ui_base::i18n::I18nManager::current_locale(), alternate);
         assert!(
             !follow.follow(),
             "the second pass skips refreshing while there is still no stamp"
         );
-        assert_eq!(ui::i18n::I18nManager::current_locale(), alternate);
+        assert_eq!(tilo_ui_base::i18n::I18nManager::current_locale(), alternate);
 
-        ui::i18n::I18nManager::set_locale(&before);
+        tilo_ui_base::i18n::I18nManager::set_locale(&before);
     }
 }

@@ -4,9 +4,9 @@
 //! typed effect vocabulary; this reaches only the toolkit's widgets inside
 //! them, the way the host does once it admitted an invocation.
 
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart};
+use tilo_ui_base::widget::Widget;
 use ui_core::automerge::{AutoCommit, ObjId};
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
-use ui_core::widget::Widget;
 
 use super::Effected;
 
@@ -36,9 +36,9 @@ pub fn press_control<W: Widget + ?Sized>(
 ) -> bool {
     if root.test_id() == Some(control) {
         return root.perform_action(
-            &ui_core::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
             &[],
-            &mut ui_core::widget::Edits::lend(doc),
+            &mut tilo_ui_base::widget::Edits::lend(doc),
             path,
         );
     }
@@ -56,10 +56,10 @@ impl<W: Widget + ?Sized> HostDelivery for W {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<Effected>, String> {
-        let started = ui_core::host_operation::start_operation(
+        let started = tilo_ui_base::host_operation::start_operation(
             self,
             &ResourceOperation::local(tilo_actions::InvocationId::new(), kind, type_id, payload),
-            &mut ui_core::widget::Edits::lend(doc),
+            &mut tilo_ui_base::widget::Edits::lend(doc),
             path,
         )?;
         Ok(started.map(|started| match started {

@@ -253,7 +253,7 @@ impl super::services::Daemon {
         });
         let programs = TaskPrograms::new(
             Arc::new(DaemonPrograms::new(person_api, hosts)),
-            ui::i18n::preferred_language,
+            tilo_ui_base::i18n::preferred_language,
         );
         Arc::new(programs).register(&self.serving().copies().providers());
     }

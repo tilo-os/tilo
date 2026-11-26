@@ -1,7 +1,7 @@
 //! [`InputHint`] as a described component.
 
-use crate::component::{Component, Described};
-use crate::input::{InputBinding, KeyboardBinding};
+use tilo_ui_base::{component::Component, component::Described};
+use tilo_ui_base::{input::InputBinding, input::KeyboardBinding};
 
 use super::InputHint;
 

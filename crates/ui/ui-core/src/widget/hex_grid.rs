@@ -11,12 +11,12 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::ScrollMetrics;
 use crate::widget::scrollbar::{PressOutcome, Scrollbar};
-use crate::widget::{TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::ScrollMetrics;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[path = "hex_grid/hex_grid_component.rs"]
 mod component;
@@ -465,7 +465,7 @@ impl HexGrid {
 }
 
 impl Widget for HexGrid {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn name(&self) -> &'static str {
         "HexGrid"
@@ -502,14 +502,14 @@ impl Widget for HexGrid {
     }
 
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.rect = rect;
             self.dirty = true;
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(unused_variables, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text_renderer, theme, _env) = ctx.parts();
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 {
@@ -544,7 +544,7 @@ impl Widget for HexGrid {
 
         // The rules between the columns run from the labels down the rows.
         let rule = f64::from(theme.tokens.metrics.chrome_rule_px);
-        let edge = crate::surface::edge_on(colors.surfaces.content);
+        let edge = tilo_ui_base::surface::edge_on(colors.surfaces.content);
         for x in [g.rule_hex, g.rule_ascii] {
             scene.fill(
                 Fill::NonZero,
@@ -589,7 +589,7 @@ impl Widget for HexGrid {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.last_cursor = ctx.logical(position);
@@ -649,9 +649,9 @@ impl Widget for HexGrid {
         }
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::Role;
-        let node = crate::a11y::AccessNode::new(Role::Table)
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::a11y::Role;
+        let node = tilo_ui_base::a11y::AccessNode::new(Role::Table)
             .with_optional_name(self.label.clone())
             .with_hashed_key("hex_grid");
         // Why it cannot be pressed now, if it says: read beside its name, never instead.

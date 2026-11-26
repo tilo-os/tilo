@@ -27,7 +27,7 @@ fn row_of(toolbar: &WindowToolbar, width: f64, compact: bool) -> ToolbarRow {
         7,
         Some(toolbar),
         Theme::dark().motion(),
-        crate::motion::frame_now(),
+        tilo_ui_base::motion::frame_now(),
     );
     row.lay_out(Rect::new(40.0, 0.0, 40.0 + width, 40.0));
     row.measure_views(&Theme::dark());

@@ -1,8 +1,8 @@
 //! [`SunburstChart`] as a described component: a hierarchy as rings, and [`ChartPart`] as one of
 //! its parts.
 
-use crate::component::{Component, Described};
 use crate::widget::{ChartBranch, ChartPart, hierarchy};
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::{SunburstChart, SunburstNode};
 

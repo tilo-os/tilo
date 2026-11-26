@@ -3,8 +3,8 @@
 
 use std::ops::Range;
 
-use crate::icons::Icon;
 use crate::widget::autocomplete::{RowRole, Suggestion};
+use tilo_ui_base::icons::Icon;
 
 pub const MAX_ROWS: usize = 50;
 
@@ -18,7 +18,7 @@ pub struct Candidate {
     pub aside: Option<String>,
     pub label: Option<String>,
     pub icon: Option<Icon>,
-    pub person: Option<crate::component::Person>,
+    pub person: Option<tilo_ui_base::component::Person>,
     pub command: Option<Command>,
 }
 
@@ -75,7 +75,7 @@ impl Candidate {
     }
 
     #[must_use]
-    pub fn with_person(mut self, person: crate::component::Person) -> Self {
+    pub fn with_person(mut self, person: tilo_ui_base::component::Person) -> Self {
         self.person = Some(person);
         self
     }
@@ -271,7 +271,7 @@ impl Entry {
                 args.set("query", query.clone());
                 let mut row = Suggestion::labelled(
                     "",
-                    crate::i18n::I18nManager::lookup("completion-no-match", Some(&args)),
+                    tilo_ui_base::i18n::I18nManager::lookup("completion-no-match", Some(&args)),
                 );
                 row.role = RowRole::Notice;
                 row
@@ -298,7 +298,7 @@ impl Folded {
         let mut text = String::with_capacity(raw.len());
         let mut origin = Vec::with_capacity(raw.len().saturating_add(1));
         for (offset, scalar) in raw.char_indices() {
-            crate::text_match::fold_char(scalar, &mut |part| {
+            tilo_ui_base::text_match::fold_char(scalar, &mut |part| {
                 text.push(part);
                 origin.resize(text.len(), offset);
             });
@@ -471,7 +471,7 @@ impl PreparedSource {
 
 #[must_use]
 pub fn rows(source: &PreparedSource, query: &str) -> Vec<Entry> {
-    let folded = crate::text_match::fold_search_text(query.trim_start());
+    let folded = tilo_ui_base::text_match::fold_search_text(query.trim_start());
     let folded = folded.trim_end();
     let mut out = Vec::new();
     if folded.is_empty() {

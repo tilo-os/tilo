@@ -11,15 +11,15 @@ use super::{
     ResourceCacheKey,
 };
 #[cfg(feature = "model")]
-use crate::collaboration::CollaborationManager;
-#[cfg(feature = "model")]
-use crate::presence::PresenceKey;
-use crate::theme::Theme;
-#[cfg(feature = "model")]
 use crate::time::Instant;
-use crate::widget::Widget;
 use std::cell::{Cell, RefCell};
 use taffy::{NodeId, TaffyTree};
+#[cfg(feature = "model")]
+use tilo_ui_base::collaboration::CollaborationManager;
+#[cfg(feature = "model")]
+use tilo_ui_base::presence::PresenceKey;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 use winit::window::CursorIcon;
 
 /// The mapped nodes that take part in history: those inside a bound
@@ -77,7 +77,7 @@ pub(super) struct LayoutRuntime {
     /// frame, or a sync or input that rebuilt it between frames.
     pub(super) unsolved: bool,
     /// Set when the root's widgets report a change they carry out in place
-    /// ([`crate::widget::StructureChange::Children`]): the next layout pass
+    /// ([`tilo_ui_base::widget::StructureChange::Children`]): the next layout pass
     /// remounts their children in the retained tree instead of rebuilding
     /// it, unless something rebuilds it first.
     pub(super) remount: bool,
@@ -93,7 +93,7 @@ pub(super) struct LayoutRuntime {
     /// device pixels, so another scale is solved again even at one size.
     pub(super) last_layout_scale: Option<f32>,
     /// System chrome drawn over the window, which content stays clear of.
-    pub(super) safe_area: crate::scale::SafeArea,
+    pub(super) safe_area: tilo_ui_base::scale::SafeArea,
     /// The row the runner draws the app's window-bar parts in, outside a
     /// Tilo session, under the safe area's top (`native_runner::part_bar`).
     pub(super) part_bar_inset: f64,
@@ -108,7 +108,7 @@ pub(super) struct LayoutRuntime {
     /// frame that sees them moved repaints the whole window.
     pub(super) drawn: (u64, u64),
     /// Whether every rebuild requested since the last one was a change the
-    /// widgets describe ([`crate::widget::StructureChange::Described`]).
+    /// widgets describe ([`tilo_ui_base::widget::StructureChange::Described`]).
     /// Anything else that asks for a rebuild goes through
     /// [`Self::request_rebuild`], which clears it.
     pub(super) rebuild_described: bool,
@@ -121,13 +121,13 @@ pub(super) struct LayoutRuntime {
     #[cfg(test)]
     pub(super) undescribed_by: Option<&'static std::panic::Location<'static>>,
     /// Frames whose layout failed, skipped, and when that was last logged.
-    pub(super) skipped_frames: crate::widget::SkippedFrames,
+    pub(super) skipped_frames: tilo_ui_base::widget::SkippedFrames,
     /// The last placement that placed every widget (`None` before one): a
     /// focus move since places them all again, so a view revealing the
     /// focused widget reads where it truly stands.
     pub(super) placed_all: Option<PlacedAll>,
     /// The last placement placed only what long collections show
-    /// ([`crate::widget::placing_again`]): a widget far from every view
+    /// ([`tilo_ui_base::widget::placing_again`]): a widget far from every view
     /// stands where an earlier placement put it until the next full one
     /// (`App::place_all`).
     pub(super) placed_partly: bool,
@@ -136,8 +136,8 @@ pub(super) struct LayoutRuntime {
     /// snaps its own parts there stands them where the frame drew them.
     pub(super) placed_scale: f64,
     /// What a host that draws only its frames' damage keeps from frame to
-    /// frame ([`crate::draw_cull`]).
-    pub(super) cull: crate::draw_cull::Culling,
+    /// frame ([`tilo_ui_base::draw_cull`]).
+    pub(super) cull: tilo_ui_base::draw_cull::Culling,
     /// What the frame's whole-tree walks last read.
     pub(super) walks: TreeWalks,
     /// What the last layout pass did with the tree ([`LayoutPass`]).
@@ -157,7 +157,7 @@ pub(super) struct LayoutPass {
     /// The tree was solved.
     pub(super) measured: bool,
     /// Nodes the solve marked to be measured again, and of those the ones with no children
-    /// ([`crate::widget::counts::LayoutCounts::marked`]).
+    /// ([`tilo_ui_base::widget::counts::LayoutCounts::marked`]).
     pub(super) marked: (u64, u64),
     /// Only what the views moved was placed: the pass placed nothing else.
     pub(super) placed_partly: bool,
@@ -200,7 +200,7 @@ impl LayoutRuntime {
             last_frame_size: None,
             last_layout_logical: None,
             last_layout_scale: None,
-            safe_area: crate::scale::SafeArea::default(),
+            safe_area: tilo_ui_base::scale::SafeArea::default(),
             part_bar_inset: 0.0,
             content_origin: vello::kurbo::Point::ORIGIN,
             rebuilds: 0,
@@ -209,11 +209,11 @@ impl LayoutRuntime {
             frame_rebuilds_described: false,
             #[cfg(test)]
             undescribed_by: None,
-            skipped_frames: crate::widget::SkippedFrames::default(),
+            skipped_frames: tilo_ui_base::widget::SkippedFrames::default(),
             placed_all: None,
             placed_partly: false,
             placed_scale: 1.0,
-            cull: crate::draw_cull::Culling::default(),
+            cull: tilo_ui_base::draw_cull::Culling::default(),
             walks: TreeWalks::default(),
             last_pass: LayoutPass::default(),
             frames: FrameCounts::default(),
@@ -246,7 +246,7 @@ impl LayoutRuntime {
 /// rebuild or a remount, what the local actor may do with the permission
 /// generation, and what the components in the tree may do with the
 /// revision of the permissions their hosts share with them
-/// ([`crate::permissions::shared_revision`]). Equal generations are the
+/// ([`tilo_ui_base::permissions::shared_revision`]). Equal generations are the
 /// same tree.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct TreeGeneration {
@@ -304,7 +304,7 @@ pub(super) struct AvailabilityWalk {
 #[derive(PartialEq)]
 pub(super) struct RouteInputs {
     pub(super) tree: TreeGeneration,
-    pub(super) observation: Option<crate::collaboration::AcceptedRoute>,
+    pub(super) observation: Option<tilo_ui_base::collaboration::AcceptedRoute>,
     pub(super) autosave_generation: u64,
     pub(super) document: (Vec<automerge::ChangeHash>, usize),
 }
@@ -349,13 +349,13 @@ pub(super) struct InputRuntime {
     pub(super) modifiers: winit::event::Modifiers,
     /// Focused native configuration only; no logical key, compose or press history.
     pub(super) keyboard_layout: Option<std::sync::Arc<winit::keyboard::KeyboardLayout>>,
-    pub(super) interaction: crate::interaction::InteractionEnvironment,
-    pub(super) platform: crate::platform::PlatformConventions,
-    pub(super) nav_gestures: crate::gesture::NavGestureRecognizer,
+    pub(super) interaction: tilo_ui_base::interaction::InteractionEnvironment,
+    pub(super) platform: tilo_ui_base::platform::PlatformConventions,
+    pub(super) nav_gestures: tilo_ui_base::gesture::NavGestureRecognizer,
     pub(super) current_cursor: CursorIcon,
     pub(super) tooltips: crate::app_core::TooltipLayer,
     /// Pen samples on their way to the pointer events they describe.
-    pub(super) pen: crate::pen::PenInput,
+    pub(super) pen: tilo_ui_base::pen::PenInput,
     /// The app is shown inside a host whose focus order continues past it:
     /// Tab at either end of the app's order leaves it for the host.
     pub(super) tab_order_continues_in_host: bool,
@@ -378,7 +378,7 @@ pub(super) struct InputRuntime {
     /// activation) addresses among the app's windows.
     pub(super) window_focused: bool,
     /// Whether this window holds the keyboard: its fields keep their text and
-    /// selection without it, and paint no caret ([`crate::caret_owner`]).
+    /// selection without it, and paint no caret ([`tilo_ui_base::caret_owner`]).
     pub(super) keyboard_held: bool,
     /// Whether the widgets last painted their carets: the window held the
     /// keyboard and nothing over them took it.
@@ -396,12 +396,12 @@ impl InputRuntime {
             keyboard_held: true,
             widget_carets: true,
             keyboard_entry_owed: false,
-            interaction: crate::interaction::InteractionEnvironment::default(),
-            platform: crate::platform::PlatformConventions::default(),
-            nav_gestures: crate::gesture::NavGestureRecognizer::new(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
+            platform: tilo_ui_base::platform::PlatformConventions::default(),
+            nav_gestures: tilo_ui_base::gesture::NavGestureRecognizer::new(),
             current_cursor: CursorIcon::Default,
             tooltips: crate::app_core::TooltipLayer::default(),
-            pen: crate::pen::PenInput::default(),
+            pen: tilo_ui_base::pen::PenInput::default(),
             tab_order_continues_in_host: false,
             pointer: crate::app_core::PointerPlace::default(),
             pointer_replay: crate::pointer_replay::PointerReplay::default(),
@@ -441,7 +441,7 @@ pub(super) struct ActionRuntime {
     pub(super) search_in_host: bool,
     /// The control an accessibility action focused while the same action
     /// replaced widgets: focused again once the next layout admits them.
-    pub(super) focus_after_rebuild: Option<crate::widget::layout::CompositionFocus>,
+    pub(super) focus_after_rebuild: Option<tilo_ui_base::widget::layout::CompositionFocus>,
     pub(super) action_registry: tilo_actions::ActionRegistry,
     // Independent from scheduling invalidation: mutable unbound decoder access.
     pub(super) action_registry_generation: u64,
@@ -454,13 +454,13 @@ pub(super) struct ActionRuntime {
     #[cfg(feature = "model")]
     pub(super) bound_publication: crate::bound_dispatch::BoundPublication,
     #[cfg(feature = "model")]
-    pub(super) last_published_bound_route: Option<crate::collaboration::AcceptedRoute>,
+    pub(super) last_published_bound_route: Option<tilo_ui_base::collaboration::AcceptedRoute>,
     /// Publication refusals already logged, so a surface refused on every
     /// frame logs each distinct reason once rather than at frame rate.
     pub(super) refusals_logged: RefusalLog,
     #[cfg(feature = "model")]
     #[cfg(test)]
-    pub(super) bound_broker_route_for_test: Option<crate::collaboration::AcceptedRoute>,
+    pub(super) bound_broker_route_for_test: Option<tilo_ui_base::collaboration::AcceptedRoute>,
     #[cfg(feature = "model")]
     pub(super) action_directory_stamp: Option<(
         std::rc::Rc<super::action_directory_snapshot::DirectoryObservation>,
@@ -499,7 +499,7 @@ pub(super) struct ActionRuntime {
     #[cfg(feature = "model")]
     /// What the broker holds of the surface `last_published_actions` names,
     /// the base of the next delta.
-    pub(super) published_surface: Option<crate::collaboration::SurfacePublication>,
+    pub(super) published_surface: Option<tilo_ui_base::collaboration::SurfacePublication>,
     /// A handled input left the surface to publish once the sync it asked
     /// for has run: the frame that runs it publishes.
     pub(super) action_surface_owed: bool,
@@ -539,7 +539,7 @@ pub(super) struct ActionRuntime {
     pub(super) hosted_requests: std::collections::HashSet<u64>,
     #[cfg(feature = "model")]
     /// Resolutions asked for a resource still being read, answered once its
-    /// read lands ([`crate::widget::resources::PublishesResources::resource_pending`]).
+    /// read lands ([`tilo_ui_base::widget::resources::PublishesResources::resource_pending`]).
     pub(super) awaited_resolutions: Vec<super::AwaitedResolution>,
     /// Answers to broker invocations held, by wire id, until what they
     /// caused in the app has landed ([`crate::wake::WakeHandle::owe`]).
@@ -681,24 +681,24 @@ impl ActionRuntime {
 
 /// Accessibility state and semantic projection.
 pub(super) struct AccessibilityRuntime {
-    pub(super) screen_reader: Option<crate::screen_reader::ScreenReader>,
+    pub(super) screen_reader: Option<tilo_ui_base::screen_reader::ScreenReader>,
     pub(super) screen_reader_modifier_down: bool,
     /// Ctrl+Super+Enter and the two-volume-key hold, which turn the screen
     /// reader on and off (`App::handle_screen_reader_chord`).
-    pub(super) screen_reader_chord: crate::screen_reader_chord::ScreenReaderChord,
+    pub(super) screen_reader_chord: tilo_ui_base::screen_reader_chord::ScreenReaderChord,
     /// Told the new state after the chord toggled the screen reader; when
     /// set, it keeps the state instead of the person's settings file.
     pub(super) on_screen_reader_chord: Option<Box<dyn FnMut(bool)>>,
     /// The narrator the chord turned off, kept until the reader is turned on
     /// again: its speech backends cut an utterance off when dropped, and it
     /// is still saying that the screen reader is off.
-    pub(super) parting_screen_reader: Option<crate::screen_reader::ScreenReader>,
+    pub(super) parting_screen_reader: Option<tilo_ui_base::screen_reader::ScreenReader>,
     /// What a finger means while the screen reader is on
     /// (`App::explore_by_touch`).
-    pub(super) touch_explorer: crate::screen_reader_touch::TouchExplorer,
+    pub(super) touch_explorer: tilo_ui_base::screen_reader_touch::TouchExplorer,
     /// The order the screen reader walks, read from
     /// [`Self::semantic_tree`] at the revision it is keyed by.
-    pub(super) reading_order: Option<(u64, Vec<crate::screen_reader::ReadingItem>)>,
+    pub(super) reading_order: Option<(u64, Vec<tilo_ui_base::screen_reader::ReadingItem>)>,
     /// Counts the refreshes that changed [`Self::semantic_tree`].
     pub(super) semantic_tree_revision: u64,
     pub(super) live_region_last: std::collections::HashMap<String, String>,
@@ -715,8 +715,8 @@ pub(super) struct AccessibilityRuntime {
     /// workspace's temperature and the person's colour, applied over
     /// [`Self::base_theme`] on every rebuild so a settings change keeps
     /// them.
-    pub(super) window: crate::theme::WindowAppearance,
-    pub(super) a11y: crate::a11y::A11ySettings,
+    pub(super) window: tilo_ui_base::theme::WindowAppearance,
+    pub(super) a11y: tilo_ui_base::a11y::A11ySettings,
     pub(super) text_scale: f32,
     pub(super) ui_scale: f32,
     /// The window's content zoom, multiplied into [`Self::ui_scale`] when
@@ -739,7 +739,7 @@ pub(super) struct AccessibilityRuntime {
     /// its tree is built at for the session's export, whose bounds an
     /// assistive client reads in physical pixels.
     pub(super) export_scale: f64,
-    /// The widgets' presentation epoch ([`crate::widget::note_resource_presentation_changed`])
+    /// The widgets' presentation epoch ([`tilo_ui_base::widget::note_resource_presentation_changed`])
     /// [`Self::semantic_tree`] was last built at: a widget that changed what it declares outside
     /// a sync, an input or a layout (a control measured where it is drawn) moves it.
     pub(super) semantic_tree_presentation: u64,
@@ -748,15 +748,15 @@ pub(super) struct AccessibilityRuntime {
 impl AccessibilityRuntime {
     pub(super) fn new(
         base_theme: Theme,
-        screen_reader: Option<crate::screen_reader::ScreenReader>,
+        screen_reader: Option<tilo_ui_base::screen_reader::ScreenReader>,
     ) -> Self {
         Self {
             screen_reader,
             screen_reader_modifier_down: false,
-            screen_reader_chord: crate::screen_reader_chord::ScreenReaderChord::new(),
+            screen_reader_chord: tilo_ui_base::screen_reader_chord::ScreenReaderChord::new(),
             on_screen_reader_chord: None,
             parting_screen_reader: None,
-            touch_explorer: crate::screen_reader_touch::TouchExplorer::new(),
+            touch_explorer: tilo_ui_base::screen_reader_touch::TouchExplorer::new(),
             reading_order: None,
             semantic_tree_revision: 0,
             live_region_last: std::collections::HashMap::new(),
@@ -764,8 +764,8 @@ impl AccessibilityRuntime {
             focus_before_trap: None,
             focus_trap_entry: None,
             base_theme,
-            window: crate::theme::WindowAppearance::default(),
-            a11y: crate::a11y::A11ySettings::default(),
+            window: tilo_ui_base::theme::WindowAppearance::default(),
+            a11y: tilo_ui_base::a11y::A11ySettings::default(),
             text_scale: 1.0,
             ui_scale: 1.0,
             zoom: crate::content_zoom::WindowZoom::default(),
@@ -782,26 +782,28 @@ impl AccessibilityRuntime {
 #[cfg(feature = "model")]
 /// Continuation publication and deferred restore state.
 pub(super) struct ContinuationRuntime {
-    pub(super) last_published: Option<crate::collaboration::ContinuationMetadata>,
+    pub(super) last_published: Option<tilo_ui_base::collaboration::ContinuationMetadata>,
     /// Distinguish a queued clear from an unknown prior projection.
     pub(super) publication_initialized: bool,
-    pub(super) pending_restore: Option<crate::collaboration::ContinuationMetadata>,
+    pub(super) pending_restore: Option<tilo_ui_base::collaboration::ContinuationMetadata>,
     /// Generic view restoration waits until layout has built the focus order.
     pub(super) pending_view: Option<crate::view::View>,
     /// Route epoch for private continuity. A new acknowledged route must
     /// republish unchanged metadata and playback through that route only.
-    pub(super) last_private_route: Option<crate::collaboration::AcceptedRoute>,
+    pub(super) last_private_route: Option<tilo_ui_base::collaboration::AcceptedRoute>,
     pub(super) private_instance: Option<u64>,
     /// What the primary route last published to the session's persistent
     /// search index, so only changes cross again.
     pub(super) search_index: crate::search::index_publication::Publisher,
     /// The primary route [`Self::search_index`] published on.
-    pub(super) search_index_route: Option<crate::collaboration::AcceptedRoute>,
+    pub(super) search_index_route: Option<tilo_ui_base::collaboration::AcceptedRoute>,
 }
 
 #[cfg(feature = "model")]
 impl ContinuationRuntime {
-    pub(super) fn new(pending_restore: Option<crate::collaboration::ContinuationMetadata>) -> Self {
+    pub(super) fn new(
+        pending_restore: Option<tilo_ui_base::collaboration::ContinuationMetadata>,
+    ) -> Self {
         Self {
             last_published: None,
             publication_initialized: false,
@@ -821,7 +823,7 @@ pub(super) struct CollaborationRuntime {
     pub(super) manager: CollaborationManager,
     /// What the primary route's end-to-end encrypted channel lets this
     /// device do, as last reported; `None` before the first report.
-    pub(super) key_access: Option<crate::collaboration::KeyAccessState>,
+    pub(super) key_access: Option<tilo_ui_base::collaboration::KeyAccessState>,
     /// What the window's status line last said about the connection: a
     /// join held up, refused or lost changes it without changing the
     /// window's model.
@@ -829,7 +831,8 @@ pub(super) struct CollaborationRuntime {
     /// Action requests the window's clients made while `manager` was still joining its primary
     /// route, which carries nothing else yet: sent, in order, once it is ready. Dropped, an
     /// invocation would wait for an answer that never comes.
-    pub(super) held_requests: std::collections::VecDeque<crate::collaboration::CollabRequest>,
+    pub(super) held_requests:
+        std::collections::VecDeque<tilo_ui_base::collaboration::CollabRequest>,
     /// How the window takes up what `manager`'s workspace sends it.
     pub(super) delivery: super::WorkspaceDelivery,
     /// The store read of the workspace's members the window is waiting for, by its request id:
@@ -868,13 +871,13 @@ impl CollaborationRuntime {
 /// Presence publication, follow, and frame-pump state.
 pub(super) struct PresenceRuntime {
     pub(super) broadcast_scope: Option<PresenceKey>,
-    pub(super) pointer_space: Option<crate::presence::PointerSpace>,
-    pub(super) followed_peer: Option<crate::permissions::MemberId>,
+    pub(super) pointer_space: Option<tilo_ui_base::presence::PointerSpace>,
+    pub(super) followed_peer: Option<tilo_ui_base::permissions::MemberId>,
     pub(super) last_pointer_broadcast: Option<Instant>,
-    pub(super) last_focus: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
-    pub(super) last_location: Option<(PresenceKey, crate::collaboration::PresencePayload)>,
+    pub(super) last_focus: Option<(PresenceKey, tilo_ui_base::collaboration::PresencePayload)>,
+    pub(super) last_location: Option<(PresenceKey, tilo_ui_base::collaboration::PresencePayload)>,
     /// What the app last said of the draft its person writes.
-    pub(super) composing: crate::presence::DraftSaid,
+    pub(super) composing: tilo_ui_base::presence::DraftSaid,
     pub(super) last_view: Option<crate::view::ViewSubset>,
     pub(super) broadcast_sink: Option<PresenceBroadcastSink>,
 }
@@ -889,7 +892,7 @@ impl PresenceRuntime {
             last_pointer_broadcast: None,
             last_focus: None,
             last_location: None,
-            composing: crate::presence::DraftSaid::default(),
+            composing: tilo_ui_base::presence::DraftSaid::default(),
             last_view: None,
             broadcast_sink: None,
         }
@@ -918,7 +921,7 @@ pub(super) struct WindowRuntime {
     pub(super) fullscreen_requested: bool,
     pub(super) fullscreen_active: bool,
     /// The narrowest the window's layout works at, as of the last tree
-    /// build ([`crate::widget::minimum_window_width`]), and what the window
+    /// build ([`tilo_ui_base::widget::minimum_window_width`]), and what the window
     /// system was last told.
     pub(super) minimum_width: Option<f64>,
     pub(super) minimum_width_stated: Option<f64>,

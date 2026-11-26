@@ -15,8 +15,8 @@ use std::rc::Rc;
 
 use tilo_resource::items::{ChildrenParts, ItemAction, ItemChildVisitor, ItemCollection};
 use tilo_resource::{ActionDecl, ModelError, Resource, ScopeDecl, SearchEntry};
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart};
 use ui_core::automerge::AutoCommit;
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
 
 use super::super::dispatch::Dispatcher;
 use super::super::effect::Effects;
@@ -126,7 +126,7 @@ pub(crate) trait TypedRoot {
 
     /// Each presence where its last action left it, shown under `app_id`'s
     /// keys for the resource.
-    fn landed_presences(&self, app_id: &str) -> Vec<ui_core::widget::ViewPresence>;
+    fn landed_presences(&self, app_id: &str) -> Vec<tilo_ui_base::widget::ViewPresence>;
 
     /// Forget where `presence` was: its view closed.
     fn forget(&self, presence: &tilo_actions::PresenceId);
@@ -256,27 +256,27 @@ pub(crate) trait TypedRoot {
         &self,
         op: &ResourceOperation<'_>,
         doc: &tilo_resource::Doc,
-        view: &mut dyn ui_core::widget::Widget,
+        view: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Result<Option<ResourceOperationStart>, String>;
 
     fn poll_effect(
         &self,
         invocation: tilo_actions::InvocationId,
         cancel: bool,
-        view: &mut dyn ui_core::widget::Widget,
+        view: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Option<tilo_actions::InvocationUpdate>;
 
     /// Finish the jobs the view's windows started.
-    fn poll_window_jobs(&self, view: &mut dyn ui_core::widget::Widget);
+    fn poll_window_jobs(&self, view: &mut dyn tilo_ui_base::widget::Widget);
 
     /// Apply what finished effects settle.
-    fn apply_settlements(&self, edits: &mut ui_core::widget::Edits<'_>);
+    fn apply_settlements(&self, edits: &mut tilo_ui_base::widget::Edits<'_>);
 
     /// Start the document effects of an applied `operation`.
     fn start_document_effects(
         &self,
         operation: &ResourceOperation<'_>,
-        applied: &ui_core::widget::document_effects::AppliedDocument<'_>,
+        applied: &tilo_ui_base::widget::document_effects::AppliedDocument<'_>,
     ) -> Result<Option<ResourceOperationStart>, String>;
 }
 
@@ -333,13 +333,13 @@ fn presences_of(
     landings: Vec<crate::framework::Landing>,
     kind: &str,
     app_id: &str,
-) -> Vec<ui_core::widget::ViewPresence> {
+) -> Vec<tilo_ui_base::widget::ViewPresence> {
     landings
         .into_iter()
         .map(|landing| {
             let (key, payload) =
                 crate::framework::ResourceSelection::from(landing.place).presence_of(kind, app_id);
-            ui_core::widget::ViewPresence {
+            tilo_ui_base::widget::ViewPresence {
                 presence: landing.presence,
                 label: landing.name,
                 key,
@@ -462,7 +462,7 @@ impl<R: Resource> TypedRoot for Typed<R> {
         }
     }
 
-    fn landed_presences(&self, app_id: &str) -> Vec<ui_core::widget::ViewPresence> {
+    fn landed_presences(&self, app_id: &str) -> Vec<tilo_ui_base::widget::ViewPresence> {
         presences_of(self.live.landings(), R::KIND, app_id)
     }
 
@@ -647,7 +647,7 @@ impl<R: Resource> TypedRoot for Typed<R> {
         &self,
         op: &ResourceOperation<'_>,
         doc: &tilo_resource::Doc,
-        view: &mut dyn ui_core::widget::Widget,
+        view: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Result<Option<ResourceOperationStart>, String> {
         self.effects.start(op, doc, view)
     }
@@ -656,23 +656,23 @@ impl<R: Resource> TypedRoot for Typed<R> {
         &self,
         invocation: tilo_actions::InvocationId,
         cancel: bool,
-        view: &mut dyn ui_core::widget::Widget,
+        view: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Option<tilo_actions::InvocationUpdate> {
         self.effects.poll(invocation, cancel, view)
     }
 
-    fn poll_window_jobs(&self, view: &mut dyn ui_core::widget::Widget) {
+    fn poll_window_jobs(&self, view: &mut dyn tilo_ui_base::widget::Widget) {
         self.effects.poll_window_jobs(view);
     }
 
-    fn apply_settlements(&self, edits: &mut ui_core::widget::Edits<'_>) {
+    fn apply_settlements(&self, edits: &mut tilo_ui_base::widget::Edits<'_>) {
         self.effects.apply_settlements(edits);
     }
 
     fn start_document_effects(
         &self,
         operation: &ResourceOperation<'_>,
-        applied: &ui_core::widget::document_effects::AppliedDocument<'_>,
+        applied: &tilo_ui_base::widget::document_effects::AppliedDocument<'_>,
     ) -> Result<Option<ResourceOperationStart>, String> {
         self.effects.start_document_effects(operation, applied)
     }

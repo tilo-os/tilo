@@ -1,13 +1,13 @@
 use super::*;
-use crate::presence::PresenceCtx;
 use crate::testing::{Dispatch, dispatch};
 use crate::time::Duration;
-use crate::widget::Widget;
 use crate::widget::history::HistoryAuthor;
 use crate::widget::history_group::NamedRange;
 use collab_types::ArtifactKind;
 use std::cell::RefCell;
 use std::rc::Rc;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::widget::Widget;
 use winit::event::ElementState;
 use winit::event::Modifiers;
 
@@ -61,7 +61,7 @@ fn paint(t: &mut ActivityTimeline) {
     tr.apply_typography(&theme.tokens.typography);
     t.place_controls(&theme);
     let presence = PresenceCtx::empty();
-    t.draw(&mut crate::draw::DrawCtx::new(
+    t.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
@@ -70,12 +70,12 @@ fn paint(t: &mut ActivityTimeline) {
     ));
 }
 
-use crate::synthetic_input::cursor_moved;
+use tilo_ui_base::synthetic_input::cursor_moved;
 
-use crate::synthetic_input::mouse_press;
+use tilo_ui_base::synthetic_input::mouse_press;
 
 fn key_press(logical_key: winit::keyboard::Key) -> WindowEvent {
-    crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+    tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
         logical_key,
         None,
         ElementState::Pressed,
@@ -146,12 +146,12 @@ tilo_test_env::scenario! {
         let semantics = timeline.accessibility().expect("history semantics");
         assert!(
             semantics.children.iter().any(
-                |node| node.role == crate::a11y::Role::ListItem && node.action_target.is_some()
+                |node| node.role == tilo_ui_base::a11y::Role::ListItem && node.action_target.is_some()
             )
         );
         assert!(semantics.children.iter().all(|node| matches!(
             node.role,
-            crate::a11y::Role::ListItem | crate::a11y::Role::TreeItem
+            tilo_ui_base::a11y::Role::ListItem | tilo_ui_base::a11y::Role::TreeItem
         )));
 
         // Each mutation affordance needs its own callback.

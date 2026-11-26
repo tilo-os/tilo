@@ -1,43 +1,46 @@
 //! [`Dropdown`] — a reusable, CRDT-backed single-select control.
 
-use crate::i18n::widget_text;
-use crate::num::f32_of_f64;
 use crate::widget::autocomplete::{Suggestion, SuggestionList};
-use crate::widget::{AppModel, EventCtx, ModelPath};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::{widget::AppModel, widget::EventCtx, widget::ModelPath};
 
 #[path = "dropdown_component.rs"]
 mod component;
-use crate::widget::TaffyTreeExt;
-use crate::widget::binding::{BoxedBinding, Pulled};
 pub use component::DropdownProps;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{widget::binding::BoxedBinding, widget::binding::Pulled};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::paint::PaintCtx;
-use crate::query_text::{QueryComposition, QueryEventChange, QueryInk, QueryView};
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::text_selection::Selection;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::Widget;
-use crate::widget::{ActionEmitter, ControlBindingMetadata};
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_selection::Selection;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    query_text::QueryComposition, query_text::QueryEventChange, query_text::QueryInk,
+    query_text::QueryView,
+};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingMetadata};
 
 /// Height of the closed control before the first layout: a Regular control.
-const CONTROL_HEIGHT: f64 = crate::tokens::Metrics::BASE.min_pointer_target as f64;
+const CONTROL_HEIGHT: f64 = tilo_ui_base::tokens::Metrics::BASE.min_pointer_target as f64;
 /// Tallest the rows of the open list get before it scrolls.
 const MAX_LIST_HEIGHT: f64 = 240.0;
 const PAD_X: f64 = 10.0;
 const CHEVRON_W: f64 = 30.0;
 
 fn menu_min_width() -> f64 {
-    f64::from(crate::tokens::Metrics::BASE.panel_width_utility)
+    f64::from(tilo_ui_base::tokens::Metrics::BASE.panel_width_utility)
 }
 
 type SelectionChangeCallback = Box<dyn FnMut(&str)>;
@@ -64,7 +67,7 @@ pub struct Dropdown {
     filter: String,
     filter_selection: Selection,
     filter_composition: QueryComposition,
-    typing: crate::type_ahead::TypeAhead,
+    typing: tilo_ui_base::type_ahead::TypeAhead,
     list: SuggestionList,
     rows_at: Vec<usize>,
     query_rect: Rect,
@@ -86,11 +89,11 @@ pub struct Dropdown {
     theme: Option<Rc<Theme>>,
 
     enabled: bool,
-    menu: Option<crate::icons::Icon>,
+    menu: Option<tilo_ui_base::icons::Icon>,
     drawn: Option<u64>,
 
     fill: bool,
-    leading_icon: Option<crate::icons::Icon>,
+    leading_icon: Option<tilo_ui_base::icons::Icon>,
     name_resolved: bool,
     field_height: f64,
     label_style: TextStyle,
@@ -101,10 +104,10 @@ pub struct Dropdown {
     node: Option<NodeId>,
     column: Option<ChooserColumn>,
     chooser_cap: f64,
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     layout_dirty: bool,
-    appear: crate::motion::Appearing,
-    list_pose: crate::motion::Pose,
+    appear: tilo_ui_base::motion::Appearing,
+    list_pose: tilo_ui_base::motion::Pose,
 }
 
 /// Lists shorter than this never show a filter: a typed letter jumps to the
@@ -216,7 +219,7 @@ impl Dropdown {
             options,
             groups: Vec::new(),
             shortcuts: Vec::new(),
-            binding: Some(crate::doc_source::text_key(value_path)),
+            binding: Some(tilo_ui_base::doc_source::text_key(value_path)),
             chosen: None,
             action: None,
             placeholder: String::new(),
@@ -226,7 +229,7 @@ impl Dropdown {
             filter: String::new(),
             filter_selection: Selection::collapsed(0),
             filter_composition: QueryComposition::new(),
-            typing: crate::type_ahead::TypeAhead::default(),
+            typing: tilo_ui_base::type_ahead::TypeAhead::default(),
             list: {
                 let mut list = SuggestionList::new()
                     .with_scrollbar()
@@ -253,18 +256,18 @@ impl Dropdown {
             leading_icon: None,
             name_resolved: false,
             field_height: CONTROL_HEIGHT,
-            label_style: crate::tokens::typography::stock().style(TextRole::Label),
-            caption_style: crate::tokens::typography::stock().style(TextRole::Caption),
+            label_style: tilo_ui_base::tokens::typography::stock().style(TextRole::Label),
+            caption_style: tilo_ui_base::tokens::typography::stock().style(TextRole::Caption),
             theme_caption_height: 0.0,
             measured: 0.0,
             node: None,
             column: None,
-            chooser_cap: f64::from(crate::tokens::Metrics::BASE.chooser_width),
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            chooser_cap: f64::from(tilo_ui_base::tokens::Metrics::BASE.chooser_width),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             layout_dirty: true,
             drawn: None,
-            appear: crate::motion::Appearing::closed(),
-            list_pose: crate::motion::Pose::REST,
+            appear: tilo_ui_base::motion::Appearing::closed(),
+            list_pose: tilo_ui_base::motion::Pose::REST,
         }
     }
 
@@ -291,7 +294,7 @@ impl Dropdown {
         // The chevron turns with the list's arrival.
         self.appear.progress().to_bits().hash(&mut hasher);
         (self.filter_selection.anchor, self.filter_selection.cursor).hash(&mut hasher);
-        crate::i18n::I18nManager::revision().hash(&mut hasher);
+        tilo_ui_base::i18n::I18nManager::revision().hash(&mut hasher);
         hasher.finish()
     }
 
@@ -301,8 +304,8 @@ impl Dropdown {
     /// this dropdown on the next synchronization pass. The selected string is
     /// intentionally not restricted to `options`, so asynchronously loaded
     /// choices can preserve their model value while options catch up.
-    pub fn from_state(options: Vec<String>, state: &crate::LocalState<String>) -> Self {
-        let (selected, binding) = super::binding::local(state);
+    pub fn from_state(options: Vec<String>, state: &tilo_ui_base::LocalState<String>) -> Self {
+        let (selected, binding) = tilo_ui_base::widget::binding::local(state);
         Self {
             selected,
             binding: Some(binding),
@@ -366,7 +369,7 @@ impl Dropdown {
 
     /// A glyph before the value that says what the choice is.
     #[must_use]
-    pub fn leading_icon(mut self, icon: crate::icons::Icon) -> Self {
+    pub fn leading_icon(mut self, icon: tilo_ui_base::icons::Icon) -> Self {
         self.leading_icon = Some(icon);
         self.layout_dirty = true;
         self
@@ -378,7 +381,7 @@ impl Dropdown {
     /// [`Self::on_action`]) without the control keeping it as its value.
     /// Name it with [`Self::with_accessible_name`]: it shows no text.
     #[must_use]
-    pub fn as_menu(mut self, icon: crate::icons::Icon) -> Self {
+    pub fn as_menu(mut self, icon: tilo_ui_base::icons::Icon) -> Self {
         self.menu = Some(icon);
         self
     }
@@ -572,8 +575,8 @@ impl Dropdown {
                 self.theme_caption_height
             } else {
                 caption_height_in(
-                    &crate::tokens::typography::stock().style(TextRole::Caption),
-                    f64::from(crate::tokens::Spacing::BASE.s1),
+                    &tilo_ui_base::tokens::typography::stock().style(TextRole::Caption),
+                    f64::from(tilo_ui_base::tokens::Spacing::BASE.s1),
                 )
             }
         } else {
@@ -610,12 +613,13 @@ impl Dropdown {
             self.list.forget_width();
         }
         self.field_height = self.control_size.height(theme);
-        let touch_minimum =
-            if self.interaction.pointer_precision == crate::interaction::PointerPrecision::Coarse {
-                f64::from(self.interaction.minimum_target())
-            } else {
-                0.0
-            };
+        let touch_minimum = if self.interaction.pointer_precision
+            == tilo_ui_base::interaction::PointerPrecision::Coarse
+        {
+            f64::from(self.interaction.minimum_target())
+        } else {
+            0.0
+        };
         self.field_height = self.field_height.max(touch_minimum);
         self.label_style = self.control_size.label_style(theme);
         self.caption_style = theme.text(TextRole::Caption);
@@ -793,7 +797,7 @@ impl Dropdown {
             return;
         };
         if !self.list.is_measured() {
-            crate::text_render::with_layout_renderer(&theme, |text| {
+            tilo_ui_base::text_render::with_layout_renderer(&theme, |text| {
                 self.list.measure(text, &theme);
             });
         }
@@ -801,11 +805,11 @@ impl Dropdown {
     }
 
     fn option_key(value: &str) -> u64 {
-        crate::a11y::hash_key(&("dropdown-option", value))
+        tilo_ui_base::a11y::hash_key(&("dropdown-option", value))
     }
 
-    fn options_access(&self) -> crate::a11y::AccessNode {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn options_access(&self) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let filtered = self.filtered();
         let total = filtered.len();
         let options = filtered
@@ -882,7 +886,7 @@ impl Dropdown {
         transform: Affine,
         text_renderer: &mut TextRenderer,
         theme: &Theme,
-        icon: crate::icons::Icon,
+        icon: tilo_ui_base::icons::Icon,
     ) {
         let name = self.accessible_name.as_deref().unwrap_or_default();
         let face = crate::widget::ButtonFace::icon_only(self.rect, icon, name)
@@ -1115,9 +1119,9 @@ impl Dropdown {
 }
 
 impl Widget for Dropdown {
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::widget::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
@@ -1126,7 +1130,7 @@ impl Widget for Dropdown {
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         if self.interaction != environment {
             self.interaction = environment;
@@ -1212,7 +1216,7 @@ impl Widget for Dropdown {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.place(crate::widget::layout_rect(taffy, node, origin));
+        self.place(tilo_ui_base::widget::layout_rect(taffy, node, origin));
         self.place_list();
     }
 
@@ -1275,7 +1279,7 @@ impl Widget for Dropdown {
         self.layout_dirty = false;
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1316,7 +1320,7 @@ impl Widget for Dropdown {
                 field: self.rect,
                 caption: self.caption.as_deref(),
                 icon: if filtering {
-                    Some(crate::icons::Icon::Search)
+                    Some(tilo_ui_base::icons::Icon::Search)
                 } else {
                     self.leading_icon
                 },
@@ -1345,7 +1349,7 @@ impl Widget for Dropdown {
         }
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1354,7 +1358,7 @@ impl Widget for Dropdown {
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.appear.follow(self.open, theme.motion());
         if !self.appear.is_drawn() {
-            self.list_pose = crate::motion::Pose::REST;
+            self.list_pose = tilo_ui_base::motion::Pose::REST;
             return;
         }
         if let Some(viewport) = env.viewport {
@@ -1378,7 +1382,7 @@ impl Widget for Dropdown {
         false
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         // One whose action the person may not run still opens: what they choose is sent to be
         // refused with why, and the chooser keeps what it holds ([`Self::commit_value`]).
         if !self.enabled {
@@ -1505,19 +1509,19 @@ impl Widget for Dropdown {
             .ime_edit_fingerprint(&self.filter, &self.filter_selection, key)
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
-        Some(crate::ime::InputContent::TEXT)
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
+        Some(tilo_ui_base::ime::InputContent::TEXT)
     }
     fn is_enabled(&self) -> bool {
         self.effectively_enabled()
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         // Explicit names are Fluent ids. Keep the legacy value/placeholder
         // fallback for unlabeled standalone dropdowns.
         let name = match &self.accessible_name {
-            Some(name) => crate::i18n::spoken_name(name, self.name_resolved),
+            Some(name) => tilo_ui_base::i18n::spoken_name(name, self.name_resolved),
             None => self.caption.clone(),
         };
         // What the chooser shows stands in for a name where nothing named it,
@@ -1576,12 +1580,12 @@ impl Widget for Dropdown {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         root: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         if !self.effectively_enabled() {
             return false;
         }
@@ -1649,13 +1653,13 @@ impl Widget for Dropdown {
     }
 }
 
-impl crate::widget::ResourceOperations for Dropdown {}
+impl tilo_ui_base::widget::ResourceOperations for Dropdown {}
 
-impl crate::widget::controls::ActionControls for Dropdown {
+impl tilo_ui_base::widget::controls::ActionControls for Dropdown {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         if let Some(action) = &mut self.action {
             let _ = action.attach(domain, attachment);
@@ -1666,7 +1670,7 @@ impl crate::widget::controls::ActionControls for Dropdown {
     }
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let control_id = self.test_id().unwrap_or("dropdown");
-        crate::widget::controls::value_control_bindings(
+        tilo_ui_base::widget::controls::value_control_bindings(
             control_id,
             self.action.as_ref(),
             self.binding.as_ref().and_then(|b| b.document_key()),
@@ -1739,7 +1743,7 @@ struct FacePaint<'a> {
     outer: Rect,
     field: Rect,
     caption: Option<&'a str>,
-    icon: Option<crate::icons::Icon>,
+    icon: Option<tilo_ui_base::icons::Icon>,
     label: Option<(&'a str, bool)>,
     size: crate::widget::ControlSize,
     open: bool,
@@ -1774,7 +1778,7 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) {
         ctx.scene.push_layer(
             Fill::NonZero,
             BlendMode::default(),
-            crate::widget::DISABLED_ALPHA,
+            tilo_ui_base::widget::DISABLED_ALPHA,
             ctx.transform,
             &shape,
         );
@@ -1788,11 +1792,11 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) {
     } else {
         raised
     };
-    let bordered = crate::surface::control_face(ctx.scene, ctx.transform, &shape, bg, theme);
+    let bordered = tilo_ui_base::surface::control_face(ctx.scene, ctx.transform, &shape, bg, theme);
     let (bw, bc) = if active {
         (2.0, theme.tokens.colors.intent.accent_ink)
     } else {
-        (1.0, crate::surface::edge_on(raised))
+        (1.0, tilo_ui_base::surface::edge_on(raised))
     };
     if active || !bordered {
         ctx.scene.stroke(
@@ -1800,7 +1804,7 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) {
             ctx.transform,
             bc,
             None,
-            &crate::surface::edge_outline(face.field, radius),
+            &tilo_ui_base::surface::edge_outline(face.field, radius),
         );
     }
 
@@ -1809,13 +1813,13 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) {
         let edge = leading_icon_edge(&style).min(face.field.height());
         let x = face.field.x0 + PAD_X;
         let cy = face.field.center().y;
-        crate::icons::draw_icon(
+        tilo_ui_base::icons::draw_icon(
             ctx.scene,
             ctx.transform,
             Rect::new(x, cy - edge / 2.0, x + edge, cy + edge / 2.0),
             icon,
             theme.text_dim,
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
     }
     if let Some((label, placeholder)) = face.label
@@ -1844,7 +1848,7 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) {
     let edge = (f64::from(theme.tokens.metrics.icon_sm) * f64::from(theme.text_scale.max(1.0)))
         .min(CHEVRON_W - 2.0);
     let slot_center = Point::new(face.field.x1 - CHEVRON_W / 2.0, face.field.center().y);
-    crate::icons::draw_icon(
+    tilo_ui_base::icons::draw_icon(
         ctx.scene,
         ctx.transform
             * Affine::rotate_about(
@@ -1852,9 +1856,9 @@ fn paint_face(ctx: &mut PaintCtx<'_>, face: &FacePaint<'_>) {
                 slot_center,
             ),
         Rect::from_center_size(slot_center, (edge, edge)),
-        crate::icons::Icon::ChevronDown,
+        tilo_ui_base::icons::Icon::ChevronDown,
         theme.text_dim,
-        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+        tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
     );
     if face.disabled {
         ctx.scene.pop_layer();
@@ -1875,7 +1879,7 @@ pub struct DropdownFace<'a> {
     value: &'a str,
     placeholder: &'a str,
     caption: Option<&'a str>,
-    icon: Option<crate::icons::Icon>,
+    icon: Option<tilo_ui_base::icons::Icon>,
     size: crate::widget::ControlSize,
     open: bool,
     hovered: bool,
@@ -1914,7 +1918,7 @@ impl<'a> DropdownFace<'a> {
     }
     /// A glyph before the value that says what the choice is.
     #[must_use]
-    pub fn leading_icon(mut self, icon: crate::icons::Icon) -> Self {
+    pub fn leading_icon(mut self, icon: tilo_ui_base::icons::Icon) -> Self {
         self.icon = Some(icon);
         self
     }

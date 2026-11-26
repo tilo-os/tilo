@@ -3,7 +3,7 @@
 //! no frames; a still theme and reduced motion land the pin at once.
 
 use super::*;
-use crate::Theme;
+use tilo_ui_base::Theme;
 
 fn theme() -> Theme {
     Theme::dark()
@@ -23,7 +23,7 @@ fn pins_of(pins: &[(&str, f64)]) -> Map {
                 hug: false,
                 grows: false,
             },
-            Box::new(crate::widget::Spacer::new()),
+            Box::new(tilo_ui_base::widget::Spacer::new()),
         );
     }
     map
@@ -36,33 +36,33 @@ fn map_of(pins: &[(&str, f64)], viewport: Rect) -> Map {
 }
 
 fn lay_out_again(map: &mut Map, viewport: Rect) {
-    let mut text = crate::font_catalog::fixture_renderer();
-    crate::widget::layout::lay_out_detached(map, viewport, &theme(), &mut text)
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+    tilo_ui_base::widget::layout::lay_out_detached(map, viewport, &theme(), &mut text)
         .expect("the map lays out");
 }
 
 fn draw(map: &mut Map) {
     let mut scene = Scene::new();
-    let mut text = crate::font_catalog::fixture_renderer();
-    map.draw(&mut crate::draw::DrawCtx::new(
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+    map.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut text,
         &theme(),
-        crate::presence::PresenceCtx::default().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::default().draw_env(),
     ));
 }
 
 #[test]
 fn a_pin_moved_by_the_person_glides_to_its_new_place_and_then_rests() {
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let mut map = map_of(&[("one", 100.0)], viewport);
     draw(&mut map);
-    let now = crate::motion::frame_now();
+    let now = tilo_ui_base::motion::frame_now();
     assert!(map.placed.borrow().contains_key("one"), "the pin is drawn");
 
-    crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+    tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
     map.pins[0].1.x = 400.0;
     map.invalidation.invalidate();
     lay_out_again(&mut map, viewport);
@@ -113,7 +113,7 @@ fn a_pin_moved_by_the_person_glides_to_its_new_place_and_then_rests() {
 
 #[test]
 fn a_map_built_again_keeps_the_camera_and_the_places_where_they_were_drawn() {
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let mut old = map_of(&[("one", 100.0)], viewport);
     draw(&mut old);
@@ -132,7 +132,7 @@ fn a_map_built_again_keeps_the_camera_and_the_places_where_they_were_drawn() {
         map.camera().same(left),
         "the lens the person left the canvas at"
     );
-    let now = crate::motion::frame_now();
+    let now = tilo_ui_base::motion::frame_now();
     assert!(
         map.placed
             .borrow()
@@ -148,7 +148,7 @@ fn a_map_built_again_keeps_the_camera_and_the_places_where_they_were_drawn() {
 
 #[test]
 fn a_place_arriving_in_view_leaves_the_camera_where_the_person_left_it() {
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let mut old = map_of(&[("one", 0.0)], viewport);
     draw(&mut old);
@@ -168,14 +168,14 @@ fn the_camera_glides_to_a_place_arriving_past_the_edge_laying_every_place_out_on
     let start = crate::time::now();
     let viewport = Rect::new(0.0, 0.0, 1200.0, 600.0);
     let (old, mut map) = {
-        let _frame = crate::motion::pin_frame_at(start);
+        let _frame = tilo_ui_base::motion::pin_frame_at(start);
         let mut old = map_of(&[("one", 300.0)], viewport);
         draw(&mut old);
         (old, pins_of(&[("one", 300.0), ("two", 1100.0)]))
     };
-    crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+    tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
     {
-        let _frame = crate::motion::pin_frame_at(start);
+        let _frame = tilo_ui_base::motion::pin_frame_at(start);
         drop(old);
         lay_out_again(&mut map, viewport);
         draw(&mut map);
@@ -185,7 +185,7 @@ fn the_camera_glides_to_a_place_arriving_past_the_edge_laying_every_place_out_on
     let mut frame = start;
     for _ in 0..120 {
         frame += crate::time::Duration::from_nanos(16_666_667);
-        let _frame = crate::motion::pin_frame_at(frame);
+        let _frame = tilo_ui_base::motion::pin_frame_at(frame);
         if !Widget::needs_animation_frame(&map) {
             break;
         }
@@ -212,7 +212,7 @@ fn the_camera_glides_to_a_place_arriving_past_the_edge_laying_every_place_out_on
             .any(|(_, two)| *two < 1099.0 && *two > last + 1.0),
         "on its way over the frames between: {along:?}"
     );
-    let _frame = crate::motion::pin_frame_at(frame);
+    let _frame = tilo_ui_base::motion::pin_frame_at(frame);
     assert!(
         (map.camera().origin.x - (100.0 + ARRIVAL_MARGIN)).abs() < 0.5
             && !Widget::needs_animation_frame(&map),
@@ -244,7 +244,7 @@ fn pins_at(pins: &[(&str, f64, f64)]) -> Map {
                 hug: false,
                 grows: false,
             },
-            Box::new(crate::widget::Spacer::new()),
+            Box::new(tilo_ui_base::widget::Spacer::new()),
         );
     }
     map
@@ -258,7 +258,7 @@ fn a_place_that_arrives_off_screen_is_panned_into_view() {
     // zoom: opening a place never resizes the places already there, so the conversation keeps the
     // size the person was reading it at, even when the pan brings the new place to the front and
     // the conversation goes partly out of sight (the person pans back to it).
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let mut old = map_of(&[("conversation", 0.0)], viewport);
     draw(&mut old);
@@ -313,19 +313,19 @@ fn middle_drag(
     (from_x, from_y): (f64, f64),
     (dx, dy): (f64, f64),
 ) {
-    harness.send(&crate::synthetic_input::cursor_moved(from_x, from_y));
-    harness.send(&crate::synthetic_input::mouse_input(
+    harness.send(&tilo_ui_base::synthetic_input::cursor_moved(from_x, from_y));
+    harness.send(&tilo_ui_base::synthetic_input::mouse_input(
         ElementState::Pressed,
         MouseButton::Middle,
     ));
     for step in 1..=4 {
         let fraction = f64::from(step) / 4.0;
-        harness.send(&crate::synthetic_input::cursor_moved(
+        harness.send(&tilo_ui_base::synthetic_input::cursor_moved(
             from_x + dx * fraction,
             from_y + dy * fraction,
         ));
     }
-    harness.send(&crate::synthetic_input::mouse_input(
+    harness.send(&tilo_ui_base::synthetic_input::mouse_input(
         ElementState::Released,
         MouseButton::Middle,
     ));
@@ -371,7 +371,7 @@ fn the_arrow_keys_pan_a_canvas_whose_press_put_the_keyboard_in_it() {
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let mut harness = mounted(map_of(&[("one", 100.0)], viewport));
     let before = laid(&harness, "one");
-    harness.send(&crate::synthetic_input::named_key(
+    harness.send(&tilo_ui_base::synthetic_input::named_key(
         winit::keyboard::NamedKey::ArrowRight,
     ));
     harness.relayout();
@@ -388,7 +388,7 @@ fn the_arrow_keys_pan_a_canvas_whose_press_put_the_keyboard_in_it() {
     );
     let mut before = laid(&harness, "one");
     for round in 1..=3 {
-        harness.send(&crate::synthetic_input::named_key(
+        harness.send(&tilo_ui_base::synthetic_input::named_key(
             winit::keyboard::NamedKey::ArrowRight,
         ));
         harness.relayout();
@@ -407,14 +407,14 @@ fn ctrl_and_a_wheel_notch_zooms_the_pins() {
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let mut harness = mounted(map_of(&[("one", 100.0)], viewport));
     let before = laid(&harness, "one");
-    let _ = harness.dispatch_to_root(&crate::synthetic_input::cursor_moved(400.0, 300.0));
+    let _ = harness.dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(400.0, 300.0));
     let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
     // Zooming in a notch at a time: the pin widens with each, so the third is wider than the
     // first, and the lens stays what the person set — no gesture's zoom is undone by the next.
     let mut seen = before.width();
     for round in 1..=3 {
-        let _ =
-            harness.dispatch_to_root_with(&crate::synthetic_input::mouse_wheel(0.0, 1.0), &ctrl);
+        let _ = harness
+            .dispatch_to_root_with(&tilo_ui_base::synthetic_input::mouse_wheel(0.0, 1.0), &ctrl);
         harness.relayout();
         let now = laid(&harness, "one").width();
         assert!(
@@ -432,7 +432,7 @@ fn places_opened_beside_a_conversation_never_shrink_it() {
     // column. A place that arrives beside another comes into view by the camera panning, never by
     // zooming, so every place keeps the size it was drawn at however many arrive. Here three
     // answers arrive one row at a time, down the canvas, as `free_place_next_to` puts them.
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
     let mut map = map_of(&[("conversation", 0.0)], viewport);
     draw(&mut map);

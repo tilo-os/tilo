@@ -5,8 +5,8 @@ use vello::kurbo::Point;
 use winit::keyboard::{Key, NamedKey};
 
 use super::{ListKey, VirtualRows};
-use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::time::Instant;
+use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
 
 impl VirtualRows {
     pub(super) fn takes_row_press(&self, event: &winit::event::WindowEvent) -> bool {

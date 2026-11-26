@@ -28,13 +28,13 @@ pub(crate) trait StateHistory {
     /// document has uncommitted or unrecorded edits, else whether the merge changed it.
     fn merge_remote_committed(
         &mut self,
-        incoming: crate::collaboration::Incoming<'_>,
+        incoming: tilo_ui_base::collaboration::Incoming<'_>,
     ) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError>;
     /// What the history can do for `author` right now.
     fn undo_status_snapshot(
         &self,
-        author: Option<&crate::permissions::MemberId>,
-    ) -> crate::widget::undo_access::UndoStatus;
+        author: Option<&tilo_ui_base::permissions::MemberId>,
+    ) -> tilo_ui_base::widget::undo_access::UndoStatus;
 }
 
 #[cfg(feature = "model")]
@@ -46,7 +46,7 @@ impl StateHistory for State {
 
     fn merge_remote_committed(
         &mut self,
-        incoming: crate::collaboration::Incoming<'_>,
+        incoming: tilo_ui_base::collaboration::Incoming<'_>,
     ) -> Result<Option<bool>, crate::history_mode::routes::RemoteApplyError> {
         if self.defers_remote() {
             return Ok(None);
@@ -65,8 +65,8 @@ impl StateHistory for State {
 
     fn undo_status_snapshot(
         &self,
-        author: Option<&crate::permissions::MemberId>,
-    ) -> crate::widget::undo_access::UndoStatus {
+        author: Option<&tilo_ui_base::permissions::MemberId>,
+    ) -> tilo_ui_base::widget::undo_access::UndoStatus {
         crate::undo::status_snapshot(&self.doc, self.undo_log(), author)
     }
 }
@@ -645,8 +645,8 @@ mod tests {
         }
     }
 
-    use crate::permissions::MemberId;
     use automerge::{ObjType, ROOT};
+    use tilo_ui_base::permissions::MemberId;
 
     fn text_body(state: &State, obj: &ObjId) -> String {
         state.doc.text(obj).unwrap_or_default()
@@ -886,11 +886,11 @@ mod tests {
         }
     }
 
-    fn alice() -> crate::permissions::MemberId {
+    fn alice() -> tilo_ui_base::permissions::MemberId {
         MemberId::person("alice")
     }
 
-    fn bob() -> crate::permissions::MemberId {
+    fn bob() -> tilo_ui_base::permissions::MemberId {
         MemberId::person("bob")
     }
 
@@ -898,7 +898,7 @@ mod tests {
         state: &mut State,
         key: &str,
         text: &str,
-        author: &crate::permissions::MemberId,
+        author: &tilo_ui_base::permissions::MemberId,
     ) {
         let obj = state
             .doc
@@ -936,7 +936,7 @@ mod tests {
             let a = alice();
 
             let empty = crate::undo::state_status(&state, Some(&a));
-            assert_eq!(empty, crate::widget::undo_access::UndoStatus::empty());
+            assert_eq!(empty, tilo_ui_base::widget::undo_access::UndoStatus::empty());
 
             type_action(&mut state, "body", "hello", &a);
             let s = crate::undo::state_status(&state, Some(&a));

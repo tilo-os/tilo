@@ -4,9 +4,13 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::component::{Component, Described, Event, ResourceId, Value};
-use crate::widget::Widget;
-use crate::widget::{Card, CardGrid, CardWidth, Element};
+use crate::{widget::Card, widget::CardGrid, widget::CardWidth};
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::ResourceId,
+    component::Value,
+};
 
 use super::Activation;
 
@@ -36,7 +40,7 @@ pub struct CardGridCardProps {
     pub activate: Event,
 }
 
-crate::component::part_type!(CardGridCardProps);
+tilo_ui_base::part_type!(CardGridCardProps);
 
 /// Cards in equal, aligned columns: the apps of a store, the devices of a network, the paragraphs of a
 /// review.
@@ -62,7 +66,7 @@ pub struct CardGridProps {
     pub delete: Event,
 }
 
-crate::component::choice!(CardWidth, "CardWidth", {
+tilo_ui_base::choice!(CardWidth, "CardWidth", {
     Compact => "compact",
     Regular => "regular",
     Wide => "wide",
@@ -81,7 +85,7 @@ fn card_of(props: CardGridCardProps) -> (String, Element) {
     let column = body.into_iter().fold(
         crate::widget::arrange::Stack::stack()
             .fill_width()
-            .gap(crate::tokens::Rhythm::Related)
+            .gap(tilo_ui_base::tokens::Rhythm::Related)
             .with_id(format!("{key}.body")),
         |column, part| column.push_part(crate::widget::arrange::Part::new(part)),
     );
@@ -268,14 +272,14 @@ impl Described for DescribedCardGrid {
     }
 }
 
-impl crate::widget::Decorator for DescribedCardGrid {
-    type Inner = dyn crate::widget::Widget;
+impl tilo_ui_base::widget::Decorator for DescribedCardGrid {
+    type Inner = dyn tilo_ui_base::widget::Widget;
 
-    fn inner(&self) -> &(dyn crate::widget::Widget + 'static) {
+    fn inner(&self) -> &(dyn tilo_ui_base::widget::Widget + 'static) {
         &self.grid
     }
 
-    fn inner_mut(&mut self) -> &mut (dyn crate::widget::Widget + 'static) {
+    fn inner_mut(&mut self) -> &mut (dyn tilo_ui_base::widget::Widget + 'static) {
         &mut self.grid
     }
 
@@ -283,7 +287,7 @@ impl crate::widget::Decorator for DescribedCardGrid {
         "CardGrid"
     }
 
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         self.grid.take_structure_change()
     }
 }

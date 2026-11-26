@@ -1,6 +1,6 @@
 //! [`PropertyList`] and its [`Property`] rows as described components.
 
-use crate::component::{Component, Described};
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::{Property, PropertyList};
 
@@ -62,25 +62,20 @@ impl Described for PropertyList {
     }
 }
 
-impl crate::component::PartType for Vec<PropertyProps> {
-    const MANY: bool = true;
-
-    fn accepts() -> crate::component::Accepts {
-        crate::component::Accepts::Component(PropertyProps::NAME.into())
+impl tilo_ui_base::component::PartItem for PropertyProps {
+    fn accepts() -> tilo_ui_base::component::Accepts {
+        tilo_ui_base::component::Accepts::Component(PropertyProps::NAME.into())
     }
 
-    fn fill(
-        &mut self,
-        source: &mut dyn crate::component::Source,
+    fn read_all(
+        source: &mut dyn tilo_ui_base::component::Source,
         part: &str,
-    ) -> Result<(), String> {
-        self.clear();
+    ) -> Result<Vec<Self>, String> {
         let mut read = Vec::new();
         source.components(part, &mut |child| {
             read.push(PropertyProps::from_source(child).map_err(|error| error.to_string())?);
             Ok(())
         })?;
-        *self = read;
-        Ok(())
+        Ok(read)
     }
 }

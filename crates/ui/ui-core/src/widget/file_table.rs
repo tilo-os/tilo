@@ -14,15 +14,15 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::icons::{LUCIDE_DEFAULT_STROKE_PX, draw_icon, icon_for_path};
+use tilo_ui_base::{icons::LUCIDE_DEFAULT_STROKE_PX, icons::draw_icon, icons::icon_for_path};
 
-use crate::selection::SelectionModel;
-use crate::text_render::{TextKind, TextRenderer};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::DrawChild;
-use crate::widget::Widget;
 use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable, text_band, type_line_height};
+use tilo_ui_base::selection::SelectionModel;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{text_render::TextKind, text_render::TextRenderer};
 
 /// One row of a file list: a file or a folder.
 pub trait FileRow: 'static {
@@ -104,7 +104,7 @@ impl FileTableMetrics {
 /// What a name cell shows: the entry's glyph and its name.
 #[derive(Clone, Copy, Debug)]
 pub struct NameCell<'a> {
-    pub icon: crate::icons::Icon,
+    pub icon: tilo_ui_base::icons::Icon,
     pub name: &'a str,
     pub is_dir: bool,
 }
@@ -300,7 +300,7 @@ fn header_height(theme: &Theme) -> f64 {
 }
 
 fn tr(key: &str) -> String {
-    crate::i18n::widget_format(key, &[])
+    tilo_ui_base::i18n::widget_format(key, &[])
 }
 
 #[allow(
@@ -411,9 +411,9 @@ impl<R: FileRow> FileTable<R> {
                     move |held: &Held<R>| {
                         held.row.modified().map(|at| {
                             if with_time {
-                                crate::format::timestamp(&at)
+                                tilo_ui_base::format::timestamp(&at)
                             } else {
-                                crate::format::date(crate::clock::at(at).date())
+                                tilo_ui_base::format::date(tilo_ui_base::clock::at(at).date())
                             }
                         })
                     },
@@ -581,7 +581,7 @@ impl<R: FileRow> FileTable<R> {
         style.size.height = Dimension::percent(1.0);
         // The table takes the width its parent leaves and no more, its rows
         // scrolling inside it (`layout::filling`).
-        let style = crate::widget::layout::filling(style, 1.0);
+        let style = tilo_ui_base::widget::layout::filling(style, 1.0);
         let _ = taffy.set_style(node, style);
         Some(node)
     }
@@ -615,7 +615,7 @@ impl<R: FileRow> FileTable<R> {
         ) else {
             return false;
         };
-        if super::solve_layout(
+        if tilo_ui_base::widget::solve_layout(
             &mut taffy,
             root,
             taffy::Size {
@@ -656,7 +656,7 @@ impl<R: FileRow> FileTable<R> {
         })
     }
 
-    pub fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -672,7 +672,7 @@ impl<R: FileRow> FileTable<R> {
     pub fn handle_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> FileTableOutcome {
         if let Some(table) = self.table.as_mut() {
             table.handle_event(event, ctx);
@@ -727,15 +727,17 @@ impl<R: FileRow> FileTable<R> {
 
     /// Tell the table where the pointer is, so a press that arrives with no
     /// move since the host was rebuilt still lands on the right row.
-    pub fn point_at(&mut self, at: Point, ctx: &mut crate::widget::EventCtx<'_>) {
+    pub fn point_at(&mut self, at: Point, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let Some(table) = self.table.as_mut() else {
             return;
         };
-        let moved =
-            crate::synthetic_input::cursor_moved(at.x * ctx.scale_factor, at.y * ctx.scale_factor);
+        let moved = tilo_ui_base::synthetic_input::cursor_moved(
+            at.x * ctx.scale_factor,
+            at.y * ctx.scale_factor,
+        );
         let mut handled = false;
         let mut focus = None;
-        let mut inner = crate::widget::EventCtx {
+        let mut inner = tilo_ui_base::widget::EventCtx {
             scale_factor: ctx.scale_factor,
             modifiers: ctx.modifiers,
             state: ctx.state.reborrow(),
@@ -750,8 +752,8 @@ impl<R: FileRow> FileTable<R> {
 
     pub fn update(
         &mut self,
-        state: &crate::widget::AppModel,
-        path: &crate::widget::ModelPath,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         self.table
             .as_mut()
@@ -828,7 +830,7 @@ impl<R: FileRow> FileTable<R> {
 
     /// The table's accessibility node.
     #[must_use]
-    pub fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    pub fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.table.as_ref()?.accessibility()
     }
 
@@ -836,10 +838,10 @@ impl<R: FileRow> FileTable<R> {
     /// table itself).
     pub fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         self.table
             .as_mut()
@@ -851,11 +853,11 @@ impl<R: FileRow> FileTable<R> {
     pub fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
-        path: &crate::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
+        path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        if matches!(action, crate::a11y::Action::Activate)
+        if matches!(action, tilo_ui_base::a11y::Action::Activate)
             && let Some(index) = self
                 .table
                 .as_ref()
@@ -969,7 +971,7 @@ mod tests {
 
         let node = table.accessibility().expect("list semantics");
         let row = node.children.first().expect("first row");
-        assert_eq!(row.role, crate::a11y::Role::Row);
+        assert_eq!(row.role, tilo_ui_base::a11y::Role::Row);
         assert_eq!(
             row.name.as_deref(),
             Some("Report.pdf"),
@@ -983,9 +985,9 @@ mod tests {
 
         let mut doc = automerge::AutoCommit::new();
         assert!(table.perform_action(
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
             &[0],
-            &mut crate::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         let (open, menu) = table.take_row_requests();
@@ -993,9 +995,9 @@ mod tests {
         assert_eq!(menu, None);
 
         assert!(table.perform_action(
-            &crate::a11y::Action::ShowContextMenu,
+            &tilo_ui_base::a11y::Action::ShowContextMenu,
             &[1],
-            &mut crate::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         let (open, menu) = table.take_row_requests();
@@ -1015,8 +1017,8 @@ mod tests {
             .expect("the row carries its semantic target");
         assert!(table.perform_semantic_action(
             &target,
-            &crate::a11y::Action::Activate,
-            &mut crate::widget::Edits::lend(&mut doc),
+            &tilo_ui_base::a11y::Action::Activate,
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         let (open, menu) = table.take_row_requests();
@@ -1029,8 +1031,8 @@ mod tests {
             .expect("the row carries its semantic target");
         assert!(table.perform_semantic_action(
             &target,
-            &crate::a11y::Action::ShowContextMenu,
-            &mut crate::widget::Edits::lend(&mut doc),
+            &tilo_ui_base::a11y::Action::ShowContextMenu,
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         let (open, menu) = table.take_row_requests();

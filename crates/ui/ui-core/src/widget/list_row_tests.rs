@@ -1,10 +1,11 @@
 use super::*;
 use crate::app::driver::Driver;
-use crate::component::{Bound, Described, Fired, Intent};
 use crate::headless::InspectionNode;
-use crate::widget::{Column, Element};
+use crate::widget::Column;
 use std::cell::Cell;
 use std::rc::Rc;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::{component::Bound, component::Described, component::Fired, component::Intent};
 use vello::Scene;
 use vello::kurbo::Affine;
 
@@ -28,7 +29,7 @@ fn rect_of(node: &InspectionNode) -> Rect {
 
 #[test]
 fn a_title_cut_short_reads_in_full_in_the_tooltip() {
-    let theme = crate::theme::Theme::dark();
+    let theme = tilo_ui_base::theme::Theme::dark();
     let message = "Expected `&[String]`, found `&Vec<String>` in the argument to parse_limit";
     let long = ListRow::new("long", message).meta("Ln 14, Col 29");
     let h = Driver::for_root(crate::State::new(), long, (240, 60), theme.clone());
@@ -166,11 +167,11 @@ tilo_test_env::scenario! {
         let mut row = ListRow::new("note-1", "Ada")
             .selected(true)
             .action(Icon::Trash, "Delete", || {});
-        row.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+        row.set_interaction_environment(tilo_ui_base::interaction::InteractionEnvironment::TOUCH);
         row.metrics = Some(RowMetrics::new(&theme));
         row.theme = Some(theme.clone());
         row.rect = rect;
-        let rects = crate::widget::capability::capability::<dyn crate::widget::RowActionRects>(&row)
+        let rects = tilo_ui_base::widget::capability::capability::<dyn crate::widget::RowActionRects>(&row)
             .expect("the row answers where its actions stand")
             .row_action_rects();
         assert_eq!(rects.len(), 1, "one action, where the row shows it");
@@ -190,9 +191,9 @@ tilo_test_env::scenario! {
         let mut doc = automerge::AutoCommit::new();
         assert!(Widget::perform_action(
             &mut row,
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
             &[1],
-            &mut crate::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!((replied.get(), deleted.get()), (0, 1));
@@ -200,9 +201,9 @@ tilo_test_env::scenario! {
         row.armed_action = Some(0);
         assert!(Widget::perform_action(
             &mut row,
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
             &[],
-            &mut crate::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(replied.get(), 1);
@@ -211,7 +212,7 @@ tilo_test_env::scenario! {
         // A hover action that is only a callback is not a published action, so
         // the inventory reports nothing for it; the row's own activation and
         // binding the row's action are what make it visible to a native audit.
-        let bindings = crate::widget::controls::ActionControls::control_action_bindings(&row);
+        let bindings = tilo_ui_base::widget::controls::ActionControls::control_action_bindings(&row);
         assert!(
             bindings
                 .iter()
@@ -228,9 +229,9 @@ tilo_test_env::scenario! {
         let mut doc = automerge::AutoCommit::new();
         assert!(!Widget::perform_action(
             &mut row,
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
             &[],
-            &mut crate::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
     }
@@ -241,7 +242,7 @@ tilo_test_env::scenario! {
             .selected(true)
             .action(Icon::Trash, "Delete", || {});
         assert!(!row.reveal_actions());
-        row.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+        row.set_interaction_environment(tilo_ui_base::interaction::InteractionEnvironment::TOUCH);
         assert!(row.reveal_actions());
     }
 
@@ -263,14 +264,14 @@ tilo_test_env::scenario! {
         let mut row =
             ListRow::new("milk", "Buy milk").swipe_binding(Icon::Trash, "Delete", true, binding);
         row.swipe.as_mut().expect("a swipe").run();
-        let taken = crate::widget::controls::take_control_invocation(&mut row);
+        let taken = tilo_ui_base::widget::controls::take_control_invocation(&mut row);
         assert_eq!(
             taken.as_ref().map(|taken| taken.address.clone()),
             Some(address),
             "one swipe runs the action once"
         );
         assert!(
-            crate::widget::controls::take_control_invocation(&mut row).is_none(),
+            tilo_ui_base::widget::controls::take_control_invocation(&mut row).is_none(),
             "the swipe is taken once"
         );
     }
@@ -285,7 +286,7 @@ tilo_test_env::scenario! {
 
     phase an_item_nobody_has_named_shows_a_muted_placeholder_and_is_spoken_by_it;
     {
-        let untitled = crate::i18n::I18nManager::lookup_plain("list-row-untitled");
+        let untitled = tilo_ui_base::i18n::I18nManager::lookup_plain("list-row-untitled");
         assert_ne!(untitled, "list-row-untitled", "the placeholder is a phrase");
         assert!(
             !untitled.is_empty(),
@@ -367,7 +368,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_rows_box_presses_as_far_as_the_pointer_needs() {
-    use crate::interaction::InteractionEnvironment;
+    use tilo_ui_base::interaction::InteractionEnvironment;
     let theme = Theme::dark();
     let row = || {
         ListRow::new("milk", "Milk")
@@ -396,7 +397,7 @@ fn a_rows_box_presses_as_far_as_the_pointer_needs() {
             boxed.width() >= target - 0.5 && boxed.height() >= target - 0.5,
             "as {name} presses it, the box takes a press {target}×{target} wide: {boxed:?}"
         );
-        let lift = row_rect.inflate(crate::chrome::row_bleed(&theme), 0.0);
+        let lift = row_rect.inflate(tilo_ui_base::chrome::row_bleed(&theme), 0.0);
         assert!(
             lift.x0 - 0.5 <= boxed.x0
                 && boxed.x1 <= lift.x1 + 0.5
@@ -420,11 +421,11 @@ fn m_icon(theme: &Theme) -> f64 {
     f64::from(theme.tokens.metrics.icon_control)
 }
 
-fn boxed_rect(access: &crate::a11y::AccessNode) -> Rect {
+fn boxed_rect(access: &tilo_ui_base::a11y::AccessNode) -> Rect {
     access
         .children
         .iter()
-        .find(|child| child.role == crate::a11y::Role::Checkbox)
+        .find(|child| child.role == tilo_ui_base::a11y::Role::Checkbox)
         .expect("the row's box is a control of its own")
         .bounds
         .expect("a box a reader presses says where it stands")
@@ -479,9 +480,9 @@ fn a_leading_checkbox_toggles_apart_from_activation() {
     let mut doc = automerge::AutoCommit::new();
     assert!(Widget::perform_action(
         &mut row,
-        &crate::a11y::Action::ToggleCheck,
+        &tilo_ui_base::a11y::Action::ToggleCheck,
         &[],
-        &mut crate::widget::Edits::lend(&mut doc),
+        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
     assert_eq!(toggled.get(), Some(true));
@@ -525,7 +526,7 @@ fn a_view_row_is_a_certified_action_a_click_and_an_agent_both_reach() {
         .expect("an agent opens the row");
     assert_eq!(calls.get(), 1);
     driver
-        .perform_named("contact-ada", &crate::a11y::Action::Activate)
+        .perform_named("contact-ada", &tilo_ui_base::a11y::Action::Activate)
         .expect("the row enters through its action");
     assert_eq!(calls.get(), 2);
     let [x, y, w, h] = find(&driver.inspection().root, "ListRow").unwrap().rect;
@@ -571,7 +572,7 @@ fn a_menu_shortcut_runs_where_the_row_has_the_keyboard() {
     let mut row = ListRow::new("milk", "Buy milk")
         .on_activate(|| {})
         .shortcuts(vec![(
-            crate::platform::Shortcut::from("Ctrl+Enter"),
+            tilo_ui_base::platform::Shortcut::from("Ctrl+Enter"),
             Rc::new(move || checked_too.set(checked_too.get() + 1)) as Rc<dyn Fn()>,
         )]);
     row.set_focus(true);
@@ -622,7 +623,10 @@ fn a_press_on_the_leading_box_marks_the_row() {
     );
 }
 
-fn bound_row(state: &crate::LocalState<bool>, intents: &crate::Intents<Fired>) -> ListRow {
+fn bound_row(
+    state: &tilo_ui_base::LocalState<bool>,
+    intents: &tilo_ui_base::Intents<Fired>,
+) -> ListRow {
     let props = ListRowProps {
         key: "milk".to_owned(),
         title: "Buy oat milk".to_owned(),
@@ -640,8 +644,8 @@ fn bound_row(state: &crate::LocalState<bool>, intents: &crate::Intents<Fired>) -
 
 #[test]
 fn a_bound_rows_checkbox_follows_a_check_made_elsewhere() {
-    let state = crate::LocalState::new(false);
-    let intents = crate::Intents::<Fired>::default();
+    let state = tilo_ui_base::LocalState::new(false);
+    let intents = tilo_ui_base::Intents::<Fired>::default();
     let row = bound_row(&state, &intents);
     let mut harness = Driver::for_root(crate::State::new(), row, (400, 60), Theme::dark());
     harness.poll_frame().expect("the first frame draws");
@@ -795,7 +799,7 @@ fn a_double_click_opens_once_and_changes_twice() {
         harness.double_click_at(x + w / 2.0, y + h / 2.0);
         let double = hits.get();
         // Two clicks apart in time, or in place, are two clicks.
-        crate::gesture::with_capture_multi_click_interval(
+        tilo_ui_base::gesture::with_capture_multi_click_interval(
             crate::time::Duration::from_millis(0),
             || harness.click_at(x + w / 2.0, y + h / 2.0),
         );
@@ -828,7 +832,7 @@ fn a_choice_line_publishes_one_control_and_pressing_the_line_opens_its_list() {
     use crate::headless::ControlInput;
     use crate::widget::Dropdown;
 
-    let chosen = crate::LocalState::new("100%".to_string());
+    let chosen = tilo_ui_base::LocalState::new("100%".to_string());
     let line: Element = Box::new(Column::new().with_no_padding().push(Box::new(
         ListRow::new("row", "Scale").trailing(Box::new(Dropdown::from_state(
             vec!["100%".to_string(), "125%".to_string()],
@@ -960,11 +964,11 @@ fn check_levels(row: ListRow, press: impl FnOnce(&mut Driver)) -> Vec<f64> {
 #[test]
 fn a_check_fills_in_over_frames_unless_the_row_is_still() {
     let by_pointer = |harness: &mut Driver| {
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         press_leading_checkbox(&mut harness.root_mut::<ListRow>());
     };
-    let state = crate::LocalState::new(false);
-    let intents = crate::Intents::<Fired>::default();
+    let state = tilo_ui_base::LocalState::new(false);
+    let intents = tilo_ui_base::Intents::<Fired>::default();
     for (name, levels) in [
         (
             "plain",
@@ -1007,7 +1011,7 @@ fn a_check_fills_in_over_frames_unless_the_row_is_still() {
 
     let still = ListRow::new("milk", "Buy oat milk")
         .checkbox(false, |_| {})
-        .with_feel(crate::motion::Feel::Still);
+        .with_feel(tilo_ui_base::motion::Feel::Still);
     assert_eq!(
         check_levels(still, by_pointer)[1],
         1.0,
@@ -1029,12 +1033,13 @@ fn a_row_tooltip_reads_anywhere_the_row_has_nothing_closer_to_say() {
 /// toned facts stay legible on both.
 #[test]
 fn a_selection_shows_and_toned_facts_stay_legible_in_every_theme() {
-    use crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
+    use tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
     for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
         let ground = theme.tokens.colors.surfaces.content;
         let fill = row_fill(&theme, true, false).expect("a selected row has a lift");
         assert!(
-            crate::surface::edge_delta(fill, ground) >= crate::tokens::colors::HAIRLINE_MIN_DELTA,
+            tilo_ui_base::surface::edge_delta(fill, ground)
+                >= tilo_ui_base::tokens::colors::HAIRLINE_MIN_DELTA,
             "{}: the selection shows",
             theme.name
         );
@@ -1043,7 +1048,7 @@ fn a_selection_shows_and_toned_facts_stay_legible_in_every_theme() {
             "{}: idle is the ground",
             theme.name
         );
-        let lift = crate::tokens::colors::composite(fill, ground);
+        let lift = tilo_ui_base::tokens::colors::composite(fill, ground);
         for tone in [Tone::Success, Tone::Danger, Tone::Warning] {
             let ink = theme.tokens.colors.ink_on_any(
                 &[ground, lift],
@@ -1052,7 +1057,7 @@ fn a_selection_shows_and_toned_facts_stay_legible_in_every_theme() {
             );
             for under in [ground, lift] {
                 assert!(
-                    crate::a11y::contrast_ratio(ink, under) >= SMALL_TEXT_MIN_CONTRAST,
+                    tilo_ui_base::a11y::contrast_ratio(ink, under) >= SMALL_TEXT_MIN_CONTRAST,
                     "{}: {tone:?} reads on the ground and the lift",
                     theme.name
                 );

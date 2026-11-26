@@ -14,13 +14,16 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{Color, Fill};
 
-use crate::motion::{Direction, MotionSpec, MotionValue, Pace, Reduced, Shortcut};
-use crate::text_render::{TextRenderer, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::{EffectiveMotion, MotionSource, TextRole};
 use crate::widget::chart_geometry;
 use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{
+    motion::Direction, motion::MotionSpec, motion::MotionValue, motion::Pace, motion::Reduced,
+    motion::Shortcut,
+};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource, tokens::TextRole};
 
 /// A stable, labelled radial datum. Negative and non-finite values are treated
 /// as zero. `id` survives sorting and updates and is returned on activation.
@@ -69,7 +72,7 @@ impl PieSlice {
 
     fn color_in(&self, theme: &Theme) -> Color {
         self.palette.map_or(self.color, |index| {
-            crate::chart_palette::ChartPalette::from_theme(theme).categorical(index)
+            tilo_ui_base::chart_palette::ChartPalette::from_theme(theme).categorical(index)
         })
     }
 
@@ -287,7 +290,7 @@ impl PieMarks {
             // The donut starts on the chart's edge, where its title and the words around it do.
             let x0 = rect.x0;
             let legend_x = x0 + diameter + gap;
-            let block = crate::num::f64_of_usize(entries.len()) * row;
+            let block = tilo_ui_base::num::f64_of_usize(entries.len()) * row;
             let mut y = (rect.center().y - block / 2.0).max(rect.y0);
             let items = entries
                 .iter()
@@ -408,7 +411,7 @@ impl PieMarks {
             || self
                 .lifts
                 .iter()
-                .any(|lift| lift.is_moving(crate::motion::frame_now()))
+                .any(|lift| lift.is_moving(tilo_ui_base::motion::frame_now()))
     }
     /// Each slice's lift toward the slice the pointer is on, on the shared spring: a slice rises
     /// as the pointer reaches it and sinks as the pointer leaves, at once when motion is reduced
@@ -448,7 +451,7 @@ impl PieMarks {
         // Where each lift stands now, not where it was last drawn: the page takes the picture
         // again while a slice is still moving, so the spring advances a frame at a time there
         // as it does where the frame itself draws it.
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         for lift in &self.lifts {
             lift.get(now).to_bits().hash(&mut hash);
         }
@@ -547,7 +550,7 @@ impl PieMarks {
         }
         let angle =
             (dy.atan2(dx) - self.style.start_angle).rem_euclid(TAU) + self.style.start_angle;
-        self.sectors_at(crate::motion::frame_now())
+        self.sectors_at(tilo_ui_base::motion::frame_now())
             .into_iter()
             .find(|s| angle >= s.start && angle < s.end)
             .map(|s| s.index)
@@ -556,7 +559,7 @@ impl PieMarks {
     /// Where slice `index` reads out from: the middle of its ring.
     fn slice_anchor(&self, index: usize) -> Option<Point> {
         let sector = self
-            .sectors_at(crate::motion::frame_now())
+            .sectors_at(tilo_ui_base::motion::frame_now())
             .into_iter()
             .find(|sector| sector.index == index)?;
         let (center, outer, inner) = self.geometry();
@@ -620,7 +623,7 @@ impl PlotMarks for PieMarks {
         slice.interactive.then(|| slice.id.clone())
     }
     fn keyboard_items(&self) -> Vec<usize> {
-        let sectors = self.sectors_at(crate::motion::frame_now());
+        let sectors = self.sectors_at(tilo_ui_base::motion::frame_now());
         sectors.into_iter().map(|sector| sector.index).collect()
     }
     /// Keyboard inspection leaves the pointer alone: the tooltip places itself
@@ -702,7 +705,7 @@ impl PlotMarks for PieMarks {
             self.frame.rect,
             &self.frame.title,
         );
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.advance_lifts(
             now,
             EffectiveMotion::new(theme.tokens.motion, theme.reduce_motion),
@@ -846,7 +849,7 @@ fn legend_label(slice: &PieSlice, total: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::Widget;
+    use tilo_ui_base::widget::Widget;
 
     tilo_test_env::scenario! {
         fn a_pie_places_its_wedges_legend_and_tooltips;
@@ -1053,18 +1056,18 @@ mod tests {
 /// How far a chart's data change has come `elapsed` after it, `0..=1`: its
 /// values move to their new places on the standard list change.
 pub(crate) fn data_change_progress(elapsed: Duration) -> f64 {
-    crate::motion::ListChange::MOVE.progress_after(
-        crate::motion::Direction::Enter,
-        crate::tokens::EffectiveMotion::default(),
-        crate::tokens::MotionSource::Pointer,
+    tilo_ui_base::motion::ListChange::MOVE.progress_after(
+        tilo_ui_base::motion::Direction::Enter,
+        tilo_ui_base::tokens::EffectiveMotion::default(),
+        tilo_ui_base::tokens::MotionSource::Pointer,
         elapsed,
     )
 }
 
 pub(crate) fn data_change_time() -> Duration {
-    crate::motion::ListChange::MOVE.settle_time(
-        crate::motion::Direction::Enter,
-        crate::tokens::EffectiveMotion::default(),
-        crate::tokens::MotionSource::Pointer,
+    tilo_ui_base::motion::ListChange::MOVE.settle_time(
+        tilo_ui_base::motion::Direction::Enter,
+        tilo_ui_base::tokens::EffectiveMotion::default(),
+        tilo_ui_base::tokens::MotionSource::Pointer,
     )
 }

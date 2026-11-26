@@ -125,7 +125,7 @@ fn held_workspace(session: &mut tilo_session::Session, api: &std::path::Path) ->
 /// written for another surface of the sections.
 #[test]
 fn a_sections_setter_is_typed_by_the_sections_surface_at_the_sessions_api() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let socket = root.path().join("api.sock");
     let desktop = session_serving(
@@ -204,7 +204,7 @@ fn a_sections_setter_is_typed_by_the_sections_surface_at_the_sessions_api() {
 /// answers as the person: `describe(tasks)` reaches the workspace's tasks.
 #[test]
 fn a_program_of_this_login_answers_as_the_person_at_the_sessions_own_api() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let api = root.path().join("api.sock");
     let desktop = session_with_api(root.path(), &api);
@@ -234,7 +234,7 @@ fn a_program_of_this_login_answers_as_the_person_at_the_sessions_own_api() {
 /// process, so no key file is written beside it.
 #[test]
 fn the_socket_is_all_its_directory_holds() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let api = root.path().join("api").join("api.sock");
     let desktop = session_with_api(root.path(), &api);
@@ -270,7 +270,7 @@ fn the_socket_is_all_its_directory_holds() {
 /// workspace this computer does not hold is refused, and nothing runs.
 #[test]
 fn a_program_is_refused_a_workspace_its_person_does_not_hold() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let api = root.path().join("api.sock");
     let desktop = session_with_api(root.path(), &api);
@@ -325,7 +325,7 @@ fn sandboxed_program() {
 #[test]
 fn a_sandboxed_program_of_this_login_is_refused_at_the_api_socket() {
     use std::os::unix::process::CommandExt as _;
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let api = root.path().join("api.sock");
     let desktop = session_with_api(root.path(), &api);

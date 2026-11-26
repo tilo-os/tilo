@@ -10,10 +10,10 @@ use super::widget::RootControls;
 impl RootControls for ResourceRoot {
     fn attach_controls(
         &mut self,
-        domain: &ui_core::ControlDomain,
-        attachment: ui_core::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
-        ui_core::widget::controls::attach_controls(self.content.as_mut(), domain, attachment);
+        tilo_ui_base::widget::controls::attach_controls(self.content.as_mut(), domain, attachment);
     }
 
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
@@ -22,9 +22,11 @@ impl RootControls for ResourceRoot {
     }
     fn take_attributed_control_invocation(
         &mut self,
-    ) -> Option<ui_core::widget::controls::AttributedControlInvocation> {
+    ) -> Option<tilo_ui_base::widget::controls::AttributedControlInvocation> {
         let taken = self.dispatch.take_attributed().or_else(|| {
-            ui_core::widget::controls::take_attributed_control_invocation(self.content.as_mut())
+            tilo_ui_base::widget::controls::take_attributed_control_invocation(
+                self.content.as_mut(),
+            )
         });
         if let Some((invocation, _)) = &taken {
             self.share.note_view_invocation(invocation);
@@ -38,14 +40,17 @@ impl RootControls for ResourceRoot {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
+        result: &Result<
+            tilo_ui_base::host_operation::ResourceOperationStart,
+            tilo_actions::ApiError,
+        >,
     ) {
         // The host delivers feedback to the exact emitting document owner;
         // forwarding stops at nested owner boundaries. Its children may have
         // arbitrary ids, including records removed since submission. Repair
         // this owner's projection without inferring ownership from an id prefix
         // or retaining requests that History may capture or discard.
-        if let Some(effect) = ui_core::widget::controls::result_on_behalf_of() {
+        if let Some(effect) = tilo_ui_base::widget::controls::result_on_behalf_of() {
             self.dispatch
                 .note_continuation(effect, &address.action, result);
         }
@@ -56,12 +61,12 @@ impl RootControls for ResourceRoot {
                 }
                 self.typed.represent();
             }
-            Ok(ui_core::host_operation::ResourceOperationStart::Completed(output)) => {
+            Ok(tilo_ui_base::host_operation::ResourceOperationStart::Completed(output)) => {
                 self.dispatch.note_landed(&address.action, output);
             }
             Ok(_) => {}
         }
-        ui_core::widget::controls::on_control_invocation_result(
+        tilo_ui_base::widget::controls::on_control_invocation_result(
             self.content.as_mut(),
             address,
             result,
@@ -69,6 +74,6 @@ impl RootControls for ResourceRoot {
     }
     fn has_pending_control_invocation(&self) -> bool {
         self.dispatch.has_pending()
-            || ui_core::widget::controls::has_pending_control_invocation(self.app_view())
+            || tilo_ui_base::widget::controls::has_pending_control_invocation(self.app_view())
     }
 }

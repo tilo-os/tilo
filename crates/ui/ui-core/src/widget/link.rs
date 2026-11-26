@@ -2,19 +2,19 @@
 //! activated by keyboard (Enter / Space), or triggered by an assistive-technology
 //! `Activate`.
 
-use crate::widget::ModelPath;
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::widget::ModelPath;
 use vello::kurbo::{Affine, Line, Point, Rect, Stroke};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::TaffyTreeExt;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 #[path = "link_component.rs"]
 mod component;
-use crate::widget::Widget;
 pub use component::LinkProps;
+use tilo_ui_base::widget::Widget;
 
 /// The key of the link's "Copy link" action in its accessibility tree: the one child a link
 /// adds beside itself, so a menu, a screen reader and an agent find the address to copy.
@@ -35,12 +35,12 @@ pub struct Link {
     is_focused: bool,
     enabled: bool,
     last_activated: Option<String>,
-    action: Option<crate::widget::ActionEmitter<()>>,
+    action: Option<tilo_ui_base::widget::ActionEmitter<()>>,
     dirty: bool,
     last_state: (bool, bool, bool),
     click: Option<Box<dyn FnMut()>>,
     id: Option<String>,
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
 }
 
 impl Link {
@@ -50,7 +50,7 @@ impl Link {
             url: url.to_string(),
             label: url.to_string(),
             text_role: TextRole::Body,
-            style: crate::tokens::typography::stock().style(TextRole::Body),
+            style: tilo_ui_base::tokens::typography::stock().style(TextRole::Body),
             rect: Rect::ZERO,
             is_hovered: false,
             is_pressed: false,
@@ -62,7 +62,7 @@ impl Link {
             last_state: (false, false, false),
             click: None,
             id: None,
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
         }
     }
 
@@ -71,14 +71,14 @@ impl Link {
     pub fn action(label: &str, binding: tilo_actions::ActionBinding<()>) -> Self {
         let mut link = Self::new("");
         link.label = label.to_string();
-        link.action = Some(crate::widget::ActionEmitter::new(binding));
+        link.action = Some(tilo_ui_base::widget::ActionEmitter::new(binding));
         link
     }
 
     /// Run `binding` when activated, instead of opening the URL.
     #[must_use]
     pub fn on_action(mut self, binding: tilo_actions::ActionBinding<()>) -> Self {
-        self.action = Some(crate::widget::ActionEmitter::new(binding));
+        self.action = Some(tilo_ui_base::widget::ActionEmitter::new(binding));
         self
     }
 
@@ -87,7 +87,7 @@ impl Link {
             && self
                 .action
                 .as_ref()
-                .is_none_or(crate::widget::ActionEmitter::is_available)
+                .is_none_or(tilo_ui_base::widget::ActionEmitter::is_available)
     }
 
     /// The URL is still what opens and what the accessible value reports.
@@ -102,7 +102,7 @@ impl Link {
     #[must_use]
     pub fn with_text_role(mut self, role: TextRole) -> Self {
         self.text_role = role;
-        self.style = crate::tokens::typography::stock().style(role);
+        self.style = tilo_ui_base::tokens::typography::stock().style(role);
         self
     }
 
@@ -164,16 +164,16 @@ impl Link {
     /// the address every other thing about the link reports, not the words it shows.
     pub fn copy_address(&self) {
         if !self.url.is_empty() {
-            crate::text_selection::clipboard_copy(&self.url);
+            tilo_ui_base::text_selection::clipboard_copy(&self.url);
         }
     }
 
     /// The link's own "Copy link", for a link that goes somewhere: the row a context menu over it
     /// shows beside its owner's, and the child its accessibility tree publishes.
-    fn copy_action(&self) -> Option<crate::widget::OwnAction> {
+    fn copy_action(&self) -> Option<tilo_ui_base::widget::OwnAction> {
         (!self.url.is_empty()).then(|| {
-            crate::widget::OwnAction::new(
-                crate::i18n::widget_format("widget-copy-link", &[]),
+            tilo_ui_base::widget::OwnAction::new(
+                tilo_ui_base::i18n::widget_format("widget-copy-link", &[]),
                 vec![COPY_CHILD],
             )
         })
@@ -205,13 +205,13 @@ impl Link {
             return;
         }
         self.last_activated = Some(self.url.clone());
-        crate::platform::os_open(&self.url);
+        tilo_ui_base::platform::os_open(&self.url);
     }
 }
 
-impl crate::widget::controls::ActionControls for Link {
-    crate::widget::controls::optional_emitter_controls!(ownership);
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+impl tilo_ui_base::widget::controls::ActionControls for Link {
+    tilo_ui_base::optional_emitter_controls!(ownership);
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         self.action
             .as_ref()
             .map(|action| vec![action.metadata(self.label.clone())])
@@ -232,9 +232,9 @@ impl crate::widget::controls::ActionControls for Link {
 }
 
 impl Widget for Link {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls);
 
     fn build_layout(
         &mut self,
@@ -244,7 +244,7 @@ impl Widget for Link {
     ) -> NodeId {
         let mut style = theme.text(self.text_role);
         if self.label == self.url {
-            style = style.with_kind(crate::text_render::TextKind::Url);
+            style = style.with_kind(tilo_ui_base::text_render::TextKind::Url);
         }
         if style != self.style {
             self.style = style;
@@ -277,7 +277,7 @@ impl Widget for Link {
         reason = "dirty-checking wants exact equality against the previous layout, not a fuzzy tolerance"
     )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let new_rect = crate::widget::layout_rect(taffy, node, origin);
+        let new_rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if new_rect.width() != self.rect.width() || new_rect.height() != self.rect.height() {
             self.dirty = true;
         }
@@ -288,7 +288,7 @@ impl Widget for Link {
         clippy::arithmetic_side_effects,
         reason = "the `transform * Affine::translate(..)` call below composes 2D transforms via kurbo's float `Mul` impl, which cannot overflow, wrap, or panic like integer arithmetic"
     )]
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -302,10 +302,10 @@ impl Widget for Link {
         let ink = colors.ink_on_any(
             &[colors.surfaces.content],
             colors.intent.accent_ink,
-            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+            tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST,
         );
         let color = if self.is_pressed {
-            crate::tokens::colors::mix8(ink, colors.surfaces.content, 0.35)
+            tilo_ui_base::tokens::colors::mix8(ink, colors.surfaces.content, 0.35)
         } else {
             ink
         };
@@ -334,7 +334,7 @@ impl Widget for Link {
             &Line::new((x0, uy), (x0 + tw, uy)),
         );
 
-        if self.is_focused && crate::focus_visible::shown() {
+        if self.is_focused && tilo_ui_base::focus_visible::shown() {
             // The ring every control wears, round the words.
             let pad = 2.0;
             crate::widget::paint_focus_ring(
@@ -362,7 +362,7 @@ impl Widget for Link {
         self.rect == Rect::ZERO
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if !self.enabled {
             return;
         }
@@ -410,7 +410,7 @@ impl Widget for Link {
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.interaction = environment;
         self.is_hovered &= environment.supports_hover();
@@ -451,12 +451,12 @@ impl Widget for Link {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         if !self.enabled {
             return false;
         }
@@ -475,12 +475,12 @@ impl Widget for Link {
         }
     }
 
-    fn own_actions(&self) -> Vec<crate::widget::OwnAction> {
+    fn own_actions(&self) -> Vec<tilo_ui_base::widget::OwnAction> {
         self.copy_action().into_iter().collect()
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let mut node = AccessNode::new(Role::Link)
             .with_name(self.label.clone())
             .with_bounds(self.target())
@@ -522,7 +522,7 @@ mod tests {
         phase link_opens_its_url_by_pointer_and_keyboard;
         {
             fn native_opener_rejects_nul_without_truncating_the_url() {
-                let error = crate::platform::try_os_open("https://example.invalid/\0unexpected").unwrap_err();
+                let error = tilo_ui_base::platform::try_os_open("https://example.invalid/\0unexpected").unwrap_err();
                 assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
             }
 
@@ -532,7 +532,7 @@ mod tests {
         phase link_semantics_cursor_and_default_label;
         {
             fn renders_as_a_link_in_the_accessibility_tree() {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 let link = Link::new("https://turing.org.uk").with_label("Turing");
                 let node = Widget::accessibility(&link).expect("a link is not presentational");
                 assert_eq!(node.role, Role::Link);
@@ -584,7 +584,7 @@ mod tests {
             let mut link = Link::action("Search everywhere", binding);
             link.activate();
             assert!(link.last_activated().is_none(), "no URL opened");
-            assert!(crate::widget::controls::take_control_invocation(&mut link).is_some());
+            assert!(tilo_ui_base::widget::controls::take_control_invocation(&mut link).is_some());
             let node = Widget::accessibility(&link).expect("semantics");
             assert_eq!(node.value, None);
         }
@@ -606,9 +606,9 @@ mod tests {
                     let mut doc = AutoCommit::new();
                     let mut link = Link::new("https://example.org/page").with_label("The page");
                     assert!(link.perform_action(
-                        &crate::a11y::Action::Activate,
+                        &tilo_ui_base::a11y::Action::Activate,
                         &[0],
-                        &mut crate::widget::Edits::lend(&mut doc),
+                        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                         &automerge::ROOT
                     ));
                     assert!(link.last_activated().is_none(), "copying opens no page");

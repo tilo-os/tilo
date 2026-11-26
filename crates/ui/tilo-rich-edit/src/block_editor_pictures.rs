@@ -3,7 +3,7 @@
 
 use winit::event::WindowEvent;
 
-use ui::widget::EventCtx;
+use tilo_ui_base::widget::EventCtx;
 
 use crate::block_editor::{
     BlockContent, BlockEditor, BlockKind, DocumentPosition, DocumentSelection, IMAGE_WIDTH_RANGE,
@@ -37,7 +37,7 @@ impl BlockEditor {
     /// The view's `image` event, which the editor fires when a picture it wrote into the
     /// document is also to be named there (an app keeping the name a picture came in as, beside
     /// the address its bytes are at).
-    pub fn set_image_event(&mut self, event: ui::component::Event) {
+    pub fn set_image_event(&mut self, event: tilo_ui_base::component::Event) {
         self.image_event = Some(event);
     }
 
@@ -210,9 +210,9 @@ impl BlockEditor {
             }
             if let Some(event) = &self.image_event {
                 event.fire_in_gesture(
-                    Some(ui::component::Value::List(vec![
-                        ui::component::Value::Text(picture.name.clone()),
-                        ui::component::Value::Text(picture.address.clone()),
+                    Some(tilo_ui_base::component::Value::List(vec![
+                        tilo_ui_base::component::Value::Text(picture.name.clone()),
+                        tilo_ui_base::component::Value::Text(picture.address.clone()),
                     ])),
                     Some(gesture),
                 );
@@ -320,7 +320,9 @@ impl BlockEditor {
                     f64::from(*IMAGE_WIDTH_RANGE.start()),
                     f64::from(*IMAGE_WIDTH_RANGE.end()),
                 );
-                sized = Some(ui::num::u32_of_i64(ui::num::i64_of_f64(next)));
+                sized = Some(tilo_ui_base::num::u32_of_i64(
+                    tilo_ui_base::num::i64_of_f64(next),
+                ));
             }
             "flip:h" => set.flip_h = !set.flip_h,
             "flip:v" => set.flip_v = !set.flip_v,

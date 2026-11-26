@@ -14,15 +14,15 @@ use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, RoundedRect, Stro
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
-use crate::chart_palette::ChartPalette;
-use crate::paint::with_alpha;
-use crate::text_render::{TextRenderer, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::chart_labels::{LabelPlacer, format_compact, shortened_labels};
 use crate::widget::chart_legend;
 use crate::widget::chart_readout::{Highlight, Readout};
 use crate::widget::plot::{Plot, PlotFrame, PlotItem, PlotMarks};
+use tilo_ui_base::chart_palette::ChartPalette;
+use tilo_ui_base::paint::with_alpha;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum AxisRange {
@@ -52,7 +52,7 @@ pub enum AxisLabelFormat {
     Percent(u8),
     Bytes(u8),
     /// Bytes stored or transferred, in SI decimal units with the precision
-    /// [`crate::format::size`] reads in (`500 MB`, `1.5 GB`).
+    /// [`tilo_ui_base::format::size`] reads in (`500 MB`, `1.5 GB`).
     Size,
     Scientific(u8),
     Duration(u8),
@@ -268,7 +268,7 @@ impl PlotSeries {
     /// The colour it is drawn in, in `theme`: its own, or the theme's palette's at its place.
     pub fn color_in(&self, theme: &Theme) -> Color {
         self.palette.map_or(self.color, |index| {
-            crate::chart_palette::ChartPalette::from_theme(theme).categorical(index)
+            tilo_ui_base::chart_palette::ChartPalette::from_theme(theme).categorical(index)
         })
     }
 
@@ -1032,7 +1032,7 @@ impl CartesianMarks {
         let y_title = if title_lines == 0 {
             0.0
         } else {
-            crate::num::f64_of_usize(title_lines) * tick_line + tight
+            tilo_ui_base::num::f64_of_usize(title_lines) * tick_line + tight
         };
         let left = (y_title + widest_tick + gap).ceil();
         Bands {
@@ -1392,7 +1392,8 @@ impl CartesianMarks {
 
     fn ticks(axis: &PlotAxis, domain: Domain, span: f64) -> Vec<AxisTick> {
         if !axis.ticks.is_empty() {
-            let available = crate::num::usize_of_f64((span / axis.min_tick_spacing).floor()).max(2);
+            let available =
+                tilo_ui_base::num::usize_of_f64((span / axis.min_tick_spacing).floor()).max(2);
             if axis.ticks.len() <= available {
                 return axis.ticks.clone();
             }
@@ -1407,11 +1408,11 @@ impl CartesianMarks {
                 .collect();
         }
         let responsive_count =
-            crate::num::u8_of_f64((span / axis.min_tick_spacing).floor()).saturating_add(1);
+            tilo_ui_base::num::u8_of_f64((span / axis.min_tick_spacing).floor()).saturating_add(1);
         let count = axis.tick_count.clamp(2, 20).min(responsive_count.max(2));
         if axis.scale == AxisScale::Log10 {
-            let first = crate::num::i32_of_f64(domain.min.log10().ceil());
-            let last = crate::num::i32_of_f64(domain.max.log10().floor());
+            let first = tilo_ui_base::num::i32_of_f64(domain.min.log10().ceil());
+            let last = tilo_ui_base::num::i32_of_f64(domain.max.log10().floor());
             let decades = if last >= first {
                 (first..=last)
                     .map(|power| 10.0_f64.powi(power))
@@ -1813,7 +1814,7 @@ impl CartesianMarks {
         if !self.style.x_axis.title.is_empty() {
             let title = tr.elide_to_width_style(
                 &self.style.x_axis.title,
-                crate::num::f32_of_f64(plot.width().max(0.0)),
+                tilo_ui_base::num::f32_of_f64(plot.width().max(0.0)),
                 &title_style,
             );
             let (width, _) = tr.measure_style(&title, None, &title_style);
@@ -1837,7 +1838,8 @@ impl CartesianMarks {
         let lines = Self::axis_title_lines(tr, theme, &self.style.y_axis.title, plot.height());
         for (index, line) in lines.iter().enumerate() {
             let (width, _) = tr.measure_style(line, None, &title_style);
-            let left = self.frame.rect.x0 + crate::num::f64_of_usize(index) * self.bands.tick_line;
+            let left =
+                self.frame.rect.x0 + tilo_ui_base::num::f64_of_usize(index) * self.bands.tick_line;
             tr.draw_style(
                 scene,
                 line,
@@ -1874,7 +1876,7 @@ impl CartesianMarks {
         let style = theme
             .text(TextRole::Caption)
             .with_weight(TextWeight::Semibold);
-        let width = crate::num::f32_of_f64(available.max(0.0));
+        let width = tilo_ui_base::num::f32_of_f64(available.max(0.0));
         let fits =
             |tr: &mut TextRenderer, text: &str| tr.measure_style(text, None, &style).0 <= width;
         let mut lines: Vec<String> = Vec::new();
@@ -2056,7 +2058,7 @@ impl CartesianMarks {
     /// into one silhouette and its bins can no longer be told apart. Slots under two device
     /// pixels apart leave no gap to draw at all, and no bars are drawn.
     fn bar_rects(points: &[Point], width: f64, zero: f64) -> Vec<Rect> {
-        let scale = f64::from(crate::widget::device_scale()).max(f64::MIN_POSITIVE);
+        let scale = f64::from(tilo_ui_base::widget::device_scale()).max(f64::MIN_POSITIVE);
         let mut width_px = (width * scale).floor();
         if let Some(pitch_px) = Self::bar_pitch_px(points, scale) {
             let gap_px = (pitch_px * Self::BAR_GAP_FRACTION).ceil().max(1.0);
@@ -2071,7 +2073,8 @@ impl CartesianMarks {
         points
             .iter()
             .map(|point| {
-                let left = crate::widget::layout::snap_to_device_pixels(point.x - width / 2.0);
+                let left =
+                    tilo_ui_base::widget::layout::snap_to_device_pixels(point.x - width / 2.0);
                 Rect::new(left, point.y.min(zero), left + width, point.y.max(zero))
             })
             .collect()
@@ -2261,7 +2264,8 @@ impl CartesianMarks {
         );
         let count = series.data.len();
         let points_per_pixel = self.style.rendering.max_points_per_pixel.clamp(0.25, 16.0);
-        let target = crate::num::usize_of_f64((plot.width().max(1.0) * points_per_pixel).ceil());
+        let target =
+            tilo_ui_base::num::usize_of_f64((plot.width().max(1.0) * points_per_pixel).ceil());
         let target = target.max(16);
         if !self.style.rendering.adaptive_sampling || !connected || count <= target || count <= 2 {
             return (0..count).collect();
@@ -3012,7 +3016,7 @@ fn format_duration(seconds: f64, places: u8) -> String {
 }
 
 fn format_size(value: f64) -> String {
-    let size = crate::format::size(crate::num::u64_of_f64(value.abs().round()));
+    let size = tilo_ui_base::format::size(tilo_ui_base::num::u64_of_f64(value.abs().round()));
     if value <= -0.5 {
         format!("-{size}")
     } else {
@@ -3021,7 +3025,7 @@ fn format_size(value: f64) -> String {
 }
 
 fn format_bytes(value: f64, places: u8) -> String {
-    crate::format::Formats::current().memory_value(value, usize::from(places.min(8)))
+    tilo_ui_base::format::Formats::current().memory_value(value, usize::from(places.min(8)))
 }
 
 impl PlotMarks for CartesianMarks {
@@ -3176,8 +3180,8 @@ impl PlotMarks for CartesianMarks {
     fn visible_changed(&mut self) {
         self.invalidate_domains();
     }
-    fn event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
-        let claim = |ctx: &mut crate::widget::EventCtx<'_>| {
+    fn event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
+        let claim = |ctx: &mut tilo_ui_base::widget::EventCtx<'_>| {
             *ctx.handled = true;
             *ctx.focus_target = Some(ctx.node_id);
         };
@@ -3321,9 +3325,9 @@ impl PlotMarks for CartesianMarks {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
-    use crate::widget::Widget;
     use crate::widget::chart_navigation::InteractiveChart as _;
+    use tilo_ui_base::presence::PresenceCtx;
+    use tilo_ui_base::widget::Widget;
 
     fn band_plot() -> CartesianPlot {
         let series = [
@@ -3356,7 +3360,7 @@ mod tests {
     fn draw_once(plot: &mut CartesianPlot, theme: &Theme) {
         let mut scene = Scene::new();
         let mut text = TextRenderer::new();
-        plot.draw(&mut crate::draw::DrawCtx::new(
+        plot.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
@@ -3584,7 +3588,7 @@ mod tests {
             fn axis_titles_wrap_to_be_read_whole_and_elide_only_past_two_lines() {
                 let theme = Theme::light();
                 let style = theme.text(TextRole::Caption).with_weight(TextWeight::Semibold);
-                crate::text_render::with_layout_renderer(&theme, |tr| {
+                tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| {
                     let lines = |tr: &mut TextRenderer, title: &str, available: f64| {
                         CartesianMarks::axis_title_lines(tr, &theme, title, available)
                     };
@@ -3716,7 +3720,7 @@ mod tests {
                 .map(|index| 80.0 + f64::from(index % 12) * 3.0)
                 .collect::<Vec<_>>();
             for scale in [1.0_f64, 1.5] {
-                let _held = crate::widget::enter_device_scale(scale);
+                let _held = tilo_ui_base::widget::enter_device_scale(scale);
                 let mut chart = crate::widget::histogram::Histogram::new(
                     samples.iter().copied(),
                     Color::WHITE,

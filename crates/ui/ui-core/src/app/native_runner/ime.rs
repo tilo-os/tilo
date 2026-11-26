@@ -10,7 +10,7 @@ use super::*;
 /// stays unchanged, while native handoff translations must not clamp to zero.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct NativeImeWindowState {
-    content: crate::ime::InputContent,
+    content: tilo_ui_base::ime::InputContent,
     pub(super) x: i32,
     pub(super) y: i32,
     pub(super) width: u32,
@@ -18,7 +18,7 @@ pub(super) struct NativeImeWindowState {
 }
 
 impl NativeImeWindowState {
-    fn from_rect(content: crate::ime::InputContent, rect: KurboRect) -> Self {
+    fn from_rect(content: tilo_ui_base::ime::InputContent, rect: KurboRect) -> Self {
         let shared = ImeWindowState::from_rect(content, rect);
         let signed = |value: f64| {
             if value.is_finite() {
@@ -199,11 +199,11 @@ mod floating_ime_continuation_tests {
         phase returned_caret_keeps_signed_child_coordinates_and_content_type;
         {
             let primary = ImeWindowState {
-                content: crate::ime::InputContent {
-                    purpose: crate::ime::InputPurpose::Email,
-                    hints: crate::ime::InputHints {
+                content: tilo_ui_base::ime::InputContent {
+                    purpose: tilo_ui_base::ime::InputPurpose::Email,
+                    hints: tilo_ui_base::ime::InputHints {
                         multiline: true,
-                        ..crate::ime::InputHints::default()
+                        ..tilo_ui_base::ime::InputHints::default()
                     },
                 },
                 x: 20,

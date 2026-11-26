@@ -18,8 +18,8 @@ use tilo_session_core::surface::{Scroll, ShellSurface, SurfaceLayer};
 
 use tilo_onboarding_session::view::OnboardingView;
 use tilo_session_core::surfaces::{Published, through_api};
+use tilo_ui_base::host_operation::ResourceOperationStart;
 use ui::device_local_api::SharedApi;
-use ui::host_operation::ResourceOperationStart;
 
 use crate::clock_wait::{ClockWait, ClockWaitStep};
 use crate::controls::SessionCommand;
@@ -249,7 +249,7 @@ fn not_started(commands: &Rc<RefCell<Vec<SessionCommand>>>) -> ui::widget::Conta
 
 /// `content` on the person's wallpaper, covering every output: what stands before the session is
 /// opaque, so nothing of the desktop under it shows through.
-pub(crate) fn on_ground(content: Box<dyn ui::Widget>) -> ui::widget::Container {
+pub(crate) fn on_ground(content: Box<dyn tilo_ui_base::Widget>) -> ui::widget::Container {
     ui::widget::Container::new()
         .filling()
         .with_no_padding()
@@ -262,7 +262,7 @@ pub(crate) fn on_ground(content: Box<dyn ui::Widget>) -> ui::widget::Container {
 
 /// A tree covering every output and taking the keyboard: what stands in front of the session withholds
 /// it.
-fn covering(root: Box<dyn ui::Widget>, placement: Placement) -> WidgetSurface {
+fn covering(root: Box<dyn tilo_ui_base::Widget>, placement: Placement) -> WidgetSurface {
     WidgetSurface::new(root, placement, false)
         .named("Setup")
         .covering_outputs()
@@ -324,7 +324,11 @@ impl Published for Setup {
         Published::a11y_name(self.widgets())
     }
 
-    fn a11y_action(&mut self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool {
+    fn a11y_action(
+        &mut self,
+        target: ui::accesskit::NodeId,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
         self.up() && Published::a11y_action(self.widgets_mut(), target, action)
     }
 

@@ -4,11 +4,16 @@ use std::path::PathBuf;
 use taffy::Size;
 use tilo_ui::State;
 use tilo_ui::headless::Driver;
-use tilo_ui::tokens::TextRole;
 use tilo_ui::widget::ButtonRole;
-use tilo_ui::widget::{
-    Actions, Button, Checkbox, Container, Element, Field, Form, FormPage, FormSection, Manual,
-    ManualContext, MeasureConstraint as M, Scrollable, Text, TextInput, WidgetLayoutError,
+use tilo_ui::{
+    widget::Actions, widget::Button, widget::Checkbox, widget::Container, widget::Field,
+    widget::Form, widget::FormPage, widget::FormSection, widget::Scrollable, widget::Text,
+    widget::TextInput,
+};
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{
+    widget::Element, widget::Manual, widget::ManualContext, widget::MeasureConstraint as M,
+    widget::WidgetLayoutError,
 };
 use vello::kurbo::Rect;
 const NAME: &str = "Full name";
@@ -173,7 +178,7 @@ fn manual_account(scale: f32) -> Element {
         .child(Box::new(
             Text::new(EMAIL_ERROR)
                 .with_role(TextRole::Caption)
-                .with_live(tilo_ui::a11y::Politeness::Polite),
+                .with_live(tilo_ui_base::a11y::Politeness::Polite),
         ))
         .child(Box::new(
             Text::new("Preferences")

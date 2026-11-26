@@ -70,7 +70,7 @@ impl LegacyAppearance {
     /// dark default the shell itself falls back to.
     pub fn from_settings_text(text: &str, reduce_motion_override: bool) -> Self {
         let document = settings_store::parse(text);
-        let theme = ui::Theme::resolved_from_settings(text);
+        let theme = tilo_ui_base::Theme::resolved_from_settings(text);
         let high_contrast = theme.colors_are_forced();
         let background = theme.tokens.colors.surfaces.content.to_rgba8();
         let luma = 0.2126 * f64::from(background.r)
@@ -352,11 +352,11 @@ mod tests {
             );
             assert_eq!(
                 lookup(&settings, GNOME_INTERFACE, "font-name"),
-                &PortalSetting::Text(format!("{} 11", ui::text_render::UI_SANS_FAMILY))
+                &PortalSetting::Text(format!("{} 11", tilo_ui_base::text_render::UI_SANS_FAMILY))
             );
             assert_eq!(
                 lookup(&settings, GNOME_INTERFACE, "monospace-font-name"),
-                &PortalSetting::Text(format!("{} 11", ui::text_render::UI_MONOSPACE_FAMILY))
+                &PortalSetting::Text(format!("{} 11", tilo_ui_base::text_render::UI_MONOSPACE_FAMILY))
             );
             assert_eq!(
                 lookup(&settings, GNOME_INTERFACE, "text-scaling-factor"),

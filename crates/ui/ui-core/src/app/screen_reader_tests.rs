@@ -1,10 +1,11 @@
 use super::*;
-use crate::screen_reader::ScreenReader;
-use crate::widget::TaffyTreeExt;
-use crate::widget::{Button, Widget};
+use crate::widget::Button;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::screen_reader::ScreenReader;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 use tts::{NullSpeaker, Speaker, Utterance};
 
 #[derive(Clone, Default)]
@@ -100,7 +101,7 @@ fn reader_narrates_focus_and_obeys_its_enablement() {
         app.init_layout();
         let second = app.focusable_order[1];
         let ak_id = accesskit::NodeId(u64::from(second) + 1);
-        app.dispatch_a11y_action(ak_id, &crate::a11y::Action::Focus);
+        app.dispatch_a11y_action(ak_id, &tilo_ui_base::a11y::Action::Focus);
         let spoken = rec.0.borrow();
         assert_eq!(
             spoken.spoken(),
@@ -123,7 +124,7 @@ fn reader_narrates_focus_and_obeys_its_enablement() {
         let before = rec.0.borrow().spoken().len();
         let second = app.focusable_order[1];
         let ak_id = accesskit::NodeId(u64::from(second) + 1);
-        app.dispatch_a11y_action(ak_id, &crate::a11y::Action::Focus);
+        app.dispatch_a11y_action(ak_id, &tilo_ui_base::a11y::Action::Focus);
         assert_eq!(
             rec.0.borrow().spoken().len(),
             before,
@@ -171,10 +172,10 @@ fn reader_narrates_focus_and_obeys_its_enablement() {
 struct LiveWidget {
     name: String,
     value: Rc<RefCell<String>>,
-    politeness: crate::a11y::Politeness,
+    politeness: tilo_ui_base::a11y::Politeness,
 }
 impl LiveWidget {
-    fn new(name: &str, politeness: crate::a11y::Politeness) -> Self {
+    fn new(name: &str, politeness: tilo_ui_base::a11y::Politeness) -> Self {
         Self {
             name: name.to_string(),
             value: Rc::new(RefCell::new(String::new())),
@@ -194,9 +195,9 @@ impl Widget for LiveWidget {
     fn name(&self) -> &'static str {
         "live-widget"
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let v = self.value.borrow().clone();
-        let mut node = crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+        let mut node = tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
             .with_name(self.name.clone())
             .with_live(self.politeness);
         if !v.is_empty() {
@@ -217,7 +218,7 @@ fn app_with_reader_over(root: Box<dyn Widget>) -> (App, SharedRecorder) {
 #[test]
 fn live_regions_announce_with_their_priority_only_when_the_reader_is_on() {
     {
-        let live = LiveWidget::new("Notifications", crate::a11y::Politeness::Assertive);
+        let live = LiveWidget::new("Notifications", tilo_ui_base::a11y::Politeness::Assertive);
         let val = live.value.clone();
         let (mut app, rec) = app_with_reader_over(Box::new(live));
         let focus_before = app.focused_node;
@@ -247,7 +248,7 @@ fn live_regions_announce_with_their_priority_only_when_the_reader_is_on() {
     }
 
     {
-        let live = LiveWidget::new("Errors", crate::a11y::Politeness::Assertive);
+        let live = LiveWidget::new("Errors", tilo_ui_base::a11y::Politeness::Assertive);
         let val = live.value.clone();
         let (mut app, rec) = app_with_reader_over(Box::new(live));
         *val.borrow_mut() = "Permission denied".to_string();
@@ -262,7 +263,7 @@ fn live_regions_announce_with_their_priority_only_when_the_reader_is_on() {
     }
 
     {
-        let live = LiveWidget::new("Status", crate::a11y::Politeness::Polite);
+        let live = LiveWidget::new("Status", tilo_ui_base::a11y::Politeness::Polite);
         let val = live.value.clone();
         let (mut app, rec) = app_with_reader_over(Box::new(live));
         *val.borrow_mut() = "Uploading, 40%".to_string();
@@ -277,7 +278,7 @@ fn live_regions_announce_with_their_priority_only_when_the_reader_is_on() {
     }
 
     {
-        let live = LiveWidget::new("Notifications", crate::a11y::Politeness::Assertive);
+        let live = LiveWidget::new("Notifications", tilo_ui_base::a11y::Politeness::Assertive);
         let val = live.value.clone();
         let mut app = App::new(State::new(), Box::new(live));
         app.init_layout();
@@ -305,13 +306,13 @@ impl Widget for CardWithFooter {
     fn name(&self) -> &'static str {
         "card-with-footer"
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let text = self.text.borrow().clone();
-        let footer = crate::a11y::AccessNode::new(crate::a11y::Role::StaticText)
+        let footer = tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::StaticText)
             .with_name(text)
-            .with_live(crate::a11y::Politeness::Polite);
+            .with_live(tilo_ui_base::a11y::Politeness::Polite);
         Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Dialog)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Dialog)
                 .with_name("Card")
                 .with_children(vec![footer]),
         )
@@ -365,7 +366,7 @@ fn caret_review_announces_characters_and_words_for_text_widgets() {
         assert!(pre.is_some(), "focused text input yields a review snapshot");
         rec.0.borrow_mut().reset(); // forget the autofocus narration
         unsafe {
-            crate::widget::undo_points::set_state(
+            tilo_ui_base::widget::undo_points::set_state(
                 &mut (*(*app.layout.node_map.get(&id).unwrap())),
                 "2",
             );
@@ -383,7 +384,7 @@ fn caret_review_announces_characters_and_words_for_text_widgets() {
         let pre = app.text_review_snapshot();
         rec.0.borrow_mut().reset(); // forget the autofocus narration
         unsafe {
-            crate::widget::undo_points::set_state(
+            tilo_ui_base::widget::undo_points::set_state(
                 &mut (*(*app.layout.node_map.get(&id).unwrap())),
                 "0",
             );
@@ -425,7 +426,7 @@ fn ctrl_super_enter(app: &mut App) -> WindowEvent {
     use winit::keyboard::ModifiersState;
     app.input.modifiers =
         winit::event::Modifiers::from(ModifiersState::CONTROL | ModifiersState::SUPER);
-    crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter)
+    tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::Enter)
 }
 
 #[cfg(feature = "native")]
@@ -456,7 +457,7 @@ fn the_chord_toggles_the_reader_and_says_so_even_when_turning_it_off() {
     assert_eq!(*told.borrow(), [false, true]);
 
     app.input.modifiers = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
-    let enter = crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter);
+    let enter = tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::Enter);
     assert!(!app.handle_screen_reader_chord(&enter));
     assert!(app.screen_reader_enabled());
 }
@@ -498,7 +499,7 @@ impl Widget for Keypad {
         taffy.widget_leaf(style, node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: vello::kurbo::Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
     }
     fn get_rect(&self) -> vello::kurbo::Rect {
         self.rect
@@ -506,8 +507,8 @@ impl Widget for Keypad {
     fn name(&self) -> &'static str {
         "keypad"
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let keys = Self::KEYS
             .iter()
             .enumerate()
@@ -528,17 +529,17 @@ impl Widget for Keypad {
     }
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        let ([key], crate::a11y::Action::Activate) = (key_path, action) else {
+        let ([key], tilo_ui_base::a11y::Action::Activate) = (key_path, action) else {
             return false;
         };
         let Some(name) = Self::KEYS
             .iter()
-            .find(|name| crate::a11y::hash_key(*name) == *key)
+            .find(|name| tilo_ui_base::a11y::hash_key(*name) == *key)
         else {
             return false;
         };
@@ -577,12 +578,12 @@ fn said_since(rec: &SharedRecorder, from: usize) -> Vec<String> {
 #[test]
 fn reading_next_and_previous_walks_into_a_widgets_synthetic_keys() {
     let (mut app, rec, _) = app_with_keypad();
-    let insert = crate::synthetic_input::key_input(
+    let insert = tilo_ui_base::synthetic_input::key_input(
         &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Insert),
         winit::event::ElementState::Pressed,
     );
-    let next = crate::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowRight);
-    let prev = crate::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowLeft);
+    let next = tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowRight);
+    let prev = tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowLeft);
     let start = rec.0.borrow().spoken().len();
     app.handle_screen_reader_key(&insert);
     for _ in 0..5 {
@@ -613,7 +614,7 @@ fn reading_next_and_previous_walks_into_a_widgets_synthetic_keys() {
 #[cfg(feature = "native")]
 #[derive(Default)]
 struct Touchscreen {
-    emulator: std::cell::RefCell<crate::interaction::TouchPointerEmulator>,
+    emulator: std::cell::RefCell<tilo_ui_base::interaction::TouchPointerEmulator>,
 }
 
 #[cfg(feature = "native")]
@@ -688,7 +689,7 @@ fn touch_explores_keys_without_pressing_them_and_a_double_tap_presses_the_one_re
     assert!(finger(&mut app, zero, (1, Started), two, 0));
     assert_eq!(
         app.screen_reader_deadline(),
-        Some(zero + crate::screen_reader_touch::EXPLORE_DELAY)
+        Some(zero + tilo_ui_base::screen_reader_touch::EXPLORE_DELAY)
     );
     assert!(!tick(&mut app, 100));
     assert!(tick(&mut app, 200));

@@ -14,7 +14,7 @@ use tilo_ui::widget::{Column, Container, Fitted, Row, Scrollable, Text};
 /// container of exactly `height` in a column that fills the window.
 fn stack_in_a_place(
     strip: Container,
-    content: Box<dyn tilo_ui::widget::Widget>,
+    content: Box<dyn tilo_ui_base::widget::Widget>,
     height: f32,
 ) -> Driver {
     let stack = Stack::stack()
@@ -29,7 +29,7 @@ fn stack_in_a_place(
         .with_child(Box::new(stack));
     let root = Column::new().with_no_padding().push(Box::new(place));
     let mut driver = Driver::new(State::new(), Box::new(root), (400, 900));
-    driver.send(&tilo_ui::synthetic_input::cursor_moved(150.0, 150.0));
+    driver.send(&tilo_ui_base::synthetic_input::cursor_moved(150.0, 150.0));
     driver
 }
 
@@ -122,7 +122,7 @@ fn a_filling_child_of_a_column_takes_the_area_under_its_strip() {
                 .with_child(Box::new(tall_scroll("content", 400.0))),
         ));
     let mut driver = Driver::new(State::new(), Box::new(root), (400, 520));
-    driver.send(&tilo_ui::synthetic_input::cursor_moved(150.0, 150.0));
+    driver.send(&tilo_ui_base::synthetic_input::cursor_moved(150.0, 150.0));
     let targets = driver.targets();
     for (name, rect) in &targets {
         println!("{name}: {rect:?}");

@@ -809,7 +809,7 @@ impl CaptureStudio {
             thumb: if self.presentation().is_drawn() {
                 String::new()
             } else {
-                ui::held_images::hero(&picture, CARD_PICTURE)
+                tilo_ui_base::held_images::hero(&picture, CARD_PICTURE)
             },
         };
         let answer = self
@@ -1097,7 +1097,7 @@ impl CaptureStudio {
             thumb: if self.presentation().is_drawn() {
                 String::new()
             } else {
-                ui::held_images::hero(&picture, CARD_PICTURE)
+                tilo_ui_base::held_images::hero(&picture, CARD_PICTURE)
             },
         };
         // A shot taken from the shell keeps its picture until its card is gone: a file that could
@@ -2158,7 +2158,7 @@ mod tests {
     fn editor_controls(
         app: &mut tilo_app_test_host::TestApp<tilo_capture_studio::CaptureStudioApp>,
     ) -> Vec<String> {
-        use ui::widget::Widget as _;
+        use tilo_ui_base::widget::Widget as _;
         app.surface_mut::<tilo_capture_studio::StudioSurface>()
             .test_rects()
             .into_iter()

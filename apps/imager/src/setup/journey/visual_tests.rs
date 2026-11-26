@@ -94,9 +94,9 @@ fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
             root.draw_child(
                 &mut scene,
                 Affine::IDENTITY,
-                &mut ui::TextRenderer::new(),
+                &mut tilo_ui_base::TextRenderer::new(),
                 theme,
-                &ui::draw::DrawEnv::default(),
+                &tilo_ui_base::draw::DrawEnv::default(),
             );
             let runs = &scene.encoding().resources.glyph_runs;
             assert!(!runs.is_empty(), "the heading must paint real glyphs");
@@ -337,7 +337,7 @@ fn guided_pages_paint_at_small_normal_and_large_host_scales_in_both_themes() {
 fn validation_copy<'a>(root: &'a dyn Widget, error: &str) -> Option<&'a dyn Widget> {
     if root.accessibility().is_some_and(|node| {
         node.name.as_deref() == Some(t(error).as_str())
-            && node.live == Some(ui::a11y::Politeness::Assertive)
+            && node.live == Some(tilo_ui_base::a11y::Politeness::Assertive)
     }) {
         return Some(root);
     }
@@ -971,7 +971,7 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
                 );
             } else {
                 app.harness()
-                    .perform_named("installer.confirmation", &ui::a11y::Action::Focus)
+                    .perform_named("installer.confirmation", &tilo_ui_base::a11y::Action::Focus)
                     .unwrap();
                 app.harness().key("Enter");
             }
@@ -1067,7 +1067,7 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
             let valid = "walnut telescope amber meadow";
             for id in ["installer.password", "installer.confirmation"] {
                 app.harness()
-                    .perform_named(id, &ui::a11y::Action::Focus)
+                    .perform_named(id, &tilo_ui_base::a11y::Action::Focus)
                     .unwrap();
                 app.harness().key("Home");
                 app.harness().set_modifiers(&["shift".into()]);
@@ -1076,7 +1076,8 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
                 app.settle();
                 let selection = app
                     .with_widget::<InstallerPreview, _>(|preview| {
-                        ui::widget::undo_points::get_state(control(preview, id).unwrap()).unwrap()
+                        tilo_ui_base::widget::undo_points::get_state(control(preview, id).unwrap())
+                            .unwrap()
                     })
                     .unwrap();
                 assert_eq!(
@@ -1088,7 +1089,8 @@ fn password_validation_scenario(viewport: (u32, u32), require_clipped: bool) {
                 app.settle();
                 app.with_widget::<InstallerPreview, _>(|preview| {
                     assert_eq!(
-                        ui::widget::undo_points::get_state(control(preview, id).unwrap()).unwrap(),
+                        tilo_ui_base::widget::undo_points::get_state(control(preview, id).unwrap())
+                            .unwrap(),
                         selection,
                         "observation preserves the private selection"
                     );
@@ -1160,7 +1162,7 @@ fn password_enter_focuses_confirmation_and_then_submits() {
         .set_theme(Theme::dark().with_reduce_motion(true));
     app.settle();
     app.harness()
-        .perform_named("installer.password", &ui::a11y::Action::Focus)
+        .perform_named("installer.password", &tilo_ui_base::a11y::Action::Focus)
         .unwrap();
     app.harness()
         .type_text("keyboard walnut telescope amber meadow");

@@ -18,7 +18,7 @@ use std::sync::Mutex;
 use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_lock::MutexRecover as _;
-use tilo_ui::diag;
+use tilo_ui_base::diag;
 
 /// Set on the child to select which write it should attempt.
 const ROLE: &str = "TILO_BROKEN_PIPE_ROLE";

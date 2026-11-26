@@ -127,7 +127,7 @@ fn admit(session: &mut Session, questions: &tilo_service::AskReceiver, program: 
 /// session's pointer, keys or a picture of its screen.
 #[test]
 fn a_control_connection_is_refused_even_from_an_admitted_agent() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("agent.sock");
     let (mut session, questions) = session(root.path(), &socket);
@@ -150,7 +150,7 @@ fn a_control_connection_is_refused_even_from_an_admitted_agent() {
 /// person's search finds it like any member, and its next connection is the same agent.
 #[test]
 fn an_admitted_client_is_an_agent_member_people_find() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("agent.sock");
     let (mut session, questions) = session(root.path(), &socket);
@@ -189,7 +189,7 @@ fn an_admitted_client_is_an_agent_member_people_find() {
 /// their own workspace.
 #[test]
 fn a_send_lists_the_workspaces_agents_and_people() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("agent.sock");
     let (mut session, questions) = session(root.path(), &socket);
@@ -266,7 +266,7 @@ fn said(session: &Session) -> Vec<(String, String)> {
 /// person is told once, naming it, instead of the agent silently losing what it was allowed.
 #[test]
 fn an_answer_this_build_cannot_read_is_asked_again_and_told_once() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     // What an older build kept: the client and the agent it asked, in a row this one does not read
     // (no program of theirs named).

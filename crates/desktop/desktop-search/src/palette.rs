@@ -1136,7 +1136,7 @@ impl DesktopSearch {
         self.render(&query);
         self.palette.set_cursor(cursor);
         // Choosing a row closes a command palette; this one only grew.
-        ui::widget::Widget::set_focus(&mut self.palette, true);
+        tilo_ui_base::widget::Widget::set_focus(&mut self.palette, true);
     }
 
     /// List every result the search found, keeping the query and the
@@ -1149,7 +1149,7 @@ impl DesktopSearch {
         self.kept_choice = None;
         self.render(&query);
         self.palette.set_cursor(cursor);
-        ui::widget::Widget::set_focus(&mut self.palette, true);
+        tilo_ui_base::widget::Widget::set_focus(&mut self.palette, true);
     }
 
     /// What lists a resource-kind parameter's items, where this host serves the workspace's list
@@ -1172,7 +1172,7 @@ impl DesktopSearch {
         match field.step {
             FieldStep::Input { .. } => {
                 self.palette.open_argument_step(id, spec);
-                ui::widget::Widget::set_focus(&mut self.palette, true);
+                tilo_ui_base::widget::Widget::set_focus(&mut self.palette, true);
             }
             FieldStep::Pick { ref kind } => {
                 let kind = kind.clone();
@@ -1208,7 +1208,7 @@ impl DesktopSearch {
         self.palette.set_query("");
         self.palette.set_query_placeholder(prompt);
         self.render_pick("");
-        ui::widget::Widget::set_focus(&mut self.palette, true);
+        tilo_ui_base::widget::Widget::set_focus(&mut self.palette, true);
     }
 
     /// Ask for the pick's answer again, without waiting: what the host's wake calls for.
@@ -1302,7 +1302,7 @@ impl DesktopSearch {
             self.finish_collected();
         } else {
             self.restart(&saved);
-            ui::widget::Widget::set_focus(&mut self.palette, true);
+            tilo_ui_base::widget::Widget::set_focus(&mut self.palette, true);
             self.open_current_field();
         }
     }
@@ -1320,7 +1320,7 @@ impl DesktopSearch {
         self.palette.open();
         self.palette.set_query(&pick.saved);
         self.restart(&pick.saved);
-        ui::widget::Widget::set_focus(&mut self.palette, true);
+        tilo_ui_base::widget::Widget::set_focus(&mut self.palette, true);
     }
 
     /// The open field's kind lists nothing here: ask for its address in the field, as a text
@@ -1341,7 +1341,7 @@ impl DesktopSearch {
             self.restart(&saved);
         }
         self.open_current_field();
-        ui::widget::Widget::set_focus(&mut self.palette, true);
+        tilo_ui_base::widget::Widget::set_focus(&mut self.palette, true);
     }
 
     /// File the value an open step answered, and open the next field or run the

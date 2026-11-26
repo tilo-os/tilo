@@ -88,7 +88,8 @@ fn open(fixture: &mut Fixture, app: &str) {
         match fixture.apps.start(&launch, &workspace) {
             Ok(()) => break,
             Err(why)
-                if format!("{why}").contains("hasn't been admitted") && Instant::now() < deadline =>
+                if format!("{why}").contains("hasn't been admitted")
+                    && Instant::now() < deadline =>
             {
                 fixture.pass(Duration::from_millis(100));
             }
@@ -166,7 +167,7 @@ fn frame_pixels(session: &mut Session, colour: [u8; 4]) -> usize {
 /// The painter module a bundle carries: it declares no parameters and fills every part it is
 /// asked for with `colour`, so a window drawn by it is visibly its own.
 fn filling_module(colour: [u8; 3]) -> Vec<u8> {
-    use ui::part_paint::{Brush, PaintedPart, PartScene};
+    use tilo_ui_base::{part_paint::Brush, part_paint::PaintedPart, part_paint::PartScene};
 
     let mut part = PartScene::new();
     let mut field = ui::kurbo::BezPath::new();
@@ -177,7 +178,9 @@ fn filling_module(colour: [u8; 3]) -> Vec<u8> {
     field.close_path();
     part.fill(
         field,
-        Brush::Solid(ui::peniko::Color::from_rgb8(colour[0], colour[1], colour[2])),
+        Brush::Solid(ui::peniko::Color::from_rgb8(
+            colour[0], colour[1], colour[2],
+        )),
     );
     let answer = tilo_theme_sdk::wire::paint_answer(Some(&PaintedPart::new(part)));
     let params = tilo_theme_sdk::wire::params_answer(&[]);
@@ -210,8 +213,9 @@ fn filling_module(colour: [u8; 3]) -> Vec<u8> {
 /// The bundle's document: the shipped Bauhaus theme with the task's own set drawing every
 /// surface role, its palette unchanged.
 fn document(id: &str, set: &str) -> String {
-    let mut value: Value = serde_json::from_str(include_str!("../../../ui/themes/bauhaus/theme.json"))
-        .expect("the shipped theme reads");
+    let mut value: Value =
+        serde_json::from_str(include_str!("../../../ui/themes/bauhaus/theme.json"))
+            .expect("the shipped theme reads");
     value["id"] = json!(id);
     value["name"] = json!(id);
     for role in ["window", "control", "floating", "bar"] {
@@ -225,8 +229,11 @@ fn document(id: &str, set: &str) -> String {
 fn install_theme_package(store: &Path, id: &str, set: &str, colour: [u8; 3]) {
     let payload = store.join("pkgs").join(set);
     std::fs::create_dir_all(&payload).expect("the payload tree");
-    std::fs::write(payload.join(ui::theme_bundle::DOCUMENT), document(id, set))
-        .expect("the document");
+    std::fs::write(
+        payload.join(tilo_ui_base::theme_bundle::DOCUMENT),
+        document(id, set),
+    )
+    .expect("the document");
     let bytes = filling_module(colour);
     std::fs::write(payload.join(format!("{set}.wasm")), &bytes).expect("the module");
     tilo_wasm_aot::Cache::at(
@@ -264,7 +271,7 @@ fn step(fixture: &mut Fixture) {
 /// while it runs: the window's pixels are the first bundle's painters', then the second's.
 #[test]
 fn an_applied_theme_package_draws_the_app_in_its_own_process_and_follows_a_change() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The person's settings service beside the desktop's own: the appearance section it
     // publishes is where the applied package is written and read.
     let mut fixture = Builder::installing(APP)
@@ -276,7 +283,12 @@ fn an_applied_theme_package_draws_the_app_in_its_own_process_and_follows_a_chang
     // Both packages are installed on the device before the app starts, as a person installs a
     // theme and then applies it; the app opens after the first was applied.
     install_theme_package(&fixture.store, FIRST_PACKAGE, FIRST_SET, [0xd0, 0x30, 0x20]);
-    install_theme_package(&fixture.store, SECOND_PACKAGE, SECOND_SET, [0x20, 0x60, 0xd0]);
+    install_theme_package(
+        &fixture.store,
+        SECOND_PACKAGE,
+        SECOND_SET,
+        [0x20, 0x60, 0xd0],
+    );
     apply(&mut fixture, FIRST_PACKAGE);
     for _ in 0..20 {
         step(&mut fixture);

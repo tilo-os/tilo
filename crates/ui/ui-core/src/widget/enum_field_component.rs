@@ -1,13 +1,13 @@
 //! [`EnumField`] as a described component.
 
-use crate::component::{Bound, Component, Described};
-use crate::icons::Icon;
-use crate::widget::Tone;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::widget::Tone;
+use tilo_ui_base::{component::Bound, component::Component, component::Described};
 
 use super::{EnumField, field};
-use crate::widget::binding::derived;
+use tilo_ui_base::widget::binding::derived;
 
-crate::component::part_type!(EnumOptionProps);
+tilo_ui_base::part_type!(EnumOptionProps);
 
 /// One case an [`EnumField`] offers: its name, what it reads as, and how it reads.
 #[derive(Clone, Component, Default)]
@@ -36,7 +36,7 @@ pub struct EnumOptionProps {
 #[component(name = "EnumField", role = "Button", label = "label")]
 pub struct EnumFieldProps {
     /// The case it holds, by the case's name, and where a picked case goes.
-    #[component(bind(ty = crate::component::EnumCase))]
+    #[component(bind(ty = tilo_ui_base::component::EnumCase))]
     pub value: Bound<String>,
     /// The cases to pick from, in the enum's order.
     #[component(part(default))]

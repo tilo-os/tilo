@@ -1,7 +1,7 @@
 use super::edit::Editor;
 use super::layout::{BoxKind, layout, nearest_gap};
 use super::model::{Node, Path, Slot, integral_ranges, parse, to_linear};
-use crate::text_render::TextRenderer;
+use tilo_ui_base::text_render::TextRenderer;
 
 tilo_test_env::scenario! {
     fn integrals_parse_lay_out_edit_and_serialize_as_functions_with_bounds;

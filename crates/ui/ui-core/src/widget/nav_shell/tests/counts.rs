@@ -29,7 +29,7 @@ fn header_count(h: &Driver) -> Option<String> {
     header_part(h).and_then(|title| title.value)
 }
 
-fn header_part(h: &Driver) -> Option<crate::a11y::AccessNode> {
+fn header_part(h: &Driver) -> Option<tilo_ui_base::a11y::AccessNode> {
     h.root::<NavShell>()
         .part(Part::Title(Column::Overview))
         .and_then(Widget::accessibility)
@@ -38,9 +38,9 @@ fn header_part(h: &Driver) -> Option<crate::a11y::AccessNode> {
 /// What the sidebar draws beside `place`, as a reader hears it.
 fn place_count(h: &Driver, place: &str) -> Option<String> {
     fn find<'a>(
-        node: &'a crate::a11y::AccessNode,
+        node: &'a tilo_ui_base::a11y::AccessNode,
         name: &str,
-    ) -> Option<&'a crate::a11y::AccessNode> {
+    ) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
         if node.name.as_deref() == Some(name) {
             return Some(node);
         }

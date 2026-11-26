@@ -8,7 +8,7 @@ use super::*;
 fn paged(
     width: f32,
     lines: usize,
-    page_shown: ui::component::Event,
+    page_shown: tilo_ui_base::component::Event,
 ) -> (Box<BlockEditor>, TextRenderer, Theme) {
     let mut editor = Box::new(BlockEditor::new().with_wrap_lines(true));
     editor.set_blocks(
@@ -19,18 +19,24 @@ fn paged(
     editor.set_pages(Pages::of("Letter", "", ""));
     editor.page_shown_event = Some(page_shown);
     let theme = Theme::dark();
-    let mut text = ui::font_catalog::fixture_renderer();
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
     layout_image_editor(&mut editor, width, &mut text);
     (editor, text, theme)
 }
 
-fn page_shown_event(queue: &ui::Intents<ui::component::Fired>) -> ui::component::Event {
-    ui::component::Event::View(ui::component::Intent::new(queue, "doc", "page_shown"))
+fn page_shown_event(
+    queue: &tilo_ui_base::Intents<tilo_ui_base::component::Fired>,
+) -> tilo_ui_base::component::Event {
+    tilo_ui_base::component::Event::View(tilo_ui_base::component::Intent::new(
+        queue,
+        "doc",
+        "page_shown",
+    ))
 }
 
 #[test]
 fn the_sheet_the_caret_stands_on_is_reported_when_it_changes() {
-    let queue = ui::Intents::<ui::component::Fired>::default();
+    let queue = tilo_ui_base::Intents::<tilo_ui_base::component::Fired>::default();
     let (mut editor, _text, _theme) = paged(520.0, 60, page_shown_event(&queue));
     assert!(
         editor.stack.pages.pages.len() > 1,
@@ -40,7 +46,7 @@ fn the_sheet_the_caret_stands_on_is_reported_when_it_changes() {
     let first = queue.take();
     assert_eq!(
         first.last().map(|fired| fired.value.clone()),
-        Some(Some(ui::component::Value::Int(1))),
+        Some(Some(tilo_ui_base::component::Value::Int(1))),
         "the document opens on its first sheet"
     );
     editor.focus_block(0, CursorPlacement::Start);
@@ -68,7 +74,7 @@ fn the_sheet_the_caret_stands_on_is_reported_when_it_changes() {
             .iter()
             .map(|fired| fired.value.clone())
             .collect::<Vec<_>>(),
-        vec![Some(ui::component::Value::Int(2))],
+        vec![Some(tilo_ui_base::component::Value::Int(2))],
         "the caret moved to the second sheet"
     );
     assert_eq!(fired[0].event, "page_shown");
@@ -76,7 +82,7 @@ fn the_sheet_the_caret_stands_on_is_reported_when_it_changes() {
 
 #[test]
 fn with_no_caret_the_sheet_the_view_shows_is_reported() {
-    let queue = ui::Intents::<ui::component::Fired>::default();
+    let queue = tilo_ui_base::Intents::<tilo_ui_base::component::Fired>::default();
     let (mut editor, mut text, theme) = paged(520.0, 60, page_shown_event(&queue));
     let _ = queue.take();
     let second_page = editor
@@ -97,7 +103,7 @@ fn with_no_caret_the_sheet_the_view_shows_is_reported() {
     let mut scene = Scene::new();
     Widget::draw(
         &mut *editor,
-        &mut tilo_ui::DrawCtx::new(
+        &mut tilo_ui_base::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
@@ -111,7 +117,7 @@ fn with_no_caret_the_sheet_the_view_shows_is_reported() {
             .iter()
             .map(|fired| fired.value.clone())
             .collect::<Vec<_>>(),
-        vec![Some(ui::component::Value::Int(2))],
+        vec![Some(tilo_ui_base::component::Value::Int(2))],
         "a view scrolled to the second sheet shows it"
     );
 }

@@ -74,7 +74,7 @@ fn called(heard: &Shown, own: Option<&str>) -> String {
     let name = if own_device {
         tilo_user_identity::device_name(&heard.device)
     } else {
-        ui::presence::shown_name(&heard.label)
+        tilo_ui_base::presence::shown_name(&heard.label)
     };
     name.unwrap_or_default().to_owned()
 }

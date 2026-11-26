@@ -5,7 +5,7 @@ use super::record::{Outcome, Progress, Spec, Subject, Unit};
 use super::{dismiss, finished, rows, running, start, stop, summary};
 
 fn owner() -> Owner {
-    Owner::new("so.tilo.test", "Test").with_icon(crate::icons::Icon::Download)
+    Owner::new("so.tilo.test", "Test").with_icon(tilo_ui_base::icons::Icon::Download)
 }
 
 fn began(title: &str) -> super::Running {

@@ -1,12 +1,12 @@
 use tilo_ui::State;
 use tilo_ui::headless::Driver;
-use tilo_ui::theme::Theme;
-use tilo_ui::widget::Router;
 use tilo_ui::widget::Text;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Router;
 use winit::event::{ElementState, MouseButton};
 
 fn side_button(driver: &mut Driver, button: MouseButton, state: ElementState) {
-    driver.send(&tilo_ui::synthetic_input::mouse_input(state, button));
+    driver.send(&tilo_ui_base::synthetic_input::mouse_input(state, button));
     driver.relayout();
 }
 

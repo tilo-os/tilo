@@ -1,7 +1,7 @@
 //! A scroll in an app a host shows in a region of its scene ([`EmbeddedApp`])
 //! hands the host what moved, and a host that presents each frame over the
-//! last ([`crate::scene_parts::damage_with_copies`],
-//! [`crate::scene_parts::present_copies`]) copies it and repaints the rest:
+//! last ([`tilo_ui_base::scene_parts::damage_with_copies`],
+//! [`tilo_ui_base::scene_parts::present_copies`]) copies it and repaints the rest:
 //! every presented frame equals a full render of the host's scene, in dark,
 //! light and high contrast, at 100 % and 200 %, with a member's mark
 //! and a badge the host draws over the app, and under a translucent layer
@@ -18,12 +18,12 @@
     clippy::arithmetic_side_effects,
     reason = "test scenes and pixel tallies: failures are the assertion"
 )]
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
 
 use super::*;
-use crate::offscreen::OffscreenRenderer;
-use crate::scene_parts::{PartKey, SectionParts};
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::{scene_parts::PartKey, scene_parts::SectionParts};
 use vello::kurbo::{Circle, RoundedRect};
 use vello::peniko::{BlendMode, Fill, Gradient};
 
@@ -86,9 +86,9 @@ fn section(
     host: Host,
     text: &mut TextRenderer,
 ) -> (Box<Scene>, SectionParts) {
-    let recording = crate::scene_parts::Recording::begin();
+    let recording = tilo_ui_base::scene_parts::Recording::begin();
     let mut scene = Box::new(Scene::new());
-    crate::scene_parts::track(&scene);
+    tilo_ui_base::scene_parts::track(&scene);
     let colors = &theme.tokens.colors;
     let wallpaper = Gradient::new_linear((0.0, 0.0), SCENE)
         .with_stops([colors.surfaces.content, theme.border_focus]);
@@ -100,7 +100,7 @@ fn section(
         &KurboRect::new(0.0, 0.0, SCENE.0, SCENE.1),
     );
     if host.section {
-        crate::scene_parts::begin(&mut scene, PartKey::new("test.section", ()));
+        tilo_ui_base::scene_parts::begin(&mut scene, PartKey::new("test.section", ()));
     }
     let shape = RoundedRect::from_rect(REGION, 12.0);
     if host.translucent {
@@ -126,12 +126,12 @@ fn section(
         Affine::IDENTITY,
         &shape,
     );
-    crate::scene_parts::part(
+    tilo_ui_base::scene_parts::part(
         &mut scene,
         PartKey::new("test.tile-content", ()),
         vec![REGION],
         |scene| {
-            tile.draw(&mut crate::draw::DrawCtx::new(
+            tile.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 Affine::IDENTITY,
                 text,
@@ -152,7 +152,7 @@ fn section(
         KurboRect::new(outer.x0, inner.y0, inner.x0, inner.y1),
         KurboRect::new(inner.x1, inner.y0, outer.x1, inner.y1),
     ];
-    crate::scene_parts::part(
+    tilo_ui_base::scene_parts::part(
         &mut scene,
         PartKey::new("test.tile-edge", ()),
         bands,
@@ -166,7 +166,7 @@ fn section(
             );
         },
     );
-    crate::scene_parts::part_drawn(&mut scene, PartKey::new("test.peer", ()), |scene| {
+    tilo_ui_base::scene_parts::part_drawn(&mut scene, PartKey::new("test.peer", ()), |scene| {
         let Some(at) = host.peer else {
             return Vec::new();
         };
@@ -181,7 +181,10 @@ fn section(
         vec![KurboRect::from_center_size(at, (20.0, 20.0))]
     });
     if host.section {
-        crate::scene_parts::end(&mut scene, vec![KurboRect::new(0.0, 0.0, SCENE.0, SCENE.1)]);
+        tilo_ui_base::scene_parts::end(
+            &mut scene,
+            vec![KurboRect::new(0.0, 0.0, SCENE.0, SCENE.1)],
+        );
     }
     if host.badge {
         scene.fill(
@@ -235,7 +238,7 @@ fn scroll(theme: &Theme, host: Host, scale: f64, runs: &[(f64, usize)]) -> Vec<R
     let mut tile = EmbeddedApp::new(list_app(theme), |_| {}).unwrap();
     tile.set_accepts_scroll_copies(true);
     // The host's target has `scale` pixels per unit of its scene.
-    let _host = crate::scroll_copy::HostCopies::begin_scaled(true, scale);
+    let _host = tilo_ui_base::scroll_copy::HostCopies::begin_scaled(true, scale);
     let mut text = TextRenderer::new();
     lay_out(&mut tile, theme);
     let size = (
@@ -249,7 +252,7 @@ fn scroll(theme: &Theme, host: Host, scale: f64, runs: &[(f64, usize)]) -> Vec<R
         scene.append(section, Some(to_device));
         scene
     };
-    let pointer = crate::synthetic_input::cursor_moved(300.0, 200.0);
+    let pointer = tilo_ui_base::synthetic_input::cursor_moved(300.0, 200.0);
     tile.app.surface_input(&tile.region, pointer, false);
     let mut shown = section(&mut tile, theme, host, &mut text);
     for _ in 0..6 {
@@ -277,7 +280,7 @@ fn scroll(theme: &Theme, host: Host, scale: f64, runs: &[(f64, usize)]) -> Vec<R
             let drawn = section(&mut tile, theme, host, &mut text);
             let scene = device_scene(&drawn.0);
             run.frames += 1;
-            if let Ok(damage) = crate::scene_parts::damage_with_copies(
+            if let Ok(damage) = tilo_ui_base::scene_parts::damage_with_copies(
                 &shown.0,
                 &shown.1,
                 &drawn.0,
@@ -289,8 +292,13 @@ fn scroll(theme: &Theme, host: Host, scale: f64, runs: &[(f64, usize)]) -> Vec<R
                     .iter()
                     .map(|rect| to_device.transform_rect_bbox(*rect).expand())
                     .collect();
-                let plan =
-                    crate::scene_parts::present_copies(&damage.copies, rects, &[], to_device, size);
+                let plan = tilo_ui_base::scene_parts::present_copies(
+                    &damage.copies,
+                    rects,
+                    &[],
+                    to_device,
+                    size,
+                );
                 if !plan.copies.is_empty() {
                     run.copied_frames += 1;
                     let repainted = covered(&plan.raster, size);
@@ -433,7 +441,7 @@ fn a_host_that_does_not_accept_copies_gets_damage_only() {
         )),
         phase: winit::event::TouchPhase::Moved,
     };
-    let pointer = crate::synthetic_input::cursor_moved(300.0, 200.0);
+    let pointer = tilo_ui_base::synthetic_input::cursor_moved(300.0, 200.0);
     tile.app.surface_input(&tile.region, pointer, false);
     tile.app.surface_input(&tile.region, wheel, false);
     tile.wants_frame.set(true);

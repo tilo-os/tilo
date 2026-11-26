@@ -3,7 +3,7 @@
 //! (`ensure_resource_cache`, bound components' contracts).
 
 use super::{App, ControlBindingStatus};
-use crate::collaboration::CollabRequest;
+use tilo_ui_base::collaboration::CollabRequest;
 
 impl App {
     /// Whether the route now carries this app's current offer: its surface
@@ -53,7 +53,7 @@ impl App {
         // surface still goes out.
         for entry in self.control_binding_coverage_for(
             &self.collect_resources(),
-            crate::widget::controls::action_control_bindings(self.root_widget.as_ref()),
+            tilo_ui_base::widget::controls::action_control_bindings(self.root_widget.as_ref()),
         ) {
             let binding = format!("{:?}", entry.binding.kind);
             if entry.status == ControlBindingStatus::StaleAddress
@@ -85,7 +85,8 @@ impl App {
             .as_deref()
             .zip(self.actions.published_surface.as_ref())
             .map(|(descriptors, state)| (state, descriptors));
-        let (delta, state) = crate::collaboration::SurfacePublication::next(prior, &descriptors);
+        let (delta, state) =
+            tilo_ui_base::collaboration::SurfacePublication::next(prior, &descriptors);
         // A surface the transport did not take is retried on the next frame.
         if delta.is_empty()
             || self

@@ -7,14 +7,14 @@ use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use crate::text_render::{TextRenderer, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
 
 /// The height the funnel draws at where its rows have room: a stage's name breaks over two lines
 /// beside it, so a chart of many stages grows to keep every row that tall.
@@ -465,11 +465,11 @@ impl PlotMarks for FunnelMarks {
                 .into_iter()
                 .find(|wrapped| wrapped.width <= spare)
                 .map_or(1, |wrapped| wrapped.lines.len());
-            row = row.max(crate::num::f64_of_usize(lines) * line + value);
+            row = row.max(tilo_ui_base::num::f64_of_usize(lines) * line + value);
         }
-        let gaps = self.style.gap * crate::num::f64_of_usize(stages.saturating_sub(1));
+        let gaps = self.style.gap * tilo_ui_base::num::f64_of_usize(stages.saturating_sub(1));
         let title = crate::widget::chart_navigation::title_band(theme, &self.frame.title);
-        (title + crate::num::f64_of_usize(stages) * row + gaps).max(NATURAL_HEIGHT)
+        (title + tilo_ui_base::num::f64_of_usize(stages) * row + gaps).max(NATURAL_HEIGHT)
     }
 
     fn paint(
@@ -679,9 +679,9 @@ mod tests {
                     continue;
                 }
                 on_band += 1;
-                let ratio = crate::a11y::contrast_ratio(label.value_ink, fill);
+                let ratio = tilo_ui_base::a11y::contrast_ratio(label.value_ink, fill);
                 assert!(
-                    ratio >= crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                    ratio >= tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST,
                     "{value:?} on stage {} reads at {ratio:.2}:1",
                     stage.index
                 );

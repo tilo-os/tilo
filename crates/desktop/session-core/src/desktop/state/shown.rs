@@ -191,7 +191,7 @@ impl DesktopHandle {
     /// the strip its window is on moves by `travel` logical pixels, positive toward later windows,
     /// as the wheel over the strip's own canvas does. What the app scrolled with itself never
     /// arrives here, so a gesture is never split between its content and the strip: the app decided
-    /// at its first event ([`ui::widget::sideways_travel`], and the app's own server of an event it
+    /// at its first event ([`tilo_ui_base::widget::sideways_travel`], and the app's own server of an event it
     /// left).
     pub fn sideways_wheel(&self, tab: TabId, travel: f64) {
         let mut shared = self.shared.borrow_mut();

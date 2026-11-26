@@ -6,10 +6,10 @@
 //! or extended automatically. Named ranges nest one level ([`MAX_GROUP_DEPTH`]); see
 //! [`group_entries`] for concurrent naming.
 
-use crate::i18n::widget_format;
 use crate::time::{Duration, SystemTime};
 use std::collections::HashMap;
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::i18n::widget_format;
 
 use crate::widget::EntryKind;
 

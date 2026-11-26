@@ -3,7 +3,7 @@
 //! library is a whole window's empty state, never a narrow list's beside a blank pane.
 
 use super::{Column, NavShell, Staged, at, at_mut};
-use crate::widget::Element;
+use tilo_ui_base::widget::Element;
 
 pub(super) struct Held {
     overview: Option<Element>,
@@ -95,7 +95,7 @@ impl NavShell {
     pub(super) fn app_body_mut(
         &mut self,
         column: Column,
-    ) -> Option<&mut (dyn crate::widget::Widget + 'static)> {
+    ) -> Option<&mut (dyn tilo_ui_base::widget::Widget + 'static)> {
         if at(&self.pending.bodies, column).is_some() {
             return at_mut(&mut self.pending.bodies, column)
                 .as_mut()

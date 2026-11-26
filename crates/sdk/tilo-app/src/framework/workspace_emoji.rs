@@ -1,5 +1,5 @@
 //! The workspace's emoji as every framework window offers them to its views
-//! ([`ui_core::workspace_emoji`]): the workspace's emoji record, held for the
+//! ([`tilo_ui_base::workspace_emoji`]): the workspace's emoji record, held for the
 //! window and registered against its wake scope, so `:name:` draws the same
 //! picture in any app, natively and in a browser.
 
@@ -7,18 +7,20 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::sync::Arc;
 
-use tilo_workspace_emoji::{OWNER, WorkspaceEmoji as Record, workspace_emoji as actions};
-use ui_core::workspace_emoji::{
-    Adding, CustomEmoji, EmojiSource, Small, WorkspaceEmoji, make_small,
+use tilo_ui_base::{
+    workspace_emoji::Adding, workspace_emoji::CustomEmoji, workspace_emoji::EmojiSource,
+    workspace_emoji::Small, workspace_emoji::WorkspaceEmoji, workspace_emoji::make_small,
 };
+use tilo_workspace_emoji::{OWNER, WorkspaceEmoji as Record, workspace_emoji as actions};
 
 use super::live::Live;
 use super::workspace::{WorkspaceResource, WorkspaceState};
 
 // The record checks what the toolkit makes small: one limit for both.
-const _: () =
-    assert!(tilo_workspace_emoji::MAX_IMAGE_BYTES == ui_core::workspace_emoji::MAX_IMAGE_BYTES);
-const _: () = assert!(tilo_workspace_emoji::MAX_EMOJI == ui_core::workspace_emoji::MAX_EMOJI);
+const _: () = assert!(
+    tilo_workspace_emoji::MAX_IMAGE_BYTES == tilo_ui_base::workspace_emoji::MAX_IMAGE_BYTES
+);
+const _: () = assert!(tilo_workspace_emoji::MAX_EMOJI == tilo_ui_base::workspace_emoji::MAX_EMOJI);
 
 /// The most a chosen file may be before it is made small.
 const MAX_CHOSEN_BYTES: usize = 8 * 1024 * 1024;
@@ -195,7 +197,9 @@ impl EmojiSource for WindowEmoji {
 
     fn add(&self, name: &str, image: &[u8]) -> Result<(), String> {
         if !self.can_manage() {
-            return Err(ui_core::i18n::widget_text("workspace-emoji-not-allowed"));
+            return Err(tilo_ui_base::i18n::widget_text(
+                "workspace-emoji-not-allowed",
+            ));
         }
         self.add_small(name, make_small(image))
     }
@@ -220,7 +224,7 @@ impl EmojiSource for WindowEmoji {
         if !self.can_manage() {
             return;
         }
-        let lookup = ui_core::i18n::widget_text;
+        let lookup = tilo_ui_base::i18n::widget_text;
         let request = ui_core::portal::PickRequest::open(
             &lookup("workspace-emoji-choose-title"),
             &lookup("workspace-emoji-choose-accept"),
@@ -261,7 +265,7 @@ fn add_emoji(name: &str, png: Vec<u8>) -> tilo_resource::Invoke<Record> {
 
 /// Why nothing of the workspace's emoji can change: its record is not open.
 fn unavailable() -> String {
-    ui_core::i18n::widget_text("workspace-emoji-unavailable")
+    tilo_ui_base::i18n::widget_text("workspace-emoji-unavailable")
 }
 
 /// Register the workspace's emoji for the window whose wake scope `window`
@@ -272,7 +276,7 @@ pub(crate) fn register(
     state: Rc<WorkspaceState>,
 ) -> Rc<WindowEmoji> {
     let source = WindowEmoji::new(state);
-    ui_core::workspace_emoji::register(
+    tilo_ui_base::workspace_emoji::register(
         window,
         Rc::new(Held(Rc::downgrade(&source))) as Rc<dyn EmojiSource>,
     );

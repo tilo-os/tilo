@@ -13,7 +13,7 @@ use crate::vello::kurbo::Vec2;
 fn sideways_travel_of(event: &WindowEvent, scale_factor: f64) -> Option<f64> {
     match event {
         WindowEvent::MouseWheel { delta, .. } => {
-            crate::widget::sideways_travel(delta, scale_factor)
+            tilo_ui_base::widget::sideways_travel(delta, scale_factor)
         }
         _ => None,
     }
@@ -68,7 +68,7 @@ impl AuxiliaryCaptureFrames {
 pub(super) struct FloatingRuntime {
     pub client: Option<FloatingSurfaceServiceClient>,
     /// The authenticated shell's palette survives private settings reloads.
-    pub host_theme: Option<crate::Theme>,
+    pub host_theme: Option<tilo_ui_base::Theme>,
     network_status_active: bool,
     host_shell_allow: Option<std::rc::Weak<std::cell::RefCell<crate::widget::HostShellAllow>>>,
     pub presentations: HashMap<String, FloatingSurfacePresentation>,
@@ -498,8 +498,8 @@ impl App {
     /// is drawn.
     #[cfg(feature = "native")]
     fn perform_accessibility_request(&mut self, request: crate::accesskit::ActionRequest) {
-        crate::motion::note_source(crate::tokens::MotionSource::Action);
-        let Some(action) = crate::accesskit_bridge::accesskit_action_to_ours(
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Action);
+        let Some(action) = tilo_ui_base::accesskit_bridge::accesskit_action_to_ours(
             request.action,
             request.data.as_ref(),
         ) else {
@@ -642,8 +642,10 @@ impl App {
 
     #[cfg(feature = "native")]
     fn take_native_process_intent(&mut self) -> Option<crate::widget::AppProcessIntent> {
-        crate::widget::capability::capability_mut::<dyn crate::AppWidget>(&mut *self.root_widget)?
-            .take_process_intent()
+        tilo_ui_base::widget::capability::capability_mut::<dyn crate::AppWidget>(
+            &mut *self.root_widget,
+        )?
+        .take_process_intent()
     }
 
     #[cfg(feature = "native")]
@@ -666,7 +668,7 @@ impl App {
         // Drain the edge so reconnecting later cannot replay a stale gesture.
         self.root_widget.take_pip_area_request();
         // No shell to dial the workspace again: the press is dropped.
-        let _ = crate::workspace_sync::take_retry();
+        let _ = tilo_ui_base::workspace_sync::take_retry();
         for request in crate::shell_tabs::take_requests() {
             self.apply_unhosted_tab_request(request);
             changed = true;
@@ -776,7 +778,7 @@ impl App {
     #[cfg(feature = "native")]
     fn sideways_gesture_now(&self, now: crate::time::Instant) -> Option<SidewaysGesture> {
         let gesture = self.floating.sideways_gesture?;
-        (now.saturating_duration_since(gesture.last) < crate::widget::WHEEL_GESTURE_GAP)
+        (now.saturating_duration_since(gesture.last) < tilo_ui_base::widget::WHEEL_GESTURE_GAP)
             .then_some(gesture)
     }
 
@@ -902,7 +904,7 @@ impl App {
             client.send(&tab_request_message(request, instance))?;
             *changed = true;
         }
-        if crate::workspace_sync::take_retry() {
+        if tilo_ui_base::workspace_sync::take_retry() {
             client.send(
                 &crate::floating_surface::FloatingSurfaceClientMessage::RetryWorkspace { instance },
             )?;
@@ -1247,9 +1249,9 @@ impl App {
         for message in messages {
             match &message {
                 FloatingSurfaceHostMessage::DeviceShellOperation { request, operation } => {
-                    let result = crate::widget::capability::capability_mut::<dyn crate::AppWidget>(
-                        &mut *self.root_widget,
-                    )
+                    let result = tilo_ui_base::widget::capability::capability_mut::<
+                        dyn crate::AppWidget,
+                    >(&mut *self.root_widget)
                     .ok_or_else(|| "Terminal is not available".to_string())
                     .and_then(|widget| widget.device_shell_operation(operation));
                     if let Some(client) = &mut self.floating.client {
@@ -1317,7 +1319,7 @@ impl App {
                 } => {
                     // A workspace that has not synced shows so in every empty
                     // state, so what it shows changes with it.
-                    if crate::workspace_sync::set(workspace_sync.clone()) {
+                    if tilo_ui_base::workspace_sync::set(workspace_sync.clone()) {
                         self.layout.layout_dirty = true;
                         self.layout.request_rebuild();
                     }
@@ -1445,9 +1447,9 @@ impl App {
                         self.report_pointing = None;
                         let about =
                             crate::shared_selection::subtree_selection(self.root_widget.as_ref());
-                        let bounds = about
-                            .as_ref()
-                            .and_then(crate::shared_subject::SharedSelection::protocol_bounds);
+                        let bounds = about.as_ref().and_then(
+                            tilo_ui_base::shared_subject::SharedSelection::protocol_bounds,
+                        );
                         self.open_send_box(about, bounds, None, to, carried);
                     }
                 }
@@ -1506,7 +1508,7 @@ impl App {
     fn reattach_after_floating_service_loss(&mut self) {
         // A window still waiting for the shell's first word never gets
         // it: what its workspace holds says it cannot arrive.
-        if crate::workspace_sync::shell_lost() {
+        if tilo_ui_base::workspace_sync::shell_lost() {
             self.layout.layout_dirty = true;
             self.layout.request_rebuild();
         }
@@ -1635,7 +1637,7 @@ fn tab_request_message(
 /// this app's own.
 #[cfg(feature = "native")]
 fn publishing_app<'a>(
-    subject: &crate::shared_subject::SharedSelection,
+    subject: &tilo_ui_base::shared_subject::SharedSelection,
     published: &'a [tilo_actions::ResourceSpec],
 ) -> Option<&'a str> {
     fn find<'a>(
@@ -1700,7 +1702,7 @@ impl App {
                         "the shell's tab service is unavailable; not opening another instance"
                     );
                 } else if let Err(error) =
-                    crate::native::standalone_instance::open(target.as_deref())
+                    tilo_ui_base::native::standalone_instance::open(target.as_deref())
                 {
                     tracing::warn!(%error, "could not open another window of this app");
                 }
@@ -1735,11 +1737,11 @@ mod host_shell_allow_tests {
     #[cfg(unix)]
     #[test]
     fn a_point_of_the_window_is_answered_with_the_control_drawn_there() {
-        use crate::a11y::PointedControl;
         use crate::floating_surface::FloatingSurfaceClientMessage;
         use crate::widget::{Button, Column};
         use std::io::{Read, Write};
         use std::os::unix::net::UnixStream;
+        use tilo_ui_base::a11y::PointedControl;
         let (app_side, mut shell_side) = UnixStream::pair().unwrap();
         shell_side.set_nonblocking(true).unwrap();
         let root = Column::new()
@@ -1887,11 +1889,11 @@ mod host_shell_allow_tests {
     }
 
     impl Widget for DeviceShellProbe {
-        crate::provides!(dyn crate::AppWidget);
+        tilo_ui_base::provides!(dyn crate::AppWidget);
         fn build_layout(
             &mut self,
             taffy: &mut taffy::TaffyTree<()>,
-            theme: &crate::Theme,
+            theme: &tilo_ui_base::Theme,
             nodes: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
         ) -> taffy::NodeId {
             self.container.build_layout(taffy, theme, nodes)
@@ -1904,14 +1906,14 @@ mod host_shell_allow_tests {
         ) {
             self.container.apply_layout(taffy, node, origin);
         }
-        fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+        fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
             #[allow(
                 unused_variables,
                 unused_mut,
                 reason = "a draw binds only the parts it uses"
             )]
             let (scene, transform, text, theme, mut env) = ctx.parts();
-            self.container.draw(&mut crate::draw::DrawCtx::new(
+            self.container.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text,

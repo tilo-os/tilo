@@ -40,7 +40,7 @@ fn unshifted_shortcut_key(key: &str) -> Option<String> {
     let (Some(shifted), None) = (chars.next(), chars.next()) else {
         return None;
     };
-    ui::keycaps::us_unshifted(shifted).map(String::from)
+    tilo_ui_base::keycaps::us_unshifted(shifted).map(String::from)
 }
 
 /// The sole configurable shortcut resolver. The input pre-router owns a press exactly when this

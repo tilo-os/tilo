@@ -11,9 +11,10 @@
     reason = "frame fixtures: failures are the assertion"
 )]
 
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 use ui::app::{App, AppSurface, SurfaceDamage};
-use ui::theme::Theme;
-use ui::widget::{Scrollable, Widget};
+use ui::widget::Scrollable;
 use vello::Scene;
 use winit::event::{MouseScrollDelta, TouchPhase, WindowEvent};
 
@@ -64,7 +65,7 @@ fn shown(root: Box<dyn Widget>) -> (App, Scene, SurfaceDamage) {
         if at == 2 {
             app.surface_input(
                 &Window,
-                ui::synthetic_input::cursor_moved(WIDTH / 2.0, HEIGHT / 2.0),
+                tilo_ui_base::synthetic_input::cursor_moved(WIDTH / 2.0, HEIGHT / 2.0),
                 false,
             );
         }
@@ -202,9 +203,9 @@ fn edit_first_line(widget: &mut dyn Widget) -> Option<()> {
 fn a_keystroke_in_a_long_note_paints_only_its_line() {
     let (mut app, mut scene, mut damage) = shown(note(600));
     for event in [
-        ui::synthetic_input::cursor_moved(400.0, 200.0),
-        ui::synthetic_input::mouse_press(),
-        ui::synthetic_input::mouse_release(),
+        tilo_ui_base::synthetic_input::cursor_moved(400.0, 200.0),
+        tilo_ui_base::synthetic_input::mouse_press(),
+        tilo_ui_base::synthetic_input::mouse_release(),
     ] {
         app.surface_input(&Window, event, false);
         scene.reset();
@@ -217,7 +218,11 @@ fn a_keystroke_in_a_long_note_paints_only_its_line() {
         .enumerate()
     {
         let _ = crate::rich_text_line::take_face_work();
-        app.surface_input(&Window, ui::synthetic_input::char_key(letter), false);
+        app.surface_input(
+            &Window,
+            tilo_ui_base::synthetic_input::char_key(letter),
+            false,
+        );
         scene.reset();
         app.surface_frame_with_damage(&Window, &mut scene, &mut damage);
         let (painted, kept) = crate::rich_text_line::take_face_work();

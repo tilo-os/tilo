@@ -33,7 +33,7 @@ use tilo_service::LoopWake;
 use tilo_session::{AppSocket, Launches, Lists, Options, Session};
 
 use crate::common::held::{Fixture, WORKSPACE, actor, fixture, layout, opened};
-use ui::dnd::COPIED_FILES_MIME;
+use tilo_ui_base::dnd::COPIED_FILES_MIME;
 
 /// The app whose clipboard this is.
 const FILES: &str = "so.tilo.file-explorer";
@@ -469,7 +469,7 @@ fn wait_for_check(check: &std::sync::mpsc::Receiver<()>) {
 
 /// What another app reading the desktop's clipboard gets: the files the copy put there, read back
 /// through the same clipboard it would read.
-fn read_clipboard(session: &mut Session) -> ui::dnd::CopiedFiles {
+fn read_clipboard(session: &mut Session) -> tilo_ui_base::dnd::CopiedFiles {
     let mime = COPIED_FILES_MIME.to_owned();
     let mut pull = session
         .compositor()
@@ -480,7 +480,7 @@ fn read_clipboard(session: &mut Session) -> ui::dnd::CopiedFiles {
         match pull.drain() {
             tilo_compositor::clipboard_history::Pulled::Ready(bytes) => {
                 let text = String::from_utf8_lossy(&bytes).into_owned();
-                return ui::dnd::copied_files(&mime, &text);
+                return tilo_ui_base::dnd::copied_files(&mime, &text);
             }
             tilo_compositor::clipboard_history::Pulled::Pending => {
                 assert!(

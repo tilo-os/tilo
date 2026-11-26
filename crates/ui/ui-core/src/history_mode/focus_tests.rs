@@ -1,7 +1,8 @@
 use super::{FrameworkHistorySurface, capability::FrameworkHistoryTopology, host::HistoryHost};
-use crate::widget::{Button, Column, Widget};
+use crate::{widget::Button, widget::Column};
 use std::{cell::Cell, collections::HashMap, rc::Rc};
 use taffy::{NodeId, TaffyTree};
+use tilo_ui_base::widget::Widget;
 
 /// Real History composition with a probe at its lifecycle enumeration boundary.
 pub(crate) struct FocusHistoryRoot {
@@ -49,13 +50,13 @@ impl FrameworkHistoryTopology for FocusHistoryRoot {
 }
 
 impl Widget for FocusHistoryRoot {
-    crate::provides!(dyn FrameworkHistoryTopology);
+    tilo_ui_base::provides!(dyn FrameworkHistoryTopology);
     crate::testing::inert_widget_methods!(name = "History focus probe");
 
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
-        theme: &crate::Theme,
+        theme: &tilo_ui_base::Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.history
@@ -88,9 +89,9 @@ fn headless_focus_order_enumerates_history_once() {
         state,
         Box::new(root),
         (900, 650),
-        crate::Theme::dark(),
-        crate::font_catalog::fixture_renderer(),
-        crate::permissions::MemberId::person("fixture"),
+        tilo_ui_base::Theme::dark(),
+        tilo_ui_base::font_catalog::fixture_renderer(),
+        tilo_ui_base::permissions::MemberId::person("fixture"),
     );
     // A frame also reads History for its sync, routes and publication; the order's own
     // recomputation is what is counted here.
@@ -113,9 +114,9 @@ fn headless_relayout_and_focus_moves_enumerate_history_independently_of_rows() {
             state,
             Box::new(root),
             (900, 650),
-            crate::Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
-            crate::permissions::MemberId::person("fixture"),
+            tilo_ui_base::Theme::dark(),
+            tilo_ui_base::font_catalog::fixture_renderer(),
+            tilo_ui_base::permissions::MemberId::person("fixture"),
         );
         visits.set(0);
         frame.relayout();
@@ -133,7 +134,7 @@ fn saved_and_captured_history_deny_only_live_composition_nodes() {
     let (mut root, _) = FocusHistoryRoot::new(3, &state);
     let mut tree = TaffyTree::new();
     let mut nodes = HashMap::new();
-    root.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+    root.build_layout(&mut tree, &tilo_ui_base::Theme::dark(), &mut nodes);
     let outside = tree.new_leaf(taffy::Style::default()).unwrap();
     let live = root.history.live_layout_node().unwrap();
     let row = tree.children(live).unwrap()[0];
@@ -152,7 +153,7 @@ fn saved_and_captured_history_deny_only_live_composition_nodes() {
     assert!(allows(&root, row));
     root.live.children_mut()[0].set_focus(true);
     root.history.preserve_captured_focus(Some(
-        crate::widget::layout::CompositionFocus::capture_live(&root.live).unwrap(),
+        tilo_ui_base::widget::layout::CompositionFocus::capture_live(&root.live).unwrap(),
     ));
     assert!(root.history.has_saved_focus());
     assert!(!root.history.captures_input());
@@ -191,7 +192,7 @@ fn nested_history_ownership_does_not_escape_outer_focus_denial() {
         .push(Box::new(Button::new("outside", "Outside")));
     let mut tree = TaffyTree::new();
     let mut nodes = HashMap::new();
-    let root_node = root.build_layout(&mut tree, &crate::Theme::dark(), &mut nodes);
+    let root_node = root.build_layout(&mut tree, &tilo_ui_base::Theme::dark(), &mut nodes);
     let outside = *tree.children(root_node).unwrap().last().unwrap();
     let mut owned_and_live = Vec::new();
     super::capability::visit_framework_history(&root, &mut |history, _| {

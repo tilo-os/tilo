@@ -15,7 +15,10 @@ use std::rc::Rc;
 
 use crate::headless::Driver;
 use crate::state::State;
-use crate::widget::{Button, Column, Scrollable, Text, Widget, resource_actions};
+use crate::{
+    widget::Button, widget::Column, widget::Scrollable, widget::Text, widget::resource_actions,
+};
+use tilo_ui_base::widget::Widget;
 
 const VIEWPORT: (u32, u32) = (400, 300);
 
@@ -36,7 +39,7 @@ struct ListApp {
     content: Column,
 }
 
-impl crate::widget::Decorator for ListApp {
+impl tilo_ui_base::widget::Decorator for ListApp {
     type Inner = Column;
 
     fn inner(&self) -> &Self::Inner {
@@ -351,7 +354,7 @@ fn the_windows_bar_stands_above_the_apps_frame() {
         State::new(),
         list_app(),
         viewport,
-        crate::theme::Theme::dark(),
+        tilo_ui_base::theme::Theme::dark(),
     );
     assert_eq!(
         driver.frame_extent(viewport),
@@ -439,13 +442,13 @@ fn an_agents_mark_rests_on_the_control_it_acts_on() {
 #[cfg(not(target_arch = "wasm32"))]
 #[test]
 fn a_field_changed_by_someone_else_keeps_no_colour_of_theirs() {
-    use crate::component::{Bound, Described as _, Person};
-    use crate::permissions::MemberId;
     use crate::widget::{TextInput, TextInputProps};
+    use tilo_ui_base::permissions::MemberId;
+    use tilo_ui_base::{component::Bound, component::Described as _, component::Person};
     let field = |changed_by: Option<Person>, title: bool| {
         let props = TextInputProps {
             value: Bound {
-                state: crate::LocalState::new("Second agent task, renamed".to_owned()),
+                state: tilo_ui_base::LocalState::new("Second agent task, renamed".to_owned()),
                 ..Bound::default()
             },
             changed_by,
@@ -457,8 +460,8 @@ fn a_field_changed_by_someone_else_keeps_no_colour_of_theirs() {
             State::new(),
             Box::new(TextInput::from_props("field", props)),
             (400, 240),
-            crate::Theme::dark(),
-            crate::font_catalog::fixture_renderer(),
+            tilo_ui_base::Theme::dark(),
+            tilo_ui_base::font_catalog::fixture_renderer(),
             MemberId::person("portable-review"),
         );
         driver.relayout();

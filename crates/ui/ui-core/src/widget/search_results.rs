@@ -1,7 +1,7 @@
 //! `SearchResultsView` — the shared results overlay for Tilo global search.
 
-use crate::widget::ModelPath;
 use std::collections::HashMap;
+use tilo_ui_base::widget::ModelPath;
 
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
@@ -12,23 +12,23 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use crate::color_compat::ColorCompat as _;
-use crate::paint::PaintCtx;
 use crate::search::{
     ActivationModifier, CommandRow, PREVIEW_BODY_LINES, PREVIEW_LINES, SearchGroup, SearchPreview,
     SearchResult, SearchRow,
 };
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
 use crate::widget::data_table::{text_band, type_line_height};
 use crate::widget::floating_list::{FloatingList, FloatingMetrics, FloatingRow, RowState};
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 #[path = "search_results/command_row.rs"]
 mod command_row;
 
-const PAD: f64 = crate::tokens::Spacing::BASE.s2 as f64; // card inner padding
+const PAD: f64 = tilo_ui_base::tokens::Spacing::BASE.s2 as f64; // card inner padding
 const ROW_INSET: f64 = 8.0; // rows inset from the card edge
 const HEADER_H: f64 = 26.0;
 const ROW_H_ONE_LINE: f64 = 38.0;
@@ -38,7 +38,7 @@ const EMPTY_H: f64 = 92.0;
 /// A lifted row (selection, hover) is inset this much top and bottom, so a
 /// selected row and its hovered neighbour keep one `s1` between them instead
 /// of fusing into one block (HIG §7 "nothing touches").
-const ROW_LIFT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64 / 2.0;
+const ROW_LIFT_INSET: f64 = tilo_ui_base::tokens::Spacing::BASE.s1 as f64 / 2.0;
 
 /// Composes two affine transforms.
 #[allow(
@@ -139,7 +139,7 @@ impl FloatingRow for Row {
             ),
             Self::Loading(_) => {
                 let style = ctx.theme.text(TextRole::Caption);
-                let searching = crate::i18n::widget_format("widget-searching", &[]);
+                let searching = tilo_ui_base::i18n::widget_format("widget-searching", &[]);
                 let (_, h) = ctx.text.measure_style(&searching, None, &style);
                 let y = crate::widget::text::centered_text_top(row.y0, row.height(), f64::from(h));
                 ctx.text.draw_style(
@@ -330,9 +330,9 @@ fn draw_result(
         // One step off the panel it sits on, polarity chosen the way
         // `hairline_on` chooses it — the white veneer this replaces was
         // invisible over a light panel (HIG §9.5).
-        let hover = crate::tokens::colors::Colors::hairline_on(
-            crate::chrome::shell::panel_ground(theme),
-            crate::chrome::shell::HAIRLINE_ALPHA,
+        let hover = tilo_ui_base::tokens::colors::Colors::hairline_on(
+            tilo_ui_base::chrome::shell::panel_ground(theme),
+            tilo_ui_base::chrome::shell::HAIRLINE_ALPHA,
         );
         ctx.scene.fill(Fill::NonZero, transform, hover, None, &lift);
     }
@@ -374,7 +374,7 @@ fn draw_result(
 }
 
 /// The results overlay.
-#[crate::component::not_a_component(system, "system search")]
+#[tilo_ui_base::component::not_a_component(system, "system search")]
 pub struct SearchResultsView {
     groups: Vec<SearchGroup>,
     flat: Vec<(usize, usize)>,
@@ -494,7 +494,7 @@ impl SearchResultsView {
         let gaps = f64::from(u32::try_from(groups.saturating_sub(1)).unwrap_or(u32::MAX));
         PAD * 2.0
             + self.preview_band()
-            + crate::num::f64_of_usize(groups) * self.bands.header
+            + tilo_ui_base::num::f64_of_usize(groups) * self.bands.header
             + self.group_gap * gaps
     }
 
@@ -514,7 +514,7 @@ impl SearchResultsView {
     pub(crate) fn row_capacity(&self, cap: f64, groups: usize, two_line: bool) -> usize {
         let band = self.row_band(two_line).max(1.0);
         let spare = (cap - self.rows_overhead(groups)).max(band);
-        crate::num::usize_of_f64((spare / band).floor()).max(1)
+        tilo_ui_base::num::usize_of_f64((spare / band).floor()).max(1)
     }
 
     /// Keep `height` free under the empty-state line, for controls the
@@ -1082,10 +1082,10 @@ impl SearchResultsView {
     }
 
     /// Where the empty-state line is set: its left edge, the width it wraps at and its style.
-    fn empty_frame(&self, theme: &Theme) -> (f64, f32, crate::text_render::TextStyle) {
+    fn empty_frame(&self, theme: &Theme) -> (f64, f32, tilo_ui_base::text_render::TextStyle) {
         let style = theme
             .text(TextRole::Caption)
-            .with_align(crate::text_render::ParagraphAlign::Center);
+            .with_align(tilo_ui_base::text_render::ParagraphAlign::Center);
         #[allow(
             clippy::cast_possible_truncation,
             reason = "card widths are logical pixels well within f32 range"
@@ -1136,7 +1136,7 @@ impl SearchResultsView {
         let cx = f64::midpoint(self.rect.x0, self.rect.x1);
         let cy = f64::midpoint(top, bottom);
         let icon_size = 24.0;
-        crate::icons::draw_icon(
+        tilo_ui_base::icons::draw_icon(
             scene,
             transform,
             Rect::new(
@@ -1145,7 +1145,7 @@ impl SearchResultsView {
                 cx + icon_size / 2.0,
                 cy - 10.0,
             ),
-            crate::icons::Icon::Search,
+            tilo_ui_base::icons::Icon::Search,
             colors.text_dim.with_alpha_factor(0.55),
             1.5,
         );
@@ -1202,7 +1202,7 @@ impl SearchResultsView {
             self.rect.x1 - ROW_INSET,
             self.rect.y1,
         );
-        crate::surface::separator(
+        tilo_ui_base::surface::separator(
             scene,
             transform,
             rect.x0,
@@ -1328,7 +1328,7 @@ fn line(
     ink: vello::peniko::Color,
     at: Point,
     width: f64,
-    style: &crate::text_render::TextStyle,
+    style: &tilo_ui_base::text_render::TextStyle,
 ) -> f64 {
     #[allow(
         clippy::cast_possible_truncation,
@@ -1358,7 +1358,7 @@ fn trailing(
     ink: vello::peniko::Color,
     right: f64,
     y: f64,
-    style: &crate::text_render::TextStyle,
+    style: &tilo_ui_base::text_render::TextStyle,
 ) -> f64 {
     let (w, _) = tr.measure_style(text, None, style);
     let x = right - f64::from(w);
@@ -1391,7 +1391,7 @@ fn draw_template(
     let body = theme.text(TextRole::Body);
     let caption = theme.text(TextRole::Caption);
     let meta = theme.text(TextRole::Caption).numeric();
-    let height = |style: &crate::text_render::TextStyle, tr: &mut TextRenderer| {
+    let height = |style: &tilo_ui_base::text_render::TextStyle, tr: &mut TextRenderer| {
         f64::from(tr.measure_style("Ag", None, style).1)
     };
     match template {
@@ -1476,13 +1476,13 @@ fn draw_template(
                 rect.center().y + thumb_h / 2.0,
             );
             let corner = f64::from(theme.tokens.radii.detail);
-            let drawn = thumbnail
-                .as_ref()
-                .is_some_and(|image| crate::icons::draw_app_image(scene, transform, thumb, image));
+            let drawn = thumbnail.as_ref().is_some_and(|image| {
+                tilo_ui_base::icons::draw_app_image(scene, transform, thumb, image)
+            });
             if !drawn {
-                let well = crate::tokens::colors::Colors::hairline_on(
-                    crate::chrome::shell::panel_ground(theme),
-                    crate::chrome::shell::HAIRLINE_ALPHA,
+                let well = tilo_ui_base::tokens::colors::Colors::hairline_on(
+                    tilo_ui_base::chrome::shell::panel_ground(theme),
+                    tilo_ui_base::chrome::shell::HAIRLINE_ALPHA,
                 );
                 scene.fill(
                     Fill::NonZero,
@@ -1492,7 +1492,7 @@ fn draw_template(
                     &RoundedRect::from_rect(thumb, corner),
                 );
                 let glyph = f64::from(theme.tokens.metrics.icon_md);
-                crate::icons::Icon::Film.draw_with_stroke(
+                tilo_ui_base::icons::Icon::Film.draw_with_stroke(
                     scene,
                     transform,
                     Rect::from_center_size(thumb.center(), (glyph, glyph)),
@@ -1623,7 +1623,7 @@ impl Widget for SearchResultsView {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.set_rect(crate::widget::layout_rect(taffy, node, origin));
+        self.set_rect(tilo_ui_base::widget::layout_rect(taffy, node, origin));
     }
 
     /// Its card stands as tall as the rows and headings it holds, so it asks layout until it is
@@ -1640,7 +1640,7 @@ impl Widget for SearchResultsView {
         self.rect
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1659,16 +1659,16 @@ impl Widget for SearchResultsView {
         scene.fill(
             Fill::NonZero,
             transform,
-            crate::chrome::shell::panel_ground(theme),
+            tilo_ui_base::chrome::shell::panel_ground(theme),
             None,
             &card,
         );
         scene.stroke(
             &Stroke::new(1.0),
             transform,
-            crate::chrome::shell::panel_border(theme),
+            tilo_ui_base::chrome::shell::panel_border(theme),
             None,
-            &crate::surface::edge_outline(self.rect, radius),
+            &tilo_ui_base::surface::edge_outline(self.rect, radius),
         );
 
         if self.flat.is_empty() {
@@ -1679,7 +1679,7 @@ impl Widget for SearchResultsView {
         self.draw_preview(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1746,11 +1746,11 @@ impl Widget for SearchResultsView {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -1764,33 +1764,33 @@ impl Widget for SearchResultsView {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &ModelPath,
     ) -> bool {
         if !matches!(
             action,
-            crate::a11y::Action::Focus | crate::a11y::Action::Activate
+            tilo_ui_base::a11y::Action::Focus | tilo_ui_base::a11y::Action::Activate
         ) {
             return false;
         }
         if !self.select_action(target) {
             return false;
         }
-        if matches!(action, crate::a11y::Action::Activate) {
+        if matches!(action, tilo_ui_base::a11y::Action::Activate) {
             self.activate_selected();
         }
         true
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let total = self.flat.len();
         let mut children = if self.flat.is_empty() {
             let mut empty = AccessNode::new(Role::StaticText)
                 .with_name(&self.empty_text)
                 .with_bounds(self.rect)
-                .with_live(crate::a11y::Politeness::Polite);
+                .with_live(tilo_ui_base::a11y::Politeness::Polite);
             if let Some(hint) = &self.empty_hint {
                 empty = empty.with_description(hint.clone());
             }
@@ -1867,13 +1867,16 @@ impl Widget for SearchResultsView {
         if self.loading && !self.flat.is_empty() {
             children.push(
                 AccessNode::new(Role::StaticText)
-                    .with_name(crate::i18n::widget_format("widget-searching", &[]))
-                    .with_live(crate::a11y::Politeness::Polite),
+                    .with_name(tilo_ui_base::i18n::widget_format("widget-searching", &[]))
+                    .with_live(tilo_ui_base::a11y::Politeness::Polite),
             );
         }
         Some(
             AccessNode::new(Role::List)
-                .with_name(crate::i18n::widget_format("widget-search-results", &[]))
+                .with_name(tilo_ui_base::i18n::widget_format(
+                    "widget-search-results",
+                    &[],
+                ))
                 .with_children(children),
         )
     }
@@ -1882,18 +1885,18 @@ impl Widget for SearchResultsView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
     use crate::search::SearchRegistry;
     use crate::testing::dispatch;
+    use tilo_ui_base::presence::PresenceCtx;
 
     fn lum_at(rgba: &[u8], w: u32, x: f64, y: f64) -> f64 {
-        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(
+        let (r, g, b, _) = tilo_ui_base::offscreen::OffscreenRenderer::sample(
             rgba,
             w,
             x.floor() as u32,
             y.floor() as u32,
         );
-        crate::a11y::relative_luminance(vello::peniko::Color::from_rgb8(r, g, b))
+        tilo_ui_base::a11y::relative_luminance(vello::peniko::Color::from_rgb8(r, g, b))
     }
 
     /// Where result `flat` is laid out, whether or not it shows: the same
@@ -1907,7 +1910,7 @@ mod tests {
     /// and the light preset, at 1×.
     #[test]
     fn the_panel_edge_and_a_hovered_row_register_on_both_presets() {
-        use crate::offscreen::OffscreenRenderer;
+        use tilo_ui_base::offscreen::OffscreenRenderer;
         const EDGE_MIN: f64 = 0.008;
         let margin = 16.0;
         for theme in [Theme::dark(), Theme::light()] {
@@ -1922,7 +1925,7 @@ mod tests {
             let mut tr = TextRenderer::new();
             let presence = PresenceCtx::default();
             let mut scene = Scene::new();
-            v.draw(&mut crate::draw::DrawCtx::new(
+            v.draw(&mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut tr,
@@ -2175,11 +2178,11 @@ mod tests {
                 assert_eq!(v.selected(), None);
                 let access = Widget::accessibility(&v).expect("empty result list semantics");
                 assert_eq!(access.children.len(), 1);
-                assert_eq!(access.children[0].role, crate::a11y::Role::StaticText);
+                assert_eq!(access.children[0].role, tilo_ui_base::a11y::Role::StaticText);
                 assert_eq!(access.children[0].name.as_deref(), Some("Nothing here"));
                 assert_eq!(
                     access.children[0].live,
-                    Some(crate::a11y::Politeness::Polite),
+                    Some(tilo_ui_base::a11y::Politeness::Polite),
                     "empty results remain a polite live announcement"
                 );
                 v.activate_selected();
@@ -2202,7 +2205,7 @@ mod tests {
                 let mut v = view_from("");
 
                 let key = |k: NamedKey| {
-                    crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+                    tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
                         Key::Named(k),
                         None,
                         ElementState::Pressed,
@@ -2234,9 +2237,9 @@ mod tests {
 
                 let mut handled = dispatch(
                     &mut v,
-                    &crate::synthetic_input::cursor_moved(target.x, target.y),
+                    &tilo_ui_base::synthetic_input::cursor_moved(target.x, target.y),
                 );
-                handled |= dispatch(&mut v, &crate::synthetic_input::mouse_press());
+                handled |= dispatch(&mut v, &tilo_ui_base::synthetic_input::mouse_press());
                 assert!(handled, "row click consumed");
                 assert_eq!(
                     v.cursor(),
@@ -2305,7 +2308,7 @@ mod tests {
 
             let mut scene = Scene::new();
             let mut text = TextRenderer::new();
-            view.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, PresenceCtx::default().draw_env()));
+            view.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme, PresenceCtx::default().draw_env()));
             assert!(!scene.encoding().is_empty());
 
             let node = view.accessibility().unwrap();

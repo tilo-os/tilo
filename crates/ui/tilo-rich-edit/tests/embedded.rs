@@ -3,15 +3,19 @@
 
 use automerge::AutoCommit;
 use tilo_rich_edit::{BlockContent, BlockEditor};
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::theme::Theme;
 use tilo_ui::widget::Embedded;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::theme::Theme;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, Modifiers, MouseButton, WindowEvent};
 
-fn click(embedded: &mut Embedded<BlockEditor>, doc: &mut tilo_ui::widget::Edits<'_>, at: Point) {
+fn click(
+    embedded: &mut Embedded<BlockEditor>,
+    doc: &mut tilo_ui_base::widget::Edits<'_>,
+    at: Point,
+) {
     let device_id = winit::event::DeviceId::dummy();
     for event in [
         WindowEvent::CursorMoved {
@@ -49,7 +53,7 @@ tilo_test_env::scenario! {
     phase a_child_under_a_transform_is_hit_and_reported_where_it_is_drawn;
     {
         let theme = Theme::dark();
-        let mut text = tilo_ui::font_catalog::fixture_renderer();
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         let mut doc = AutoCommit::new();
         let mut embedded = Embedded::new(BlockEditor::new().with_wrap_lines(true));
         embedded.widget_mut()
@@ -63,7 +67,7 @@ tilo_test_env::scenario! {
         assert!((drawn.x0 - 60.0).abs() < 1e-9 && (drawn.width() - 200.0).abs() < 1e-9);
         click(
             &mut embedded,
-            &mut tilo_ui::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             Point::new(drawn.x0 + 20.0, drawn.y0 + 4.0),
         );
         assert!(embedded.widget().is_focused(), "the click reached the box");
@@ -82,7 +86,7 @@ tilo_test_env::scenario! {
     phase a_menu_opened_on_small_words_near_an_edge_stays_inside_the_owner;
     {
         let theme = Theme::dark();
-        let mut text = tilo_ui::font_catalog::fixture_renderer();
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         let mut embedded = Embedded::new(BlockEditor::new().with_wrap_lines(true));
         embedded.widget_mut()
             .present_blocks(&[BlockContent::paragraph("a", "words at the edge")]);
@@ -91,14 +95,14 @@ tilo_test_env::scenario! {
         let owner = Rect::new(0.0, 0.0, 800.0, 600.0);
         let presence = PresenceCtx::empty();
         presence.viewport.set(Some(owner));
-        embedded.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+        embedded.draw(&mut tilo_ui_base::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
         assert_eq!(
             presence.viewport.get(),
             Some(owner),
             "the owner's viewport is put back"
         );
         assert!(embedded.widget_mut().open_text_menu(Point::new(380.0, 10.0)));
-        embedded.draw_overlay(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
+        embedded.draw_overlay(&mut tilo_ui_base::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
         let menu = embedded.modal_capture().expect("the menu is open");
         assert!(
             menu.x0 >= owner.x0 - 1e-6
@@ -119,7 +123,7 @@ tilo_test_env::scenario! {
         let large = Theme::high_contrast().with_text_scale(2.0);
         let fixture = [BlockContent::paragraph("private", "Unsent Studio context")];
         for width in [220.0, 180.0] {
-            let mut text = tilo_ui::font_catalog::fixture_renderer();
+            let mut text = tilo_ui_base::font_catalog::fixture_renderer();
             let mut embedded = Embedded::new(BlockEditor::new().with_wrap_lines(true));
             embedded.widget_mut().present_blocks(&fixture);
             embedded.widget_mut()
@@ -135,7 +139,7 @@ tilo_test_env::scenario! {
                 .selection_range();
             for _ in 0..3 {
                 embedded.layout(Rect::new(0.0, 0.0, 220.0, 0.0), &normal, &mut text);
-                embedded.draw(&mut tilo_ui::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &normal, PresenceCtx::empty().draw_env()));
+                embedded.draw(&mut tilo_ui_base::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &normal, PresenceCtx::empty().draw_env()));
             }
 
             text.set_text_scale(large.text_scale);

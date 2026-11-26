@@ -28,7 +28,7 @@ fn first_ask() -> Vec<u8> {
 /// as the connection arrives, not after a poll: its connection is what ends the loop's wait.
 #[test]
 fn a_window_connecting_on_an_idle_shell_is_taken_at_once() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let runtime = tempfile::tempdir().expect("a runtime directory");
     let mut environment = ScopedEnv::new();
     environment.set("XDG_RUNTIME_DIR", runtime.path());

@@ -2,21 +2,21 @@
 //! inside an `impl Widget for ...` (or produces the whole `impl AppWidget`) so a probe
 //! only spells out the methods it observes.
 
-/// Stubs for [`Widget`](crate::widget::Widget) methods a probe does not observe; it emits
+/// Stubs for [`Widget`](tilo_ui_base::widget::Widget) methods a probe does not observe; it emits
 /// exactly the named pieces.
 macro_rules! inert_widget_methods {
     (@ leaf_layout) => {
         fn build_layout(
             &mut self,
             tree: &mut ::taffy::TaffyTree<()>,
-            _: &$crate::theme::Theme,
+            _: &::tilo_ui_base::theme::Theme,
             nodes: &mut ::std::collections::HashMap<
                 ::taffy::NodeId,
-                *mut dyn $crate::widget::Widget,
+                *mut dyn ::tilo_ui_base::widget::Widget,
             >,
         ) -> ::taffy::NodeId {
             let node = tree.new_leaf(::taffy::Style::default()).unwrap();
-            nodes.insert(node, ::std::ptr::from_mut::<dyn $crate::widget::Widget>(self));
+            nodes.insert(node, ::std::ptr::from_mut::<dyn ::tilo_ui_base::widget::Widget>(self));
             node
         }
     };
@@ -24,8 +24,8 @@ macro_rules! inert_widget_methods {
         fn build_layout(
             &mut self,
             tree: &mut ::taffy::TaffyTree<()>,
-            _: &$crate::theme::Theme,
-            _: &mut ::std::collections::HashMap<::taffy::NodeId, *mut dyn $crate::widget::Widget>,
+            _: &::tilo_ui_base::theme::Theme,
+            _: &mut ::std::collections::HashMap<::taffy::NodeId, *mut dyn ::tilo_ui_base::widget::Widget>,
         ) -> ::taffy::NodeId {
             tree.new_leaf(::taffy::Style::default()).unwrap()
         }
@@ -47,7 +47,7 @@ macro_rules! inert_widget_methods {
 
 macro_rules! delegate_widget_methods {
     (@ $field:tt sync) => {
-        fn sync(&mut self, doc: &$crate::widget::AppModel, path: &$crate::widget::ModelPath) {
+        fn sync(&mut self, doc: &::tilo_ui_base::widget::AppModel, path: &::tilo_ui_base::widget::ModelPath) {
             self.$field.sync(doc, path);
         }
     };
@@ -55,10 +55,10 @@ macro_rules! delegate_widget_methods {
         fn build_layout(
             &mut self,
             tree: &mut ::taffy::TaffyTree<()>,
-            theme: &$crate::theme::Theme,
+            theme: &::tilo_ui_base::theme::Theme,
             nodes: &mut ::std::collections::HashMap<
                 ::taffy::NodeId,
-                *mut dyn $crate::widget::Widget,
+                *mut dyn ::tilo_ui_base::widget::Widget,
             >,
         ) -> ::taffy::NodeId {
             self.$field.build_layout(tree, theme, nodes)
@@ -75,7 +75,7 @@ macro_rules! delegate_widget_methods {
         }
     };
     (@ $field:tt draw) => {
-        fn draw(&mut self, ctx: &mut $crate::draw::DrawCtx<'_>) {
+        fn draw(&mut self, ctx: &mut ::tilo_ui_base::draw::DrawCtx<'_>) {
             self.$field.draw(ctx);
         }
     };
@@ -83,7 +83,7 @@ macro_rules! delegate_widget_methods {
         fn handle_event(
             &mut self,
             event: &::winit::event::WindowEvent,
-            ctx: &mut $crate::widget::EventCtx<'_>,
+            ctx: &mut ::tilo_ui_base::widget::EventCtx<'_>,
         ) {
             self.$field.handle_event(event, ctx);
         }
@@ -164,14 +164,17 @@ impl TwoWindows {
 }
 
 #[cfg(feature = "model")]
-impl crate::widget::Widget for TwoWindows {
+impl tilo_ui_base::widget::Widget for TwoWindows {
     fn build_layout(
         &mut self,
         taffy: &mut ::taffy::TaffyTree<()>,
-        theme: &crate::theme::Theme,
-        node_map: &mut ::std::collections::HashMap<::taffy::NodeId, *mut dyn crate::widget::Widget>,
+        theme: &tilo_ui_base::theme::Theme,
+        node_map: &mut ::std::collections::HashMap<
+            ::taffy::NodeId,
+            *mut dyn tilo_ui_base::widget::Widget,
+        >,
     ) -> ::taffy::NodeId {
-        use crate::widget::TaffyTreeExt as _;
+        use tilo_ui_base::widget::TaffyTreeExt as _;
         let mut nodes = Vec::new();
         for tile in &mut self.tiles {
             let node = tile.build_layout(taffy, theme, node_map);
@@ -203,7 +206,7 @@ impl crate::widget::Widget for TwoWindows {
         node: ::taffy::NodeId,
         origin: ::vello::kurbo::Point,
     ) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.rect = rect;
         let children = taffy.children(node).unwrap();
         for (tile, child) in self.tiles.iter_mut().zip(children) {
@@ -211,17 +214,17 @@ impl crate::widget::Widget for TwoWindows {
         }
     }
 
-    fn children(&self) -> Vec<&dyn crate::widget::Widget> {
+    fn children(&self) -> Vec<&dyn tilo_ui_base::widget::Widget> {
         self.tiles
             .iter()
-            .map(|tile| tile as &dyn crate::widget::Widget)
+            .map(|tile| tile as &dyn tilo_ui_base::widget::Widget)
             .collect()
     }
 
-    fn children_mut(&mut self) -> Vec<&mut (dyn crate::widget::Widget + '_)> {
+    fn children_mut(&mut self) -> Vec<&mut (dyn tilo_ui_base::widget::Widget + '_)> {
         self.tiles
             .iter_mut()
-            .map(|tile| tile as &mut dyn crate::widget::Widget)
+            .map(|tile| tile as &mut dyn tilo_ui_base::widget::Widget)
             .collect()
     }
 
@@ -338,18 +341,21 @@ impl TestLeaf {
     }
 
     /// The leaf as an element, with what it will be shown and sent.
-    pub(crate) fn boxed(self) -> (crate::widget::Element, Seen) {
+    pub(crate) fn boxed(self) -> (tilo_ui_base::widget::Element, Seen) {
         let seen = self.seen();
         (Box::new(self), seen)
     }
 }
 
-impl crate::widget::Widget for TestLeaf {
+impl tilo_ui_base::widget::Widget for TestLeaf {
     fn build_layout(
         &mut self,
         taffy: &mut ::taffy::TaffyTree<()>,
-        _: &crate::theme::Theme,
-        node_map: &mut ::std::collections::HashMap<::taffy::NodeId, *mut dyn crate::widget::Widget>,
+        _: &tilo_ui_base::theme::Theme,
+        node_map: &mut ::std::collections::HashMap<
+            ::taffy::NodeId,
+            *mut dyn tilo_ui_base::widget::Widget,
+        >,
     ) -> ::taffy::NodeId {
         let size = match self.size {
             LeafSize::Fill => ::taffy::Size::from_percent(1.0, 1.0),
@@ -360,15 +366,15 @@ impl crate::widget::Widget for TestLeaf {
             size,
             ..::taffy::Style::default()
         };
-        crate::widget::TaffyTreeExt::widget_leaf(taffy, style, node_map, self)
+        tilo_ui_base::widget::TaffyTreeExt::widget_leaf(taffy, style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
     fn handle_event(
         &mut self,
         event: &::winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         use ::winit::event::{ElementState, MouseButton, WindowEvent};
         let mut seen = self.seen.0.borrow_mut();
@@ -409,11 +415,11 @@ impl crate::widget::Widget for TestLeaf {
 
     fn reveal_descendant(
         &mut self,
-        target: *const dyn crate::widget::Widget,
+        target: *const dyn tilo_ui_base::widget::Widget,
         _: ::vello::kurbo::Rect,
     ) -> bool {
         ::std::ptr::addr_eq(
-            ::std::ptr::from_ref::<dyn crate::widget::Widget>(self),
+            ::std::ptr::from_ref::<dyn tilo_ui_base::widget::Widget>(self),
             target,
         )
     }

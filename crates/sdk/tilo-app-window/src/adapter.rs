@@ -19,11 +19,12 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 use crate::{ResourceRef, UiNode, Value};
-use ui::component::{
-    Accepts, Bound, BoundValue, Catalogue, Description, Event, Fired, Intent, Merge, Source, Type,
-    Value as Prop,
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::{
+    component::Accepts, component::Bound, component::BoundValue, component::Catalogue,
+    component::Description, component::Event, component::Fired, component::Intent,
+    component::Merge, component::Source, component::Type, component::Value as Prop,
 };
-use ui::widget::Element;
 
 use crate::reconcile::{Reconciler, UiEvent, presence_path};
 
@@ -35,10 +36,10 @@ pub const PART: &str = "part";
 /// The described widgets a window builds by name: the toolkit's, and those of each crate of widgets
 /// above it.
 #[must_use]
-pub fn components() -> &'static ui::component::Registry {
-    static COMPONENTS: OnceLock<ui::component::Registry> = OnceLock::new();
+pub fn components() -> &'static tilo_ui_base::component::Registry {
+    static COMPONENTS: OnceLock<tilo_ui_base::component::Registry> = OnceLock::new();
     COMPONENTS.get_or_init(|| {
-        ui::component::Registry::of(&[
+        tilo_ui_base::component::Registry::of(&[
             &ui::component_catalogue::TOOLKIT,
             &tilo_rich_edit::COMPONENTS,
         ])
@@ -70,7 +71,7 @@ pub fn description_of(node: &UiNode) -> Option<&'static Description> {
 
 /// Where the rows of a virtual list come from: the window renders them as the list shows them. Given
 /// the list node's key, its rows; `None` when the window renders no rows for it.
-pub type RowsOf = Rc<dyn Fn(&str) -> Option<ui::component::SharedRows>>;
+pub type RowsOf = Rc<dyn Fn(&str) -> Option<tilo_ui_base::component::SharedRows>>;
 
 /// What a built component's events do, kept by its key until its node is built again.
 struct Built {
@@ -85,7 +86,7 @@ struct Built {
 /// both.
 #[derive(Clone, Default)]
 pub struct Adapter {
-    fired: ui::Intents<Fired>,
+    fired: tilo_ui_base::Intents<Fired>,
     built: Rc<RefCell<HashMap<String, Built>>>,
     /// The resources components were given, by id: what an event that carries one reports.
     resources: Rc<RefCell<HashMap<String, ResourceRef>>>,
@@ -371,7 +372,11 @@ impl Adapter {
     /// What an event carries, as the runtime's value, in the parts the component describes: a move
     /// names the row that moved and the row it lands at, and the one a parameter of an option takes
     /// is handed over as an option — none where the part holds no row.
-    fn event_value(&self, value: &Prop, event: &ui::component::EventDescription) -> Option<Value> {
+    fn event_value(
+        &self,
+        value: &Prop,
+        event: &tilo_ui_base::component::EventDescription,
+    ) -> Option<Value> {
         match (value, &event.value, &event.at) {
             (Prop::List(parts), Some(first), Some(at)) => {
                 let typed: Option<Vec<Value>> = parts
@@ -487,7 +492,7 @@ impl Adapter {
 fn bound<'a>(
     node: &UiNode,
     description: &'a Description,
-) -> Option<&'a ui::component::BindingDescription> {
+) -> Option<&'a tilo_ui_base::component::BindingDescription> {
     match node.props.get("bind") {
         Some(Value::Text(name)) => description.binding(name),
         _ if description.bindings.len() == 1 => description.bindings.first(),
@@ -636,11 +641,13 @@ impl<'a> NodeSource<'a> {
             && let Some(tone) = crate::date::shown_tone(self.node, base, self.under.as_deref())
         {
             let case = match tone {
-                ui::widget::Tone::Danger => "danger",
-                ui::widget::Tone::Warning => "warning",
-                ui::widget::Tone::Success => "success",
-                ui::widget::Tone::Info => "info",
-                ui::widget::Tone::Neutral | ui::widget::Tone::Presence(_) => "neutral",
+                tilo_ui_base::widget::Tone::Danger => "danger",
+                tilo_ui_base::widget::Tone::Warning => "warning",
+                tilo_ui_base::widget::Tone::Success => "success",
+                tilo_ui_base::widget::Tone::Info => "info",
+                tilo_ui_base::widget::Tone::Neutral | tilo_ui_base::widget::Tone::Presence(_) => {
+                    "neutral"
+                }
             };
             return Some(Prop::Choice(case.to_owned()));
         }
@@ -667,7 +674,7 @@ fn shown_value(
     reconciler: &mut Reconciler,
     name: &str,
 ) -> Option<BoundValue> {
-    fn shown<T>(state: ui::LocalState<T>) -> Bound<T> {
+    fn shown<T>(state: tilo_ui_base::LocalState<T>) -> Bound<T> {
         Bound {
             state,
             edits: None,
@@ -730,9 +737,11 @@ fn convert(value: &Value, ty: &Type, reconciler: &Reconciler) -> Option<Prop> {
             Prop::Resource(reference.id.clone())
         }
         (Type::Icon, Value::Text(name)) => Prop::Icon(name.replace('_', "-")),
-        (Type::Picture, Value::Picture(picture)) => Prop::Picture(ui::component::Picture {
-            src: picture.src.clone(),
-        }),
+        (Type::Picture, Value::Picture(picture)) => {
+            Prop::Picture(tilo_ui_base::component::Picture {
+                src: picture.src.clone(),
+            })
+        }
         (Type::File, Value::File(file)) => Prop::File(file.clone()),
         // A moment reaches the component as the instant it is, never as text read the person's way:
         // the component decides how to show it.
@@ -778,7 +787,7 @@ impl NodeSource<'_> {
     /// The action the event `name` of the node runs, when it runs one the app published and that
     /// action takes nothing: the control is bound to it, so it offers the action the way every
     /// control offers one. An event that runs no action, an action the app has not published yet,
-    /// and an event that is not its control's own action ([`ui::component::Event::press`], or one
+    /// and an event that is not its control's own action ([`tilo_ui_base::component::Event::press`], or one
     /// of the actions a control offers by a prop) are the view's own.
     fn published(&self, name: &str) -> Option<tilo_actions::ActionBinding<()>> {
         if !self.presses(name) {
@@ -962,7 +971,7 @@ impl Source for NodeSource<'_> {
         !part_nodes(self.node, self.description, part).is_empty()
     }
 
-    fn rows(&mut self, part: &str) -> Option<ui::component::SharedRows> {
+    fn rows(&mut self, part: &str) -> Option<tilo_ui_base::component::SharedRows> {
         let is_rows = self
             .description
             .part(part)

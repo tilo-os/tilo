@@ -1156,7 +1156,7 @@ async fn a_call_joins_while_the_workspace_keys_are_still_on_their_way() {
     reason = "the session lives until the call is over, and ends in a blocking context"
 )]
 async fn a_session_that_cannot_carry_a_call_ends_it_and_says_why() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("collab.sock");
     let sync = std::rc::Rc::new(Client::untethered(

@@ -6,7 +6,7 @@ use super::{
     KEY_SEEK_STEP, MenuHit, OpenMenu, PlayerSettingControl, PlayerSettingEvent, VideoPlayer,
     format_ms, said,
 };
-use crate::num::f64_of_u64;
+use tilo_ui_base::num::f64_of_u64;
 use vello::kurbo::Rect;
 use winit::event::ElementState;
 use winit::keyboard::{Key, NamedKey};
@@ -287,8 +287,8 @@ impl VideoPlayer {
         clippy::too_many_lines,
         reason = "the accessibility tree intentionally inventories the complete transport and settings surface in one order-matched function"
     )]
-    pub(super) fn semantic_controls(&self) -> Vec<(String, crate::a11y::AccessNode, Rect)> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    pub(super) fn semantic_controls(&self) -> Vec<(String, tilo_ui_base::a11y::AccessNode, Rect)> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let mut controls = Vec::new();
         let focused = |target: &str| self.a11y_focus.as_deref() == Some(target);
         let focusable = |target: &str| AccessState {
@@ -321,7 +321,7 @@ impl VideoPlayer {
                 seek_target.clone(),
                 AccessNode::new(Role::Slider)
                     .with_name(said("now-playing-seek"))
-                    .with_value(crate::i18n::widget_format(
+                    .with_value(tilo_ui_base::i18n::widget_format(
                         "media-position-value",
                         &[
                             ("position", format_ms(self.position_ms).into()),
@@ -501,9 +501,9 @@ impl VideoPlayer {
     pub(super) fn activate_semantic_target(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         match target {
             "transport.play-pause"
                 if self.has_media()

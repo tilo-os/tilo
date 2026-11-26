@@ -13,13 +13,13 @@ use super::{
     CapturePreview, CaptureStudio, RECORDING_RECEIPT_DURATION, SCREENSHOT_RECEIPT_DURATION,
     ScreenshotKept, ScreenshotReceipt, leaving_opacity, studio_progress,
 };
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use crate::time::Duration;
-use crate::tokens::TextRole;
 use crate::widget::{Button, ButtonFace, ButtonRole, ControlSize, IconButton};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Size as KurboSize};
 use vello::peniko::{BlendMode, Color, Fill};
@@ -27,15 +27,15 @@ use vello::peniko::{BlendMode, Color, Fill};
 /// The screenshot receipt's buttons are small controls, an icon-only one
 /// square, `s1` apart, inset `s1` in a bar that keeps `s2` off the screen
 /// edge.
-const RECEIPT_BUTTON_H: f64 = crate::tokens::Metrics::BASE.bar_control_height as f64;
+const RECEIPT_BUTTON_H: f64 = tilo_ui_base::tokens::Metrics::BASE.bar_control_height as f64;
 const RECEIPT_BUTTON_W: f64 = RECEIPT_BUTTON_H;
-const RECEIPT_BUTTON_GAP: f64 = crate::tokens::Spacing::BASE.s1 as f64;
-const RECEIPT_INSET: f64 = crate::tokens::Spacing::BASE.s1 as f64;
+const RECEIPT_BUTTON_GAP: f64 = tilo_ui_base::tokens::Spacing::BASE.s1 as f64;
+const RECEIPT_INSET: f64 = tilo_ui_base::tokens::Spacing::BASE.s1 as f64;
 /// The thumbnail's inset at rest.
-const RECEIPT_THUMB_INSET: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+const RECEIPT_THUMB_INSET: f64 = tilo_ui_base::tokens::Spacing::BASE.s2 as f64;
 const RECEIPT_HEIGHT: f64 = RECEIPT_BUTTON_H + 2.0 * RECEIPT_INSET;
-const RECEIPT_TEXT_GAP: f64 = crate::tokens::Spacing::BASE.s3 as f64;
-const RECEIPT_EDGE_MARGIN: f64 = crate::tokens::Spacing::BASE.s2 as f64;
+const RECEIPT_TEXT_GAP: f64 = tilo_ui_base::tokens::Spacing::BASE.s3 as f64;
+const RECEIPT_EDGE_MARGIN: f64 = tilo_ui_base::tokens::Spacing::BASE.s2 as f64;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ReceiptAction {
@@ -129,7 +129,7 @@ impl CaptureStudio {
             return progress;
         }
         studio_progress(
-            crate::motion::Zoom::SPEC,
+            tilo_ui_base::motion::Zoom::SPEC,
             crate::time::now().saturating_duration_since(receipt.shown_at),
         )
     }
@@ -269,7 +269,7 @@ impl CaptureStudio {
     fn measure_receipt(&mut self, status: &str, tr: &mut TextRenderer, theme: &Theme) {
         let status_style = theme
             .text(TextRole::Caption)
-            .with_weight(crate::text_render::TextWeight::Medium);
+            .with_weight(tilo_ui_base::text_render::TextWeight::Medium);
         // Rounded up, with a pixel to spare, so the measured text is never
         // elided by the arithmetic that places it.
         self.receipt_widths.status =
@@ -347,10 +347,11 @@ impl CaptureStudio {
                 );
             }
             scene.pop_layer();
-            crate::surface::ContentFrame::Thumbnail { selected: hovered }
+            tilo_ui_base::surface::ContentFrame::Thumbnail { selected: hovered }
                 .draw(scene, transform, rect, theme);
         }
-        let content_alpha = crate::motion::unit_opacity(crate::motion::stage(p, 0.32, 1.0));
+        let content_alpha =
+            tilo_ui_base::motion::unit_opacity(tilo_ui_base::motion::stage(p, 0.32, 1.0));
         if content_alpha > 0.0 {
             scene.push_layer(
                 Fill::NonZero,
@@ -361,7 +362,7 @@ impl CaptureStudio {
             );
             let status_style = theme
                 .text(TextRole::Caption)
-                .with_weight(crate::text_render::TextWeight::Medium);
+                .with_weight(tilo_ui_base::text_render::TextWeight::Medium);
             let status_x = if preview.is_some() {
                 layout.preview.x1 + RECEIPT_TEXT_GAP
             } else {

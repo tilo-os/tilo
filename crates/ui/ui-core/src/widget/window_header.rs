@@ -27,11 +27,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use super::Widget;
-use super::capability::capability_mut;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::DrawChild;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::widget::capability::capability_mut;
 
 pub mod header_row;
 
@@ -284,7 +284,7 @@ impl RowFurniture {
 
     pub(crate) fn paint(
         &self,
-        ctx: &mut crate::draw::DrawCtx<'_>,
+        ctx: &mut tilo_ui_base::draw::DrawCtx<'_>,
         search: &mut crate::widget::WindowSearch,
         state: RowFurnitureState,
     ) {
@@ -358,11 +358,11 @@ impl RowControl {
         use crate::widget::window_controls::WindowControl;
         match self {
             RowControl::NewTab => crate::widget::tabs::new_tab_name(),
-            RowControl::Maximize => {
-                crate::i18n::I18nManager::lookup_plain(WindowControl::Maximize.name_key(resize))
-            }
+            RowControl::Maximize => tilo_ui_base::i18n::I18nManager::lookup_plain(
+                WindowControl::Maximize.name_key(resize),
+            ),
             RowControl::Close => {
-                crate::i18n::I18nManager::lookup_plain(WindowControl::Close.name_key(resize))
+                tilo_ui_base::i18n::I18nManager::lookup_plain(WindowControl::Close.name_key(resize))
             }
         }
     }
@@ -406,7 +406,7 @@ pub fn merged_row_width_in(width: f64) -> f64 {
 /// ([`WindowHeader::set_window_presents_search`]).
 #[must_use]
 pub fn merged_row_holds_search(width: f64) -> bool {
-    width >= f64::from(crate::tokens::Metrics::BASE.compact_breakpoint)
+    width >= f64::from(tilo_ui_base::tokens::Metrics::BASE.compact_breakpoint)
 }
 
 const WIDE_ENOUGH: f64 = 10_000.0;
@@ -434,7 +434,7 @@ fn is_window_frame(widget: &dyn Widget) -> bool {
 
 /// The header row the app's frame draws itself (a shell's), which is the window's top.
 pub(crate) fn root_header_row(root: &dyn Widget) -> Option<&dyn WindowHeader> {
-    if let Some(row) = super::capability::capability::<dyn WindowHeader>(root) {
+    if let Some(row) = tilo_ui_base::widget::capability::capability::<dyn WindowHeader>(root) {
         return Some(row);
     }
     if is_window_frame(root) {
@@ -444,7 +444,7 @@ pub(crate) fn root_header_row(root: &dyn Widget) -> Option<&dyn WindowHeader> {
 }
 
 pub(crate) fn window_bar_part(root: &dyn Widget) -> Option<WindowBarPart> {
-    if let Some(header) = super::capability::capability::<dyn WindowHeader>(root) {
+    if let Some(header) = tilo_ui_base::widget::capability::capability::<dyn WindowHeader>(root) {
         return header.window_bar_part();
     }
     root.children().into_iter().find_map(window_bar_part)
@@ -460,7 +460,7 @@ pub(crate) fn offer_sync_status(root: &mut dyn Widget, status: Option<&WindowSta
 }
 
 #[derive(Debug, Default)]
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     shell,
     "window chrome and titles are the system's (AGENTS.md principle 3)"
 )]
@@ -503,13 +503,13 @@ impl HeaderStatus {
         let Some(status) = self.text.as_deref() else {
             return;
         };
-        let style = theme.text(crate::tokens::TextRole::Caption);
+        let style = theme.text(tilo_ui_base::tokens::TextRole::Caption);
         let spare = x1 - x0;
         let (_, line) = text.measure_style("Ag", None, &style);
         if spare < f64::from(line) * 4.0 {
             return;
         }
-        let shown = text.elide_to_width_style(status, crate::num::f32_of_f64(spare), &style);
+        let shown = text.elide_to_width_style(status, tilo_ui_base::num::f32_of_f64(spare), &style);
         let (w, h) = text.measure_style(&shown, None, &style);
         let (w, h) = (f64::from(w), f64::from(h));
         let origin = Point::new(x1 - w, row.center().y - h / 2.0);
@@ -527,12 +527,12 @@ impl HeaderStatus {
 
 impl Widget for HeaderStatus {
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn build_layout(
@@ -541,7 +541,7 @@ impl Widget for HeaderStatus {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
-        use super::TaffyTreeExt;
+        use tilo_ui_base::widget::TaffyTreeExt;
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
 
@@ -557,8 +557,8 @@ impl Widget for HeaderStatus {
         false
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Politeness, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Politeness, a11y::Role};
         let text = self.text.as_deref()?;
         Some(
             AccessNode::new(Role::StaticText)
@@ -754,12 +754,14 @@ impl HistoryOpener {
     }
 
     #[must_use]
-    pub fn accessibility(&self, rect: Rect) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    pub fn accessibility(&self, rect: Rect) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let control = self.control?;
         (rect.width() > 0.0).then(|| {
             AccessNode::new(Role::ToggleButton)
-                .with_name(crate::i18n::I18nManager::lookup_plain("history-mode-title"))
+                .with_name(tilo_ui_base::i18n::I18nManager::lookup_plain(
+                    "history-mode-title",
+                ))
                 .with_action_target(HISTORY_TARGET)
                 .with_bounds(rect)
                 .with_state(
@@ -774,19 +776,27 @@ impl HistoryOpener {
     pub fn is_target(key_path: &[u64]) -> bool {
         key_path
             .last()
-            .is_some_and(|key| *key == crate::a11y::hash_key(&HISTORY_TARGET))
+            .is_some_and(|key| *key == tilo_ui_base::a11y::hash_key(&HISTORY_TARGET))
     }
 
-    pub fn perform_semantic_action(&mut self, target: &str, action: &crate::a11y::Action) -> bool {
-        if target == HISTORY_TARGET && matches!(action, crate::a11y::Action::Activate) {
+    pub fn perform_semantic_action(
+        &mut self,
+        target: &str,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool {
+        if target == HISTORY_TARGET && matches!(action, tilo_ui_base::a11y::Action::Activate) {
             self.activate();
             return self.pending.is_some();
         }
         false
     }
 
-    pub fn perform_action(&mut self, action: &crate::a11y::Action, key_path: &[u64]) -> bool {
-        if Self::is_target(key_path) && matches!(action, crate::a11y::Action::Activate) {
+    pub fn perform_action(
+        &mut self,
+        action: &tilo_ui_base::a11y::Action,
+        key_path: &[u64],
+    ) -> bool {
+        if Self::is_target(key_path) && matches!(action, tilo_ui_base::a11y::Action::Activate) {
             self.activate();
             return self.pending.is_some();
         }
@@ -830,7 +840,10 @@ mod tests {
         opener.set_control(Some(HistoryControl::Open));
         let node = opener.accessibility(rect).expect("a node");
         assert_eq!(node.state.checked, Some(true));
-        assert!(opener.perform_action(&crate::a11y::Action::Activate, &[node.key.expect("keyed")]));
+        assert!(opener.perform_action(
+            &tilo_ui_base::a11y::Action::Activate,
+            &[node.key.expect("keyed")]
+        ));
         assert_eq!(opener.take().map(|i| i.address.action), Some("hide".into()));
     }
 }

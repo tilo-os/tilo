@@ -107,7 +107,7 @@ OWN_PROCESS_TEST = "tilo_test_env::in_own_process("
 CAPTURE_ASKS = "wall_frozen()"
 # The capture launcher itself: it pins the clock for the process its frames
 # are drawn in, and no test reaches it.
-CAPTURE_LAUNCHER = Path("crates/ui/ui-core/src/clock.rs")
+CAPTURE_LAUNCHER = Path("crates/ui/ui-base/src/clock.rs")
 
 
 @dataclass(frozen=True)

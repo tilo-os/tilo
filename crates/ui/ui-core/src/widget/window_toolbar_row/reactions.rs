@@ -8,13 +8,13 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
 use super::{CONTROL_PX, Part, SECTION_GAP, ToolbarRow, Widget};
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::DrawChild;
 use crate::widget::emoji_picker::{EmojiPicker, PickerEvent};
 use crate::widget::reaction_strip::{self, ReactionStrip, StripMetrics};
 use crate::window_toolbar::{ToolbarEvent, ToolbarReaction, WindowToolbar, reaction_action};
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
 
 pub const REACTION_TARGET_PREFIX: &str = "window-toolbar-reaction:";
 pub const REACTION_ADD_TARGET: &str = "window-toolbar-reaction-add";
@@ -167,7 +167,7 @@ impl ToolbarRow {
                     usize::MAX,
                 );
                 let metrics = StripMetrics::of(theme);
-                let laid = crate::text_render::with_layout_renderer(theme, |text| {
+                let laid = tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
                     reaction_strip::layout(
                         &groups,
                         &[],
@@ -221,7 +221,7 @@ impl ToolbarRow {
             .and_then(|t| t.reactions.as_ref())
             .is_some_and(|r| r.pills.iter().any(|pill| pill.emoji == emoji && pill.mine))
         {
-            crate::emoji_catalogue::record_used(emoji);
+            tilo_ui_base::emoji_catalogue::record_used(emoji);
         }
         self.push(ToolbarEvent::Action {
             id: reaction_action(emoji),
@@ -262,7 +262,7 @@ impl ToolbarRow {
     pub(super) fn picker_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         if !self.reactions.picker.is_open() {
             return false;
@@ -277,7 +277,7 @@ impl ToolbarRow {
         let mut handled = false;
         self.reactions.picker.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 handled: &mut handled,
                 ..ctx.reborrow(ctx.path, ctx.node_id)
             },
@@ -302,7 +302,7 @@ impl ToolbarRow {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        (tr, theme, env): (&mut TextRenderer, &Theme, &crate::draw::DrawEnv<'_>),
+        (tr, theme, env): (&mut TextRenderer, &Theme, &tilo_ui_base::draw::DrawEnv<'_>),
     ) {
         if let Some(anchor) = self.reactions.opening.take() {
             let area = if self.popup_area.area() > 0.0 {
@@ -373,8 +373,8 @@ impl ToolbarRow {
             .tooltip_at(p, &|reactor| reactor.name.clone().unwrap_or_default())
     }
 
-    pub(super) fn reaction_nodes(&self) -> Vec<crate::a11y::AccessNode> {
-        let mut nodes: Vec<crate::a11y::AccessNode> = self
+    pub(super) fn reaction_nodes(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {
+        let mut nodes: Vec<tilo_ui_base::a11y::AccessNode> = self
             .reactions
             .strip
             .accessibility()

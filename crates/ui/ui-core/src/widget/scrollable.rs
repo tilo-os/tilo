@@ -1,15 +1,15 @@
-use crate::num::f32_of_f64;
 use crate::time::{Duration, Instant};
-use crate::widget::{AppModel, ModelPath};
 use std::cell::Cell;
 use std::rc::Rc;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
 use crate::widget::scrollbar::Scrollbar;
-use crate::widget::{Element, ScrollAxis, Widget};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{widget::Element, widget::ScrollAxis, widget::Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::BlendMode;
@@ -48,7 +48,7 @@ const LINE_STEP: f32 = 48.0;
     clippy::cast_possible_truncation,
     reason = "PAGE_FRACTION is a fixed 0..1 fraction; narrowing to f32 loses only unused precision"
 )]
-const PAGE_FRACTION: f32 = crate::widget::PAGE_FRACTION as f32;
+const PAGE_FRACTION: f32 = tilo_ui_base::widget::PAGE_FRACTION as f32;
 const HOLD_INITIAL_MS: u64 = 300;
 const HOLD_REPEAT_MS: u64 = 55;
 
@@ -93,15 +93,15 @@ pub struct Scrollable {
     viewport_w: f32,
     viewport_h: f32,
     /// The glide after a flick: the lists' decay
-    /// ([`crate::virtual_viewport::glide_step`]), in whole device pixels so
+    /// ([`tilo_ui_base::virtual_viewport::glide_step`]), in whole device pixels so
     /// a host that copies what a scroll keeps on screen copies every frame
     /// of it.
-    glide: crate::virtual_viewport::ScrollGlide,
+    glide: tilo_ui_base::virtual_viewport::ScrollGlide,
     /// The motion toward what [`Self::scroll_into_view`] was asked to show.
-    scroll_to: crate::motion::ScrollTo,
+    scroll_to: tilo_ui_base::motion::ScrollTo,
     /// The name of the descendant to keep in view (`Widget::kept_in_view`), and the name it
     /// last brought into view: a change of the kept one glides to it, at the pace
-    /// [`crate::motion::ScrollTo`] sets from the person's recent input, and what stays the same
+    /// [`tilo_ui_base::motion::ScrollTo`] sets from the person's recent input, and what stays the same
     /// leaves where the person put it.
     keep: Option<String>,
     /// The descendant that named itself the one to keep in view last, by its place in the tree:
@@ -112,7 +112,7 @@ pub struct Scrollable {
     /// from: glides and jumps step in whole ones.
     device_scale: f64,
     /// The motion the theme allows, sampled by the latest draw.
-    motion: crate::tokens::EffectiveMotion,
+    motion: tilo_ui_base::tokens::EffectiveMotion,
     /// The content's opacity in the latest draw: below 1 while it fades in
     /// after a long jump.
     fade_drawn: Cell<f32>,
@@ -142,7 +142,7 @@ pub struct Scrollable {
     child: Option<Element>,
     /// A content shown in place of another since the host last read it
     /// ([`Self::replace_child`]): described.
-    structure: crate::widget::StructureChange,
+    structure: tilo_ui_base::widget::StructureChange,
     /// Retained Taffy identity for `child`; refreshed with the layout tree so
     /// event and scroll-layout paths never allocate `taffy.children()`.
     child_node: Option<NodeId>,
@@ -197,10 +197,10 @@ pub struct Scrollable {
     holds_windows: bool,
     /// Release-velocity samples of the continuous (touchpad/touchscreen)
     /// gesture in progress; a fast lift turns into [`Self::fling`].
-    kinetic: crate::virtual_viewport::KineticSampler,
+    kinetic: tilo_ui_base::virtual_viewport::KineticSampler,
     /// The give past the ends while fingers pull the content there, and its
-    /// spring back once they let go ([`crate::motion::RubberBand`]).
-    band: crate::motion::RubberBand,
+    /// spring back once they let go ([`tilo_ui_base::motion::RubberBand`]).
+    band: tilo_ui_base::motion::RubberBand,
     /// Survives this widget being dropped and rebuilt — needed by apps that
     /// recreate their whole widget subtree every frame. Every offset
     /// mutation writes back through `clamp`. See
@@ -256,8 +256,8 @@ pub struct Scrollable {
     /// What the frame being drawn shows of the content, and what the last
     /// frame the host presented showed: a scroll between the two that moved
     /// nothing else is offered to the host as a copy
-    /// ([`crate::scroll_copy::offer`]).
-    shown: crate::scroll_copy::ShownFrames<Shown>,
+    /// ([`tilo_ui_base::scroll_copy::offer`]).
+    shown: tilo_ui_base::scroll_copy::ShownFrames<Shown>,
     /// The layout scale the offset was last taken to ([`Scrollable::land_offsets`]),
     /// or `None` before the content was first placed.
     placed_scale: Option<f32>,
@@ -282,7 +282,7 @@ struct Shown {
     overlays: Vec<Rect>,
 }
 
-impl crate::scroll_copy::Shown for Shown {
+impl tilo_ui_base::scroll_copy::Shown for Shown {
     fn scroll(&self) -> vello::kurbo::Vec2 {
         vello::kurbo::Vec2::new(self.offset.0, self.offset.1)
     }
@@ -309,7 +309,7 @@ impl Scrollable {
     /// Box this widget in the SDK so thin apps reuse its shared implementation.
     /// This keeps the widget's vtable instantiation out of the app.
     #[must_use]
-    pub fn into_widget(self) -> Box<dyn crate::widget::Widget> {
+    pub fn into_widget(self) -> Box<dyn tilo_ui_base::widget::Widget> {
         Box::new(self)
     }
 
@@ -326,12 +326,12 @@ impl Scrollable {
             walked_h: 0.0,
             viewport_w: 0.0,
             viewport_h: 0.0,
-            glide: crate::virtual_viewport::ScrollGlide::new(),
-            scroll_to: crate::motion::ScrollTo::new(),
+            glide: tilo_ui_base::virtual_viewport::ScrollGlide::new(),
+            scroll_to: tilo_ui_base::motion::ScrollTo::new(),
             keep: None,
             kept: None,
             device_scale: 1.0,
-            motion: crate::tokens::EffectiveMotion::default(),
+            motion: tilo_ui_base::tokens::EffectiveMotion::default(),
             fade_drawn: Cell::new(1.0),
             fade_shown: 1.0,
             fixed_height: None,
@@ -340,7 +340,7 @@ impl Scrollable {
             content_fills_viewport: false,
             content_fills_viewport_width: false,
             child: None,
-            structure: crate::widget::StructureChange::None,
+            structure: tilo_ui_base::widget::StructureChange::None,
             child_node: None,
             rect: Rect::ZERO,
             scroll_dirty: false,
@@ -363,8 +363,8 @@ impl Scrollable {
             terminal_fade_damage: Cell::new(false),
             reduce_motion_active: false,
             holds_windows: false,
-            kinetic: crate::virtual_viewport::KineticSampler::new(),
-            band: crate::motion::RubberBand::new(),
+            kinetic: tilo_ui_base::virtual_viewport::KineticSampler::new(),
+            band: tilo_ui_base::motion::RubberBand::new(),
             persisted_offset: None,
             content_gutter: 0.0,
             bar_thickness: BAR_THICKNESS,
@@ -380,7 +380,7 @@ impl Scrollable {
             compact_bottom_content_inset: None,
             semantic_key: None,
             label: None,
-            shown: crate::scroll_copy::ShownFrames::default(),
+            shown: tilo_ui_base::scroll_copy::ShownFrames::default(),
             placed_scale: None,
             follow_end: false,
             snap_x: Vec::new(),
@@ -416,7 +416,7 @@ impl Scrollable {
         let c = self.content(c);
         self.structure = self
             .structure
-            .join(crate::widget::StructureChange::Described);
+            .join(tilo_ui_base::widget::StructureChange::Described);
         self.child.replace(c)
     }
     /// `c` as the child, in the wrapper that keeps it at least the viewport's height when the
@@ -545,7 +545,7 @@ impl Scrollable {
     /// surface that fits its window to this view's content goes with it. The view's own box does
     /// not move, so this is not its [`Widget::disclosing`].
     #[must_use]
-    pub fn content_disclosing(&self) -> Option<crate::widget::Disclosing> {
+    pub fn content_disclosing(&self) -> Option<tilo_ui_base::widget::Disclosing> {
         self.child.as_ref().and_then(|child| child.disclosing())
     }
 
@@ -677,7 +677,7 @@ impl Scrollable {
     fn paint_clip_rect(&self, theme: &Theme) -> Rect {
         let viewport = self.content_viewport_rect();
         if matches!(self.axis, ScrollAxis::Vertical) {
-            viewport.inflate(crate::chrome::row_bleed(theme), 0.0)
+            viewport.inflate(tilo_ui_base::chrome::row_bleed(theme), 0.0)
         } else {
             viewport
         }
@@ -743,7 +743,7 @@ impl Scrollable {
     /// Move the content by `dx`, `dy`: the hand (a wheel, a key, a bar
     /// drag) or the caller takes over from any jump in progress.
     pub fn scroll_by(&mut self, dx: f32, dy: f32) {
-        self.scroll_to.take_over(crate::motion::frame_now());
+        self.scroll_to.take_over(tilo_ui_base::motion::frame_now());
         self.move_by(dx, dy);
     }
 
@@ -779,7 +779,7 @@ impl Scrollable {
     fn drawn_offset(&self) -> (f64, f64) {
         let give = self
             .band
-            .give(crate::motion::frame_now(), self.device_scale);
+            .give(tilo_ui_base::motion::frame_now(), self.device_scale);
         (
             f64::from(self.offset_x) + give.x,
             f64::from(self.offset_y) + give.y,
@@ -789,7 +789,7 @@ impl Scrollable {
     /// Where the content's origin lands on screen, as drawn: exactly where
     /// [`Self::drawn_offset`] puts it. A scroll that moves the content by
     /// part of a pixel moves it by exactly that much, because the copy it
-    /// offers ([`crate::scroll_copy`]) moves the pixels it was shown at by
+    /// offers ([`tilo_ui_base::scroll_copy`]) moves the pixels it was shown at by
     /// the same delta: content placed on any coarser grid than the offsets
     /// it is scrolled by would sit a pixel away from the pixels a host
     /// copied, and every edge in the content would jump. An offset carried
@@ -807,7 +807,7 @@ impl Scrollable {
     /// between pixels. A scroll keeps its fraction, which the copy path
     /// needs.
     fn land_offsets(&mut self) {
-        let scale = super::layout::device_scale().max(f32::MIN_POSITIVE);
+        let scale = tilo_ui_base::widget::layout::device_scale().max(f32::MIN_POSITIVE);
         if self
             .placed_scale
             .is_some_and(|placed| placed.to_bits() == scale.to_bits())
@@ -824,7 +824,7 @@ impl Scrollable {
     /// Whether the give moved since the content was placed with it.
     fn give_unplaced(&self) -> bool {
         self.band
-            .needs_frame(crate::motion::frame_now(), self.device_scale)
+            .needs_frame(tilo_ui_base::motion::frame_now(), self.device_scale)
     }
 
     fn wake(&mut self) {
@@ -849,7 +849,7 @@ impl Scrollable {
         self.glided(dx, dy);
     }
 
-    /// Advance a glide by `dt` seconds ([`crate::virtual_viewport::glide_step`]).
+    /// Advance a glide by `dt` seconds ([`tilo_ui_base::virtual_viewport::glide_step`]).
     pub fn tick(&mut self, dt: f32) {
         let elapsed = Duration::from_secs_f64(f64::from(dt.max(0.0)));
         let (dx, dy) = self.glide.advance_by(elapsed);
@@ -891,7 +891,7 @@ impl Scrollable {
     /// puts the content at its target.
     fn jump_in_progress(&self) -> bool {
         self.scroll_to.target().is_some()
-            || self.scroll_to.is_moving(crate::motion::frame_now())
+            || self.scroll_to.is_moving(tilo_ui_base::motion::frame_now())
             || self.fade_drawn.get() < 1.0
     }
 
@@ -900,7 +900,7 @@ impl Scrollable {
     fn content_fading(&self) -> bool {
         self.fade_drawn.get() < 1.0
             || self.fade_shown < 1.0
-            || self.scroll_to.opacity(crate::motion::frame_now()) < 1.0
+            || self.scroll_to.opacity(tilo_ui_base::motion::frame_now()) < 1.0
     }
     /// Reveal newly focused controls while allowing manual scroll away from
     /// unchanged focus. Opt-in for form panels; ordinary scrolling is unchanged.
@@ -921,7 +921,7 @@ impl Scrollable {
     /// Keep the descendant that names itself `name` ([`Widget::kept_in_view`]) in view: when
     /// the one that is named changes (the front strip of a row, as the person moves between
     /// windows), the content moves the least it takes to show it, gliding at the pace
-    /// [`crate::motion::ScrollTo`] sets from the person's recent input. A scroll between changes
+    /// [`tilo_ui_base::motion::ScrollTo`] sets from the person's recent input. A scroll between changes
     /// leaves the content where the person put it.
     pub fn keep_in_view(&mut self, name: impl Into<String>) {
         let name = name.into();
@@ -934,11 +934,11 @@ impl Scrollable {
 
     /// Show the content rect at `x`, `y` (`w` by `h`, in content
     /// coordinates), moving as little as it takes. A jump the person's hand
-    /// or key just asked for moves there ([`crate::motion::ScrollTo`]): it
+    /// or key just asked for moves there ([`tilo_ui_base::motion::ScrollTo`]): it
     /// glides when short and fades in at the target when long; one nobody
     /// asked for (a sync, a restored view) or an agent's lands at once.
     pub fn scroll_into_view(&mut self, x: f32, y: f32, w: f32, h: f32) {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let (tx, ty) = self.offset_showing(x, y, w, h);
         let viewport = vello::kurbo::Vec2::new(
             f64::from(self.viewport_w),
@@ -948,7 +948,7 @@ impl Scrollable {
         let target = vello::kurbo::Vec2::new(f64::from(tx), f64::from(ty));
         self.glide.stop();
         if self.scroll_to.go(drawn, target, viewport, self.motion, now)
-            == crate::motion::ScrollJump::Glide
+            == tilo_ui_base::motion::ScrollJump::Glide
         {
             self.follow_scroll_to(now);
         } else {
@@ -995,7 +995,7 @@ impl Scrollable {
         );
         // A reveal lands on a display's pixel, so the content it brings to view stands on
         // it: the offset it reached, the content's end at most, taken down to the pixel.
-        let scale = f64::from(super::layout::device_scale()).max(f64::MIN_POSITIVE);
+        let scale = f64::from(tilo_ui_base::widget::layout::device_scale()).max(f64::MIN_POSITIVE);
         let snap = |offset: f32| f32_of_f64((f64::from(offset) * scale).floor() / scale);
         self.glide.stop();
         self.move_by(tx - self.offset_x, ty - self.offset_y);
@@ -1006,7 +1006,7 @@ impl Scrollable {
         let clip = self.content_viewport_rect();
         let origin = self.content_origin();
         if let (Some(child), Some(node)) = (&mut self.child, self.child_node) {
-            crate::widget::with_layout_clip(clip, || {
+            tilo_ui_base::widget::with_layout_clip(clip, || {
                 child.apply_layout(taffy, node, origin);
             });
         }
@@ -1014,7 +1014,7 @@ impl Scrollable {
 
     /// Show the descendant that names itself the one to keep in view, when that name changed:
     /// the front strip of a row, as the person moves between windows. It moves the least it
-    /// takes, at the pace [`crate::motion::ScrollTo`] sets from the person's recent input.
+    /// takes, at the pace [`tilo_ui_base::motion::ScrollTo`] sets from the person's recent input.
     fn keep_asked(&mut self, taffy: &TaffyTree<()>) {
         /// A widget's place in the tree, as a number: its address without the metadata of its
         /// trait object, so the scroll knows the one it keeps changed.
@@ -1075,7 +1075,7 @@ impl Scrollable {
         let clip = self.content_viewport_rect();
         let origin = self.content_origin();
         if let (Some(child), Some(node)) = (&mut self.child, self.child_node) {
-            crate::widget::with_layout_clip(clip, || {
+            tilo_ui_base::widget::with_layout_clip(clip, || {
                 child.apply_layout(taffy, node, origin);
             });
         }
@@ -1229,7 +1229,7 @@ impl ViewportContent {
     }
 }
 
-impl crate::widget::Decorator for ViewportContent {
+impl tilo_ui_base::widget::Decorator for ViewportContent {
     type Inner = crate::widget::Container;
 
     fn inner(&self) -> &crate::widget::Container {
@@ -1268,7 +1268,7 @@ impl crate::widget::Decorator for ViewportContent {
                 ..Default::default()
             },
         );
-        crate::widget::register_node(nodes, node, self);
+        tilo_ui_base::widget::register_node(nodes, node, self);
         node
     }
 
@@ -1283,10 +1283,10 @@ impl crate::widget::Decorator for ViewportContent {
 }
 
 impl Widget for Scrollable {
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls);
 
-    fn primary_vertical_scroll(&self) -> Option<crate::widget::PrimaryScrollRegion> {
-        Some(crate::widget::PrimaryScrollRegion {
+    fn primary_vertical_scroll(&self) -> Option<tilo_ui_base::widget::PrimaryScrollRegion> {
+        Some(tilo_ui_base::widget::PrimaryScrollRegion {
             key: "primary",
             owner_generation: None,
             metrics: self.v_metrics(),
@@ -1294,8 +1294,8 @@ impl Widget for Scrollable {
     }
     fn apply_primary_vertical_scroll(
         &mut self,
-        action: crate::widget::PrimaryScrollAction,
-    ) -> crate::widget::PrimaryScrollResult {
+        action: tilo_ui_base::widget::PrimaryScrollAction,
+    ) -> tilo_ui_base::widget::PrimaryScrollResult {
         // As any scroll does, it asks for the frame that places what came into view.
         action.apply_to(self, Self::primary_vertical_scroll, |s, _, next| {
             s.scroll_by(0.0, next as f32 - s.offset_y);
@@ -1306,8 +1306,8 @@ impl Widget for Scrollable {
         Some(self.content_viewport_rect())
     }
     /// Which way its content may go on past it.
-    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
-        use crate::widget::{LayoutInfo, ScrollDirection, ScrollLayout};
+    fn layout_info(&self) -> Option<tilo_ui_base::widget::LayoutInfo> {
+        use tilo_ui_base::{widget::LayoutInfo, widget::ScrollDirection, widget::ScrollLayout};
         let direction = match self.axis {
             ScrollAxis::Vertical => ScrollDirection::Vertical,
             ScrollAxis::Horizontal => ScrollDirection::Horizontal,
@@ -1323,15 +1323,15 @@ impl Widget for Scrollable {
 
     /// A glide in progress advances here, once per frame, and moves only
     /// this view: like a wheel that only pans
-    /// ([`crate::widget::note_view_only_pan`]) it is no change of the model,
+    /// ([`tilo_ui_base::widget::note_view_only_pan`]) it is no change of the model,
     /// so it does not report one; reporting it synced the app and
     /// republished its resources on every frame of every fling. The host
     /// places the content where the glide took it
-    /// ([`crate::widget::note_layout_moved`]).
+    /// ([`tilo_ui_base::widget::note_layout_moved`]).
     fn update(&mut self, s: &AppModel, p: &ModelPath) -> bool {
         if self.glide.is_active() {
             // On the frame's instant, the one its layout reads the view at.
-            self.advance_momentum(crate::motion::frame_now());
+            self.advance_momentum(tilo_ui_base::motion::frame_now());
         }
         // The give springing back moves the content like a glide does.
         if self.give_unplaced() {
@@ -1339,7 +1339,7 @@ impl Widget for Scrollable {
             self.scroll_unplaced = true;
         }
         // A jump in progress, like a glide, moves only this view.
-        self.follow_scroll_to(crate::motion::frame_now());
+        self.follow_scroll_to(tilo_ui_base::motion::frame_now());
         // Click-and-hold auto-repeat: the host wakes on the repeat's
         // deadline (`next_wake_deadline`), not on animation frames.
         let held = self.hold.is_some() && {
@@ -1348,7 +1348,7 @@ impl Widget for Scrollable {
             (self.offset_x, self.offset_y) != before
         };
         if self.scroll_dirty {
-            crate::widget::note_layout_moved();
+            tilo_ui_base::widget::note_layout_moved();
         }
         let child = self.child.as_mut().is_some_and(|c| c.update(s, p));
         held || child
@@ -1549,7 +1549,7 @@ impl Widget for Scrollable {
         });
         self.reserve_vertical = self.axis_has_vertical() && right;
         self.reserve_horizontal = self.axis_has_horizontal() && bottom;
-        self.rect = crate::widget::placed(&l, origin);
+        self.rect = tilo_ui_base::widget::placed(&l, origin);
         // An offset carried from a display of another scale lands whole here
         // before anything places or measures against it.
         self.land_offsets();
@@ -1566,14 +1566,14 @@ impl Widget for Scrollable {
             self.content_h = cl.content_size.height.max(cl.size.height);
         }
         let previous_offset = (self.offset_x, self.offset_y);
-        let placing_again = crate::widget::placing_again(taffy);
+        let placing_again = tilo_ui_base::widget::placing_again(taffy);
         // Content placed below knows what this view shows of it
         // (`widget::layout_clip`), so a long collection lays out only that.
         let clip = self.content_viewport_rect();
         let origin = self.content_origin();
         if let Some(c) = &mut self.child {
             if let Some(child_node) = self.child_node {
-                crate::widget::with_layout_clip(clip, || {
+                tilo_ui_base::widget::with_layout_clip(clip, || {
                     c.apply_layout(taffy, child_node, origin);
                 });
                 let cl = taffy.layout(child_node).copied().unwrap_or_default();
@@ -1591,7 +1591,7 @@ impl Widget for Scrollable {
                 // always reaches the real last pixel; placed again, the
                 // content only moved and the walk would find the same.
                 if !placing_again {
-                    let max_y = super::layout::max_bottom_edge(c.as_ref());
+                    let max_y = tilo_ui_base::widget::layout::max_bottom_edge(c.as_ref());
                     self.walked_h = f32_of_f64((max_y - origin.y).max(0.0));
                 }
                 if self.walked_h > self.content_h {
@@ -1609,7 +1609,7 @@ impl Widget for Scrollable {
         {
             // A restored offset or a resize may need clamping. Publish
             // geometry at the final offset in this same layout pass.
-            crate::widget::with_layout_clip(clip, || {
+            tilo_ui_base::widget::with_layout_clip(clip, || {
                 c.apply_layout(taffy, child_node, origin);
             });
         }
@@ -1660,7 +1660,7 @@ impl Widget for Scrollable {
                     let clip = self.content_viewport_rect();
                     let origin = self.content_origin();
                     if let (Some(child), Some(node)) = (&mut self.child, self.child_node) {
-                        crate::widget::with_layout_clip(clip, || {
+                        tilo_ui_base::widget::with_layout_clip(clip, || {
                             child.apply_layout(taffy, node, origin);
                         });
                     }
@@ -1684,7 +1684,7 @@ impl Widget for Scrollable {
         self.was_overflowing = scrollable_now;
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1702,7 +1702,7 @@ impl Widget for Scrollable {
         self.shown.note(Shown {
             offset: self.drawn_offset(),
             clip,
-            transform: crate::scroll_copy::on_screen(transform),
+            transform: tilo_ui_base::scroll_copy::on_screen(transform),
             overlays: self.copy_overlays(clip),
         });
         scene.push_layer(
@@ -1714,7 +1714,7 @@ impl Widget for Scrollable {
         );
         let previous_viewport = env.push_viewport(self.content_viewport_rect());
         // After a long jump the content fades in where it landed.
-        let opacity = self.scroll_to.opacity(crate::motion::frame_now());
+        let opacity = self.scroll_to.opacity(tilo_ui_base::motion::frame_now());
         self.fade_drawn.set(opacity);
         let fading = opacity < 1.0;
         if fading {
@@ -1731,8 +1731,8 @@ impl Widget for Scrollable {
         let windows = crate::control_hints::anchors::windows_drawn();
         let keeping = keep.is_some();
         if let Some(c) = &mut self.child {
-            crate::draw_cull::keeping(scene, keep, |scene| {
-                crate::widget::draw_child(c.as_mut(), scene, transform, tr, theme, &env);
+            tilo_ui_base::draw_cull::keeping(scene, keep, |scene| {
+                tilo_ui_base::widget::draw_child(c.as_mut(), scene, transform, tr, theme, &env);
             });
         }
         // Windows drawn along a row that scrolls sideways: those scrolled past either end lie out
@@ -1762,7 +1762,7 @@ impl Widget for Scrollable {
         clippy::too_many_lines,
         reason = "ordered pointer capture, child-first wheel dispatch, and clip routing share one event boundary"
     )]
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 match self.on_cursor_moved(*position, ctx.scale_factor) {
@@ -1800,7 +1800,7 @@ impl Widget for Scrollable {
                     // A bar dragged and let go settles on a detent like a
                     // finger does.
                     if dragged && self.snaps() {
-                        self.settle_snap((0.0, 0.0), crate::tokens::MotionSource::Pointer);
+                        self.settle_snap((0.0, 0.0), tilo_ui_base::tokens::MotionSource::Pointer);
                     }
                     self.scroll_dirty = true;
                     self.scroll_unplaced = true;
@@ -1860,7 +1860,7 @@ impl Widget for Scrollable {
             // Every child refused it and it moved only this view: nothing
             // the app publishes changed.
             if *ctx.handled {
-                crate::widget::note_view_only_pan();
+                tilo_ui_base::widget::note_view_only_pan();
                 // A sideways scroll along a row of windows moves the view across them.
                 if self.holds_windows && self.axis_has_horizontal() && moved_x {
                     crate::control_hints::performed::note(
@@ -1883,7 +1883,7 @@ impl Widget for Scrollable {
         let child_has_capture = self
             .child
             .as_ref()
-            .is_some_and(|child| crate::widget::holds_pointer(child.as_ref()));
+            .is_some_and(|child| tilo_ui_base::widget::holds_pointer(child.as_ref()));
         let pointer_in_content = match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.content_viewport_rect().contains(ctx.logical(position))
@@ -1975,7 +1975,7 @@ impl Widget for Scrollable {
     /// visits only the children near the viewport.
     fn for_each_child_in_clip(&self, visitor: &mut dyn FnMut(&dyn Widget)) {
         if let Some(child) = &self.child {
-            crate::widget::with_layout_clip(self.content_viewport_rect(), || {
+            tilo_ui_base::widget::with_layout_clip(self.content_viewport_rect(), || {
                 visitor(child.as_ref());
             });
         }
@@ -2030,7 +2030,7 @@ impl Widget for Scrollable {
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        self.fade_start_deadline_at(crate::motion::frame_now())
+        self.fade_start_deadline_at(tilo_ui_base::motion::frame_now())
             .into_iter()
             .chain(self.hold.map(|hold| hold.next_at))
             .chain(
@@ -2062,15 +2062,18 @@ impl Widget for Scrollable {
         }
         if self.scroll_dirty {
             match self.shown.compare(self, regions) {
-                crate::scroll_copy::Since::Copied => {
+                tilo_ui_base::scroll_copy::Since::Copied => {
                     // What changed in the content besides moving, where its
                     // widgets say; the host carries it with the copy.
                     let clip = self.shown.drawing().map_or(self.rect, |shown| shown.clip);
                     if let Some(child) = &self.child {
                         let first = regions.len();
-                        crate::widget::with_layout_clip(self.content_viewport_rect(), || {
-                            child.collect_damage(regions);
-                        });
+                        tilo_ui_base::widget::with_layout_clip(
+                            self.content_viewport_rect(),
+                            || {
+                                child.collect_damage(regions);
+                            },
+                        );
                         if let Some(changed) = regions.get_mut(first..) {
                             for rect in changed {
                                 *rect = rect.intersect(clip);
@@ -2079,18 +2082,18 @@ impl Widget for Scrollable {
                     }
                     return;
                 }
-                crate::scroll_copy::Since::Repaint => {
+                tilo_ui_base::scroll_copy::Since::Repaint => {
                     regions.push(self.rect);
                     return;
                 }
                 // Scrolled back where the screen shows it: only what changed.
-                crate::scroll_copy::Since::Still => {}
+                tilo_ui_base::scroll_copy::Since::Still => {}
             }
         }
 
         if let Some(child) = &self.child {
             let first = regions.len();
-            crate::widget::with_layout_clip(self.content_viewport_rect(), || {
+            tilo_ui_base::widget::with_layout_clip(self.content_viewport_rect(), || {
                 child.collect_damage(regions);
             });
             if let Some(child_regions) = regions.get_mut(first..) {
@@ -2159,8 +2162,8 @@ impl Widget for Scrollable {
             return false;
         }
         let viewport = self.content_viewport_rect();
-        let x = crate::num::f32_of_f64(rect.x0 - viewport.x0 + f64::from(self.offset_x));
-        let y = crate::num::f32_of_f64(rect.y0 - viewport.y0 + f64::from(self.offset_y));
+        let x = tilo_ui_base::num::f32_of_f64(rect.x0 - viewport.x0 + f64::from(self.offset_x));
+        let y = tilo_ui_base::num::f32_of_f64(rect.y0 - viewport.y0 + f64::from(self.offset_y));
         // Keep enough surrounding context to identify a form control after
         // keyboard traversal. Merely placing a focused field flush against
         // the viewport edge can hide its label and the adjacent action,
@@ -2171,16 +2174,16 @@ impl Widget for Scrollable {
         self.scroll_into_view_at_once(
             (x - context).max(0.0),
             (y - context).max(0.0),
-            crate::num::f32_of_f64(rect.width()) + context * 2.0,
-            crate::num::f32_of_f64(rect.height()) + context * 2.0,
+            tilo_ui_base::num::f32_of_f64(rect.width()) + context * 2.0,
+            tilo_ui_base::num::f32_of_f64(rect.height()) + context * 2.0,
         );
         true
     }
 
     /// The meaningful label belongs to whatever it wraps; a region that
     /// becomes a keyboard stop carries its own ([`Self::with_label`]).
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         let mut node = AccessNode::new(Role::Group);
         if let Some(label) = &self.label {
             node = node.with_name(label.clone());
@@ -2202,7 +2205,7 @@ impl Widget for Scrollable {
     /// The view adds no structure of its own but a content replaced in place,
     /// which is described: a change its content can describe (a long list
     /// mounting the rows a scroll brought near) stays described.
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         let own = std::mem::take(&mut self.structure);
         self.child
             .as_mut()
@@ -2210,12 +2213,12 @@ impl Widget for Scrollable {
     }
 }
 
-impl crate::widget::controls::ActionControls for Scrollable {
-    fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        crate::widget::controls::children_action_control_bindings(self)
+impl tilo_ui_base::widget::controls::ActionControls for Scrollable {
+    fn action_control_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
+        tilo_ui_base::widget::controls::children_action_control_bindings(self)
     }
     fn has_action_control_bindings(&self) -> bool {
-        crate::widget::controls::children_have_action_control_bindings(self)
+        tilo_ui_base::widget::controls::children_have_action_control_bindings(self)
     }
 }
 

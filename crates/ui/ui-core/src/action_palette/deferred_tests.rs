@@ -34,7 +34,7 @@ tilo_test_env::scenario! {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let calls = Arc::new(AtomicUsize::new(0));
         let resource = deferred_palette_resource(calls.clone());
-        let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        let mut palette = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
             SearchField::with_language("en_US")
         });
         for _ in 0..3 {
@@ -53,7 +53,7 @@ tilo_test_env::scenario! {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let calls = Arc::new(AtomicUsize::new(0));
         let resource = deferred_palette_resource(calls.clone());
-        let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        let mut palette = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
             SearchField::with_language("en_US")
         });
         palette.load_open_resources(&[resource]);
@@ -66,7 +66,7 @@ tilo_test_env::scenario! {
             assert!(matches!(
                 palette
                     .take_dispatch(
-                        &mut crate::widget::Edits::lend(&mut doc),
+                        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                         &registry(),
                         &mut tx
                     )
@@ -87,7 +87,7 @@ tilo_test_env::scenario! {
         use std::sync::atomic::{AtomicUsize, Ordering};
         let calls = Arc::new(AtomicUsize::new(0));
         let mut resource = deferred_palette_resource(calls.clone());
-        let mut palette = ActionPalette::with_inputs(crate::font_catalog::fixture_renderer(), || {
+        let mut palette = ActionPalette::with_inputs(tilo_ui_base::font_catalog::fixture_renderer(), || {
             SearchField::with_language("en_US")
         });
         palette.load_open_resources(std::slice::from_ref(&resource));

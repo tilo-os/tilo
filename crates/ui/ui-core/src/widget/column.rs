@@ -1,15 +1,18 @@
 use super::flow::{Flow, flow_builders, flow_capabilities, flow_widget_methods};
-use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
 use taffy::style_helpers::{length, percent};
 use taffy::{NodeId, Style, TaffyTree};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 #[allow(
     clippy::struct_excessive_bools,
     reason = "independent layout flags model orthogonal sizing choices"
 )]
-#[crate::component::not_a_component(layout, "the language's `stack` (`column` is its older name)")]
+#[tilo_ui_base::component::not_a_component(
+    layout,
+    "the language's `stack` (`column` is its older name)"
+)]
 pub struct Column {
     flow: Flow,
     extra_left_padding: f32,
@@ -33,7 +36,7 @@ impl Column {
     /// Box this widget in the SDK so thin apps reuse its shared implementation.
     /// This keeps the widget's vtable instantiation out of the app.
     #[must_use]
-    pub fn into_widget(self) -> Box<dyn crate::widget::Widget> {
+    pub fn into_widget(self) -> Box<dyn tilo_ui_base::widget::Widget> {
         Box::new(self)
     }
 
@@ -171,11 +174,11 @@ impl Column {
 }
 
 impl Widget for Column {
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::controls::ActionControls,
         #[cfg(feature = "model")]
-        dyn crate::widget::permission::PermissionGuarded,
-        dyn crate::presence::capability::PublishesPresence
+        dyn tilo_ui_base::widget::permission::PermissionGuarded,
+        dyn tilo_ui_base::presence::capability::PublishesPresence
     );
 
     flow_widget_methods!();
@@ -246,7 +249,7 @@ impl Widget for Column {
                 let (left, right) = self
                     .horizontal_padding_override
                     .unwrap_or((base_x + self.extra_left_padding, base_x));
-                super::layout::insets(
+                tilo_ui_base::widget::layout::insets(
                     vert + self.extra_top_padding,
                     right,
                     vert + self.extra_bottom_padding,
@@ -269,7 +272,7 @@ impl Widget for Column {
         };
         // A column that fills what its parent's column leaves takes that height and no more: its
         // content scrolls or clips inside it rather than growing it past the parent.
-        let style = crate::widget::layout::filling(
+        let style = tilo_ui_base::widget::layout::filling(
             style,
             if self.fill_remaining_height { 1.0 } else { 0.0 },
         );
@@ -297,7 +300,7 @@ impl Widget for Column {
 
     /// A content-sized column a band moves in grows with it, and so moves
     /// what follows it in its own container.
-    fn disclosing(&self) -> Option<crate::widget::Disclosing> {
+    fn disclosing(&self) -> Option<tilo_ui_base::widget::Disclosing> {
         self.flow.disclosing()
     }
 }
@@ -313,21 +316,21 @@ impl Column {
     }
 }
 
-impl crate::widget::controls::ActionControls for Column {
-    fn action_control_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        crate::widget::controls::children_action_control_bindings(self)
+impl tilo_ui_base::widget::controls::ActionControls for Column {
+    fn action_control_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
+        tilo_ui_base::widget::controls::children_action_control_bindings(self)
     }
     fn has_action_control_bindings(&self) -> bool {
-        crate::widget::controls::children_have_action_control_bindings(self)
+        tilo_ui_base::widget::controls::children_have_action_control_bindings(self)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text_render::TextRenderer;
     use crate::widget::{Container, Row, Text};
     use std::collections::HashMap;
+    use tilo_ui_base::text_render::TextRenderer;
     use vello::Scene;
     use vello::kurbo::{Affine, Point};
     use vello_encoding::DrawTag;
@@ -361,11 +364,11 @@ mod tests {
     fn glyph_count(root: &mut dyn Widget) -> usize {
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
-        let presence = crate::presence::PresenceCtx::default();
+        let presence = tilo_ui_base::presence::PresenceCtx::default();
         let mut scene = Scene::new();
         // Draw through the column's cached-draw path (the buggy one) — that's where the leading Text was
         // dropped.
-        root.draw(&mut crate::draw::DrawCtx::new(
+        root.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
@@ -387,7 +390,7 @@ mod tests {
 
         phase an_intrinsic_width_column_hugs_its_widest_child;
         {
-            use crate::widget::Spacer;
+            use tilo_ui_base::widget::Spacer;
             let mut row = Row::new().no_wrap().push(Box::new(
                 Column::new()
                     .with_no_padding()
@@ -545,7 +548,8 @@ mod tests {
             }
 
             fn intrinsic_column_gap_contributes_to_scrollable_content_height() {
-                use crate::widget::{ScrollAxis, Scrollable};
+                use crate::widget::Scrollable;
+                use tilo_ui_base::widget::ScrollAxis;
 
                 let inner = Column::new()
                     .with_intrinsic_height()
@@ -576,7 +580,8 @@ mod tests {
             }
 
             fn horizontal_scrollable_keeps_cross_axis_stretch() {
-                use crate::widget::{ScrollAxis, Scrollable};
+                use crate::widget::Scrollable;
+                use tilo_ui_base::widget::ScrollAxis;
 
                 let mut scroll = Scrollable::new(ScrollAxis::Horizontal)
                     .with_height(50.0)
@@ -605,7 +610,8 @@ mod tests {
             /// leading Text must resolve a non-degenerate rect through the measure
             /// pass.
             fn bare_leading_text_in_scrolled_intrinsic_column() {
-                use crate::widget::{ScrollAxis, Scrollable};
+                use crate::widget::Scrollable;
+                use tilo_ui_base::widget::ScrollAxis;
                 let inner = Column::new()
                     .with_intrinsic_height()
                     .push(Box::new(Text::new("Section Heading")))

@@ -39,7 +39,7 @@ use tilo_desktop_model::width::{
 use tilo_desktop_model::{
     GroupId, Layout, StripId, Tab, TabId, TileContent, WindowGroup, Workspace, WorkspaceId,
 };
-use ui::icons::Icon;
+use tilo_ui_base::icons::Icon;
 
 use crate::desktop::i18n::{t, t_args};
 use crate::desktop::navigation::{
@@ -380,7 +380,7 @@ pub fn rows(tree: &Layout, route: &RouteIds, facts: &Facts) -> Vec<Row> {
     let own = facts.held.is_none();
     let held = || {
         facts.held.clone().map(|name| {
-            if ui::presence::is_unnamed_person(&name) {
+            if tilo_ui_base::presence::is_unnamed_person(&name) {
                 t("window-menu-someone-elses-unnamed")
             } else {
                 t_args("window-menu-someone-elses", &[("name", name.into())])
@@ -2361,9 +2361,9 @@ mod tests {
             labels(&handle),
             (None, Some("Stop sharing with workspace (3 waiting)".into()))
         );
-        ui::i18n::I18nManager::set_locale("de-DE");
+        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
         let german_waiting = labels(&handle);
-        ui::i18n::I18nManager::set_locale("en-US");
+        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
         assert_eq!(
             german_waiting,
             (
@@ -2373,11 +2373,11 @@ mod tests {
         );
         shares.nothing_sent.set(false);
 
-        ui::i18n::I18nManager::set_locale("de-DE");
+        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
         let german_shared = labels(&handle);
         shares.shared.borrow_mut().clear();
         let german = labels(&handle);
-        ui::i18n::I18nManager::set_locale("en-US");
+        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
         assert_eq!(
             german_shared,
             (
@@ -2469,13 +2469,13 @@ mod tests {
     /// words that stand for their name.
     #[test]
     fn someone_unnamed_elses_window_says_someone_else() {
-        ui::i18n::I18nManager::init("en-US");
+        tilo_ui_base::i18n::I18nManager::init("en-US");
         let (handle, tab) = shell_showing(7, mapped_notes());
         let _shares = session_sharing_with(&handle);
         assert!(handle.set_holders(HashMap::from([(
             tab,
             TabHolder {
-                name: ui::presence::unnamed_person_label(),
+                name: tilo_ui_base::presence::unnamed_person_label(),
                 rgb: (200, 120, 40),
                 keeps: true,
             },

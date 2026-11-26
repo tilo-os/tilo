@@ -30,14 +30,14 @@ fn touch_form(field: TextInput) -> crate::app::driver::Driver {
         (400, 300),
         Theme::dark().with_reduce_motion(true),
     );
-    frame.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
+    frame.set_interaction_environment(tilo_ui_base::InteractionEnvironment::TOUCH);
     frame
 }
 
 #[test]
 fn a_finger_scrolls_a_form_up_or_down_and_selects_across_a_field() {
-    let _settled = crate::motion::testing::settled();
-    let name = crate::LocalState::new("Ada Lovelace".to_owned());
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let name = tilo_ui_base::LocalState::new("Ada Lovelace".to_owned());
     let mut frame = touch_form(TextInput::from_state(&name));
     let field = frame.targets()["name"];
     let rest = frame.targets()["rest"].y0;
@@ -92,8 +92,8 @@ fn x_of(frame: &mut crate::app::driver::Driver, at: usize) -> f64 {
 
 #[test]
 fn a_finger_selects_what_it_crosses_and_lets_go_where_it_lifts() {
-    let _settled = crate::motion::testing::settled();
-    let name = crate::LocalState::new("Ada Lovelace".to_owned());
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let name = tilo_ui_base::LocalState::new("Ada Lovelace".to_owned());
     let mut frame = touch_form(TextInput::from_state(&name));
     let y = frame.targets()["name"].center().y;
 
@@ -115,8 +115,8 @@ fn a_finger_selects_what_it_crosses_and_lets_go_where_it_lifts() {
 #[test]
 fn a_second_finger_ends_a_selection_without_taking_it_over() {
     use winit::event::TouchPhase;
-    let _settled = crate::motion::testing::settled();
-    let name = crate::LocalState::new("Ada Lovelace".to_owned());
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let name = tilo_ui_base::LocalState::new("Ada Lovelace".to_owned());
     let mut frame = touch_form(TextInput::from_state(&name));
     let y = frame.targets()["name"].center().y;
     let (from, to) = (x_of(&mut frame, 1), x_of(&mut frame, 5));
@@ -155,8 +155,8 @@ fn a_second_finger_ends_a_selection_without_taking_it_over() {
 
 #[test]
 fn a_tap_on_a_fields_clear_button_clears_it() {
-    let _settled = crate::motion::testing::settled();
-    let name = crate::LocalState::new("Ada Lovelace".to_owned());
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let name = tilo_ui_base::LocalState::new("Ada Lovelace".to_owned());
     let mut frame = touch_form(TextInput::from_state(&name).with_clear_button());
     let clear = frame
         .with_widget_mut::<TextInput, _>(|field| {
@@ -175,8 +175,8 @@ fn a_tap_on_a_fields_clear_button_clears_it() {
 
 #[test]
 fn a_tap_on_a_secret_fields_show_control_shows_it() {
-    let _settled = crate::motion::testing::settled();
-    let secret = crate::LocalState::new("hunter2".to_owned());
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let secret = tilo_ui_base::LocalState::new("hunter2".to_owned());
     let mut frame = touch_form(TextInput::from_state(&secret).with_secret(true));
     let reveal = frame
         .with_widget_mut::<TextInput, _>(|field| field.reveal_control_rect())

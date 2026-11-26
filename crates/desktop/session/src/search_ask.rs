@@ -183,7 +183,7 @@ impl Ask {
             subtitle: subtitle.filter(|subtitle| !subtitle.trim().is_empty()),
             facts: Vec::new(),
             score: MAX_PROVIDER_SCORE,
-            icon: Some(ui::icons::Icon::Sparkles),
+            icon: Some(tilo_ui_base::icons::Icon::Sparkles),
             target: Target::Copy {
                 text: state.text.clone(),
             },
@@ -204,7 +204,7 @@ impl Ask {
             subtitle: Some(tilo_desktop_search::i18n::t("search-ask-setup-detail")),
             facts: Vec::new(),
             score: MAX_PROVIDER_SCORE,
-            icon: Some(ui::icons::Icon::Sparkles),
+            icon: Some(tilo_ui_base::icons::Icon::Sparkles),
             target: Target::Invoke(Box::new(tilo_desktop_search::providers::settings::opening(
                 &self.workspace,
                 PROVIDERS_ANCHOR,

@@ -1,17 +1,17 @@
 //! The show/hide control every single-line secret [`super::TextInput`] carries at its trailing
 //! edge.
-use crate::i18n::widget_text;
 use std::collections::HashMap;
+use tilo_ui_base::i18n::widget_text;
 
 use taffy::{Dimension, NodeId, Position, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::color_compat::ColorCompat;
-use crate::icons::Icon;
+use tilo_ui_base::icons::Icon;
 
-use crate::theme::Theme;
-use crate::widget::{ModelPath, TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
 
 const SHOW_LABEL: &str = "text-input-show-password";
 const HIDE_LABEL: &str = "text-input-hide-password";
@@ -140,7 +140,7 @@ impl Widget for RevealToggle {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -181,7 +181,7 @@ impl Widget for RevealToggle {
         let color = if !self.enabled {
             theme
                 .text_dim
-                .with_alpha_factor(crate::widget::DISABLED_ALPHA)
+                .with_alpha_factor(tilo_ui_base::widget::DISABLED_ALPHA)
         } else if self.hovered || self.focused {
             theme.text_primary
         } else {
@@ -200,7 +200,7 @@ impl Widget for RevealToggle {
         );
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         if !self.enabled {
             return;
@@ -242,11 +242,11 @@ impl Widget for RevealToggle {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -286,19 +286,19 @@ impl Widget for RevealToggle {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action {
-            crate::a11y::Action::Activate => self.toggle(),
+            tilo_ui_base::a11y::Action::Activate => self.toggle(),
             _ => false,
         }
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         Some(
             AccessNode::new(Role::Button)
                 .with_name(widget_text(self.label()))

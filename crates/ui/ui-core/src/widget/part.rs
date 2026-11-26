@@ -3,7 +3,7 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use super::{AppModel, Element, ModelPath, Widget};
+use tilo_ui_base::{widget::AppModel, widget::Element, widget::ModelPath, widget::Widget};
 
 /// What the app holds to replace a [`Part`]'s content.
 #[derive(Clone)]
@@ -19,7 +19,7 @@ impl PartHandle {
 
 /// A place in the tree whose content the app replaces in place:
 /// transparent to layout, input, paint and semantics.
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     framework,
     "content its owner swaps in place; the language swaps content with `if`"
 )]
@@ -62,7 +62,7 @@ impl Part {
     }
 }
 
-impl super::Decorator for Part {
+impl tilo_ui_base::widget::Decorator for Part {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -89,7 +89,7 @@ impl super::Decorator for Part {
         self.content.take_structure_dirty() | own
     }
 
-    fn settle(&mut self, edits: &mut super::Edits<'_>, path: &automerge::ObjId) {
+    fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, path: &automerge::ObjId) {
         self.adopt();
         self.content.settle(edits, path);
     }
@@ -118,7 +118,7 @@ impl super::Decorator for Part {
 
 /// One of several parts, chosen by a key, each built once and kept alive
 /// while another shows. See the module docs.
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     framework,
     "content its owner swaps in place; the language swaps content with `if`"
 )]
@@ -150,7 +150,7 @@ impl<K: PartialEq + 'static> Switch<K> {
 
     /// Show the part for the key `state` projects to.
     pub fn from_state<T: 'static>(
-        state: &crate::LocalState<T>,
+        state: &tilo_ui_base::LocalState<T>,
         mut key: impl FnMut(&T) -> K + 'static,
         build: impl FnMut(&K) -> Element + 'static,
     ) -> Self {
@@ -189,7 +189,7 @@ impl<K: PartialEq + 'static> Switch<K> {
     }
 }
 
-impl<K: PartialEq + 'static> super::Decorator for Switch<K> {
+impl<K: PartialEq + 'static> tilo_ui_base::widget::Decorator for Switch<K> {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {

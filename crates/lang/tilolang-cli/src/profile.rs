@@ -12,7 +12,7 @@
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
-use ui::interaction::InteractionEnvironment;
+use tilo_ui_base::interaction::InteractionEnvironment;
 
 use crate::layout_check::stage;
 
@@ -142,7 +142,7 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
         .collect::<Result<_, _>>()?;
     // The instant a run is of does not matter, but it must not move while it runs: the days a view
     // shows are read from it, as a layout check reads them.
-    ui::clock::freeze_for_capture();
+    tilo_ui_base::clock::freeze_for_capture();
     tilo_app_window::i18n::ensure();
     let search = if options.search.is_empty() {
         options
@@ -172,7 +172,7 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
         .clone()
         .or_else(|| app.scenarios.first().map(|scenario| scenario.name.clone()));
     let viewport = options.size;
-    let theme = ui::Theme::light();
+    let theme = tilo_ui_base::Theme::light();
     let input = InteractionEnvironment::POINTER;
     let (staged, opened) = tilo_resource::profiling::observe(|| -> Result<_, String> {
         let mut staged = stage::Staged::over_workspace(
@@ -208,8 +208,8 @@ pub fn profile(options: &ProfileOptions) -> Result<(), String> {
     }
     for interaction in interactions {
         staged.reset_costs();
-        let _ = ui::widget::counts::take();
-        let _ = ui::widget::counts::take_restyled();
+        let _ = tilo_ui_base::widget::counts::take();
+        let _ = tilo_ui_base::widget::counts::take_restyled();
         let (done, scopes) = tilo_resource::profiling::observe(|| -> Result<(), String> {
             perform(&mut staged, &interaction)?;
             staged.answer()
@@ -256,12 +256,12 @@ fn perform(staged: &mut stage::Staged, interaction: &Interaction) -> Result<(), 
 /// The scopes a step ran, the costliest first: microseconds, then how often. Scopes nest, so they
 /// do not add up.
 fn print_times(scopes: &[tilo_resource::profiling::Sample]) {
-    let solved = ui::widget::counts::take();
+    let solved = tilo_ui_base::widget::counts::take();
     println!(
         "    layout  {} solves, {} passes, {} measures",
         solved.solves, solved.passes, solved.measures
     );
-    let restyled = ui::widget::counts::take_restyled();
+    let restyled = tilo_ui_base::widget::counts::take_restyled();
     if !restyled.is_empty() {
         let named: Vec<String> = restyled
             .iter()
@@ -285,7 +285,7 @@ fn print_times(scopes: &[tilo_resource::profiling::Sample]) {
 /// The widgets still asking for layout once a step settled: each lays the window out again on the
 /// next input it handles.
 fn print_asking(staged: &stage::Staged) {
-    let asking = ui::widget::counts::asking_for_layout(staged.harness().root_widget());
+    let asking = tilo_ui_base::widget::counts::asking_for_layout(staged.harness().root_widget());
     if !asking.is_empty() {
         let named: Vec<String> = asking
             .iter()
@@ -313,7 +313,7 @@ fn print_resident(started: Resident, compiled: Resident) {
 /// The font files text has read so far: a font is mapped up front and read only when text first
 /// needs one of its faces.
 fn print_fonts_read() {
-    let read = ui::font_catalog::font_files_read();
+    let read = tilo_ui_base::font_catalog::font_files_read();
     let names: Vec<String> = read
         .iter()
         .map(|path| {

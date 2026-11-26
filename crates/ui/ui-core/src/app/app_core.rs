@@ -284,8 +284,10 @@ impl App {
             return false;
         };
         let path = &self.state.root;
-        let answered =
-            history.answer_own_controls(&mut crate::widget::Edits::lend(&mut self.state.doc), path);
+        let answered = history.answer_own_controls(
+            &mut tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
+            path,
+        );
         answered > 0
     }
 
@@ -303,7 +305,7 @@ impl App {
     pub(crate) fn dispatch_current_history_control(
         &mut self,
         prepared: crate::history_mode::pending_controls::PreparedContinuation,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         use crate::bound_dispatch::local_target::LocalResourceTarget;
         let argument = format!(
             "{}{}",
@@ -330,7 +332,7 @@ impl App {
         target: &crate::bound_dispatch::local_target::LocalResourceTarget,
         address: &tilo_actions::ActionAddress,
         arguments: &crate::bound_dispatch::ControlContinuationArguments,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         use crate::bound_dispatch::local_target::LocalResourceTarget;
         // The device knows the call by the address this window publishes it under: a component's
         // own resource by its alias.
@@ -355,12 +357,12 @@ impl App {
         &self.input.modifiers
     }
 
-    pub(crate) fn platform(&self) -> crate::platform::PlatformConventions {
+    pub(crate) fn platform(&self) -> tilo_ui_base::platform::PlatformConventions {
         self.input.platform
     }
 
     /// The focus order, kept inside the keyboard scope (the focused shell
-    /// window, [`crate::widget::Widget::scopes_keyboard_focus`])
+    /// window, [`tilo_ui_base::widget::Widget::scopes_keyboard_focus`])
     /// unless a trap owns the keyboard.
     pub(crate) fn keyboard_travel_order(&self) -> Vec<taffy::NodeId> {
         if self.accessibility.focus_trap_active {

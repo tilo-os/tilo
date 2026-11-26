@@ -850,10 +850,10 @@ fn a_published_catalogue_is_what_the_windows_palette_offers() {
     // The app's surface, as the broker and the window hold it, changed one step at a time.
     let mut held: Option<(
         Vec<tilo_actions::ActionDescriptor>,
-        ui::collaboration::SurfacePublication,
+        tilo_ui_base::collaboration::SurfacePublication,
     )> = None;
     let mut publish = |app: &mut local::End, offers: Vec<tilo_actions::ActionDescriptor>| {
-        let (delta, state) = ui::collaboration::SurfacePublication::next(
+        let (delta, state) = tilo_ui_base::collaboration::SurfacePublication::next(
             held.as_ref()
                 .map(|(descriptors, state)| (state, descriptors.as_slice())),
             &offers,
@@ -1139,7 +1139,7 @@ fn a_key_that_presses_a_control_says_where_the_control_stands() {
     }]);
     let button = rect_of(drawn_window(&mut harness).body.as_ref(), "archive")
         .expect("the button is laid out");
-    ui::press::note(DECLARED);
+    tilo_ui_base::press::note(DECLARED);
     press(&mut harness, &["command"], "Enter");
     assert_eq!(fired(&mut app).len(), 1, "the key pressed the button");
     assert_eq!(
@@ -1153,7 +1153,7 @@ fn a_key_that_presses_a_control_says_where_the_control_stands() {
     harness.relayout();
     let field =
         rect_of(drawn_window(&mut harness).body.as_ref(), "field").expect("the field is laid out");
-    ui::press::note(FOCUSED);
+    tilo_ui_base::press::note(FOCUSED);
     harness.key("Enter");
     assert_eq!(
         tilo_actions::remote::press_points::of(FOCUSED),
@@ -1176,7 +1176,7 @@ fn a_declared_shortcut_runs_the_action_through_its_button() {
         window.composed().is_some_and(|tree| shortcut_action_where(
             tree,
             None,
-            &ui::platform::Shortcut::from("Ctrl+Enter")
+            &tilo_ui_base::platform::Shortcut::from("Ctrl+Enter")
         )
         .is_some()),
         "the composed shell carries the declared shortcut: {:#?}",
@@ -1415,7 +1415,7 @@ fn palette_keys(window: &AppWindow, action: &str) -> Option<String> {
                 .or_else(|| find(&spec.children, action))
         })
     }
-    let shown = ui::widget::resources::PublishesResources::resources(
+    let shown = tilo_ui_base::widget::resources::PublishesResources::resources(
         window,
         &ui::automerge::AutoCommit::new(),
     );
@@ -1971,7 +1971,7 @@ fn told(app: &mut local::End) -> Vec<ToApp> {
 /// Run `test` with the clock at the day a capture shows (30 June 2026), so a day's fact reads the
 /// same on every run, not as "Overdue" once the day has gone by.
 fn at_capture_day<T>(test: impl FnOnce() -> T) -> T {
-    let at = ui::clock::capture_wall().expect("the capture day exists in the local zone");
+    let at = tilo_ui_base::clock::capture_wall().expect("the capture day exists in the local zone");
     ui::time::testing::with_wall(at, test)
 }
 
@@ -2018,7 +2018,7 @@ fn a_bound_control_shows_the_value_the_app_bound() {
         };
         // What the field is for, and the day the app bound as the day's own fact ("Due, Today"),
         // never as the "Add date" a field that holds no day offers.
-        let today = ui::clock::today();
+        let today = tilo_ui_base::clock::today();
         let bound = ui::widget::DateField::spoken(Some("Due"), Some(today), None);
         assert_ne!(
             bound,
@@ -2100,14 +2100,14 @@ fn a_picked_day_is_sent_as_the_day_the_field_now_holds() {
         ));
         let field = node_named(&harness, &day("2026-06-30"));
         harness
-            .perform_a11y_action(field, &ui::a11y::Action::Activate)
+            .perform_a11y_action(field, &tilo_ui_base::a11y::Action::Activate)
             .expect("the field opens its calendar");
         harness.relayout();
         let calendar = node_named(&harness, "Calendar");
         harness
             .perform_a11y_action(
                 calendar,
-                &ui::a11y::Action::SetValue("2026-07-01".to_owned()),
+                &tilo_ui_base::a11y::Action::SetValue("2026-07-01".to_owned()),
             )
             .expect("a day is picked");
         harness.relayout();
@@ -2167,7 +2167,7 @@ fn a_mark_or_a_turn_is_sent_as_the_state_the_control_now_holds() {
     ));
     let boxed = node_named(&harness, "Done");
     harness
-        .perform_a11y_action(boxed, &ui::a11y::Action::Activate)
+        .perform_a11y_action(boxed, &tilo_ui_base::a11y::Action::Activate)
         .expect("the box is chosen");
     harness.relayout();
     drawn_window(&mut harness).flush();
@@ -2189,7 +2189,7 @@ fn a_mark_or_a_turn_is_sent_as_the_state_the_control_now_holds() {
     ));
     let toggle = node_named(&harness, "Sync");
     harness
-        .perform_a11y_action(toggle, &ui::a11y::Action::Activate)
+        .perform_a11y_action(toggle, &tilo_ui_base::a11y::Action::Activate)
         .expect("the switch turns");
     harness.relayout();
     drawn_window(&mut harness).flush();
@@ -2383,7 +2383,7 @@ fn a_one_column_window_whose_body_holds_only_an_empty_state_opens_on_its_sidebar
     // The state says what to do: it offers the app's primary action, and pressing it runs it.
     let action = named_node(&harness, "New note");
     harness
-        .perform_a11y_action(action, &ui::a11y::Action::Activate)
+        .perform_a11y_action(action, &tilo_ui_base::a11y::Action::Activate)
         .expect("the state's action presses");
     drawn_window(&mut harness).flush();
     assert!(
@@ -3628,7 +3628,7 @@ fn an_ask_is_the_systems_prompt_and_its_choice_answers_the_app() {
     node_named(&harness, "Allow “Search”? requested by Ada");
     let always = node_named(&harness, "Always allow");
     harness
-        .perform_a11y_action(always, &ui::a11y::Action::Activate)
+        .perform_a11y_action(always, &tilo_ui_base::a11y::Action::Activate)
         .expect("the prompt offers to always allow");
     drawn_window(&mut harness).flush();
     let answers: Vec<Answer> = told(&mut app)
@@ -3764,15 +3764,15 @@ fn action_shell_declaring(kind: tilo_actions::ActionKind) -> Vec<ToUi> {
 #[test]
 fn an_editors_press_of_an_undoable_action_reaches_the_app() {
     let (mut app, mut harness) = drawn(&action_shell_declaring(tilo_actions::ActionKind::Undoable));
-    harness.set_permission_ctx(ui::permissions::PermissionContext::member(
-        &ui::permissions::MemberId::person("bo"),
-        ui::permissions::policy::Role::Editor,
+    harness.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::member(
+        &tilo_ui_base::permissions::MemberId::person("bo"),
+        tilo_ui_base::permissions::policy::Role::Editor,
     ));
     harness.relayout();
     let _ = sent(&mut app);
     let action = named_node(&harness, "New note");
     harness
-        .perform_a11y_action(action, &ui::a11y::Action::Activate)
+        .perform_a11y_action(action, &tilo_ui_base::a11y::Action::Activate)
         .expect("the button presses");
     drawn_window(&mut harness).flush();
     let told = sent(&mut app);
@@ -3787,21 +3787,21 @@ fn an_editors_press_of_an_undoable_action_reaches_the_app() {
 /// does when the person presses its control.
 #[derive(Default)]
 struct AskingPlayer {
-    ask: std::cell::RefCell<Option<ui::widget::PictureInPictureAsk>>,
+    ask: std::cell::RefCell<Option<tilo_ui_base::widget::PictureInPictureAsk>>,
 }
 
-impl ui::widget::Widget for AskingPlayer {
-    ui::provides!(dyn ui::widget::PictureInPictureProvider);
+impl tilo_ui_base::widget::Widget for AskingPlayer {
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::PictureInPictureProvider);
 
-    fn sync(&mut self, _: &ui::widget::AppModel, _: &ui::widget::ModelPath) {}
+    fn sync(&mut self, _: &tilo_ui_base::widget::AppModel, _: &tilo_ui_base::widget::ModelPath) {}
 
     fn build_layout(
         &mut self,
         taffy: &mut ui::taffy::TaffyTree<()>,
-        _: &ui::Theme,
-        _: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>,
+        _: &tilo_ui_base::Theme,
+        _: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
     ) -> ui::taffy::NodeId {
-        use ui::widget::TaffyTreeExt as _;
+        use tilo_ui_base::widget::TaffyTreeExt as _;
         taffy.leaf_node(ui::taffy::Style::default())
     }
 
@@ -3810,12 +3810,12 @@ impl ui::widget::Widget for AskingPlayer {
     }
 }
 
-impl ui::widget::PictureInPictureProvider for AskingPlayer {
+impl tilo_ui_base::widget::PictureInPictureProvider for AskingPlayer {
     fn wants_picture_in_picture(&self) -> bool {
         self.ask.borrow().is_some()
     }
 
-    fn take_picture_in_picture(&self) -> Option<ui::widget::PictureInPictureAsk> {
+    fn take_picture_in_picture(&self) -> Option<tilo_ui_base::widget::PictureInPictureAsk> {
         self.ask.borrow_mut().take()
     }
 }
@@ -3828,7 +3828,7 @@ fn a_players_picture_in_picture_request_becomes_a_floating_surface() {
     let region = ui::kurbo::Rect::new(24.0, 64.0, 744.0, 469.0);
     let aspect = region.width() / region.height();
     let asking = AskingPlayer::default();
-    *asking.ask.borrow_mut() = Some(ui::widget::PictureInPictureAsk {
+    *asking.ask.borrow_mut() = Some(tilo_ui_base::widget::PictureInPictureAsk {
         region,
         aspect,
         title: "Why every magnet you own is lying to you".to_owned(),
@@ -3953,18 +3953,18 @@ struct SoundingPlayer {
     audio: std::cell::RefCell<Vec<i16>>,
 }
 
-impl ui::widget::Widget for SoundingPlayer {
-    ui::provides!(dyn ui::widget::AudioTapProvider);
+impl tilo_ui_base::widget::Widget for SoundingPlayer {
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::AudioTapProvider);
 
-    fn sync(&mut self, _: &ui::widget::AppModel, _: &ui::widget::ModelPath) {}
+    fn sync(&mut self, _: &tilo_ui_base::widget::AppModel, _: &tilo_ui_base::widget::ModelPath) {}
 
     fn build_layout(
         &mut self,
         taffy: &mut ui::taffy::TaffyTree<()>,
-        _: &ui::Theme,
-        _: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn ui::widget::Widget>,
+        _: &tilo_ui_base::Theme,
+        _: &mut std::collections::HashMap<ui::taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
     ) -> ui::taffy::NodeId {
-        use ui::widget::TaffyTreeExt as _;
+        use tilo_ui_base::widget::TaffyTreeExt as _;
         taffy.leaf_node(ui::taffy::Style::default())
     }
 
@@ -3973,7 +3973,7 @@ impl ui::widget::Widget for SoundingPlayer {
     }
 }
 
-impl ui::widget::AudioTapProvider for SoundingPlayer {
+impl tilo_ui_base::widget::AudioTapProvider for SoundingPlayer {
     fn take_audio(&self) -> Vec<i16> {
         std::mem::take(&mut *self.audio.borrow_mut())
     }
@@ -4041,7 +4041,7 @@ fn a_notice_the_app_says_shows_in_its_bar_leaves_by_itself_and_its_undo_reaches_
         .expect("the bar tells assistive technology what it says");
     assert_eq!(
         heard.live,
-        Some(ui::a11y::Politeness::Polite),
+        Some(tilo_ui_base::a11y::Politeness::Polite),
         "a passing notice waits for a pause to be read"
     );
 
@@ -4367,7 +4367,7 @@ fn a_media_card_given_on_its_own_is_drawn_as_a_card() {
         Some("Hanna Berg, This device"),
         "the card says its meta lines"
     );
-    let column = ui::widget::MediaSize::Regular.extent(&ui::Theme::dark());
+    let column = ui::widget::MediaSize::Regular.extent(&tilo_ui_base::Theme::dark());
     assert!(
         (bounds.width() - column).abs() < 1.0,
         "a card on its own is a grid column wide, not the page's: {bounds:?}"

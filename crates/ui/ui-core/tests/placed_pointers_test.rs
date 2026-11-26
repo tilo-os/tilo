@@ -11,10 +11,10 @@
 
 use tilo_ui::State;
 use tilo_ui::headless::Driver;
-use tilo_ui::permissions::MemberId;
-use tilo_ui::presence::{PlacedPointer, PresenceCtx};
-use tilo_ui::theme::Theme;
-use tilo_ui::widget::Spacer;
+use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Spacer;
+use tilo_ui_base::{presence::PlacedPointer, presence::PresenceCtx};
 
 const SIZE: (u32, u32) = (420, 200);
 const PINK: (u8, u8, u8) = (0xee, 0x83, 0xaf);
@@ -91,18 +91,18 @@ fn pointers_outside_the_surface_or_taken_away_are_not_drawn() {
 /// A window showing Ada's caret, labelled with her name, at (100, 80).
 struct AdasCaret;
 
-impl tilo_ui::Widget for AdasCaret {
+impl tilo_ui_base::Widget for AdasCaret {
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
         _theme: &Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui::Widget>,
+        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::Widget>,
     ) -> taffy::NodeId {
-        use tilo_ui::widget::TaffyTreeExt;
+        use tilo_ui_base::widget::TaffyTreeExt;
         taffy.widget_leaf(taffy::Style::default(), node_map, self)
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -128,7 +128,7 @@ impl tilo_ui::Widget for AdasCaret {
 }
 
 /// The pointers as the frame shows them over Ada's caret, with hers at `at`.
-fn pointers_over_adas_caret(at: (f64, f64)) -> Vec<tilo_ui::presence::PeerCursor> {
+fn pointers_over_adas_caret(at: (f64, f64)) -> Vec<tilo_ui_base::presence::PeerCursor> {
     let mut harness =
         Driver::new_with_theme(State::new(), Box::new(AdasCaret), SIZE, Theme::dark());
     let presence = PresenceCtx::empty();

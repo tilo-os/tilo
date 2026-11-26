@@ -3,9 +3,9 @@
 //! needs only what changed: while typing that is the edited field and its caret, not the whole window's
 //! hundreds of nodes.
 use super::{InspectionNode, InspectionSnapshot};
-use crate::a11y::AccessNode;
 use serde::Serialize;
 use std::hash::{Hash, Hasher};
+use tilo_ui_base::a11y::AccessNode;
 
 /// How much of a tree a patch carries.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -344,7 +344,7 @@ fn inspection_own_eq(a: &InspectionNode, b: &InspectionNode) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::a11y::{AccessState, Role};
+    use tilo_ui_base::{a11y::AccessState, a11y::Role};
 
     fn item(key: u64, name: &str) -> AccessNode {
         AccessNode::new(Role::ListItem)

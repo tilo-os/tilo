@@ -1,5 +1,5 @@
 use super::*;
-use crate::widget::TaffyTreeExt;
+use tilo_ui_base::widget::TaffyTreeExt;
 use vello::kurbo::Rect;
 
 use std::cell::RefCell;
@@ -27,7 +27,7 @@ impl FsRoot {
     }
 }
 
-impl crate::widget::FullscreenProvider for FsRoot {
+impl tilo_ui_base::widget::FullscreenProvider for FsRoot {
     fn fullscreen_intent(&self) -> Option<bool> {
         self.want
     }
@@ -38,7 +38,7 @@ impl crate::widget::FullscreenProvider for FsRoot {
 }
 
 impl Widget for FsRoot {
-    crate::provides!(dyn crate::widget::FullscreenProvider);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::FullscreenProvider);
 
     fn build_layout(
         &mut self,

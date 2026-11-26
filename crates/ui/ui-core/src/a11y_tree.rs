@@ -9,8 +9,10 @@ use tilo_sort::CompactSort as _;
 use taffy::NodeId as TaffyNodeId;
 use vello::kurbo::Rect;
 
-use crate::a11y::{AccessNode, AccessState, Action, Role, SharedAccessNode};
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{
+    a11y::AccessNode, a11y::AccessState, a11y::Action, a11y::Role, a11y::SharedAccessNode,
+};
 
 #[cfg(test)]
 #[path = "a11y_tree/identity_tests.rs"]
@@ -43,14 +45,15 @@ use component_nodes::ComponentNodes;
 type ComponentSnapshot = crate::bound_dispatch::BoundResourceSnapshot;
 #[cfg(not(feature = "model"))]
 type ComponentSnapshot = std::convert::Infallible;
-use crate::a11y::SemanticId;
-use crate::a11y_walk::{
-    A11yVisitor, HostedByIndex, HostedWidget, Visit, walk, walk_synthetic, with_slot_words,
-};
 pub(crate) use component_nodes::component_resource;
-pub(crate) use node_identity::AdmittedNodeNames;
 use node_identity::WidgetNodeMap;
 use reading_order::ReadingOrder;
+use tilo_ui_base::a11y::SemanticId;
+pub(crate) use tilo_ui_base::widget::bound_nodes::AdmittedNodeNames;
+use tilo_ui_base::{
+    a11y_walk::A11yVisitor, a11y_walk::HostedByIndex, a11y_walk::HostedWidget, a11y_walk::Visit,
+    a11y_walk::walk, a11y_walk::walk_synthetic, a11y_walk::with_slot_words,
+};
 
 type NodeMap = HashMap<SemanticId, SemanticNode, rustc_hash::FxBuildHasher>;
 type RetainedMap = HashMap<SemanticId, RetainedSubtree, rustc_hash::FxBuildHasher>;
@@ -139,7 +142,7 @@ pub struct SemanticNode {
     /// Already i18n-resolved.
     pub name: Option<String>,
     /// The row's own title, the line its [`name`](Self::name) starts with, kept
-    /// apart from the rest of it ([`AccessNode::title`](crate::a11y::AccessNode::title)).
+    /// apart from the rest of it ([`AccessNode::title`](tilo_ui_base::a11y::AccessNode::title)).
     pub title: Option<String>,
     /// A field's contents, a slider's readout, etc.
     pub value: Option<String>,
@@ -160,7 +163,7 @@ pub struct SemanticNode {
     /// them ("3 of 5, level 2").
     pub place: SetPlace,
     /// The item of its app's collection this node shows
-    /// ([`AccessNode::item`](crate::a11y::AccessNode::item)).
+    /// ([`AccessNode::item`](tilo_ui_base::a11y::AccessNode::item)).
     pub item: Option<String>,
 }
 
@@ -189,7 +192,7 @@ impl SemanticNode {
     }
 
     /// Whether the node answers to `name`: it is named it, or it is a row
-    /// titled it ([`AccessNode::answers_to`](crate::a11y::AccessNode::answers_to)).
+    /// titled it ([`AccessNode::answers_to`](tilo_ui_base::a11y::AccessNode::answers_to)).
     pub fn answers_to(&self, name: &str) -> bool {
         self.name.as_deref() == Some(name) || self.title.as_deref() == Some(name)
     }
@@ -276,7 +279,7 @@ impl SemanticTree {
                 id: root.clone(),
                 durable_identity: true,
                 role: Role::Window,
-                name: Some(crate::i18n::widget_format("window-root-name", &[])),
+                name: Some(tilo_ui_base::i18n::widget_format("window-root-name", &[])),
                 title: None,
                 value: None,
                 description: None,
@@ -327,7 +330,7 @@ impl SemanticTree {
     /// receive no layout dispatch id. `focused` folds
     /// into each node's [`AccessState::focused`]. `resources` is the focused
     /// app's open-resource forest
-    /// ([`crate::widget::resources::PublishesResources::resources`]); each
+    /// ([`tilo_ui_base::widget::resources::PublishesResources::resources`]); each
     /// exported [`ActionSpec`] becomes an invokable
     /// affordance.
     pub fn refresh(
@@ -515,7 +518,7 @@ impl SemanticTree {
                 id: root_id.clone(),
                 durable_identity: true,
                 role: Role::Window,
-                name: Some(crate::i18n::widget_format("window-root-name", &[])),
+                name: Some(tilo_ui_base::i18n::widget_format("window-root-name", &[])),
                 title: None,
                 value: None,
                 description: None,
@@ -858,7 +861,7 @@ impl SemanticTree {
                 // The node's id as the URI component it is: the unreserved characters
                 // (`-`, `.`, `_`, `~`) stay as they are, so an address still reads as the
                 // control it names.
-                let encoded_node_id = crate::uri::encode_component(node.id.as_str());
+                let encoded_node_id = tilo_ui_base::uri::encode_component(node.id.as_str());
                 let mut resource =
                     ResourceSpec::new(format!("ui:{encoded_node_id}"), "tilo.ui.control", label);
                 for (action, verb) in verbs {
@@ -968,7 +971,9 @@ fn verbs(role: Role, s: &AccessState, actionable: bool) -> Vec<SemanticAction> {
             kind: SemanticActionKind::Verb(Action::ShowContextMenu),
         });
     }
-    if !s.disabled && (crate::a11y::activation_role(role) || (role == Role::Row && actionable)) {
+    if !s.disabled
+        && (tilo_ui_base::a11y::activation_role(role) || (role == Role::Row && actionable))
+    {
         out.push(SemanticAction {
             name: "activate".into(),
             label: "Activate".into(),
@@ -1052,6 +1057,11 @@ fn semantic_operation_kind(role: Role, action: &Action) -> OperationKind {
         | Action::Increment
         | Action::Decrement
         | Action::SetValue(_) => OperationKind::Effect,
+        #[expect(
+            clippy::unreachable,
+            reason = "the base marks it non_exhaustive for crates outside the toolkit, and every variant it has is matched above"
+        )]
+        other => unreachable!("an action no operation kind names: {other:?}"),
     }
 }
 
@@ -1071,8 +1081,8 @@ struct Build<'a, const BOUND: bool> {
     kept_overwritten: bool,
     #[cfg(any(test, feature = "test-support"))]
     compared: usize,
-    routes: crate::a11y_child_route::Routes,
-    synthetic_route: Option<crate::a11y_child_route::ChildRoute>,
+    routes: tilo_ui_base::a11y_child_route::Routes,
+    synthetic_route: Option<tilo_ui_base::a11y_child_route::ChildRoute>,
 }
 
 /// A widget's synthetic child as the widget handed it over: built this frame, or shared with the frame
@@ -1182,7 +1192,7 @@ impl<'a, const BOUND: bool> Build<'a, BOUND> {
             ambiguous_projection: false,
             ptr_to_taffy,
             focused,
-            routes: crate::a11y_child_route::Routes::default(),
+            routes: tilo_ui_base::a11y_child_route::Routes::default(),
             synthetic_route: None,
         }
     }
@@ -1300,7 +1310,7 @@ struct PendingWidget {
     /// Synthetic children shared with the frame that built them ([`Widget::accessibility_shared`]).
     shared: Vec<Arc<AccessNode>>,
     taffy_id: Option<TaffyNodeId>,
-    route: Option<crate::a11y_child_route::ChildRoute>,
+    route: Option<tilo_ui_base::a11y_child_route::ChildRoute>,
 }
 
 struct Level {
@@ -1386,7 +1396,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
         parent: &mut Level,
     ) {
         if !access.children.is_empty() {
-            access = crate::a11y::with_synthetic_bounds(access, w);
+            access = tilo_ui_base::a11y::with_synthetic_bounds(access, w);
         }
         let synthetic = std::mem::take(&mut access.children)
             .into_iter()
@@ -1437,7 +1447,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             bounds: Some(
                 access
                     .bounds
-                    .map_or_else(|| w.get_rect(), crate::a11y::AccessBounds::to_rect),
+                    .map_or_else(|| w.get_rect(), tilo_ui_base::a11y::AccessBounds::to_rect),
             ),
             actions,
             children,
@@ -1445,7 +1455,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
                 .or(route.as_ref().map(|(owner, _)| *owner))
                 .map(u64::from),
             semantic_target: match (&route, taffy_id) {
-                (Some((_, path)), None) => Some(crate::a11y_child_route::encode(
+                (Some((_, path)), None) => Some(tilo_ui_base::a11y_child_route::encode(
                     path,
                     access.action_target.as_deref(),
                 )),
@@ -1508,7 +1518,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
             },
             description: access.description.clone(),
             state: access.state,
-            bounds: access.bounds.map(crate::a11y::AccessBounds::to_rect),
+            bounds: access.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect),
             actions: if semantic_target.is_some() {
                 verbs_for(access)
             } else {
@@ -1520,7 +1530,7 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
                 .map(u64::from),
             semantic_target: match (&self.synthetic_route, owner) {
                 (Some((_, path)), None) => semantic_target
-                    .map(|target| crate::a11y_child_route::encode(path, Some(target))),
+                    .map(|target| tilo_ui_base::a11y_child_route::encode(path, Some(target))),
                 _ => semantic_target.map(str::to_owned),
             },
             place: SetPlace::of(access),
@@ -1534,11 +1544,12 @@ impl<const BOUND: bool> A11yVisitor for Build<'_, BOUND> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::Theme;
     use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
-    use crate::widget::{Button, Column, TextInput, Widget};
+    use crate::{widget::Button, widget::Column, widget::TextInput};
     use std::collections::HashMap;
     use taffy::TaffyTree;
+    use tilo_ui_base::theme::Theme;
+    use tilo_ui_base::widget::Widget;
 
     include!("a11y_tree/action_projection_tests.rs");
 
@@ -1646,7 +1657,7 @@ mod tests {
             }
 
             {
-                let label = crate::a11y::AccessNode::new(Role::Label);
+                let label = tilo_ui_base::a11y::AccessNode::new(Role::Label);
                 assert!(
                     verbs_for(&label)
                         .iter()
@@ -1656,7 +1667,7 @@ mod tests {
             }
 
             {
-                let row = crate::a11y::AccessNode::new(Role::ListItem)
+                let row = tilo_ui_base::a11y::AccessNode::new(Role::ListItem)
                     .with_state(AccessState::new().focusable(true).context_menu(true));
                 let action = verbs_for(&row)
                     .into_iter()
@@ -1706,7 +1717,7 @@ mod tests {
 
         phase a_table_row_affords_activation_and_its_menu;
         {
-            let mut row = crate::a11y::AccessNode::new(Role::Row)
+            let mut row = tilo_ui_base::a11y::AccessNode::new(Role::Row)
                 .with_name("Quarterly report.pdf")
                 .with_action_target("row:a:0")
                 .with_bounds(Rect::new(0.0, 0.0, 200.0, 24.0));
@@ -1728,7 +1739,7 @@ mod tests {
                 "a row the table opens a menu for announces that menu"
             );
 
-            let inert = crate::a11y::AccessNode::new(Role::Row).with_name("only a name");
+            let inert = tilo_ui_base::a11y::AccessNode::new(Role::Row).with_name("only a name");
             assert!(
                 verbs_for(&inert).iter().all(|verb| verb.name != "activate"),
                 "a row with nothing to reach is not offered an activation"
@@ -1742,8 +1753,8 @@ mod tests {
         phase controls_keyed_alike_under_one_parent_stay_two_nodes;
         {
             use crate::widget::Slider;
-            let first = crate::LocalState::new(0.2);
-            let second = crate::LocalState::new(0.7);
+            let first = tilo_ui_base::LocalState::new(0.2);
+            let second = tilo_ui_base::LocalState::new(0.7);
             let mut col = Column::new()
                 .push(Box::new(Button::new("same", "First")))
                 .push(Box::new(Button::new("same", "Second")))
@@ -1784,7 +1795,7 @@ mod tests {
         phase sliders_given_ids_are_keyed_by_them;
         {
             use crate::widget::Slider;
-            let level = crate::LocalState::new(0.5);
+            let level = tilo_ui_base::LocalState::new(0.5);
             let slider = Slider::from_state(&level).with_id("qs-volume");
             assert_eq!(
                 slider.accessibility().unwrap().semantic_key.as_deref(),

@@ -11,16 +11,16 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use crate::paint::with_alpha;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::chart_data::ChartItem;
 use crate::widget::chart_geometry::annulus;
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
+use tilo_ui_base::paint::with_alpha;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
 #[derive(Clone, Debug)]
 pub struct PolarAreaStyle {
@@ -601,8 +601,8 @@ mod tests {
 
         phase every_wedge_label_clears_the_text_floor_on_the_themes_side;
         {
-            use crate::a11y::{contrast_ratio, relative_luminance};
-            use crate::tokens::colors::{ON_FILL_MIN_CONTRAST, PRESENCE_LEN};
+            use tilo_ui_base::{a11y::contrast_ratio, a11y::relative_luminance};
+            use tilo_ui_base::{tokens::colors::ON_FILL_MIN_CONTRAST, tokens::colors::PRESENCE_LEN};
             let chart = PolarAreaChart::new(
                 (0..PRESENCE_LEN)
                     .map(|slot| ChartItem::new(format!("s{slot}"), format!("S{slot}"), 1.0))

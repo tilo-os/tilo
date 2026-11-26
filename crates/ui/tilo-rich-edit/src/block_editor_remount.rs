@@ -4,8 +4,8 @@ use taffy::style_helpers::length;
 use taffy::{Dimension, NodeId, Size, Style};
 
 use super::{BlockEditor, HandleMetrics, ImageAttachment};
-use ui::theme::Theme;
-use ui::widget::{Remount, StructureChange, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::Remount, widget::StructureChange, widget::Widget};
 
 impl BlockEditor {
     pub(super) fn change_of_its_own(&mut self) -> StructureChange {

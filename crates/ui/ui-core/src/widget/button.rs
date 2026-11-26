@@ -1,21 +1,21 @@
-use crate::component::Person;
-use crate::i18n::widget_text;
-use crate::num::f32_of_f64;
-use crate::paint::PaintCtx;
-#[cfg(feature = "model")]
-use crate::permissions::PermissionScope;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::colors::ON_FILL_MIN_CONTRAST;
-use crate::widget::ActionEmitter;
 use crate::widget::ControlSize;
 use crate::widget::Interaction;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
 use crate::widget::badge::{BadgeMetrics, CountBadge};
-use crate::widget::{AppModel, ModelPath, Tone};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::component::Person;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::paint::PaintCtx;
+#[cfg(feature = "model")]
+use tilo_ui_base::permissions::PermissionScope;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST;
+use tilo_ui_base::widget::ActionEmitter;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::Tone};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
@@ -43,7 +43,7 @@ pub struct Button {
     /// left unset when the label itself serves as the accessible name.
     accessible_name: Option<String>,
     /// What it says is news: a screen reader announces it without the person moving focus.
-    live: Option<crate::a11y::Politeness>,
+    live: Option<tilo_ui_base::a11y::Politeness>,
     /// Fluent key or plain string, shown by the host's central
     /// [`TooltipHost`](crate::widget::TooltipHost); on an icon-only button it is also the
     /// accessible name unless one was set.
@@ -62,7 +62,7 @@ pub struct Button {
     /// the person is, so the focus ring is kept for keyboard focus.
     pressed_into_focus: bool,
     /// Drawn instead of (icon-only) or before (icon + label) the text.
-    icon: Option<crate::icons::Icon>,
+    icon: Option<tilo_ui_base::icons::Icon>,
     /// A picture drawn in the icon's place (an icon-only button), with an optional badge pill: what
     /// an extension's toolbar action shows. The glyph in `icon` stays the fallback and the layout
     /// key.
@@ -84,7 +84,7 @@ pub struct Button {
     /// several equal answers, the one a press there gives.
     primary_on_hover: bool,
     toggled: Option<bool>,
-    shortcut: Option<crate::platform::Shortcut>,
+    shortcut: Option<tilo_ui_base::platform::Shortcut>,
     /// The width `measure` settled on, pinned onto the node so a stretching
     /// parent cannot widen an intrinsic button.
     measured_width: Option<f32>,
@@ -98,7 +98,7 @@ pub struct Button {
     #[cfg(feature = "model")]
     permission_scope: Option<PermissionScope>,
     enabled: bool,
-    enabled_binding: Option<crate::widget::binding::BoxedBinding<bool>>,
+    enabled_binding: Option<tilo_ui_base::widget::binding::BoxedBinding<bool>>,
     /// While it waits to open ([`Self::opening_at`]): the moment it opens, in seconds since 1970,
     /// and whether it is enabled then. Its face counts the time left as its detail.
     opening: Option<(i64, bool)>,
@@ -110,20 +110,20 @@ pub struct Button {
     /// starts here unless a control is marked [`Self::with_default_focus`].
     main_answer: bool,
     /// The last painted body, border and label; a move only translates it.
-    face: crate::widget::CachedPaint,
+    face: tilo_ui_base::widget::CachedPaint,
     dirty: bool,
     layout_dirty: bool,
     /// Whether the layout solver has ever placed it. A button only its host
     /// places ([`Self::apply_layout_external`]) has no node to measure.
     solver_placed: bool,
     i18n_revision: u64,
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     in_window_bar: bool,
     last_state: (bool, bool, bool, bool), // (hovered, pressed, focused, enabled)
     /// The theme roles the cached face was painted from, so a theme change
     /// that keeps the layout (dark to light, a new emphasis) repaints it.
     last_theme: Option<ThemeKey>,
-    motion: crate::part_paint::PartMotion,
+    motion: tilo_ui_base::part_paint::PartMotion,
     painted_hit: Option<vello::kurbo::BezPath>,
 }
 
@@ -148,7 +148,9 @@ fn theme_key(theme: &Theme) -> ThemeKey {
         colors.semantic.danger,
         colors.intent.accent_ink,
         theme.tokens.radii.control.to_bits(),
-        theme.painter(crate::tokens::SurfaceRole::Control).id(),
+        theme
+            .painter(tilo_ui_base::tokens::SurfaceRole::Control)
+            .id(),
     )
 }
 
@@ -156,12 +158,12 @@ impl Button {
     /// Box this widget in the SDK so thin apps reuse its shared implementation.
     /// This keeps the widget's vtable instantiation out of the app.
     #[must_use]
-    pub fn into_widget(self) -> Box<dyn crate::widget::Widget> {
+    pub fn into_widget(self) -> Box<dyn tilo_ui_base::widget::Widget> {
         Box::new(self)
     }
 
     fn focus_visible(&self) -> bool {
-        self.is_focused && !self.pressed_into_focus && crate::focus_visible::shown()
+        self.is_focused && !self.pressed_into_focus && tilo_ui_base::focus_visible::shown()
     }
 
     fn effectively_enabled(&self) -> bool {
@@ -215,16 +217,18 @@ impl Button {
             enabled: true,
             enabled_binding: None,
             opening: None,
-            face: crate::widget::CachedPaint::default(),
+            face: tilo_ui_base::widget::CachedPaint::default(),
             dirty: true,
             layout_dirty: false,
             solver_placed: false,
-            i18n_revision: crate::i18n::I18nManager::revision(),
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            i18n_revision: tilo_ui_base::i18n::I18nManager::revision(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             in_window_bar: false,
             last_state: (false, false, false, true),
             last_theme: None,
-            motion: crate::part_paint::PartMotion::new(crate::part_paint::States::REST),
+            motion: tilo_ui_base::part_paint::PartMotion::new(
+                tilo_ui_base::part_paint::States::REST,
+            ),
             painted_hit: None,
         }
     }
@@ -265,7 +269,7 @@ impl Button {
     /// With an empty label the icon is centred (icon-only button); with
     /// a label it sits to its left.
     #[must_use]
-    pub fn with_icon(mut self, icon: crate::icons::Icon) -> Self {
+    pub fn with_icon(mut self, icon: tilo_ui_base::icons::Icon) -> Self {
         self.icon = Some(icon);
         self
     }
@@ -292,11 +296,11 @@ impl Button {
         self.menu_group.as_deref()
     }
 
-    pub(crate) fn glyph(&self) -> Option<crate::icons::Icon> {
+    pub(crate) fn glyph(&self) -> Option<tilo_ui_base::icons::Icon> {
         self.icon
     }
 
-    pub(crate) fn declared_key(&self) -> Option<crate::platform::Shortcut> {
+    pub(crate) fn declared_key(&self) -> Option<tilo_ui_base::platform::Shortcut> {
         self.shortcut.clone()
     }
 
@@ -323,7 +327,7 @@ impl Button {
         self.with_faces_of(faces.into_iter().map(Person::named))
     }
 
-    /// Show who is here as their faces: each member's own ([`crate::widget::AvatarFace::of`]),
+    /// Show who is here as their faces: each member's own ([`tilo_ui_base::widget::AvatarFace::of`]),
     /// named for a reader.
     #[must_use]
     pub fn with_faces_of(mut self, faces: impl IntoIterator<Item = Person>) -> Self {
@@ -335,7 +339,7 @@ impl Button {
 
     /// Lead with one person's avatar before the label, so a chip names who it is about as well as
     /// what it is called, in the presence `hue` the workspace gives them
-    /// ([`PresenceCtx::hue_for`](crate::presence::PresenceCtx::hue_for)): the one they chose, never one
+    /// ([`PresenceCtx::hue_for`](tilo_ui_base::presence::PresenceCtx::hue_for)): the one they chose, never one
     /// derived here.
     #[must_use]
     pub fn with_avatar(mut self, who: Person) -> Self {
@@ -563,7 +567,7 @@ impl Button {
     /// Announce what it says without the person moving focus, when it changes: a polite wait for a
     /// pause, or assertive speech ([`AccessNode::live`]).
     #[must_use]
-    pub fn with_live(mut self, politeness: crate::a11y::Politeness) -> Self {
+    pub fn with_live(mut self, politeness: tilo_ui_base::a11y::Politeness) -> Self {
         self.live = Some(politeness);
         self
     }
@@ -578,7 +582,7 @@ impl Button {
     }
 
     fn observe_i18n_revision(&mut self) {
-        let revision = crate::i18n::I18nManager::revision();
+        let revision = tilo_ui_base::i18n::I18nManager::revision();
         if revision != self.i18n_revision {
             self.i18n_revision = revision;
             self.dirty = true;
@@ -605,7 +609,7 @@ impl Button {
         self.dirty = true;
     }
 
-    pub fn set_icon(&mut self, icon: crate::icons::Icon) {
+    pub fn set_icon(&mut self, icon: tilo_ui_base::icons::Icon) {
         if self.icon != Some(icon) {
             self.icon = Some(icon);
             self.dirty = true;
@@ -615,7 +619,7 @@ impl Button {
     /// An icon-only button: `icon` is what it shows, `label` what a reader hears and the tooltip
     /// says. A square of its [`ControlSize`]'s height, never under the minimum pointer target.
     #[track_caller]
-    pub fn icon_only(id: &str, icon: crate::icons::Icon, label: &str) -> Self {
+    pub fn icon_only(id: &str, icon: tilo_ui_base::icons::Icon, label: &str) -> Self {
         debug_assert!(
             !label.trim().is_empty(),
             "an icon-only button needs its accessible name: it is also its tooltip"
@@ -704,7 +708,7 @@ impl Button {
     }
 
     #[must_use]
-    pub fn shortcut_hint(mut self, shortcut: crate::platform::Shortcut) -> Self {
+    pub fn shortcut_hint(mut self, shortcut: tilo_ui_base::platform::Shortcut) -> Self {
         self.shortcut = Some(shortcut);
         self.dirty = true;
         self.layout_dirty = true;
@@ -725,8 +729,8 @@ impl Button {
     }
 
     #[must_use]
-    pub fn enabled_from(mut self, state: &crate::LocalState<bool>) -> Self {
-        let (enabled, binding) = super::binding::local(state);
+    pub fn enabled_from(mut self, state: &tilo_ui_base::LocalState<bool>) -> Self {
+        let (enabled, binding) = tilo_ui_base::widget::binding::local(state);
         self.enabled = enabled;
         self.enabled_binding = Some(binding);
         self
@@ -735,10 +739,10 @@ impl Button {
     #[must_use]
     pub fn enabled_while<S: Clone + 'static>(
         mut self,
-        state: &crate::LocalState<S>,
+        state: &tilo_ui_base::LocalState<S>,
         ready: impl Fn(&S) -> bool + 'static,
     ) -> Self {
-        let (enabled, binding) = super::binding::derived(state, ready);
+        let (enabled, binding) = tilo_ui_base::widget::binding::derived(state, ready);
         self.enabled = enabled;
         self.enabled_binding = Some(binding);
         self
@@ -768,7 +772,7 @@ impl Button {
             self.set_enabled(enabled);
         } else {
             let left = u64::try_from(at.saturating_sub(now)).unwrap_or(u64::MAX);
-            self.set_detail(Some(crate::format::timecode(left)));
+            self.set_detail(Some(tilo_ui_base::format::timecode(left)));
             self.set_enabled(false);
         }
         before != (self.enabled, self.detail.clone())
@@ -888,7 +892,7 @@ impl ButtonRole {
     }
 }
 
-crate::component::choice!(ButtonRole, "ButtonRole", {
+tilo_ui_base::choice!(ButtonRole, "ButtonRole", {
     Primary => "primary",
     Secondary => "secondary",
     Destructive => "destructive",
@@ -899,8 +903,11 @@ crate::component::choice!(ButtonRole, "ButtonRole", {
 
 /// Glyphs authored as one closed outline, so a toggle that is on draws them
 /// filled (a starred item, a pinned one).
-fn fills_when_on(icon: crate::icons::Icon) -> bool {
-    matches!(icon, crate::icons::Icon::Star | crate::icons::Icon::Pin)
+fn fills_when_on(icon: tilo_ui_base::icons::Icon) -> bool {
+    matches!(
+        icon,
+        tilo_ui_base::icons::Icon::Star | tilo_ui_base::icons::Icon::Pin
+    )
 }
 
 type FaceColors = (
@@ -948,7 +955,7 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: Interaction) -> Fa
             (colors.lift_on(colors.surfaces.content, 0.5), None, ink)
         } else {
             let rest = colors.surfaces.raised;
-            (rest, Some(crate::surface::edge_on(rest)), ink)
+            (rest, Some(tilo_ui_base::surface::edge_on(rest)), ink)
         };
     }
 
@@ -1012,7 +1019,7 @@ pub fn face_colors(theme: &Theme, role: ButtonRole, interact: Interaction) -> Fa
             let edge = colors
                 .palette
                 .high_contrast
-                .then(|| crate::chrome::panel_border(theme));
+                .then(|| tilo_ui_base::chrome::panel_border(theme));
             (fill, edge, ink)
         }
         ButtonRole::Key => {
@@ -1160,7 +1167,7 @@ impl FaceMetrics {
     fn of_role(size: ControlSize, role: ButtonRole, theme: &Theme) -> Self {
         let mut metrics = Self::of(size, theme);
         if role == ButtonRole::Key {
-            metrics.label_style = theme.text(crate::tokens::TextRole::Title);
+            metrics.label_style = theme.text(tilo_ui_base::tokens::TextRole::Title);
             metrics.icon = f64::from(metrics.label_style.size).round();
         }
         if role == ButtonRole::Bar {
@@ -1168,7 +1175,7 @@ impl FaceMetrics {
             metrics.height = f64::from(tokens.metrics.bar_control_height - tokens.spacing.s1);
             metrics.pad_x = f64::from(tokens.spacing.rhythm.related);
             metrics.icon = f64::from(tokens.metrics.icon_control);
-            metrics.label_style = theme.text(crate::tokens::TextRole::Label);
+            metrics.label_style = theme.text(tilo_ui_base::tokens::TextRole::Label);
         }
         metrics
     }
@@ -1219,7 +1226,7 @@ impl FaceSizer {
     pub(crate) fn intrinsic_width(
         &self,
         text: &mut TextRenderer,
-        icon: Option<crate::icons::Icon>,
+        icon: Option<tilo_ui_base::icons::Icon>,
         label: &str,
     ) -> f64 {
         FaceContent {
@@ -1250,7 +1257,7 @@ fn paint_corner_badge(ctx: &mut PaintCtx<'_>, rect: Rect, label: &str) {
 }
 
 struct FaceContent<'a> {
-    icon: Option<crate::icons::Icon>,
+    icon: Option<tilo_ui_base::icons::Icon>,
     /// Painted instead of `icon` on an icon-only face.
     image: Option<&'a vello::peniko::ImageData>,
     faces: &'a [Person],
@@ -1275,8 +1282,8 @@ impl FaceContent<'_> {
         if self.label.is_empty() && self.hint.is_none() && self.detail.is_none() {
             if !self.faces.is_empty() {
                 let pad = if self.flush { 0.0 } else { metrics.pad_x };
-                let group =
-                    crate::presence::FaceStack::in_face(height).group_width(self.faces.len());
+                let group = tilo_ui_base::presence::FaceStack::in_face(height)
+                    .group_width(self.faces.len());
                 return (group + 2.0 * pad).ceil();
             }
             return height;
@@ -1289,7 +1296,8 @@ impl FaceContent<'_> {
             width += metrics.icon + metrics.icon_gap;
         }
         if !self.faces.is_empty() {
-            width += crate::presence::FaceStack::in_face(height).group_width(self.faces.len())
+            width += tilo_ui_base::presence::FaceStack::in_face(height)
+                .group_width(self.faces.len())
                 + metrics.icon_gap;
         }
         if !self.label.is_empty() {
@@ -1317,21 +1325,21 @@ impl FaceContent<'_> {
     /// face counting the rest, on the bar's own ground so each face's ring separates
     /// it from the next.
     fn draw_faces(&self, ctx: &mut PaintCtx<'_>, left: f64, center_y: f64, side: f64) {
-        let stack = crate::presence::FaceStack::in_face(side);
+        let stack = tilo_ui_base::presence::FaceStack::in_face(side);
         let (shown, more) = stack.group(self.faces.len());
         let palette = &ctx.theme.tokens.colors.presence;
-        let faces: Vec<crate::presence::Face<'_>> = self
+        let faces: Vec<tilo_ui_base::presence::Face<'_>> = self
             .faces
             .iter()
             .take(shown)
-            .map(|who| crate::presence::Face::of(who, palette.hue(who.hue)))
+            .map(|who| tilo_ui_base::presence::Face::of(who, palette.hue(who.hue)))
             .collect();
         let width = stack.width_of(faces.len(), more);
         stack.paint(
             ctx,
             (left + width, center_y),
             (&faces, more),
-            crate::chrome::panel_ground(ctx.theme),
+            tilo_ui_base::chrome::panel_ground(ctx.theme),
         );
     }
 
@@ -1354,20 +1362,20 @@ impl FaceContent<'_> {
     fn draw_icon(
         &self,
         ctx: &mut PaintCtx<'_>,
-        icon: crate::icons::Icon,
+        icon: tilo_ui_base::icons::Icon,
         rect: Rect,
         ink: vello::peniko::Color,
     ) {
         if self.filled_icon {
             icon.draw_filled(ctx.scene, ctx.transform, rect, ink);
         } else {
-            crate::icons::draw_icon(
+            tilo_ui_base::icons::draw_icon(
                 ctx.scene,
                 ctx.transform,
                 rect,
                 icon,
                 ink,
-                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
         }
     }
@@ -1387,7 +1395,7 @@ impl FaceContent<'_> {
         let icon_px = metrics.icon.min(rect.height());
         if self.label.is_empty() {
             if !self.faces.is_empty() {
-                let width = crate::presence::FaceStack::in_face(rect.height())
+                let width = tilo_ui_base::presence::FaceStack::in_face(rect.height())
                     .group_width(self.faces.len());
                 self.draw_faces(
                     ctx,
@@ -1401,14 +1409,14 @@ impl FaceContent<'_> {
                 // One person's avatar alone (their own menu on a bar) at an avatar's own size.
                 let side = rect
                     .height()
-                    .min(crate::widget::AvatarSize::Regular.side(ctx.theme));
+                    .min(tilo_ui_base::widget::AvatarSize::Regular.side(ctx.theme));
                 let face = Rect::new(
                     rect.center().x - side / 2.0,
                     rect.center().y - side / 2.0,
                     rect.center().x + side / 2.0,
                     rect.center().y + side / 2.0,
                 );
-                crate::widget::AvatarFace::of(who).paint(ctx, face);
+                tilo_ui_base::widget::AvatarFace::of(who).paint(ctx, face);
                 return;
             }
             if let Some(image) = self.image {
@@ -1443,7 +1451,7 @@ impl FaceContent<'_> {
         } + if self.faces.is_empty() {
             0.0
         } else {
-            crate::presence::FaceStack::in_face(rect.height()).group_width(self.faces.len())
+            tilo_ui_base::presence::FaceStack::in_face(rect.height()).group_width(self.faces.len())
                 + metrics.icon_gap
         };
         let pad = if self.flush { 0.0 } else { metrics.pad_x };
@@ -1471,7 +1479,7 @@ impl FaceContent<'_> {
             if let Some(who) = self.avatar {
                 let iy = rect.center().y - avatar_px / 2.0;
                 let face = Rect::new(leading, iy, leading + avatar_px, iy + avatar_px);
-                crate::widget::AvatarFace::of(who).paint(ctx, face);
+                tilo_ui_base::widget::AvatarFace::of(who).paint(ctx, face);
             }
             if !self.faces.is_empty() {
                 self.draw_faces(ctx, leading, rect.center().y, rect.height());
@@ -1517,7 +1525,7 @@ impl FaceContent<'_> {
         if let Some(who) = self.avatar {
             let iy = rect.center().y - avatar_px / 2.0;
             let face = Rect::new(start_x, iy, start_x + avatar_px, iy + avatar_px);
-            crate::widget::AvatarFace::of(who).paint(ctx, face);
+            tilo_ui_base::widget::AvatarFace::of(who).paint(ctx, face);
         }
         if !self.faces.is_empty() {
             self.draw_faces(ctx, start_x, rect.center().y, rect.height());
@@ -1533,13 +1541,13 @@ impl FaceContent<'_> {
         if self.menu {
             let ix = label_x + f64::from(label_w) + hint_w + metrics.icon_gap;
             let iy = rect.center().y - icon_px / 2.0;
-            crate::icons::draw_icon(
+            tilo_ui_base::icons::draw_icon(
                 ctx.scene,
                 ctx.transform,
                 Rect::new(ix, iy, ix + icon_px, iy + icon_px),
-                crate::icons::Icon::ChevronDown,
+                tilo_ui_base::icons::Icon::ChevronDown,
                 ink,
-                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
         }
     }
@@ -1572,9 +1580,9 @@ fn hint_ink(
     }
 }
 
-fn shortcut_text(shortcut: &crate::platform::Shortcut) -> String {
-    shortcut.label(crate::platform::PlatformConventions::new(
-        crate::platform::Platform::current(),
+fn shortcut_text(shortcut: &tilo_ui_base::platform::Shortcut) -> String {
+    shortcut.label(tilo_ui_base::platform::PlatformConventions::new(
+        tilo_ui_base::platform::Platform::current(),
     ))
 }
 
@@ -1590,11 +1598,11 @@ struct FacePaint<'a> {
     interact: Interaction,
     content: FaceContent<'a>,
     metrics: &'a FaceMetrics,
-    moment: crate::part_paint::Moment,
+    moment: tilo_ui_base::part_paint::Moment,
 }
 
-fn container_states(interact: Interaction, on: bool) -> crate::part_paint::States {
-    use crate::part_paint::States;
+fn container_states(interact: Interaction, on: bool) -> tilo_ui_base::part_paint::States {
+    use tilo_ui_base::part_paint::States;
     States::REST
         .with(States::HOVERED, interact.hovered)
         .with(States::PRESSED, interact.pressed)
@@ -1621,22 +1629,22 @@ impl FacePaint<'_> {
         scene: &mut Scene,
         transform: Affine,
         theme: &Theme,
-    ) -> Option<crate::part_paint::Painted> {
-        let set = theme.painter(crate::tokens::SurfaceRole::Control);
+    ) -> Option<tilo_ui_base::part_paint::Painted> {
+        let set = theme.painter(tilo_ui_base::tokens::SurfaceRole::Control);
         let ((fill, edge, ink), _) = self.colors(theme);
-        crate::part_paint::paint_part(
+        tilo_ui_base::part_paint::paint_part(
             scene,
             transform,
             self.face_rect(),
             (
                 set,
-                crate::part_paint::Part::ButtonContainer,
-                crate::tokens::SurfaceRole::Control,
+                tilo_ui_base::part_paint::Part::ButtonContainer,
+                tilo_ui_base::tokens::SurfaceRole::Control,
             ),
             self.moment,
-            &crate::part_paint::part_tokens(
+            &tilo_ui_base::part_paint::part_tokens(
                 theme,
-                crate::tokens::SurfaceRole::Control,
+                tilo_ui_base::tokens::SurfaceRole::Control,
                 (fill, ink, edge.unwrap_or(vello::peniko::Color::TRANSPARENT)),
                 theme.tokens.colors.surfaces.content,
             ),
@@ -1675,13 +1683,17 @@ impl FacePaint<'_> {
         // A painted container draws its own edge; a border stands in for
         // the rest edge.
         let bordered = painted.is_some()
-            || crate::surface::control_face(ctx.scene, ctx.transform, &shape, fill, theme);
+            || tilo_ui_base::surface::control_face(ctx.scene, ctx.transform, &shape, fill, theme);
         // A button showing a choice (a day, a person, a case) is a field that opens a list: it
         // wears the edge a dropdown wears, so the choosers of one form read as one kind.
         let edge = if bordered {
             None
         } else if self.field && self.role == ButtonRole::Secondary {
-            edge.or_else(|| Some(crate::surface::edge_on(theme.tokens.colors.surfaces.raised)))
+            edge.or_else(|| {
+                Some(tilo_ui_base::surface::edge_on(
+                    theme.tokens.colors.surfaces.raised,
+                ))
+            })
         } else {
             edge
         };
@@ -1691,7 +1703,7 @@ impl FacePaint<'_> {
         // Rest edge and focus ring share one half-pixel-inset outline. A disabled face's edge
         // dims with the face under the one group alpha, so it reads as the same button,
         // disabled, rather than as an outlined button of another style.
-        let outline = crate::surface::edge_outline(face_rect, radius);
+        let outline = tilo_ui_base::surface::edge_outline(face_rect, radius);
         if disabled {
             if let Some(edge) = edge {
                 ctx.scene.stroke(
@@ -1728,8 +1740,8 @@ impl FacePaint<'_> {
             // toggle) would only make the face look larger: a line of the
             // ground both are made to stand out from parts the two.
             if fill.components[3] > 0.0
-                && crate::a11y::contrast_ratio(ring, fill)
-                    < crate::tokens::colors::NON_TEXT_MIN_CONTRAST
+                && tilo_ui_base::a11y::contrast_ratio(ring, fill)
+                    < tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST
             {
                 let gap = f64::from(theme.tokens.metrics.chrome_rule_px);
                 let inset = FOCUS_RING_WIDTH - 0.5 + gap / 2.0;
@@ -1766,13 +1778,13 @@ pub struct ButtonFace<'a> {
     rect: Rect,
     label: &'a str,
     tone: Option<Tone>,
-    icon: Option<crate::icons::Icon>,
+    icon: Option<tilo_ui_base::icons::Icon>,
     role: ButtonRole,
     confirms: bool,
     on: bool,
     interact: Interaction,
     control_size: ControlSize,
-    shortcut: Option<crate::platform::Shortcut>,
+    shortcut: Option<tilo_ui_base::platform::Shortcut>,
     detail: Option<&'a str>,
     accessible_name: Option<&'a str>,
 }
@@ -1795,7 +1807,7 @@ impl<'a> ButtonFace<'a> {
         }
     }
     /// An icon-only face; `name` is its accessible name.
-    pub fn icon_only(rect: Rect, icon: crate::icons::Icon, name: &'a str) -> Self {
+    pub fn icon_only(rect: Rect, icon: tilo_ui_base::icons::Icon, name: &'a str) -> Self {
         Self::new(rect, "")
             .icon(icon)
             .accessible_name(name)
@@ -1821,7 +1833,7 @@ impl<'a> ButtonFace<'a> {
         self
     }
     #[must_use]
-    pub fn icon(mut self, icon: crate::icons::Icon) -> Self {
+    pub fn icon(mut self, icon: tilo_ui_base::icons::Icon) -> Self {
         self.icon = Some(icon);
         self
     }
@@ -1831,7 +1843,7 @@ impl<'a> ButtonFace<'a> {
         self
     }
     #[must_use]
-    pub fn shortcut_hint(mut self, shortcut: crate::platform::Shortcut) -> Self {
+    pub fn shortcut_hint(mut self, shortcut: tilo_ui_base::platform::Shortcut) -> Self {
         self.shortcut = Some(shortcut);
         self
     }
@@ -1942,7 +1954,7 @@ impl<'a> ButtonFace<'a> {
     pub fn contains(&self, theme: &Theme, point: Point) -> bool {
         let metrics = FaceMetrics::of_role(self.control_size, self.role, theme);
         match self.painter(&metrics, "").painted_shape(theme) {
-            Some(shape) => crate::part_paint::hit_contains(&shape, point),
+            Some(shape) => tilo_ui_base::part_paint::hit_contains(&shape, point),
             None => self.hit_rect(theme).contains(point),
         }
     }
@@ -1969,13 +1981,16 @@ impl<'a> ButtonFace<'a> {
                 flush: false,
                 filled_icon: self.icon.is_some_and(|icon| {
                     icon.is_brand()
-                        || icon == crate::icons::Icon::HeartFilled
+                        || icon == tilo_ui_base::icons::Icon::HeartFilled
                         || (self.on && fills_when_on(icon))
                 }),
                 menu: false,
             },
             metrics,
-            moment: crate::part_paint::Moment::settled(container_states(self.interact, self.on)),
+            moment: tilo_ui_base::part_paint::Moment::settled(container_states(
+                self.interact,
+                self.on,
+            )),
         }
     }
 }
@@ -2030,7 +2045,7 @@ impl Button {
         metrics: &'b FaceMetrics,
         label: &'b str,
         hint: Option<String>,
-        moment: crate::part_paint::Moment,
+        moment: tilo_ui_base::part_paint::Moment,
     ) -> FacePaint<'b> {
         let interact = super::shown::interaction(Interaction {
             // A hover face is the pointer's answer, so a surface with none never paints one —
@@ -2069,7 +2084,7 @@ impl Button {
                 hint,
                 filled_icon: self.icon.is_some_and(|icon| {
                     icon.is_brand()
-                        || icon == crate::icons::Icon::HeartFilled
+                        || icon == tilo_ui_base::icons::Icon::HeartFilled
                         || (on && fills_when_on(icon))
                 }),
                 menu: self.opens_menu,
@@ -2139,7 +2154,9 @@ impl Button {
 
     fn takes(&self, point: Point) -> bool {
         match &self.painted_hit {
-            Some(hit) => crate::part_paint::hit_contains(hit, point - self.rect.origin().to_vec2()),
+            Some(hit) => {
+                tilo_ui_base::part_paint::hit_contains(hit, point - self.rect.origin().to_vec2())
+            }
             None => self.hit_rect().contains(point),
         }
     }
@@ -2200,16 +2217,16 @@ impl Button {
 }
 
 impl Widget for Button {
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::controls::ActionControls,
         #[cfg(feature = "model")]
-        dyn crate::widget::permission::PermissionGuarded,
-        dyn crate::presence::capability::PublishesPresence,
+        dyn tilo_ui_base::widget::permission::PermissionGuarded,
+        dyn tilo_ui_base::presence::capability::PublishesPresence,
     );
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         if self.interaction != environment {
             self.interaction = environment;
@@ -2232,7 +2249,7 @@ impl Widget for Button {
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         self.observe_i18n_revision();
         if let Some(binding) = &mut self.enabled_binding
-            && let crate::widget::binding::Pulled::Value(enabled) = binding.pull(state, path)
+            && let tilo_ui_base::widget::binding::Pulled::Value(enabled) = binding.pull(state, path)
         {
             match &mut self.opening {
                 Some((_, when_open)) => *when_open = enabled,
@@ -2369,7 +2386,7 @@ impl Widget for Button {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         // A button the solver places for the first time was measured as it stands: what it was
         // handed before (a label, a detail) is in that measure, and asks for no second solve.
         if !self.solver_placed {
@@ -2381,7 +2398,7 @@ impl Widget for Button {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2414,11 +2431,11 @@ impl Widget for Button {
         });
         let on = self.is_toggled();
         let now = crate::time::now();
-        let set = theme.painter(crate::tokens::SurfaceRole::Control);
+        let set = theme.painter(tilo_ui_base::tokens::SurfaceRole::Control);
         self.motion.go(
             container_states(interact, on),
-            (Some(set), crate::part_paint::Part::ButtonContainer),
-            crate::part_paint::Transition::None,
+            (Some(set), tilo_ui_base::part_paint::Part::ButtonContainer),
+            tilo_ui_base::part_paint::Transition::None,
             theme.reduce_motion,
             now,
         );
@@ -2427,9 +2444,9 @@ impl Widget for Button {
         // it applies none: a second layer would dim a disabled face twice.
         if !self.dirty && moment.settled && !self.face.is_empty() {
             self.face.append(out_scene, out_transform, self.rect);
-            crate::widget::draw_over(
+            tilo_ui_base::widget::draw_over(
                 self,
-                &mut crate::draw::DrawCtx::new(
+                &mut tilo_ui_base::draw::DrawCtx::new(
                     out_scene,
                     out_transform,
                     text_renderer,
@@ -2459,9 +2476,9 @@ impl Widget for Button {
             );
             self.painted_hit = None;
             self.face.append(out_scene, out_transform, self.rect);
-            crate::widget::draw_over(
+            tilo_ui_base::widget::draw_over(
                 self,
-                &mut crate::draw::DrawCtx::new(
+                &mut tilo_ui_base::draw::DrawCtx::new(
                     out_scene,
                     out_transform,
                     text_renderer,
@@ -2493,9 +2510,9 @@ impl Widget for Button {
         }
         self.painted_hit = hit.map(|hit| Affine::translate(-self.rect.origin().to_vec2()) * hit);
         self.face.append(out_scene, out_transform, self.rect);
-        crate::widget::draw_over(
+        tilo_ui_base::widget::draw_over(
             self,
-            &mut crate::draw::DrawCtx::new(
+            &mut tilo_ui_base::draw::DrawCtx::new(
                 out_scene,
                 out_transform,
                 text_renderer,
@@ -2508,7 +2525,7 @@ impl Widget for Button {
     fn needs_redraw(&self) -> bool {
         self.dirty
             || self.motion.moving(crate::time::now())
-            || self.i18n_revision != crate::i18n::I18nManager::revision()
+            || self.i18n_revision != tilo_ui_base::i18n::I18nManager::revision()
             || (
                 self.is_hovered,
                 self.shows_held(),
@@ -2533,7 +2550,7 @@ impl Widget for Button {
     fn is_layout_dirty(&self) -> bool {
         (!self.solver_placed && self.rect == Rect::ZERO)
             || self.layout_dirty
-            || self.i18n_revision != crate::i18n::I18nManager::revision()
+            || self.i18n_revision != tilo_ui_base::i18n::I18nManager::revision()
     }
 
     fn layout_needs_measure(&self) -> bool {
@@ -2542,7 +2559,8 @@ impl Widget for Button {
         // A button only its host places has no node for the solver to
         // measure: the host sizes it, however hidden or unplaced it is.
         self.solver_placed
-            && (self.layout_dirty || self.i18n_revision != crate::i18n::I18nManager::revision())
+            && (self.layout_dirty
+                || self.i18n_revision != tilo_ui_base::i18n::I18nManager::revision())
     }
 
     /// The solver measured the face it asked for, whether or not this frame
@@ -2552,10 +2570,10 @@ impl Widget for Button {
     }
 
     fn needs_idle_sync(&self) -> bool {
-        self.i18n_revision != crate::i18n::I18nManager::revision()
+        self.i18n_revision != tilo_ui_base::i18n::I18nManager::revision()
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if !self.enabled {
             return;
         }
@@ -2694,12 +2712,12 @@ impl Widget for Button {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         if !self.effectively_enabled() {
             return false;
         }
@@ -2712,8 +2730,8 @@ impl Widget for Button {
         }
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let label = localized_label(&self.label);
         let spoken = |text: &str| {
             let spoken = widget_text(text);
@@ -2735,7 +2753,7 @@ impl Widget for Button {
         } else {
             (self.label.as_str(), Some(label))
         };
-        let interface = name.is_some() && crate::i18n::I18nManager::has_message(key);
+        let interface = name.is_some() && tilo_ui_base::i18n::I18nManager::has_message(key);
         let role = if self.toggled.is_some() {
             Role::ToggleButton
         } else {
@@ -2784,22 +2802,22 @@ impl Widget for Button {
     }
 }
 
-impl crate::presence::capability::PublishesPresence for Button {
+impl tilo_ui_base::presence::capability::PublishesPresence for Button {
     fn presence_key(&self) -> Option<PresenceKey> {
         PresenceKey::widget(&self.presence_path)
     }
 }
 
 #[cfg(feature = "model")]
-impl crate::widget::permission::PermissionGuarded for Button {
+impl tilo_ui_base::widget::permission::PermissionGuarded for Button {
     fn permission_scope(&self) -> Option<PermissionScope> {
         self.permission_scope.clone()
     }
 }
 
-impl crate::widget::controls::ActionControls for Button {
-    crate::widget::controls::optional_emitter_controls!(ownership);
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+impl tilo_ui_base::widget::controls::ActionControls for Button {
+    tilo_ui_base::optional_emitter_controls!(ownership);
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         self.action
             .as_ref()
             .map(|action| vec![action.metadata(self.id.clone())])

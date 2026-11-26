@@ -8,8 +8,8 @@ use vello::kurbo::{Affine, Rect, Vec2};
 use vello::peniko::Color;
 
 use super::{Target, Toolbar, ToolbarItem};
-use crate::scroll_copy::{Piece, Showing, Since};
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{scroll_copy::Piece, scroll_copy::Showing, scroll_copy::Since};
 
 pub(super) type BarShown = Showing<BarLook>;
 
@@ -86,7 +86,7 @@ impl Toolbar {
         self.shown.note(Showing {
             scroll: Vec2::ZERO,
             clip: self.rect,
-            transform: crate::scroll_copy::on_screen(transform),
+            transform: tilo_ui_base::scroll_copy::on_screen(transform),
             look: BarLook {
                 rect: self.rect,
                 colors: [

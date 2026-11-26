@@ -114,7 +114,7 @@ impl ActivityTimeline {
         theme: &Theme,
     ) -> Option<(String, f64, ChipLead)> {
         is_bot_author(&entry.author).then(|| {
-            let label = crate::i18n::widget_format("author-bot-chip", &[]);
+            let label = tilo_ui_base::i18n::widget_format("author-bot-chip", &[]);
             let lead = ChipLead::None;
             let width =
                 crate::widget::ChipFace::intrinsic_width(&label, lead, false, text_renderer, theme);

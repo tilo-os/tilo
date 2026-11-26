@@ -3,8 +3,8 @@
 //! "fit to viewport" reset. Interaction state (zoom, pan, drag origin) lives on the widget
 //! directly; CRDT reflection is out of scope.
 
-use crate::num::f32_of_f64;
 use std::collections::HashMap;
+use tilo_ui_base::num::f32_of_f64;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
@@ -12,9 +12,9 @@ use vello::kurbo::{Affine, Point, Rect, Vec2};
 use vello::peniko::{self, BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 
-use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 const ZOOM_MIN: f32 = 0.1;
 const ZOOM_MAX: f32 = 10.0;
@@ -96,7 +96,7 @@ impl ImageViewport {
     }
 }
 
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "the pan-and-zoom surface `ui.ImageViewer` shows its picture in"
 )]
@@ -190,11 +190,11 @@ impl Widget for ImageViewer {
             flex_shrink: 1.0,
             ..Default::default()
         };
-        let style = crate::widget::layout::filling(style, 1.0);
+        let style = tilo_ui_base::widget::layout::filling(style, 1.0);
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
     /// It fills its slot from its style alone, and the picture's zoom and pan are drawn inside
     /// it: it asks for a layout only until it has one.
@@ -202,7 +202,7 @@ impl Widget for ImageViewer {
         self.rect == Rect::ZERO
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -216,7 +216,7 @@ impl Widget for ImageViewer {
         clippy::arithmetic_side_effects,
         reason = "kurbo::Vec2 arithmetic is f64 component-wise math; it never panics or overflows, unlike integer +/-/*"
     )]
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -289,19 +289,19 @@ impl Widget for ImageViewer {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
         "ImageViewer"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         Some(AccessNode::new(Role::Image))
     }
 }

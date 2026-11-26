@@ -1,8 +1,10 @@
 //! [`TimeField`] as a described component.
 
-use crate::component::{Bound, Component, Described, Event};
-use crate::widget::binding::derived;
 use crate::widget::date_field::time_in;
+use tilo_ui_base::widget::binding::derived;
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+};
 
 use super::TimeField;
 
@@ -14,10 +16,10 @@ use super::TimeField;
 pub struct TimeFieldProps {
     /// The moment, as a bound field holds it (`09:00`, or the ISO text of an instant), and
     /// where a picked time of day goes.
-    #[component(bind(ty = crate::component::Moment))]
+    #[component(bind(ty = tilo_ui_base::component::Moment))]
     pub value: Bound<String>,
     /// A time was picked or removed: carries the time of day, or nothing for a removed one.
-    #[component(event(value = crate::component::Moment))]
+    #[component(event(value = tilo_ui_base::component::Moment))]
     pub change: Event,
 }
 
@@ -43,8 +45,10 @@ fn reports(
         .then(|| change.clone().handler())
         .flatten();
     move |time| {
-        let said =
-            crate::component::Value::Text(crate::widget::date_field::with_time(&held.get(), time));
+        let said = tilo_ui_base::component::Value::Text(crate::widget::date_field::with_time(
+            &held.get(),
+            time,
+        ));
         bound.edited(said.clone());
         change.fire(Some(said));
         if let Some(run) = run.as_mut() {

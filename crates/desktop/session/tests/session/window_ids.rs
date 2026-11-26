@@ -39,7 +39,7 @@ fn device_salt_past_an_integer() -> u16 {
 /// answered rather than taken for the shell's first window.
 #[test]
 fn the_desktop_sends_a_window_whose_id_is_past_an_integer() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_minting_under(device_salt_past_an_integer());
     let _client = mapped(&mut session, "org.example.Editor");
     let tab = tab_of(&session, "org.example.Editor");

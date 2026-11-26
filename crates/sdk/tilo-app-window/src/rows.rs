@@ -12,8 +12,8 @@ use std::ops::Range;
 use std::rc::Rc;
 
 use tilo_render_protocol::patch::RowChange;
-use ui::collection_transition::ListModelChange;
-use ui::component::{RowSource, Source};
+use tilo_ui_base::collection_transition::ListModelChange;
+use tilo_ui_base::{component::RowSource, component::Source};
 
 use crate::adapter::{NodeSource, description_of};
 use crate::reconcile::Reconciler;
@@ -720,7 +720,7 @@ mod tests {
     /// list reads of the row leaves it out, and keeps the time of day it is due.
     #[test]
     fn a_row_under_the_heading_its_list_says_keeps_only_its_time() {
-        let today = ui::clock::today();
+        let today = tilo_ui_base::clock::today();
         let day = today.strftime("%Y-%m-%d").to_string();
         let mut rows = RemoteRows::new(
             Level::Root,
@@ -731,7 +731,7 @@ mod tests {
             Rc::default(),
         );
         let at_nine = {
-            let at = ui::clock::instant_of(jiff::civil::date(2026, 6, 30).at(9, 0, 0, 0))
+            let at = tilo_ui_base::clock::instant_of(jiff::civil::date(2026, 6, 30).at(9, 0, 0, 0))
                 .expect("nine in the morning exists");
             format!("{at:.0}")
         };
@@ -759,23 +759,23 @@ mod tests {
             .expect("the row is read");
             meta
         };
-        let said = |meta: Option<ui::component::Value>| match meta {
-            Some(ui::component::Value::Text(text)) => text,
+        let said = |meta: Option<tilo_ui_base::component::Value>| match meta {
+            Some(tilo_ui_base::component::Value::Text(text)) => text,
             other => panic!("the row states its day as words: {other:?}"),
         };
         assert_eq!(
             said(meta(&mut rows)),
-            ui::format::day_fact_today(
+            tilo_ui_base::format::day_fact_today(
                 today,
                 Some(jiff::civil::Time::new(9, 0, 0, 0).expect("nine"))
             )
             .text,
             "under no heading the row says the day it is due, with the time"
         );
-        rows.under(Some(ui::format::day_fact_today(today, None).text));
+        rows.under(Some(tilo_ui_base::format::day_fact_today(today, None).text));
         assert_eq!(
             said(meta(&mut rows)),
-            ui::format::time(jiff::civil::Time::new(9, 0, 0, 0).expect("nine")),
+            tilo_ui_base::format::time(jiff::civil::Time::new(9, 0, 0, 0).expect("nine")),
             "the heading says the day: the row keeps the time of day it is due"
         );
     }

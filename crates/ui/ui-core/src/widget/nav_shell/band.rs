@@ -10,7 +10,7 @@ use super::layout::plan_columns;
 use super::{
     Frame, Inputs, ManualContext, NavGeometry, NavShell, Part, WidgetLayoutError, measure,
 };
-use crate::widget::Element;
+use tilo_ui_base::widget::Element;
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct Band {
@@ -35,7 +35,7 @@ impl NavShell {
             return;
         }
         let theme = f.theme.clone();
-        crate::surface::separator(
+        tilo_ui_base::surface::separator(
             f.scene,
             f.transform,
             rect.x0,

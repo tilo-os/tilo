@@ -1,16 +1,16 @@
 //! `SignalMeter`: how strong a radio signal is (a Wi-Fi network, a mobile network), as four
 //! bars of rising height.
 
-use crate::i18n::widget_text;
 use std::collections::HashMap;
+use tilo_ui_base::i18n::widget_text;
 
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, RoundedRect};
 use vello::peniko::Fill;
 
-use crate::theme::Theme;
-use crate::widget::{TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[path = "signal_meter_component.rs"]
 mod component;
@@ -158,7 +158,7 @@ impl SignalMeter {
 }
 
 impl Widget for SignalMeter {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -175,9 +175,9 @@ impl Widget for SignalMeter {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -187,7 +187,7 @@ impl Widget for SignalMeter {
         SignalMeterFace::new(self.level).paint(scene, transform, theme, self.rect);
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 
     fn name(&self) -> &'static str {
         "SignalMeter"
@@ -197,8 +197,8 @@ impl Widget for SignalMeter {
         self.rect == Rect::ZERO
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         Some(
             AccessNode::new(Role::Image)
                 .with_name(self.level.name())

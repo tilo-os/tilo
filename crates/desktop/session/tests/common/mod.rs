@@ -526,7 +526,7 @@ pub fn canvas_word() -> String {
 fn shell_word(declared: &str, otherwise: &str) -> String {
     use tilolang_tilo::tilolang::messages;
     let shell = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../apps/tl/shell");
-    let locale = ui::i18n::I18nManager::current_locale();
+    let locale = tilo_ui_base::i18n::I18nManager::current_locale();
     let catalogue = std::fs::read_to_string(
         shell
             .join(messages::LOCALES_DIR)

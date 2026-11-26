@@ -187,7 +187,7 @@ impl Workspace for InviteWorkspace {
                 }
                 people.push(sheet::Person {
                     name: if member.name.is_empty() {
-                        ui::presence::unnamed_person_label()
+                        tilo_ui_base::presence::unnamed_person_label()
                     } else {
                         member.name
                     },

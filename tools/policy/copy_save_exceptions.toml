@@ -11,12 +11,12 @@
 # An entry that no longer matches anything fails the check.
 
 [[allow]]
-unit = "crates-ui-ui-core"
+unit = "crates-ui-ui-base"
 key = "save-status-saved"
 reason = "The save status surface's own one-time Saved, after a save the person saw stall or fail; the one place the word answers a save."
 
 [[allow]]
-unit = "crates-ui-ui-core"
+unit = "crates-ui-ui-base"
 key = "widget-screenshot-saved"
 reason = "A screenshot receipt says whether the person's capture went to a file or the clipboard, an outcome that is out of sight."
 

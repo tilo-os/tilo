@@ -5,7 +5,7 @@ use super::super::staging::{self, plan, probe};
 
 pub(super) struct Storage {
     pub facts: Option<probe::HostFacts>,
-    pub size: ui::LocalState<f64>,
+    pub size: tilo_ui_base::LocalState<f64>,
     pub plan: Option<Result<plan::Plan, plan::PlanError>>,
     pub bounds: Option<(u64, u64)>,
     pub details: bool,
@@ -18,7 +18,7 @@ impl Default for Storage {
         let selected = staging::DEFAULT_TARGET_BYTES >> 30;
         Self {
             facts: None,
-            size: ui::LocalState::new(selected as f64),
+            size: tilo_ui_base::LocalState::new(selected as f64),
             plan: None,
             bounds: None,
             details: false,

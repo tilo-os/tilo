@@ -1,5 +1,5 @@
 use super::*;
-use crate::a11y::{AccessNode, Role};
+use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 
 struct Node {
     name: &'static str,

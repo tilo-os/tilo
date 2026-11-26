@@ -9,21 +9,22 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::a11y::{AccessNode, AccessState, Politeness, Role};
-use crate::emoji_catalogue::{self, CatalogueGroup};
-use crate::num::{f32_of_f64, f64_of_usize, usize_of_f64};
-use crate::paint::PaintCtx;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Politeness, a11y::Role};
+use tilo_ui_base::{emoji_catalogue, emoji_catalogue::CatalogueGroup};
+use tilo_ui_base::{num::f32_of_f64, num::f64_of_usize, num::usize_of_f64};
 
-use crate::text_render::TextWeight;
-use crate::theme::Theme;
 use crate::time::{Duration, Instant};
-use crate::tokens::TextRole;
-use crate::widget::DrawChild;
-use crate::widget::{
-    ControlSize, EventCtx, ModelPath, ScrollRegion, SearchField, SegmentedFace, SegmentedStyle,
-    TaffyTreeExt, ToggleGroup, Widget,
+use crate::{
+    widget::ControlSize, widget::ScrollRegion, widget::SearchField, widget::SegmentedFace,
+    widget::SegmentedStyle, widget::ToggleGroup,
 };
-use crate::workspace_emoji::Adding;
+use tilo_ui_base::text_render::TextWeight;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::workspace_emoji::Adding;
+use tilo_ui_base::{widget::EventCtx, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
 
 /// Matches listed for a query at most.
 const SEARCH_RESULTS: usize = 96;
@@ -88,7 +89,7 @@ struct Geometry {
     content_height: f64,
 }
 
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "the panel of the `ui.EmojiPicker` button, which opens it in its popover"
 )]
@@ -173,7 +174,7 @@ impl EmojiPicker {
         picker
     }
 
-    /// A framed picker at a sheet's width ([`crate::tokens::Metrics::BASE`]'s
+    /// A framed picker at a sheet's width ([`tilo_ui_base::tokens::Metrics::BASE`]'s
     /// `panel_width_sheet`): the shell's own card over a whole session, where a wider grid
     /// shows more emoji before it scrolls.
     #[must_use]
@@ -348,7 +349,10 @@ impl EmojiPicker {
         self.search.set_query("");
         let _ = self.search.take_dirty();
         self.search
-            .set_placeholder(&crate::i18n::widget_format("emoji-chooser-search", &[]));
+            .set_placeholder(&tilo_ui_base::i18n::widget_format(
+                "emoji-chooser-search",
+                &[],
+            ));
         self.search.set_focused(true);
         self.group = 0;
         self.tones = None;
@@ -366,7 +370,7 @@ impl EmojiPicker {
     }
 
     fn sources() -> (u64, u64, u64) {
-        let source = crate::workspace_emoji::current();
+        let source = tilo_ui_base::workspace_emoji::current();
         (
             emoji_catalogue::CATALOGUE.generation(),
             source.as_ref().map_or(0, |source| source.revision()),
@@ -378,7 +382,7 @@ impl EmojiPicker {
     /// built: the new emoji selected, or why it was not added.
     fn show_added(&mut self) {
         let Some((_, Some(adding))) =
-            crate::workspace_emoji::current().map(|source| source.last_added())
+            tilo_ui_base::workspace_emoji::current().map(|source| source.last_added())
         else {
             return;
         };
@@ -399,7 +403,7 @@ impl EmojiPicker {
                 if let Some(at) = self.items.iter().position(|item| *item == Item::AddCustom) {
                     self.selected = at;
                 }
-                self.notice = Some(crate::i18n::widget_format(
+                self.notice = Some(tilo_ui_base::i18n::widget_format(
                     "emoji-chooser-add-failed",
                     &[("reason", reason.as_str().into())],
                 ));
@@ -413,12 +417,12 @@ impl EmojiPicker {
         let catalogue = emoji_catalogue::catalogue();
         self.groups = catalogue.groups();
         self.group = self.group.min(self.groups.len().saturating_sub(1));
-        let source = crate::workspace_emoji::current();
+        let source = tilo_ui_base::workspace_emoji::current();
         let workspace = source
             .as_ref()
             .map_or_else(std::rc::Rc::default, |source| source.emoji());
         let can_manage = source.as_ref().is_some_and(|source| source.can_manage());
-        let t = |key: &str| crate::i18n::widget_format(key, &[]);
+        let t = |key: &str| tilo_ui_base::i18n::widget_format(key, &[]);
         self.items.clear();
         self.sections.clear();
         let mut section = |items: &mut Vec<Item>, heading: Option<String>, more: Vec<Item>| {
@@ -771,7 +775,7 @@ impl EmojiPicker {
         match self.items.get(index).cloned() {
             Some(Item::Emoji(text)) => self.pick(text),
             Some(Item::AddCustom) => {
-                if let Some(source) = crate::workspace_emoji::current() {
+                if let Some(source) = tilo_ui_base::workspace_emoji::current() {
                     source.choose_and_add();
                 }
             }
@@ -904,7 +908,7 @@ impl EmojiPicker {
     fn item_name(&self, index: usize) -> String {
         match self.items.get(index) {
             Some(Item::Emoji(text)) => emoji_catalogue::emoji_name(text),
-            Some(Item::AddCustom) => crate::i18n::widget_format("emoji-chooser-add", &[]),
+            Some(Item::AddCustom) => tilo_ui_base::i18n::widget_format("emoji-chooser-add", &[]),
             None => String::new(),
         }
     }
@@ -934,7 +938,7 @@ impl EmojiPicker {
             Some(text) => tilo_actions::custom_emoji_name(text)
                 .map_or_else(|| emoji_catalogue::emoji_name(text), str::to_owned),
             None if self.items.get(self.selected) == Some(&Item::AddCustom) => {
-                crate::i18n::widget_format("emoji-chooser-add", &[])
+                tilo_ui_base::i18n::widget_format("emoji-chooser-add", &[])
             }
             None => return,
         };
@@ -953,7 +957,7 @@ impl EmojiPicker {
         let hints = if self.tones.is_none() && announced.is_some_and(Self::takes_tone) {
             vec![super::KeyHint::new(
                 ["Shift", "Enter"],
-                crate::i18n::widget_format("emoji-chooser-tone-hint", &[]),
+                tilo_ui_base::i18n::widget_format("emoji-chooser-tone-hint", &[]),
             )]
         } else {
             Vec::new()
@@ -1036,7 +1040,7 @@ impl EmojiPicker {
                 let lift = theme
                     .tokens
                     .colors
-                    .lift_on(crate::chrome::panel_ground(theme), 0.5);
+                    .lift_on(tilo_ui_base::chrome::panel_ground(theme), 0.5);
                 ctx.scene.fill(Fill::NonZero, content, lift, None, &shape);
             }
             let mut c = ctx.with_transform(content);
@@ -1045,9 +1049,11 @@ impl EmojiPicker {
                     let side = cell.height() * 0.66;
                     let glyph = Rect::from_center_size(cell.center(), (side, side));
                     if tilo_actions::custom_emoji_name(text).is_some()
-                        && crate::workspace_emoji::emoji()
+                        && tilo_ui_base::workspace_emoji::emoji()
                             .resolve(text)
-                            .and_then(|emoji| crate::workspace_emoji::emoji().image(&emoji.name))
+                            .and_then(|emoji| {
+                                tilo_ui_base::workspace_emoji::emoji().image(&emoji.name)
+                            })
                             .is_none()
                     {
                         let shown = c.text.elide_to_width_style(
@@ -1074,19 +1080,19 @@ impl EmojiPicker {
                 }
                 Item::AddCustom => {
                     let side = f64::from(theme.tokens.metrics.icon_sm) + 4.0;
-                    crate::icons::draw_icon(
+                    tilo_ui_base::icons::draw_icon(
                         c.scene,
                         content,
                         Rect::from_center_size(cell.center(), (side, side)),
-                        crate::icons::Icon::Plus,
+                        tilo_ui_base::icons::Icon::Plus,
                         theme.text_dim,
-                        crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                        tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
                     );
                 }
             }
         }
         if self.items.is_empty() {
-            let message = crate::i18n::widget_format("emoji-chooser-no-results", &[]);
+            let message = tilo_ui_base::i18n::widget_format("emoji-chooser-no-results", &[]);
             let (w, h) = ctx.text.measure_style(&message, None, &caption);
             let at = shown.center();
             ctx.text(
@@ -1108,7 +1114,7 @@ impl EmojiPicker {
         let theme = ctx.theme;
         let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.control);
-        crate::surface::shadow(
+        tilo_ui_base::surface::shadow(
             ctx.scene,
             ctx.transform,
             tones.rect,
@@ -1126,7 +1132,7 @@ impl EmojiPicker {
         ctx.scene.stroke(
             &vello::kurbo::Stroke::new(1.0),
             ctx.transform,
-            crate::surface::edge_on(colors.surfaces.raised),
+            tilo_ui_base::surface::edge_on(colors.surfaces.raised),
             None,
             &shape,
         );
@@ -1157,7 +1163,7 @@ impl EmojiPicker {
     }
 
     fn access_tree(&self) -> AccessNode {
-        let t = |key: &str| crate::i18n::widget_format(key, &[]);
+        let t = |key: &str| tilo_ui_base::i18n::widget_format(key, &[]);
         let mut dialog = AccessNode::new(Role::Dialog)
             .with_name(t("emoji-chooser-title"))
             .with_bounds(self.rect)
@@ -1430,7 +1436,7 @@ impl Widget for EmojiPicker {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.rect = rect;
             self.layout();
@@ -1447,7 +1453,7 @@ impl Widget for EmojiPicker {
         self.rect == Rect::ZERO
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1461,7 +1467,10 @@ impl Widget for EmojiPicker {
         if theme_changed {
             self.theme = theme.clone();
             self.search
-                .set_placeholder(&crate::i18n::widget_format("emoji-chooser-search", &[]));
+                .set_placeholder(&tilo_ui_base::i18n::widget_format(
+                    "emoji-chooser-search",
+                    &[],
+                ));
         }
         if Self::sources() != self.built_from {
             let selected = self.selected;
@@ -1477,7 +1486,7 @@ impl Widget for EmojiPicker {
         let local;
         let theme = if self.framed {
             crate::widget::floating_surface::paint(scene, transform, self.rect, theme);
-            local = theme.on_ground(crate::chrome::panel_ground(theme));
+            local = theme.on_ground(tilo_ui_base::chrome::panel_ground(theme));
             &local
         } else {
             theme
@@ -1628,7 +1637,7 @@ impl Widget for EmojiPicker {
                 || self.search.needs_animation_frame())
     }
 
-    fn update(&mut self, _state: &crate::widget::AppModel, _path: &ModelPath) -> bool {
+    fn update(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &ModelPath) -> bool {
         self.advance_scroll()
     }
 
@@ -1663,12 +1672,12 @@ impl Widget for EmojiPicker {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
+        if !matches!(action, tilo_ui_base::a11y::Action::Activate) {
             return false;
         }
         let Some(key) = key_path.last() else {
@@ -1679,7 +1688,7 @@ impl Widget for EmojiPicker {
                 Item::Emoji(text) => ("emoji", text.clone()),
                 Item::AddCustom => ("emoji-add", String::new()),
             };
-            crate::a11y::hash_key(&id) == *key
+            tilo_ui_base::a11y::hash_key(&id) == *key
         });
         if let Some(index) = item {
             self.selected = index;
@@ -1689,7 +1698,7 @@ impl Widget for EmojiPicker {
         if let Some(group) = self
             .groups
             .iter()
-            .position(|group| crate::a11y::hash_key(&("emoji-group", group.id)) == *key)
+            .position(|group| tilo_ui_base::a11y::hash_key(&("emoji-group", group.id)) == *key)
         {
             self.select_group(group);
             return true;

@@ -2,7 +2,7 @@
 //! inspected, or one way a row's text is cut, and says which windows it finds it in.
 
 use super::*;
-use ui::a11y::{AccessNode, Role};
+use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 
 fn node_of(widget: &str, id: &str, rect: [f64; 4]) -> InspectionNode {
     node(widget, id, rect, None)
@@ -83,12 +83,12 @@ tilo_test_env::scenario! {
     // The shell reports how it held each header row, and the check holds it to the rule there.
     {
         let mut shell = node("NavShell", "shell", [0.0, 0.0, 400.0, 300.0], None);
-        shell.layout = Some(ui::widget::LayoutInfo::Shell(ui::widget::ShellLayout {
-            sidebar: ui::widget::SidebarPosition::None,
-            beside: ui::widget::WidthClass::Compact,
-            needs: ui::widget::WidthClass::Compact,
+        shell.layout = Some(tilo_ui_base::widget::LayoutInfo::Shell(tilo_ui_base::widget::ShellLayout {
+            sidebar: tilo_ui_base::widget::SidebarPosition::None,
+            beside: tilo_ui_base::widget::WidthClass::Compact,
+            needs: tilo_ui_base::widget::WidthClass::Compact,
             beside_width: 400.0,
-            rows: ui::widget::HeaderRows {
+            rows: tilo_ui_base::widget::HeaderRows {
                 rows: [
                     None,
                     Some(header_row(120.0, 120.0, 0.0, false, false)),
@@ -285,7 +285,7 @@ fn header_row(
     free: f32,
     labelled: bool,
     primary: bool,
-) -> ui::widget::HeaderRowLayout {
+) -> tilo_ui_base::widget::HeaderRowLayout {
     row_that_opens(needs, has, free, true, labelled, primary)
 }
 
@@ -297,8 +297,8 @@ fn row_that_opens(
     opens: bool,
     labelled: bool,
     primary: bool,
-) -> ui::widget::HeaderRowLayout {
-    ui::widget::HeaderRowLayout {
+) -> tilo_ui_base::widget::HeaderRowLayout {
+    tilo_ui_base::widget::HeaderRowLayout {
         column: "content",
         title_needs: needs,
         title_has: has,
@@ -310,16 +310,16 @@ fn row_that_opens(
 }
 
 fn shell_layout(
-    sidebar: ui::widget::SidebarPosition,
-    beside: ui::widget::WidthClass,
+    sidebar: tilo_ui_base::widget::SidebarPosition,
+    beside: tilo_ui_base::widget::WidthClass,
     width: f32,
-) -> ui::widget::ShellLayout {
-    ui::widget::ShellLayout {
+) -> tilo_ui_base::widget::ShellLayout {
+    tilo_ui_base::widget::ShellLayout {
         sidebar,
         beside,
-        needs: ui::widget::WidthClass::Medium,
+        needs: tilo_ui_base::widget::WidthClass::Medium,
         beside_width: width,
-        rows: ui::widget::HeaderRows { rows: [None; 4] },
+        rows: tilo_ui_base::widget::HeaderRows { rows: [None; 4] },
     }
 }
 
@@ -330,11 +330,11 @@ tilo_test_env::scenario! {
     // A sidebar stands beside content of the window's own: a pane narrower than a column is a phone's
     // screen, so the sidebar folds behind the bar's toggle there instead.
     {
-        use ui::widget::SidebarPosition;
-        use ui::widget::WidthClass;
+        use tilo_ui_base::widget::SidebarPosition;
+        use tilo_ui_base::widget::WidthClass;
         let with = |sidebar, beside, width| {
             let mut shell = node("NavShell", "shell", [0.0, 0.0, 616.0, 700.0], None);
-            shell.layout = Some(ui::widget::LayoutInfo::Shell(shell_layout(
+            shell.layout = Some(tilo_ui_base::widget::LayoutInfo::Shell(shell_layout(
                 sidebar, beside, width,
             )));
             inspect(&shell, (616, 700), None, 1.0)
@@ -354,7 +354,7 @@ tilo_test_env::scenario! {
         let mut phone_pane = node("NavShell", "shell", [0.0, 0.0, 616.0, 700.0], None);
         let mut layout = shell_layout(SidebarPosition::Docked, WidthClass::Compact, 336.0);
         layout.needs = WidthClass::Compact;
-        phone_pane.layout = Some(ui::widget::LayoutInfo::Shell(layout));
+        phone_pane.layout = Some(tilo_ui_base::widget::LayoutInfo::Shell(layout));
         assert!(
             inspect(&phone_pane, (616, 700), None, 1.0)
                 .iter()
@@ -413,8 +413,8 @@ tilo_test_env::scenario! {
                     })
                     .collect(),
             );
-            scrolling.layout = Some(ui::widget::LayoutInfo::Scroll(ui::widget::ScrollLayout {
-                direction: ui::widget::ScrollDirection::Vertical,
+            scrolling.layout = Some(tilo_ui_base::widget::LayoutInfo::Scroll(tilo_ui_base::widget::ScrollLayout {
+                direction: tilo_ui_base::widget::ScrollDirection::Vertical,
             }));
             stack_node("window", [0.0, 0.0, 400.0, 300.0], vec![scrolling])
         };
@@ -537,8 +537,8 @@ tilo_test_env::scenario! {
     {
         let scrolled = |content: InspectionNode| {
             let mut page = stack_node("page", [0.0, 0.0, 400.0, 300.0], vec![content]);
-            page.layout = Some(ui::widget::LayoutInfo::Scroll(ui::widget::ScrollLayout {
-                direction: ui::widget::ScrollDirection::Vertical,
+            page.layout = Some(tilo_ui_base::widget::LayoutInfo::Scroll(tilo_ui_base::widget::ScrollLayout {
+                direction: tilo_ui_base::widget::ScrollDirection::Vertical,
             }));
             stack_node("window", [0.0, 0.0, 400.0, 300.0], vec![page])
         };
@@ -580,7 +580,7 @@ tilo_test_env::scenario! {
     // A place on a canvas past its viewport is reached by panning, so it is no finding; the same place
     // in a region of a plain column reaches past it, and is caught.
     {
-        use ui::widget::{LayoutInfo, ManualLayout, ScrollDirection, ScrollLayout};
+        use tilo_ui_base::{widget::LayoutInfo, widget::ManualLayout, widget::ScrollDirection, widget::ScrollLayout};
         let found = |outer: Option<LayoutInfo>| {
             let mut region = node("Manual", "region", [0.0, 0.0, 320.0, 300.0], None);
             region.layout = Some(LayoutInfo::Manual(ManualLayout {
@@ -859,7 +859,7 @@ tilo_test_env::scenario! {
     // A group heading takes one band over its first row, and a finger's target where the window is
     // held in the hand — never a space or padding of its own between the heading and the row.
     {
-        let theme = ui::Theme::dark();
+        let theme = tilo_ui_base::Theme::dark();
         let band = band_height(&theme);
         let with = |band: f64, row_top: f64| {
             let mut list = node_of("DescribedList", "list", [0.0, 0.0, 400.0, 600.0]);
@@ -904,13 +904,13 @@ tilo_test_env::scenario! {
     // row where the list leaves that heading out — stands on the column's content gutter, where a
     // page's first block stands: one closer to the box over the list hugs it.
     {
-        let theme = ui::Theme::dark();
-        let inset = ui::chrome::column_gutter(&theme);
+        let theme = tilo_ui_base::Theme::dark();
+        let inset = tilo_ui_base::chrome::column_gutter(&theme);
         let list = |heads_rows: bool, lead: f64| {
             let mut list = node_of("VirtualList", "list", [100.0, 40.0, 400.0, 600.0]);
-            list.layout = Some(ui::widget::LayoutInfo::List(ui::widget::ListLayout {
+            list.layout = Some(tilo_ui_base::widget::LayoutInfo::List(tilo_ui_base::widget::ListLayout {
                 heads_rows,
-                lead: ui::num::f32_of_f64(lead),
+                lead: tilo_ui_base::num::f32_of_f64(lead),
                 pill: None,
             }));
             let mut access = AccessNode::new(Role::List);
@@ -990,7 +990,7 @@ tilo_test_env::scenario! {
             title
         };
         let tag = |at: [f64; 4], index: usize| {
-            let mut tag = node_of(ui::presence::TAG_WIDGET, "presence-tag-agent:helper", at);
+            let mut tag = node_of(tilo_ui_base::presence::TAG_WIDGET, "presence-tag-agent:helper", at);
             tag.path = format!("presence-tag-agent:helper-{index}");
             tag
         };
@@ -2415,9 +2415,9 @@ tilo_test_env::scenario! {
 /// it; text that keeps its words whole (source code's soft wrap) is clipped, and caught.
 #[test]
 fn text_that_cannot_break_a_word_wider_than_its_column_is_caught() {
-    use ui::widget::Length;
+    use tilo_ui_base::widget::Length;
     use ui::widget::arrange::{Part, Stack};
-    let clipped = |mode: ui::text_render::TextWrapMode| {
+    let clipped = |mode: tilo_ui_base::text_render::TextWrapMode| {
         let text = ui::widget::Text::new("Donaudampfschifffahrtsgesellschaft").with_wrap_mode(mode);
         let mut column = Part::new(Box::new(Stack::stack().push(Box::new(text))));
         column.fit.width.max = Some(Length::Rem(6.0));
@@ -2425,13 +2425,16 @@ fn text_that_cannot_break_a_word_wider_than_its_column_is_caught() {
             ui::State::new(),
             Stack::stack().push_part(column),
             (320, 200),
-            ui::Theme::light(),
+            tilo_ui_base::Theme::light(),
         );
-        let mut renderer = ui::TextRenderer::new();
+        let mut renderer = tilo_ui_base::TextRenderer::new();
         clipped_text(h.root_widget_mut(), &mut renderer, (320, 200)).len()
     };
-    assert_eq!(clipped(ui::text_render::TextWrapMode::Wrap), 0);
-    assert_eq!(clipped(ui::text_render::TextWrapMode::Indented), 1);
+    assert_eq!(clipped(tilo_ui_base::text_render::TextWrapMode::Wrap), 0);
+    assert_eq!(
+        clipped(tilo_ui_base::text_render::TextWrapMode::Indented),
+        1
+    );
 }
 
 /// A line given less room than its text needs: its last rows are laid out and painted nowhere,
@@ -2449,9 +2452,9 @@ fn a_line_with_less_room_than_its_text_needs_is_caught() {
                 .with_height(height)
                 .with_child(Box::new(line)),
             (320, 200),
-            ui::Theme::light(),
+            tilo_ui_base::Theme::light(),
         );
-        let mut renderer = ui::TextRenderer::new();
+        let mut renderer = tilo_ui_base::TextRenderer::new();
         clipped_text(h.root_widget_mut(), &mut renderer, (320, 200)).len()
     };
     assert_eq!(cut(17.5), 1, "one row of a two-row sentence is cut");
@@ -2725,7 +2728,7 @@ tilo_test_env::scenario! {
     // has the room: on a phone's screen it starts on the gutter, and a section set a control's
     // width in is what a person sees the page lose on every line.
     {
-        let theme = ui::Theme::dark();
+        let theme = tilo_ui_base::Theme::dark();
         let page = |width: f64, section_x: f64, section_width: f64| {
             let mut page = node_of("Page", "page", [0.0, 56.0, width, 700.0]);
             let mut stack = node_of("Stack", "blocks", [24.0, 80.0, width - 48.0, 600.0]);
@@ -2737,7 +2740,7 @@ tilo_test_env::scenario! {
             page.children.push(stack);
             page
         };
-        let lead = 32.0 + f64::from(theme.tokens.spacing.rhythm.get(ui::tokens::Rhythm::Related));
+        let lead = 32.0 + f64::from(theme.tokens.spacing.rhythm.get(tilo_ui_base::tokens::Rhythm::Related));
         let phone = indented_bodies(&page(390.0, 24.0 + lead, 302.0), &theme, None);
         assert_eq!(phone.len(), 1, "{phone:?}");
         assert_eq!(phone[0].kind, Kind::IndentedBody);
@@ -2809,7 +2812,7 @@ fn grouped_list_of(title: &str, count: u32, heading: &str, rows: u32, done: u32)
     head.name = Some(heading.to_owned());
     head.value = Some(count.to_string());
     head.action_target = Some(format!("group:{heading}"));
-    head.bounds = Some(ui::a11y::AccessBounds {
+    head.bounds = Some(tilo_ui_base::a11y::AccessBounds {
         x0: 0.0,
         y0: 48.0,
         x1: 400.0,
@@ -2822,7 +2825,7 @@ fn grouped_list_of(title: &str, count: u32, heading: &str, rows: u32, done: u32)
             item.state.checked = Some(true);
         }
         let top = 68.0 + f64::from(row) * 40.0;
-        item.bounds = Some(ui::a11y::AccessBounds {
+        item.bounds = Some(tilo_ui_base::a11y::AccessBounds {
             x0: 0.0,
             y0: top,
             x1: 400.0,
@@ -2888,11 +2891,13 @@ fn day_fact_card(heading: Option<&str>, fact: &str) -> InspectionNode {
 fn a_pill_floating_over_a_list_is_caught_when_it_cuts_its_words() {
     let pill = |needs: f32, has: f32| {
         let mut list = node_of("VirtualList", "transcript", [0.0, 40.0, 320.0, 500.0]);
-        list.layout = Some(ui::widget::LayoutInfo::List(ui::widget::ListLayout {
-            heads_rows: false,
-            lead: 8.0,
-            pill: Some(ui::widget::ListPillLayout { needs, has }),
-        }));
+        list.layout = Some(tilo_ui_base::widget::LayoutInfo::List(
+            tilo_ui_base::widget::ListLayout {
+                heads_rows: false,
+                lead: 8.0,
+                pill: Some(tilo_ui_base::widget::ListPillLayout { needs, has }),
+            },
+        ));
         list
     };
     let clipped = |root: &InspectionNode| {

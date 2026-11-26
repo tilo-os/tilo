@@ -136,7 +136,7 @@ fn drive() {
     // Who sits here, as the binary reads it before it builds anything.
     tilo_session::identity::install();
     // The font catalog every renderer sets text in, built on a thread as the binary builds it.
-    let fonts = ui::warmup::spawn_warmup();
+    let fonts = tilo_ui_base::warmup::spawn_warmup();
     // The desktop services run beside a session in no bus at all: nothing here reaches the caller's
     // session bus, and an arrival is pushed into the daemon's handle the way the bus would hand it
     // over.
@@ -209,7 +209,7 @@ fn drive() {
 
     // Who sits at this device, as the workspace sheet's people rows and the apps naming an author
     // ask it.
-    let _ = ui::local_identity::load();
+    let _ = tilo_ui_base::local_identity::load();
     // Which identity each workspace presents, as every publish and frame asks it.
     if let Ok(store) = tilo_identity::store::IdentityRegistryStore::from_env() {
         let _ = store.load_reconciled_cached();

@@ -47,11 +47,11 @@ fn the_retained_banner_holds_its_buttons_and_dismisses_through_its_control() {
         d.native_app_audit()
     );
 
-    d.perform_named("offline.retry", &crate::a11y::Action::Activate)
+    d.perform_named("offline.retry", &tilo_ui_base::a11y::Action::Activate)
         .expect("the action is addressable");
     assert_eq!(retried.get(), 1);
 
-    d.perform_named("offline.dismiss", &crate::a11y::Action::Activate)
+    d.perform_named("offline.dismiss", &tilo_ui_base::a11y::Action::Activate)
         .expect("the dismiss control is addressable");
     d.relayout();
     assert_eq!(dismissed.get(), 1, "on_dismiss runs once");
@@ -69,8 +69,8 @@ fn the_retained_banner_holds_its_buttons_and_dismisses_through_its_control() {
 #[test]
 fn a_state_bound_banner_collapses_while_absent() {
     // Where it rests: the motion on the way is its own test.
-    let _settled = crate::motion::testing::settled();
-    let state = crate::LocalState::new(None::<BannerNotice>);
+    let _settled = tilo_ui_base::motion::testing::settled();
+    let state = tilo_ui_base::LocalState::new(None::<BannerNotice>);
     let root = Column::new()
         .push(Box::new(Banner::from_state(&state).with_id("sync")))
         .push(Box::new(crate::widget::Text::new("Below").with_id("below")));
@@ -91,19 +91,22 @@ fn a_state_bound_banner_collapses_while_absent() {
 }
 
 /// The first child of the driver's column, as it moves.
-fn band(d: &Driver) -> Option<crate::widget::Disclosing> {
+fn band(d: &Driver) -> Option<tilo_ui_base::widget::Disclosing> {
     d.root_widget().children()[0].disclosing()
 }
 
 /// A band's full and drawn height.
-fn band_heights(band: Option<crate::widget::Disclosing>) -> (f64, f64) {
+fn band_heights(band: Option<tilo_ui_base::widget::Disclosing>) -> (f64, f64) {
     match band {
-        Some(crate::widget::Disclosing::Band { extent, drawn }) => (extent, drawn),
+        Some(tilo_ui_base::widget::Disclosing::Band { extent, drawn }) => (extent, drawn),
         other => panic!("a banner on its way is a band, not {other:?}"),
     }
 }
 
-fn sync_banner(state: &crate::LocalState<Option<BannerNotice>>, dismissible: bool) -> Banner {
+fn sync_banner(
+    state: &tilo_ui_base::LocalState<Option<BannerNotice>>,
+    dismissible: bool,
+) -> Banner {
     let banner = Banner::from_state(state).with_id("sync");
     if dismissible {
         banner.dismissible()
@@ -112,7 +115,10 @@ fn sync_banner(state: &crate::LocalState<Option<BannerNotice>>, dismissible: boo
     }
 }
 
-fn sync_column(state: &crate::LocalState<Option<BannerNotice>>, dismissible: bool) -> Column {
+fn sync_column(
+    state: &tilo_ui_base::LocalState<Option<BannerNotice>>,
+    dismissible: bool,
+) -> Column {
     Column::new()
         .push(Box::new(sync_banner(state, dismissible)))
         .push(Box::new(crate::widget::Text::new("Below").with_id("below")))
@@ -124,12 +130,12 @@ fn sync_failed() -> BannerNotice {
 
 #[test]
 fn an_arriving_banner_discloses_over_what_follows_laid_out_where_it_stood() {
-    let state = crate::LocalState::new(None::<BannerNotice>);
+    let state = tilo_ui_base::LocalState::new(None::<BannerNotice>);
     let mut d = driver(Box::new(sync_column(&state, false)));
     let empty_y = d.targets()["below"].y0;
     // Nobody did anything: the window went offline. The frame's instant is
     // held, so the test reads the motion where it starts.
-    let frame = crate::motion::pin_frame();
+    let frame = tilo_ui_base::motion::pin_frame();
     state.set(Some(sync_failed()));
     d.relayout();
     d.relayout();
@@ -148,7 +154,7 @@ fn an_arriving_banner_discloses_over_what_follows_laid_out_where_it_stood() {
     drop(frame);
 
     // At rest the layout takes the banner in, once; then nothing is asked.
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     assert!(band(&d).is_none());
     assert!(d.root_widget().is_layout_dirty());
     d.relayout();
@@ -160,13 +166,13 @@ fn an_arriving_banner_discloses_over_what_follows_laid_out_where_it_stood() {
 
 #[test]
 fn a_banner_dismissed_by_pointer_collapses_and_by_key_lands() {
-    let state = crate::LocalState::new(Some(sync_failed()));
+    let state = tilo_ui_base::LocalState::new(Some(sync_failed()));
     let mut d = driver(Box::new(sync_column(&state, true)));
     assert!(band(&d).is_none(), "first paint shows the banner at rest");
     let shown_y = d.targets()["below"].y0;
     let dismiss = d.targets()["sync.dismiss"];
 
-    let frame = crate::motion::pin_frame();
+    let frame = tilo_ui_base::motion::pin_frame();
     d.click_at(dismiss.center().x, dismiss.center().y);
     d.relayout();
     let empty_y = d.targets()["below"].y0;
@@ -191,7 +197,7 @@ fn a_banner_dismissed_by_pointer_collapses_and_by_key_lands() {
     let mut d = driver(Box::new(sync_column(&state, false)));
     state.set(Some(sync_failed()));
     d.relayout();
-    crate::motion::note_source(crate::tokens::MotionSource::Keyboard);
+    tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Keyboard);
     state.set(None);
     d.relayout();
     assert!(band(&d).is_none(), "a key's result lands");
@@ -200,7 +206,7 @@ fn a_banner_dismissed_by_pointer_collapses_and_by_key_lands() {
 #[test]
 fn a_banner_in_a_section_or_a_container_moves_what_follows_the_group() {
     for nest in ["section", "container"] {
-        let state = crate::LocalState::new(None::<BannerNotice>);
+        let state = tilo_ui_base::LocalState::new(None::<BannerNotice>);
         // Each nest its own banner: the one the last nest dropped is not
         // this one coming back.
         let banner: Box<dyn Widget> =
@@ -220,7 +226,7 @@ fn a_banner_in_a_section_or_a_container_moves_what_follows_the_group() {
         let mut d = driver(Box::new(root));
         let empty_after = d.targets()["after"].y0;
 
-        let frame = crate::motion::pin_frame();
+        let frame = tilo_ui_base::motion::pin_frame();
         state.set(Some(sync_failed()));
         d.relayout();
         d.relayout();
@@ -230,19 +236,19 @@ fn a_banner_in_a_section_or_a_container_moves_what_follows_the_group() {
         );
         let group = d.root_widget().children()[0].disclosing();
         assert!(
-            matches!(group, Some(crate::widget::Disclosing::Grows { by, .. }) if by.abs() < 0.5),
+            matches!(group, Some(tilo_ui_base::widget::Disclosing::Grows { by, .. }) if by.abs() < 0.5),
             "{nest}: the group grows with the band, from nothing: {group:?}"
         );
         assert!(
             matches!(
                 d.root_widget().disclosing(),
-                Some(crate::widget::Disclosing::Grows { .. })
+                Some(tilo_ui_base::widget::Disclosing::Grows { .. })
             ),
             "{nest}: and so does a content-sized column around it"
         );
         drop(frame);
 
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         assert!(d.root_widget().children()[0].disclosing().is_none());
         d.relayout();
         assert!(
@@ -301,7 +307,7 @@ fn a_banner_its_view_stops_building_collapses_and_what_follows_moves_up() {
 
     // Back online: the view builds no banner.
     with_monotonic_time(start, || {
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         rebuild(&mut d, None);
     });
     let empty_y = d.targets()["below"].y0;
@@ -348,9 +354,9 @@ fn nothing_leaves_when_the_whole_view_is_replaced() {
     let start = crate::time::now();
     let mut d = with_monotonic_time(start, || rooted(offline_view()));
     with_monotonic_time(start, || {
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         d.root_mut::<Column>().set_children(vec![
-            Box::new(crate::widget::Spacer::new()),
+            Box::new(tilo_ui_base::widget::Spacer::new()),
             Box::new(crate::widget::Text::new("Another page")),
             Box::new(crate::widget::Text::new("Below").with_id("below")),
         ]);
@@ -378,18 +384,18 @@ fn a_banner_whose_dismiss_is_bound_runs_the_action_it_names_once() {
     let binding = tilo_actions::ActionBinding::unit_for(&spec, "dismiss").expect("published");
     let address = binding.address().clone();
     let mut banner = Banner::new(BannerKind::Info, "Synced").with_dismiss_press(
-        crate::widget::Press::of(crate::component::Event::Action(binding)),
+        tilo_ui_base::widget::Press::of(tilo_ui_base::component::Event::Action(binding)),
     );
     banner.dismiss_now();
     assert!(banner.dismissed, "the press dismisses the banner");
-    let taken = crate::widget::controls::take_control_invocation(&mut banner);
+    let taken = tilo_ui_base::widget::controls::take_control_invocation(&mut banner);
     assert_eq!(
         taken.as_ref().map(|taken| taken.address.clone()),
         Some(address),
         "one press runs the dismiss once"
     );
     assert!(
-        crate::widget::controls::take_control_invocation(&mut banner).is_none(),
+        tilo_ui_base::widget::controls::take_control_invocation(&mut banner).is_none(),
         "the press is taken once"
     );
 }
@@ -429,7 +435,7 @@ tilo_test_env::scenario! {
 
     phase the_banner_is_a_live_region_by_severity;
     {
-        use crate::a11y::{Politeness, Role};
+        use tilo_ui_base::{a11y::Politeness, a11y::Role};
         let err = Banner::error("Boom").with_message("details");
         let node = Widget::accessibility(&err).expect("banner exposes a11y");
         assert_eq!(node.role, Role::Group);
@@ -447,7 +453,7 @@ tilo_test_env::scenario! {
         let mut d = rooted(Column::new());
         rebuild(&mut d, None);
         let empty_y = d.targets()["below"].y0;
-        let frame = crate::motion::pin_frame();
+        let frame = tilo_ui_base::motion::pin_frame();
         rebuild(&mut d, Some(Banner::error("Sync failed")));
         assert!(band(&d).is_some(), "a banner new to the view discloses");
         assert!((d.targets()["below"].y0 - empty_y).abs() < 0.5);
@@ -466,7 +472,7 @@ tilo_test_env::scenario! {
                 .push(Box::new(crate::widget::Text::new("Below").with_id("below"))),
         );
         let shown_y = d.targets()["below"].y0;
-        let _frame = crate::motion::pin_frame();
+        let _frame = tilo_ui_base::motion::pin_frame();
         rebuild(&mut d, Some(Banner::warning("Offline")));
         assert!(band(&d).is_none(), "built again at rest, it stays at rest");
         assert!(!d.root_widget().needs_animation_frame());
@@ -585,11 +591,11 @@ fn both_actions_keep_their_faces_whether_beside_or_under_the_message() {
 
 #[test]
 fn under_reduced_motion_a_banner_lands_and_its_contents_fade_in() {
-    let state = crate::LocalState::new(None::<BannerNotice>);
+    let state = tilo_ui_base::LocalState::new(None::<BannerNotice>);
     let mut d = driver(Box::new(sync_column(&state, false)));
     d.set_theme(Theme::dark().with_reduce_motion(true));
     let empty_y = d.targets()["below"].y0;
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     state.set(Some(sync_failed()));
     d.relayout();
     assert!(
@@ -609,7 +615,7 @@ fn a_banner_leaving_lands_by_key_and_fades_under_reduced_motion() {
     let start = crate::time::now();
     let mut d = with_monotonic_time(start, || rooted(offline_view()));
     with_monotonic_time(start, || {
-        crate::motion::note_source(crate::tokens::MotionSource::Keyboard);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Keyboard);
         rebuild(&mut d, None);
         assert!(
             d.root::<Column>().drawn_offsets().is_none(),
@@ -621,7 +627,7 @@ fn a_banner_leaving_lands_by_key_and_fades_under_reduced_motion() {
     d.set_theme(Theme::dark().with_reduce_motion(true));
     with_monotonic_time(start, || {
         d.relayout();
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         rebuild(&mut d, None);
         assert!(first_offset(&d).abs() < 0.01, "the height lands");
         assert!(
@@ -647,7 +653,7 @@ fn a_banner_dropped_while_opening_leaves_from_where_it_is_drawn() {
     with_monotonic_time(start, || rebuild(&mut d, None));
     let empty_y = d.targets()["below"].y0;
     with_monotonic_time(start, || {
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         rebuild(&mut d, Some(Banner::warning("Reconnecting")));
     });
     let midway = start + crate::time::Duration::from_millis(90);

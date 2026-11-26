@@ -11,18 +11,20 @@
 
 use std::collections::HashMap;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use tilo_ui::offscreen::OffscreenRenderer;
+use tilo_ui_base::offscreen::OffscreenRenderer;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;
 
 use crate::support::render::{pixel_hash, write_png};
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
-use tilo_ui::widget::{
-    AppKind, GroupRow, TabDescriptor, TileContent, Widget, WindowGroup, WindowWidth,
+use tilo_ui::{
+    widget::AppKind, widget::GroupRow, widget::TabDescriptor, widget::TileContent,
+    widget::WindowGroup, widget::WindowWidth,
 };
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Widget;
 
 fn make_group(id: u64, tabs: &[(u64, &str, AppKind)]) -> WindowGroup {
     let tabs: Vec<(TabDescriptor, TileContent)> = tabs
@@ -83,7 +85,7 @@ fn render_row(renderer: &mut OffscreenRenderer, row: &mut GroupRow) -> Vec<u8> {
 
     let presence = PresenceCtx::default();
     let mut scene = Scene::new();
-    row.draw(&mut tilo_ui::draw::DrawCtx::new(
+    row.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
@@ -299,10 +301,10 @@ fn group_row_maximize_and_reorder_paint_visibly() {
                 let mut focus: Option<NodeId> = None;
                 row.handle_event(
                     &ev,
-                    &mut tilo_ui::widget::EventCtx {
+                    &mut tilo_ui_base::widget::EventCtx {
                         scale_factor: 1.0,
                         modifiers: &modifiers,
-                        state: tilo_ui::widget::Edits::lend(&mut state),
+                        state: tilo_ui_base::widget::Edits::lend(&mut state),
                         path: &path,
                         handled: &mut handled,
                         focus_target: &mut focus,
@@ -316,13 +318,17 @@ fn group_row_maximize_and_reorder_paint_visibly() {
             dispatch(
                 &mut row,
                 &taffy,
-                tilo_ui::synthetic_input::cursor_moved(grab.x, grab.y),
+                tilo_ui_base::synthetic_input::cursor_moved(grab.x, grab.y),
             );
-            dispatch(&mut row, &taffy, tilo_ui::synthetic_input::mouse_press());
             dispatch(
                 &mut row,
                 &taffy,
-                tilo_ui::synthetic_input::cursor_moved(past_x, grab.y),
+                tilo_ui_base::synthetic_input::mouse_press(),
+            );
+            dispatch(
+                &mut row,
+                &taffy,
+                tilo_ui_base::synthetic_input::cursor_moved(past_x, grab.y),
             );
             assert!(
                 row.group_drag_active(),

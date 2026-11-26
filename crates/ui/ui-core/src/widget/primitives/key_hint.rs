@@ -3,11 +3,11 @@
 
 use vello::kurbo::{Point, Rect};
 
-use crate::paint::PaintCtx;
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::InputHint;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 
 #[path = "key_hint_component.rs"]
 mod component;
@@ -23,11 +23,11 @@ pub struct KeyHint {
 
 impl KeyHint {
     /// A hint for one key or a chord. Key names go through the person's
-    /// keyboard legends ([`crate::keycaps::active`]), so `Ctrl` reads
+    /// keyboard legends ([`tilo_ui_base::keycaps::active`]), so `Ctrl` reads
     /// `Strg` on a German keyboard.
     #[must_use]
     pub fn new<'a>(keys: impl IntoIterator<Item = &'a str>, label: impl Into<String>) -> Self {
-        let caps = crate::keycaps::active();
+        let caps = tilo_ui_base::keycaps::active();
         Self {
             keys: keys.into_iter().map(|k| caps.token(k)).collect(),
             label: label.into(),
@@ -174,31 +174,34 @@ impl KeyHints {
     }
 }
 
-impl crate::widget::Widget for KeyHints {
-    crate::described!();
+impl tilo_ui_base::widget::Widget for KeyHints {
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
         theme: &Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+        node_map: &mut std::collections::HashMap<
+            taffy::NodeId,
+            *mut dyn tilo_ui_base::widget::Widget,
+        >,
     ) -> taffy::NodeId {
-        use crate::widget::TaffyTreeExt as _;
+        use tilo_ui_base::widget::TaffyTreeExt as _;
         if self.theme.as_ref() != Some(theme) {
             self.theme = Some(theme.clone());
             self.dirty = true;
             self.layout_dirty = true;
         }
-        let width = crate::text_render::with_layout_renderer(theme, |text| {
+        let width = tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
             KeyHintsFace::new(&self.hints).width(text, theme)
         });
         let style = taffy::Style {
             flex_shrink: 1.0,
             size: taffy::Size {
-                width: taffy::Dimension::length(crate::num::f32_of_f64(width.ceil())),
-                height: taffy::Dimension::length(crate::num::f32_of_f64(KeyHintsFace::height(
-                    theme,
-                ))),
+                width: taffy::Dimension::length(tilo_ui_base::num::f32_of_f64(width.ceil())),
+                height: taffy::Dimension::length(tilo_ui_base::num::f32_of_f64(
+                    KeyHintsFace::height(theme),
+                )),
             },
             min_size: taffy::Size {
                 width: taffy::Dimension::length(0.0_f32),
@@ -213,7 +216,7 @@ impl crate::widget::Widget for KeyHints {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!(measured);
+    tilo_ui_base::rect_geometry!(measured);
 
     fn needs_redraw(&self) -> bool {
         self.dirty
@@ -223,7 +226,7 @@ impl crate::widget::Widget for KeyHints {
         self.dirty = false;
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -243,7 +246,7 @@ impl crate::widget::Widget for KeyHints {
         "KeyHints"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let spoken: Vec<String> = self
             .hints
             .iter()
@@ -256,7 +259,7 @@ impl crate::widget::Widget for KeyHints {
             })
             .collect();
         Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::StaticText)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::StaticText)
                 .with_name(spoken.join(", "))
                 .with_bounds(self.rect),
         )

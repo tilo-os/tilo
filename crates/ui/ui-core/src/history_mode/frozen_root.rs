@@ -7,11 +7,11 @@ use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 
 use super::{HistoryPreview, PreviewAccessibility, PreviewNavigation, PreviewView};
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::DrawChild;
-use crate::widget::Widget;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Widget;
 
 /// A past version drawn by a read-only root of the app over its frozen document.
 pub struct FrozenRootPreview {
@@ -90,7 +90,7 @@ impl HistoryPreview for FrozenRootPreview {
             crate::widget::window_header::offer_window_search(self.root.as_mut(), true);
         }
         let mut laid_out = Ok(());
-        for _ in 0..crate::widget::SETTLE_FRAMES {
+        for _ in 0..tilo_ui_base::widget::SETTLE_FRAMES {
             frame.sync(self.root.as_mut());
             laid_out = frame.layout(self.root.as_mut());
             if laid_out.is_err() || !self.root.take_structure_dirty() {
@@ -140,13 +140,13 @@ impl HistoryPreview for FrozenRootPreview {
     }
 
     fn accessibility(&self) -> PreviewAccessibility {
-        let heading = crate::i18n::I18nManager::format(
+        let heading = tilo_ui_base::i18n::I18nManager::format(
             "history-preview-description",
             &[("resource", self.label.as_str().into())],
         );
         PreviewAccessibility {
             description: std::iter::once(heading)
-                .chain(crate::a11y::texts(self.root.as_ref()))
+                .chain(tilo_ui_base::a11y::texts(self.root.as_ref()))
                 .collect::<Vec<_>>()
                 .join("\n"),
             pages: Vec::new(),
@@ -160,7 +160,7 @@ const OUTLINE_LINES: usize = 400;
 /// draws no version of its own.
 pub fn outline_preview(input: super::PreviewInput) -> Result<Box<dyn HistoryPreview>, String> {
     let doc = AutoCommit::load(input.snapshot.bytes()).map_err(|error| error.to_string())?;
-    let label = crate::i18n::I18nManager::lookup_plain("history-mode-preview-resource");
+    let label = tilo_ui_base::i18n::I18nManager::lookup_plain("history-mode-preview-resource");
     Ok(Box::new(
         FrozenRootPreview::new(outline_root(&doc), doc, label).with_view(input.initial_view),
     ))
@@ -206,9 +206,9 @@ fn outline_root(doc: &AutoCommit) -> Box<dyn Widget> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::TaffyTreeExt;
     use std::collections::HashMap;
     use taffy::{NodeId, TaffyTree};
+    use tilo_ui_base::widget::TaffyTreeExt;
 
     /// A page that, like Notes, centres its column on the width its last layout gave it: the first pass
     /// builds at no width and asks to be built again.
@@ -246,7 +246,7 @@ mod tests {
             node: NodeId,
             origin: vello::kurbo::Point,
         ) {
-            self.rect = crate::widget::layout_rect(taffy, node, origin);
+            self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
             if (self.rect.width() - self.given).abs() > 0.5 {
                 self.given = self.rect.width();
                 self.rebuild = true;
@@ -270,7 +270,7 @@ mod tests {
     fn a_version_is_laid_out_settled_as_the_live_view_is() {
         let mut preview =
             FrozenRootPreview::new(Box::new(Page::default()), AutoCommit::new(), "Document");
-        let mut text = crate::font_catalog::fixture_renderer();
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         preview
             .layout(Rect::new(0.0, 0.0, 640.0, 480.0), &mut text, &Theme::dark())
             .unwrap();

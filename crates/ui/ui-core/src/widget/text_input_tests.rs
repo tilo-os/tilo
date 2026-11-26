@@ -6,14 +6,15 @@ use super::*;
 use crate::testing::Dispatch;
 
 pub(super) fn body_size() -> f32 {
-    crate::tokens::typography::stock().size(TextRole::Body)
+    tilo_ui_base::tokens::typography::stock().size(TextRole::Body)
 }
 
 #[cfg(test)]
 pub(super) fn right_click(ti: &mut TextInput, doc: &mut AutoCommit, x: f64, y: f64) -> bool {
     let mut sender = Dispatch::new().doc(doc);
-    let moved = crate::synthetic_input::cursor_moved(x, y);
-    let press = crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
+    let moved = tilo_ui_base::synthetic_input::cursor_moved(x, y);
+    let press =
+        tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
     sender.send(ti, &moved).handled | sender.send(ti, &press).handled
 }
 
@@ -48,7 +49,7 @@ pub(super) fn command_mods() -> Modifiers {
 }
 
 pub(super) fn middle_press() -> WindowEvent {
-    crate::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Middle)
+    tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Middle)
 }
 
 pub(super) fn test_node() -> (TaffyTree<()>, NodeId) {
@@ -71,13 +72,13 @@ pub(super) fn draw_to_populate(ti: &mut TextInput) {
 }
 
 pub(super) fn draw_with_theme(ti: &mut TextInput, theme: &Theme) {
-    let presence = crate::presence::PresenceCtx::empty();
+    let presence = tilo_ui_base::presence::PresenceCtx::empty();
     let mut tr = TextRenderer::new();
     tr.set_text_scale(theme.text_scale);
     let mut scene = Scene::new();
     Widget::draw(
         ti,
-        &mut crate::draw::DrawCtx::new(
+        &mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
@@ -207,7 +208,7 @@ tilo_test_env::scenario! {
     // sheet) starts at its beginning however the caret would follow it, and a focused field that
     // widens shows its whole value again.
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::dark();
         {
             let mut input = TextInput::local().with_initial_value("Meeting notes");
@@ -308,9 +309,9 @@ tilo_test_env::scenario! {
 /// makes the item a list's entry names, from the first keystroke.
 #[test]
 fn a_fields_first_change_is_reported_so_an_entry_makes_its_item() {
-    use crate::component::{Event, Fired, Intent};
+    use tilo_ui_base::{component::Event, component::Fired, component::Intent};
     use winit::event::Ime;
-    let queue: crate::Intents<Fired> = crate::Intents::default();
+    let queue: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
     let mut ti = TextInput::local().with_entry(true);
     ti.set_begin_event(Event::View(Intent::new(&queue, "step-entry", "begin")));
     let mut doc = AutoCommit::new();
@@ -322,7 +323,7 @@ fn a_fields_first_change_is_reported_so_an_entry_makes_its_item() {
     assert_eq!(fired.len(), 1, "the first change is told: {fired:?}");
     assert_eq!(fired[0].key, "step-entry");
     assert_eq!(fired[0].event, "begin");
-    assert_eq!(fired[0].value, Some(crate::component::testing::text("C")));
+    assert_eq!(fired[0].value, Some(crate::component_testing::text("C")));
     // A further character is no first change: the item already exists.
     Dispatch::new()
         .doc(&mut doc)
@@ -334,9 +335,9 @@ fn a_fields_first_change_is_reported_so_an_entry_makes_its_item() {
 /// acts on the words while they are typed, as a window's search does.
 #[test]
 fn a_field_reports_every_change_as_the_words_are_typed() {
-    use crate::component::{Event, Fired, Intent};
+    use tilo_ui_base::{component::Event, component::Fired, component::Intent};
     use winit::event::Ime;
-    let queue: crate::Intents<Fired> = crate::Intents::default();
+    let queue: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
     let mut ti = TextInput::local();
     ti.set_changed_event(Event::View(Intent::new(&queue, "bar-search", "changed")));
     let mut doc = AutoCommit::new();
@@ -351,16 +352,16 @@ fn a_field_reports_every_change_as_the_words_are_typed() {
     assert_eq!(fired.len(), 2, "every change is told: {fired:?}");
     assert_eq!(fired[0].key, "bar-search");
     assert_eq!(fired[0].event, "changed");
-    assert_eq!(fired[0].value, Some(crate::component::testing::text("n")));
-    assert_eq!(fired[1].value, Some(crate::component::testing::text("no")));
+    assert_eq!(fired[0].value, Some(crate::component_testing::text("n")));
+    assert_eq!(fired[1].value, Some(crate::component_testing::text("no")));
 }
 
 /// A field tells its listener when it loses the keyboard: an entry left empty is taken away, so no
 /// empty item is left behind.
 #[test]
 fn a_field_left_told_goes_so_an_empty_entry_is_taken_away() {
-    use crate::component::{Event, Fired, Intent};
-    let queue: crate::Intents<Fired> = crate::Intents::default();
+    use tilo_ui_base::{component::Event, component::Fired, component::Intent};
+    let queue: tilo_ui_base::Intents<Fired> = tilo_ui_base::Intents::default();
     let mut ti = TextInput::local().with_entry(true);
     ti.set_blur_event(Event::View(Intent::new(&queue, "step-entry", "blur")));
     Widget::set_focus(&mut ti, true);

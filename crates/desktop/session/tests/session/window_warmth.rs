@@ -8,7 +8,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 
 use tilo_app_launch::Connects as _;
 use tilo_desktop_model::ids::WorkspaceId;
-use ui::WindowAppearance;
+use tilo_ui_base::WindowAppearance;
 use ui::floating_surface::{
     FLOATING_SURFACE_PROTOCOL_VERSION, FloatingSurfaceClientMessage, FloatingSurfaceHostMessage,
 };
@@ -137,7 +137,7 @@ fn appearance(message: &FloatingSurfaceHostMessage) -> WindowAppearance {
 #[test]
 fn a_window_takes_the_temperature_of_its_workspace_and_the_person_s_colour() {
     let _home = tilo_test_env::TestHome::new().expect("a home of its own");
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let launches = Arc::new(tilo_session::Launches::default());
     let mut session = crate::common::headless(Options {
         collab: false,
@@ -174,7 +174,7 @@ fn a_window_takes_the_temperature_of_its_workspace_and_the_person_s_colour() {
     );
     assert_eq!(
         opened.your_colour,
-        Some(ui::tokens::PresenceHue::of_identity("person")),
+        Some(tilo_ui_base::tokens::PresenceHue::of_identity("person")),
         "and the colour of the person at this machine"
     );
     assert!(

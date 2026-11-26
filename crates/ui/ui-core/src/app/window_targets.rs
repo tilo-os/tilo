@@ -90,7 +90,7 @@ impl App {
             // takes what is typed into it, or anything else that answers an assistive technology.
             // A control that answers no press is still listed where it says what it does: a field
             // edits a record without one, and the person reaches it by a point.
-            let operable = crate::a11y::pressable_role(described.role())
+            let operable = tilo_ui_base::a11y::pressable_role(described.role())
                 || [
                     crate::accesskit::Action::Click,
                     crate::accesskit::Action::ShowContextMenu,
@@ -155,8 +155,8 @@ impl App {
         action: TargetAction,
     ) -> bool {
         let verb = match action {
-            TargetAction::Activate => crate::a11y::Action::Activate,
-            TargetAction::ShowContextMenu => crate::a11y::Action::ShowContextMenu,
+            TargetAction::Activate => tilo_ui_base::a11y::Action::Activate,
+            TargetAction::ShowContextMenu => tilo_ui_base::a11y::Action::ShowContextMenu,
         };
         // The name a caller reads is the one described, trimmed as it was
         // listed, so a description padded around its text still presses. What
@@ -245,7 +245,7 @@ impl App {
         let scale = self.accessibility.export_scale;
         let mut tree = self.build_a11y_tree_update(scale);
         if !name.is_empty() {
-            crate::accesskit_bridge::name_window(&mut tree, &name);
+            tilo_ui_base::accesskit_bridge::name_window(&mut tree, &name);
         }
         client.send(
             &crate::floating_surface::FloatingSurfaceClientMessage::AccessibilityTree {

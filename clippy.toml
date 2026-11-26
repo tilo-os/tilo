@@ -57,5 +57,5 @@ disallowed-methods = [
     # scene, so a page that shows the scene as HTML gives it an element of its
     # own (its scroller a native container, its semantic node a painted home).
     # A package that does not depend on tilo-ui has nothing to ban.
-    { path = "tilo_ui::widget::Widget::draw", reason = "draw a child with tilo_ui::widget::DrawChild::draw_child (or draw_child_at)", allow-invalid = true },
+    { path = "tilo_ui_base::widget::Widget::draw", reason = "draw a child with tilo_ui_base::widget::DrawChild::draw_child (or draw_child_at)", allow-invalid = true },
 ]

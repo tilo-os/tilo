@@ -9,7 +9,7 @@ use automerge::transaction::Transactable;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, Value};
 use collab_types::CommitNamed as _;
 use tilo_automerge::ApplyIncoming as _;
-use ui_core::collaboration::CollabRequest;
+use tilo_ui_base::collaboration::CollabRequest;
 
 fn text_of(doc: &AutoCommit) -> String {
     let Ok(Some((Value::Object(ObjType::Text), id))) = doc.get(&ROOT, "text") else {

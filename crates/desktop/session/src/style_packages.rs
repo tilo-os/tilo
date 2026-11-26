@@ -30,7 +30,7 @@ use serde_json::{Map, Value, json};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_lock::MutexRecover as _;
 use tilo_session_core::surfaces::Published;
-use ui::host_operation::ResourceOperationStart;
+use tilo_ui_base::host_operation::ResourceOperationStart;
 
 use crate::i18n::t;
 

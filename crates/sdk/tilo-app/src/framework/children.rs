@@ -38,10 +38,10 @@ use tilo_actions::{
 };
 use tilo_resource::children::{self as lifecycle, ChildList as _, ChildRef, Children as Container};
 use tilo_resource::{Atom, Edit, EditOp, Id, Reader, Resource, Segment};
-use ui_core::arriving::{Arrival, Arriving, Source};
-use ui_core::permissions::{PermissionScope, TreePath};
+use tilo_ui_base::widget::Edits;
+use tilo_ui_base::{arriving::Arrival, arriving::Arriving, arriving::Source};
+use tilo_ui_base::{permissions::PermissionScope, permissions::TreePath};
 use ui_core::resource::{DocumentCheckout, DocumentId, ResourceOpenError, ResourceType};
-use ui_core::widget::Edits;
 
 use super::chain::{CHAIN_ACTION_TYPE, WorkspaceResources};
 use super::live::Live;
@@ -342,7 +342,7 @@ impl<C: ChildResource> ChildrenState<C> {
                 (Some(live), _) => Arrival::Ready(live.get()),
                 (None, Some(reason)) => Arrival::Failed(reason.clone()),
                 (None, None) => Arrival::Pending {
-                    from: ui_core::arriving::Source::Remote,
+                    from: tilo_ui_base::arriving::Source::Remote,
                 },
             };
             match arrivals.get(&id) {
@@ -873,7 +873,7 @@ impl<C: ChildResource> ChildrenState<C> {
     /// its own actions, `delete` and `move` (a trashed one with `restore`),
     /// carried out on the container's API.
     pub(crate) fn publish(&self) -> tilo_actions::ResourceSpec {
-        let revision = (self.revision(), ui_core::i18n::I18nManager::revision());
+        let revision = (self.revision(), tilo_ui_base::i18n::I18nManager::revision());
         if let Some((at, published)) = self.published.borrow().as_ref()
             && *at == revision
         {

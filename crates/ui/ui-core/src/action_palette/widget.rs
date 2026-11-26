@@ -4,8 +4,8 @@ use super::{
     ActionPalette, HashMap, ModelPath, NodeId, Point, Rect, Size, Style, TaffyTree, Theme, Widget,
     WindowEvent,
 };
-use crate::i18n::widget_text;
 use crate::widget::SearchField;
+use tilo_ui_base::i18n::widget_text;
 
 /// What names the palette's field and what its description adds, whichever rows the palette is over: a
 /// step collecting an action's argument is asked in the action words, which a description would only
@@ -25,11 +25,11 @@ pub(crate) fn field_announcement(
 
 impl Widget for ActionPalette {
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
     fn name(&self) -> &str {
         "ActionPalette"
@@ -90,7 +90,7 @@ impl Widget for ActionPalette {
         theme: &Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        use crate::widget::TaffyTreeExt;
+        use tilo_ui_base::widget::TaffyTreeExt;
         if self.hosts_rows() {
             self.host_prepare(theme);
             let (width, height) = self.desired_size();
@@ -111,7 +111,7 @@ impl Widget for ActionPalette {
         if !self.hosts_rows() {
             return;
         }
-        self.rect = crate::widget::layout_rect(tree, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(tree, node, origin);
         self.sync_list();
         self.place_field();
     }
@@ -124,7 +124,10 @@ impl Widget for ActionPalette {
     fn is_layout_dirty(&self) -> bool {
         !self.hosts_rows()
     }
-    fn set_platform_conventions(&mut self, conventions: crate::platform::PlatformConventions) {
+    fn set_platform_conventions(
+        &mut self,
+        conventions: tilo_ui_base::platform::PlatformConventions,
+    ) {
         if self.hosts_rows() {
             self.set_host_platform(conventions);
         }
@@ -132,7 +135,7 @@ impl Widget for ActionPalette {
     fn get_rect(&self) -> Rect {
         self.rect
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -140,7 +143,7 @@ impl Widget for ActionPalette {
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if self.hosts_rows() {
-            self.draw_host(&mut crate::draw::DrawCtx::new(
+            self.draw_host(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text,
@@ -151,10 +154,10 @@ impl Widget for ActionPalette {
         }
         ActionPalette::draw(
             self,
-            &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
         );
     }
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         *ctx.handled |= self.route_event(
             event,
@@ -178,7 +181,7 @@ impl Widget for ActionPalette {
             .then(|| self.field.ime_cursor_rect())
             .flatten()
     }
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         self.hosts_rows()
             .then(|| self.field.ime_content())
             .flatten()
@@ -204,7 +207,7 @@ impl Widget for ActionPalette {
         }
         self.host_focus_synthetic(path)
     }
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         if self.hosts_rows() {
             return Some(self.host_accessibility());
         }
@@ -253,15 +256,15 @@ impl Widget for ActionPalette {
         // The palette names the step it is on: while it collects the arguments of an action,
         // that action, and itself otherwise.
         let name = if self.in_argument_mode() {
-            crate::i18n::widget_format("palette-argument-name", &[])
+            tilo_ui_base::i18n::widget_format("palette-argument-name", &[])
         } else {
-            crate::i18n::widget_format("palette-name", &[])
+            tilo_ui_base::i18n::widget_format("palette-name", &[])
         };
         Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Dialog)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Dialog)
                 .with_name(name)
                 .with_state(
-                    crate::a11y::AccessState::new()
+                    tilo_ui_base::a11y::AccessState::new()
                         .modal(true)
                         .focused(self.is_focused()),
                 )
@@ -271,8 +274,8 @@ impl Widget for ActionPalette {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        doc: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if self.hosts_rows() {
@@ -282,7 +285,7 @@ impl Widget for ActionPalette {
             return false;
         }
         if target == self.target("field") {
-            if matches!(action, crate::a11y::Action::Focus) {
+            if matches!(action, tilo_ui_base::a11y::Action::Focus) {
                 self.focus_part(0);
             }
             return self.field.perform_action(action, &[], doc, path);
@@ -299,12 +302,12 @@ impl Widget for ActionPalette {
         }
         for (index, part) in ["submit", "cancel"].into_iter().enumerate() {
             if target == self.target(part) {
-                if matches!(action, crate::a11y::Action::Focus) {
+                if matches!(action, tilo_ui_base::a11y::Action::Focus) {
                     self.focus_part(index + 1);
                 }
                 let handled =
                     self.controls.children_mut()[index].perform_action(action, &[], doc, path);
-                let (doc, path) = crate::doc::document(doc, path);
+                let (doc, path) = tilo_ui_base::doc::document(doc, path);
                 self.drain_command(doc, path);
                 return handled;
             }

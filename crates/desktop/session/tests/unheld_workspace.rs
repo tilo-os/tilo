@@ -57,7 +57,7 @@ fn wakes() -> (Vec<(String, u64)>, f64) {
 
 #[test]
 fn a_change_of_a_workspace_this_device_does_not_hold_wakes_nothing() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let changes = Changes::default();
     let mut session = crate::common::headless(Options {

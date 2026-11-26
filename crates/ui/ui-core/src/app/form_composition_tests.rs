@@ -1,7 +1,9 @@
 use super::*;
-use crate::widget::{
-    Actions, Button, Field, Form, FormSection, LabelPlacement, LayoutInfo, TextInput,
+use crate::{
+    widget::Actions, widget::Button, widget::Field, widget::Form, widget::FormSection,
+    widget::TextInput,
 };
+use tilo_ui_base::{widget::LabelPlacement, widget::LayoutInfo};
 
 fn form_layout(app: &mut App, width: u32) {
     app.layout.layout_dirty = true;
@@ -38,7 +40,7 @@ fn form_host_preserves_entry_selection_focus_and_click_geometry_across_modes() {
     let first = app.focusable_order[0];
     app.set_focused_node(Some(first));
     app.mutate_node(first, |widget| {
-        crate::widget::undo_points::set_state(widget, "8:b:2")
+        tilo_ui_base::widget::undo_points::set_state(widget, "8:b:2")
     })
     .unwrap();
     for (width, placement) in [(340, None), (900, Some(LabelPlacement::Above)), (900, None)] {
@@ -55,7 +57,7 @@ fn form_host_preserves_entry_selection_focus_and_click_geometry_across_modes() {
         assert_eq!(
             app.inspect_node(focused, |widget| (
                 widget.test_id().map(str::to_owned),
-                crate::widget::undo_points::get_state(widget)
+                tilo_ui_base::widget::undo_points::get_state(widget)
             ))
             .unwrap(),
             (Some("name".into()), Some("8:b:2".into()))

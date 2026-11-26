@@ -182,7 +182,7 @@ fn history(session: &Session) -> Vec<(String, Option<String>)> {
 
 #[test]
 fn a_copy_is_offered_to_the_person_s_other_devices_and_theirs_joins_the_clipboard() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let link = FakeLink::joined();
     let mut session = session(&link);
 

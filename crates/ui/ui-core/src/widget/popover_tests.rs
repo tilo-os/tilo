@@ -25,13 +25,13 @@ fn opened() -> Popover {
 }
 
 fn cursor_at(pt: Point) -> WindowEvent {
-    crate::synthetic_input::cursor_moved(pt.x, pt.y)
+    tilo_ui_base::synthetic_input::cursor_moved(pt.x, pt.y)
 }
 
-use crate::synthetic_input::mouse_press;
+use tilo_ui_base::synthetic_input::mouse_press;
 
 fn key_event(logical: Key) -> WindowEvent {
-    crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+    tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
         logical,
         None,
         ElementState::Pressed,
@@ -44,18 +44,18 @@ fn key(named: NamedKey) -> WindowEvent {
 
 /// Paint the top layer over `WINDOW`, as hosts do.
 fn present<C: Widget + 'static>(p: &mut Popover<C>, theme: &Theme) -> Scene {
-    let presence = crate::presence::PresenceCtx::default();
+    let presence = tilo_ui_base::presence::PresenceCtx::default();
     let previous = presence.push_viewport(WINDOW);
     let mut scene = Scene::new();
     let mut tr = TextRenderer::new();
-    p.draw(&mut crate::draw::DrawCtx::new(
+    p.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
         theme,
         presence.draw_env(),
     ));
-    p.draw_overlay(&mut crate::draw::DrawCtx::new(
+    p.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut tr,
@@ -71,7 +71,7 @@ tilo_test_env::scenario! {
 
     phase menu_keyboard_moves_clamps_selects_and_swallows_keys;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let mut p = opened();
             assert_eq!(p.highlighted(), 1, "opens on the selected row");
@@ -124,7 +124,7 @@ tilo_test_env::scenario! {
 
     phase menu_pointer_selection_and_dismissal;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut p = opened();
         let row2 = p.item_rect(2).expect("published row geometry");
         assert_eq!(p.item_at(row2.center()), Some(2));
@@ -151,7 +151,7 @@ tilo_test_env::scenario! {
         assert!(!p.is_open());
         let doc = automerge::AutoCommit::new();
         assert!(
-            crate::widget::resources::resources(&p, &doc).is_empty(),
+            tilo_ui_base::widget::resources::resources(&p, &doc).is_empty(),
             "a closed popover offers no way to close it"
         );
         assert!(dismissed.get());
@@ -160,8 +160,8 @@ tilo_test_env::scenario! {
 
     phase menu_semantics_focus_and_reopen;
     {
-        use crate::a11y::Role;
-        let _settled = crate::motion::testing::settled();
+        use tilo_ui_base::a11y::Role;
+        let _settled = tilo_ui_base::motion::testing::settled();
         let p = opened();
         let node = Widget::accessibility(&p).expect("a menu is semantic");
         assert_eq!(node.role, Role::Menu);
@@ -191,7 +191,7 @@ tilo_test_env::scenario! {
 
     phase placement_flips_and_stays_in_the_window;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::dark();
         let mut tr = TextRenderer::new();
 
@@ -248,11 +248,11 @@ tilo_test_env::scenario! {
 
     phase the_panel_is_painted_in_the_top_layer_lighter_than_the_window;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         {
             let mut p = opened();
             let mut scene = Scene::new();
-            p.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), crate::presence::PresenceCtx::default().draw_env()));
+            p.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), tilo_ui_base::presence::PresenceCtx::default().draw_env()));
             assert!(scene.encoding().draw_tags.is_empty());
             assert!(
                 !present(&mut p, &Theme::dark())
@@ -272,13 +272,13 @@ tilo_test_env::scenario! {
         }
 
         {
-            use crate::a11y::relative_luminance;
+            use tilo_ui_base::a11y::relative_luminance;
             for theme in [
                 Theme::dark(),
                 Theme::named("dusk-dark").unwrap(),
                 Theme::named("moss-dark").unwrap(),
             ] {
-                let panel = crate::chrome::panel_ground(&theme);
+                let panel = tilo_ui_base::chrome::panel_ground(&theme);
                 let content = theme.tokens.colors.surfaces.content;
                 let base = theme.tokens.colors.surfaces.base;
                 assert!(
@@ -297,7 +297,7 @@ tilo_test_env::scenario! {
             let theme = Theme::dark();
             let (armed, _) = crate::widget::floating_surface::armed_row(&theme);
             let oklch = crate::color::Oklch::from_color(armed);
-            let panel = crate::color::Oklch::from_color(crate::chrome::panel_ground(&theme));
+            let panel = crate::color::Oklch::from_color(tilo_ui_base::chrome::panel_ground(&theme));
             assert!(
                 oklch.c <= panel.c + 0.004,
                 "no hue in the highlight beyond the panel's temperature: {oklch:?}"
@@ -320,7 +320,7 @@ tilo_test_env::scenario! {
     // press was.
     phase a_popover_aimed_at_a_press_stands_its_main_answer_under_it;
     {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let theme = Theme::light();
         let mut tr = TextRenderer::new();
         let answers = || {

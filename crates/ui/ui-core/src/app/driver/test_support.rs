@@ -1,8 +1,8 @@
 //! Helpers shared by application tests that drive a root on the display-less [`Driver`].
 
 use super::Driver;
-use crate::a11y::AccessNode;
 use crate::headless::InspectionNode;
+use tilo_ui_base::a11y::AccessNode;
 
 /// Every semantic node of the current frame, paired with the inspection path of the widget that
 /// owns it (the owner [`Driver::perform_semantic_named`] routes to).

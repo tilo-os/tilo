@@ -69,7 +69,7 @@ new tilo/tilo-sans release, rebuild it as above to confirm its bytes, copy
 `fonts/default/*.ttf` here, and update the manifest (both copies), this file
 and `LICENSES/FONT-COPYRIGHT-NOTICES.txt` with the tag, commit and hashes. The
 toolkit's held-back-feature test face
-(`crates/ui/ui-core/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf`)
+(`crates/ui/ui-base/tests/fixtures/fonts/TiloSansFeaturesFixture-Regular.ttf`)
 comes from the same repository's `scripts/toolkit_fixture.py`.
 
 ## Reading faces

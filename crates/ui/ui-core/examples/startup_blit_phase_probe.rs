@@ -123,7 +123,7 @@ fn texture(
 }
 
 fn draw_frame(
-    handle: &tilo_ui::gpu::DeviceHandle,
+    handle: &tilo_ui_base::gpu::DeviceHandle,
     renderer: &mut vello::Renderer,
     source: &wgpu::TextureView,
     destination: &wgpu::Texture,
@@ -179,7 +179,7 @@ fn draw_frame(
 }
 
 fn verify_pixels(
-    handle: &tilo_ui::gpu::DeviceHandle,
+    handle: &tilo_ui_base::gpu::DeviceHandle,
     destination: &wgpu::Texture,
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Read every real destination pixel after the timed intervals. BGRA red
@@ -252,7 +252,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cache = phase(&mut setup, "cache-fixture", || {
         prepare_cache(&mut home, &mode)
     })?;
-    let mut context = phase(&mut setup, "context", tilo_ui::gpu::RenderContext::new);
+    let mut context = phase(&mut setup, "context", tilo_ui_base::gpu::RenderContext::new);
     let device_id = phase(&mut setup, "device", || {
         pollster::block_on(context.device(None))
     })

@@ -199,7 +199,7 @@ impl NavShell {
         let motion = self.layout_theme.motion();
         self.inputs.borrow_mut().sheet.set_detent(
             detent,
-            crate::tokens::MotionSource::Action,
+            tilo_ui_base::tokens::MotionSource::Action,
             motion,
         );
         self.sheet_moved();
@@ -249,7 +249,7 @@ impl NavShell {
     pub(super) fn sheet_event(
         &mut self,
         event: &WindowEvent,
-        ctx: &crate::widget::EventCtx<'_>,
+        ctx: &tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         if !self.sheet_shown() {
             return false;
@@ -292,9 +292,9 @@ impl NavShell {
         )
     }
 
-    pub(super) fn sheet_accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    pub(super) fn sheet_accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.sheet_shown().then(|| {
-            let name = crate::i18n::widget_format("widget-inspector", &[]);
+            let name = tilo_ui_base::i18n::widget_format("widget-inspector", &[]);
             self.inputs
                 .borrow()
                 .sheet
@@ -302,7 +302,7 @@ impl NavShell {
         })
     }
 
-    pub(super) fn perform_sheet_action(&mut self, action: &crate::a11y::Action) -> bool {
+    pub(super) fn perform_sheet_action(&mut self, action: &tilo_ui_base::a11y::Action) -> bool {
         if !self.sheet_shown() {
             return false;
         }

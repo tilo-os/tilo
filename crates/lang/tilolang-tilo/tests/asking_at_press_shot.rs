@@ -53,7 +53,7 @@ fn texts(tree: &UiNode) -> Vec<String> {
 /// beside `out`.
 #[test]
 fn a_press_that_needs_a_yes_in_both_themes() {
-    let mut dark = ui::Theme::dark();
+    let mut dark = tilo_ui_base::Theme::dark();
     dark.reduce_motion = true;
     let mut shell = StagedWindow::staged(SCENARIO, (1280, 800), dark);
     // The confirm is what the capture is of: it stands at the press, showing whom the call would
@@ -82,7 +82,7 @@ fn a_press_that_needs_a_yes_in_both_themes() {
 /// themes: a question no press here started, whose keyboard starts on declining it.
 #[test]
 fn a_question_nothing_here_started_in_both_themes() {
-    let mut dark = ui::Theme::dark();
+    let mut dark = tilo_ui_base::Theme::dark();
     dark.reduce_motion = true;
     let mut shell = StagedWindow::staged("a call that writes another record", (1280, 800), dark);
     assert_eq!(
@@ -102,7 +102,7 @@ fn capture(shell: &mut StagedWindow, name: &str) {
     shell
         .harness
         .render_png(&out.join(format!("{name}-dark.png")));
-    let mut light = ui::Theme::light();
+    let mut light = tilo_ui_base::Theme::light();
     light.reduce_motion = true;
     shell
         .harness

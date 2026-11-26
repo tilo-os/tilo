@@ -424,7 +424,7 @@ pub(super) struct InternalInstall {
     readiness: Readiness,
     facts: Option<HostFacts>,
     pending: Vec<Record>,
-    target_gib: ui::LocalState<f64>,
+    target_gib: tilo_ui_base::LocalState<f64>,
     target_bytes: u64,
     minimum_target_bytes: u64,
     bounds: Option<Result<TargetBounds, PlanError>>,
@@ -454,7 +454,7 @@ impl InternalInstall {
             },
             facts: None,
             pending: Vec::new(),
-            target_gib: ui::LocalState::new((DEFAULT_TARGET_BYTES / GIB) as f64),
+            target_gib: tilo_ui_base::LocalState::new((DEFAULT_TARGET_BYTES / GIB) as f64),
             target_bytes: DEFAULT_TARGET_BYTES,
             minimum_target_bytes: super::staging::MIN_TARGET_BYTES,
             bounds: None,
@@ -618,7 +618,7 @@ impl InternalInstall {
         });
     }
 
-    pub(super) fn target_state(&self) -> &ui::LocalState<f64> {
+    pub(super) fn target_state(&self) -> &tilo_ui_base::LocalState<f64> {
         &self.target_gib
     }
 

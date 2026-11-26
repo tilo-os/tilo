@@ -138,7 +138,7 @@ const CARRIED_HERE: &str = "carried-here";
 enum Step {
     Input(InputEvent),
     /// The button came up: the resource lands where the pointer is.
-    Land(ui::dnd::DragPayload),
+    Land(tilo_ui_base::dnd::DragPayload),
 }
 
 /// A drag that crossed here, waiting for its content.
@@ -228,7 +228,7 @@ struct State {
     /// A drag that crossed here, waiting for its content.
     landing: Option<Landing>,
     /// A resource carried here, in flight on the shell's drag bus until the button comes up.
-    on_bus: Option<ui::dnd::DragPayload>,
+    on_bus: Option<tilo_ui_base::dnd::DragPayload>,
     /// The keys and buttons each device driving this one holds down here.
     held: BTreeMap<DeviceId, (BTreeSet<u32>, BTreeSet<u32>)>,
     injected: u64,
@@ -1166,7 +1166,7 @@ impl SharedInput {
                 }),
                 _,
             )) => {
-                let payload = ui::dnd::DragPayload::Custom {
+                let payload = tilo_ui_base::dnd::DragPayload::Custom {
                     kind: kind.clone(),
                     blob: address.clone().into_bytes(),
                 };
@@ -1351,7 +1351,7 @@ fn on_the_bus() -> Option<Carrying> {
     if flight.source == CARRIED_HERE {
         return None;
     }
-    let ui::dnd::DragPayload::Custom { kind, blob } = flight.payload else {
+    let tilo_ui_base::dnd::DragPayload::Custom { kind, blob } = flight.payload else {
         return None;
     };
     // A drag that names nothing (a foreign window's bar) lands nowhere here either.
@@ -1372,7 +1372,8 @@ fn carried_formats(formats: &[String]) -> Vec<String> {
     formats
         .iter()
         .filter(|format| {
-            !ui::dnd::is_file_mime(format) && format.as_str() != ui::clipboard::SECRET_MIME
+            !tilo_ui_base::dnd::is_file_mime(format)
+                && format.as_str() != ui::clipboard::SECRET_MIME
         })
         .take(MAX_CARRIED_OFFERS)
         .cloned()

@@ -1,8 +1,8 @@
 //! `Backdrop`: the shell's wallpaper under everything a view draws.
 //!
 //! The session decodes the person's picture once, into
-//! [`crate::part_paint::wallpaper::Source`], and hands it to the host
-//! ([`crate::part_paint::wallpaper::install`]); a `Backdrop` fills its box with
+//! [`tilo_ui_base::part_paint::wallpaper::Source`], and hands it to the host
+//! ([`tilo_ui_base::part_paint::wallpaper::install`]); a `Backdrop` fills its box with
 //! the picture, scaled to cover it and centred, as a desktop's wallpaper
 //! fills a screen. A shell with no picture shows its gradient instead: the one
 //! the host set, else the theme's own ground, eased toward neutral and falling
@@ -16,8 +16,8 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Brush, Color, Extend, Fill, Gradient, ImageBrush};
 
-use crate::theme::Theme;
-use crate::widget::{TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 #[path = "backdrop_component.rs"]
 mod component;
@@ -42,7 +42,7 @@ impl Backdrop {
 }
 
 impl Widget for Backdrop {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn name(&self) -> &'static str {
         "Backdrop"
@@ -64,7 +64,7 @@ impl Widget for Backdrop {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
     /// It fills its box from its style and measures nothing, so it asks layout only until it is
     /// placed.
@@ -72,7 +72,7 @@ impl Widget for Backdrop {
         self.rect == Rect::ZERO
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -82,10 +82,10 @@ impl Widget for Backdrop {
         if self.rect.width() <= 0.0 || self.rect.height() <= 0.0 || env.should_cull(self.rect) {
             return;
         }
-        let source = crate::part_paint::wallpaper::installed();
+        let source = tilo_ui_base::part_paint::wallpaper::installed();
         if let Some(picture) = source
             .as_ref()
-            .and_then(crate::part_paint::wallpaper::Source::picture)
+            .and_then(tilo_ui_base::part_paint::wallpaper::Source::picture)
         {
             paint_picture(scene, transform, self.rect, &picture);
             return;
@@ -95,7 +95,7 @@ impl Widget for Backdrop {
         // the desktop reads as the colour of the machine whichever theme the person chose.
         let stops = source
             .as_ref()
-            .and_then(crate::part_paint::wallpaper::Source::gradient)
+            .and_then(tilo_ui_base::part_paint::wallpaper::Source::gradient)
             .unwrap_or_else(|| ground_stops(theme));
         let gradient =
             Gradient::new_linear(self.rect.origin(), Point::new(self.rect.x1, self.rect.y1))

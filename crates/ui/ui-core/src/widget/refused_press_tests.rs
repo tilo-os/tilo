@@ -13,7 +13,7 @@ use tilo_actions::ActionBinding;
 use vello::kurbo::{Point, Rect};
 
 use crate::app::driver::Driver;
-use crate::widget::Element;
+use tilo_ui_base::widget::Element;
 
 /// Where a press lands on the control a person finds by its name.
 type Aim = fn(Rect) -> Point;
@@ -36,7 +36,7 @@ fn before_a_viewer<I: 'static>(
         crate::State::new(),
         root,
         (600, 400),
-        crate::theme::Theme::dark(),
+        tilo_ui_base::theme::Theme::dark(),
     );
     driver.connect_peer();
     driver.set_permission_ctx(PermissionContext::member(
@@ -316,7 +316,7 @@ fn a_refused_text_edit_says_why_and_keeps_the_text() {
 /// serves. The send reaches outside, which an Editor's grants only ask about.
 struct Relays {
     resource: tilo_actions::ResourceSpec,
-    queued: Option<crate::widget::controls::AttributedControlInvocation>,
+    queued: Option<tilo_ui_base::widget::controls::AttributedControlInvocation>,
     sent: Rc<Cell<usize>>,
     child: Element,
 }
@@ -360,11 +360,11 @@ fn relays(sent: Rc<Cell<usize>>) -> Element {
     })
 }
 
-impl crate::widget::Widget for Relays {
-    crate::provides!(
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::widget::resources::PublishesResources,
-        dyn crate::widget::ResourceOperations
+impl tilo_ui_base::widget::Widget for Relays {
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
     crate::testing::delegate_widget_methods!(
         child: sync,
@@ -377,25 +377,25 @@ impl crate::widget::Widget for Relays {
     fn name(&self) -> &str {
         "Relay fixture"
     }
-    fn children(&self) -> Vec<&dyn crate::widget::Widget> {
+    fn children(&self) -> Vec<&dyn tilo_ui_base::widget::Widget> {
         vec![self.child.as_ref()]
     }
-    fn children_mut(&mut self) -> Vec<&mut (dyn crate::widget::Widget + '_)> {
+    fn children_mut(&mut self) -> Vec<&mut (dyn tilo_ui_base::widget::Widget + '_)> {
         vec![self.child.as_mut()]
     }
 }
 
-impl crate::widget::ResourceOperations for Relays {
+impl tilo_ui_base::widget::ResourceOperations for Relays {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         [SEND.to_owned(), RELAY.to_owned()].into_iter().collect()
     }
 
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        _: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         match op.request().type_id {
             SEND => self.sent.set(self.sent.get() + 1),
             RELAY => {
@@ -408,22 +408,24 @@ impl crate::widget::ResourceOperations for Relays {
             }
             _ => return Ok(None),
         }
-        Ok(Some(crate::widget::ResourceOperationStart::Completed(
-            tilo_actions::ActionOutput::default(),
-        )))
+        Ok(Some(
+            tilo_ui_base::widget::ResourceOperationStart::Completed(
+                tilo_actions::ActionOutput::default(),
+            ),
+        ))
     }
 }
 
-impl crate::widget::resources::PublishesResources for Relays {
+impl tilo_ui_base::widget::resources::PublishesResources for Relays {
     fn resources(&self, _: &automerge::AutoCommit) -> Vec<tilo_actions::ResourceSpec> {
         vec![self.resource.clone()]
     }
 }
 
-impl crate::widget::controls::ActionControls for Relays {
+impl tilo_ui_base::widget::controls::ActionControls for Relays {
     fn take_attributed_control_invocation(
         &mut self,
-    ) -> Option<crate::widget::controls::AttributedControlInvocation> {
+    ) -> Option<tilo_ui_base::widget::controls::AttributedControlInvocation> {
         self.queued.take()
     }
 }
@@ -441,7 +443,7 @@ fn an_agent_s_call_to_a_refused_action_never_asks_the_workspace() {
         crate::State::new(),
         relays(Rc::clone(&sent)),
         (600, 400),
-        crate::theme::Theme::dark(),
+        tilo_ui_base::theme::Theme::dark(),
     );
     driver.connect_peer();
     driver.set_permission_ctx(PermissionContext::member(
@@ -473,7 +475,7 @@ fn an_agent_s_call_to_a_refused_action_never_asks_the_workspace() {
     let asked_the_workspace = driver.peer_requests().into_iter().any(|request| {
         matches!(
             request,
-            crate::collaboration::CollabRequest::RemoteAction {
+            tilo_ui_base::collaboration::CollabRequest::RemoteAction {
                 message: tilo_actions::remote::RemoteActionMessage::Invoke(ref invoke),
                 ..
             } if invoke.target.provider == tilo_actions::remote::OWN_PROVIDER

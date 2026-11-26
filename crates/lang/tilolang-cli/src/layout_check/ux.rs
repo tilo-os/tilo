@@ -13,10 +13,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use tilo_app_window::{UiNode, Value};
-use ui::a11y::Role;
+use tilo_ui_base::a11y::Role;
+use tilo_ui_base::{widget::LayoutInfo, widget::RowLayout};
 use ui::headless::InspectionNode;
 use ui::kurbo::Rect;
-use ui::widget::{LayoutInfo, RowLayout};
 
 use super::audit::{Kind, Problem};
 
@@ -887,7 +887,7 @@ fn opens(
             if !is_item || item.state.expanded != Some(true) {
                 continue;
             }
-            if let Some(row) = item.bounds.map(ui::a11y::AccessBounds::to_rect)
+            if let Some(row) = item.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect)
                 && let Some(detail) = outside_list(list, row)
             {
                 push(out, Kind::OpenOutsideList, node, keys, detail);
@@ -980,7 +980,7 @@ fn repeated_row_titles(node: &InspectionNode, keys: &mut Vec<String>, out: &mut 
                     })
                     .filter_map(|item| {
                         let name = item.name.as_deref()?;
-                        let at = item.bounds.map(ui::a11y::AccessBounds::to_rect)?;
+                        let at = item.bounds.map(tilo_ui_base::a11y::AccessBounds::to_rect)?;
                         Some((one_line(name), at))
                     })
                     .collect()
@@ -1031,7 +1031,7 @@ fn titled_within(node: &InspectionNode, title: &str, at: Rect) -> usize {
 
 /// Whether this node writes `title` on the screen: the words of a label, a heading or a link, or
 /// the value of the field it is.
-fn writes(semantics: &ui::a11y::AccessNode, title: &str) -> bool {
+fn writes(semantics: &tilo_ui_base::a11y::AccessNode, title: &str) -> bool {
     let drawn = matches!(
         semantics.role,
         Role::StaticText | Role::Label | Role::Heading { .. } | Role::Link
@@ -1148,7 +1148,7 @@ fn gutter(node: &InspectionNode, width: f64, keys: &mut Vec<String>, out: &mut V
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ui::a11y::AccessNode;
+    use tilo_ui_base::a11y::AccessNode;
 
     fn node(widget: &str, id: &str, rect: [f64; 4], role: Option<Role>) -> InspectionNode {
         InspectionNode {
@@ -1174,8 +1174,9 @@ mod tests {
 
     fn selected(widget: &str, id: &str, rect: [f64; 4], role: Role) -> InspectionNode {
         let mut node = node(widget, id, rect, Some(role));
-        node.semantics =
-            Some(AccessNode::new(role).with_state(ui::a11y::AccessState::new().selected(true)));
+        node.semantics = Some(
+            AccessNode::new(role).with_state(tilo_ui_base::a11y::AccessState::new().selected(true)),
+        );
         node
     }
 
@@ -1525,7 +1526,7 @@ mod tests {
                 lines: u32,
             ) -> InspectionNode {
                 let mut field = node("TextInput", id, at, Some(Role::TextInput));
-                field.layout = Some(LayoutInfo::Text(ui::widget::TextLayout {
+                field.layout = Some(LayoutInfo::Text(tilo_ui_base::widget::TextLayout {
                     top: f64_to_f32(top),
                     line: f64_to_f32(line),
                     rows,
@@ -1627,7 +1628,7 @@ mod tests {
 
             let mut boxed = shape();
             boxed.semantics = Some(
-                AccessNode::new(Role::List).with_state(ui::a11y::AccessState::new().selected(true)),
+                AccessNode::new(Role::List).with_state(tilo_ui_base::a11y::AccessState::new().selected(true)),
             );
             let problems = found(Kind::DoubleSelection, &boxed, (1280, 800));
             assert_eq!(problems.len(), 1, "{problems:?}");
@@ -1957,7 +1958,7 @@ mod tests {
         node.semantics = Some(
             AccessNode::new(Role::TreeItem)
                 .with_name(name)
-                .with_state(ui::a11y::AccessState::new().selected(true)),
+                .with_state(tilo_ui_base::a11y::AccessState::new().selected(true)),
         );
         node
     }
@@ -1965,8 +1966,9 @@ mod tests {
     /// An item held open where it stands: the row of the list, below its top edge.
     fn opened(id: &str, rect: [f64; 4], role: Role) -> InspectionNode {
         let mut row = node("ListItem", id, rect, Some(role));
-        row.semantics =
-            Some(AccessNode::new(role).with_state(ui::a11y::AccessState::new().expanded(true)));
+        row.semantics = Some(
+            AccessNode::new(role).with_state(tilo_ui_base::a11y::AccessState::new().expanded(true)),
+        );
         row
     }
 
@@ -2041,14 +2043,14 @@ mod tests {
         // A list's rows are the nodes the list publishes under its own, not widgets of their own: a
         // row open where it stands is read from the box its node reports.
         {
-            fn published(rows: Vec<ui::a11y::AccessNode>) -> InspectionNode {
+            fn published(rows: Vec<tilo_ui_base::a11y::AccessNode>) -> InspectionNode {
                 let mut list = list_of(vec![]);
                 list.semantics = Some(AccessNode::new(Role::List).with_children(rows));
                 list
             }
-            fn row(role: Role, rect: [f64; 4]) -> ui::a11y::AccessNode {
+            fn row(role: Role, rect: [f64; 4]) -> tilo_ui_base::a11y::AccessNode {
                 AccessNode::new(role)
-                    .with_state(ui::a11y::AccessState::new().expanded(true))
+                    .with_state(tilo_ui_base::a11y::AccessState::new().expanded(true))
                     .with_bounds(Rect::new(
                         rect[0],
                         rect[1],
@@ -2129,7 +2131,7 @@ mod tests {
                                 let y = 110.0 + 36.0 * f64::from(u32::try_from(at).unwrap());
                                 AccessNode::new(Role::TreeItem)
                                     .with_name(name)
-                                    .with_state(ui::a11y::AccessState::new().selected(chosen))
+                                    .with_state(tilo_ui_base::a11y::AccessState::new().selected(chosen))
                                     .with_bounds(Rect::new(16.0, y, 264.0, y + 28.0))
                             })
                             .collect(),
@@ -2212,7 +2214,7 @@ mod tests {
                 list.semantics = Some(AccessNode::new(Role::List).with_children(vec![
                     AccessNode::new(Role::ListItem)
                         .with_name("Call the landlord about the boiler")
-                        .with_state(ui::a11y::AccessState::new().expanded(true))
+                        .with_state(tilo_ui_base::a11y::AccessState::new().expanded(true))
                         .with_bounds(Rect::new(0.0, 100.0, 400.0, 500.0)),
                 ]));
                 list
@@ -2230,7 +2232,7 @@ mod tests {
             row.semantics = Some(
                 AccessNode::new(Role::ListItem)
                     .with_name("Call the landlord about the boiler")
-                    .with_state(ui::a11y::AccessState::new().expanded(true)),
+                    .with_state(tilo_ui_base::a11y::AccessState::new().expanded(true)),
             );
             assert!(
                 found(Kind::RepeatedRowTitle, &list(vec![row]), (1280, 800)).is_empty(),

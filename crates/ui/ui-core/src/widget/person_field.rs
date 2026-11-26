@@ -3,17 +3,20 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use crate::LocalState;
-use crate::component::Person;
-use crate::icons::Icon;
-use crate::tokens::TextRole;
 use crate::widget::arrange::Stack;
-use crate::widget::binding::{BoxedBinding, Pulled, derived};
-use crate::widget::{
-    AppModel, Button, ButtonRole, Decorator, ModelPath, PopoverButton, Text, TextInput, When,
-    Widget,
+use crate::{
+    widget::Button, widget::ButtonRole, widget::PopoverButton, widget::Text, widget::TextInput,
+    widget::When,
 };
 use tilo_actions::Actor;
+use tilo_ui_base::LocalState;
+use tilo_ui_base::component::Person;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::ModelPath, widget::Widget};
+use tilo_ui_base::{
+    widget::binding::BoxedBinding, widget::binding::Pulled, widget::binding::derived,
+};
 
 #[path = "person_field_component.rs"]
 mod component;
@@ -89,15 +92,17 @@ impl PersonField {
         }
     }
 
-    /// A field following the actor `state` holds as its text ([`crate::component::actor_text`],
+    /// A field following the actor `state` holds as its text ([`tilo_ui_base::component::actor_text`],
     /// `""` for nobody): a person set there shows in place.
     pub(super) fn from_state(
         id: &str,
-        state: &crate::LocalState<String>,
+        state: &tilo_ui_base::LocalState<String>,
         people: Vec<Person>,
         me: Option<Person>,
     ) -> Self {
-        let (who, binding) = derived(state, |text: &String| crate::component::actor_of_text(text));
+        let (who, binding) = derived(state, |text: &String| {
+            tilo_ui_base::component::actor_of_text(text)
+        });
         let mut field = Self::new(id, who.as_ref(), people, me);
         field.bound = Some(binding);
         field
@@ -130,7 +135,7 @@ impl PersonField {
     #[must_use]
     pub fn who_name(&self, identity: Option<&Actor>) -> String {
         let Some(identity) = identity else {
-            return crate::i18n::widget_format("person-field-none", &[]);
+            return tilo_ui_base::i18n::widget_format("person-field-none", &[]);
         };
         self.people
             .iter()
@@ -210,7 +215,7 @@ fn field(
             .map_or_else(|| identity.id().to_owned(), |person| person.name.clone())
     });
     let label = if name.is_empty() {
-        crate::i18n::widget_format("person-field-none", &[])
+        tilo_ui_base::i18n::widget_format("person-field-none", &[])
     } else {
         name
     };
@@ -246,14 +251,14 @@ fn picker(
     let mut content = Stack::stack();
     let mut search = TextInput::from_state(query)
         .with_id(&format!("{id}-search"))
-        .with_placeholder(crate::i18n::LabelKey::new("person-field-search"))
+        .with_placeholder(tilo_ui_base::i18n::LabelKey::new("person-field-search"))
         .with_clear_button();
     if focus {
         search = search.wants_focus();
     }
     content = content.push(Box::new(search));
     if let Some(me) = me {
-        let label = crate::i18n::widget_format("person-field-me", &[]);
+        let label = tilo_ui_base::i18n::widget_format("person-field-me", &[]);
         content = content.push(Box::new(When::new(
             Box::new(entry(
                 &format!("{id}-me"),
@@ -265,7 +270,7 @@ fn picker(
             shown_matching(query, &label, me.identity.id()),
         )));
     }
-    let none_label = crate::i18n::widget_format("person-field-none", &[]);
+    let none_label = tilo_ui_base::i18n::widget_format("person-field-none", &[]);
     let on_clear = Rc::clone(picked);
     let clear = Button::new(&format!("{id}-none"), &none_label)
         .role(ButtonRole::Plain)
@@ -292,7 +297,7 @@ fn picker(
         )));
     }
     // What the list says while the search holds nobody: a line, never a row that does nothing.
-    let no_matches = crate::i18n::widget_format("search-no-matches", &[]);
+    let no_matches = tilo_ui_base::i18n::widget_format("search-no-matches", &[]);
     let notice = Text::new(&no_matches)
         .with_role(TextRole::Caption)
         .dimmed()
@@ -301,7 +306,7 @@ fn picker(
         .iter()
         .map(|me| {
             (
-                crate::i18n::widget_format("person-field-me", &[]),
+                tilo_ui_base::i18n::widget_format("person-field-me", &[]),
                 me.identity.id().to_owned(),
             )
         })
@@ -312,7 +317,7 @@ fn picker(
                 .map(|person| (person.name.clone(), person.identity.id().to_owned())),
         )
         .chain(std::iter::once((
-            crate::i18n::widget_format("person-field-none", &[]),
+            tilo_ui_base::i18n::widget_format("person-field-none", &[]),
             String::new(),
         )))
         .collect();
@@ -408,13 +413,13 @@ mod tests {
         let mia = Person {
             identity: mia_id(),
             name: "Mia".to_owned(),
-            hue: crate::tokens::PresenceHue::Violet,
+            hue: tilo_ui_base::tokens::PresenceHue::Violet,
             picture: None,
         };
         let sam = Person {
             identity: sam_id(),
             name: "Sam".to_owned(),
-            hue: crate::tokens::PresenceHue::Cyan,
+            hue: tilo_ui_base::tokens::PresenceHue::Cyan,
             picture: None,
         };
         (vec![mia.clone(), sam], mia)
@@ -460,7 +465,7 @@ mod tests {
         phase a_bound_identity_shows_and_one_set_while_the_list_is_open_waits_for_it;
         {
             let (people, mia) = people();
-            let state = crate::LocalState::new(crate::component::actor_text(&mia_id()));
+            let state = tilo_ui_base::LocalState::new(tilo_ui_base::component::actor_text(&mia_id()));
             let doc = automerge::AutoCommit::new();
             let mut field = PersonField::from_state("assignee", &state, people, Some(mia));
             assert_eq!(
@@ -468,7 +473,7 @@ mod tests {
                 Some(&mia_id()),
                 "the person the binding holds is shown"
             );
-            state.set(crate::component::actor_text(&sam_id()));
+            state.set(tilo_ui_base::component::actor_text(&sam_id()));
             Decorator::sync(&mut field, &doc, &automerge::ROOT);
             assert_eq!(
                 field.value(),
@@ -498,7 +503,7 @@ mod tests {
 /// words are typed in, and always offers the "No one" row while nothing is typed.
 #[test]
 fn the_search_matches_names_and_identities() {
-    use crate::LocalState;
+    use tilo_ui_base::LocalState;
 
     assert!(matches("", "Mia", "mia"));
     assert!(matches("  ", "Mia", "mia"), "only blanks narrow nothing");

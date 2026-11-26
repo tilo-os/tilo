@@ -28,7 +28,7 @@ use tilo_actions::{
     OperationKind, ParamType, ResourceSpec,
 };
 
-use crate::i18n::I18nManager;
+use tilo_ui_base::i18n::I18nManager;
 
 /// The operation type the host search resource's `open` action runs.
 pub(crate) const SEARCH_OPERATION: &str = "tilo.host.search.view";
@@ -373,12 +373,12 @@ pub fn search_button(request: SearchRequest) -> crate::widget::Button {
         Some(scope) => format!("{label} {}", scope.label),
         None => label,
     };
-    crate::widget::Button::icon_only(&id, crate::icons::Icon::Search, &name)
+    crate::widget::Button::icon_only(&id, tilo_ui_base::icons::Icon::Search, &name)
         .on_action(open_search_binding(&request))
 }
 
 /// The invocation a painted widget queues (through
-/// [`ActionControls`](crate::widget::controls::ActionControls)) to open the platform
+/// [`ActionControls`](tilo_ui_base::widget::controls::ActionControls)) to open the platform
 /// search with `request`; [`SearchOpener`] keeps one for it.
 #[must_use]
 pub fn open_search_invocation(request: &SearchRequest) -> ControlInvocation {

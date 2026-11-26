@@ -7,9 +7,9 @@ use std::rc::Rc;
 
 use automerge::AutoCommit;
 
-use crate::reorder::{DropPlacement, DropTarget, ReorderDrop};
 use crate::testing::Dispatch;
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
 
 /// A model whose rows name the row they stand under, as a list of subtasks does: the rows keep
 /// the model's order, and a parent need not be the row above. `groups` are the headings its rows
@@ -95,10 +95,10 @@ fn press<M: ListModel + 'static>(
     taffy: &TaffyTree<()>,
     node: NodeId,
 ) {
-    let at = crate::synthetic_input::cursor_moved(x, y);
+    let at = tilo_ui_base::synthetic_input::cursor_moved(x, y);
     let _ = Dispatch::new().layout(taffy, node).send(list, &at);
     for state in [ElementState::Pressed, ElementState::Released] {
-        let event = crate::synthetic_input::mouse_input(state, MouseButton::Left);
+        let event = tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left);
         let _ = Dispatch::new().layout(taffy, node).send(list, &event);
     }
 }
@@ -260,7 +260,7 @@ tilo_test_env::scenario! {
 
     phase a_tree_reads_as_a_tree_and_says_how_deep_each_row_stands;
     {
-        use crate::a11y::Role;
+        use tilo_ui_base::a11y::Role;
 
         let marks = Rc::new(TreeMarks::default());
         let mut list = nested().with_tree(Rc::clone(&marks));
@@ -311,19 +311,19 @@ tilo_test_env::scenario! {
         let laid_out = (&taffy, node);
         assert!(list.fold_row(&0, true));
         let _ = super::tests::lay_out(&mut list, 300.0);
-        list.reorder = crate::reorder::ReorderController::new()
+        list.reorder = tilo_ui_base::reorder::ReorderController::new()
             .with_drag_threshold(0.0)
             .with_hover_expand_delay(crate::time::Duration::ZERO);
 
         send(
             &mut list,
-            &crate::synthetic_input::cursor_moved(20.0, 30.0),
+            &tilo_ui_base::synthetic_input::cursor_moved(20.0, 30.0),
             laid_out,
         );
-        send(&mut list, &crate::synthetic_input::mouse_press(), laid_out);
+        send(&mut list, &tilo_ui_base::synthetic_input::mouse_press(), laid_out);
         send(
             &mut list,
-            &crate::synthetic_input::cursor_moved(20.0, 10.0),
+            &tilo_ui_base::synthetic_input::cursor_moved(20.0, 10.0),
             laid_out,
         );
         assert_eq!(
@@ -392,7 +392,7 @@ tilo_test_env::scenario! {
 
         assert!(send(
             &mut list,
-            &crate::synthetic_input::named_key(NamedKey::Tab),
+            &tilo_ui_base::synthetic_input::named_key(NamedKey::Tab),
             laid_out
         ));
         assert_eq!(
@@ -410,7 +410,7 @@ tilo_test_env::scenario! {
 
         assert!(send_with(
             &mut list,
-            &crate::synthetic_input::named_key(NamedKey::Tab),
+            &tilo_ui_base::synthetic_input::named_key(NamedKey::Tab),
             winit::keyboard::ModifiersState::SHIFT,
             laid_out,
         ));
@@ -437,7 +437,7 @@ tilo_test_env::scenario! {
         assert!(
             !send(
                 &mut list,
-                &crate::synthetic_input::named_key(NamedKey::Tab),
+                &tilo_ui_base::synthetic_input::named_key(NamedKey::Tab),
                 (&taffy, node)
             ),
             "a top row has no row above to indent into"
@@ -460,7 +460,7 @@ tilo_test_env::scenario! {
         assert!(list.reveal(&2));
         assert!(send_with(
             &mut list,
-            &crate::synthetic_input::named_key(NamedKey::ArrowRight),
+            &tilo_ui_base::synthetic_input::named_key(NamedKey::ArrowRight),
             alt,
             laid_out
         ));
@@ -471,7 +471,7 @@ tilo_test_env::scenario! {
         );
         assert!(send_with(
             &mut list,
-            &crate::synthetic_input::named_key(NamedKey::ArrowLeft),
+            &tilo_ui_base::synthetic_input::named_key(NamedKey::ArrowLeft),
             alt,
             laid_out
         ));
@@ -481,7 +481,7 @@ tilo_test_env::scenario! {
         // stands under row 0, and row 2 passes both to stand above them, still a top row.
         assert!(send_with(
             &mut list,
-            &crate::synthetic_input::named_key(NamedKey::ArrowUp),
+            &tilo_ui_base::synthetic_input::named_key(NamedKey::ArrowUp),
             ctrl,
             laid_out
         ));
@@ -501,13 +501,13 @@ tilo_test_env::scenario! {
 
         send(
             &mut list,
-            &crate::synthetic_input::cursor_moved(20.0, 50.0),
+            &tilo_ui_base::synthetic_input::cursor_moved(20.0, 50.0),
             laid_out,
         );
-        send(&mut list, &crate::synthetic_input::mouse_press(), laid_out);
+        send(&mut list, &tilo_ui_base::synthetic_input::mouse_press(), laid_out);
         send(
             &mut list,
-            &crate::synthetic_input::cursor_moved(20.0, 10.0),
+            &tilo_ui_base::synthetic_input::cursor_moved(20.0, 10.0),
             laid_out,
         );
         assert_eq!(
@@ -518,7 +518,7 @@ tilo_test_env::scenario! {
         assert!(list.reorder_preview().is_some());
         send(
             &mut list,
-            &crate::synthetic_input::mouse_release(),
+            &tilo_ui_base::synthetic_input::mouse_release(),
             laid_out,
         );
 
@@ -539,13 +539,13 @@ tilo_test_env::scenario! {
 
         send(
             &mut list,
-            &crate::synthetic_input::cursor_moved(20.0, 50.0),
+            &tilo_ui_base::synthetic_input::cursor_moved(20.0, 50.0),
             laid_out,
         );
-        send(&mut list, &crate::synthetic_input::mouse_press(), laid_out);
+        send(&mut list, &tilo_ui_base::synthetic_input::mouse_press(), laid_out);
         send(
             &mut list,
-            &crate::synthetic_input::cursor_moved(20.0, 18.0),
+            &tilo_ui_base::synthetic_input::cursor_moved(20.0, 18.0),
             laid_out,
         );
         assert_eq!(
@@ -723,13 +723,13 @@ tilo_test_env::scenario! {
         list.set_focus(true);
         assert!(send(
             &mut list,
-            &crate::synthetic_input::named_key(NamedKey::ArrowDown),
+            &tilo_ui_base::synthetic_input::named_key(NamedKey::ArrowDown),
             laid_out
         ));
         assert_eq!(list.focused_key(), Some(&0));
         assert!(send(
             &mut list,
-            &crate::synthetic_input::named_key(NamedKey::Delete),
+            &tilo_ui_base::synthetic_input::named_key(NamedKey::Delete),
             laid_out
         ));
         assert_eq!(
@@ -751,13 +751,13 @@ tilo_test_env::scenario! {
         list.set_focus(true);
         assert!(send(
             &mut list,
-            &crate::synthetic_input::named_key(NamedKey::ArrowDown),
+            &tilo_ui_base::synthetic_input::named_key(NamedKey::ArrowDown),
             laid_out
         ));
 
         assert!(send(
             &mut list,
-            &crate::synthetic_input::named_key(NamedKey::F2),
+            &tilo_ui_base::synthetic_input::named_key(NamedKey::F2),
             laid_out
         ));
         assert_eq!(list.renaming(), Some(&0));
@@ -773,19 +773,19 @@ tilo_test_env::scenario! {
         // Typing goes into the field, never the list's type-ahead, and Enter commits.
         assert!(send(
             &mut list,
-            &crate::synthetic_input::char_key("!"),
+            &tilo_ui_base::synthetic_input::char_key("!"),
             laid_out
         ));
         let semantics = list.accessibility().expect("the list has a node");
         let field = semantics.children[0]
             .children
             .iter()
-            .find(|child| child.role == crate::a11y::Role::TextInput)
+            .find(|child| child.role == tilo_ui_base::a11y::Role::TextInput)
             .expect("the row carries the field over its label, for a reader to reach");
         assert_eq!(field.value.as_deref(), Some("row 0!"));
         assert!(send(
             &mut list,
-            &crate::synthetic_input::named_key(NamedKey::Enter),
+            &tilo_ui_base::synthetic_input::named_key(NamedKey::Enter),
             laid_out
         ));
         assert_eq!(list.renaming(), None, "the field closed");
@@ -804,12 +804,12 @@ tilo_test_env::scenario! {
         assert!(list.begin_rename(&0));
         assert!(send(
             &mut list,
-            &crate::synthetic_input::char_key("x"),
+            &tilo_ui_base::synthetic_input::char_key("x"),
             laid_out
         ));
         assert!(send(
             &mut list,
-            &crate::synthetic_input::named_key(NamedKey::Escape),
+            &tilo_ui_base::synthetic_input::named_key(NamedKey::Escape),
             laid_out
         ));
         assert_eq!(list.renaming(), None);
@@ -821,18 +821,18 @@ tilo_test_env::scenario! {
         assert!(list.begin_rename(&0));
         assert!(send(
             &mut list,
-            &crate::synthetic_input::char_key("y"),
+            &tilo_ui_base::synthetic_input::char_key("y"),
             laid_out
         ));
         send(
             &mut list,
-            &crate::synthetic_input::cursor_moved(20.0, 30.0),
+            &tilo_ui_base::synthetic_input::cursor_moved(20.0, 30.0),
             laid_out,
         );
-        send(&mut list, &crate::synthetic_input::mouse_press(), laid_out);
+        send(&mut list, &tilo_ui_base::synthetic_input::mouse_press(), laid_out);
         send(
             &mut list,
-            &crate::synthetic_input::mouse_release(),
+            &tilo_ui_base::synthetic_input::mouse_release(),
             laid_out,
         );
         assert_eq!(*renamed.borrow(), vec![(0, "row 0y".to_owned())]);
@@ -911,12 +911,12 @@ impl ListModel for OpenableTree {
 
 #[test]
 fn a_tree_row_open_in_its_place_hands_a_reader_what_it_holds() {
-    use crate::a11y::Action;
     use crate::app::driver::Driver;
     use crate::widget::{Checkbox, Column, TextInput};
     use accesskit::Role as AkRole;
+    use tilo_ui_base::a11y::Action;
 
-    let done = crate::LocalState::new(false);
+    let done = tilo_ui_base::LocalState::new(false);
     let state = done.clone();
     let model = OpenableTree {
         keys: vec![0, 1, 2],
@@ -928,7 +928,7 @@ fn a_tree_row_open_in_its_place_hands_a_reader_what_it_holds() {
                 Column::new()
                     .push(Box::new(
                         TextInput::new(Vec::new())
-                            .with_text_role(crate::tokens::TextRole::Title)
+                            .with_text_role(tilo_ui_base::tokens::TextRole::Title)
                             .with_id("title")
                             .with_accessible_name("Title")
                             .with_initial_value("Subtasks"),
@@ -1047,7 +1047,7 @@ impl ListModel for ArrivingNested {
     fn row_state(&self, index: usize) -> Arrival<(), &str> {
         if index == 0 && !self.ready.get() {
             Arrival::Pending {
-                from: crate::arriving::Source::Remote,
+                from: tilo_ui_base::arriving::Source::Remote,
             }
         } else {
             Arrival::Ready(())
@@ -1061,9 +1061,9 @@ impl ListModel for ArrivingNested {
 #[test]
 fn a_branch_on_its_way_offers_nothing_to_fold_until_it_arrives() {
     use crate::app::driver::Driver;
-    use crate::arriving::{GRACE, MIN_SHOWN};
     use crate::time::testing::with_monotonic_time;
     use crate::widget::ListRow;
+    use tilo_ui_base::{arriving::GRACE, arriving::MIN_SHOWN};
 
     let t0 = crate::time::now();
     let ready = Rc::new(Cell::new(false));

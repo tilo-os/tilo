@@ -17,8 +17,8 @@ tilo_test_env::scenario! {
     // as a phone and insets what it holds as a bar's body does, so the row has nowhere to put the
     // controls but beside each other.
     {
-        use crate::interaction::InteractionEnvironment;
-        use crate::tokens::Rhythm;
+        use tilo_ui_base::interaction::InteractionEnvironment;
+        use tilo_ui_base::tokens::Rhythm;
         for pointer in [
             InteractionEnvironment::POINTER,
             InteractionEnvironment::TOUCH,
@@ -28,7 +28,7 @@ tilo_test_env::scenario! {
                 .with_padding_rhythm(Rhythm::Tight, Rhythm::Tight);
             for key in ["menu", "workspace", "bell"] {
                 row = row.push(Box::new(
-                    Button::icon_only(key, crate::icons::Icon::Bell, key).role(ButtonRole::Bar),
+                    Button::icon_only(key, tilo_ui_base::icons::Icon::Bell, key).role(ButtonRole::Bar),
                 ));
             }
             let mut harness =

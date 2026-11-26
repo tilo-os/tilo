@@ -32,10 +32,10 @@ pub const MAX_SUGGESTIONS: usize = 8;
 pub const MAX_CHOICES: usize = 32;
 
 /// Largest encoded location picture, in bytes.
-pub const MAX_IMAGE_BYTES: usize = crate::icons::MAX_PNG_BYTES;
+pub const MAX_IMAGE_BYTES: usize = tilo_ui_base::icons::MAX_PNG_BYTES;
 
 /// Largest location picture, in pixels (edge squared).
-pub const MAX_IMAGE_PIXELS: u32 = crate::icons::MAX_PNG_PIXELS;
+pub const MAX_IMAGE_PIXELS: u32 = tilo_ui_base::icons::MAX_PNG_PIXELS;
 
 /// Longest label, value or name the bar takes, in bytes. Longer text is cut at a
 /// character boundary: the bar elides far sooner, and the wire never carries a page's
@@ -171,7 +171,7 @@ impl ToolbarNotice {
     fn bound(&mut self) {
         cut(&mut self.text);
         self.actions
-            .retain(|action| crate::icons::Icon::from_name(&action.icon).is_some());
+            .retain(|action| tilo_ui_base::icons::Icon::from_name(&action.icon).is_some());
         self.actions.truncate(MAX_NOTICE_ACTIONS);
         for action in &mut self.actions {
             cut(&mut action.id);
@@ -287,7 +287,7 @@ pub struct LocationAvatar {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub agent: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub hue: Option<crate::tokens::PresenceHue>,
+    pub hue: Option<tilo_ui_base::tokens::PresenceHue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub presence: Option<LocationPresence>,
 }
@@ -305,12 +305,12 @@ pub enum LocationPresence {
 impl LocationPresence {
     /// The badge their face wears.
     #[must_use]
-    pub fn status(self) -> crate::widget::PresenceStatus {
+    pub fn status(self) -> tilo_ui_base::widget::PresenceStatus {
         match self {
-            Self::Online => crate::widget::PresenceStatus::Online,
-            Self::Away => crate::widget::PresenceStatus::Away,
-            Self::Busy => crate::widget::PresenceStatus::Busy,
-            Self::Offline => crate::widget::PresenceStatus::Offline,
+            Self::Online => tilo_ui_base::widget::PresenceStatus::Online,
+            Self::Away => tilo_ui_base::widget::PresenceStatus::Away,
+            Self::Busy => tilo_ui_base::widget::PresenceStatus::Busy,
+            Self::Offline => tilo_ui_base::widget::PresenceStatus::Offline,
         }
     }
 }
@@ -332,14 +332,14 @@ impl std::fmt::Debug for ToolbarImage {
 impl ToolbarImage {
     /// The picture as the bar paints it: decoded once, at most [`MAX_IMAGE_PIXELS`].
     #[must_use]
-    pub fn app_image(&self) -> Option<crate::icons::AppImage> {
+    pub fn app_image(&self) -> Option<tilo_ui_base::icons::AppImage> {
         let key = {
             use std::hash::{Hash, Hasher};
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             self.png.hash(&mut hasher);
             format!("window-toolbar-image:{:016x}", hasher.finish())
         };
-        crate::icons::AppImage::from_png(key, &self.png)
+        tilo_ui_base::icons::AppImage::from_png(key, &self.png)
     }
 }
 
@@ -355,10 +355,10 @@ pub struct LocationSuggestion {
 }
 
 impl ToolbarLocation {
-    /// A location naming `period` ([`crate::format::Period`]), in its widest form, with
+    /// A location naming `period` ([`tilo_ui_base::format::Period`]), in its widest form, with
     /// its narrower ones for a narrow bar.
     #[must_use]
-    pub fn period(period: crate::format::Period) -> Self {
+    pub fn period(period: tilo_ui_base::format::Period) -> Self {
         let mut forms = period.forms().into_iter();
         Self {
             label: forms.next().unwrap_or_default(),
@@ -679,7 +679,7 @@ pub enum SearchOpening {
 impl SearchOffer {
     /// What `root`'s widgets offer the window's search.
     #[must_use]
-    pub fn of(root: &mut dyn crate::widget::Widget) -> Self {
+    pub fn of(root: &mut dyn tilo_ui_base::widget::Widget) -> Self {
         crate::widget::InPlace::of(root).into()
     }
 }
@@ -840,7 +840,7 @@ impl WindowToolbar {
         self.actions.sort_by_key(|action| action.menu);
         self.actions.truncate(MAX_DECLARED_ACTIONS);
         self.leading
-            .retain(|action| crate::icons::Icon::from_name(&action.icon).is_some());
+            .retain(|action| tilo_ui_base::icons::Icon::from_name(&action.icon).is_some());
         self.leading.truncate(MAX_LEADING);
         for action in self.actions.iter_mut().chain(self.leading.iter_mut()) {
             cut(&mut action.id);
@@ -891,7 +891,7 @@ impl WindowToolbar {
             if location
                 .icon
                 .as_deref()
-                .is_some_and(|icon| crate::icons::Icon::from_name(icon).is_none())
+                .is_some_and(|icon| tilo_ui_base::icons::Icon::from_name(icon).is_none())
             {
                 location.icon = None;
             }
@@ -916,7 +916,7 @@ impl WindowToolbar {
                 if suggestion
                     .icon
                     .as_deref()
-                    .is_some_and(|icon| crate::icons::Icon::from_name(icon).is_none())
+                    .is_some_and(|icon| tilo_ui_base::icons::Icon::from_name(icon).is_none())
                 {
                     suggestion.icon = None;
                 }
@@ -938,7 +938,7 @@ impl WindowToolbar {
 }
 
 fn shown_icon(icon: &str, in_menu: bool) -> bool {
-    crate::icons::Icon::from_name(icon).is_some() || (in_menu && icon.is_empty())
+    tilo_ui_base::icons::Icon::from_name(icon).is_some() || (in_menu && icon.is_empty())
 }
 
 impl ToolbarEvent {

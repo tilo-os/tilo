@@ -16,8 +16,8 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicU64;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
-use ui::widget::TaffyTreeExt;
-use ui::widget::{AppModel, ModelPath};
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use taffy::style_helpers::{length, percent};
 use taffy::{
@@ -33,20 +33,22 @@ use winit::event_loop::EventLoopProxy;
 use winit::keyboard::{Key, NamedKey};
 use zeroize::{Zeroize, Zeroizing};
 
-use ui::a11y::AccessibilityRequest;
+use tilo_ui_base::a11y::AccessibilityRequest;
+use tilo_ui_base::caps_lock::CapsLockEstimate;
+use tilo_ui_base::icons::Icon;
 use ui::app::UserEvent;
-use ui::caps_lock::CapsLockEstimate;
-use ui::icons::Icon;
 
 #[cfg(test)]
-use ui::text_render::TextRenderer;
-use ui::text_render::{NumericStyle, OpenTypeTag, TextWeight};
-use ui::theme::Theme;
-use ui::tokens::TextRole;
-use ui::widget::DrawChild;
-use ui::widget::{
-    Avatar, AvatarSize, Button, ButtonRole, ControlSize, Dropdown, FieldRole, IconWidget,
-    Presentation, Row, Scrollable, SecretKind, SecretPrompt, Spacer, Text, TextInput, Widget,
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{text_render::NumericStyle, text_render::OpenTypeTag, text_render::TextWeight};
+use tilo_ui_base::{widget::AvatarSize, widget::Spacer, widget::Widget};
+use ui::{
+    widget::Avatar, widget::Button, widget::ButtonRole, widget::ControlSize, widget::Dropdown,
+    widget::FieldRole, widget::IconWidget, widget::Presentation, widget::Row, widget::Scrollable,
+    widget::SecretKind, widget::SecretPrompt, widget::Text, widget::TextInput,
 };
 
 mod boot_mode;
@@ -303,7 +305,7 @@ impl Widget for Stack {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         let own_origin = Point::new(self.rect.x0, self.rect.y0);
         if let Ok(child_nodes) = taffy.children(node) {
             for (child, &child_node) in self.children.iter_mut().zip(child_nodes.iter()) {
@@ -312,7 +314,7 @@ impl Widget for Stack {
         }
     }
 
-    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -324,9 +326,9 @@ impl Widget for Stack {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let Ok(child_nodes) = ctx.taffy.children(ctx.node_id) {
-            ui::widget::route_to_children(&mut self.children, &child_nodes, event, ctx);
+            tilo_ui_base::widget::route_to_children(&mut self.children, &child_nodes, event, ctx);
         }
     }
 
@@ -352,7 +354,7 @@ impl Widget for Stack {
 
     fn needs_redraw(&self) -> bool {
         self.children.iter().any(|c| c.needs_redraw())
-            || ui::widget::Widget::needs_animation_frame(self)
+            || tilo_ui_base::widget::Widget::needs_animation_frame(self)
     }
 
     /// The stack's own paint changes only with a rebuild, which repaints
@@ -382,12 +384,14 @@ impl Widget for Stack {
         "GreeterStack"
     }
 
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         (self.access == StackAccess::Hidden).then(|| {
-            ui::a11y::AccessNode::new(ui::a11y::Role::Group).with_state(ui::a11y::AccessState {
-                hidden: true,
-                ..Default::default()
-            })
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group).with_state(
+                tilo_ui_base::a11y::AccessState {
+                    hidden: true,
+                    ..Default::default()
+                },
+            )
         })
     }
 
@@ -588,13 +592,13 @@ struct ClockFace {
 
 impl ClockFace {
     fn now() -> Self {
-        Self::of(&ui::clock::local_now())
+        Self::of(&tilo_ui_base::clock::local_now())
     }
 
     fn of(now: &jiff::Zoned) -> Self {
         Self {
-            time: ui::clock::time_of_day(now),
-            date: ui::format::day_heading(now.date(), false),
+            time: tilo_ui_base::clock::time_of_day(now),
+            date: tilo_ui_base::format::day_heading(now.date(), false),
         }
     }
 }
@@ -646,7 +650,7 @@ pub struct GreeterApp {
     selected_session: usize,
     /// The session picker's chosen name. [`Widget::sync`] mirrors it onto
     /// `selected_session`.
-    session_choice: ui::LocalState<String>,
+    session_choice: tilo_ui_base::LocalState<String>,
     /// The local accounts this machine offers, in account-database order.
     /// With more than one, the screen lists them to choose from.
     users: Vec<LoginUser>,
@@ -655,7 +659,7 @@ pub struct GreeterApp {
     login_user: Option<LoginUser>,
     /// The username field's value. Seeded with the known account, replaced
     /// when another account is chosen, and read when an attempt starts.
-    username: ui::LocalState<String>,
+    username: tilo_ui_base::LocalState<String>,
     /// Whether fingerprint login is unavailable, already confirmed for the
     /// fixed local account, or must be resolved from the typed username.
     fingerprint: FingerprintAvailability,
@@ -684,7 +688,7 @@ pub struct GreeterApp {
     /// App polls to trigger a fresh `build_layout`.
     dirty_structure: bool,
     /// Heuristic Caps-Lock state inferred from typed letters (winit can't
-    /// report the lock directly). See [`ui::caps_lock`].
+    /// report the lock directly). See [`tilo_ui_base::caps_lock`].
     caps_lock: CapsLockEstimate,
     /// One-shot request that the App re-seat keyboard focus on the first
     /// focusable widget after the next rebuild (drained by
@@ -752,7 +756,7 @@ pub struct GreeterApp {
     /// The on-screen keyboard's state and the keys pressed on it.
     touch_keyboard: touch_keyboard::Shared,
     /// The input devices and the one in use, as the host reports them.
-    environment: ui::InteractionEnvironment,
+    environment: tilo_ui_base::InteractionEnvironment,
     /// Whether a keyboard is attached, where the kiosk's own report cannot
     /// be trusted ([`crate::keyboards`]); `None` takes the host's.
     keyboards: Option<bool>,
@@ -943,7 +947,7 @@ impl GreeterApp {
         fingerprint: FingerprintAvailability,
     ) -> Self {
         crate::i18n::ensure();
-        let session_choice = ui::LocalState::new(
+        let session_choice = tilo_ui_base::LocalState::new(
             sessions
                 .first()
                 .map(|session| session.name.clone())
@@ -955,7 +959,7 @@ impl GreeterApp {
             selected_session: 0,
             session_choice,
             users: login_user.iter().cloned().collect(),
-            username: ui::LocalState::new(
+            username: tilo_ui_base::LocalState::new(
                 login_user
                     .as_ref()
                     .map(|user| user.username.clone())
@@ -980,7 +984,7 @@ impl GreeterApp {
             screen_reader: false,
             sign_in_comforts: None,
             clock: ClockFace::now(),
-            clock_turns: minute_ends(&ui::clock::local_now(), ui::time::now()),
+            clock_turns: minute_ends(&tilo_ui_base::clock::local_now(), ui::time::now()),
             clock_pinned: false,
             device: DeviceStatus::default(),
             direction: Direction::Column,
@@ -1003,7 +1007,7 @@ impl GreeterApp {
                 passcode: Arc::clone(&password_buffer),
                 ..touch_keyboard::Shared::default()
             },
-            environment: ui::InteractionEnvironment::default(),
+            environment: tilo_ui_base::InteractionEnvironment::default(),
             keyboards: None,
             recovery: None,
             auth_socket: crate::handoff::DEFAULT_SOCKET.into(),
@@ -1473,7 +1477,7 @@ impl GreeterApp {
         let label_row = (f64::from(theme.text(TextRole::Label).line_height_px() + s.s1)
             + (field - action) / 2.0)
             .max(0.0);
-        let label_row = ui::num::f32_of_f64(label_row);
+        let label_row = tilo_ui_base::num::f32_of_f64(label_row);
         form.push(Box::new(
             Row::new()
                 .with_gap(s.s2)
@@ -1704,7 +1708,7 @@ impl GreeterApp {
         let chosen = labels.clone();
         trailing.push(Box::new(
             // A menu: the choice is a command, reported and never kept.
-            Dropdown::from_state(labels, &ui::LocalState::new(String::new()))
+            Dropdown::from_state(labels, &tilo_ui_base::LocalState::new(String::new()))
                 .as_menu(Icon::Power)
                 .with_id("greeter.power")
                 .with_accessible_name(t("greeter-power"))
@@ -2240,7 +2244,7 @@ impl GreeterApp {
     }
 }
 
-impl ui::widget::FullscreenProvider for GreeterApp {
+impl tilo_ui_base::widget::FullscreenProvider for GreeterApp {
     fn fullscreen_intent(&self) -> Option<bool> {
         // greetd owns the output; this is a system surface, not an app window.
         Some(true)
@@ -2248,10 +2252,10 @@ impl ui::widget::FullscreenProvider for GreeterApp {
 }
 
 impl Widget for GreeterApp {
-    ui::provides!(
-        dyn ui::widget::FullscreenProvider,
-        dyn ui::widget::resources::PublishesResources,
-        dyn ui::host_operation::ResourceOperations
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::FullscreenProvider,
+        dyn tilo_ui_base::widget::resources::PublishesResources,
+        dyn tilo_ui_base::host_operation::ResourceOperations
     );
 
     /// Take what the controls reported since the last pass. The document is
@@ -2261,7 +2265,7 @@ impl Widget for GreeterApp {
         // The minute turned over (the wake deadline brought us here), or the
         // machine's state changed: rebuild once to show it.
         if !self.clock_pinned {
-            let (wall, now) = (ui::clock::local_now(), ui::time::now());
+            let (wall, now) = (tilo_ui_base::clock::local_now(), ui::time::now());
             let clock = ClockFace::of(&wall);
             let turned = clock != self.clock;
             if turned {
@@ -2407,7 +2411,7 @@ impl Widget for GreeterApp {
                 .to_bits(),
             self.content.width() >= 1000.0,
         );
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         let child = taffy
             .children(node)
             .ok()
@@ -2422,8 +2426,8 @@ impl Widget for GreeterApp {
                 .and_then(|children| children.first().copied())
         {
             // The primary-output box built above holds the composition.
-            let outputs = ui::widget::layout_rect(taffy, outputs, child_origin);
-            self.content = ui::widget::layout_rect(taffy, area, outputs.origin());
+            let outputs = tilo_ui_base::widget::layout_rect(taffy, outputs, child_origin);
+            self.content = tilo_ui_base::widget::layout_rect(taffy, area, outputs.origin());
         }
         // The composition depends on the viewport. App and Driver
         // settle this rebuild before painting, including the very first frame
@@ -2446,7 +2450,7 @@ impl Widget for GreeterApp {
         }
     }
 
-    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2474,14 +2478,14 @@ impl Widget for GreeterApp {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::Focused(focused) => self.keyboard_focus = *focused,
             WindowEvent::KeyboardInput { .. } => self.keyboard_focus = true,
             _ => {}
         }
         // Track Caps Lock from typed letters (winit's Modifiers can't report
-        // the lock directly — see `ui::caps_lock`). A flip in the estimate
+        // the lock directly — see `tilo_ui_base::caps_lock`). A flip in the estimate
         // triggers a rebuild so the note appears/disappears. Focus + caret
         // survive that rebuild via the App's `rebuild_structure` continuity.
         if let WindowEvent::KeyboardInput {
@@ -2560,7 +2564,7 @@ impl Widget for GreeterApp {
 
     /// The card is rebuilt from state: each build keeps the input in use,
     /// so a finger gets touch-sized fields and actions.
-    fn set_interaction_environment(&mut self, environment: ui::InteractionEnvironment) {
+    fn set_interaction_environment(&mut self, environment: tilo_ui_base::InteractionEnvironment) {
         let shown = self.shows_touch_keyboard();
         self.environment = environment;
         if self.shows_touch_keyboard() != shown {
@@ -2616,10 +2620,10 @@ impl Widget for GreeterApp {
     fn on_external_event(
         &mut self,
         payload: &str,
-        state: &mut ui::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         root: &ModelPath,
     ) {
-        let (state, _root) = ui::doc::document_ref(state.doc(), root);
+        let (state, _root) = tilo_ui_base::doc::document_ref(state.doc(), root);
         if payload == CONSOLE_WAKE {
             self.serve_console(state);
             return;
@@ -2707,7 +2711,7 @@ impl Widget for GreeterApp {
     }
 }
 
-impl ui::host_operation::ResourceOperations for GreeterApp {
+impl tilo_ui_base::host_operation::ResourceOperations for GreeterApp {
     /// The greeter answers its own published operations; without this the
     /// host refuses to publish any of them.
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -2719,13 +2723,13 @@ impl ui::host_operation::ResourceOperations for GreeterApp {
     /// what the console runs.
     fn start_operation(
         &mut self,
-        op: &ui::host_operation::ResourceOperation<'_>,
-        doc: &mut ui::widget::Edits<'_>,
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &automerge::ObjId,
-    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         let request = op.request();
         if request.type_id != console::OPERATION {
-            return ui::host_operation::start_in_children(self, op, doc, path);
+            return tilo_ui_base::host_operation::start_in_children(self, op, doc, path);
         }
         let mut encoded = ui::tilo_actions::EncodedAction {
             type_id: request.type_id.to_owned(),
@@ -2735,12 +2739,14 @@ impl ui::host_operation::ResourceOperations for GreeterApp {
         encoded.payload.zeroize();
         applied
             .map(|value| {
-                Some(ui::host_operation::ResourceOperationStart::Completed(
-                    ui::tilo_actions::ActionOutput {
-                        value: Some(value),
-                        resources: Vec::new(),
-                    },
-                ))
+                Some(
+                    tilo_ui_base::host_operation::ResourceOperationStart::Completed(
+                        ui::tilo_actions::ActionOutput {
+                            value: Some(value),
+                            resources: Vec::new(),
+                        },
+                    ),
+                )
             })
             .map_err(|(_, message)| message)
     }

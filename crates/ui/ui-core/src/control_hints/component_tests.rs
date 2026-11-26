@@ -10,16 +10,19 @@ use vello::kurbo::Rect;
 
 use super::performed::{self, Performed};
 use super::{ControlHints, ControlHintsProps};
-use crate::component::{Described, Event, Fired, Intent, Value};
 use crate::headless::Driver;
-use crate::theme::Theme;
 use crate::time::{Duration, Instant};
-use crate::widget::Length;
 use crate::widget::arrange::{Fit, Sizing, Stack};
-use crate::widget::{
-    CanvasPlace, Manual, Map, MapProps, MeasureConstraint, PLACE_BAND, PinPlace, PlaceProps,
-    Scrollable, Spacer, Widget, WindowFrame, WindowFrameProps,
+use crate::{
+    widget::CanvasPlace, widget::Map, widget::MapProps, widget::PLACE_BAND, widget::PinPlace,
+    widget::PlaceProps, widget::Scrollable, widget::WindowFrame, widget::WindowFrameProps,
 };
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Length;
+use tilo_ui_base::{
+    component::Described, component::Event, component::Fired, component::Intent, component::Value,
+};
+use tilo_ui_base::{widget::Manual, widget::MeasureConstraint, widget::Spacer, widget::Widget};
 
 /// The display the shell draws on, and where its two windows stand: room above them, where a hint
 /// about a window's bar stands clear of what the windows show.
@@ -86,7 +89,7 @@ fn measured(rect: Rect) -> taffy::Size<MeasureConstraint> {
 /// them. Each frame draws at the instant it is asked for.
 struct Shell {
     host: Driver,
-    queue: crate::Intents<Fired>,
+    queue: tilo_ui_base::Intents<Fired>,
     start: Instant,
 }
 
@@ -104,12 +107,12 @@ impl Shell {
 
     /// `parts` laid out where each stands, and the hints over the whole area.
     fn with(parts: Vec<(Box<dyn Widget>, Rect)>, props: ControlHintsProps) -> Self {
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let start = crate::time::now();
         let hints = ControlHints::from_props("hints", Self::props(&queue, props));
         let rects: Vec<Rect> = parts.iter().map(|(_, rect)| *rect).collect();
         let mut region = Manual::new(
-            move |cx| -> Result<taffy::Size<f32>, crate::widget::WidgetLayoutError> {
+            move |cx| -> Result<taffy::Size<f32>, tilo_ui_base::widget::WidgetLayoutError> {
                 let available = cx.available();
                 for (index, rect) in rects.iter().enumerate() {
                     let _ = cx.measure_child(index, measured(*rect))?;
@@ -139,7 +142,7 @@ impl Shell {
     }
 
     /// The hints' props with the events this shell binds to its record.
-    fn props(queue: &crate::Intents<Fired>, props: ControlHintsProps) -> ControlHintsProps {
+    fn props(queue: &tilo_ui_base::Intents<Fired>, props: ControlHintsProps) -> ControlHintsProps {
         let event = |name: &str| Event::View(Intent::new(queue, "hints", name));
         ControlHintsProps {
             learn: event("learn"),
@@ -164,7 +167,7 @@ impl Shell {
 
     /// Draw a frame `ms` milliseconds in: the windows, then the hints over them.
     fn frame(&mut self, ms: u64) {
-        let _at = crate::motion::pin_frame_at(self.start + Duration::from_millis(ms));
+        let _at = tilo_ui_base::motion::pin_frame_at(self.start + Duration::from_millis(ms));
         self.host.relayout();
     }
 
@@ -172,7 +175,7 @@ impl Shell {
     /// resting on it.
     fn hover(&mut self, x: f64, y: f64) {
         self.host
-            .dispatch_to_root(&crate::synthetic_input::cursor_moved(x, y));
+            .dispatch_to_root(&tilo_ui_base::synthetic_input::cursor_moved(x, y));
     }
 
     /// The pointer presses at `from`, travels to `to` and lets go there: a window carried by its
@@ -433,7 +436,7 @@ fn a_place_taken_by_its_band_teaches_moving_a_window() {
 
 #[test]
 fn a_canvas_that_resizes_by_an_edge_teaches_it_beside_the_window_in_front() {
-    let resized = crate::Intents::<Fired>::default();
+    let resized = tilo_ui_base::Intents::<Fired>::default();
     let canvas = Map::from_props(
         "canvas",
         MapProps {

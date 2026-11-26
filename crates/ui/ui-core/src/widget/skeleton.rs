@@ -2,17 +2,22 @@
 
 use std::collections::HashMap;
 
+use crate::widget::RowShapeFace;
+
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 
-use crate::paint::PaintCtx;
+use tilo_ui_base::paint::PaintCtx;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::{MediaAspect, RowShape, SkeletonShape, TaffyTreeExt, Widget};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{
+    widget::MediaAspect, widget::RowShape, widget::SkeletonShape, widget::TaffyTreeExt,
+    widget::Widget,
+};
 
 #[path = "skeleton_component.rs"]
 mod component;
@@ -24,7 +29,10 @@ const PAGE_LINES: u8 = 12;
 /// near-black ground.
 #[must_use]
 pub fn skeleton_tone(ground: Color) -> Color {
-    crate::tokens::colors::composite(crate::tokens::colors::tier_on(ground, TONE_ALPHA), ground)
+    tilo_ui_base::tokens::colors::composite(
+        tilo_ui_base::tokens::colors::tier_on(ground, TONE_ALPHA),
+        ground,
+    )
 }
 
 const TONE_ALPHA: u8 = 32;
@@ -76,7 +84,7 @@ impl SkeletonFace {
     #[must_use]
     pub fn painted_rect(&self, layout: Rect, theme: &Theme) -> Rect {
         match self.shape {
-            SkeletonShape::Row(_) => layout.inflate(crate::chrome::row_bleed(theme), 0.0),
+            SkeletonShape::Row(_) => layout.inflate(tilo_ui_base::chrome::row_bleed(theme), 0.0),
             _ => layout,
         }
     }
@@ -100,7 +108,7 @@ impl SkeletonFace {
         );
         let lines = |ctx: &mut PaintCtx<'_>, count: usize| {
             for i in 0..count {
-                let top = rect.y0 + crate::num::f64_of_usize(i) * body;
+                let top = rect.y0 + tilo_ui_base::num::f64_of_usize(i) * body;
                 let w = if i + 1 == count && count > 1 {
                     rect.width() * LAST_LINE_SHARE
                 } else {
@@ -267,7 +275,7 @@ impl Skeleton {
 }
 
 impl Widget for Skeleton {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -307,13 +315,13 @@ impl Widget for Skeleton {
         let height = SkeletonFace::new(self.shape).height(text_renderer, theme, f64::from(width));
         taffy::Size {
             width,
-            height: crate::num::f32_of_f64(height),
+            height: tilo_ui_base::num::f32_of_f64(height),
         }
     }
 
-    crate::rect_geometry!(measured);
+    tilo_ui_base::rect_geometry!(measured);
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -330,19 +338,19 @@ impl Widget for Skeleton {
         );
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 
     fn name(&self) -> &'static str {
         "Skeleton"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         Some(
             AccessNode::new(Role::Generic)
                 // "Loading" is a fallback the skeleton found for itself: a parent that names the
                 // block (an app's own card, drawn over it) says its own words instead.
-                .with_found_name(crate::i18n::widget_format("widget-loading", &[]))
+                .with_found_name(tilo_ui_base::i18n::widget_format("widget-loading", &[]))
                 .with_state(AccessState::new().busy(true)),
         )
     }

@@ -4,7 +4,7 @@
 
 use super::*;
 use crate::time::Duration;
-use crate::tokens::MotionSource;
+use tilo_ui_base::tokens::MotionSource;
 
 #[derive(Clone)]
 struct R {
@@ -78,12 +78,12 @@ fn frame(table: &mut DataTable<R>, theme: &Theme) {
     }
     let mut scene = Scene::new();
     let mut text = TextRenderer::new();
-    table.draw(&mut crate::draw::DrawCtx::new(
+    table.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut text,
         theme,
-        crate::presence::PresenceCtx::default().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::default().draw_env(),
     ));
 }
 
@@ -98,17 +98,17 @@ fn settled_frames(table: &mut DataTable<R>, theme: &Theme) {
 fn a_header_click_moves_the_shown_rows_to_their_new_places_and_nothing_else() {
     // The frame's instant is held, so the test reads the motion where it
     // starts.
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let theme = Theme::dark();
     let mut table = table(hundred(&["00", "03", "02", "01"]));
     settled_frames(&mut table, &theme);
     let before_03 = table.viewport.item_view_top(1).expect("shown");
     let before_01 = table.viewport.item_view_top(3).expect("shown");
 
-    crate::motion::note_source(MotionSource::Pointer);
+    tilo_ui_base::motion::note_source(MotionSource::Pointer);
     assert_eq!(table.toggle_sort(0), Some(("name".into(), true)));
     frame(&mut table, &theme);
-    let now = crate::motion::frame_now();
+    let now = tilo_ui_base::motion::frame_now();
 
     let names: Vec<_> = table
         .view_rows()
@@ -155,22 +155,22 @@ fn a_header_click_moves_the_shown_rows_to_their_new_places_and_nothing_else() {
         table.moving.rows.is_empty(),
         "rows that arrived are forgotten"
     );
-    let until = crate::motion::frames_until().expect("the sort asked for frames");
+    let until = tilo_ui_base::motion::frames_until().expect("the sort asked for frames");
     assert!(
-        crate::motion::frames_wanted(until),
+        tilo_ui_base::motion::frames_wanted(until),
         "the frame showing the rows at rest is still owed"
     );
-    crate::motion::frame_drawn(until);
-    assert!(!crate::motion::frames_wanted(until));
+    tilo_ui_base::motion::frame_drawn(until);
+    assert!(!tilo_ui_base::motion::frames_wanted(until));
 }
 
 #[test]
 fn a_table_its_view_builds_again_after_a_header_click_moves_its_rows_on() {
     // The frame's instant is held, so the test reads the motion where it
     // starts.
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let theme = Theme::dark();
-    let sort = crate::LocalState::new(None::<TableSort>);
+    let sort = tilo_ui_base::LocalState::new(None::<TableSort>);
     let build = |id: &str| {
         table(hundred(&["00", "03", "02", "01"]))
             .with_id(id)
@@ -178,7 +178,7 @@ fn a_table_its_view_builds_again_after_a_header_click_moves_its_rows_on() {
     };
     let mut clicked = build("rebuilt");
     settled_frames(&mut clicked, &theme);
-    crate::motion::note_source(MotionSource::Pointer);
+    tilo_ui_base::motion::note_source(MotionSource::Pointer);
     assert!(clicked.toggle_sort(0).is_some());
     // The view keeps the sort, so it builds the table again.
     drop(clicked);
@@ -198,7 +198,7 @@ fn a_table_its_view_builds_again_after_a_header_click_moves_its_rows_on() {
     assert!(table.moving.rows.get(&key("00")).is_none());
     assert!(Widget::needs_animation_frame(&table));
 
-    let now = crate::motion::frame_now();
+    let now = tilo_ui_base::motion::frame_now();
     let offset = table
         .moving
         .rows
@@ -219,17 +219,17 @@ fn a_table_its_view_builds_again_after_a_header_click_moves_its_rows_on() {
 
 #[test]
 fn a_keyed_table_whose_host_reorders_its_rows_moves_them() {
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let theme = Theme::dark();
     let mut table = table(rows(&["00", "01", "02", "03"]));
     settled_frames(&mut table, &theme);
     let before_02 = table.viewport.item_view_top(2).expect("shown");
 
     // The person moves 02 to the top; the host hands the rows in again.
-    crate::motion::note_source(MotionSource::Pointer);
+    tilo_ui_base::motion::note_source(MotionSource::Pointer);
     table.set_rows(rows(&["02", "00", "01", "03"]));
     frame(&mut table, &theme);
-    let now = crate::motion::frame_now();
+    let now = tilo_ui_base::motion::frame_now();
     let after_02 = table.viewport.item_view_top(0).expect("shown");
     let moving = table.moving.rows.get(&key("02")).expect("02 moves up");
     assert!(
@@ -245,14 +245,14 @@ fn a_keyed_table_whose_host_reorders_its_rows_moves_them() {
 /// reduced motion, lands every row at once and asks for no frames.
 #[test]
 fn a_click_sort_fades_rows_in_and_a_key_or_a_still_theme_lands_them() {
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let theme = Theme::dark();
     let mut clicked = table(hundred(&["00", "90", "91", "92", "93", "94"]));
     settled_frames(&mut clicked, &theme);
-    crate::motion::note_source(MotionSource::Pointer);
+    tilo_ui_base::motion::note_source(MotionSource::Pointer);
     assert!(clicked.toggle_sort(0).is_some());
     frame(&mut clicked, &theme);
-    let now = crate::motion::frame_now();
+    let now = tilo_ui_base::motion::frame_now();
     let arriving = clicked
         .moving
         .rows
@@ -274,7 +274,7 @@ fn a_click_sort_fades_rows_in_and_a_key_or_a_still_theme_lands_them() {
     ] {
         let mut landed = table(hundred(&["00", "03", "02", "01"]));
         settled_frames(&mut landed, &theme);
-        crate::motion::note_source(source);
+        tilo_ui_base::motion::note_source(source);
         assert!(landed.toggle_sort(0).is_some());
         frame(&mut landed, &theme);
         assert!(
@@ -291,18 +291,18 @@ fn a_click_sort_fades_rows_in_and_a_key_or_a_still_theme_lands_them() {
 /// A row the person adds fades in and pushes the rows below it down from where they stood.
 #[test]
 fn a_row_the_person_adds_fades_in_and_pushes_the_rows_below_down() {
-    let _frame = crate::motion::pin_frame();
+    let _frame = tilo_ui_base::motion::pin_frame();
     let theme = Theme::dark();
     let names = ["00", "01", "02", "03", "04", "05", "06", "07"];
     let mut table = table(rows(&names));
     settled_frames(&mut table, &theme);
     let before = table.viewport.item_view_top(1).expect("01 is shown");
-    crate::motion::note_source(MotionSource::Pointer);
+    tilo_ui_base::motion::note_source(MotionSource::Pointer);
     let mut added = names.to_vec();
     added.insert(1, "50");
     table.set_rows(rows(&added));
     frame(&mut table, &theme);
-    let now = crate::motion::frame_now();
+    let now = tilo_ui_base::motion::frame_now();
     let new = table
         .moving
         .rows

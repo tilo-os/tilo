@@ -5,7 +5,7 @@ use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, WindowEvent};
 
 use super::ActionPalette;
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
 
 /// How much of the height a card may give its result list: four fifths,
 /// which on an 800-pixel window still leaves the card inside it.
@@ -78,11 +78,11 @@ impl ActionPalette {
         theme: &Theme,
     ) {
         if let Some(scrim) = self.scrim {
-            crate::overlay::scrim::modal(
+            tilo_ui_base::overlay::scrim::modal(
                 scene,
                 transform,
                 scrim,
-                crate::num::f32_of_f64(self.appear.progress()),
+                tilo_ui_base::num::f32_of_f64(self.appear.progress()),
                 theme,
             );
         }

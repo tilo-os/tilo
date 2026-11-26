@@ -1,13 +1,17 @@
 //! Keyed, model-derived retained subtrees.
 
-use crate::widget::{AppModel, ModelPath};
 use automerge::{AutoCommit, ObjId};
 use taffy::{NodeId, Style, TaffyTree};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use vello::kurbo::Rect;
 
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
 
-use super::{Element, FullscreenProvider, FullscreenWidgetExt as _, TaffyTreeExt, Text, Widget};
+use super::Text;
+use tilo_ui_base::{
+    widget::Element, widget::FullscreenProvider, widget::FullscreenWidgetExt as _,
+    widget::TaffyTreeExt, widget::Widget,
+};
 
 /// The style of the boundary node a [`ModelView`] puts around its child.
 ///
@@ -55,18 +59,18 @@ pub(crate) fn boundary_style(child: Option<&Style>) -> Style {
 }
 
 type Projection<K> = Box<dyn FnMut(&AutoCommit, &ObjId) -> K>;
-type Builder<K> = Box<dyn FnMut(&K, Option<&crate::ControlDomain>) -> Element>;
+type Builder<K> = Box<dyn FnMut(&K, Option<&tilo_ui_base::ControlDomain>) -> Element>;
 
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     framework,
     "binds a native app's model to its view; a tilolang view is bound by the language"
 )]
 pub struct ModelView<K> {
     project: Projection<K>,
     build: Builder<K>,
-    control_domain: Option<crate::ControlDomain>,
-    child_domain: Option<crate::ControlDomain>,
-    scope_domain: Option<crate::ControlDomain>,
+    control_domain: Option<tilo_ui_base::ControlDomain>,
+    child_domain: Option<tilo_ui_base::ControlDomain>,
+    scope_domain: Option<tilo_ui_base::ControlDomain>,
     current: Option<K>,
     child: Element,
     rect: Rect,
@@ -108,9 +112,9 @@ where
     /// Build with the exact installed domain before any constructor emission.
     /// The supplied domain must be the owner obtained from ProcessContext/runner.
     pub fn from_document_in(
-        domain: &crate::ControlDomain,
+        domain: &tilo_ui_base::ControlDomain,
         project: impl FnMut(&AutoCommit, &ObjId) -> K + 'static,
-        mut build: impl FnMut(&K, &crate::ControlDomain) -> Element + 'static,
+        mut build: impl FnMut(&K, &tilo_ui_base::ControlDomain) -> Element + 'static,
     ) -> Self {
         let mut view = Self::from_document(project, |_| Box::new(Text::new("")));
         view.control_domain = Some(domain.clone());
@@ -151,7 +155,7 @@ where
         {
             self.child_domain = None;
             scope.close();
-            crate::widget::controls::attach_controls(
+            tilo_ui_base::widget::controls::attach_controls(
                 taken.as_mut(),
                 &outer,
                 outer.renewal_from(&scope),
@@ -188,15 +192,18 @@ where
             self.scope_domain = self
                 .control_domain
                 .as_ref()
-                .map(crate::ControlDomain::child);
+                .map(tilo_ui_base::ControlDomain::child);
         }
-        self.child_domain = self.scope_domain.as_ref().map(crate::ControlDomain::child);
+        self.child_domain = self
+            .scope_domain
+            .as_ref()
+            .map(tilo_ui_base::ControlDomain::child);
         self.child = (self.build)(&next, self.child_domain.as_ref());
         if let Some(domain) = &self.child_domain {
-            crate::widget::controls::attach_controls(
+            tilo_ui_base::widget::controls::attach_controls(
                 self.child.as_mut(),
                 domain,
-                crate::control_domain::DomainAttachment::Dynamic,
+                tilo_ui_base::control_domain::DomainAttachment::Dynamic,
             );
         }
         self.current = Some(next);
@@ -211,11 +218,11 @@ where
 {
     /// Create a subtree keyed directly by typed process-local state.
     ///
-    /// A [`LocalStateWriter`](crate::LocalStateWriter) wakes an idle app after
+    /// A [`LocalStateWriter`](tilo_ui_base::LocalStateWriter) wakes an idle app after
     /// worker-thread updates, so this follows the same reconciliation path for
     /// UI callbacks and background results.
     pub fn from_state(
-        state: &crate::LocalState<K>,
+        state: &tilo_ui_base::LocalState<K>,
         build: impl FnMut(&K) -> Element + 'static,
     ) -> Self {
         let state = state.clone();
@@ -234,7 +241,7 @@ where
     /// when it did. Equal keys retain the existing subtree across unrelated
     /// payload mutations.
     pub fn from_state_by<T: 'static>(
-        state: &crate::LocalState<T>,
+        state: &tilo_ui_base::LocalState<T>,
         mut key: impl FnMut(&T) -> K + 'static,
         mut build: impl FnMut(&T) -> Element + 'static,
     ) -> Self {
@@ -255,7 +262,7 @@ where
         self.child.fullscreen_intent()
     }
 
-    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
+    fn fullscreen_params(&self) -> tilo_ui_base::fullscreen::FullscreenRequest {
         self.child.fullscreen_params()
     }
 
@@ -268,11 +275,11 @@ impl<K> Widget for ModelView<K>
 where
     K: PartialEq + 'static,
 {
-    crate::provides!(
-        dyn crate::widget::FullscreenProvider,
-        dyn crate::widget::undo_access::CommittedActions,
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::widget::resources::PublishesResources,
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::FullscreenProvider,
+        dyn tilo_ui_base::widget::undo_access::CommittedActions,
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
         #[cfg(feature = "model")]
         dyn crate::resource::capability::ResourceScoped,
@@ -280,13 +287,13 @@ where
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, path) = crate::doc::document_ref(state, path);
+        let (state, path) = tilo_ui_base::doc::document_ref(state, path);
         self.reconcile(state, path);
         self.child.sync(state, path);
     }
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
-        let (state, path) = crate::doc::document_ref(state, path);
+        let (state, path) = tilo_ui_base::doc::document_ref(state, path);
         self.reconcile(state, path);
         self.child.update(state, path)
     }
@@ -310,7 +317,7 @@ where
         &mut self,
         taffy: &mut TaffyTree<()>,
         node: NodeId,
-        _text: &mut crate::text_render::TextRenderer,
+        _text: &mut tilo_ui_base::text_render::TextRenderer,
     ) -> bool {
         let child = taffy
             .children(node)
@@ -330,7 +337,7 @@ where
         }
     }
 
-    crate::forward_to_child!(child, rect);
+    tilo_ui_base::forward_to_child!(child, rect);
 
     fn name(&self) -> &'static str {
         "ModelView"
@@ -360,7 +367,7 @@ where
     fn on_external_event(
         &mut self,
         payload: &str,
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         root: &ModelPath,
     ) {
         self.child.on_external_event(payload, state, root);
@@ -416,7 +423,7 @@ where
     fn activate_search_result(
         &mut self,
         action_id: &str,
-        doc: &mut crate::widget::Edits<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) {
         crate::search::capability::activate_search_result(
@@ -428,7 +435,7 @@ where
     }
 }
 
-impl<K> crate::widget::resources::PublishesResources for ModelView<K>
+impl<K> tilo_ui_base::widget::resources::PublishesResources for ModelView<K>
 where
     K: PartialEq + 'static,
 {
@@ -438,18 +445,23 @@ where
         address: &tilo_actions::ActionAddress,
         changes: &[automerge::Patch],
     ) -> Option<serde_json::Value> {
-        crate::widget::resources::document_action_result(self.child.as_ref(), doc, address, changes)
+        tilo_ui_base::widget::resources::document_action_result(
+            self.child.as_ref(),
+            doc,
+            address,
+            changes,
+        )
     }
 }
 
-impl<K> crate::widget::controls::ActionControls for ModelView<K>
+impl<K> tilo_ui_base::widget::controls::ActionControls for ModelView<K>
 where
     K: PartialEq + 'static,
 {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         if let Some(old) = &self.control_domain {
             if !old.same(domain) {
@@ -466,16 +478,20 @@ where
         self.control_domain = Some(domain.clone());
         let scope = self.scope_domain.get_or_insert_with(|| domain.child());
         let child_domain = self.child_domain.get_or_insert_with(|| scope.child());
-        crate::widget::controls::attach_controls(self.child.as_mut(), child_domain, attachment);
+        tilo_ui_base::widget::controls::attach_controls(
+            self.child.as_mut(),
+            child_domain,
+            attachment,
+        );
     }
 }
 
-impl<K> crate::widget::undo_access::CommittedActions for ModelView<K>
+impl<K> tilo_ui_base::widget::undo_access::CommittedActions for ModelView<K>
 where
     K: PartialEq + 'static,
 {
     fn take_committed_action(&mut self) -> Option<Vec<automerge::ChangeHash>> {
-        crate::widget::undo_access::take_committed_action(self.child.as_mut())
+        tilo_ui_base::widget::undo_access::take_committed_action(self.child.as_mut())
     }
 }
 
@@ -494,7 +510,8 @@ mod tests {
 
         phase the_boundary_passes_percent_height_and_growth_through;
         {
-            use crate::widget::{Column, Scrollable, Spacer};
+            use crate::{widget::Column, widget::Scrollable};
+            use tilo_ui_base::widget::Spacer;
             let page = || -> Element {
                 Box::new(
                     Scrollable::new_vertical()
@@ -506,7 +523,7 @@ mod tests {
                         )),
                 )
             };
-            let state = crate::LocalState::new(0_u8);
+            let state = tilo_ui_base::LocalState::new(0_u8);
             let mut root = Column::new()
                 .with_no_padding()
                 .with_gap(0.0)
@@ -521,7 +538,7 @@ mod tests {
                 "the scroller fills the column below the bar: {view:?}"
             );
 
-            let absent = crate::LocalState::new(0_u8);
+            let absent = tilo_ui_base::LocalState::new(0_u8);
             let mut root = Column::new()
                 .with_no_padding()
                 .with_intrinsic_height()
@@ -577,7 +594,7 @@ mod tests {
             }
 
             fn typed_state_selects_arbitrary_subtrees() {
-                let state = crate::LocalState::new(String::from("loading"));
+                let state = tilo_ui_base::LocalState::new(String::from("loading"));
                 let mut view = ModelView::from_state(&state, |value| Box::new(Text::new(value)));
                 let doc = AutoCommit::new();
 
@@ -614,7 +631,7 @@ mod tests {
         let mut tree = TaffyTree::new();
         let mut map = std::collections::HashMap::new();
         let node = root.build_layout(&mut tree, &theme, &mut map);
-        crate::text_render::with_layout_renderer(&theme, |text| {
+        tilo_ui_base::text_render::with_layout_renderer(&theme, |text| {
             tree.compute_layout_with_measure(
                 node,
                 taffy::Size {

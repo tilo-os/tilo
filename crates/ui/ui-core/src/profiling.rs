@@ -1,22 +1,22 @@
 //! Frame profiler and headless performance-testing harness for `ui` apps. Measures each of the
 //! toolkit's five frame passes (`sync`, `build_layout`, `apply_layout`, `draw`, `handle_event` — see
-//! [`crate::widget::Widget`]) so frame cost can be **read off, not guessed**.
+//! [`tilo_ui_base::widget::Widget`]) so frame cost can be **read off, not guessed**.
 
 pub(crate) mod resource_trace;
 
-use crate::num::{f32_of_f64, f64_of_u64, f64_of_usize, usize_of_f64};
 use crate::time::{Duration, Instant};
 use std::collections::VecDeque;
 use std::path::Path;
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::{num::f32_of_f64, num::f64_of_u64, num::f64_of_usize, num::usize_of_f64};
 
 use serde::Serialize;
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 
 /// Rounded 60 Hz CPU-work budget.
 pub const FRAME_BUDGET_US: u64 = 16_667;
@@ -1015,7 +1015,7 @@ pub fn run_scenario(driver: &mut crate::headless::Driver, scenario: &PerfScenari
 /// The one-call entry point for an app author or a test: no driver bookkeeping.
 pub fn run_scenario_on(
     state: crate::state::State,
-    root: Box<dyn crate::widget::Widget>,
+    root: Box<dyn tilo_ui_base::widget::Widget>,
     scenario: &PerfScenario,
 ) -> PerfReport {
     let mut driver = crate::headless::Driver::new(state, root, scenario.viewport);

@@ -18,10 +18,10 @@
 
 use super::*;
 use crate::app::{App, AppSurface, SurfaceDamage};
-use crate::offscreen::OffscreenRenderer;
 use crate::strip_layers::{
     ChromeDamage, LayerPresenter, LayerRecording, QueuedRaster, WorkspaceWork, tiles,
 };
+use tilo_ui_base::offscreen::OffscreenRenderer;
 use vello::wgpu;
 
 struct Window;
@@ -150,7 +150,7 @@ fn pan_as_layers(theme: &Theme, mut app: App, bounded: bool) {
     let mut scene = Scene::new();
     app.surface_input(
         &Window,
-        crate::synthetic_input::cursor_moved(200.0, 200.0),
+        tilo_ui_base::synthetic_input::cursor_moved(200.0, 200.0),
         false,
     );
     for _ in 0..3 {
@@ -159,7 +159,7 @@ fn pan_as_layers(theme: &Theme, mut app: App, bounded: bool) {
     }
     let _ = damage.take_copying();
 
-    let mut context = crate::gpu::RenderContext::new();
+    let mut context = tilo_ui_base::gpu::RenderContext::new();
     let index = pollster::FutureExt::block_on(context.device(None))
         .expect("layer presenting is checked on a real adapter");
     let gpu = &context.devices[index];

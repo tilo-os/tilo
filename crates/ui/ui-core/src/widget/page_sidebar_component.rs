@@ -6,8 +6,10 @@ use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::Fill;
 use winit::event::WindowEvent;
 
-use crate::component::{Component, Described, Event, Value};
-use crate::widget::TaffyTreeExt;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Value,
+};
 
 use super::{PageSidebar, PageSidebarEvent};
 
@@ -132,7 +134,7 @@ impl DeclaredRail {
     }
 }
 
-impl crate::widget::Widget for DeclaredRail {
+impl tilo_ui_base::widget::Widget for DeclaredRail {
     fn needs_redraw(&self) -> bool {
         if self.rail.needs_redraw() || self.rail.needs_animation_frame() {
             return true;
@@ -167,14 +169,18 @@ impl crate::widget::Widget for DeclaredRail {
         Some(self)
     }
 
-    fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.report();
     }
 
     fn update(
         &mut self,
-        _state: &crate::widget::AppModel,
-        _path: &crate::widget::ModelPath,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         self.report()
     }
@@ -185,12 +191,15 @@ impl crate::widget::Widget for DeclaredRail {
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        theme: &crate::theme::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+        theme: &tilo_ui_base::theme::Theme,
+        node_map: &mut std::collections::HashMap<
+            taffy::NodeId,
+            *mut dyn tilo_ui_base::widget::Widget,
+        >,
     ) -> taffy::NodeId {
         self.rail.adopt_theme(theme);
         let width = theme.tokens.metrics.page_rail_width;
-        let mut style = crate::widget::layout::natural_filling();
+        let mut style = tilo_ui_base::widget::layout::natural_filling();
         style.size.width = taffy::Dimension::auto();
         style.max_size.width = taffy::Dimension::length(width);
         taffy.widget_leaf(style, node_map, self)
@@ -200,7 +209,7 @@ impl crate::widget::Widget for DeclaredRail {
         &mut self,
         known: taffy::Size<Option<f32>>,
         available: taffy::Size<taffy::AvailableSpace>,
-        _text_renderer: &mut crate::text_render::TextRenderer,
+        _text_renderer: &mut tilo_ui_base::text_render::TextRenderer,
     ) -> taffy::Size<f32> {
         let offered = match available.width {
             taffy::AvailableSpace::Definite(width) => f64::from(width),
@@ -223,7 +232,7 @@ impl crate::widget::Widget for DeclaredRail {
     /// The rail stands where the component is laid out, painted or not: a page composes it
     /// from there without ever painting it.
     fn apply_layout(&mut self, taffy: &taffy::TaffyTree<()>, node: taffy::NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.rail.begin_frame(self.rect, self.count, self.current);
         self.laid_out = Some(self.count);
     }
@@ -232,7 +241,7 @@ impl crate::widget::Widget for DeclaredRail {
         self.laid_out != Some(self.count)
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -244,7 +253,7 @@ impl crate::widget::Widget for DeclaredRail {
         let tones = &theme.tokens.colors;
         let radii = &theme.tokens.radii;
         let mut thumb = |scene: &mut vello::Scene,
-                         _text: &mut crate::text_render::TextRenderer,
+                         _text: &mut tilo_ui_base::text_render::TextRenderer,
                          base: Affine,
                          i: usize,
                          rect: Rect| {
@@ -267,7 +276,7 @@ impl crate::widget::Widget for DeclaredRail {
 
     /// A page pressed is chosen, a page dragged moves, a page's menu duplicates or deletes it,
     /// the wheel scrolls a rail taller than its box, and Escape lets go of a drag or a menu.
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         use winit::event::{ElementState, MouseButton, MouseScrollDelta};
         let changed = match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -290,7 +299,7 @@ impl crate::widget::Widget for DeclaredRail {
             WindowEvent::MouseWheel { delta, .. } if self.rect.contains(self.cursor) => {
                 let dy = match delta {
                     MouseScrollDelta::LineDelta(_, y) => {
-                        -f64::from(*y) * crate::widget::wheel::line_of_wheel()
+                        -f64::from(*y) * tilo_ui_base::widget::wheel::line_of_wheel()
                     }
                     MouseScrollDelta::PixelDelta(at) => -at.y / ctx.scale_factor,
                 };
@@ -323,7 +332,7 @@ impl crate::widget::Widget for DeclaredRail {
         self.rail.tooltip_target_at(point)
     }
 
-    fn tooltip_side(&self) -> crate::widget::TooltipSide {
+    fn tooltip_side(&self) -> tilo_ui_base::widget::TooltipSide {
         self.rail.tooltip_side()
     }
 
@@ -408,13 +417,13 @@ fn paint_page_picture(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::component::{Fired, Intent};
+    use tilo_ui_base::{component::Fired, component::Intent};
 
     /// A rail a view declares answers the pointer: a page pressed is the page the view is told
     /// was chosen.
     #[test]
     fn a_page_pressed_on_a_declared_rail_is_chosen() {
-        let queue = crate::Intents::<Fired>::default();
+        let queue = tilo_ui_base::Intents::<Fired>::default();
         let rail = DeclaredRail::from_props(
             "r",
             PageSidebarProps {
@@ -429,9 +438,9 @@ mod tests {
             crate::State::new(),
             Box::new(rail),
             (240, 900),
-            crate::theme::Theme::light(),
+            tilo_ui_base::theme::Theme::light(),
         );
-        fn find(widget: &dyn crate::widget::Widget) -> Option<&DeclaredRail> {
+        fn find(widget: &dyn tilo_ui_base::widget::Widget) -> Option<&DeclaredRail> {
             widget
                 .as_any()
                 .and_then(|any| any.downcast_ref::<DeclaredRail>())

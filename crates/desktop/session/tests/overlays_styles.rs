@@ -187,7 +187,7 @@ fn styles() -> [(&'static str, &'static str); 4] {
 /// as Settings and an agent turn it. The panel closes on Escape.
 #[test]
 fn quick_settings_opens_and_toggles_dark_mode_in_every_style() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().unwrap();
     crate::common::app_store();
     let mut session = session();
@@ -242,7 +242,7 @@ fn quick_settings_opens_and_toggles_dark_mode_in_every_style() {
 /// arrive through the clipboard's own published `copy`, as an app's Copy or an agent's call does.
 #[test]
 fn quick_settings_finds_a_copy_by_its_words() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().unwrap();
     crate::common::app_store();
     let mut session = session();
@@ -295,7 +295,7 @@ fn quick_settings_finds_a_copy_by_its_words() {
 /// style shows.
 #[test]
 fn a_notice_rises_as_a_banner_and_opens_the_centre_in_every_style() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().unwrap();
     crate::common::app_store();
     let mut session = session();
@@ -379,7 +379,7 @@ fn a_notice_rises_as_a_banner_and_opens_the_centre_in_every_style() {
 /// style, the launcher being the shell's one view over all of them.
 #[test]
 fn the_launcher_lists_apps_filters_and_opens_notes_on_enter() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _home = tilo_test_env::TestHome::new().unwrap();
     crate::common::app_store();
     let mut session = session();

@@ -18,10 +18,10 @@ use std::rc::Rc;
 use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
-use crate::component::{Component, Described};
+use tilo_ui_base::{component::Component, component::Described};
 
-use crate::theme::Theme;
-use crate::widget::{TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 /// Where the wells of a tree on this thread report, shared with the window policy that places
 /// the windows they stand for: the same handle, so a well that moves moves its window.
@@ -291,8 +291,11 @@ impl Widget for WindowWell {
 
     /// The window of the place it shows, standing here: a page's host fills it with what stands
     /// for that window ([`crate::composition::page::well_place`]).
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        Some(crate::a11y::AccessNode::new(crate::a11y::Role::Window).with_item(self.place.clone()))
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        Some(
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Window)
+                .with_item(self.place.clone()),
+        )
     }
 
     fn build_layout(
@@ -314,12 +317,12 @@ impl Widget for WindowWell {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.on_screen = true;
         report(&self.place, self.rect);
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -379,13 +382,13 @@ mod tests {
 
     use super::{WINDOW_ASPECT, WindowWell};
 
-    use crate::theme::Theme;
-    use crate::widget::Widget as _;
+    use tilo_ui_base::theme::Theme;
+    use tilo_ui_base::widget::Widget as _;
 
     /// The size the well takes in a column shaped by `container`.
     fn well_in(container: Style) -> (f32, f32) {
         let mut taffy = TaffyTree::<()>::new();
-        let mut node_map: HashMap<NodeId, *mut dyn crate::widget::Widget> = HashMap::new();
+        let mut node_map: HashMap<NodeId, *mut dyn tilo_ui_base::widget::Widget> = HashMap::new();
         let node = WindowWell::new("place").build_layout(&mut taffy, &Theme::dark(), &mut node_map);
         let column = taffy.new_with_children(container, &[node]).unwrap();
         taffy

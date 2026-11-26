@@ -1,10 +1,12 @@
 use super::*;
 use crate::widget::ButtonRole;
-use crate::widget::{
-    Actions, Button, Card, CardGrid, Column, Element, EmptyState, Scrollable, Text,
+use crate::{
+    widget::Actions, widget::Button, widget::Card, widget::CardGrid, widget::Column,
+    widget::EmptyState, widget::Scrollable, widget::Text,
 };
 use std::cell::Cell;
 use std::rc::Rc;
+use tilo_ui_base::widget::Element;
 use winit::dpi::PhysicalPosition;
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::{Key, KeyLocation, NamedKey, PhysicalKey};
@@ -88,7 +90,7 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
         assert_eq!(app.focused_node, Some(app.focusable_order[3]));
         assert_eq!(crate::testing::clicks("clicked"), 1);
         let mut scene = Scene::new();
-        app.root_widget.draw(&mut crate::draw::DrawCtx::new(
+        app.root_widget.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut app.text_renderer,
@@ -219,7 +221,7 @@ fn card_hosts_are_coherent_before_paint_and_activate_through_the_real_route() {
         let invocations = Rc::new(Cell::new(0));
         let activated = invocations.clone();
         let root = EmptyState::new("No messages are available")
-            .with_icon(crate::icons::Icon::Inbox)
+            .with_icon(tilo_ui_base::icons::Icon::Inbox)
             .with_message("Reconnect to load messages.")
             .with_action("Review connection settings")
             .on_open(move || activated.set(activated.get() + 1))
@@ -286,7 +288,7 @@ fn named_key_event(key: NamedKey, state: ElementState) -> WindowEvent {
         None,
         logical_key,
     );
-    crate::synthetic_input::keyboard_input(event)
+    tilo_ui_base::synthetic_input::keyboard_input(event)
 }
 
 fn send_widget_then_host_fallback(app: &mut App, event: &WindowEvent) -> bool {

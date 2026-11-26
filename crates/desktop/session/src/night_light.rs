@@ -224,7 +224,7 @@ impl NightLight {
         let follow = self.followed.0.lock_recover();
         follow
             .schedule
-            .is_some_and(|schedule| schedule.is_night(ui::theme::local_moment()))
+            .is_some_and(|schedule| schedule.is_night(tilo_ui_base::theme::local_moment()))
     }
 }
 

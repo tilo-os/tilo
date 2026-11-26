@@ -129,7 +129,7 @@ impl References {
             subtitle: Some(facts.join(", ")),
             facts,
             score,
-            icon: (!readable).then_some(ui::icons::Icon::Lock),
+            icon: (!readable).then_some(tilo_ui_base::icons::Icon::Lock),
             target: Target::Invoke(Box::new(target)),
         }
     }

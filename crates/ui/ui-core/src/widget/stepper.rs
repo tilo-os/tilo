@@ -23,16 +23,16 @@ use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Circle, Point, Rect, Stroke};
 use vello::peniko::Fill;
 
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
 
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 #[path = "stepper_component.rs"]
 mod component;
-use crate::widget::{TaffyTreeExt, Widget};
 pub use component::StepperProps;
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 /// The resolved geometry of a stepper in `theme`.
 #[derive(Clone, Debug)]
@@ -148,7 +148,7 @@ impl<'a> StepperFace<'a> {
             .map(|label| m.disc + m.gap + f64::from(text.measure_style(label, None, &m.current).0))
             .collect();
         let total: f64 = widths.iter().sum();
-        let joins = crate::num::f64_of_usize(self.steps.len().saturating_sub(1));
+        let joins = tilo_ui_base::num::f64_of_usize(self.steps.len().saturating_sub(1));
         let join = if joins > 0.0 {
             ((width - total) / joins).max(m.min_gap)
         } else {
@@ -166,7 +166,7 @@ impl<'a> StepperFace<'a> {
             .iter()
             .map(|label| m.disc + m.gap + f64::from(text.measure_style(label, None, &m.current).0))
             .sum::<f64>()
-            + crate::num::f64_of_usize(self.steps.len().saturating_sub(1)) * m.min_gap;
+            + tilo_ui_base::num::f64_of_usize(self.steps.len().saturating_sub(1)) * m.min_gap;
         needed > width
     }
 
@@ -189,12 +189,12 @@ impl<'a> StepperFace<'a> {
         match self.current {
             Some(current) => {
                 let n = current.min(self.steps.len().saturating_sub(1)) + 1;
-                crate::i18n::widget_format(
+                tilo_ui_base::i18n::widget_format(
                     "widget-step-of",
                     &[("step", n.into()), ("total", self.steps.len().into())],
                 )
             }
-            None => crate::i18n::widget_format(
+            None => tilo_ui_base::i18n::widget_format(
                 "widget-steps-count",
                 &[("count", self.steps.len().into())],
             ),
@@ -207,7 +207,7 @@ impl<'a> StepperFace<'a> {
     /// fill, the current one primary ink, later ones the ground's edge.
     fn paint_track(&self, ctx: &mut PaintCtx<'_>, track: Rect, m: &StepMetrics) {
         let colors = &ctx.theme.tokens.colors;
-        let count = crate::num::f64_of_usize(self.steps.len());
+        let count = tilo_ui_base::num::f64_of_usize(self.steps.len());
         let segment = ((track.width() - m.track_gap * (count - 1.0)) / count).max(0.0);
         let mut x = track.x0;
         for index in 0..self.steps.len() {
@@ -216,7 +216,7 @@ impl<'a> StepperFace<'a> {
             } else if self.is_current(index) {
                 ctx.theme.text_primary
             } else {
-                crate::surface::edge_on(colors.surfaces.content)
+                tilo_ui_base::surface::edge_on(colors.surfaces.content)
             };
             let piece = Rect::new(x, track.y0, x + segment, track.y1);
             ctx.fill_round(piece, track.height() / 2.0, ink);
@@ -240,7 +240,7 @@ impl<'a> StepperFace<'a> {
                 .unwrap_or_default();
             let label = ctx.text.elide_to_width_style(
                 label,
-                crate::num::f32_of_f64(rect.width()),
+                tilo_ui_base::num::f32_of_f64(rect.width()),
                 &m.current,
             );
             let y = rect.y0 + StepMetrics::line(ctx.text, &m.position);
@@ -343,7 +343,7 @@ impl<'a> StepperFace<'a> {
                 let ink = if done {
                     theme.text_dim
                 } else {
-                    crate::surface::edge_on(colors.surfaces.content)
+                    tilo_ui_base::surface::edge_on(colors.surfaces.content)
                 };
                 ctx.scene
                     .fill(Fill::NonZero, ctx.transform, ink, None, &rule);
@@ -369,7 +369,7 @@ pub struct Stepper {
     focused_station: Option<usize>,
     last_cursor: Point,
     /// What inputs the host has, from the frame: a station is a finger's target on touch.
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
 }
 
 impl Stepper {
@@ -387,7 +387,7 @@ impl Stepper {
             focused: false,
             focused_station: None,
             last_cursor: Point::ZERO,
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
         }
     }
 
@@ -489,9 +489,9 @@ impl Stepper {
 }
 
 impl Widget for Stepper {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls);
 
     fn build_layout(
         &mut self,
@@ -531,19 +531,19 @@ impl Widget for Stepper {
         let height = self.with_face(|face| face.height(text_renderer, &theme, f64::from(width)));
         taffy::Size {
             width,
-            height: crate::num::f32_of_f64(height),
+            height: tilo_ui_base::num::f32_of_f64(height),
         }
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.dirty = true;
         }
         self.rect = rect;
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -564,7 +564,7 @@ impl Widget for Stepper {
         // page's picture after the frame's tree was built — gains stations where a walk found
         // none, so the tree must be walked again rather than kept.
         if stations != self.stations {
-            crate::widget::note_resource_presentation_changed();
+            tilo_ui_base::widget::note_resource_presentation_changed();
         }
         self.stations = stations;
     }
@@ -572,7 +572,7 @@ impl Widget for Stepper {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         use winit::event::{ElementState, MouseButton, WindowEvent};
         if self.on_station.is_none() {
@@ -661,11 +661,11 @@ impl Widget for Stepper {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        if !matches!(action, crate::a11y::Action::Activate) {
+        if !matches!(action, tilo_ui_base::a11y::Action::Activate) {
             return false;
         }
         let Some(index) = (0..self.steps.len()).find(|&i| self.station_id(i) == target) else {
@@ -683,12 +683,12 @@ impl Widget for Stepper {
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         self.interaction = environment;
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 
     fn is_layout_dirty(&self) -> bool {
         self.rect == Rect::ZERO
@@ -706,8 +706,8 @@ impl Widget for Stepper {
         self.on_station.as_ref().map(|_| self.id.as_str())
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let label = self
             .steps
             .get(
@@ -746,11 +746,13 @@ impl Widget for Stepper {
     }
 }
 
-impl crate::widget::controls::ActionControls for Stepper {
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+impl tilo_ui_base::widget::controls::ActionControls for Stepper {
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         self.enabled_stations()
             .into_iter()
-            .map(|index| crate::widget::ControlBindingMetadata::semantic(self.station_id(index)))
+            .map(|index| {
+                tilo_ui_base::widget::ControlBindingMetadata::semantic(self.station_id(index))
+            })
             .collect()
     }
 }

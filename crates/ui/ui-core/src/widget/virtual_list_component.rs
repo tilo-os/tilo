@@ -14,24 +14,30 @@ use std::rc::Rc;
 
 use vello::kurbo::Point;
 
-use crate::component::{
-    Accepts, Component, Described, Event, Moment, PartType, Person, ResourceId, SharedRows, Source,
-    Value,
-};
-use crate::selection::KeySelection;
-use crate::tokens::{Rhythm, TextRole};
-use crate::widget::Length;
 use crate::widget::arrange::{Align, Fit, MEASURE_REM, Page, Part, Row, Stack, TranscriptEdges};
 use crate::widget::conversation::list::GROUPING_WINDOW_SECS;
 use crate::widget::conversation::{ConversationClock, SectionDivider};
-use crate::widget::{
-    Attachments, Avatar, AvatarSize, ContextMenuArea, Decorator, Element, ListRow, ListRowProps,
-    MenuEntry, MenuPart, RowBuild, Spacer, SwipeActionProps, Text, Tone, Widget,
+use crate::{
+    widget::Attachments, widget::Avatar, widget::ContextMenuArea, widget::ListRow,
+    widget::ListRowProps, widget::MenuEntry, widget::MenuPart, widget::RowBuild,
+    widget::SwipeActionProps, widget::Text,
+};
+use tilo_ui_base::selection::KeySelection;
+use tilo_ui_base::widget::Length;
+use tilo_ui_base::{
+    component::Accepts, component::Component, component::Described, component::Event,
+    component::Moment, component::PartType, component::Person, component::ResourceId,
+    component::SharedRows, component::Source, component::Value,
+};
+use tilo_ui_base::{tokens::Rhythm, tokens::TextRole};
+use tilo_ui_base::{
+    widget::AvatarSize, widget::Decorator, widget::Element, widget::Spacer, widget::Tone,
+    widget::Widget,
 };
 
 use super::{ListModel, TreeMarks, VirtualList};
-use crate::collection_transition::ListModelChange;
 use crate::widget::ChangeMarkProps;
+use tilo_ui_base::collection_transition::ListModelChange;
 
 #[path = "virtual_list_facts.rs"]
 mod facts;
@@ -301,7 +307,7 @@ pub struct VirtualListProps {
     pub revealed: Event,
     /// The pace its rows arrive, leave and change places at, and the rows it builds move at
     /// when they say nothing themselves: the theme's unless it says otherwise.
-    pub motion: Option<crate::motion::Feel>,
+    pub motion: Option<tilo_ui_base::motion::Feel>,
     /// A row was selected: carries the item it shows.
     #[component(event(value = ResourceId))]
     pub select: Event,
@@ -699,16 +705,16 @@ impl ListModel for DescribedRows {
     /// A row in place of an item someone removed is the list's own, given whole beside the
     /// rows the host renders: the host never renders it, and asking it for one would leave the
     /// row on its way forever.
-    fn row_state(&self, index: usize) -> crate::arriving::Arrival<(), &str> {
+    fn row_state(&self, index: usize) -> tilo_ui_base::arriving::Arrival<(), &str> {
         if let Held::Rendered(rows) = &self.held
             && let Some(key) = self.key_at(index)
             && !self.is_removed(&key)
             && let Ok(rows) = rows.try_borrow()
             && !rows.rendered(&key)
         {
-            return crate::arriving::Arrival::local();
+            return tilo_ui_base::arriving::Arrival::local();
         }
-        crate::arriving::Arrival::Ready(())
+        tilo_ui_base::arriving::Arrival::Ready(())
     }
 
     fn poll_changes(&mut self) -> Vec<ListModelChange<String>> {
@@ -957,8 +963,11 @@ impl DescribedList {
 /// than the keyboard or an assistive technology.
 pub(crate) fn by_hand() -> bool {
     matches!(
-        crate::motion::recent_input(crate::time::now()),
-        Some(crate::tokens::MotionSource::Pointer | crate::tokens::MotionSource::Gesture)
+        tilo_ui_base::motion::recent_input(crate::time::now()),
+        Some(
+            tilo_ui_base::tokens::MotionSource::Pointer
+                | tilo_ui_base::tokens::MotionSource::Gesture
+        )
     )
 }
 
@@ -1114,8 +1123,8 @@ fn declared_shortcuts(
     menu: &[MenuPart],
     attached: &[MenuPart],
     (keys, shortcut): (&[String], &Event),
-) -> Vec<(crate::platform::Shortcut, std::rc::Rc<dyn Fn()>)> {
-    let mut out: Vec<(crate::platform::Shortcut, std::rc::Rc<dyn Fn()>)> = Vec::new();
+) -> Vec<(tilo_ui_base::platform::Shortcut, std::rc::Rc<dyn Fn()>)> {
+    let mut out: Vec<(tilo_ui_base::platform::Shortcut, std::rc::Rc<dyn Fn()>)> = Vec::new();
     for part in menu.iter().chain(attached) {
         let MenuPart::Item(item) = part else {
             continue;
@@ -1126,14 +1135,14 @@ fn declared_shortcuts(
         if tilo_ui_graph::keys::Chord::parse(key).is_err() {
             continue;
         }
-        let shortcut = crate::platform::Shortcut::from(key);
+        let shortcut = tilo_ui_base::platform::Shortcut::from(key);
         if out
             .iter()
             .any(|(declared, _)| declared.same_press(&shortcut))
         {
             continue;
         }
-        let press = crate::widget::Press::of(item.choose.clone());
+        let press = tilo_ui_base::widget::Press::of(item.choose.clone());
         if press.address().is_none() && !press.is_none() {
             out.push((shortcut, press.runner()));
         }
@@ -1144,7 +1153,7 @@ fn declared_shortcuts(
         if tilo_ui_graph::keys::Chord::parse(key).is_err() {
             continue;
         }
-        let pressed = crate::platform::Shortcut::from(key.as_str());
+        let pressed = tilo_ui_base::platform::Shortcut::from(key.as_str());
         if out
             .iter()
             .any(|(declared, _)| declared.same_press(&pressed))
@@ -1154,7 +1163,7 @@ fn declared_shortcuts(
         let (fires, key) = (shortcut.clone(), key.clone());
         out.push((
             pressed,
-            Rc::new(move || fires.fire(Some(crate::component::Value::Text(key.clone())))),
+            Rc::new(move || fires.fire(Some(tilo_ui_base::component::Value::Text(key.clone())))),
         ));
     }
     out
@@ -1165,7 +1174,7 @@ fn declared_shortcuts(
 fn row_of(
     rows: &DescribedRows,
     key: &str,
-    feel: crate::motion::Feel,
+    feel: tilo_ui_base::motion::Feel,
     tree: Option<&TreeMarks<String>>,
     build: RowBuild,
 ) -> Element {
@@ -1190,7 +1199,7 @@ fn indent_view(
         .fill_width()
         .align(Align::Center)
         .gap(Rhythm::None);
-    let indent = chevron_column + crate::num::f32_of_f64(f64::from(depth) * f64::from(nest));
+    let indent = chevron_column + tilo_ui_base::num::f32_of_f64(f64::from(depth) * f64::from(nest));
     if indent > 0.0 {
         line = line.push(Box::new(Spacer::fixed(indent)));
     }
@@ -1199,7 +1208,9 @@ fn indent_view(
     line = line.push_part(part);
     if let Some(progress) = progress {
         line = line
-            .push(Box::new(Spacer::token(crate::tokens::SpacingStep::S2)))
+            .push(Box::new(Spacer::token(
+                tilo_ui_base::tokens::SpacingStep::S2,
+            )))
             .push(Box::new(Text::new(&progress).with_role(TextRole::Caption)));
     }
     Box::new(line)
@@ -1210,7 +1221,7 @@ fn indent_view(
 fn bare_row(
     rows: &DescribedRows,
     key: &str,
-    feel: crate::motion::Feel,
+    feel: tilo_ui_base::motion::Feel,
     tree: Option<&TreeMarks<String>>,
     RowBuild {
         expanded,
@@ -1267,7 +1278,7 @@ fn bare_row(
                     && parent == meta
                 {
                     props.meta = None;
-                    props.meta_tone = crate::widget::Tone::Neutral;
+                    props.meta_tone = tilo_ui_base::widget::Tone::Neutral;
                 }
                 props.activate = Event::None;
                 // // The row's own figure stands unless the tree's count takes that column.
@@ -1432,7 +1443,7 @@ fn message_of(
     rows: &DescribedRows,
     key: &str,
     unread: Option<&str>,
-    feel: crate::motion::Feel,
+    feel: tilo_ui_base::motion::Feel,
     measure: Option<Length>,
 ) -> Element {
     let first_unread = unread.is_some_and(|item| {
@@ -1560,7 +1571,10 @@ fn read_faces(key: &str, read: Vec<Person>) -> Element {
         crate::widget::Container::new()
             .with_no_padding()
             .landmark(
-                crate::i18n::widget_format("conversation-read-by", &[("names", names.into())]),
+                tilo_ui_base::i18n::widget_format(
+                    "conversation-read-by",
+                    &[("names", names.into())],
+                ),
                 format!("{key}~read"),
             )
             .with_child(Box::new(faces)),
@@ -1717,7 +1731,7 @@ impl Described for DescribedList {
         } = props;
         rows.removed = removed.0;
         rows.ungrouped = ungrouped_title;
-        let feel = motion.unwrap_or(crate::motion::Feel::Standard);
+        let feel = motion.unwrap_or(tilo_ui_base::motion::Feel::Standard);
         let reading = Rc::new(RefCell::new(rows.reader()));
         if page_column {
             let unseen = Rc::new(RefCell::new(unseen_from.map(|item| item.0)));
@@ -1941,7 +1955,7 @@ impl Described for DescribedList {
             end: end_reached,
             ..
         } = props;
-        let feel = motion.unwrap_or(crate::motion::Feel::Standard);
+        let feel = motion.unwrap_or(tilo_ui_base::motion::Feel::Standard);
         rows.removed = removed.0;
         rows.ungrouped = ungrouped_title;
         let replaced = rendered(&rows).is_none();
@@ -2064,7 +2078,7 @@ impl Decorator for DescribedList {
     }
 
     /// The list's node is its body's, which it does not rewrite: read without its rows.
-    fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility_root(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.inner().accessibility_root()
     }
 
@@ -2089,7 +2103,7 @@ impl Decorator for DescribedList {
 
     /// The list's change is the described list's: it adds no structure of its own, so rows
     /// the list builds anew stay mounted in place and the window keeps its tree.
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         self.inner_mut().take_structure_change()
     }
 }
@@ -2097,9 +2111,11 @@ impl Decorator for DescribedList {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::component::{BoundValue, Event, Fired, Intent};
     use crate::widget::MenuItemProps;
     use std::cell::Cell;
+    use tilo_ui_base::{
+        component::BoundValue, component::Event, component::Fired, component::Intent,
+    };
 
     /// The rows of a list given its items whole: a row a title each.
     fn given_rows(count: usize) -> DescribedRows {
@@ -2142,7 +2158,12 @@ mod tests {
         Widget::sync(list, &doc, &automerge::ROOT);
         let mut taffy = taffy::TaffyTree::new();
         let mut nodes = std::collections::HashMap::new();
-        let node = Widget::build_layout(list, &mut taffy, &crate::theme::Theme::dark(), &mut nodes);
+        let node = Widget::build_layout(
+            list,
+            &mut taffy,
+            &tilo_ui_base::theme::Theme::dark(),
+            &mut nodes,
+        );
         taffy
             .compute_layout(
                 node,
@@ -2233,11 +2254,11 @@ mod tests {
         let at = Point::new(20.0, row.center().y);
         let pressed = crate::winit::event::ElementState::Pressed;
         let mut events = vec![
-            crate::synthetic_input::cursor_moved(at.x, at.y),
-            crate::synthetic_input::mouse_input(pressed, button),
+            tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y),
+            tilo_ui_base::synthetic_input::mouse_input(pressed, button),
         ];
         if button == crate::winit::event::MouseButton::Left {
-            events.push(crate::synthetic_input::mouse_input(
+            events.push(tilo_ui_base::synthetic_input::mouse_input(
                 crate::winit::event::ElementState::Released,
                 button,
             ));
@@ -2267,7 +2288,7 @@ mod tests {
                 author: Some(Person {
                     identity: tilo_actions::MemberId::person(format!("person-{index}")).into(),
                     name: format!("Writer {index}"),
-                    hue: crate::tokens::PresenceHue::of_identity(&format!("person-{index}")),
+                    hue: tilo_ui_base::tokens::PresenceHue::of_identity(&format!("person-{index}")),
                     picture: None,
                 }),
                 time: Some(Moment(*said)),
@@ -2287,13 +2308,13 @@ mod tests {
 
     /// What `list` lays out, as the inspection sees it: where each widget stands.
     fn laid_out(list: DescribedList) -> crate::headless::InspectionNode {
-        laid_out_in(list, crate::theme::Theme::dark())
+        laid_out_in(list, tilo_ui_base::theme::Theme::dark())
     }
 
     /// What `list` lays out under `theme`, as the inspection sees it.
     fn laid_out_in(
         list: DescribedList,
-        theme: crate::theme::Theme,
+        theme: tilo_ui_base::theme::Theme,
     ) -> crate::headless::InspectionNode {
         let mut harness =
             crate::app::driver::Driver::for_root(crate::State::new(), list, (900, 600), theme);
@@ -2331,13 +2352,13 @@ mod tests {
                         Person {
                             identity: tilo_actions::MemberId::person("person-0").into(),
                             name: "Mia".to_owned(),
-                            hue: crate::tokens::PresenceHue::of_identity("person-0"),
+                            hue: tilo_ui_base::tokens::PresenceHue::of_identity("person-0"),
                             picture: None,
                         },
                         Person {
                             identity: tilo_actions::MemberId::person("person-1").into(),
                             name: "Writer 1".to_owned(),
-                            hue: crate::tokens::PresenceHue::of_identity("person-1"),
+                            hue: tilo_ui_base::tokens::PresenceHue::of_identity("person-1"),
                             picture: None,
                         },
                     ],
@@ -2402,7 +2423,7 @@ mod tests {
         );
         let (taffy, node) = lay_out_tree(list, 400.0);
         Widget::set_focus(list, true);
-        let up = crate::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowUp);
+        let up = tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowUp);
         assert!(
             crate::testing::Dispatch::new()
                 .layout(&taffy, node)
@@ -2429,7 +2450,7 @@ mod tests {
     /// the item rather than vanishing with the row.
     #[test]
     fn the_page_a_row_opens_into_carries_the_mark_of_the_change() {
-        fn rows_of(root: &dyn crate::widget::Widget, out: &mut Vec<String>) {
+        fn rows_of(root: &dyn tilo_ui_base::widget::Widget, out: &mut Vec<String>) {
             if let Some(row) = root
                 .as_any()
                 .and_then(|widget| widget.downcast_ref::<ListRow>())
@@ -2458,7 +2479,7 @@ mod tests {
                     by: Some(Person {
                         identity: tilo_actions::MemberId::person("bo").into(),
                         name: "Bo".to_owned(),
-                        hue: crate::tokens::PresenceHue::of_identity("bo"),
+                        hue: tilo_ui_base::tokens::PresenceHue::of_identity("bo"),
                         picture: None,
                     }),
                     said: Some("moved it to Today".to_owned()),
@@ -2482,7 +2503,7 @@ mod tests {
             crate::State::new(),
             list,
             (900, 600),
-            crate::theme::Theme::dark(),
+            tilo_ui_base::theme::Theme::dark(),
         );
         harness.relayout();
         let mut marked = Vec::new();
@@ -2499,7 +2520,7 @@ mod tests {
     /// window to open the item elsewhere.
     #[test]
     fn a_menu_over_a_row_that_opens_in_place_reports_no_choice() {
-        let queue = crate::Intents::<Fired>::default();
+        let queue = tilo_ui_base::Intents::<Fired>::default();
         let select = Event::View(Intent::new(&queue, "list", "select"));
         let props = VirtualListProps {
             select,
@@ -2568,7 +2589,7 @@ mod tests {
     /// only the question every menu carries.
     #[test]
     fn a_row_whose_menu_is_asked_for_lists_its_own_and_its_items_commands() {
-        let _settled = crate::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         // A shell that can carry a question is connected, as in an app window: every menu then
         // keeps its "Send to…" row, so an empty one opens rather than being held back.
         crate::shared_selection::set_send_host_available(true);
@@ -2589,7 +2610,7 @@ mod tests {
             crate::State::new(),
             list,
             (900, 600),
-            crate::theme::Theme::dark(),
+            tilo_ui_base::theme::Theme::dark(),
         );
         harness.relayout();
         let key = "row-1".to_owned();
@@ -2598,8 +2619,11 @@ mod tests {
             .list()
             .and_then(|list| list.row_rect(&key))
             .expect("the row is laid out");
-        harness.send(&crate::synthetic_input::cursor_moved(20.0, row.center().y));
-        harness.send(&crate::synthetic_input::mouse_input(
+        harness.send(&tilo_ui_base::synthetic_input::cursor_moved(
+            20.0,
+            row.center().y,
+        ));
+        harness.send(&tilo_ui_base::synthetic_input::mouse_input(
             crate::winit::event::ElementState::Pressed,
             crate::winit::event::MouseButton::Right,
         ));
@@ -2701,7 +2725,7 @@ mod tests {
     /// its own order, and the list never edits a model it does not own.
     #[test]
     fn a_reordered_row_reports_the_two_ids_it_moved_between() {
-        let queue = crate::Intents::<Fired>::default();
+        let queue = tilo_ui_base::Intents::<Fired>::default();
         let reorder = Event::View(Intent::new(&queue, "list", "reorder"));
         let mut list = DescribedList::from_props(
             "list",
@@ -2714,7 +2738,7 @@ mod tests {
         let (taffy, node) = lay_out_tree(inner, 400.0);
         Widget::set_focus(inner, true);
         inner.focus_row("row-0".to_owned());
-        let down = crate::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowDown);
+        let down = tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::ArrowDown);
         assert!(
             crate::testing::Dispatch::new()
                 .modifiers(winit::keyboard::ModifiersState::CONTROL)
@@ -2746,7 +2770,7 @@ mod tests {
     /// host keeping it can put it back.
     #[test]
     fn the_person_opening_a_row_reports_the_item_it_shows() {
-        let queue = crate::Intents::<Fired>::default();
+        let queue = tilo_ui_base::Intents::<Fired>::default();
         let opened = Event::View(Intent::new(&queue, "list", "opened"));
         let closed = Event::View(Intent::new(&queue, "list", "closed"));
         let props = VirtualListProps {
@@ -2830,7 +2854,7 @@ mod tests {
         keys: Rc<RefCell<Vec<String>>>,
     }
 
-    impl crate::component::RowSource for Arriving {
+    impl tilo_ui_base::component::RowSource for Arriving {
         fn len(&self) -> usize {
             self.keys.borrow().len()
         }
@@ -2860,7 +2884,7 @@ mod tests {
                 return Ok(false);
             }
             let mut rows = ViewRows::new(&[(key, None)], 0.0, 0.0);
-            crate::component::RowSource::read(&mut rows, key, read)
+            tilo_ui_base::component::RowSource::read(&mut rows, key, read)
         }
 
         fn key_presenting(&self, id: &str) -> Option<String> {
@@ -2990,7 +3014,7 @@ mod tests {
     }
 
     /// A menu command that reports its choose to `queue` when run.
-    fn command(label: &str, key: &str, queue: &crate::Intents<Fired>) -> MenuPart {
+    fn command(label: &str, key: &str, queue: &tilo_ui_base::Intents<Fired>) -> MenuPart {
         let mut item = MenuItemProps {
             label: label.to_owned(),
             key: Some(key.to_owned()),
@@ -3003,7 +3027,7 @@ mod tests {
     /// The row's menus reach it with the keys they declare, matched as every shortcut is.
     #[test]
     fn a_row_reads_the_shortcuts_its_menu_declares() {
-        let queue = crate::Intents::<Fired>::default();
+        let queue = tilo_ui_base::Intents::<Fired>::default();
         let menu = vec![command("Complete", "Ctrl+Enter", &queue)];
         let attached = vec![
             command("Double click", "Double click", &queue),
@@ -3014,7 +3038,7 @@ mod tests {
         assert!(
             shortcuts[0]
                 .0
-                .same_press(&crate::platform::Shortcut::from("Control+Return"))
+                .same_press(&tilo_ui_base::platform::Shortcut::from("Control+Return"))
         );
         (shortcuts[0].1)();
         assert_eq!(
@@ -3031,7 +3055,7 @@ mod tests {
     /// One key runs one command: the first the menus offer it on holds it.
     #[test]
     fn one_key_sessions_one_command_of_the_row() {
-        let queue = crate::Intents::<Fired>::default();
+        let queue = tilo_ui_base::Intents::<Fired>::default();
         let menu = vec![command("Complete", "Ctrl+Enter", &queue)];
         let attached = vec![command("Reopen", "control+enter", &queue)];
         assert_eq!(
@@ -3121,7 +3145,7 @@ mod tests {
         }
     }
 
-    impl crate::component::RowSource for ViewRows {
+    impl tilo_ui_base::component::RowSource for ViewRows {
         fn len(&self) -> usize {
             self.items.len()
         }
@@ -3384,7 +3408,8 @@ mod tests {
         }
 
         fn binding(&mut self, name: &str) -> Option<BoundValue> {
-            (name == "checkbox").then(|| BoundValue::Bool(crate::component::Bound::default()))
+            (name == "checkbox")
+                .then(|| BoundValue::Bool(tilo_ui_base::component::Bound::default()))
         }
 
         fn children(&mut self, _part: &str) -> Vec<Element> {
@@ -3463,7 +3488,7 @@ mod tests {
             let (mut built, _, _) = bare_row(
                 &rows,
                 "bare",
-                crate::motion::Feel::Standard,
+                tilo_ui_base::motion::Feel::Standard,
                 None,
                 RowBuild::default(),
             )
@@ -3487,7 +3512,7 @@ mod tests {
     #[test]
     fn a_keyed_row_answers_whichever_way_it_is_drawn() {
         for views in [false, true] {
-            let queue = crate::Intents::<Fired>::default();
+            let queue = tilo_ui_base::Intents::<Fired>::default();
             let mut rows = ViewRows::new(&[("row-0", None), ("row-1", None)], 20.0, 8.0)
                 .keys(&["s"], Event::View(Intent::new(&queue, "row", "key")));
             if views {
@@ -3504,7 +3529,7 @@ mod tests {
                     ..VirtualListProps::default()
                 },
             );
-            let pressed = crate::synthetic_input::char_key("s");
+            let pressed = tilo_ui_base::synthetic_input::char_key("s");
             let handled = {
                 let inner = list.list_mut().expect("the list stands");
                 let (taffy, node) = lay_out_tree(inner, 400.0);

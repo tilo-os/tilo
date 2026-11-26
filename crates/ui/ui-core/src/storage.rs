@@ -22,12 +22,12 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
-pub use crate::settings_source::ChangeOrigin;
 use settings_model::{DeviceClass, Scope, SettingsSchema};
 /// Whether this thread may wait on storage.
 pub use tilo_files::waiting;
 pub use tilo_files::{Dir, FsError};
 pub use tilo_paths::{AppPaths, Location};
+pub use tilo_ui_base::settings_source::ChangeOrigin;
 
 /// One app's private file areas.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -99,24 +99,24 @@ impl SettingsDocument {
     /// another workspace installs that workspace's document over the one before it.
     fn version(&self) -> Option<u64> {
         self.located().map(|source| match self {
-            Self::Session => crate::settings_source::installed_version(&*source),
+            Self::Session => tilo_ui_base::settings_source::installed_version(&*source),
             Self::Profile(_) => source.revision(),
         })
     }
 
-    fn source(&self) -> Option<std::sync::Arc<dyn crate::settings_source::SettingsSource>> {
+    fn source(&self) -> Option<std::sync::Arc<dyn tilo_ui_base::settings_source::SettingsSource>> {
         let source = self.located();
         let versioned = self.clone();
         read_versioned(self, Box::new(move || versioned.version()));
         source
     }
 
-    fn located(&self) -> Option<std::sync::Arc<dyn crate::settings_source::SettingsSource>> {
+    fn located(&self) -> Option<std::sync::Arc<dyn tilo_ui_base::settings_source::SettingsSource>> {
         match self {
-            Self::Session => crate::settings_source::source(),
+            Self::Session => tilo_ui_base::settings_source::source(),
             // A browser has no profile directory.
             Self::Profile(_) if tilo_platform_caps::WEB => None,
-            Self::Profile(root) => Some(crate::settings_source::profile_source(root)),
+            Self::Profile(root) => Some(tilo_ui_base::settings_source::profile_source(root)),
         }
     }
 
@@ -143,7 +143,7 @@ impl SettingsDocument {
     #[must_use]
     pub fn section(&self, name: &str) -> Map<String, Value> {
         self.source()
-            .map(|source| crate::settings_source::load_section_in(&*source, name))
+            .map(|source| tilo_ui_base::settings_source::load_section_in(&*source, name))
             .unwrap_or_default()
     }
 
@@ -212,7 +212,7 @@ impl SettingsDocument {
 /// Make every settings change stored before going on, which the native runner does before
 /// the process ends.
 pub fn flush_settings_writes() {
-    crate::settings_source::flush_pending_writes();
+    tilo_ui_base::settings_source::flush_pending_writes();
 }
 
 /// An app's typed settings of one [`SettingsSchema`] type, in the settings document its
@@ -691,13 +691,15 @@ impl SettingsSection {
 /// empty document.
 #[must_use]
 pub fn parse_settings(text: &str) -> Map<String, Value> {
-    crate::settings_source::parse(text)
+    tilo_ui_base::settings_source::parse(text)
 }
 
 /// The settings of the profile at `root`, for code that compares two profiles.
 #[must_use]
 pub fn settings_at(root: &Path) -> Map<String, Value> {
-    crate::settings_source::SettingsSource::load(&*crate::settings_source::profile_source(root))
+    tilo_ui_base::settings_source::SettingsSource::load(
+        &*tilo_ui_base::settings_source::profile_source(root),
+    )
 }
 
 /// This app's secrets in the store the current host provides.
@@ -725,16 +727,17 @@ mod tests {
             const SCOPE: Scope = Scope::Shared("appearance");
         }
 
-        let first = crate::settings_source::HostDocument::new(Map::new(), |_| Ok(()));
-        let _page = crate::settings_source::scoped_source(Some(std::sync::Arc::new(first)));
+        let first = tilo_ui_base::settings_source::HostDocument::new(Map::new(), |_| Ok(()));
+        let _page = tilo_ui_base::settings_source::scoped_source(Some(std::sync::Arc::new(first)));
         let settings = Settings::<Appearance>::shared();
         let mut cached = SettingsCache::new(settings);
         assert_eq!(cached.get().mode, None, "a page with nothing chosen");
 
         let chosen = serde_json::json!({"appearance": {"mode": "dark"}});
         let chosen = chosen.as_object().cloned().unwrap_or_default();
-        let second = crate::settings_source::HostDocument::new(chosen, |_| Ok(()));
-        let _other = crate::settings_source::scoped_source(Some(std::sync::Arc::new(second)));
+        let second = tilo_ui_base::settings_source::HostDocument::new(chosen, |_| Ok(()));
+        let _other =
+            tilo_ui_base::settings_source::scoped_source(Some(std::sync::Arc::new(second)));
         assert!(
             cached.refresh(),
             "the document installed in the other's place is a version of its own"
@@ -1083,11 +1086,11 @@ fn read_versioned(document: &SettingsDocument, version: Box<dyn Fn() -> Option<u
     let named = match document {
         SettingsDocument::Session => 0,
         SettingsDocument::Profile(root) => {
-            crate::component_inputs::fold(1, root.as_os_str().as_encoded_bytes())
+            tilo_ui_base::component_inputs::fold(1, root.as_os_str().as_encoded_bytes())
         }
     };
-    crate::component_inputs::probe(
-        || crate::component_inputs::Key::Versioned(named),
+    tilo_ui_base::component_inputs::probe(
+        || tilo_ui_base::component_inputs::Key::Versioned(named),
         || (version(), version),
     );
 }

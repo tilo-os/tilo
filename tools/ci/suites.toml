@@ -704,17 +704,39 @@ inputs = [
   "apps/tl/gallery/",
   "crates/ui/themes/liquid-glass/theme.json",
   "crates/ui/themes/liquid-glass-light/theme.json",
+  # The base's catalogue and finish fixtures, which the widgets' tests read.
+  "crates/ui/ui-base/locales/",
+  "crates/ui/ui-base/tests/fixtures/finishes/",
 ]
 readers = [
   "crates/ui/ui-core/src/app/close_admission.rs",
   "crates/ui/ui-core/src/webview/paint.rs",
-  "crates/ui/ui-core/src/widget/webview.rs",
   "crates/ui/ui-core/src/theme_bundle/tests.rs",
   "crates/ui/ui-core/src/component/coverage_tests.rs",
-  "crates/ui/ui-core/src/part_paint/shader/tests.rs",
-  "crates/ui/ui-core/src/tokens/shader.rs",
+  "crates/ui/ui-core/src/history_mode/host_tests.rs",
+  "crates/ui/ui-core/src/history_source/digest.rs",
+  "crates/ui/ui-core/src/i18n/tests.rs",
+  "crates/ui/ui-core/src/search/system/tests.rs",
+  "crates/ui/ui-core/src/widget/color_picker.rs",
+  "crates/ui/ui-core/src/widget/floating_window.rs",
+  "crates/ui/ui-core/src/widget/tabs_new_tab_tests.rs",
+  "crates/ui/ui-core/src/widget/video_player/tests.rs",
+  "crates/ui/ui-core/tests/finish_render.rs",
   # The painter AOT test paints with the Bauhaus theme (an input above).
   "crates/ui/ui-core/tests/painter_aot.rs",
+]
+
+
+[[cargo]]
+package = "tilo-ui-base"
+# The shader tests paint with the Liquid Glass themes.
+inputs = [
+  "crates/ui/themes/liquid-glass/theme.json",
+  "crates/ui/themes/liquid-glass-light/theme.json",
+]
+readers = [
+  "crates/ui/ui-base/src/part_paint/shader/tests.rs",
+  "crates/ui/ui-base/src/tokens/shader.rs",
 ]
 
 
@@ -1052,7 +1074,7 @@ inputs = [
   "crates/lang/tilolang-tilo/tests/native-chat/",
   "crates/lang/tilolang-tilo/tests/native-tasks/surface.json",
   "crates/sdk/tilo-app-window/locales/",
-  "crates/ui/ui-core/locales/",
+  "crates/ui/ui-base/locales/",
 ]
 readers = [
   "crates/lang/tilolang-process/examples/process_cost.rs",
@@ -1675,7 +1697,7 @@ inputs = [
   "apps/*/Cargo.toml",
   # The catalogues the locale-leak test reads words of: the toolkit's, which
   # every window carries, and the Settings index's, which every window offers.
-  "crates/ui/ui-core/locales/en-US.ftl",
+  "crates/ui/ui-base/locales/en-US.ftl",
   "crates/desktop/settings/locales/en-US.ftl",
   "crates/desktop/settings/locales/de-DE.ftl",
   # The page the page-track tests' engine shows: a snapshot the paint stream's own tests keep.
@@ -1752,7 +1774,7 @@ readers = ["apps/staging-handoff-model/src/sizes.rs"]
 package = "settings-sections"
 # The own-themes tests load the finish fixtures the toolkit's tests keep and the
 # built-in Liquid theme's document.
-inputs = ["crates/ui/ui-core/tests/fixtures/finishes/", "crates/ui/themes/liquid-glass/theme.json"]
+inputs = ["crates/ui/ui-base/tests/fixtures/finishes/", "crates/ui/themes/liquid-glass/theme.json"]
 readers = ["crates/desktop/settings-sections/src/own_themes_tests.rs"]
 
 # Exercised by a suite that is already guarded.

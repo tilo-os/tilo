@@ -276,7 +276,7 @@ impl Wallpapers {
         }
         let hue = {
             let image = state.images.get(&value)?;
-            ui::theme::workspace_hue(image.data.data())
+            tilo_ui_base::theme::workspace_hue(image.data.data())
         };
         state.hues.insert(value, hue);
         hue

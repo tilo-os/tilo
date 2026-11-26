@@ -1,11 +1,11 @@
 //! [`SignalMeter`] as a described component.
 
-use crate::component::{Component, Described};
 use crate::widget::SignalLevel;
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::SignalMeter;
 
-crate::component::choice!(SignalLevel, "SignalLevel", {
+tilo_ui_base::choice!(SignalLevel, "SignalLevel", {
     Unknown => "unknown",
     Weak => "weak",
     Fair => "fair",

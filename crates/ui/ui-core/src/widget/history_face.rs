@@ -8,9 +8,9 @@ use std::rc::Rc;
 
 use vello::kurbo::Rect;
 
-use crate::paint::PaintCtx;
-use crate::theme::Theme;
 use crate::widget::history::HistoryEntry;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::theme::Theme;
 
 /// An app's presentation of the changes in its History. Asked once per
 /// listed change each time the list changes, so answering is cheap: it reads

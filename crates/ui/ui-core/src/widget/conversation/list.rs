@@ -10,15 +10,15 @@ use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use vello::peniko::Color;
 
-use crate::paint::PaintCtx;
+use tilo_ui_base::paint::PaintCtx;
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::tokens::colors::mix8;
-use crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::tokens::colors::mix8;
+use tilo_ui_base::tokens::contrast::BODY_TEXT_MIN_CONTRAST;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 use super::band::SectionDividerFace;
 use super::day::{ConversationClock, ConversationDay, DayBreaks};
@@ -259,7 +259,7 @@ impl Column {
             right,
             bubble_max,
             inner_max,
-            wrap: crate::num::f32_of_f64(inner_max),
+            wrap: tilo_ui_base::num::f32_of_f64(inner_max),
         }
     }
 }
@@ -388,7 +388,7 @@ struct Painted {
 /// assumed.
 #[must_use]
 pub fn bubble_colors(theme: &Theme, role: ConversationRole) -> (Color, Color) {
-    use crate::a11y::contrast_ratio;
+    use tilo_ui_base::a11y::contrast_ratio;
     let colors = &theme.tokens.colors;
     match role {
         ConversationRole::Incoming => {
@@ -612,7 +612,7 @@ impl<'a> ListFace<'a> {
                 begins_group,
                 bubble,
                 text: Point::new(bubble.x0 + pad_x, bubble.y0 + pad_y),
-                text_width: crate::num::f32_of_f64((bubble_w - 2.0 * pad_x).max(1.0)),
+                text_width: tilo_ui_base::num::f32_of_f64((bubble_w - 2.0 * pad_x).max(1.0)),
                 author,
                 caption,
             });
@@ -638,7 +638,7 @@ impl<'a> ListFace<'a> {
         text: &mut TextRenderer,
         line: &ConversationLine,
         wrap: f32,
-        style: &crate::text_render::TextStyle,
+        style: &tilo_ui_base::text_render::TextStyle,
         counts: &mut MeasuredCounts,
     ) -> (f32, f32) {
         if let Some(kept) = cache.measures.get_mut(&line.id) {
@@ -854,7 +854,7 @@ fn seconds(at_ms: i64) -> i64 {
     at_ms.div_euclid(1_000)
 }
 
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "`ui.ConversationList` (`DescribedConversationList`) is its described form"
 )]
@@ -987,12 +987,12 @@ impl ConversationList {
 
 impl Widget for ConversationList {
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn build_layout(
@@ -1039,13 +1039,13 @@ impl Widget for ConversationList {
         );
         taffy::Size {
             width,
-            height: crate::num::f32_of_f64(height),
+            height: tilo_ui_base::num::f32_of_f64(height),
         }
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1074,8 +1074,8 @@ impl Widget for ConversationList {
         "ConversationList"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let face = ListFace::new(&self.lines, ConversationClock::local());
         let total = self.lines.len();
         let [_, moved] = self.moved();
@@ -1124,7 +1124,7 @@ mod geometry_tests {
 
     #[test]
     fn every_row_is_laid_out_inside_the_list_it_is_given() {
-        let mut text = crate::font_catalog::fixture_renderer();
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         let theme = Theme::dark();
         let clock = ConversationClock::at(0, 1_782_828_300);
         let lines = vec![

@@ -7,14 +7,14 @@
 use vello::Scene;
 use vello::kurbo::{Affine, Rect, Vec2};
 
-use crate::collection_transition::RowMotions;
-use crate::draw::DrawEnv;
-use crate::motion::Feel;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use crate::time::Instant;
-use crate::tokens::EffectiveMotion;
-use crate::widget::{Element, Widget};
+use tilo_ui_base::collection_transition::RowMotions;
+use tilo_ui_base::draw::DrawEnv;
+use tilo_ui_base::motion::Feel;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::EffectiveMotion;
+use tilo_ui_base::{widget::Element, widget::Widget};
 
 /// A part taken out of the container, painted where it stood while it fades out: never hit-tested and
 /// not in the accessibility tree, since the container no longer holds it.
@@ -88,7 +88,7 @@ impl PartMotions {
         if self.pending {
             return;
         }
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let Some(source) = RowMotions::<u64, Vec2>::caused_by_hand(now, self.motion.reduced())
         else {
             return;
@@ -113,7 +113,7 @@ impl PartMotions {
         if !std::mem::take(&mut self.pending) {
             return;
         }
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.rows.start(shown, self.motion, now);
         let leaving: Vec<u64> = self.rows.leaving(now).map(|(key, _, _)| *key).collect();
         self.leavers.retain(|leaver| leaving.contains(&leaver.key));
@@ -291,7 +291,7 @@ pub(super) fn draw_posed(
         reason = "kurbo Affine composition is floating-point matrix math"
     )]
     let moved = transform * Affine::translate(by);
-    crate::widget::draw_child_unculled(child, None, scene, moved, text, theme, env);
+    tilo_ui_base::widget::draw_child_unculled(child, None, scene, moved, text, theme, env);
     if faded {
         scene.pop_layer();
     }

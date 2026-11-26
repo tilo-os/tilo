@@ -9,13 +9,9 @@ include!("application_handoff_tests.rs");
 include!("driver_peer_tests.rs");
 
 use super::*;
-use crate::a11y::SemanticId;
 use crate::a11y_tree::SemanticActionKind;
-use crate::component::Described;
 use crate::state::State;
-use crate::widget::TaffyTreeExt;
-use crate::widget::{AppModel, ModelPath};
-use crate::widget::{Button, TreeViewNodeProps, TreeViewProps, Widget};
+use crate::{widget::Button, widget::TreeViewNodeProps, widget::TreeViewProps};
 use automerge::transaction::Transactable;
 use automerge::{ROOT, ReadDoc, ScalarValue, Value};
 use serde::{Deserialize, Serialize};
@@ -25,6 +21,11 @@ use tilo_actions::{
     Action as QAction, ActionError, ActionSpec, Doc, EncodedAction, ExecutionLocus, OperationKind,
     ResourceSpec,
 };
+use tilo_ui_base::a11y::SemanticId;
+use tilo_ui_base::component::Described;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 enum CounterAction {
@@ -62,7 +63,7 @@ impl LargeDirectoryProvider {
                 )
                 .field(
                     format!("record {index} needle-{index}"),
-                    crate::text_match::FieldWeight::UNRANKED,
+                    tilo_ui_base::text_match::FieldWeight::UNRANKED,
                 )
             }))
             .expect("canonical synthetic directory rows");
@@ -179,7 +180,7 @@ struct CounterCard {
     /// Bump the counter as part of every `ping`, as an effect's handler
     /// submits an edit.
     bump_after_ping: bool,
-    follow_ups: Vec<crate::widget::controls::AttributedControlInvocation>,
+    follow_ups: Vec<tilo_ui_base::widget::controls::AttributedControlInvocation>,
     /// On the next settle, replace the button with a new one, carrying its
     /// pending activation over, as a surface closing its own dialog does.
     replace_on_settle: std::rc::Rc<std::cell::Cell<bool>>,
@@ -359,21 +360,21 @@ impl CounterCard {
     }
 }
 impl Widget for CounterCard {
-    crate::provides!(
-        dyn crate::widget::resources::PublishesResources,
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::widget::resources::PublishesResources,
         dyn crate::search::capability::SearchSource,
-        dyn crate::widget::controls::ActionControls,
-        dyn crate::widget::ResourceOperations
+        dyn tilo_ui_base::widget::controls::ActionControls,
+        dyn tilo_ui_base::widget::ResourceOperations
     );
 
     fn sync(&mut self, s: &AppModel, p: &ModelPath) {
-        let (s, p) = crate::doc::document_ref(s, p);
+        let (s, p) = tilo_ui_base::doc::document_ref(s, p);
         self.button.sync(s, p);
     }
-    fn settle(&mut self, edits: &mut crate::widget::Edits<'_>, p: &automerge::ObjId) {
+    fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, p: &automerge::ObjId) {
         if self.replace_on_settle.replace(false) {
             if let Some(invocation) =
-                crate::widget::controls::take_control_invocation(&mut self.button)
+                tilo_ui_base::widget::controls::take_control_invocation(&mut self.button)
             {
                 self.follow_ups.push((invocation, None));
             }
@@ -417,29 +418,29 @@ impl Widget for CounterCard {
     }
 }
 
-impl crate::widget::ResourceOperations for CounterCard {
+impl tilo_ui_base::widget::ResourceOperations for CounterCard {
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
         &[COUNTER_TYPE, ASYNC_COUNTER_TYPE]
     }
 
     fn start_operation(
         &mut self,
-        op: &crate::widget::ResourceOperation<'_>,
-        doc: &mut crate::widget::Edits<'_>,
+        op: &tilo_ui_base::widget::ResourceOperation<'_>,
+        doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &automerge::ObjId,
-    ) -> Result<Option<crate::widget::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
         let request = op.request();
-        if let Some(started) = crate::widget::start_in_children(
+        if let Some(started) = tilo_ui_base::widget::start_in_children(
             self,
             op,
-            &mut crate::widget::Edits::lend(doc.document_mut()),
+            &mut tilo_ui_base::widget::Edits::lend(doc.document_mut()),
             path,
         )? {
             return Ok(Some(started));
         }
         if self.async_bump && request.type_id == ASYNC_COUNTER_TYPE {
             self.pending_bump = Some(request.invocation);
-            return Ok(Some(crate::widget::ResourceOperationStart::Accepted));
+            return Ok(Some(tilo_ui_base::widget::ResourceOperationStart::Accepted));
         }
         if self.bump_after_ping && request.kind == tilo_actions::OperationKind::Effect {
             self.follow_ups.push((
@@ -454,7 +455,7 @@ impl crate::widget::ResourceOperations for CounterCard {
             (request.kind == tilo_actions::OperationKind::Effect
                 && request.type_id == COUNTER_TYPE)
                 .then(|| {
-                    crate::widget::ResourceOperationStart::Completed(
+                    tilo_ui_base::widget::ResourceOperationStart::Completed(
                         tilo_actions::ActionOutput::default(),
                     )
                 }),
@@ -480,10 +481,10 @@ impl crate::widget::ResourceOperations for CounterCard {
     }
 }
 
-impl crate::widget::controls::ActionControls for CounterCard {
+impl tilo_ui_base::widget::controls::ActionControls for CounterCard {
     fn take_attributed_control_invocation(
         &mut self,
-    ) -> Option<crate::widget::controls::AttributedControlInvocation> {
+    ) -> Option<tilo_ui_base::widget::controls::AttributedControlInvocation> {
         if self.follow_ups.is_empty() {
             self.take_control_invocation()
                 .map(|invocation| (invocation, None))
@@ -502,7 +503,7 @@ impl crate::search::capability::SearchSource for CounterCard {
     }
 }
 
-impl crate::widget::resources::PublishesResources for CounterCard {
+impl tilo_ui_base::widget::resources::PublishesResources for CounterCard {
     fn resources(&self, doc: &automerge::AutoCommit) -> Vec<ResourceSpec> {
         self.lazy_resource
             .is_none()
@@ -515,7 +516,7 @@ impl crate::widget::resources::PublishesResources for CounterCard {
         doc: &automerge::AutoCommit,
         cursor: &[u8],
         max_results: usize,
-    ) -> Option<crate::widget::ActionDirectoryResourcePage> {
+    ) -> Option<tilo_ui_base::widget::ActionDirectoryResourcePage> {
         let offset = std::str::from_utf8(cursor)
             .ok()
             .and_then(|cursor| cursor.parse::<usize>().ok())
@@ -545,7 +546,7 @@ impl crate::widget::resources::PublishesResources for CounterCard {
                 }
             })
             .collect();
-        Some(crate::widget::ActionDirectoryResourcePage {
+        Some(tilo_ui_base::widget::ActionDirectoryResourcePage {
             resources,
             next_cursor: end.to_string().into_bytes(),
             exhausted: end >= self.directory_roots,
@@ -596,7 +597,7 @@ pub(super) fn admitted_delivery_manager() -> CollaborationManager {
 // channel disconnects. It has no native history/read protocol, and cannot
 // publish a terminal result or admit a new outbound action.
 struct DisconnectedDeliveryPeer;
-impl crate::collaboration::PeerTransport for DisconnectedDeliveryPeer {
+impl tilo_ui_base::collaboration::PeerTransport for DisconnectedDeliveryPeer {
     fn is_connected(&self) -> bool {
         false
     }
@@ -608,7 +609,7 @@ impl crate::collaboration::PeerTransport for DisconnectedDeliveryPeer {
     }
     fn join_route(
         &mut self,
-        _: crate::collaboration::RouteSpec,
+        _: tilo_ui_base::collaboration::RouteSpec,
         _: crate::resource::ResourceType,
     ) -> Result<(), String> {
         Ok(())
@@ -683,7 +684,7 @@ fn background_document_job_from_an_unbound_resource_waits_for_broker_admission()
         .unwrap();
     assert!(matches!(
         started,
-        crate::widget::ResourceOperationStart::Accepted
+        tilo_ui_base::widget::ResourceOperationStart::Accepted
     ));
     assert_eq!(counter(&app), 0, "no edit before native broker admission");
     let request = sent
@@ -744,9 +745,9 @@ fn activate_bound_button(app: &mut App) {
     let pointer = app.layout.node_map[&node];
     assert!(unsafe {
         (*pointer).perform_action(
-            &crate::a11y::Action::Activate,
+            &tilo_ui_base::a11y::Action::Activate,
             &[],
-            &mut crate::widget::Edits::lend(&mut app.state.doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut app.state.doc),
             &app.state.root,
         )
     });
@@ -780,8 +781,8 @@ fn lazy_resources_populate_the_tree_with_stable_identity_and_permissions() {
 
     {
         let mut app = lazy_app(lazy_resource("test.lazy"));
-        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
-            &crate::permissions::MemberId::person("restricted"),
+        app.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::stranger(
+            &tilo_ui_base::permissions::MemberId::person("restricted"),
         ));
 
         let address = tilo_actions::ActionAddress::new("test.lazy", "bump");
@@ -883,7 +884,7 @@ fn action_bound_controls_use_the_fresh_api_and_never_auto_confirm() {
         let accesskit_button = accesskit::NodeId(u64::from(button) + 1);
 
         assert_eq!(
-            app.dispatch_a11y_action(accesskit_button, &crate::a11y::Action::Activate),
+            app.dispatch_a11y_action(accesskit_button, &tilo_ui_base::a11y::Action::Activate),
             None
         );
         assert_eq!(
@@ -900,15 +901,15 @@ fn action_bound_controls_use_the_fresh_api_and_never_auto_confirm() {
         let pointer = app.layout.node_map[&node];
         assert!(unsafe { (*pointer).is_enabled() });
 
-        app.set_permission_ctx(crate::permissions::PermissionContext::stranger(
-            &crate::permissions::MemberId::person("restricted"),
+        app.set_permission_ctx(tilo_ui_base::permissions::PermissionContext::stranger(
+            &tilo_ui_base::permissions::MemberId::person("restricted"),
         ));
         assert!(!unsafe { (*pointer).is_enabled() });
         assert!(!unsafe {
             (*pointer).perform_action(
-                &crate::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
                 &[],
-                &mut crate::widget::Edits::lend(&mut app.state.doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut app.state.doc),
                 &app.state.root,
             )
         });
@@ -1081,7 +1082,10 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert_eq!(context.source_invocation, Some(admitted_invocation));
         assert_eq!(
             app.state.peek_last_undo().and_then(|entry| entry.author),
-            Some(crate::permissions::MemberId::agent("Scribe", "restricted")),
+            Some(tilo_ui_base::permissions::MemberId::agent(
+                "Scribe",
+                "restricted"
+            )),
             "undo attribution and durable history use the same actor"
         );
     }
@@ -1284,7 +1288,10 @@ fn broker_and_directed_document_actions_preserve_pending_edits_and_ownership() {
         assert_eq!(counter(&app), 1);
         assert_eq!(
             app.state.peek_last_undo().and_then(|entry| entry.author),
-            Some(crate::permissions::MemberId::agent("Scribe", "restricted"))
+            Some(tilo_ui_base::permissions::MemberId::agent(
+                "Scribe",
+                "restricted"
+            ))
         );
     }
 
@@ -1421,9 +1428,9 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
             host.dispatch_control_invocations();
             assert_eq!(observed.calls.get(), 1);
             let expected = if accepted {
-                crate::widget::ResourceOperationStart::Accepted
+                tilo_ui_base::widget::ResourceOperationStart::Accepted
             } else {
-                crate::widget::ResourceOperationStart::Completed(
+                tilo_ui_base::widget::ResourceOperationStart::Completed(
                     tilo_actions::ActionOutput::default(),
                 )
             };
@@ -1431,8 +1438,8 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
             observed.enqueue("run");
             binding
                 .permissions
-                .set(crate::permissions::PermissionContext::member(
-                    &crate::permissions::MemberId::person("reader"),
+                .set(tilo_ui_base::permissions::PermissionContext::member(
+                    &tilo_ui_base::permissions::MemberId::person("reader"),
                     collab_types::role::Role::Viewer,
                 ));
             let before = owner
@@ -1502,9 +1509,9 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
                 observed.results.borrow()
             );
             let expected = if accepted {
-                crate::widget::ResourceOperationStart::Accepted
+                tilo_ui_base::widget::ResourceOperationStart::Accepted
             } else {
-                crate::widget::ResourceOperationStart::Completed(
+                tilo_ui_base::widget::ResourceOperationStart::Completed(
                     tilo_actions::ActionOutput::default(),
                 )
             };
@@ -1533,8 +1540,8 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
                 host.collaboration.manager =
                     CollaborationManager::with_peer_transport(HostedModelTransport(sent.clone()));
             }
-            let readonly = crate::permissions::PermissionContext::member(
-                &crate::permissions::MemberId::person("reader"),
+            let readonly = tilo_ui_base::permissions::PermissionContext::member(
+                &tilo_ui_base::permissions::MemberId::person("reader"),
                 collab_types::role::Role::Viewer,
             );
             host.set_permission_ctx(readonly);
@@ -1553,7 +1560,7 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
             if connected {
                 assert_eq!(
                     *observed.results.borrow(),
-                    vec![Ok(crate::widget::ResourceOperationStart::Accepted)],
+                    vec![Ok(tilo_ui_base::widget::ResourceOperationStart::Accepted)],
                     "the control hears its press went to the workspace to be decided"
                 );
                 let asked = sent
@@ -1598,7 +1605,7 @@ fn local_control_results_stay_local_and_report_refusal_or_success() {
         let result = app.invoke_resource_action(ResourceInvocation::new(&address, &actor));
         assert!(matches!(
             result,
-            Ok(crate::widget::ResourceOperationStart::Completed(_))
+            Ok(tilo_ui_base::widget::ResourceOperationStart::Completed(_))
         ));
         assert_eq!(app.state.doc.get_heads(), before);
         assert!(app.state.peek_last_undo().is_none());
@@ -1698,9 +1705,9 @@ fn semantic_invocation_matches_the_affordance_dispatch() {
 /// A tree of a branch "Root" over a leaf "Child": the rows the semantic routes act on.
 fn items_tree(id: &str, open: bool) -> Box<dyn Widget> {
     let node = |label: &str, item: &str, parent: Option<&str>, branch: bool| TreeViewNodeProps {
-        item: crate::component::ResourceId(item.into()),
+        item: tilo_ui_base::component::ResourceId(item.into()),
         label: label.into(),
-        parent: parent.map(|parent| crate::component::ResourceId(parent.into())),
+        parent: parent.map(|parent| tilo_ui_base::component::ResourceId(parent.into())),
         branch,
         ..TreeViewNodeProps::default()
     };
@@ -1712,7 +1719,7 @@ fn items_tree(id: &str, open: bool) -> Box<dyn Widget> {
         ]
         .into(),
         expanded: Some(if open {
-            vec![crate::component::ResourceId("1".into())]
+            vec![tilo_ui_base::component::ResourceId("1".into())]
         } else {
             Vec::new()
         }),
@@ -1732,7 +1739,8 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
             .semantic_tree()
             .iter()
             .find(|node| {
-                node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some("Child")
+                node.role == tilo_ui_base::a11y::Role::TreeItem
+                    && node.name.as_deref() == Some("Child")
             })
             .map(|node| node.id.clone())
             .expect("semantic child row");
@@ -1765,7 +1773,7 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
                 *id
             })
             .expect("virtual root row");
-        let route = crate::accesskit_bridge::resolve_node_id(
+        let route = tilo_ui_base::accesskit_bridge::resolve_node_id(
             app.root_widget.as_ref(),
             &app.layout.node_map,
             root_row,
@@ -1773,13 +1781,13 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
         .expect("root row route");
         assert!(matches!(
             route,
-            crate::accesskit_bridge::A11yTarget::Synthetic {
+            tilo_ui_base::accesskit_bridge::A11yTarget::Synthetic {
                 semantic_target: Some(ref target),
                 ..
             } if target == "key:node:1"
         ));
         assert_eq!(
-            app.dispatch_a11y_action(root_row, &crate::a11y::Action::Collapse),
+            app.dispatch_a11y_action(root_row, &tilo_ui_base::a11y::Action::Collapse),
             None
         );
         app.refresh_semantic_tree();
@@ -1787,7 +1795,8 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
             .semantic_tree()
             .iter()
             .find(|node| {
-                node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some("Root")
+                node.role == tilo_ui_base::a11y::Role::TreeItem
+                    && node.name.as_deref() == Some("Root")
             })
             .expect("root semantics after collapse");
         assert_eq!(root_semantics.state.expanded, Some(false));
@@ -1827,7 +1836,7 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
             .find(|(_, node)| node.label() == Some("Search city"))
             .unwrap()
             .0;
-        app.dispatch_a11y_action(field, &crate::a11y::Action::SetValue("Ber".into()));
+        app.dispatch_a11y_action(field, &tilo_ui_base::a11y::Action::SetValue("Ber".into()));
         let update = app.build_a11y_tree_update(1.0);
         let result = update
             .nodes
@@ -1835,7 +1844,7 @@ fn retained_and_virtual_trees_dispatch_through_semantic_routes() {
             .find(|(_, node)| node.label() == Some("Berlin"))
             .expect("native edit must publish a result")
             .0;
-        app.dispatch_a11y_action(result, &crate::a11y::Action::Activate);
+        app.dispatch_a11y_action(result, &tilo_ui_base::a11y::Action::Activate);
         let update = app.build_a11y_tree_update(1.0);
         let field = &update
             .nodes
@@ -1924,7 +1933,10 @@ fn an_effects_edit_is_applied_for_its_invoker_before_it_answers() {
     assert_eq!(counter(&app), 1, "the effect's edit was applied");
     assert_eq!(
         app.state.peek_last_undo().and_then(|entry| entry.author),
-        Some(crate::permissions::MemberId::agent("Scribe", "restricted")),
+        Some(tilo_ui_base::permissions::MemberId::agent(
+            "Scribe",
+            "restricted"
+        )),
         "by the effect's invoker, not the person at the device"
     );
     assert!(
@@ -2311,8 +2323,8 @@ mod native_pty_wake_tests;
 /// a point guessed from it.
 #[test]
 fn a_table_row_does_what_an_assistive_technology_asks_of_it() {
-    use crate::a11y::Action;
     use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
+    use tilo_ui_base::a11y::Action;
 
     #[derive(Clone)]
     struct Listed {

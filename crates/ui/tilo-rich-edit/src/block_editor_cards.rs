@@ -2,7 +2,7 @@
 //! app keeps, each shown as the thing's title and the start of its content, opening what it names.
 
 use std::collections::HashMap;
-use ui::i18n::widget_text;
+use tilo_ui_base::i18n::widget_text;
 
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
@@ -10,8 +10,8 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::Block;
 use crate::{BlockEditor, TransclusionPreview};
-use ui::text_render::{TextRenderer, TextStyle};
-use ui::theme::Theme;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 use ui::widget::marks::{Mark, PageId};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -88,8 +88,8 @@ pub(super) fn card_body_width(theme: &Theme, width: f64) -> f64 {
 
 fn card_styles(theme: &Theme) -> (TextStyle, TextStyle) {
     (
-        theme.text(ui::tokens::TextRole::Subheading),
-        theme.text(ui::tokens::TextRole::Body),
+        theme.text(tilo_ui_base::tokens::TextRole::Subheading),
+        theme.text(tilo_ui_base::tokens::TextRole::Body),
     )
 }
 
@@ -207,7 +207,7 @@ pub(super) fn draw_embed_card(
     paint.scene.stroke(
         &vello::kurbo::Stroke::new(1.0),
         transform,
-        ui::surface::edge_on(tokens.colors.surfaces.raised),
+        tilo_ui_base::surface::edge_on(tokens.colors.surfaces.raised),
         None,
         &card,
     );
@@ -226,21 +226,21 @@ pub(super) fn draw_embed_card(
         rect.x0 + pad + icon_side,
         title_y + (title_h + icon_side) / 2.0,
     );
-    ui::icons::draw_icon(
+    tilo_ui_base::icons::draw_icon(
         paint.scene,
         transform,
         icon_rect,
-        ui::icons::Icon::FileText,
+        tilo_ui_base::icons::Icon::FileText,
         ink.ink_dim,
-        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
     );
-    ui::icons::draw_icon(
+    tilo_ui_base::icons::draw_icon(
         paint.scene,
         transform,
         Rect::new(chevron_x, icon_rect.y0, chevron_x + icon_side, icon_rect.y1),
-        ui::icons::Icon::ChevronRight,
+        tilo_ui_base::icons::Icon::ChevronRight,
         ink.ink_dim,
-        ui::icons::LUCIDE_DEFAULT_STROKE_PX,
+        tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
     );
     let title_x = icon_rect.x1 + gap;
     let title_w = (chevron_x - gap - title_x).max(1.0);
@@ -262,7 +262,7 @@ pub(super) fn draw_embed_card(
     let link_ink = tokens.colors.ink_on(
         tokens.colors.surfaces.raised,
         tokens.colors.intent.accent_ink,
-        ui::tokens::contrast::BODY_TEXT_MIN_CONTRAST,
+        tilo_ui_base::tokens::contrast::BODY_TEXT_MIN_CONTRAST,
     );
     let right = rect.x1 - pad;
     let lines = card_lines(
@@ -367,7 +367,7 @@ impl BlockEditor {
                     .map_or_else(Vec::new, <[tilo_ui_graph::rich::Run]>::to_vec),
             };
             let height = card_height(text_renderer, &theme, card_width, &body);
-            heights.push((block.id.clone(), ui::num::f32_of_f64(height)));
+            heights.push((block.id.clone(), tilo_ui_base::num::f32_of_f64(height)));
         }
         self.card_heights = heights.into_iter().collect();
         for (block, stack_box) in self.blocks.iter().zip(&mut self.stack_boxes) {
@@ -441,7 +441,7 @@ mod tests {
     #[test]
     fn a_card_shows_a_few_lines_of_what_it_projects_and_says_where_it_reads_on() {
         let theme = Theme::light();
-        let style = theme.text(ui::tokens::TextRole::Body);
+        let style = theme.text(tilo_ui_base::tokens::TextRole::Body);
         let mut renderer = TextRenderer::new();
         let long = "Oat milk, eggs, two lemons, bread and cheese for lunch, coffee beans for \
                     the week, apples for the crumble, yoghurt the plain one, something green";

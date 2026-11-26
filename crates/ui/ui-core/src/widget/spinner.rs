@@ -6,9 +6,9 @@ use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Circle, Point, Rect};
 
 use crate::color_compat::ColorCompat;
-use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 #[path = "spinner_component.rs"]
 mod component;
@@ -37,7 +37,7 @@ pub struct Spinner {
     size: f32,
     /// When set, the size follows one line of this role on every layout, so
     /// a spinner beside a status line matches the text at any text scale.
-    text_role: Option<crate::tokens::TextRole>,
+    text_role: Option<tilo_ui_base::tokens::TextRole>,
     start: Instant,
     rect: Rect,
     /// Captured from the last draw.
@@ -93,14 +93,14 @@ impl Spinner {
         if self.reduce_motion {
             0
         } else {
-            crate::animation::indicator_step(self.start, now)
+            tilo_ui_base::animation::indicator_step(self.start, now)
         }
     }
 
     /// Sized to one line of `role` text, for a spinner that sits inline with
     /// a status line rather than on its own.
     #[must_use]
-    pub fn for_text(role: crate::tokens::TextRole) -> Self {
+    pub fn for_text(role: tilo_ui_base::tokens::TextRole) -> Self {
         Self {
             text_role: Some(role),
             ..Self::new()
@@ -126,7 +126,7 @@ impl Default for Spinner {
 }
 
 impl Widget for Spinner {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -146,9 +146,9 @@ impl Widget for Spinner {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -171,7 +171,7 @@ impl Widget for Spinner {
             0.0
         } else {
             let elapsed_ms =
-                crate::animation::indicator_elapsed(self.start, now).as_secs_f64() * 1000.0;
+                tilo_ui_base::animation::indicator_elapsed(self.start, now).as_secs_f64() * 1000.0;
             (elapsed_ms / ROTATION_PERIOD_MS).fract()
         };
 
@@ -201,8 +201,8 @@ impl Widget for Spinner {
         "Spinner"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         Some(
             AccessNode::new(Role::Spinner)
                 .with_optional_name(self.label.clone())
@@ -226,7 +226,7 @@ impl Widget for Spinner {
     /// steps leave its box undamaged, and an unchanged frame does not
     /// present.
     fn needs_redraw(&self) -> bool {
-        self.stepped || self.drawn_step != Some(self.step_at(crate::motion::frame_now()))
+        self.stepped || self.drawn_step != Some(self.step_at(tilo_ui_base::motion::frame_now()))
     }
 
     fn mark_drawn(&mut self) {
@@ -242,10 +242,10 @@ impl Widget for Spinner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
-    use crate::text_render::TextRenderer;
     use std::collections::HashMap;
     use taffy::prelude::TaffyMaxContent;
+    use tilo_ui_base::presence::PresenceCtx;
+    use tilo_ui_base::text_render::TextRenderer;
     use vello::Scene;
     use vello::kurbo::Affine;
     use vello_encoding::DrawTag;
@@ -280,9 +280,9 @@ mod tests {
                 let line = theme
                     .tokens
                     .typography
-                    .style(crate::tokens::TextRole::Caption)
+                    .style(tilo_ui_base::tokens::TextRole::Caption)
                     .line_height_px();
-                let mut s = Spinner::for_text(crate::tokens::TextRole::Caption);
+                let mut s = Spinner::for_text(tilo_ui_base::tokens::TextRole::Caption);
                 let mut taffy = TaffyTree::<()>::new();
                 let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
                 let node = s.build_layout(&mut taffy, &theme, &mut node_map);
@@ -299,7 +299,7 @@ mod tests {
             }
 
             {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 let s = Spinner::new();
                 let node = Widget::accessibility(&s).expect("spinner is not presentational");
                 assert_eq!(node.role, Role::Spinner);
@@ -322,7 +322,7 @@ mod tests {
                 let mut tr = TextRenderer::new();
                 let presence = PresenceCtx::default();
                 let mut scene = Scene::new();
-                s.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
+                s.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
 
                 let colour_fills = scene
                     .encoding()

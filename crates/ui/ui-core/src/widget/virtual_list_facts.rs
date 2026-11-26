@@ -2,8 +2,12 @@
 
 use std::collections::HashMap;
 
-use crate::component::{Component as _, Event, Moment, Person, ResourceId, Source};
-use crate::widget::{ListRowProps, Tone};
+use crate::widget::ListRowProps;
+use tilo_ui_base::widget::Tone;
+use tilo_ui_base::{
+    component::Component as _, component::Event, component::Moment, component::Person,
+    component::ResourceId, component::Source,
+};
 
 use super::{DescribedRows, Held, ItemRow, ListItemProps};
 
@@ -28,7 +32,7 @@ pub(super) struct ItemFacts {
     pub(super) title: Option<String>,
 }
 
-fn prop_of<T: crate::component::PropType + Default>(
+fn prop_of<T: tilo_ui_base::component::PropType + Default>(
     source: &mut dyn Source,
     name: &str,
 ) -> Result<T, String> {
@@ -99,7 +103,7 @@ impl ItemFacts {
 }
 
 /// What a list read of its rendered rows, each kept while its source says the row stands as it
-/// was read ([`crate::component::RowSource::revision`]): the list asks it of every row it holds
+/// was read ([`tilo_ui_base::component::RowSource::revision`]): the list asks it of every row it holds
 /// on every pass, and a row's item is decoded again only when the row changed.
 #[derive(Default)]
 pub(super) struct KeptReads {

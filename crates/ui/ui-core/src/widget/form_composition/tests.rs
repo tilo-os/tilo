@@ -1,9 +1,9 @@
 use super::*;
 use crate::app::driver::Driver;
 use crate::headless::InspectionNode;
-use crate::theme::Theme;
 use crate::widget::ButtonRole;
 use crate::widget::TextInput;
+use tilo_ui_base::theme::Theme;
 
 fn fixture() -> Element {
     Box::new(
@@ -56,7 +56,7 @@ fn form_page_reveals_at_focus_and_preserves_manual_scroll() {
         };
         let last = input_node(&harness, "Detail 19");
         harness
-            .perform_a11y_action(last, &crate::a11y::Action::Focus)
+            .perform_a11y_action(last, &tilo_ui_base::a11y::Action::Focus)
             .unwrap();
         assert_eq!(harness.a11y_focus().unwrap().0, last);
         let revealed = harness.targets()["Detail 19"];
@@ -66,7 +66,7 @@ fn form_page_reveals_at_focus_and_preserves_manual_scroll() {
 
         // A real wheel event may move the focused field off screen. Re-layout
         // must not undo that deliberate scroll while focus stays unchanged.
-        harness.send(&crate::synthetic_input::cursor_moved(180.0, 210.0));
+        harness.send(&tilo_ui_base::synthetic_input::cursor_moved(180.0, 210.0));
         harness.scroll(0.0, 3.0);
         let manual_offset = offset.get().1;
         assert!(manual_offset < revealed_offset);
@@ -76,7 +76,7 @@ fn form_page_reveals_at_focus_and_preserves_manual_scroll() {
 
         let first = input_node(&harness, "Detail 0");
         harness
-            .perform_a11y_action(first, &crate::a11y::Action::Focus)
+            .perform_a11y_action(first, &tilo_ui_base::a11y::Action::Focus)
             .unwrap();
         assert_eq!(harness.a11y_focus().unwrap().0, first);
         let revealed = harness.targets()["Detail 0"];
@@ -281,8 +281,8 @@ fn solve(widget: &mut dyn Widget, width: f32, theme: &Theme) {
     let mut tree = TaffyTree::new();
     let mut nodes = HashMap::new();
     let node = widget.build_layout(&mut tree, theme, &mut nodes);
-    let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
-    let mut text = crate::font_catalog::fixture_renderer();
+    let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::new();
+    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
     // SAFETY: exact live, exclusively owned widget tree and matching maps.
     unsafe {
         bindings.rebuild(widget, &tree, node, &nodes);
@@ -504,7 +504,7 @@ fn read_only_values_stack_without_overlap_at_narrow_width_and_large_type() {
     }
 }
 
-fn semantic_names(node: &InspectionNode, out: &mut Vec<(crate::a11y::Role, String)>) {
+fn semantic_names(node: &InspectionNode, out: &mut Vec<(tilo_ui_base::a11y::Role, String)>) {
     if let Some(access) = &node.semantics
         && let Some(name) = &access.name
     {
@@ -553,7 +553,7 @@ fn untitled_sections_custom_fields_and_control_rows() {
     semantic_names(&root, &mut names);
     let headings: Vec<_> = names
         .iter()
-        .filter(|(role, _)| matches!(role, crate::a11y::Role::Heading { .. }))
+        .filter(|(role, _)| matches!(role, tilo_ui_base::a11y::Role::Heading { .. }))
         .collect();
     assert_eq!(headings.len(), 1, "{headings:?}");
     assert_eq!(
@@ -564,7 +564,7 @@ fn untitled_sections_custom_fields_and_control_rows() {
     assert!(
         names
             .iter()
-            .any(|(role, name)| *role == crate::a11y::Role::Label && name == "Version"),
+            .any(|(role, name)| *role == tilo_ui_base::a11y::Role::Label && name == "Version"),
         "a custom field's label is a label: {names:?}"
     );
     let name = named(&root, "name").rect;
@@ -752,7 +752,7 @@ fn a_form_page_titles_in_large_title_or_not_at_all() {
     assert!(
         !names
             .iter()
-            .any(|(role, _)| matches!(role, crate::a11y::Role::Heading { level: 1 })),
+            .any(|(role, _)| matches!(role, tilo_ui_base::a11y::Role::Heading { level: 1 })),
         "{names:?}"
     );
 }
@@ -804,10 +804,10 @@ fn the_forms_of_a_pages_sections_share_one_label_column_and_name_their_controls(
     let mut names = Vec::new();
     semantic_names(&root, &mut names);
     for (role, name) in [
-        (crate::a11y::Role::TextInput, "Share of the time"),
-        (crate::a11y::Role::TextInput, "Room"),
-        (crate::a11y::Role::Switch, "Background"),
-        (crate::a11y::Role::List, "Accent"),
+        (tilo_ui_base::a11y::Role::TextInput, "Share of the time"),
+        (tilo_ui_base::a11y::Role::TextInput, "Room"),
+        (tilo_ui_base::a11y::Role::Switch, "Background"),
+        (tilo_ui_base::a11y::Role::List, "Accent"),
     ] {
         assert!(
             names.iter().any(|(r, n)| *r == role && n == name),
@@ -819,7 +819,7 @@ fn the_forms_of_a_pages_sections_share_one_label_column_and_name_their_controls(
 /// What a language view wraps each form in: a pane that answers as itself and shows the form.
 struct Shown(Element);
 
-impl crate::widget::Decorator for Shown {
+impl tilo_ui_base::widget::Decorator for Shown {
     type Inner = dyn Widget;
     fn inner(&self) -> &(dyn Widget + 'static) {
         self.0.as_ref()

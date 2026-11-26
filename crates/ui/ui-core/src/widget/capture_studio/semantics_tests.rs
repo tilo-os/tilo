@@ -2,14 +2,14 @@
 //! meets it: the studio is modal while choosing, so a control missing from the tree is one they cannot
 //! use.
 
-use crate::a11y::Action;
 use crate::app::driver::Driver;
 use crate::state::State;
-use crate::theme::Theme;
 use crate::widget::{
     AudioCaptureMode, CaptureMode, CapturePreview, CaptureStudio, ScreenshotCommand,
     ScreenshotKept, SourceMode,
 };
+use tilo_ui_base::a11y::Action;
+use tilo_ui_base::theme::Theme;
 
 fn harness() -> Driver {
     let mut studio = CaptureStudio::default();

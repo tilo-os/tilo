@@ -16,14 +16,16 @@ use std::rc::{Rc, Weak};
 
 use tilo_actions::{Action as _, ActionContext, ActionError, ActionInvoker, ChangeKind};
 use tilo_resource::{Invoke, Resource};
-use ui_core::LocalState;
-use ui_core::arriving::{Arriving, Source};
+use tilo_ui_base::LocalState;
+use tilo_ui_base::workspace_sync::RecordNotHere;
+use tilo_ui_base::{arriving::Arriving, arriving::Source};
+use tilo_ui_base::{
+    permissions::LivePermissions, permissions::PermissionScope, permissions::TreePath,
+};
 use ui_core::history_mode::HistoryOwner;
-use ui_core::permissions::{LivePermissions, PermissionScope, TreePath};
 use ui_core::resource::StoredResource;
 use ui_core::resource::workspace::WorkspaceResources;
 use ui_core::wake::WakeHandle;
-use ui_core::workspace_sync::RecordNotHere;
 
 use super::live::Live;
 use super::resources::{Held, ResourceApi};
@@ -1109,12 +1111,12 @@ enum Holdings {
 
 impl Holdings {
     fn now() -> Self {
-        use ui_core::arriving::Arrival;
-        use ui_core::workspace_sync::WorkspaceSyncState;
-        match ui_core::workspace_sync::holdings().get() {
+        use tilo_ui_base::arriving::Arrival;
+        use tilo_ui_base::workspace_sync::WorkspaceSyncState;
+        match tilo_ui_base::workspace_sync::holdings().get() {
             Arrival::Pending { .. } => Self::Arriving,
             Arrival::Failed(_) => Self::Unreachable,
-            Arrival::Ready(()) => match ui_core::workspace_sync::current() {
+            Arrival::Ready(()) => match tilo_ui_base::workspace_sync::current() {
                 Some(sync) if sync.state == WorkspaceSyncState::Unreachable => Self::Unreachable,
                 _ => Self::Here,
             },
@@ -1177,7 +1179,7 @@ impl WorkspaceState {
             .on_retry(|arriving| {
                 // The shell dials the workspace's holders again; the window's next refresh
                 // asks for each document once more.
-                ui_core::workspace_sync::retry();
+                tilo_ui_base::workspace_sync::retry();
                 arriving.writer().pending(Source::Remote);
             })
             .on_continue_without(|arriving| arriving.writer().ready(()))
@@ -1198,7 +1200,10 @@ impl WorkspaceState {
         self.awaited
             .borrow()
             .iter()
-            .filter(|wait| wait.arriving.with(ui_core::arriving::Arrival::is_pending))
+            .filter(|wait| {
+                wait.arriving
+                    .with(tilo_ui_base::arriving::Arrival::is_pending)
+            })
             .filter_map(|wait| wait.since.checked_add(LONG_WAIT))
             .min()
     }
@@ -1220,7 +1225,10 @@ impl WorkspaceState {
             let mut awaited = self.awaited.borrow_mut();
             awaited.retain(|wait| wait.arriving.with(|arrival| arrival.ready().is_none()));
             for wait in awaited.iter_mut() {
-                if !wait.arriving.with(ui_core::arriving::Arrival::is_pending) {
+                if !wait
+                    .arriving
+                    .with(tilo_ui_base::arriving::Arrival::is_pending)
+                {
                     continue;
                 }
                 if wait.ended {

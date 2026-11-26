@@ -4,8 +4,8 @@
 //! asks the host to raise a notification ([`SaveStatusSurface::take_notice`]), since the person could
 //! lose work they cannot see.
 
-use crate::i18n::{widget_format, widget_text};
 use std::cell::RefCell;
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 
 use crate::time::{Duration, Instant};
 use crate::widget::toast::{ToastKind, Transient};

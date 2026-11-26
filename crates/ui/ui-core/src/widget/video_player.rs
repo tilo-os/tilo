@@ -10,15 +10,15 @@
 //! `realtime` feature is on (any app that streams video enables it); in other
 //! builds the feed methods report that nothing was decoded.
 
-use crate::num::f64_of_u64;
 use crate::time::{Duration, Instant};
-use crate::widget::{AppModel, ModelPath};
 use std::borrow::Cow;
 use std::sync::Arc;
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::num::f64_of_u64;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
-use crate::widget::TaffyTreeExt;
 use taffy::{NodeId, Size, TaffyTree};
+use tilo_ui_base::widget::TaffyTreeExt;
 use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{
@@ -26,12 +26,12 @@ use vello::peniko::{
 };
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
-use crate::icons::Icon;
+use tilo_ui_base::icons::Icon;
 
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::{FullscreenProvider, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::{widget::FullscreenProvider, widget::Widget};
 
 /// The shape a player stands at where nothing gives it a height: a video's usual 16:9.
 const NATURAL_ASPECT: f32 = 16.0 / 9.0;
@@ -145,7 +145,7 @@ pub enum PlayerSettingEvent {
 
 fn setting_value(setting: &PlayerSetting) -> String {
     match &setting.control {
-        PlayerSettingControl::Toggle { on } => crate::i18n::widget_format(
+        PlayerSettingControl::Toggle { on } => tilo_ui_base::i18n::widget_format(
             if *on {
                 "media-toggle-on"
             } else {
@@ -161,7 +161,7 @@ fn setting_value(setting: &PlayerSetting) -> String {
 }
 
 fn said(key: &str) -> Cow<'static, str> {
-    Cow::Owned(crate::i18n::widget_format(key, &[]))
+    Cow::Owned(tilo_ui_base::i18n::widget_format(key, &[]))
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -199,7 +199,7 @@ pub struct NowPlaying {
     clippy::struct_excessive_bools,
     reason = "flags are independent widget state, not related toggles"
 )]
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "the player surface `ui.VideoPlayer` is built from, over its app's engine"
 )]
@@ -273,7 +273,7 @@ pub struct VideoPlayer {
     gear_entries: Vec<usize>,
     menu_hit_rects: Vec<(MenuHit, Rect)>,
     now_playing: NowPlaying,
-    fullscreen_target: crate::fullscreen::FullscreenTarget,
+    fullscreen_target: tilo_ui_base::fullscreen::FullscreenTarget,
 }
 
 #[derive(Clone, Copy)]
@@ -374,7 +374,7 @@ impl VideoPlayer {
             gear_entries: Vec::new(),
             menu_hit_rects: Vec::new(),
             now_playing: NowPlaying::default(),
-            fullscreen_target: crate::fullscreen::FullscreenTarget::Largest,
+            fullscreen_target: tilo_ui_base::fullscreen::FullscreenTarget::Largest,
         }
     }
 
@@ -875,11 +875,11 @@ impl VideoPlayer {
         self.dirty = true;
     }
 
-    pub fn set_fullscreen_target(&mut self, target: crate::fullscreen::FullscreenTarget) {
+    pub fn set_fullscreen_target(&mut self, target: tilo_ui_base::fullscreen::FullscreenTarget) {
         self.fullscreen_target = target;
     }
 
-    pub fn fullscreen_target(&self) -> crate::fullscreen::FullscreenTarget {
+    pub fn fullscreen_target(&self) -> tilo_ui_base::fullscreen::FullscreenTarget {
         self.fullscreen_target
     }
 
@@ -929,11 +929,11 @@ impl VideoPlayer {
         if self.motion_reduced {
             return 1.0;
         }
-        crate::motion::Transient::opacity(
-            crate::motion::Transient::CONFIRMATION,
+        tilo_ui_base::motion::Transient::opacity(
+            tilo_ui_base::motion::Transient::CONFIRMATION,
             (now, deadline),
             now,
-            crate::tokens::EffectiveMotion::default(),
+            tilo_ui_base::tokens::EffectiveMotion::default(),
         )
     }
 
@@ -1182,7 +1182,8 @@ impl VideoPlayer {
                 transform,
                 &picture,
             );
-            let mut ctx = crate::paint::PaintCtx::new(scene, transform, text_renderer, theme);
+            let mut ctx =
+                tilo_ui_base::paint::PaintCtx::new(scene, transform, text_renderer, theme);
             paint(&mut ctx, picture);
             scene.pop_layer();
         } else {
@@ -1240,7 +1241,7 @@ impl VideoPlayer {
         self.controls_on_screen
     }
 
-    fn seen_controls(&self) -> Vec<(String, crate::a11y::AccessNode, Rect)> {
+    fn seen_controls(&self) -> Vec<(String, tilo_ui_base::a11y::AccessNode, Rect)> {
         if !self.controls_seen() {
             return Vec::new();
         }
@@ -1269,7 +1270,7 @@ impl VideoPlayer {
         let Some(cue) = active_cue(&self.captions, self.position_ms) else {
             return;
         };
-        let style = theme.text(crate::tokens::TextRole::Body);
+        let style = theme.text(tilo_ui_base::tokens::TextRole::Body);
         let inset = f64::from(theme.tokens.spacing.s3);
         let pad_x = inset;
         let pad_y = f64::from(theme.tokens.spacing.s1);
@@ -1291,7 +1292,7 @@ impl VideoPlayer {
         if plate.width() <= 0.0 || plate.height() <= 0.0 {
             return;
         }
-        crate::overlay::scrim::text_plate(scene, transform, plate, theme);
+        tilo_ui_base::overlay::scrim::text_plate(scene, transform, plate, theme);
         text_renderer.draw_style(
             scene,
             &cue.text,
@@ -1314,7 +1315,7 @@ impl VideoPlayer {
             return;
         }
         crate::widget::floating_surface::paint(scene, transform, bar, theme);
-        let panel_theme = theme.on_ground(crate::chrome::panel_ground(theme));
+        let panel_theme = theme.on_ground(tilo_ui_base::chrome::panel_ground(theme));
         let theme = &panel_theme;
         let on_panel = theme.on_surface(theme.tokens.colors.surfaces.content);
 
@@ -2213,20 +2214,20 @@ impl VideoPlayer {
                 row_rect.x1 - 2.0,
                 y + row_h - 3.0,
             );
-            let panel = crate::chrome::shell::panel_ground(theme);
+            let panel = tilo_ui_base::chrome::shell::panel_ground(theme);
             scene.fill(
                 Fill::NonZero,
                 transform,
-                crate::tokens::colors::Colors::hairline_on(panel, MENU_SELECTED_ALPHA),
+                tilo_ui_base::tokens::colors::Colors::hairline_on(panel, MENU_SELECTED_ALPHA),
                 None,
                 &RoundedRect::from_rect(hl_rect, 6.0),
             );
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                crate::surface::edge_on(panel),
+                tilo_ui_base::surface::edge_on(panel),
                 None,
-                &crate::surface::edge_outline(hl_rect, 6.0),
+                &tilo_ui_base::surface::edge_outline(hl_rect, 6.0),
             );
         }
         let label = options.get(oi).cloned().unwrap_or_default();
@@ -2355,7 +2356,7 @@ fn draw_fullscreen_glyph(
 }
 
 fn format_ms(ms: u64) -> String {
-    crate::format::timecode(ms / 1000)
+    tilo_ui_base::format::timecode(ms / 1000)
 }
 
 impl Default for VideoPlayer {
@@ -2373,8 +2374,8 @@ impl FullscreenProvider for VideoPlayer {
         }
     }
 
-    fn fullscreen_params(&self) -> crate::fullscreen::FullscreenRequest {
-        crate::fullscreen::FullscreenRequest::mirror(self.fullscreen_target)
+    fn fullscreen_params(&self) -> tilo_ui_base::fullscreen::FullscreenRequest {
+        tilo_ui_base::fullscreen::FullscreenRequest::mirror(self.fullscreen_target)
     }
 
     fn on_fullscreen_changed(&mut self, active: bool) {
@@ -2389,7 +2390,7 @@ impl FullscreenProvider for VideoPlayer {
 }
 
 impl Widget for VideoPlayer {
-    crate::provides!(dyn crate::widget::FullscreenProvider);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::FullscreenProvider);
 
     fn sync(&mut self, _state: &AppModel, _path: &ModelPath) {
         self.resolve_poster();
@@ -2402,7 +2403,11 @@ impl Widget for VideoPlayer {
         _theme: &Theme,
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        taffy.widget_leaf(crate::widget::layout::natural_filling(), node_map, self)
+        taffy.widget_leaf(
+            tilo_ui_base::widget::layout::natural_filling(),
+            node_map,
+            self,
+        )
     }
 
     /// Where nothing gives it a height (a column that grows with what it holds), the player
@@ -2413,11 +2418,11 @@ impl Widget for VideoPlayer {
         available: Size<taffy::AvailableSpace>,
         _text_renderer: &mut TextRenderer,
     ) -> Size<f32> {
-        crate::widget::layout::natural_shape(known, available, NATURAL_ASPECT)
+        tilo_ui_base::widget::layout::natural_shape(known, available, NATURAL_ASPECT)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
     }
 
     /// A video's shape across the width it is given: placed once, it asks for no layout.
@@ -2425,7 +2430,7 @@ impl Widget for VideoPlayer {
         self.rect == Rect::ZERO
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2435,7 +2440,7 @@ impl Widget for VideoPlayer {
         self.paint(scene, transform, text_renderer, theme);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 let logical =
@@ -2548,8 +2553,8 @@ impl Widget for VideoPlayer {
         self.dirty = false;
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         // Hidden or faded controls leave the tree: a reader is not sent to
         // a control nobody can see, and the keys in the description reach
         // all of them meanwhile.
@@ -2560,8 +2565,8 @@ impl Widget for VideoPlayer {
             .collect();
         Some(
             AccessNode::new(Role::Group)
-                .with_name(crate::i18n::widget_format("media-player", &[]))
-                .with_description(crate::i18n::widget_format(
+                .with_name(tilo_ui_base::i18n::widget_format("media-player", &[]))
+                .with_description(tilo_ui_base::i18n::widget_format(
                     if self.has_media() {
                         "media-player-hint"
                     } else {
@@ -2607,8 +2612,8 @@ impl Widget for VideoPlayer {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         self.activate_semantic_target(target, action)

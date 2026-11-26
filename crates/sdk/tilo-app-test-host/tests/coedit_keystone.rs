@@ -19,13 +19,17 @@ use automerge::{AutoCommit, ObjId, ObjType, ROOT, ReadDoc, Value};
 use collab_types::CommitNamed as _;
 use tilo_automerge::ApplyIncoming as _;
 
-use ui_core::collaboration::{CollabEvent, CollabRequest, CollaborationManager, PresencePayload};
-use ui_core::offscreen::OffscreenRenderer;
-use ui_core::permissions::MemberId;
-use ui_core::presence::{PathSegment, PresenceCtx, PresenceKey};
-use ui_core::text_render::TextRenderer;
-use ui_core::theme::Theme;
-use ui_core::widget::{DrawChild as _, TextInput, Widget};
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{
+    collaboration::CollabEvent, collaboration::CollabRequest, collaboration::CollaborationManager,
+    collaboration::PresencePayload,
+};
+use tilo_ui_base::{presence::PathSegment, presence::PresenceCtx, presence::PresenceKey};
+use tilo_ui_base::{widget::DrawChild as _, widget::Widget};
+use ui_core::widget::TextInput;
 
 use crate::support_collab::TypedBroker;
 use ui_core::vello::Scene;
@@ -212,7 +216,7 @@ fn render_widget(mut input: TextInput, doc: &AutoCommit, presence: &PresenceCtx)
 
 fn render_bound(doc: &AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> LocalRender {
     let mut input = TextInput::new(Vec::new())
-        .with_text_role(ui_core::TextRole::LargeTitle)
+        .with_text_role(tilo_ui_base::TextRole::LargeTitle)
         .with_plain_chrome();
     input.bind_text(bound.clone());
     render_widget(input, doc, presence)
@@ -222,7 +226,7 @@ fn render_bound(doc: &AutoCommit, bound: &ObjId, presence: &PresenceCtx) -> Loca
 /// the same key paints into this widget's local render.
 fn render_presence_probe(path: Vec<PathSegment>, presence: &PresenceCtx) -> LocalRender {
     let input = TextInput::new(path)
-        .with_text_role(ui_core::TextRole::LargeTitle)
+        .with_text_role(tilo_ui_base::TextRole::LargeTitle)
         .with_plain_chrome();
     let throwaway = AutoCommit::new();
     render_widget(input, &throwaway, presence)

@@ -87,7 +87,7 @@ fn reads(
 
 #[test]
 fn tilo_do_set_dark_mode_runs_the_one_action_without_asking() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let socket = root.path().join("test-control.sock");
     let mut session = settings_session(root.path(), &socket);
@@ -110,7 +110,7 @@ fn tilo_do_set_dark_mode_runs_the_one_action_without_asking() {
 /// settings and one of the device's, each named by its address.
 #[test]
 fn tilo_do_sets_a_persons_setting_and_a_devices_by_their_setters() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let socket = root.path().join("test-control.sock");
     let mut session = settings_session(root.path(), &socket);
@@ -156,7 +156,7 @@ fn tilo_do_sets_a_persons_setting_and_a_devices_by_their_setters() {
 /// control socket.
 #[test]
 fn a_process_outside_sets_its_own_preference_through_the_control_socket() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = crate::common::private_home();
     let socket = root.path().join("test-control.sock");
     let mut session = settings_session(root.path(), &socket);

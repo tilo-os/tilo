@@ -8,7 +8,7 @@ use vello::kurbo::{Affine, Rect};
 use vello::peniko::Fill;
 use vello::{FineDamageRect, Scene, wgpu};
 
-use crate::damage::{area, damage_union};
+use tilo_ui_base::{damage::area, damage::damage_union};
 
 mod present;
 mod recording;
@@ -57,7 +57,7 @@ pub struct FrameLayers {
     pub strips: Vec<Scene>,
     /// The damage parts each of `strips` marked, in the same order, so a presenter
     /// rasterises only where a part's drawing changed.
-    pub strip_parts: Vec<Option<crate::scene_parts::SectionParts>>,
+    pub strip_parts: Vec<Option<tilo_ui_base::scene_parts::SectionParts>>,
     pub chrome: Scene,
 }
 
@@ -112,7 +112,7 @@ pub struct Shown {
 struct ShownStrips {
     workspace: Scene,
     drawn: Vec<Scene>,
-    parts: Vec<Option<crate::scene_parts::SectionParts>>,
+    parts: Vec<Option<tilo_ui_base::scene_parts::SectionParts>>,
     width: u32,
     strips: Vec<StripBlit>,
 }
@@ -194,11 +194,11 @@ pub struct BandCopy {
 impl BandCopy {
     /// The copy as a scroll within a retained target makes it.
     #[must_use]
-    pub fn device_copy(self) -> crate::scroll_copy::DeviceCopy {
+    pub fn device_copy(self) -> tilo_ui_base::scroll_copy::DeviceCopy {
         let delta = |src: u32, dst: u32| {
             i32::try_from(i64::from(dst).saturating_sub(i64::from(src))).unwrap_or(i32::MAX)
         };
-        crate::scroll_copy::DeviceCopy {
+        tilo_ui_base::scroll_copy::DeviceCopy {
             x: self.src_x,
             y: self.src_y,
             width: self.width,
@@ -452,8 +452,8 @@ enum Change {
 const TILE_EDGE: u32 = 16;
 
 fn strip_change(
-    (old_drawn, old_parts): (&Scene, Option<&crate::scene_parts::SectionParts>),
-    (new_drawn, new_parts): (&Scene, Option<&crate::scene_parts::SectionParts>),
+    (old_drawn, old_parts): (&Scene, Option<&tilo_ui_base::scene_parts::SectionParts>),
+    (new_drawn, new_parts): (&Scene, Option<&tilo_ui_base::scene_parts::SectionParts>),
     blit: &StripBlit,
     size: (u32, u32),
 ) -> Change {
@@ -463,7 +463,8 @@ fn strip_change(
     let (Some(old_parts), Some(new_parts)) = (old_parts, new_parts) else {
         return Change::Anywhere;
     };
-    let Ok(rects) = crate::scene_parts::damage(old_drawn, old_parts, new_drawn, new_parts) else {
+    let Ok(rects) = tilo_ui_base::scene_parts::damage(old_drawn, old_parts, new_drawn, new_parts)
+    else {
         return Change::Anywhere;
     };
     let (bx0, by0, bx1, by1) = band(blit, size);
@@ -475,7 +476,7 @@ fn strip_change(
     let edge = f64::from(TILE_EDGE);
     let tile = |value: f64, round: fn(f64) -> f64| round(value / edge) * edge;
     let clamp = |value: f64, low: u32, high: u32| -> u32 {
-        crate::num::u32_of_f64(value.clamp(f64::from(low), f64::from(high)))
+        tilo_ui_base::num::u32_of_f64(value.clamp(f64::from(low), f64::from(high)))
     };
     for rect in rects {
         let x0 = clamp(tile(rect.x0 - scroll, f64::floor), bx0, bx1);
@@ -794,7 +795,7 @@ pub struct StripLayers {
     backdrop: LayerTexture,
     workspace: LayerTexture,
     chrome: LayerTexture,
-    scratch: crate::scroll_copy::CopyScratch,
+    scratch: tilo_ui_base::scroll_copy::CopyScratch,
     composite: CompositePass,
     primed: bool,
     pub shown: Option<Shown>,
@@ -807,7 +808,7 @@ impl StripLayers {
             backdrop: LayerTexture::new(device, size, "tilo-strip-layer-backdrop"),
             workspace: LayerTexture::new(device, size, "tilo-strip-layer-workspace"),
             chrome: LayerTexture::new(device, size, "tilo-strip-layer-chrome"),
-            scratch: crate::scroll_copy::CopyScratch::default(),
+            scratch: tilo_ui_base::scroll_copy::CopyScratch::default(),
             composite: CompositePass::new(device),
             primed: false,
             shown: None,
@@ -851,7 +852,7 @@ impl StripLayers {
     }
 
     /// Move the strips layer's bands `copies` names, as a scroll within a retained target
-    /// moves ([`crate::scroll_copy::encode_copies`]). Returns `false`, recording nothing,
+    /// moves ([`tilo_ui_base::scroll_copy::encode_copies`]). Returns `false`, recording nothing,
     /// when a copy would leave the layer: the caller then rasterises the layer whole.
     #[must_use]
     pub fn encode_copies(
@@ -860,9 +861,9 @@ impl StripLayers {
         encoder: &mut wgpu::CommandEncoder,
         copies: &[BandCopy],
     ) -> bool {
-        let copies: Vec<crate::scroll_copy::DeviceCopy> =
+        let copies: Vec<tilo_ui_base::scroll_copy::DeviceCopy> =
             copies.iter().map(|copy| copy.device_copy()).collect();
-        crate::scroll_copy::encode_copies(
+        tilo_ui_base::scroll_copy::encode_copies(
             device,
             encoder,
             &self.workspace.texture,

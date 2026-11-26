@@ -22,8 +22,8 @@ fn external_navigation_omits_bar_from_layout_and_semantics_but_retains_tabs() {
     reason = "sample points are small positive pixel coordinates"
 )]
 fn a_resting_pointer_lights_the_whole_edge_that_will_change() {
-    use crate::offscreen::OffscreenRenderer;
     use taffy::prelude::TaffyMaxContent;
+    use tilo_ui_base::offscreen::OffscreenRenderer;
     let theme = Theme::dark();
     let mut renderer = OffscreenRenderer::new(400, 300);
     let mut render = |group: &mut WindowGroup| {
@@ -45,12 +45,12 @@ fn a_resting_pointer_lights_the_whole_edge_that_will_change() {
         tree.compute_layout(root, Size::MAX_CONTENT).unwrap();
         group.apply_layout(&tree, node, Point::new(100.0, 30.0));
         let mut scene = Scene::new();
-        group.draw(&mut crate::draw::DrawCtx::new(
+        group.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
             &theme,
-            crate::presence::PresenceCtx::empty().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
         ));
         renderer.render(&scene, vello::peniko::Color::from_rgb8(0, 0, 255))
     };
@@ -313,15 +313,15 @@ fn tab_bar_requests_reorder_search_and_pin_keep_hosts_aligned() {
     }
 
     {
-        use crate::theme::Theme;
         use std::collections::HashMap;
         use taffy::Style;
         use taffy::prelude::TaffyMaxContent;
+        use tilo_ui_base::theme::Theme;
         use winit::event::Modifiers;
         use winit::keyboard::{Key, ModifiersState, SmolStr};
 
         fn key_press(logical_key: Key) -> WindowEvent {
-            crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+            tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
                 logical_key,
                 None,
                 ElementState::Pressed,
@@ -459,10 +459,10 @@ fn closing_tab_hosts_fade_out_and_the_last_one_closes_the_group() {
         }
 
         {
-            use crate::theme::Theme;
             use std::collections::HashMap;
             use taffy::Style;
             use taffy::prelude::TaffyMaxContent;
+            use tilo_ui_base::theme::Theme;
 
             let mut g = make_group();
             let theme = Theme::dark();
@@ -520,10 +520,10 @@ fn closing_tab_hosts_fade_out_and_the_last_one_closes_the_group() {
         // sequence the prune, so if `closing_at` never flips the group
         // stays around as an empty shell forever.
         {
-            use crate::theme::Theme;
             use std::collections::HashMap;
             use taffy::Style;
             use taffy::prelude::TaffyMaxContent;
+            use tilo_ui_base::theme::Theme;
 
             let tabs: Vec<(TabDescriptor, TileContent)> = vec![(
                 TabDescriptor::new(1, "solo"),
@@ -588,7 +588,7 @@ struct Reached {
 struct TabProbe(std::rc::Rc<Reached>);
 
 impl Widget for TabProbe {
-    crate::provides!(
+    tilo_ui_base::provides!(
         dyn crate::history_mode::capability::FrameworkHistoryTopology,
         dyn crate::component_lifecycle::ComponentLifecycle
     );
@@ -673,7 +673,7 @@ fn a_background_tab_is_still_part_of_its_window() {
         1,
         WindowWidth::Normal,
     );
-    crate::widget::handle_collab_event(
+    tilo_ui_base::widget::handle_collab_event(
         &mut group,
         &::collaboration::CollabEvent::FollowChanged { peer_id: None },
     );

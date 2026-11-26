@@ -6,10 +6,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Point, Rect};
 use vello::peniko::{Color, Fill};
 
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct LegendEntry {
@@ -97,7 +97,7 @@ pub fn paint_entry_emphasised(
         None,
         &Circle::new(Point::new(rect.x0 + dot / 2.0, cy), dot / 2.0),
     );
-    let spare = crate::num::f32_of_f64((rect.width() - dot - gap).max(0.0));
+    let spare = tilo_ui_base::num::f32_of_f64((rect.width() - dot - gap).max(0.0));
     let label = text.elide_to_width_style(label, spare, &style);
     let h = f64::from(text.measure_style(&label, None, &style).1);
     text.draw_style(
@@ -171,7 +171,7 @@ impl SeriesToggles {
     /// `colour` as series `id` wears it now: faded while another's legend entry is pointed at.
     pub(crate) fn ink(&self, id: &str, colour: Color) -> Color {
         if self.dims(id) {
-            crate::paint::with_alpha(colour, 56)
+            tilo_ui_base::paint::with_alpha(colour, 56)
         } else {
             colour
         }
@@ -243,7 +243,7 @@ impl SeriesToggles {
     pub(crate) fn access_node(&self, id: &str, name: &str) -> AccessNode {
         AccessNode::new(Role::ToggleButton)
             .with_action_target(target(id))
-            .with_name(crate::i18n::widget_format(
+            .with_name(tilo_ui_base::i18n::widget_format(
                 "widget-chart-series",
                 &[("name", name.into())],
             ))
@@ -259,7 +259,7 @@ impl SeriesToggles {
         key: u64,
     ) -> Option<String> {
         ids.into_iter()
-            .find(|id| crate::a11y::hash_key(&target(id)) == key)
+            .find(|id| tilo_ui_base::a11y::hash_key(&target(id)) == key)
             .map(str::to_owned)
     }
 }
@@ -281,7 +281,7 @@ pub(crate) fn paint_series(
 ) {
     let fade = |colour: Color, alpha: u8| {
         if hidden {
-            crate::paint::with_alpha(colour, alpha)
+            tilo_ui_base::paint::with_alpha(colour, alpha)
         } else {
             colour
         }
@@ -307,7 +307,9 @@ pub(crate) fn paint_series(
         name,
         fade(ink, 90),
         transform * Affine::translate((item.x0 + 14.0, cy - h / 2.0)),
-        Some(crate::num::f32_of_f64((item.width() - 18.0).max(1.0))),
+        Some(tilo_ui_base::num::f32_of_f64(
+            (item.width() - 18.0).max(1.0),
+        )),
         &style,
     );
 }
@@ -349,7 +351,7 @@ pub fn layout<'a>(
 
 pub fn rows<'a>(labels: impl IntoIterator<Item = &'a str>, left: f64, right: f64) -> usize {
     layout(labels, left, right, 0.0).last().map_or(0, |rect| {
-        crate::num::usize_of_f64(rect.y0 / ROW_HEIGHT).saturating_add(1)
+        tilo_ui_base::num::usize_of_f64(rect.y0 / ROW_HEIGHT).saturating_add(1)
     })
 }
 

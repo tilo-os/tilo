@@ -25,13 +25,15 @@ use std::rc::Rc;
 
 use tilo_actions::api::{ActionAddress, ActionDescriptor, ApiError};
 use tilo_actions::{ActionEnvelope, ActionOutput, ActionTransport};
+use tilo_ui_base::collaboration::DocumentMutation;
+use tilo_ui_base::{
+    permissions::MemberId, permissions::PermissionContext, permissions::SharedPermissions,
+};
 use ui_core::application::{
     ApplicationDefinition, ComponentRunnerInputs, LaunchTarget, ProcessContextInputs, RestoreInput,
 };
 use ui_core::application_view::InstanceViewStore;
-use ui_core::collaboration::DocumentMutation;
 use ui_core::headless::Driver;
-use ui_core::permissions::{MemberId, PermissionContext, SharedPermissions};
 
 use ui_core::resource::{
     DocumentCheckout, DocumentPort, DocumentSync, MemoryWorkspace, ResourceOwners, ResourceStore,
@@ -62,7 +64,7 @@ impl ActionTransport for Landed {
 /// is made a resource only when a page reaches it
 /// ([`AttachedView::chain_level_item`]).
 #[derive(Clone)]
-pub struct ChainLevel(ui_core::published::SharedResource);
+pub struct ChainLevel(tilo_ui_base::published::SharedResource);
 
 impl ChainLevel {
     /// How many items the level holds.
@@ -78,7 +80,7 @@ impl ChainLevel {
             .children()
             .as_slice()
             .get(at)
-            .map(ui_core::published::SharedResource::id)
+            .map(tilo_ui_base::published::SharedResource::id)
     }
 
     /// Whether the level holds no item.
@@ -479,8 +481,8 @@ impl AttachedView {
             component,
             VIEWPORT,
             ComponentRunnerInputs {
-                theme: ui_core::Theme::default(),
-                text_renderer: ui_core::TextRenderer::new(),
+                theme: tilo_ui_base::Theme::default(),
+                text_renderer: tilo_ui_base::TextRenderer::new(),
             },
         )
         .map_err(|error| error.to_string())?;
@@ -610,9 +612,9 @@ impl AttachedView {
                 .records
                 .with(&self.checkout.id, ui_core::automerge::AutoCommit::get_heads)
                 .unwrap_or_default(),
-            input: ui_core::input_generation::generation(),
+            input: tilo_ui_base::input_generation::generation(),
             frames: self.frame_as_is().frames(),
-            permissions: ui_core::permissions::shared_revision(),
+            permissions: tilo_ui_base::permissions::shared_revision(),
         }
     }
 
@@ -1178,7 +1180,7 @@ impl AttachedView {
     ) -> Result<
         (
             tilo_actions::InvocationId,
-            ui_core::host_operation::ResourceOperationStart,
+            tilo_ui_base::host_operation::ResourceOperationStart,
         ),
         ApiError,
     > {
@@ -1730,14 +1732,14 @@ impl AttachedView {
 /// it submitted, the replies it asked a worker for. One frame when it asked
 /// for nothing; when what it submitted changed the record, the frames that
 /// shows ([`Driver::settle_owed`]). Laid out as a still frame
-/// ([`ui_core::arriving::still_frames`]): a view no window shows has no later frame.
+/// ([`tilo_ui_base::arriving::still_frames`]): a view no window shows has no later frame.
 ///
 /// What a worker or an arrival woke the view's models for meanwhile is served
 /// first, as a live window's idle pass serves it before its next frame: served
 /// after the frame, it retired the layout that frame admitted, and the next
 /// action laid the whole view out again to admit it.
 fn lay_out(frame: &mut Driver) {
-    let _still = ui_core::arriving::still_frames();
+    let _still = tilo_ui_base::arriving::still_frames();
     if frame.has_pending_owner_models()
         && let Err(error) = frame.service_pending_owner_models()
     {

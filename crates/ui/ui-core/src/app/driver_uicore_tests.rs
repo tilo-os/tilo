@@ -8,12 +8,13 @@
 )]
 
 use super::driver::Driver;
-use crate::permissions::MemberId;
-use crate::presence::{PlacedPointer, PresenceCtx};
-use crate::theme::Theme;
-use crate::widget::{Spacer, Text};
+use crate::widget::Text;
+use tilo_ui_base::permissions::MemberId;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::Spacer;
+use tilo_ui_base::{presence::PlacedPointer, presence::PresenceCtx};
 
-fn pointer(presence: &PresenceCtx, at: (f64, f64)) -> crate::presence::PeerCursor {
+fn pointer(presence: &PresenceCtx, at: (f64, f64)) -> tilo_ui_base::presence::PeerCursor {
     presence.placed_cursor(PlacedPointer {
         user: MemberId::person("ada"),
         at,

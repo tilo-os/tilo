@@ -27,20 +27,23 @@ use vello::peniko::{BlendMode, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::component::{Component, Described, Event, PartViews};
-use crate::icons::Icon;
-use crate::theme::Theme;
-use crate::tokens::{Rhythm, SpacingStep, TextRole};
-use crate::widget::DrawChild;
-use crate::widget::Length;
 use crate::widget::arrange::{Align, At, Fit, Layers, Part, Stack};
 use crate::widget::primitives::{SurfaceLevel, paint_surface};
 use crate::widget::tabs::{TAB_BAR_HEIGHT, TabBar, TabStrip};
 use crate::widget::window_controls::WindowControls;
 use crate::widget::window_header::header_row::HeaderRowMetrics;
-use crate::widget::{
-    Decorator, Element, IconSize, IconWidget, Spacer, Text, Widget, WindowBar, WindowBarPart,
+use crate::{
+    widget::IconSize, widget::IconWidget, widget::Text, widget::WindowBar, widget::WindowBarPart,
 };
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::Length;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PartViews,
+};
+use tilo_ui_base::{tokens::Rhythm, tokens::SpacingStep, tokens::TextRole};
+use tilo_ui_base::{widget::Decorator, widget::Element, widget::Spacer, widget::Widget};
 
 /// A window on a shell: the window surface with its edge and shadow, holding the
 /// window's content and its controls, clipped to its radius.
@@ -178,7 +181,7 @@ pub struct WindowFrame {
     /// gliding when its place changes (`motion::Placed`: `WindowMotion::OPEN` and `MOVE`, landing at
     /// once for a still theme and reduced motion). Drawn as a component of the shell's do: a window a
     /// view builds again each time the layout changes still moves rather than jumping.
-    placed: crate::motion::Placed,
+    placed: tilo_ui_base::motion::Placed,
     /// The resource the bar carries when it is picked up, by its published address: what a
     /// press on the bar's empty area publishes on the drag bus once it travels past the
     /// threshold, so a place on the canvas reaches a composer or the canvas itself by its own
@@ -191,7 +194,7 @@ pub struct WindowFrame {
     /// Whether the window has just closed: its frame goes back into its control and takes nothing.
     leaving: bool,
     /// What a press on the bar does.
-    press: crate::widget::Press,
+    press: tilo_ui_base::widget::Press,
     /// Whether the bar takes a press now, and why it cannot when it does not.
     enabled: bool,
     description: Option<String>,
@@ -383,22 +386,22 @@ impl Described for WindowFrame {
             placed: if leaving {
                 // A window the shell keeps only as it leaves: it starts whole where it stood and
                 // goes from there, back into the control it was asked for from.
-                crate::motion::Placed::leaving().from_control(control_of(&control))
-            } else if crate::motion::window_has_shown() {
-                crate::motion::Placed::closed()
+                tilo_ui_base::motion::Placed::leaving().from_control(control_of(&control))
+            } else if tilo_ui_base::motion::window_has_shown() {
+                tilo_ui_base::motion::Placed::closed()
                     .from_control(control_of(&control))
                     // A window the person pressed for comes out of the control they pressed — the
                     // dock icon or the search row. A window a shortcut or an agent asked for lands
                     // where it stands, and one in the session's first frame rests.
                     .arriving_out_of_pointer()
             } else {
-                crate::motion::Placed::opened()
+                tilo_ui_base::motion::Placed::opened()
             },
             carries,
             lift: None,
             keep,
             leaving,
-            press: crate::widget::Press::of(press),
+            press: tilo_ui_base::widget::Press::of(press),
             enabled,
             description,
             cursor: Point::ZERO,
@@ -426,7 +429,7 @@ impl Described for WindowFrame {
         self.placed.set_control(control_of(&props.control));
         self.enabled = props.enabled;
         self.description = props.description;
-        self.press = crate::widget::Press::of(props.press);
+        self.press = tilo_ui_base::widget::Press::of(props.press);
         true
     }
 
@@ -705,7 +708,7 @@ impl WindowFrame {
         let (Some(carries), Some(lift)) = (self.carries.as_deref(), self.lift.as_mut()) else {
             return;
         };
-        if !lift.active && lift.start.distance(point) > crate::dnd::DRAG_START_THRESHOLD_PX {
+        if !lift.active && lift.start.distance(point) > tilo_ui_base::dnd::DRAG_START_THRESHOLD_PX {
             lift.active = true;
         }
         if !lift.active {
@@ -746,7 +749,7 @@ impl WindowFrame {
             };
             crate::widget::drag_bus::end(Some(crate::widget::drag_bus::Landed {
                 source: self.key.clone(),
-                payload: crate::dnd::DragPayload::Custom {
+                payload: tilo_ui_base::dnd::DragPayload::Custom {
                     kind: crate::widget::drag_source::RESOURCE_PAYLOAD.to_owned(),
                     blob: carries.into_bytes(),
                 },
@@ -770,7 +773,7 @@ impl Decorator for WindowFrame {
         &mut self.layers
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         // A window on its way out takes nothing: its place is gone from the layout, so a press on
         // its bar or in its content would reach an action that cannot run.
         if self.leaving {
@@ -957,19 +960,20 @@ impl Decorator for WindowFrame {
     /// Whether the window is arriving, going or moving: what asks for frames while it does,
     /// and what its own content asks for.
     fn needs_animation_frame(&self) -> bool {
-        self.placed.is_moving(crate::motion::frame_now()) || self.layers.needs_animation_frame()
+        self.placed.is_moving(tilo_ui_base::motion::frame_now())
+            || self.layers.needs_animation_frame()
     }
 
     fn collect_damage(&self, regions: &mut Vec<Rect>) {
         self.layers.collect_damage(regions);
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let drawn = self.placed.rect(now);
         if drawn != self.rect {
             regions.push(drawn.union(self.rect));
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -980,19 +984,19 @@ impl Decorator for WindowFrame {
         if rect.width() <= 0.0 || rect.height() <= 0.0 {
             return;
         }
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.placed.follow(
             rect,
             !self.leaving,
             theme.motion(),
-            crate::motion::input_source(),
+            tilo_ui_base::motion::input_source(),
             now,
         );
         let pose = self.placed.pose(rect, now);
         let bounds = rect.union(pose.drawn_rect(rect));
         pose.paint(scene, transform, bounds, |scene, transform| {
             self.paint_frame(
-                &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env),
+                &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text, theme, env),
                 rect,
             );
         });
@@ -1016,7 +1020,7 @@ impl Decorator for WindowFrame {
         self.layers.take_structure_dirty()
     }
 
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
         // The bar built again (its name, its app's glyph) is a change of the frame's own, which
         // a host learns here as it learns its children's; the room the bar keeps is layout's,
         // never a structure change.
@@ -1038,9 +1042,9 @@ impl Decorator for WindowFrame {
     }
 
     /// The frame is a group named for the window, and what it holds is read inside it.
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.name.as_ref().map(|name| {
-            let node = crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+            let node = tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
                 .with_optional_name(Some(name.clone()));
             // Why it cannot be pressed now, if it says: read beside its name, never instead.
             let node = match &self.description {
@@ -1051,7 +1055,7 @@ impl Decorator for WindowFrame {
             // window and where a gesture that moves the strip aims, whatever its tabs report.
             if self.bar.area() > 0.0 {
                 return node.with_children(vec![
-                    crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+                    tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
                         .with_optional_name(Some(name.clone()))
                         .with_bounds(self.bar),
                 ]);
@@ -1064,7 +1068,7 @@ impl Decorator for WindowFrame {
 impl WindowFrame {
     /// The window itself, drawn where `rect` says: what [`Decorator::draw`] draws once the
     /// window is posed where its arrival or move has reached.
-    fn paint_frame(&mut self, ctx: &mut crate::draw::DrawCtx<'_>, rect: Rect) {
+    fn paint_frame(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>, rect: Rect) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1073,7 +1077,7 @@ impl WindowFrame {
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let radius = SurfaceLevel::Window.radius(theme).min(rect.height() / 2.0);
         if self.focused {
-            crate::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
+            tilo_ui_base::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
         }
         let on = paint_surface(scene, transform, rect, SurfaceLevel::Window, theme);
         scene.push_layer(
@@ -1118,8 +1122,8 @@ impl WindowFrame {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::component::{Described, Event, ResourceId};
     use crate::widget::{TabItemProps, TabStrip, TabStripProps};
+    use tilo_ui_base::{component::Described, component::Event, component::ResourceId};
     use vello::Scene;
     use vello::kurbo::Affine;
 
@@ -1200,27 +1204,27 @@ mod tests {
             None,
             &Rect::new(0.0, 0.0, 240.0, 240.0),
         );
-        let mut text = crate::font_catalog::fixture_renderer();
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         Widget::draw(
             &mut frame,
-            &mut crate::draw::DrawCtx::new(
+            &mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text,
                 theme,
-                crate::presence::PresenceCtx::empty().draw_env(),
+                tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
             ),
         );
-        crate::offscreen::OffscreenRenderer::new(240, 240)
+        tilo_ui_base::offscreen::OffscreenRenderer::new(240, 240)
             .render(&scene, vello::peniko::Color::BLACK)
     }
 
     /// How far the pixel at (`x`, `y`) stands from the ground, in relative luminance.
     fn from_ground(rgba: &[u8], theme: &Theme, x: u32, y: u32) -> f64 {
-        let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(rgba, 240, x, y);
+        let (r, g, b, _) = tilo_ui_base::offscreen::OffscreenRenderer::sample(rgba, 240, x, y);
         let seen = vello::peniko::Color::from_rgb8(r, g, b);
-        (crate::a11y::relative_luminance(seen)
-            - crate::a11y::relative_luminance(theme.tokens.colors.surfaces.base))
+        (tilo_ui_base::a11y::relative_luminance(seen)
+            - tilo_ui_base::a11y::relative_luminance(theme.tokens.colors.surfaces.base))
         .abs()
     }
 
@@ -1231,7 +1235,8 @@ mod tests {
         let rect = Rect::new(40.0, 40.0, 200.0, 160.0);
         for theme in [Theme::dark(), Theme::light()] {
             let front = rendered(&theme, true, rect);
-            let (r, g, b, _) = crate::offscreen::OffscreenRenderer::sample(&front, 240, 120, 39);
+            let (r, g, b, _) =
+                tilo_ui_base::offscreen::OffscreenRenderer::sample(&front, 240, 120, 39);
             let accent = theme.tokens.colors.window_edge_focused().to_rgba8();
             let near = |seen: u8, want: u8| (i32::from(seen) - i32::from(want)).abs() <= 12;
             assert!(
@@ -1253,13 +1258,13 @@ mod tests {
             // // The pixel row just outside the top edge, away from the corners: the edge.
             let edge = |rgba: &[u8]| from_ground(rgba, &theme, 120, 39);
             assert!(
-                edge(&front) > edge(&behind) + crate::tokens::colors::HAIRLINE_MIN_DELTA,
+                edge(&front) > edge(&behind) + tilo_ui_base::tokens::colors::HAIRLINE_MIN_DELTA,
                 "the window in front has the heavier edge: {} over {}",
                 edge(&front),
                 edge(&behind)
             );
             assert!(
-                edge(&behind) >= crate::tokens::colors::HAIRLINE_MIN_DELTA / 2.0,
+                edge(&behind) >= tilo_ui_base::tokens::colors::HAIRLINE_MIN_DELTA / 2.0,
                 "a window behind still has an edge on the ground: {}",
                 edge(&behind)
             );
@@ -1282,8 +1287,8 @@ mod tests {
     /// and the controls keep their room from that same solve, so the window needs no second one.
     fn laid_out(frame: &mut WindowFrame, rect: Rect) {
         let theme = Theme::dark();
-        let mut text = crate::font_catalog::fixture_renderer();
-        crate::widget::layout::lay_out_detached(frame, rect, &theme, &mut text)
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+        tilo_ui_base::widget::layout::lay_out_detached(frame, rect, &theme, &mut text)
             .expect("the window lays out");
     }
 
@@ -1341,18 +1346,18 @@ mod tests {
             None,
             &Rect::new(0.0, 0.0, 240.0, 240.0),
         );
-        let mut text = crate::font_catalog::fixture_renderer();
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         Widget::draw(
             frame,
-            &mut crate::draw::DrawCtx::new(
+            &mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 &mut text,
                 theme,
-                crate::presence::PresenceCtx::empty().draw_env(),
+                tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
             ),
         );
-        crate::offscreen::OffscreenRenderer::new(240, 240)
+        tilo_ui_base::offscreen::OffscreenRenderer::new(240, 240)
             .render(&scene, vello::peniko::Color::BLACK)
     }
 
@@ -1441,12 +1446,12 @@ mod tests {
     /// stands.
     #[test]
     fn a_window_the_person_pressed_for_flies_out_of_the_control_they_pressed() {
-        let _frame = crate::motion::pin_frame();
+        let _frame = tilo_ui_base::motion::pin_frame();
         // A window opening in a running session: the shell has drawn a frame before.
-        let _shown = crate::motion::laying_out_window(true);
+        let _shown = tilo_ui_base::motion::laying_out_window(true);
         let control = Point::new(30.0, 700.0);
-        crate::motion::note_pointer(control);
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+        tilo_ui_base::motion::note_pointer(control);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
         let mut frame = WindowFrame::from_props(
             "w",
             WindowFrameProps {
@@ -1458,12 +1463,12 @@ mod tests {
         );
         let rect = Rect::new(400.0, 40.0, 880.0, 480.0);
         laid_out(&mut frame, rect);
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         frame.placed.follow(
             rect,
             true,
             Theme::dark().motion(),
-            crate::motion::input_source(),
+            tilo_ui_base::motion::input_source(),
             now,
         );
         let mark = frame.placed.pose(rect, now).drawn_rect(rect);
@@ -1477,7 +1482,7 @@ mod tests {
         );
 
         // A window a shortcut asked for lands where it stands.
-        crate::motion::note_source(crate::tokens::MotionSource::Keyboard);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Keyboard);
         let mut shortcut = WindowFrame::from_props(
             "w",
             WindowFrameProps {
@@ -1492,7 +1497,7 @@ mod tests {
             rect,
             true,
             Theme::dark().motion(),
-            crate::motion::input_source(),
+            tilo_ui_base::motion::input_source(),
             now,
         );
         assert_eq!(
@@ -1500,7 +1505,7 @@ mod tests {
             rect,
             "a shortcut's window shows in its frame at once"
         );
-        crate::motion::note_source(crate::tokens::MotionSource::Action);
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Action);
     }
 
     /// A window a shell keeps only as it leaves is drawn whole where it stood and goes back into
@@ -1509,11 +1514,11 @@ mod tests {
     #[test]
     fn a_window_that_closes_goes_back_into_the_control_it_came_out_of() {
         use taffy::TaffyTree;
-        let _frame = crate::motion::pin_frame();
-        let _shown = crate::motion::laying_out_window(true);
+        let _frame = tilo_ui_base::motion::pin_frame();
+        let _shown = tilo_ui_base::motion::laying_out_window(true);
         // The person closed it with a press: a pointer's departure plays; a shortcut's lands.
-        crate::motion::note_source(crate::tokens::MotionSource::Pointer);
-        let queue = crate::Intents::default();
+        tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
+        let queue = tilo_ui_base::Intents::default();
         let mut frame = Box::new(WindowFrame::from_props(
             "w",
             WindowFrameProps {
@@ -1521,7 +1526,7 @@ mod tests {
                 name: Some("A note".to_owned()),
                 leaving: true,
                 control: vec![30, 700],
-                press: Event::View(crate::component::Intent::new(&queue, "w", "press")),
+                press: Event::View(tilo_ui_base::component::Intent::new(&queue, "w", "press")),
                 body: Some(Box::new(Spacer::new())),
                 ..WindowFrameProps::default()
             },
@@ -1550,7 +1555,7 @@ mod tests {
 
         // The frame's first draw starts its departure: whole where it stood, on its way.
         let _ = drawn(&theme, &mut frame);
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let start = frame.placed.pose(rect, now).drawn_rect(rect);
         assert!(
             (start.center() - rect.center()).hypot() < 1.0,
@@ -1567,16 +1572,19 @@ mod tests {
         };
         send(
             frame.as_mut(),
-            &crate::synthetic_input::cursor_moved(bar.center().x, bar.center().y),
+            &tilo_ui_base::synthetic_input::cursor_moved(bar.center().x, bar.center().y),
         );
-        send(frame.as_mut(), &crate::synthetic_input::mouse_press());
+        send(
+            frame.as_mut(),
+            &tilo_ui_base::synthetic_input::mouse_press(),
+        );
         assert!(
             queue.take().is_empty(),
             "a window on its way out takes no press"
         );
 
         let mid = now + crate::time::Duration::from_millis(80);
-        let _later = crate::motion::pin_frame_at(mid);
+        let _later = tilo_ui_base::motion::pin_frame_at(mid);
         let going = frame.placed.pose(rect, mid).drawn_rect(rect);
         let control = Point::new(30.0, 700.0);
         assert!(
@@ -1594,14 +1602,14 @@ mod tests {
     fn a_drag_on_the_window_bar_carries_the_resource_it_holds() {
         use crate::widget::drag_bus;
         use taffy::TaffyTree;
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut frame = Box::new(WindowFrame::from_props(
             "w",
             WindowFrameProps {
                 key: "w".to_owned(),
                 name: Some("Design crit".to_owned()),
                 carries: Some("chat.workspace/channels/c_crit".to_owned()),
-                press: Event::View(crate::component::Intent::new(&queue, "w", "press")),
+                press: Event::View(tilo_ui_base::component::Intent::new(&queue, "w", "press")),
                 body: Some(Box::new(Spacer::new())),
                 ..WindowFrameProps::default()
             },
@@ -1635,8 +1643,8 @@ mod tests {
                 .send(frame.as_mut(), event);
         };
         let (from_x, from_y) = (bar.x0 + bar.width() / 2.0, bar.center().y);
-        send(&crate::synthetic_input::cursor_moved(from_x, from_y));
-        send(&crate::synthetic_input::mouse_press());
+        send(&tilo_ui_base::synthetic_input::cursor_moved(from_x, from_y));
+        send(&tilo_ui_base::synthetic_input::mouse_press());
         assert_eq!(
             queue
                 .take()
@@ -1648,12 +1656,15 @@ mod tests {
         );
         for step in 1..=4 {
             let dy = 12.0 * f64::from(step);
-            send(&crate::synthetic_input::cursor_moved(from_x, from_y + dy));
+            send(&tilo_ui_base::synthetic_input::cursor_moved(
+                from_x,
+                from_y + dy,
+            ));
         }
         let in_flight = drag_bus::current();
         let target = Rect::new(60.0, 200.0, 400.0, 320.0);
-        send(&crate::synthetic_input::cursor_moved(200.0, 260.0));
-        send(&crate::synthetic_input::mouse_release());
+        send(&tilo_ui_base::synthetic_input::cursor_moved(200.0, 260.0));
+        send(&tilo_ui_base::synthetic_input::mouse_release());
         let landed = drag_bus::take("composer", target);
         drag_bus::end(None);
         let in_flight = in_flight.expect("the bar published what it carries");
@@ -1666,7 +1677,7 @@ mod tests {
             "the ghost says the window's name"
         );
         let landed = landed.expect("the drop landed in the target it was let go over");
-        let crate::dnd::DragPayload::Custom { kind, blob } = landed.payload else {
+        let tilo_ui_base::dnd::DragPayload::Custom { kind, blob } = landed.payload else {
             panic!("the bar carries a resource");
         };
         assert_eq!(kind, crate::widget::drag_source::RESOURCE_PAYLOAD);
@@ -1677,10 +1688,10 @@ mod tests {
         );
 
         let (bx, by) = (bar.x0 + bar.width() / 2.0, bar.y1 + 120.0);
-        send(&crate::synthetic_input::cursor_moved(bx, by));
-        send(&crate::synthetic_input::mouse_press());
+        send(&tilo_ui_base::synthetic_input::cursor_moved(bx, by));
+        send(&tilo_ui_base::synthetic_input::mouse_press());
         for step in 1..=4 {
-            send(&crate::synthetic_input::cursor_moved(
+            send(&tilo_ui_base::synthetic_input::cursor_moved(
                 bx + 12.0 * f64::from(step),
                 by,
             ));
@@ -1704,14 +1715,14 @@ mod tests {
     fn a_one_tab_bar_lifts_the_whole_window() {
         use crate::widget::drag_bus;
         use taffy::TaffyTree;
-        let queue = crate::Intents::default();
+        let queue = tilo_ui_base::Intents::default();
         let mut frame = Box::new(WindowFrame::from_props(
             "w",
             WindowFrameProps {
                 key: "w".to_owned(),
                 name: Some("Groceries — Notes".to_owned()),
                 carries: Some("notes.workspace/notes/n_groceries".to_owned()),
-                press: Event::View(crate::component::Intent::new(&queue, "w", "press")),
+                press: Event::View(tilo_ui_base::component::Intent::new(&queue, "w", "press")),
                 tabs: Some(one_place()),
                 body: Some(Box::new(Spacer::new())),
                 ..WindowFrameProps::default()
@@ -1746,8 +1757,8 @@ mod tests {
         };
         // A point on the pill: the one tab's title stands at the bar's leading edge.
         let (from_x, from_y) = (bar.x0 + 24.0, bar.center().y);
-        send(&crate::synthetic_input::cursor_moved(from_x, from_y));
-        send(&crate::synthetic_input::mouse_press());
+        send(&tilo_ui_base::synthetic_input::cursor_moved(from_x, from_y));
+        send(&tilo_ui_base::synthetic_input::mouse_press());
         assert_eq!(
             queue
                 .take()
@@ -1759,12 +1770,15 @@ mod tests {
         );
         for step in 1..=4 {
             let dx = 12.0 * f64::from(step);
-            send(&crate::synthetic_input::cursor_moved(from_x + dx, from_y));
+            send(&tilo_ui_base::synthetic_input::cursor_moved(
+                from_x + dx,
+                from_y,
+            ));
         }
         let in_flight = drag_bus::current();
         let target = Rect::new(60.0, 200.0, 400.0, 320.0);
-        send(&crate::synthetic_input::cursor_moved(200.0, 260.0));
-        send(&crate::synthetic_input::mouse_release());
+        send(&tilo_ui_base::synthetic_input::cursor_moved(200.0, 260.0));
+        send(&tilo_ui_base::synthetic_input::mouse_release());
         let landed = drag_bus::take("composer", target);
         drag_bus::end(None);
         let in_flight = in_flight.expect("the bar published what the window carries");
@@ -1777,7 +1791,7 @@ mod tests {
             "the ghost says the window's name"
         );
         let landed = landed.expect("the drop landed in the target it was let go over");
-        let crate::dnd::DragPayload::Custom { kind, blob } = landed.payload else {
+        let tilo_ui_base::dnd::DragPayload::Custom { kind, blob } = landed.payload else {
             panic!("the bar carries a resource");
         };
         assert_eq!(kind, crate::widget::drag_source::RESOURCE_PAYLOAD);

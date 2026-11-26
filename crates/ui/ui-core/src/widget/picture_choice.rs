@@ -10,19 +10,20 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::num::{f32_of_f64, f64_of_usize};
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use tilo_ui_base::{num::f32_of_f64, num::f64_of_usize};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 #[path = "picture_choice_component.rs"]
 mod component;
-use crate::widget::{
-    ActionEmitter, AppModel, ControlBindingMetadata, ModelPath, TaffyTreeExt, Widget,
-    card_column_width, card_columns,
-};
+use crate::{widget::card_column_width, widget::card_columns};
 pub use component::{PictureChoiceProps, PictureKind, PictureOptionProps};
+use tilo_ui_base::{
+    widget::ActionEmitter, widget::AppModel, widget::ControlBindingMetadata, widget::ModelPath,
+    widget::TaffyTreeExt, widget::Widget,
+};
 
 pub use super::picture::{ColourFilter, Picture, TouchpadGesture};
 
@@ -62,7 +63,7 @@ pub struct PictureChoice {
     hover: Option<usize>,
     /// Where the chosen edge stands: it slides from the picture chosen before to the one
     /// chosen now.
-    edge: crate::motion::MotionValue<Rect>,
+    edge: tilo_ui_base::motion::MotionValue<Rect>,
     /// The picture `edge` was last placed on.
     edge_for: Option<usize>,
     focused: bool,
@@ -90,8 +91,8 @@ impl PictureChoice {
     /// A choice among `options`, `selected` chosen (`None`: none yet).
     pub fn new(options: Vec<PictureOption>, selected: Option<usize>) -> Self {
         let selected = selected.filter(|index| *index < options.len());
-        let metrics = crate::tokens::Metrics::BASE;
-        let spacing = crate::tokens::Spacing::BASE;
+        let metrics = tilo_ui_base::tokens::Metrics::BASE;
+        let spacing = tilo_ui_base::tokens::Spacing::BASE;
         Self {
             dirty: true,
             id: None,
@@ -99,7 +100,7 @@ impl PictureChoice {
             options,
             selected,
             hover: None,
-            edge: crate::motion::MotionValue::new(Rect::ZERO),
+            edge: tilo_ui_base::motion::MotionValue::new(Rect::ZERO),
             edge_for: None,
             focused: false,
             enabled: true,
@@ -120,11 +121,11 @@ impl PictureChoice {
     /// value, and a value set anywhere else chooses its tile.
     pub fn from_state<T: Clone + PartialEq + 'static>(
         choices: Vec<(T, PictureOption)>,
-        state: &crate::LocalState<T>,
+        state: &tilo_ui_base::LocalState<T>,
     ) -> Self {
         let (values, options): (Vec<T>, Vec<PictureOption>) = choices.into_iter().unzip();
         let values = std::rc::Rc::new(values);
-        let (current, binding) = crate::local_state::LocalBinding::new(state);
+        let (current, binding) = tilo_ui_base::local_state::LocalBinding::new(state);
         let binding = std::rc::Rc::new(std::cell::RefCell::new(binding));
         let selected = values.iter().position(|value| *value == current);
         let mut picker = Self::new(options, selected);
@@ -266,9 +267,9 @@ impl PictureChoice {
 
     /// Where the chosen edge stands this frame while it slides to the chosen picture: `None`
     /// once it rests there (the chosen tile draws its own edge) or when none is chosen.
-    fn follow_edge(&mut self, motion: crate::tokens::EffectiveMotion) -> Option<Rect> {
-        use crate::motion::{Direction, ListChange};
-        let now = crate::motion::frame_now();
+    fn follow_edge(&mut self, motion: tilo_ui_base::tokens::EffectiveMotion) -> Option<Rect> {
+        use tilo_ui_base::{motion::Direction, motion::ListChange};
+        let now = tilo_ui_base::motion::frame_now();
         let Some(chosen) = self.selected else {
             self.edge_for = None;
             return None;
@@ -277,11 +278,14 @@ impl PictureChoice {
         let moved =
             self.edge_for.is_some_and(|before| before != chosen) && self.edge.target().area() > 0.0;
         if moved {
-            let timing =
-                ListChange::MOVE.timing(Direction::Enter, motion, crate::motion::input_source());
+            let timing = ListChange::MOVE.timing(
+                Direction::Enter,
+                motion,
+                tilo_ui_base::motion::input_source(),
+            );
             self.edge.set(target, timing, now);
             if let Some(until) = self.edge.settles_at() {
-                crate::motion::want_frames_until(until);
+                tilo_ui_base::motion::want_frames_until(until);
             }
         } else if self.edge.target() != target {
             self.edge.snap(target);
@@ -318,14 +322,14 @@ impl PictureChoice {
         scene.pop_layer();
         let chosen = self.selected == Some(index);
         if chosen && !sliding {
-            crate::surface::selected_edge(scene, transform, area, radius, theme);
+            tilo_ui_base::surface::selected_edge(scene, transform, area, radius, theme);
         } else if !chosen {
             scene.stroke(
                 &Stroke::new(1.0),
                 transform,
-                crate::surface::edge_on(ground),
+                tilo_ui_base::surface::edge_on(ground),
                 None,
-                &crate::surface::edge_outline(area, radius),
+                &tilo_ui_base::surface::edge_outline(area, radius),
             );
             if self.hover == Some(index) && self.enabled {
                 scene.fill(Fill::NonZero, transform, colors.overlay_subtle, None, &tile);
@@ -401,9 +405,9 @@ impl Widget for PictureChoice {
         false
     }
 
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls);
 
     fn sync(&mut self, _state: &AppModel, _root: &ModelPath) {
         self.dirty = true;
@@ -462,9 +466,9 @@ impl Widget for PictureChoice {
         }
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -475,7 +479,7 @@ impl Widget for PictureChoice {
             scene.push_layer(
                 Fill::NonZero,
                 vello::peniko::BlendMode::default(),
-                crate::widget::DISABLED_ALPHA,
+                tilo_ui_base::widget::DISABLED_ALPHA,
                 transform,
                 &self.rect,
             );
@@ -486,14 +490,14 @@ impl Widget for PictureChoice {
         }
         if let Some(at) = sliding {
             let radius = f64::from(theme.tokens.radii.control);
-            crate::surface::selected_edge(scene, transform, at, radius, theme);
+            tilo_ui_base::surface::selected_edge(scene, transform, at, radius, theme);
         }
         if !self.enabled {
             scene.pop_layer();
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -532,15 +536,15 @@ impl Widget for PictureChoice {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        self.edge.is_moving(crate::motion::frame_now())
+        self.edge.is_moving(tilo_ui_base::motion::frame_now())
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty || self.needs_animation_frame(), self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty || self.needs_animation_frame(), self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -631,8 +635,8 @@ impl Widget for PictureChoice {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         let prefix = format!("{}.", self.id.as_deref().unwrap_or("picture"));
@@ -644,12 +648,14 @@ impl Widget for PictureChoice {
             return false;
         };
         match action {
-            crate::a11y::Action::Focus => {
+            tilo_ui_base::a11y::Action::Focus => {
                 self.focused = true;
                 self.cursor = index;
                 true
             }
-            crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck if self.enabled => {
+            tilo_ui_base::a11y::Action::Activate | tilo_ui_base::a11y::Action::ToggleCheck
+                if self.enabled =>
+            {
                 self.request(index);
                 true
             }
@@ -658,8 +664,8 @@ impl Widget for PictureChoice {
     }
 }
 
-impl crate::widget::controls::ActionControls for PictureChoice {
-    crate::widget::controls::optional_emitter_controls!();
+impl tilo_ui_base::widget::controls::ActionControls for PictureChoice {
+    tilo_ui_base::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         match &self.action {
             Some(action) => (0..self.options.len())
@@ -668,7 +674,9 @@ impl crate::widget::controls::ActionControls for PictureChoice {
             None if self.choice.is_some() || self.on_change.is_some() => (0..self.options.len())
                 .map(|index| ControlBindingMetadata {
                     control_id: self.option_id(index),
-                    kind: crate::widget::ControlBindingKind::SemanticAction(self.option_id(index)),
+                    kind: tilo_ui_base::widget::ControlBindingKind::SemanticAction(
+                        self.option_id(index),
+                    ),
                 })
                 .collect(),
             None => Vec::new(),

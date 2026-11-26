@@ -4,15 +4,18 @@ use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use vello::peniko::{self, Color};
 
-use crate::ImageStore;
-use crate::paint::PaintCtx;
-use crate::theme::Theme;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::ImageStore;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 #[cfg(feature = "local-daemons")]
-use super::avatar_face::profile_image;
-use super::avatar_face::{AvatarFace, AvatarSize, PresenceStatus};
+use tilo_ui_base::widget::avatar_face::profile_image;
+use tilo_ui_base::{
+    widget::avatar_face::AvatarFace, widget::avatar_face::AvatarSize,
+    widget::avatar_face::PresenceStatus,
+};
 
 enum Picture {
     None,
@@ -26,18 +29,18 @@ enum Picture {
 
 pub struct Avatar {
     name: String,
-    name_state: Option<crate::local_state::LocalBinding<String>>,
+    name_state: Option<tilo_ui_base::local_state::LocalBinding<String>>,
     identity: String,
     presence: Option<Color>,
     /// The member it shows, whose kind and hue pick the face ([`AvatarFace::of`]).
-    who: Option<crate::component::Person>,
+    who: Option<tilo_ui_base::component::Person>,
     picture: Picture,
     image: Option<peniko::ImageData>,
     size: AvatarSize,
     square: bool,
     neutral: bool,
     status: Option<PresenceStatus>,
-    glyph: Option<crate::icons::Icon>,
+    glyph: Option<tilo_ui_base::icons::Icon>,
     side: f64,
     rect: Rect,
     dirty: bool,
@@ -83,7 +86,7 @@ impl Avatar {
     }
 
     #[must_use]
-    pub fn with_glyph(mut self, glyph: crate::icons::Icon) -> Self {
+    pub fn with_glyph(mut self, glyph: tilo_ui_base::icons::Icon) -> Self {
         self.glyph = Some(glyph);
         self.neutral = true;
         self.square = true;
@@ -93,7 +96,7 @@ impl Avatar {
     /// `who`'s face as every surface shows it ([`AvatarFace::of`]), showing the picture they
     /// set where they set one.
     #[must_use]
-    pub fn of(who: crate::component::Person) -> Self {
+    pub fn of(who: tilo_ui_base::component::Person) -> Self {
         let mut avatar = Self::person(who.name.clone(), who.identity.id());
         if let Some(picture) = who.picture.clone().filter(|picture| !picture.is_empty()) {
             avatar = avatar.with_picture_url(picture);
@@ -103,8 +106,8 @@ impl Avatar {
     }
 
     #[must_use]
-    pub fn with_name_state(mut self, state: &crate::LocalState<String>) -> Self {
-        let (name, binding) = crate::local_state::LocalBinding::new(state);
+    pub fn with_name_state(mut self, state: &tilo_ui_base::LocalState<String>) -> Self {
+        let (name, binding) = tilo_ui_base::local_state::LocalBinding::new(state);
         self.name = name;
         self.name_state = Some(binding);
         self.dirty = true;
@@ -257,15 +260,19 @@ impl Widget for Avatar {
         Some(self)
     }
 
-    fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
+    ) {
         self.refresh_name();
         self.follow_picture();
     }
 
     fn update(
         &mut self,
-        _state: &crate::widget::AppModel,
-        _path: &crate::widget::ModelPath,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
         let renamed = self.refresh_name();
         let followed = self.follow_picture();
@@ -279,7 +286,7 @@ impl Widget for Avatar {
         node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         self.side = self.size.side(theme);
-        let side = crate::num::f32_of_f64(self.side);
+        let side = tilo_ui_base::num::f32_of_f64(self.side);
         let style = Style {
             size: Size::from_lengths(side, side),
             flex_shrink: 0.0,
@@ -289,14 +296,14 @@ impl Widget for Avatar {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.dirty = true;
         }
         self.rect = rect;
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -312,7 +319,7 @@ impl Widget for Avatar {
             let since = *self.call_since.get_or_insert(now);
             let motion = theme.motion();
             self.sweeping = motion.loops();
-            Some(crate::motion::Sweep::at(
+            Some(tilo_ui_base::motion::Sweep::at(
                 now.saturating_duration_since(since),
                 motion,
             ))
@@ -359,8 +366,8 @@ impl Widget for Avatar {
         self.rect
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         if self.placeholder {
             return None;
         }
@@ -375,10 +382,10 @@ impl Widget for Avatar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
-    use crate::text_render::TextRenderer;
-    use crate::tokens::colors::PresenceHue;
-    use crate::widget::avatar_face::{initial_ink, initials_for_name};
+    use tilo_ui_base::presence::PresenceCtx;
+    use tilo_ui_base::text_render::TextRenderer;
+    use tilo_ui_base::tokens::colors::PresenceHue;
+    use tilo_ui_base::{widget::avatar_face::initial_ink, widget::avatar_face::initials_for_name};
     use vello::Scene;
     use vello::kurbo::Affine;
     use vello::peniko::ImageData as PenikoImage;
@@ -410,7 +417,7 @@ mod tests {
     /// moves as the sweep turns, and where motion is reduced the whole ring is lit and still.
     #[test]
     fn a_face_in_a_call_wears_the_sweeping_ring() {
-        use crate::motion::Sweep;
+        use tilo_ui_base::motion::Sweep;
         let theme = Theme::dark();
         let quiet = drawn(&paint_face(AvatarFace::new("Ada", "ada"), &theme));
         let early = drawn(&paint_face(
@@ -435,7 +442,7 @@ mod tests {
 
     #[test]
     fn a_member_wears_one_face_on_every_surface() {
-        use crate::component::{Described, Person};
+        use tilo_ui_base::{component::Described, component::Person};
         let theme = Theme::dark();
         let agent = Person::new(tilo_actions::MemberId::agent("helper", "ada"), "Helper");
         let mark = drawn(&paint_face(
@@ -507,7 +514,7 @@ mod tests {
     #[test]
     fn bound_name_refresh_keeps_photo_and_adjacent_input_selection() {
         use crate::widget::{Row, TextInput};
-        let name = crate::LocalState::new("Ada".to_owned());
+        let name = tilo_ui_base::LocalState::new("Ada".to_owned());
         let photo = tilo_identity_client::ProfilePhoto::new(1, 1, vec![200, 100, 50, 255]).unwrap();
         let avatar = Avatar::person("Ada", "ada")
             .with_name_state(&name)
@@ -574,7 +581,7 @@ mod tests {
         .unwrap();
         avatar.apply_layout(&tree, node, Point::ZERO);
         let mut scene = Scene::new();
-        avatar.draw(&mut crate::draw::DrawCtx::new(
+        avatar.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut TextRenderer::new(),
@@ -659,7 +666,7 @@ mod tests {
             // A nameless neutral tile paints only the tile.
             let blank = paint_face(AvatarFace::new("", "so.tilo.notes").neutral(), &theme);
             let glyph = paint_face(
-                AvatarFace::new("", "so.tilo.notes").glyph(crate::icons::Icon::FileText),
+                AvatarFace::new("", "so.tilo.notes").glyph(tilo_ui_base::icons::Icon::FileText),
                 &theme,
             );
             assert!(
@@ -674,14 +681,14 @@ mod tests {
             let person = tilo_actions::MemberId::person("aa");
             let blank = paint_face(AvatarFace::new("", "aa").neutral(), &theme);
             let glyph = paint_face(
-                AvatarFace::new("", "aa").glyph(crate::icons::Icon::User),
+                AvatarFace::new("", "aa").glyph(tilo_ui_base::icons::Icon::User),
                 &theme,
             );
             for name in [
                 String::new(),
                 "ab".repeat(32),
-                crate::presence::unnamed_person_label(),
-                crate::presence::unnamed_person_short_label(),
+                tilo_ui_base::presence::unnamed_person_label(),
+                tilo_ui_base::presence::unnamed_person_short_label(),
             ] {
                 let face = AvatarFace::member(&name, &person);
                 assert_eq!(face.initials(), "", "no initials from {name:?}");

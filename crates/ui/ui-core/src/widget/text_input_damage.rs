@@ -1,5 +1,5 @@
 //! What a shaped multiline field repaints. A frame that only scrolled it offers its host a copy of
-//! what stays on screen ([`crate::scroll_copy`]); one that changed some of its lines in place
+//! what stays on screen ([`tilo_ui_base::scroll_copy`]); one that changed some of its lines in place
 //! repaints those lines and where its caret, selection and marks were and are, not the field.
 use std::hash::{Hash, Hasher};
 
@@ -7,9 +7,9 @@ use vello::kurbo::{Affine, Rect, Vec2};
 use vello::peniko::Color;
 
 use super::TextInput;
-use crate::scroll_copy::{Piece, Showing, Since};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{scroll_copy::Piece, scroll_copy::Showing, scroll_copy::Since};
 
 pub(super) type FieldShown = Showing<FieldLook>;
 
@@ -131,7 +131,7 @@ impl TextInput {
         self.shown.note(Showing {
             scroll: Vec2::new(0.0, self.shown_scroll_y()),
             clip: self.rect,
-            transform: crate::scroll_copy::on_screen(transform),
+            transform: tilo_ui_base::scroll_copy::on_screen(transform),
             look: self.field_look(theme),
             overlays: self.field_overlays(theme),
             pieces,
@@ -189,18 +189,18 @@ impl TextInput {
 
     /// From the shaped draw, once the field is scrolled and placed for
     /// this frame: where the frame keeps the pixels of its rows, as
-    /// [`Self::collect_damage_for`] will find it ([`crate::draw_cull`]).
+    /// [`Self::collect_damage_for`] will find it ([`tilo_ui_base::draw_cull`]).
     pub(super) fn field_keep(
         &self,
         transform: Affine,
         theme: &Theme,
-    ) -> Option<crate::draw_cull::Keep> {
+    ) -> Option<tilo_ui_base::draw_cull::Keep> {
         if self.untracked() {
             return None;
         }
         let presented = self.shown.presented()?;
         if presented.clip != self.rect
-            || presented.transform != crate::scroll_copy::on_screen(transform)
+            || presented.transform != tilo_ui_base::scroll_copy::on_screen(transform)
             || presented.look != self.field_look(theme)
         {
             return None;
@@ -208,16 +208,16 @@ impl TextInput {
         let delta = presented.scroll - Vec2::new(0.0, self.shown_scroll_y());
         let mut overlays = self.field_overlays(theme);
         overlays.extend_from_slice(&presented.overlays);
-        crate::draw_cull::Keep::scrolled(transform, self.rect, delta, &overlays)
+        tilo_ui_base::draw_cull::Keep::scrolled(transform, self.rect, delta, &overlays)
     }
 
     pub(super) fn draw_gutter_line_numbers(
         &self,
         scene: &mut vello::Scene,
         transform: Affine,
-        tr: &mut crate::text_render::TextRenderer,
+        tr: &mut tilo_ui_base::text_render::TextRenderer,
         theme: &Theme,
-        style: &crate::text_render::TextStyle,
+        style: &tilo_ui_base::text_render::TextStyle,
         caret_byte: usize,
         (gutter_width, visible, leave_out): (f64, Rect, &[usize]),
     ) {
@@ -268,9 +268,9 @@ impl TextInput {
     pub(super) fn paint_selection_keeping_lines(
         &self,
         (scene, transform): (&mut vello::Scene, Affine),
-        tr: &mut crate::text_render::TextRenderer,
+        tr: &mut tilo_ui_base::text_render::TextRenderer,
         theme: &Theme,
-        style: &crate::text_render::TextStyle,
+        style: &tilo_ui_base::text_render::TextStyle,
         (visible, gutter_width, caret_byte): (Rect, f64, usize),
     ) -> Vec<usize> {
         let mut marks = self
@@ -297,19 +297,19 @@ impl TextInput {
 
     /// The logical lines of the shaped layout this frame need not paint,
     /// ascending: those whose rows and line number the frame keeps on
-    /// screen as they were ([`crate::draw_cull::kept_band`]), clear of
+    /// screen as they were ([`tilo_ui_base::draw_cull::kept_band`]), clear of
     /// every mark painted over the rows now (`marks`, on screen) or on the
     /// frame on screen (a caret, a current line, a selection).
     pub(super) fn kept_lines(
         &self,
         scene: &vello::Scene,
         transform: Affine,
-        tr: &mut crate::text_render::TextRenderer,
-        style: &crate::text_render::TextStyle,
+        tr: &mut tilo_ui_base::text_render::TextRenderer,
+        style: &tilo_ui_base::text_render::TextStyle,
         (visible, gutter_width): (Rect, f64),
         marks: &[Rect],
     ) -> Vec<usize> {
-        let Some(band) = crate::draw_cull::kept_band(scene, transform, visible) else {
+        let Some(band) = tilo_ui_base::draw_cull::kept_band(scene, transform, visible) else {
             return Vec::new();
         };
         let Some(layout) = self.single_layout.as_ref() else {
@@ -381,7 +381,7 @@ impl TextInput {
             } else {
                 ink
             };
-            if crate::draw_cull::kept(scene, transform, ink) {
+            if tilo_ui_base::draw_cull::kept(scene, transform, ink) {
                 kept.push(line);
             }
         }

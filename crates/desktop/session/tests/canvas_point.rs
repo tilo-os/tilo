@@ -122,7 +122,7 @@ fn pan_and_zoom(session: &mut Session, by: (f64, f64)) {
 /// the old "Find something, or ask" field, not a caret.
 #[test]
 fn the_canvas_has_no_fixed_bar() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     for _ in 0..4 {
@@ -143,7 +143,7 @@ fn the_canvas_has_no_fixed_bar() {
 /// Escape takes it away, and a click elsewhere puts it there.
 #[test]
 fn a_click_puts_the_caret_where_it_points_under_pan_and_zoom() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     pan_and_zoom(&mut session, (-140.0, -90.0));
@@ -170,7 +170,7 @@ fn a_click_puts_the_caret_where_it_points_under_pan_and_zoom() {
 /// typed straight after it, with no pause for the caret, stand at the caret and are sent.
 #[test]
 fn the_first_ask_after_switching_to_frames_is_typed_and_sent() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let mut repl = crate::common::Api::open(&mut session, root.path());
@@ -213,7 +213,7 @@ fn the_first_ask_after_switching_to_frames_is_typed_and_sent() {
 /// what is said there is only what is typed there.
 #[test]
 fn escape_lets_go_of_the_words_typed_at_the_caret() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let at = crate::common::free_point(&mut session);
@@ -243,7 +243,7 @@ fn escape_lets_go_of_the_words_typed_at_the_caret() {
 /// fills the rectangle on screen — its surface at the rectangle's corner and its size, the
 /// handle's band over it.
 fn the_rectangle_is_filled(text: &str, needle: &str) {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -327,7 +327,7 @@ fn card_foot(session: &mut Session, (x, top): (f64, f64), width: f64) -> Option<
 /// at its corner, never below the height the inbox could grow to.
 #[test]
 fn a_rectangle_under_a_hugging_place_is_filled_where_it_was_dragged() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -377,7 +377,7 @@ fn a_rectangle_under_a_hugging_place_is_filled_where_it_was_dragged() {
 /// handle's band over it.
 #[test]
 fn what_is_found_at_a_click_stands_at_the_point() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -418,7 +418,7 @@ fn what_is_found_at_a_click_stands_at_the_point() {
 /// narrowed to the free area before the inbox, never below or beside the inbox instead.
 #[test]
 fn what_is_found_left_of_a_place_stands_at_the_click_narrowed() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -468,7 +468,7 @@ fn what_is_found_left_of_a_place_stands_at_the_click_narrowed() {
 /// caption clear of it.
 #[test]
 fn what_is_found_at_a_click_is_named_for_what_it_is_and_hugs_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -580,7 +580,7 @@ const CONVERSATION: &str = "chat.workspace/channels/c_ask";
 /// message, nothing stands.
 #[test]
 fn a_question_stands_its_turn_at_the_caret() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -650,7 +650,7 @@ fn a_question_stands_its_turn_at_the_caret() {
 /// under the turn: the rectangle is the turn's anchor.
 #[test]
 fn an_agents_place_in_the_turn_fills_the_dragged_rectangle() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -730,7 +730,7 @@ fn an_agents_place_in_the_turn_fills_the_dragged_rectangle() {
 /// rectangle under the turn, and beside the turn after that, and the turn's view stays.
 #[test]
 fn an_agents_step_aimed_at_the_turn_never_replaces_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -837,7 +837,7 @@ fn an_agents_step_aimed_at_the_turn_never_replaces_it() {
 /// answer. It is opened as a composed view opens anything, through `place` naming only it.
 #[test]
 fn the_whole_conversation_stands_beside_its_turn() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -886,7 +886,7 @@ fn the_whole_conversation_stands_beside_its_turn() {
 /// drawn until the pointer is over it, and then it is.
 #[test]
 fn a_place_has_no_frame_and_its_handle_shows_on_hover() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -985,7 +985,7 @@ fn inbox_in(
 /// A right-click on the canvas's free ground points there as a click does: the caret stands at it.
 #[test]
 fn a_right_click_on_free_space_puts_the_caret_there() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -1003,7 +1003,7 @@ fn a_right_click_on_free_space_puts_the_caret_there() {
 /// resource publishes, the list its handle's menu and an agent see.
 #[test]
 fn a_right_click_on_a_place_opens_its_actions() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -1066,7 +1066,7 @@ fn a_right_click_on_a_place_opens_its_actions() {
 /// size, one arranging step of the person's.
 #[test]
 fn dragging_a_places_corner_sizes_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -1105,7 +1105,7 @@ fn dragging_a_places_corner_sizes_it() {
 /// the caret.
 #[test]
 fn the_dragged_rectangle_stays_outlined_while_typing() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -1153,7 +1153,7 @@ fn the_dragged_rectangle_stays_outlined_while_typing() {
 /// runs, and what an agent or the REPL runs to size it.
 #[test]
 fn a_places_size_action_sizes_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -1197,7 +1197,7 @@ fn canvas_says(session: &Session) -> Option<String> {
 /// never in a control that is always there, and choosing another style from it shows it.
 #[test]
 fn the_canvas_is_the_whole_screen() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     until(&mut session, "the canvas's bar", |session| {
@@ -1232,7 +1232,7 @@ fn the_canvas_is_the_whole_screen() {
 /// away when the canvas is empty again: it is the person's record, not the canvas's state.
 #[test]
 fn the_empty_canvas_says_once_what_it_is_for() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     until(&mut session, "the hint", |session| {
@@ -1278,7 +1278,7 @@ fn the_empty_canvas_says_once_what_it_is_for() {
 /// for Chat publishes no reading of the turn for it to hug.)
 #[test]
 fn a_turn_asked_at_the_edge_is_panned_into_view() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -1324,7 +1324,7 @@ fn a_turn_asked_at_the_edge_is_panned_into_view() {
 /// wholly in view, at the zoom the person had.
 #[test]
 fn the_turn_stays_in_view_over_the_agents_places() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -1439,7 +1439,7 @@ fn the_turn_stays_in_view_over_the_agents_places() {
 /// turn's own action runs stands Chat's page of the conversation beside the turn.
 #[test]
 fn the_whole_conversation_is_reached_from_the_turns_handle() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -1499,7 +1499,7 @@ fn say_on_the_canvas(root: &std::path::Path, text: &str) -> Session {
 /// window's sidebar of accounts does not.
 #[test]
 fn my_mails_places_the_message_list_not_the_mail_window() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = say_on_the_canvas(root.path(), "my mails");
     until(
@@ -1517,7 +1517,7 @@ fn my_mails_places_the_message_list_not_the_mail_window() {
 /// notebook's file menu.
 #[test]
 fn my_notes_places_the_list_of_notes_not_the_notebook_window() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = say_on_the_canvas(root.path(), "my notes");
     until(&mut session, "the notes as rows on the canvas", |session| {
@@ -1538,7 +1538,7 @@ fn my_notes_places_the_list_of_notes_not_the_notebook_window() {
 /// of accounts with it.
 #[test]
 fn open_mail_places_the_whole_app() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = say_on_the_canvas(root.path(), "open Mail");
     until(&mut session, "Mail's window with its sidebar", |session| {
@@ -1552,7 +1552,7 @@ fn open_mail_places_the_whole_app() {
 /// agent's.
 #[test]
 fn placing_mails_root_without_a_view_stands_the_message_list() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let mail = session
@@ -1585,7 +1585,7 @@ fn placing_mails_root_without_a_view_stands_the_message_list() {
 /// the app's lists, no window frame.
 #[test]
 fn the_agents_open_of_an_apps_root_stands_its_place_view() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -1712,7 +1712,7 @@ fn in_room(what: (i64, i64, i64, i64), turn: (i64, i64, i64, i64)) -> bool {
 /// the session in that turn, fills that turn's own rectangle — never the conversation's latest.
 #[test]
 fn two_asks_in_quick_succession_each_fill_their_own_rectangle() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -1772,7 +1772,7 @@ fn two_asks_in_quick_succession_each_fill_their_own_rectangle() {
 /// the room is not given out twice.
 #[test]
 fn a_step_before_its_turn_stands_fills_the_turns_rectangle() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -1844,7 +1844,7 @@ fn a_step_before_its_turn_stands_fills_the_turns_rectangle() {
 /// question.
 #[test]
 fn a_turns_place_hugs_its_words() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, _) = on_screen(&session, CANVAS).expect("the canvas");
@@ -1879,7 +1879,7 @@ fn a_turns_place_hugs_its_words() {
 /// the camera panning after it.
 #[test]
 fn a_turn_asked_left_of_another_stands_at_its_click_narrowed() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -1922,7 +1922,7 @@ fn a_turn_asked_left_of_another_stands_at_its_click_narrowed() {
 /// so the first turn stands where it stood.
 #[test]
 fn a_turn_asked_with_nothing_free_at_its_click_stands_in_view_and_nothing_pans() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -1988,7 +1988,7 @@ fn a_turn_asked_with_nothing_free_at_its_click_stands_in_view_and_nothing_pans()
 /// turn does.
 #[test]
 fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -2078,7 +2078,7 @@ fn a_clicked_turns_place_stands_beside_it_after_a_rectangles_turn() {
 /// in for its record.)
 #[test]
 fn the_canvas_lays_out_every_frame_through_asks_an_inbox_and_a_find() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");
@@ -2204,7 +2204,7 @@ fn the_canvas_lays_out_every_frame_through_asks_an_inbox_and_a_find() {
 /// wheel with Ctrl held zooms it about the pointer. A place on it moves and grows with the lens.
 #[test]
 fn the_test_control_socket_pans_and_zooms_the_canvas() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let socket = root.path().join("test-control.sock");
     let mut session = seeded_session(root.path());
@@ -2283,7 +2283,7 @@ fn the_test_control_socket_pans_and_zooms_the_canvas() {
 /// canvas, so a notice arriving never shifts the canvas or what it shows.
 #[test]
 fn a_notice_floats_over_the_canvas_and_never_moves_what_stands() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let (x, y, w, h) = on_screen(&session, CANVAS).expect("the canvas");

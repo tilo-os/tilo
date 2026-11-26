@@ -1,15 +1,15 @@
 //! A context menu takes typing: a query narrows its rows with the shared
 //! ranking, Enter runs the best match, and a sentence none answers is asked.
 
-use crate::i18n::{widget_format, widget_text};
 use std::cell::RefCell;
 use std::rc::Rc;
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
 
 use winit::keyboard::NamedKey;
 
 use super::*;
-use crate::synthetic_input::{char_key, named_key};
 use crate::testing::dispatch;
+use tilo_ui_base::{synthetic_input::char_key, synthetic_input::named_key};
 
 fn type_into(menu: &mut ContextMenu, text: &str) {
     for ch in text.chars() {
@@ -46,7 +46,7 @@ fn context_menu(ran: &Rc<RefCell<Vec<&'static str>>>) -> ContextMenu {
             menu.push(MenuItem::separator());
         }
     }
-    note_input(&crate::synthetic_input::mouse_input(
+    note_input(&tilo_ui_base::synthetic_input::mouse_input(
         ElementState::Pressed,
         MouseButton::Right,
     ));
@@ -192,7 +192,7 @@ fn a_sentence_no_row_answers_is_sent_from_the_box_in_the_menus_place() {
     let _ = crate::shared_selection::take_send_to();
     let ran = Rc::new(RefCell::new(Vec::new()));
     let mut menu = context_menu(&ran);
-    let item = crate::shared_subject::SharedSelection::of_text("Report.pdf")
+    let item = tilo_ui_base::shared_subject::SharedSelection::of_text("Report.pdf")
         .at(tilo_actions::SelectionPlace::item("file-9"));
     menu.set_about(Some(item.clone()));
     menu.open_anchored(
@@ -222,9 +222,12 @@ fn a_sentence_no_row_answers_is_sent_from_the_box_in_the_menus_place() {
     assert_eq!(menu.send_to().text(), "summarise this for Ana!");
     assert_eq!(menu.query(), "summarise this for Ana");
     // What a screen reader reads: of the fields, exactly one takes the typing.
-    fn fields(node: &crate::a11y::AccessNode, out: &mut Vec<crate::a11y::AccessState>) {
+    fn fields(
+        node: &tilo_ui_base::a11y::AccessNode,
+        out: &mut Vec<tilo_ui_base::a11y::AccessState>,
+    ) {
         for child in &node.children {
-            if child.role == crate::a11y::Role::TextInput && !child.state.hidden {
+            if child.role == tilo_ui_base::a11y::Role::TextInput && !child.state.hidden {
                 out.push(child.state);
             }
             fields(child, out);
@@ -256,9 +259,9 @@ fn a_sentence_no_row_answers_is_sent_from_the_box_in_the_menus_place() {
     let _ = crate::shared_selection::take_send_to();
     let ran = Rc::new(RefCell::new(Vec::new()));
     let mut menu = context_menu(&ran);
-    menu.set_about(Some(crate::shared_subject::SharedSelection::of_text(
-        "Report.pdf",
-    )));
+    menu.set_about(Some(
+        tilo_ui_base::shared_subject::SharedSelection::of_text("Report.pdf"),
+    ));
     menu.open_at([120.0, 80.0]);
     menu.set_query("summarise this for Ana");
     dispatch(&mut menu, &named_key(NamedKey::Enter));
@@ -271,8 +274,8 @@ fn a_sentence_no_row_answers_is_sent_from_the_box_in_the_menus_place() {
     assert!(Widget::perform_semantic_action(
         &mut menu,
         "send-to:send",
-        &crate::a11y::Action::Activate,
-        &mut crate::widget::Edits::lend(&mut doc),
+        &tilo_ui_base::a11y::Action::Activate,
+        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
         &automerge::ROOT,
     ));
     assert_eq!(
@@ -291,7 +294,7 @@ fn an_owner_that_answers_typing_takes_the_sentence_itself() {
     crate::shared_selection::set_send_host_available(false);
     // Opened with the keyboard, not the context-menu gesture: an owner that
     // answers typing still gets a field, however short the menu.
-    note_input(&crate::synthetic_input::mouse_input(
+    note_input(&tilo_ui_base::synthetic_input::mouse_input(
         ElementState::Pressed,
         MouseButton::Left,
     ));
@@ -315,7 +318,7 @@ fn an_owner_that_answers_typing_takes_the_sentence_itself() {
 #[test]
 fn a_short_menu_takes_no_typing_and_adds_no_row() {
     crate::shared_selection::set_send_host_available(false);
-    note_input(&crate::synthetic_input::mouse_input(
+    note_input(&tilo_ui_base::synthetic_input::mouse_input(
         ElementState::Pressed,
         MouseButton::Right,
     ));
@@ -336,7 +339,7 @@ fn a_short_menu_takes_no_typing_and_adds_no_row() {
     assert_eq!(menu.shown_rows(), &[0, 1, 2], "every command is shown");
 
     crate::shared_selection::set_send_host_available(true);
-    note_input(&crate::synthetic_input::mouse_input(
+    note_input(&tilo_ui_base::synthetic_input::mouse_input(
         ElementState::Pressed,
         MouseButton::Left,
     ));

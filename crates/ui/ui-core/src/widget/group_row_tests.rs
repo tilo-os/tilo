@@ -351,7 +351,7 @@ pub(super) fn relayout_row_owned_with(
     let viewport = taffy.parent_node(
         Style {
             size: Size {
-                width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
+                width: Dimension::length(tilo_ui_base::num::f32_of_f64(viewport_w)),
                 height: Dimension::length(600.0),
             },
             ..Default::default()
@@ -362,7 +362,7 @@ pub(super) fn relayout_row_owned_with(
         .compute_layout_with_measure(
             viewport,
             TSize {
-                width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
+                width: AvailableSpace::Definite(tilo_ui_base::num::f32_of_f64(viewport_w)),
                 height: AvailableSpace::Definite(600.0),
             },
             |_, _, _, _, _| taffy::Size::ZERO,
@@ -394,7 +394,7 @@ fn make_row_with_groups_on_display(
     let viewport = taffy.parent_node(
         Style {
             size: Size {
-                width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
+                width: Dimension::length(tilo_ui_base::num::f32_of_f64(viewport_w)),
                 height: Dimension::length(600.0),
             },
             ..Default::default()
@@ -405,7 +405,7 @@ fn make_row_with_groups_on_display(
         .compute_layout_with_measure(
             viewport,
             TSize {
-                width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
+                width: AvailableSpace::Definite(tilo_ui_base::num::f32_of_f64(viewport_w)),
                 height: AvailableSpace::Definite(600.0),
             },
             |_, _, _, _, _| taffy::Size::ZERO,
@@ -424,12 +424,12 @@ pub(super) fn drawn_strip(windows: u64) -> (GroupRow, Scene) {
     let specs: Vec<&[u64]> = specs.iter().map(Vec::as_slice).collect();
     let (mut row, _, _) = make_row_with_groups_on_display(&specs, FIXTURE_USABLE_PX, 2000.0);
     let mut scene = Scene::new();
-    row.draw(&mut crate::draw::DrawCtx::new(
+    row.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         &Theme::dark(),
-        crate::presence::PresenceCtx::empty().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
     ));
     (row, scene)
 }
@@ -669,7 +669,7 @@ tilo_test_env::scenario! {
         );
         let pull = row.group_pull(100).expect("it follows the drag");
         assert!(
-            pull.x > 0.0 && pull.x < f64::from(crate::tokens::Spacing::BASE.s4),
+            pull.x > 0.0 && pull.x < f64::from(tilo_ui_base::tokens::Spacing::BASE.s4),
             "{pull:?}"
         );
         dispatch_at(
@@ -1072,7 +1072,7 @@ tilo_test_env::scenario! {
          ({expected}); got {}",
                 anim.target()
             );
-            row.tick_snap_at(crate::motion::frame_now() + Duration::from_millis(400));
+            row.tick_snap_at(tilo_ui_base::motion::frame_now() + Duration::from_millis(400));
             assert!(
                 (row.scroll_x() - expected).abs() < 0.5,
                 "the snap must settle on its original target ({expected}); \
@@ -1140,7 +1140,7 @@ fn make_overflow_row(count: usize, viewport_w: f64) -> (GroupRow, TaffyTree<()>,
     let viewport = taffy.parent_node(
         Style {
             size: Size {
-                width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
+                width: Dimension::length(tilo_ui_base::num::f32_of_f64(viewport_w)),
                 height: Dimension::length(600.0),
             },
             ..Default::default()
@@ -1151,7 +1151,7 @@ fn make_overflow_row(count: usize, viewport_w: f64) -> (GroupRow, TaffyTree<()>,
         .compute_layout_with_measure(
             viewport,
             TSize {
-                width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
+                width: AvailableSpace::Definite(tilo_ui_base::num::f32_of_f64(viewport_w)),
                 height: AvailableSpace::Definite(600.0),
             },
             |_, _, _, _, _| taffy::Size::ZERO,
@@ -1290,7 +1290,7 @@ pub(super) fn relayout_strip(row: &mut GroupRow, viewport_w: f64) {
     let viewport = taffy.parent_node(
         Style {
             size: Size {
-                width: Dimension::length(crate::num::f32_of_f64(viewport_w)),
+                width: Dimension::length(tilo_ui_base::num::f32_of_f64(viewport_w)),
                 height: Dimension::length(1080.0),
             },
             ..Default::default()
@@ -1301,7 +1301,7 @@ pub(super) fn relayout_strip(row: &mut GroupRow, viewport_w: f64) {
         .compute_layout_with_measure(
             viewport,
             TSize {
-                width: AvailableSpace::Definite(crate::num::f32_of_f64(viewport_w)),
+                width: AvailableSpace::Definite(tilo_ui_base::num::f32_of_f64(viewport_w)),
                 height: AvailableSpace::Definite(1080.0),
             },
             |_, _, _, _, _| taffy::Size::ZERO,
@@ -1377,7 +1377,7 @@ tilo_test_env::scenario! {
 
     phase a_window_edge_shows_the_resize_cursor_through_the_shared_rule;
     {
-        use crate::widget::cursor::in_tree;
+        use tilo_ui_base::widget::cursor::in_tree;
         use winit::window::CursorIcon;
         let (mut row, taffy, root) = edge_strip(None, None);
         let r = rects(&row);
@@ -1600,7 +1600,7 @@ tilo_test_env::scenario! {
         let scroll = row.scroll_x();
         let from = Point::new(before[1].x0 + 2.0, before[1].center().y);
         let (mut row, taffy, root, _) = drag_edge(row, &taffy, root, from, &[-80.0], false);
-        let escape = crate::synthetic_input::named_key(winit::keyboard::NamedKey::Escape);
+        let escape = tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::Escape);
         assert!(edge_event(&mut row, &taffy, root, false, &escape));
         assert!(!row.edge_resize_in_flight());
         assert_eq!(row.scroll_x(), scroll);
@@ -1662,7 +1662,7 @@ impl Widget for MinWidthApp {
     ) -> NodeId {
         taffy.fill_leaf(node_map, self)
     }
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
     fn name(&self) -> &'static str {
         "MinWidthApp"
     }
@@ -1896,7 +1896,7 @@ impl Widget for TreeMinimumApp {
     ) -> NodeId {
         taffy.fill_leaf(node_map, self)
     }
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
     fn name(&self) -> &'static str {
         "TreeMinimumApp"
     }
@@ -2387,7 +2387,7 @@ fn wheel_over_strip_never_moves_it() {
             },
         );
         assert!(!handled, "a bare wheel must be left unclaimed by the strip");
-        row.tick_snap_at(crate::motion::frame_now() + Duration::from_millis(400));
+        row.tick_snap_at(tilo_ui_base::motion::frame_now() + Duration::from_millis(400));
         assert_eq!(row.scroll_x(), 0.0, "a bare wheel must not move the strip");
         row.apply_layout(&taffy, root, Point::ORIGIN);
         assert_eq!(
@@ -2412,7 +2412,7 @@ fn maximize_fades_the_neighbours_and_reduced_motion_hides_them_at_once() {
             let before = row.groups[0].get_rect().width();
             row.groups[1].maximized = true;
             let (row, ..) = relayout_row_owned_with(row, 2000.0, &theme);
-            let now = crate::motion::frame_now();
+            let now = tilo_ui_base::motion::frame_now();
             assert_eq!(
                 row.sibling_fade.is_moving(now),
                 fades,

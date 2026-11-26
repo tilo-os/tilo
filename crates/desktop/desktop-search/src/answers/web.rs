@@ -6,7 +6,7 @@
 
 use std::fmt::Write as _;
 
-use ui::icons::Icon;
+use tilo_ui_base::icons::Icon;
 
 /// The scheme the browser takes a web search under; it runs the query on
 /// the person's own search engine (`apps/tl/browser`, its address bar).

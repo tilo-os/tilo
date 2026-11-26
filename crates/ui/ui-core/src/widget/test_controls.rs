@@ -1,7 +1,7 @@
 //! Test support for action-bound controls: a mount outside host ownership
 //! and a one-parameter test action.
 
-use super::{Decorator, Widget, capability, controls};
+use tilo_ui_base::{widget::Decorator, widget::Widget, widget::capability, widget::controls};
 
 pub(crate) struct Unattached<W>(pub W);
 
@@ -40,8 +40,8 @@ impl<W: Widget + controls::ActionControls + 'static> Decorator for Unattached<W>
 impl<W: Widget + controls::ActionControls + 'static> controls::ActionControls for Unattached<W> {
     fn attach_controls(
         &mut self,
-        _domain: &crate::ControlDomain,
-        _attachment: crate::control_domain::DomainAttachment,
+        _domain: &tilo_ui_base::ControlDomain,
+        _attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
     }
 

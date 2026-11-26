@@ -1,6 +1,6 @@
 //! The customization page's fields, over the install profile they edit.
 
-use ui::local_state::LocalState;
+use tilo_ui_base::local_state::LocalState;
 use ui::widget::{Dropdown, Field, Form, FormSection, TextInput};
 
 use crate::hosting::Store;
@@ -90,7 +90,7 @@ impl CzField {
     fn choose_message(self) -> String {
         CATALOG.t_args(
             "imager-profile-choose-listed-field",
-            &[("field", ui::i18n::ArgValue::Text(self.label()))],
+            &[("field", tilo_ui_base::i18n::ArgValue::Text(self.label()))],
         )
     }
 

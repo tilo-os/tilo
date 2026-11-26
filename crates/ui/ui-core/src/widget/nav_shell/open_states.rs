@@ -3,8 +3,8 @@
 //! something in it.
 
 use super::{NavShell, OpenBinding};
-use crate::LocalState;
-use crate::local_state::LocalBinding;
+use tilo_ui_base::LocalState;
+use tilo_ui_base::local_state::LocalBinding;
 
 impl NavShell {
     /// Keep whether the sidebar shows in `state`: the shell writes where it

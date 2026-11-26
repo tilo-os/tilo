@@ -3,12 +3,12 @@
 use vello::kurbo::{Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::{Button, ButtonRole, ControlSize};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
 
 #[derive(Clone, Copy, Debug)]
 pub struct BarControlFace<'a> {
@@ -78,7 +78,7 @@ impl<'a> BarControlFace<'a> {
     }
 
     /// Keyboard focus. The ring shows only while focus is visible
-    /// ([`crate::focus_visible`]).
+    /// ([`tilo_ui_base::focus_visible`]).
     #[must_use]
     pub fn focused(mut self, focused: bool) -> Self {
         self.focused = focused;
@@ -200,7 +200,7 @@ impl<'a> BarControlFace<'a> {
                     };
                 let shown = ctx.text.elide_to_width_style(
                     label,
-                    crate::num::f32_of_f64(spare.max(0.0)),
+                    tilo_ui_base::num::f32_of_f64(spare.max(0.0)),
                     &style,
                 );
                 let (w, h) = ctx.text.measure_style(&shown, None, &style);
@@ -248,8 +248,8 @@ impl<'a> BarControlFace<'a> {
         );
     }
 
-    pub fn accessibility(&self, rect: Rect) -> crate::a11y::AccessNode {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    pub fn accessibility(&self, rect: Rect) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         AccessNode::new(Role::Button)
             .with_name(self.name)
             .with_bounds(rect)
@@ -310,7 +310,7 @@ mod tests {
 
         phase an_icon_button_carries_its_name_as_tooltip_and_accessible_name;
         {
-            use crate::widget::Widget;
+            use tilo_ui_base::widget::Widget;
             let button = IconButton::small("close", Icon::X, "Close window");
             let node = button.accessibility().expect("a button is accessible");
             assert_eq!(node.name.as_deref(), Some("Close window"));

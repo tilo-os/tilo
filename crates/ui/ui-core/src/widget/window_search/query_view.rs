@@ -1,9 +1,9 @@
 //! A view that answers the window bar's search: the query view of an app whose view is a function
 //! of its resource.
-use crate::widget::capability::{Request, RequestMut};
-use crate::widget::identity::concrete;
 use crate::widget::search_field::FilterCount;
-use crate::widget::{Element, Widget};
+use tilo_ui_base::widget::identity::concrete;
+use tilo_ui_base::{widget::Element, widget::Widget};
+use tilo_ui_base::{widget::capability::Request, widget::capability::RequestMut};
 
 use super::Queryable;
 
@@ -26,7 +26,7 @@ use super::Queryable;
 ///
 /// Opening the search and Enter in its field ask nothing of the view: it
 /// already is the query view, and the bar hands the keyboard on to it.
-#[crate::component::not_a_component(system, "system search")]
+#[tilo_ui_base::component::not_a_component(system, "system search")]
 pub struct QueryView {
     view: Element,
     kept: Option<FilterCount>,

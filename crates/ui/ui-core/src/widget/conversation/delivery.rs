@@ -2,12 +2,12 @@
 
 use vello::kurbo::{Point, Rect};
 
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::Tone;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::Tone;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DeliveryStep {

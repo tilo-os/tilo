@@ -50,6 +50,7 @@ tilo-user-identity = { path = "../../core/tilo-user-identity" }
 tilo-workspace-join = { path = "../../core/workspace-join" }
 tokio = { workspace = true, features = ["full"] }
 tracing.workspace = true
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # Workspace sync states, as apps are told them.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame", features = ["tokio"] }
@@ -57,6 +58,7 @@ wire-frame = { package = "tilo-wire-frame", path = "../../platform/wire-frame", 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 # The workspace-hack's native feature set does not build for wasm32.
 workspace-hack = { version = "0.1" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-ui", path = "../../ui/ui-core", features = ["model"] }
 
 [dev-dependencies]

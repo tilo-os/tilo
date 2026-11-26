@@ -198,7 +198,7 @@ pub(crate) fn new_strip(session: &mut Session) -> StripId {
 /// Focus previous/next window: the keyboard steps along the shown strip and stops at its ends.
 #[test]
 fn focus_previous_and_next_window_step_along_the_strip() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let shown = open(&mut session, &notes, 3);
     assert_eq!(
@@ -225,7 +225,7 @@ fn focus_previous_and_next_window_step_along_the_strip() {
 /// it stays.
 #[test]
 fn focus_window_by_number_puts_the_keyboard_on_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let shown = open(&mut session, &notes, 3);
     shortcut(&mut session, ShortcutAction::FocusGroup1);
@@ -246,7 +246,7 @@ fn focus_window_by_number_puts_the_keyboard_on_it() {
 /// the tabs cycle and wrap, and the tab leaves for a window of its own again.
 #[test]
 fn tabs_attach_cycle_and_detach_by_shortcut() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let shown = open(&mut session, &notes, 3);
     let (first, _) = shown[0];
@@ -301,7 +301,7 @@ fn tabs_attach_cycle_and_detach_by_shortcut() {
 /// Previous/next strip and strip 1–9: the shown strip steps, and stepping past an end stays.
 #[test]
 fn strips_step_and_go_by_number() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     open(&mut session, &notes, 1);
     let first = strips(&session).1.expect("a strip shown");
@@ -335,7 +335,7 @@ fn strips_step_and_go_by_number() {
 /// Previous/next workspace: the workspace in front steps, and stays at either end.
 #[test]
 fn workspaces_step_by_shortcut() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     open(&mut session, &notes, 1);
     let first = workspace(&session);
@@ -366,7 +366,7 @@ fn workspaces_step_by_shortcut() {
 /// back, as its menu's rows do.
 #[test]
 fn maximize_restore_and_toggle_by_shortcut() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let shown = open(&mut session, &notes, 2);
     let front = shown[1].0;
@@ -387,7 +387,7 @@ fn maximize_restore_and_toggle_by_shortcut() {
 /// Toggle fullscreen: the window in front covers the display, and gives it back.
 #[test]
 fn fullscreen_toggles_by_shortcut() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let shown = open(&mut session, &notes, 1);
     let front = shown[0].0;
@@ -406,7 +406,7 @@ fn fullscreen_toggles_by_shortcut() {
 /// Toggle float: the window in front floats over its strip, and snaps back into it.
 #[test]
 fn float_toggles_by_shortcut() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let shown = open(&mut session, &notes, 2);
     let front = shown[1].0;
@@ -426,7 +426,7 @@ fn float_toggles_by_shortcut() {
 /// keyboard; at an end it stays.
 #[test]
 fn windows_move_along_the_strip_by_shortcut() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let shown = open(&mut session, &notes, 3);
     let moved = shown[2].0;
@@ -451,7 +451,7 @@ fn windows_move_along_the_strip_by_shortcut() {
 /// last strip in a new one, and nowhere when it is alone in the last strip.
 #[test]
 fn windows_move_between_strips_by_shortcut() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let shown = open(&mut session, &notes, 2);
     let moved = shown[1].0;
@@ -490,7 +490,7 @@ fn windows_move_between_strips_by_shortcut() {
 /// Narrower/wider: the window in front steps through the strip's widths.
 #[test]
 fn windows_resize_by_shortcut() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let shown = open(&mut session, &notes, 2);
     let front = shown[1].0;
@@ -508,7 +508,7 @@ fn windows_resize_by_shortcut() {
 /// shortcut brings it back where it was.
 #[test]
 fn close_and_reopen_by_shortcut() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     let shown = open(&mut session, &notes, 2);
     let resource = |session: &Session| crate::common::placed(session, &notes[1]);
@@ -529,7 +529,7 @@ fn close_and_reopen_by_shortcut() {
 /// The overview shortcut opens the shell's overview and closes it again.
 #[test]
 fn the_overview_shortcut_opens_the_shells_overview() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     open(&mut session, &notes, 1);
     let overview = tilo_session_core::desktop::overlays::Overlay::Overview.name();
@@ -546,7 +546,7 @@ fn the_overview_shortcut_opens_the_shells_overview() {
 /// The workspace history shortcuts open what happened here, in the workspace in front.
 #[test]
 fn workspace_history_opens_by_shortcut() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     open(&mut session, &notes, 1);
     fixed(&mut session, FixedAction::WorkspaceHistory);
@@ -565,7 +565,7 @@ fn workspace_history_opens_by_shortcut() {
 /// closes it again.
 #[test]
 fn the_emoji_shortcut_opens_the_shells_picker() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     open(&mut session, &notes, 1);
     shortcut(&mut session, ShortcutAction::EmojiPicker);
@@ -581,7 +581,7 @@ fn the_emoji_shortcut_opens_the_shells_picker() {
 /// New window opens the shell's launcher, to pick the app the window shows.
 #[test]
 fn new_window_opens_the_shells_launcher() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, notes) = session();
     open(&mut session, &notes, 1);
     let launcher = tilo_session_core::desktop::overlays::Overlay::Launcher.name();

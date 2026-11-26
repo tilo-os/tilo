@@ -44,7 +44,9 @@ const fn reason_label(reason: StopReason) -> &'static str {
 /// what stopped the computer as its badge.
 fn present(report: &CrashReport) -> ResourcePresentation {
     ResourcePresentation {
-        detail: Some(ui::format::timestamp(&ui::format::UnixSecs(report.at))),
+        detail: Some(tilo_ui_base::format::timestamp(
+            &tilo_ui_base::format::UnixSecs(report.at),
+        )),
         badge: report.reason.map(|reason| reason_label(reason).to_owned()),
         preview: report.build.as_ref().map(|build| format!("build {build}")),
     }
@@ -80,7 +82,7 @@ pub struct CrashReportResource;
 /// `report` with the time it happened as this computer reads a clock.
 fn stated(report: &CrashReport) -> CrashReport {
     CrashReport {
-        when: ui::format::timestamp(&ui::format::UnixSecs(report.at)),
+        when: tilo_ui_base::format::timestamp(&tilo_ui_base::format::UnixSecs(report.at)),
         ..report.clone()
     }
 }
@@ -279,9 +281,9 @@ mod tests {
                 .clone()
                 .expect("a report says when it happened and what stopped it");
             let at =
-                ui::format::DateTime::strptime("%Y-%m-%d %H:%M:%S", "2026-10-24 22:52:01")
+                tilo_ui_base::format::DateTime::strptime("%Y-%m-%d %H:%M:%S", "2026-10-24 22:52:01")
                     .expect("the report's time");
-            let when = ui::format::timestamp(&at);
+            let when = tilo_ui_base::format::timestamp(&at);
             assert_eq!(presentation.detail.as_deref(), Some(when.as_str()));
             assert_eq!(presentation.badge.as_deref(), Some("emergency restart"));
         }

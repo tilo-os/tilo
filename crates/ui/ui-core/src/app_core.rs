@@ -10,7 +10,7 @@ use crate::history_mode::embedded::{PendingCommand, PendingCommandOutcome};
 use crate::history_mode::pending_controls::{
     ContinuationCommand, PendingControlStatus, PreparedContinuation,
 };
-use crate::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 #[cfg(feature = "model")]
 mod controls;
@@ -29,7 +29,7 @@ pub(crate) struct AppTree<'a> {
     /// The app's registered framework History, when it has one.
     #[cfg(feature = "model")]
     pub(crate) history: Option<&'a crate::history_mode::host::HistoryHost>,
-    pub(crate) bindings: &'a crate::widget::bound_nodes::BoundNodeMap,
+    pub(crate) bindings: &'a tilo_ui_base::widget::bound_nodes::BoundNodeMap,
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
     pub(crate) taffy: &'a TaffyTree<()>,
     pub(crate) focused: Option<NodeId>,
@@ -82,7 +82,7 @@ impl AppTree<'_> {
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
         // SAFETY: the host owns this stable tree; no target reference escapes.
         unsafe {
-            crate::widget::bound_nodes::inspect_bound_node(
+            tilo_ui_base::widget::bound_nodes::inspect_bound_node(
                 self.bindings,
                 self.node_map,
                 node,
@@ -153,7 +153,7 @@ impl AppTree<'_> {
     ) -> (Vec<NodeId>, bool) {
         // One sweep asks every mapped node, entering each component's scope
         // once rather than once a node.
-        let sweep = std::cell::RefCell::new(crate::widget::bound_nodes::NodeSweep::new(
+        let sweep = std::cell::RefCell::new(tilo_ui_base::widget::bound_nodes::NodeSweep::new(
             self.bindings,
             self.node_map,
         ));
@@ -218,12 +218,12 @@ impl AppTree<'_> {
     }
 
     /// What the laid-out widgets offer at `point` (logical coords) for the pointer's shape
-    /// ([`crate::widget::cursor`]).
+    /// ([`tilo_ui_base::widget::cursor`]).
     pub(crate) fn cursor_pick_at(
         &self,
         point: vello::kurbo::Point,
-    ) -> crate::widget::cursor::CursorPick {
-        let mut pick = crate::widget::cursor::CursorPick::default();
+    ) -> tilo_ui_base::widget::cursor::CursorPick {
+        let mut pick = tilo_ui_base::widget::cursor::CursorPick::default();
         for &node in self.node_map.keys() {
             let _ = self.inspect_node(node, |widget| pick.offer(widget, point));
         }
@@ -235,7 +235,11 @@ impl AppTree<'_> {
     pub(crate) fn tooltips_at(
         &self,
         point: vello::kurbo::Point,
-    ) -> Vec<(vello::kurbo::Rect, String, crate::widget::TooltipSide)> {
+    ) -> Vec<(
+        vello::kurbo::Rect,
+        String,
+        tilo_ui_base::widget::TooltipSide,
+    )> {
         self.node_map
             .keys()
             .filter_map(|&node| {
@@ -260,13 +264,13 @@ impl AppTree<'_> {
     }
 
     /// What a contact beginning at `point` (logical coords) means: raw for a widget that reads fingers
-    /// itself, else what the widget under it claims ([`crate::widget::Widget::touch_claim`]), else
+    /// itself, else what the widget under it claims ([`tilo_ui_base::widget::Widget::touch_claim`]), else
     /// ordinary pointer emulation.
     pub(crate) fn touch_claim_at(
         &self,
         point: vello::kurbo::Point,
-    ) -> crate::interaction::TouchClaim {
-        use crate::interaction::TouchClaim;
+    ) -> tilo_ui_base::interaction::TouchClaim {
+        use tilo_ui_base::interaction::TouchClaim;
         if self.claims_raw_touch_at(point) {
             return TouchClaim::Raw;
         }
@@ -302,7 +306,7 @@ impl AppTree<'_> {
     }
 
     /// `order` kept inside the keyboard scope: the focused shell window
-    /// ([`crate::widget::Widget::scopes_keyboard_focus`]).
+    /// ([`tilo_ui_base::widget::Widget::scopes_keyboard_focus`]).
     pub(crate) fn within_keyboard_scope(&self, order: Vec<NodeId>) -> Vec<NodeId> {
         let scopes: Vec<NodeId> = self
             .node_map
@@ -320,7 +324,7 @@ impl AppTree<'_> {
 /// A host's document beside its bindings, borrowed for one write through a laid-out widget.
 pub(crate) struct HostDocument<'a> {
     pub(crate) state: &'a mut crate::State,
-    pub(crate) bindings: &'a crate::widget::bound_nodes::BoundNodeMap,
+    pub(crate) bindings: &'a tilo_ui_base::widget::bound_nodes::BoundNodeMap,
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
 }
 
@@ -390,7 +394,7 @@ impl<'a> ResourceInvocation<'a> {
 pub(crate) struct HostLayout<'a> {
     pub(crate) taffy: &'a mut TaffyTree<()>,
     pub(crate) node_map: &'a mut HashMap<NodeId, *mut dyn Widget>,
-    pub(crate) bindings: &'a mut crate::widget::bound_nodes::BoundNodeMap,
+    pub(crate) bindings: &'a mut tilo_ui_base::widget::bound_nodes::BoundNodeMap,
     pub(crate) focused: &'a mut Option<NodeId>,
 }
 
@@ -400,7 +404,7 @@ pub(crate) struct HostFocus<'a> {
     #[cfg(feature = "model")]
     pub(crate) history: Option<&'a mut crate::history_mode::host::HistoryChrome>,
     pub(crate) node_map: &'a HashMap<NodeId, *mut dyn Widget>,
-    pub(crate) bindings: &'a crate::widget::bound_nodes::BoundNodeMap,
+    pub(crate) bindings: &'a tilo_ui_base::widget::bound_nodes::BoundNodeMap,
     pub(crate) taffy: &'a TaffyTree<()>,
     pub(crate) focused: &'a mut Option<NodeId>,
 }
@@ -409,14 +413,14 @@ pub(crate) struct HostFocus<'a> {
 pub(crate) struct HostRemount<'a> {
     pub(crate) root: &'a mut dyn Widget,
     pub(crate) state: &'a crate::State,
-    pub(crate) theme: &'a crate::theme::Theme,
+    pub(crate) theme: &'a tilo_ui_base::theme::Theme,
     pub(crate) taffy: &'a mut TaffyTree<()>,
     pub(crate) node_map: &'a mut HashMap<NodeId, *mut dyn Widget>,
-    pub(crate) bindings: &'a mut crate::widget::bound_nodes::BoundNodeMap,
+    pub(crate) bindings: &'a mut tilo_ui_base::widget::bound_nodes::BoundNodeMap,
     #[cfg(feature = "model")]
     pub(crate) close_reports: &'a mut Vec<crate::application::ComponentCloseReport>,
     /// How the person reaches the window: what the remount mounts hears it.
-    pub(crate) interaction: crate::interaction::InteractionEnvironment,
+    pub(crate) interaction: tilo_ui_base::interaction::InteractionEnvironment,
 }
 
 /// How many times one remount carries out the in-place changes the widgets report: the changes
@@ -429,7 +433,7 @@ pub(crate) static TEST_APPROVAL: std::sync::LazyLock<tilo_actions::remote::asked
     std::sync::LazyLock::new(|| {
         tilo_actions::remote::asked::Approval::new(
             tilo_actions::remote::asked::RecordRef {
-                workspace: crate::permissions::LOCAL_WORKSPACE.to_owned(),
+                workspace: tilo_ui_base::permissions::LOCAL_WORKSPACE.to_owned(),
                 record: "invocations/allowed".to_owned(),
                 device: None,
             },
@@ -444,7 +448,11 @@ impl crate::app::App {
     pub(crate) fn tooltip_target_at(
         &self,
         point: vello::kurbo::Point,
-    ) -> Option<(vello::kurbo::Rect, String, crate::widget::TooltipSide)> {
+    ) -> Option<(
+        vello::kurbo::Rect,
+        String,
+        tilo_ui_base::widget::TooltipSide,
+    )> {
         if !self.pointer_hovers() {
             return None;
         }
@@ -500,16 +508,16 @@ impl crate::app::App {
     /// Where focus is, as an identity that survives a rebuild.
     pub(crate) fn capture_focus_identity(
         &mut self,
-    ) -> Option<crate::widget::layout::CompositionFocus> {
+    ) -> Option<tilo_ui_base::widget::layout::CompositionFocus> {
         let replaced = self.composition_replaced();
         let tree = self.tree();
         if replaced || tree.node_map.is_empty() {
-            return crate::widget::layout::CompositionFocus::capture_live(tree.root);
+            return tilo_ui_base::widget::layout::CompositionFocus::capture_live(tree.root);
         }
         // SAFETY: no widget was replaced since the maps were admitted, so
         // they describe this exclusively owned live tree.
         unsafe {
-            crate::widget::layout::CompositionFocus::capture(
+            tilo_ui_base::widget::layout::CompositionFocus::capture(
                 tree.focused,
                 tree.node_map,
                 tree.bindings,
@@ -518,7 +526,7 @@ impl crate::app::App {
     }
 
     /// Carry out the change the root's widgets make in place
-    /// ([`crate::widget::StructureChange::Children`]) in the retained tree: mount what they added,
+    /// ([`tilo_ui_base::widget::StructureChange::Children`]) in the retained tree: mount what they added,
     /// unmount what they let go of, keep the rest.
     ///
     /// The sync after a remount hands what it mounted its content (a list its rows), which may
@@ -552,13 +560,14 @@ impl crate::app::App {
             ));
         parts.root.set_interaction_environment(parts.interaction);
         let mapped = parts.node_map.len();
-        let mut remount = crate::widget::Remount::new(parts.taffy, parts.theme, parts.node_map);
+        let mut remount =
+            tilo_ui_base::widget::Remount::new(parts.taffy, parts.theme, parts.node_map);
         let mut applied = parts.root.remount_children(&mut remount);
         // A widget the remount built may change its own parts in place as it is built (a part
         // view filled in as its component mounts): that change is carried out in the same remount.
         let mut after = parts.root.take_structure_change();
         for _ in 1..REMOUNT_PASSES {
-            if !applied || after != crate::widget::StructureChange::Children {
+            if !applied || after != tilo_ui_base::widget::StructureChange::Children {
                 break;
             }
             applied = parts.root.remount_children(&mut remount);
@@ -574,7 +583,7 @@ impl crate::app::App {
         // a build's are, so the next structure check finds the maps live.
         self.admit_layout_maps();
         let parts = self.remount_parts();
-        if !applied || after != crate::widget::StructureChange::None {
+        if !applied || after != tilo_ui_base::widget::StructureChange::None {
             return false;
         }
         parts.bindings.forget(&unmounted);
@@ -687,10 +696,10 @@ impl crate::app::App {
     ) -> Result<R, crate::bound_dispatch::BoundDispatchError> {
         self.widget_reached();
         let document = self.document();
-        crate::widget::component_walk::note_input(document.bindings, node);
+        tilo_ui_base::widget::component_walk::note_input(document.bindings, node);
         // SAFETY: exclusive host access prevents overlapping target references.
         unsafe {
-            crate::widget::bound_nodes::mutate_bound_node(
+            tilo_ui_base::widget::bound_nodes::mutate_bound_node(
                 document.bindings,
                 document.node_map,
                 node,
@@ -724,10 +733,15 @@ impl crate::app::App {
     pub(crate) fn perform_node_action(
         &mut self,
         node: NodeId,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> Result<bool, crate::bound_dispatch::BoundDispatchError> {
         self.dispatch_node(node, |widget, doc, root| {
-            widget.perform_action(action, &[], &mut crate::widget::Edits::lend(doc), root)
+            widget.perform_action(
+                action,
+                &[],
+                &mut tilo_ui_base::widget::Edits::lend(doc),
+                root,
+            )
         })
     }
 
@@ -737,7 +751,7 @@ impl crate::app::App {
     pub(crate) fn note_continuation(
         &mut self,
         on_behalf_of: Option<tilo_actions::InvocationId>,
-        result: &Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError>,
+        result: &Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError>,
     ) {
         let Err(error) = result else {
             return;
@@ -776,13 +790,13 @@ impl crate::app::App {
         node: NodeId,
         semantic_target: Option<&str>,
         key_path: &[u64],
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
     ) -> Result<bool, String> {
         self.dispatch_semantic_node(node, |widget, doc, root| {
-            let edits = &mut crate::widget::Edits::lend(doc);
+            let edits = &mut tilo_ui_base::widget::Edits::lend(doc);
             match semantic_target {
                 Some(target) => {
-                    crate::a11y_child_route::perform(widget, target, action, edits, root)
+                    tilo_ui_base::a11y_child_route::perform(widget, target, action, edits, root)
                         || (names_the_widget(widget, target)
                             && widget.perform_action(action, &[], edits, root))
                 }
@@ -798,7 +812,7 @@ impl crate::app::App {
         &mut self,
         owner: NodeId,
         target: &str,
-        verb: &crate::a11y::Action,
+        verb: &tilo_ui_base::a11y::Action,
     ) -> Result<bool, String> {
         let key_path = target
             .strip_prefix("tilo.key-action:")
@@ -811,11 +825,11 @@ impl crate::app::App {
             .transpose()
             .map_err(|error| format!("invalid keyed semantic action: {error}"))?;
         self.dispatch_node(owner, |widget, doc, root| {
-            let edits = &mut crate::widget::Edits::lend(doc);
+            let edits = &mut tilo_ui_base::widget::Edits::lend(doc);
             match &key_path {
                 Some(key_path) => widget.perform_action(verb, key_path, edits, root),
                 None => {
-                    crate::a11y_child_route::perform(widget, target, verb, edits, root)
+                    tilo_ui_base::a11y_child_route::perform(widget, target, verb, edits, root)
                         || (names_the_widget(widget, target)
                             && widget.perform_action(verb, &[], edits, root))
                 }
@@ -835,7 +849,7 @@ impl crate::app::App {
     ) -> vello::kurbo::Point {
         self.inspect_node(node, |widget| {
             semantic_target
-                .and_then(|target| crate::a11y_child_route::rect(widget, target))
+                .and_then(|target| tilo_ui_base::a11y_child_route::rect(widget, target))
                 .or_else(|| {
                     (!ordinal_path.is_empty())
                         .then(|| widget.synthetic_accessibility_rect(ordinal_path))
@@ -854,13 +868,13 @@ impl crate::app::App {
     /// toggles.
     pub(crate) fn pointer_completion(
         &self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         node: &accesskit::Node,
         widget: NodeId,
         semantic_target: Option<&str>,
         ordinal_path: &[usize],
     ) -> Option<(vello::kurbo::Point, winit::event::MouseButton)> {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         if node.is_disabled() {
             return None;
         }
@@ -892,7 +906,7 @@ impl crate::app::App {
     pub(crate) fn touch_claim_at(
         &self,
         point: vello::kurbo::Point,
-    ) -> crate::interaction::TouchClaim {
+    ) -> tilo_ui_base::interaction::TouchClaim {
         self.tree().touch_claim_at(point)
     }
 
@@ -907,7 +921,7 @@ impl crate::app::App {
     pub(crate) fn dispatch_prepared_history_control(
         &mut self,
         prepared: PreparedContinuation,
-    ) -> Result<crate::widget::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::widget::ResourceOperationStart, tilo_actions::ApiError> {
         let captured = prepared.observation.as_ref().map_err(|reason| {
             tilo_actions::ApiError::Unavailable {
                 code: "stale_pending_control".into(),
@@ -1068,12 +1082,12 @@ impl PointerPlace {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 self.at = Some(logical(position.x, position.y));
-                crate::part_paint::backdrop::set_pointer(Some((position.x, position.y)));
+                tilo_ui_base::part_paint::backdrop::set_pointer(Some((position.x, position.y)));
                 false
             }
             WindowEvent::CursorLeft { .. } => {
                 self.at = None;
-                crate::part_paint::backdrop::set_pointer(None);
+                tilo_ui_base::part_paint::backdrop::set_pointer(None);
                 false
             }
             WindowEvent::MouseInput {
@@ -1136,7 +1150,7 @@ impl PointerPlace {
 
 /// Whether `target` names `widget` itself: the action target its own accessibility node
 /// publishes, so an action aimed at it is the widget's own, not a child's.
-pub(crate) fn names_the_widget(widget: &dyn crate::widget::Widget, target: &str) -> bool {
+pub(crate) fn names_the_widget(widget: &dyn tilo_ui_base::widget::Widget, target: &str) -> bool {
     widget
         .accessibility()
         .and_then(|access| access.action_target)

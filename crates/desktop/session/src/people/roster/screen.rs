@@ -5,10 +5,10 @@ use ui::kurbo::{Affine, Rect};
 use ui::peniko::Color;
 use ui::vello::Scene;
 
-use ui::TextRole;
-use ui::icons::Icon;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
+use tilo_ui_base::TextRole;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
 
 use super::RosterRow;
 use tilo_session_core::desktop::here::{Screen, ScreenWindow};
@@ -45,7 +45,7 @@ fn paint_window(
     let ink = on.tokens.colors.text_dim;
     let style = on
         .text(TextRole::Caption)
-        .with_weight(ui::text_render::TextWeight::Medium);
+        .with_weight(tilo_ui_base::text_render::TextWeight::Medium);
     let line_h = f64::from(theme.text(TextRole::Caption).line_height_px());
     let icon = (tile.height() * 0.3).clamp(10.0, 20.0);
     let name = window
@@ -64,7 +64,7 @@ fn paint_window(
         tile.center().x + icon / 2.0,
         top + icon,
     );
-    let glyph = match ui::icons::app_glyph(&window.app, None) {
+    let glyph = match tilo_ui_base::icons::app_glyph(&window.app, None) {
         Icon::AppWindow => Icon::Square,
         glyph => glyph,
     };
@@ -77,7 +77,7 @@ fn paint_window(
             mark.y1 + 4.0 + line_h,
         );
         ui::widget::TextLineFace::styled(name, &style, TextRole::Caption).paint(
-            &mut ui::paint::PaintCtx::new(scene, transform, text, &on),
+            &mut tilo_ui_base::paint::PaintCtx::new(scene, transform, text, &on),
             lines,
             ink,
         );
@@ -89,7 +89,10 @@ fn paint_window(
             transform,
             colour,
             None,
-            &ui::surface::edge_outline(tile, ui::widget::SurfaceLevel::Raised.radius(theme)),
+            &tilo_ui_base::surface::edge_outline(
+                tile,
+                ui::widget::SurfaceLevel::Raised.radius(theme),
+            ),
         );
     }
 }

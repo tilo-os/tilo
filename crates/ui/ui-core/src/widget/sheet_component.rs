@@ -3,13 +3,15 @@
 
 use tilo_ui_graph::component::{CaseDescription, EnumDescription};
 
-use crate::component::{
-    Component, Described, Event, PropType, Type, Value, case_field, case_field_description, wrong,
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PropType,
+    component::Type, component::Value, component::case_field, component::case_field_description,
+    component::wrong,
 };
 
 use super::sheet::{CellKind, Peer, Sheet, SheetCell, SheetSize};
 
-crate::component::choice!(CellKind, "SheetCellKind", {
+tilo_ui_base::choice!(CellKind, "SheetCellKind", {
     Text => "text",
     Number => "number",
     Bool => "bool",

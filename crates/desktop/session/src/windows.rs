@@ -73,7 +73,7 @@ fn window_reading(
     let title = tab.title.trim();
     // What the window's well shows instead of a picture: its app's own glyph, so two apps' windows
     // never look alike.
-    let icon = ui::icons::app_glyph(&app, None).name().to_owned();
+    let icon = tilo_ui_base::icons::app_glyph(&app, None).name().to_owned();
     let preview = match &tab.tile {
         TileContent::Foreign { .. } if handle.withholds(&app) => "withheld",
         TileContent::Foreign { .. } => "live",
@@ -172,8 +172,8 @@ fn author_of(handle: &DesktopHandle, tab: u64) -> Option<Author> {
             kind: "person".to_owned(),
             name: String::new(),
             colour: author_colour(MemberId::parsed_person(&person).map_or_else(
-                || ui::tokens::PresenceHue::of_agent(&person),
-                |member| ui::tokens::PresenceHue::of_member(&member),
+                || tilo_ui_base::tokens::PresenceHue::of_agent(&person),
+                |member| tilo_ui_base::tokens::PresenceHue::of_member(&member),
             )),
             agent: String::new(),
             run: String::new(),
@@ -183,7 +183,7 @@ fn author_of(handle: &DesktopHandle, tab: u64) -> Option<Author> {
             identity: String::from_utf8_lossy(&run.agent.actor_bytes()).into_owned(),
             kind: "agent".to_owned(),
             name: run.label.clone(),
-            colour: author_colour(ui::tokens::PresenceHue::of_member(&run.agent)),
+            colour: author_colour(tilo_ui_base::tokens::PresenceHue::of_member(&run.agent)),
             agent: String::from_utf8_lossy(&run.agent.actor_bytes()).into_owned(),
             run: run.run,
             title: run.title,
@@ -192,8 +192,8 @@ fn author_of(handle: &DesktopHandle, tab: u64) -> Option<Author> {
 }
 
 /// The presence colour `hue` is, as `#rrggbb`: the one every surface draws its member in.
-fn author_colour(hue: ui::tokens::PresenceHue) -> String {
-    let (red, green, blue) = ui::presence::identity_rgb(hue);
+fn author_colour(hue: tilo_ui_base::tokens::PresenceHue) -> String {
+    let (red, green, blue) = tilo_ui_base::presence::identity_rgb(hue);
     format!("#{red:02x}{green:02x}{blue:02x}")
 }
 

@@ -56,7 +56,7 @@ impl ResourceRoot {
         });
         let key = OverlayKey {
             base: Rc::clone(base),
-            version: (self.version(), ui_core::i18n::I18nManager::revision()),
+            version: (self.version(), tilo_ui_base::i18n::I18nManager::revision()),
             bindings: self.typed.bindings_generation(),
             availability,
         };

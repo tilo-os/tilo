@@ -1,5 +1,5 @@
 //! What a [`super::VirtualList`] frame shows of its rows, as a later frame
-//! compares it ([`crate::scroll_copy::Shown`]).
+//! compares it ([`tilo_ui_base::scroll_copy::Shown`]).
 
 use vello::kurbo::{Affine, Rect};
 
@@ -56,7 +56,7 @@ impl ListShown {
     }
 }
 
-impl crate::scroll_copy::Shown for ListShown {
+impl tilo_ui_base::scroll_copy::Shown for ListShown {
     fn scroll(&self) -> vello::kurbo::Vec2 {
         vello::kurbo::Vec2::new(0.0, self.position)
     }

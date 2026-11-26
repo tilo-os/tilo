@@ -9,10 +9,10 @@ use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Affine, Rect};
 use vello::peniko::{Color, Fill};
 
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 /// Default quiet-zone size in modules (the standard requires ≥4).
 pub const DEFAULT_QUIET_MODULES: usize = 4;
@@ -248,7 +248,7 @@ impl QrWidget {
 }
 
 impl Widget for QrWidget {
-    crate::described!();
+    tilo_ui_base::described!();
 
     #[allow(
         clippy::cast_precision_loss,
@@ -280,7 +280,7 @@ impl Widget for QrWidget {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!(measured);
+    tilo_ui_base::rect_geometry!(measured);
 
     // The QR spec caps `matrix_size` at 177 (version 40) and `quiet_modules`
     // is a small widget-construction constant, so every `usize -> f64` cast
@@ -289,7 +289,7 @@ impl Widget for QrWidget {
         clippy::cast_precision_loss,
         reason = "QR module counts are capped by the QR spec at 177"
     )]
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -297,7 +297,7 @@ impl Widget for QrWidget {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         if self.secret && !self.payload.is_empty() {
-            crate::secret_paint::note_secret_painted();
+            tilo_ui_base::secret_paint::note_secret_painted();
         }
         // Fixed white/black regardless of theme, so a dark theme never
         // paints a black-on-black QR a scanner can't see.
@@ -363,11 +363,11 @@ impl Widget for QrWidget {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -378,13 +378,13 @@ impl Widget for QrWidget {
         Some(&self.test_id)
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
 
         let mut node = AccessNode::new(Role::Image).with_name(self.alt.clone());
         node.state = node.state.protected(self.secret);
         if let Some(error) = &self.error {
-            node = node.with_description(crate::i18n::widget_format(
+            node = node.with_description(tilo_ui_base::i18n::widget_format(
                 "widget-qr-failed",
                 &[("error", error.clone().into())],
             ));
@@ -396,8 +396,8 @@ impl Widget for QrWidget {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
-    use crate::text_render::TextRenderer;
+    use tilo_ui_base::presence::PresenceCtx;
+    use tilo_ui_base::text_render::TextRenderer;
     use vello::Scene;
 
     tilo_test_env::scenario! {
@@ -447,7 +447,7 @@ mod tests {
 
         phase private_pairing_qr_marks_real_paint_and_clears_when_cancelled;
         {
-            use crate::secret_paint::SecretPaint;
+            use tilo_ui_base::secret_paint::SecretPaint;
             let mut code =
                 QrWidget::new(b"sgnl://linkdevice?uuid=synthetic&pub_key=synthetic".to_vec())
                     .with_secret()
@@ -455,7 +455,7 @@ mod tests {
             let presence = PresenceCtx::empty();
             let mut renderer = TextRenderer::new();
             let painted = SecretPaint::begin();
-            code.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut renderer, &Theme::dark(), presence.draw_env()));
+            code.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut renderer, &Theme::dark(), presence.draw_env()));
             assert!(painted.finish());
             let semantics = code.accessibility().unwrap();
             assert_eq!(
@@ -469,16 +469,16 @@ mod tests {
             assert_eq!(code.matrix_size, 0);
             assert!(code.matrix.is_empty());
             let painted = SecretPaint::begin();
-            code.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut renderer, &Theme::light(), presence.draw_env()));
+            code.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut renderer, &Theme::light(), presence.draw_env()));
             assert!(!painted.finish());
         }
 
         phase public_qr_paint_keeps_capture_available;
         {
-            use crate::secret_paint::SecretPaint;
+            use tilo_ui_base::secret_paint::SecretPaint;
             let mut code = QrWidget::new(b"https://example.test/public".to_vec());
             let painted = SecretPaint::begin();
-            code.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::empty().draw_env()));
+            code.draw(&mut tilo_ui_base::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::empty().draw_env()));
             assert!(!painted.finish());
         }
 
@@ -507,7 +507,7 @@ mod tests {
         phase qr_image_semantics_stay_stable_through_encoding_failure;
         {
             {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
 
                 let w = QrWidget::new(b"https://example.com".to_vec())
                     .with_id("share-code")
@@ -520,7 +520,7 @@ mod tests {
             }
 
             {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
 
                 let w = QrWidget::new(vec![b'x'; 10_000]).with_id("oversized-code");
                 assert!(w.error().is_some());
@@ -531,7 +531,7 @@ mod tests {
                 assert_eq!(
                     node.description.as_deref(),
                     Some(
-                        crate::i18n::widget_format("widget-qr-failed", &[("error", why.into())])
+                        tilo_ui_base::i18n::widget_format("widget-qr-failed", &[("error", why.into())])
                             .as_str()
                     ),
                     "the description names the failure that kept the code from being drawn"

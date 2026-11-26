@@ -2,7 +2,8 @@
 //! following the tab, taking Find, and placed at the end of the bar's row.
 
 use super::WindowGroup;
-use crate::widget::{TileHost, Widget};
+use crate::widget::TileHost;
+use tilo_ui_base::widget::Widget;
 use vello::kurbo::Rect;
 use winit::event::WindowEvent;
 
@@ -45,10 +46,10 @@ impl WindowGroup {
         for request in requests {
             match request {
                 crate::widget::WindowSearchRequest::Open => {
-                    self.open_search(crate::tokens::MotionSource::Pointer);
+                    self.open_search(tilo_ui_base::tokens::MotionSource::Pointer);
                 }
                 crate::widget::WindowSearchRequest::Close => {
-                    self.close_search(crate::motion::input_source());
+                    self.close_search(tilo_ui_base::motion::input_source());
                 }
                 crate::widget::WindowSearchRequest::Widen(reach) => {
                     self.pending_search_open = Some(crate::widget::SearchHandoff {
@@ -56,7 +57,7 @@ impl WindowGroup {
                         reach,
                         query: self.search.query().to_owned(),
                     });
-                    self.close_search(crate::motion::input_source());
+                    self.close_search(tilo_ui_base::motion::input_source());
                 }
             }
         }
@@ -68,7 +69,7 @@ impl WindowGroup {
         if let Some(tab) = self.search_tab
             && tab != self.bar.active_id()
         {
-            self.close_search(crate::tokens::MotionSource::Pointer);
+            self.close_search(tilo_ui_base::tokens::MotionSource::Pointer);
         }
     }
 
@@ -84,7 +85,7 @@ impl WindowGroup {
         let Some(opening) = crate::widget::window_search::search_chord(
             event,
             modifiers.state(),
-            crate::platform::PlatformConventions::default(),
+            tilo_ui_base::platform::PlatformConventions::default(),
         ) else {
             return false;
         };
@@ -115,7 +116,7 @@ impl WindowGroup {
         {
             return false;
         }
-        self.open_search_as(crate::tokens::MotionSource::Keyboard, opening);
+        self.open_search_as(tilo_ui_base::tokens::MotionSource::Keyboard, opening);
         true
     }
 

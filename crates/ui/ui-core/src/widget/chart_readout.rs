@@ -9,10 +9,10 @@ use vello::Scene;
 use vello::kurbo::{Affine, Circle, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
-use crate::paint::with_alpha;
-use crate::text_render::{TextRenderer, TextStyle, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
+use tilo_ui_base::paint::with_alpha;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight};
 
 /// What a chart reads at the mark a person inspects.
 #[derive(Clone, Debug, PartialEq)]
@@ -169,8 +169,8 @@ impl Readout {
                 lead + label + gap + value
             })
             .fold(title_w, f64::max);
-        let rows_h = crate::num::f64_of_usize(self.rows.len()) * m.line
-            + crate::num::f64_of_usize(self.rows.len().saturating_sub(1)) * m.row_gap;
+        let rows_h = tilo_ui_base::num::f64_of_usize(self.rows.len()) * m.line
+            + tilo_ui_base::num::f64_of_usize(self.rows.len().saturating_sub(1)) * m.row_gap;
         let title_h = if self.title.is_empty() {
             0.0
         } else if self.rows.is_empty() {
@@ -269,34 +269,37 @@ impl Readout {
         }
         let placed = self.place(tr, theme);
         let m = Metrics::of(theme);
-        crate::surface::shadow(
+        tilo_ui_base::surface::shadow(
             scene,
             transform,
             placed.card,
             m.radius,
             &theme.tokens.elevation.floating,
         );
-        crate::surface::panel(scene, transform, placed.card, m.radius, theme);
-        let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
+        tilo_ui_base::surface::panel(scene, transform, placed.card, m.radius, theme);
+        let on_panel = theme.on_ground(tilo_ui_base::chrome::panel_ground(theme));
         let styles = Styles::of(theme);
         let ink = Inks::of(&on_panel);
-        let mut words =
-            |tr: &mut TextRenderer, text: &str, rect: Rect, color, style: &TextStyle| {
-                if text.is_empty() || rect.width() <= 0.0 {
-                    return;
-                }
-                let shown =
-                    tr.elide_to_width_style(text, crate::num::f32_of_f64(rect.width()), style);
-                let (_, h) = tr.measure_style(&shown, None, style);
-                tr.draw_style(
-                    scene,
-                    &shown,
-                    color,
-                    transform * Affine::translate((rect.x0, rect.center().y - f64::from(h) / 2.0)),
-                    None,
-                    style,
-                );
-            };
+        let mut words = |tr: &mut TextRenderer,
+                         text: &str,
+                         rect: Rect,
+                         color,
+                         style: &TextStyle| {
+            if text.is_empty() || rect.width() <= 0.0 {
+                return;
+            }
+            let shown =
+                tr.elide_to_width_style(text, tilo_ui_base::num::f32_of_f64(rect.width()), style);
+            let (_, h) = tr.measure_style(&shown, None, style);
+            tr.draw_style(
+                scene,
+                &shown,
+                color,
+                transform * Affine::translate((rect.x0, rect.center().y - f64::from(h) / 2.0)),
+                None,
+                style,
+            );
+        };
         if let Some(rect) = placed.title {
             words(tr, &self.title, rect, ink.title, &styles.title);
         }
@@ -483,7 +486,7 @@ pub(crate) fn number(value: f64, unit: &str) -> String {
     };
     let number = digits.map_or_else(
         || crate::widget::chart_labels::format_compact(value),
-        |digits| crate::format::decimal(value, digits),
+        |digits| tilo_ui_base::format::decimal(value, digits),
     );
     match unit.chars().next() {
         None => number,

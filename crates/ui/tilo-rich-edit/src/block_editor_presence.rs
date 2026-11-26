@@ -4,7 +4,7 @@
 use vello::kurbo::{Point, Rect};
 
 use super::{Block, BlockDrawCtx, BlockEditor, transformed};
-use ui::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 impl BlockEditor {
     /// Live-typing glows, what an invocation wrote and its caret, then carets
@@ -17,8 +17,8 @@ impl BlockEditor {
         document_selections: &[(
             usize,
             usize,
-            &ui::permissions::MemberId,
-            ui::presence::SelectionRange,
+            &tilo_ui_base::permissions::MemberId,
+            tilo_ui_base::presence::SelectionRange,
         )],
         ctx: &mut BlockDrawCtx<'_>,
     ) {
@@ -81,7 +81,12 @@ impl BlockEditor {
                 })
             });
         let acting = ctx.presence.draw_writes_in(
-            &mut ui::paint::PaintCtx::new(ctx.scene, ctx.transform, ctx.text_renderer, ctx.theme),
+            &mut tilo_ui_base::paint::PaintCtx::new(
+                ctx.scene,
+                ctx.transform,
+                ctx.text_renderer,
+                ctx.theme,
+            ),
             (None, &b.id, line.value()),
             (edited, selected),
             None,
@@ -98,8 +103,11 @@ impl BlockEditor {
                 (
                     vec![line.selection_rect(ctx.theme, start, end)],
                     (!later).then(|| {
-                        ui::presence::LabeledCaret::within(line.caret_rect(ctx.theme, end), top)
-                            .among(self.ink_around(i, ctx.theme), text_right)
+                        tilo_ui_base::presence::LabeledCaret::within(
+                            line.caret_rect(ctx.theme, end),
+                            top,
+                        )
+                        .among(self.ink_around(i, ctx.theme), text_right)
                     }),
                 )
             },
@@ -120,8 +128,11 @@ impl BlockEditor {
                     ctx.transform,
                     user,
                     &name,
-                    ui::presence::LabeledCaret::within(line.caret_rect(ctx.theme, *byte_pos), top)
-                        .among(self.ink_around(i, ctx.theme), text_right),
+                    tilo_ui_base::presence::LabeledCaret::within(
+                        line.caret_rect(ctx.theme, *byte_pos),
+                        top,
+                    )
+                    .among(self.ink_around(i, ctx.theme), text_right),
                 );
             }
         }
@@ -165,7 +176,7 @@ impl BlockEditor {
 impl BlockEditor {
     /// Where block `i` and the blocks either side of it have glyphs, one rect
     /// per visual line: what a peer's caret chip in block `i` must not cover.
-    fn ink_around(&self, i: usize, theme: &ui::theme::Theme) -> Vec<Rect> {
+    fn ink_around(&self, i: usize, theme: &tilo_ui_base::theme::Theme) -> Vec<Rect> {
         let last = self.blocks.len().saturating_sub(1);
         (i.saturating_sub(1)..=(i + 1).min(last))
             .filter_map(|j| self.blocks.get(j))

@@ -10,10 +10,10 @@ use std::rc::Rc;
 use tilo_session_core::surface::ShellSurface as _;
 
 use tilo_session::platform::surfaces::{Placement, WidgetSurface};
+use tilo_ui_base::{widget::TaffyTreeExt as _, widget::Widget};
 use ui::kurbo::Rect;
 use ui::peniko::{Color, Fill};
 use ui::taffy::{NodeId, Style, TaffyTree};
-use ui::widget::{TaffyTreeExt as _, Widget};
 
 /// Where the part rests.
 const PART: Rect = Rect::new(40.0, 20.0, 140.0, 80.0);
@@ -33,7 +33,7 @@ impl Widget for Fader {
     fn build_layout(
         &mut self,
         taffy: &mut TaffyTree<()>,
-        _theme: &ui::Theme,
+        _theme: &tilo_ui_base::Theme,
         nodes: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
         taffy.widget_leaf(
@@ -46,9 +46,9 @@ impl Widget for Fader {
         )
     }
 
-    ui::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -67,7 +67,10 @@ impl Widget for Fader {
         ui::lift::lifted(
             scene,
             transform,
-            (ui::scene_parts::PartKey::new("test.part", 0), PART),
+            (
+                tilo_ui_base::scene_parts::PartKey::new("test.part", 0),
+                PART,
+            ),
             ui::lift::Pose::faded(self.opacity.get()),
             |scene, transform| scene.fill(Fill::NonZero, transform, Color::WHITE, None, &PART),
         );
@@ -76,7 +79,7 @@ impl Widget for Fader {
 
 #[test]
 fn a_fading_part_is_drawn_once_and_posed_by_the_compositor() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let opacity = Rc::new(Cell::new(0.25));
     let under = Rc::new(Cell::new(false));
     let mut host = WidgetSurface::new(

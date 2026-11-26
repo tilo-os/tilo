@@ -30,6 +30,7 @@ collab-types = { package = "tilo-collab-types", version = "0.1.0", path = "../..
 # The presence track's schedule and the tiles its pointers land on, as the page's own live session
 # already runs them.
 tilo-live = { path = "../../core/tilo-live", features = ["live_session"] }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # The undo log and the clock are the toolkit's shared, portable parts.
 ui = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 # The layout's actions and the items it publishes are declared with the resource macros.

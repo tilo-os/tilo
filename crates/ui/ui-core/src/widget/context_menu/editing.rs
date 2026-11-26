@@ -6,8 +6,8 @@
 //! shortcut runs, so a row, a key and an agent's action are one edit.
 
 use super::MenuItem;
-use crate::i18n::I18nManager;
-use crate::platform::Shortcut;
+use tilo_ui_base::i18n::I18nManager;
+use tilo_ui_base::platform::Shortcut;
 
 /// One of the standard editing commands of a text's context menu.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

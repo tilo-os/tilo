@@ -15,6 +15,10 @@ crate = "tilo-cpu-raster"
 reason = "it is the toolkit's CPU fallback renderer, and a UI draws through ui-core, which owns it"
 
   [[rule.allow]]
+  package = "tilo-ui-base"
+  why = "the toolkit's offscreen renderer rasterizes a surface's scene where no GPU can run vello's compute pipeline"
+
+  [[rule.allow]]
   package = "tilo-ui"
   why = "the toolkit's own renderer rasterizes a surface's scene where no GPU can run vello's compute pipeline"
 

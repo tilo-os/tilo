@@ -41,7 +41,7 @@ impl DataTableCore {
         {
             format!(
                 "{message} \u{00b7} {}",
-                crate::i18n::I18nManager::lookup_plain("arriving-retry")
+                tilo_ui_base::i18n::I18nManager::lookup_plain("arriving-retry")
             )
         } else {
             message.to_owned()
@@ -52,13 +52,15 @@ impl DataTableCore {
 pub(super) fn paint_row_failure(
     scene: &mut vello::Scene,
     transform: vello::kurbo::Affine,
-    text_renderer: &mut crate::text_render::TextRenderer,
-    theme: &crate::theme::Theme,
+    text_renderer: &mut tilo_ui_base::text_render::TextRenderer,
+    theme: &tilo_ui_base::theme::Theme,
     label: &str,
     slot: vello::kurbo::Rect,
 ) {
     let tokens = &theme.tokens;
-    let style = tokens.typography.style(crate::tokens::TextRole::Caption);
+    let style = tokens
+        .typography
+        .style(tilo_ui_base::tokens::TextRole::Caption);
     let (_, text_h) = text_renderer.measure_style(label, None, &style);
     let top = super::centered_text_top(slot.y0, slot.height(), text_h);
     text_renderer.draw_style(

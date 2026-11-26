@@ -9,12 +9,13 @@
 use super::Scrollable;
 use crate::app::driver::Framed;
 use crate::testing::dispatch;
-use crate::theme::Theme;
 use crate::time::testing::with_monotonic_time;
 use crate::time::{Duration, Instant};
-use crate::tokens::{EffectiveMotion, Motion, Rhythm};
-use crate::widget::{Board, Container, Element, Text, Widget};
+use crate::{widget::Board, widget::Container, widget::Text};
 use automerge::AutoCommit;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::Motion, tokens::Rhythm};
+use tilo_ui_base::{widget::Element, widget::Widget};
 use winit::event::{MouseScrollDelta, TouchPhase};
 use winit::keyboard::NamedKey;
 
@@ -196,7 +197,7 @@ tilo_test_env::scenario! {
             assert!(
                 dispatch(
                     &mut *view,
-                    &crate::synthetic_input::named_key(NamedKey::ArrowRight)
+                    &tilo_ui_base::synthetic_input::named_key(NamedKey::ArrowRight)
                 ),
                 "the view takes the key"
             );

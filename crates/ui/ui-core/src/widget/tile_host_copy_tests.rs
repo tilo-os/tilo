@@ -1,5 +1,5 @@
 //! A scroll in an app a window shows, drawn for a host that keeps what it presented and can move it
-//! (the web's canvas, [`crate::scroll_copy::HostCopies`]): the window hands over what moved, the
+//! (the web's canvas, [`tilo_ui_base::scroll_copy::HostCopies`]): the window hands over what moved, the
 //! host copies it ([`crate::retained_raster::RetainedFrames::repaint_copying`]) and repaints the
 //! strip the scroll exposed, and every presented frame equals a full render of the scene, the shell
 //! under the window included.
@@ -15,11 +15,11 @@
 )]
 
 use super::*;
-use crate::offscreen::OffscreenRenderer;
 use crate::retained_raster::{Repaint, RetainedFrames, TargetKey};
 use std::cell::Cell;
 use std::rc::Rc;
 use taffy::prelude::TaffyMaxContent;
+use tilo_ui_base::offscreen::OffscreenRenderer;
 
 /// The scene, in logical pixels.
 const SCENE: (f64, f64) = (720.0, 540.0);
@@ -104,7 +104,7 @@ fn covered(rects: &[Rect], size: (u32, u32)) -> f64 {
 /// over the last as the web's canvas does; every few frames and after the
 /// last of a run, what was presented must equal a full render.
 fn scroll(theme: &Theme, scale: f64, runs: &[(f32, usize)]) -> Vec<Run> {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let scroll = Rc::new(Cell::new(0.0));
     let mut host = TileHost::new(TileContent::App(Box::new(List::new(Rc::clone(&scroll)))));
     let mut tree = TaffyTree::new();
@@ -143,7 +143,7 @@ fn scroll(theme: &Theme, scale: f64, runs: &[(f32, usize)]) -> Vec<Run> {
     })
     .unwrap();
     // The host draws for a target of `scale` pixels per unit of its scene.
-    let _copies = crate::scroll_copy::HostCopies::begin_scaled(true, scale);
+    let _copies = tilo_ui_base::scroll_copy::HostCopies::begin_scaled(true, scale);
     let mut text = TextRenderer::new();
     let size = (
         (SCENE.0 * scale).round() as u32,
@@ -158,9 +158,9 @@ fn scroll(theme: &Theme, scale: f64, runs: &[(f32, usize)]) -> Vec<Run> {
     };
     let mut frame = |host: &mut TileHost| {
         host.apply_layout(&tree, tile, Point::ORIGIN);
-        let recording = crate::scene_parts::Recording::begin();
+        let recording = tilo_ui_base::scene_parts::Recording::begin();
         let mut scene = Scene::new();
-        crate::scene_parts::track(&scene);
+        tilo_ui_base::scene_parts::track(&scene);
         // The shell under the window: something a copy must not move.
         scene.fill(
             vello::peniko::Fill::NonZero,
@@ -170,12 +170,12 @@ fn scroll(theme: &Theme, scale: f64, runs: &[(f32, usize)]) -> Vec<Run> {
             None,
             &Rect::new(0.0, 0.0, SCENE.0, SCENE.1),
         );
-        host.draw(&mut crate::draw::DrawCtx::new(
+        host.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut text,
             theme,
-            crate::presence::PresenceCtx::empty().draw_env(),
+            tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
         ));
         host.mark_drawn();
         let parts = recording.finish().of(&scene).expect("well nested parts");

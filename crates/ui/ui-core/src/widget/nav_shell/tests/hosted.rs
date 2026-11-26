@@ -231,9 +231,9 @@ impl Widget for RenameAsker {
         taffy.fill_leaf(node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -242,7 +242,7 @@ impl Widget for RenameAsker {
         let (_scene, _transform, _text, _theme, mut env) = ctx.parts();
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if matches!(
             event,
             WindowEvent::MouseInput {
@@ -302,7 +302,7 @@ fn a_sections_menu_and_rename_come_back_through_the_feed() {
         .sidebar_ref::<NavList>()
         .and_then(|list| list.row_rect("projects"))
         .expect("the header is in view");
-    h.send(&crate::synthetic_input::cursor_moved(
+    h.send(&tilo_ui_base::synthetic_input::cursor_moved(
         header.center().x,
         header.center().y,
     ));
@@ -310,7 +310,7 @@ fn a_sections_menu_and_rename_come_back_through_the_feed() {
         winit::event::ElementState::Pressed,
         winit::event::ElementState::Released,
     ] {
-        h.send(&crate::synthetic_input::mouse_input(
+        h.send(&tilo_ui_base::synthetic_input::mouse_input(
             state,
             winit::event::MouseButton::Right,
         ));

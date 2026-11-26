@@ -2,18 +2,19 @@
 //! one: a pointer move before the next layout (its cursor and tooltip
 //! lookups) reached a dropped colour picker and crashed Canvas.
 
-use crate::widget::TaffyTreeExt;
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
+use tilo_ui_base::widget::TaffyTreeExt;
 
 use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect};
 
 use crate::app::App;
 use crate::state::State;
-use crate::theme::Theme;
-use crate::widget::{AppModel, ModelPath, Text, Widget};
+use crate::widget::Text;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::Widget};
 
 /// Shows one child, replaced by a new one on the sync after `swap` is set,
 /// as a view switching what it shows does.
@@ -201,7 +202,7 @@ tilo_test_env::scenario! {
     // An assistive technology's action that arrives after a replacement and
     // before the next layout reaches no replaced control.
     {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         let (root, armed) = crate::widget::replaced_tripwire::Replacing::new(
             crate::widget::replaced_tripwire::ReplaceAt::Sync,
         );
@@ -227,7 +228,7 @@ tilo_test_env::scenario! {
     // layout: an assistive technology's action afterwards reaches the control
     // it names, rather than being dropped as if the tree had changed since.
     {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         use crate::widget::replaced_tripwire::{ReplaceAt, Replacing};
         let (root, armed) = Replacing::new(ReplaceAt::Sync);
         let mut app = App::new_with_controlled_inputs(State::new(), Box::new(root));

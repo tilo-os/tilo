@@ -2,8 +2,8 @@
 
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_resource::{Effect, Resource};
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
-use ui_core::widget::Widget;
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart};
+use tilo_ui_base::widget::Widget;
 
 use std::rc::Weak;
 
@@ -51,7 +51,7 @@ impl<R: Resource, E: Effect, W: Widget + 'static> ViewHandler for WindowHandler<
         if op.request().type_id != E::OPERATION {
             return Ok(None);
         }
-        let window = ui_core::widget::find_mut::<W>(view).ok_or("the window is not open")?;
+        let window = tilo_ui_base::widget::find_mut::<W>(view).ok_or("the window is not open")?;
         let handle = &mut self.handle;
         self.runner.start(op, &mut (), Some(doc), |(), effect, cx| {
             handle(window, effect, cx)
@@ -89,7 +89,7 @@ impl<R: Resource, E: Effect, W: Widget + 'static> ViewHandler for HostedWindowHa
         if op.request().type_id != E::OPERATION {
             return Ok(None);
         }
-        let window = ui_core::widget::find_mut::<W>(view).ok_or("the window is not open")?;
+        let window = tilo_ui_base::widget::find_mut::<W>(view).ok_or("the window is not open")?;
         self.runner.start(op, window, Some(doc), &mut self.handle)
     }
 
@@ -104,7 +104,7 @@ impl<R: Resource, E: Effect, W: Widget + 'static> ViewHandler for HostedWindowHa
         if !self.scope.0.active() {
             return None;
         }
-        let window = ui_core::widget::find_mut::<W>(view)?;
+        let window = tilo_ui_base::widget::find_mut::<W>(view)?;
         self.runner.poll(invocation, cancel, window)
     }
 }
@@ -140,7 +140,7 @@ impl<R: Resource, W: Widget + 'static> ViewHandler for WindowJobs<R, W> {
     /// its jobs finished waits for it: the completion needs the window.
     fn poll_jobs(&mut self, view: &mut dyn Widget) {
         if self.scope.0.active()
-            && let Some(window) = ui_core::widget::find_mut::<W>(view)
+            && let Some(window) = tilo_ui_base::widget::find_mut::<W>(view)
         {
             self.jobs.poll(window);
         }

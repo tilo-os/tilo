@@ -47,7 +47,7 @@ fn settle(table: &mut DataTable<Item>, width: f32, height: f32) -> (TaffyTree<()
         },
         &[node],
     );
-    crate::widget::layout::solve_built(
+    tilo_ui_base::widget::layout::solve_built(
         table,
         &mut tree,
         (root, node),
@@ -83,11 +83,11 @@ fn send(
 }
 
 fn at(x: f64, y: f64) -> WindowEvent {
-    crate::synthetic_input::cursor_moved(x, y)
+    tilo_ui_base::synthetic_input::cursor_moved(x, y)
 }
 
 fn button(state: ElementState, button: MouseButton) -> WindowEvent {
-    crate::synthetic_input::mouse_input(state, button)
+    tilo_ui_base::synthetic_input::mouse_input(state, button)
 }
 
 tilo_test_env::scenario! {
@@ -121,7 +121,7 @@ tilo_test_env::scenario! {
         assert!(table.h_overflow(), "what still does not fit scrolls");
         let before = table.scroll_x();
         send(&mut table, &tree, node, &at(60.0, 60.0), false);
-        let wheel = crate::synthetic_input::mouse_wheel(0.0, -1.0);
+        let wheel = tilo_ui_base::synthetic_input::mouse_wheel(0.0, -1.0);
         assert!(
             send(&mut table, &tree, node, &wheel, true),
             "shift-wheel scrolls sideways"
@@ -177,9 +177,9 @@ tilo_test_env::scenario! {
         let mut doc = AutoCommit::new();
         assert!(Widget::perform_action(
             &mut table,
-            &crate::a11y::Action::Expand,
+            &tilo_ui_base::a11y::Action::Expand,
             &[0],
-            &mut crate::widget::Edits::lend(&mut doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT,
         ));
         assert_eq!(toggles.borrow().len(), 2);
@@ -297,7 +297,7 @@ tilo_test_env::scenario! {
 #[test]
 fn hosted_checkbox_cells_toggle_instead_of_activating_their_row() {
     struct RetainedTable(DataTable<Item>);
-    impl crate::widget::Decorator for RetainedTable {
+    impl tilo_ui_base::widget::Decorator for RetainedTable {
         type Inner = DataTable<Item>;
         fn inner(&self) -> &Self::Inner {
             &self.0
@@ -335,17 +335,17 @@ fn hosted_checkbox_cells_toggle_instead_of_activating_their_row() {
         .collect();
     assert_eq!(cells.len(), 2);
     harness
-        .perform_a11y_action(cells[1], &crate::a11y::Action::Focus)
+        .perform_a11y_action(cells[1], &tilo_ui_base::a11y::Action::Focus)
         .unwrap();
     assert!(
         checks.borrow().is_empty(),
         "focus does not toggle a checkbox"
     );
     harness
-        .perform_a11y_action(cells[1], &crate::a11y::Action::ToggleCheck)
+        .perform_a11y_action(cells[1], &tilo_ui_base::a11y::Action::ToggleCheck)
         .unwrap();
     harness
-        .perform_a11y_action(cells[0], &crate::a11y::Action::Activate)
+        .perform_a11y_action(cells[0], &tilo_ui_base::a11y::Action::Activate)
         .unwrap();
     assert_eq!(*checks.borrow(), [(1, true), (0, true)]);
     assert_eq!(activations.get(), 0, "a checkbox never activates its row");
@@ -355,7 +355,7 @@ fn hosted_checkbox_cells_toggle_instead_of_activating_their_row() {
     harness.relayout();
     assert!(
         harness
-            .perform_a11y_action(cells[0], &crate::a11y::Action::ToggleCheck)
+            .perform_a11y_action(cells[0], &tilo_ui_base::a11y::Action::ToggleCheck)
             .is_err(),
         "a removed record's retained checkbox must be refused"
     );

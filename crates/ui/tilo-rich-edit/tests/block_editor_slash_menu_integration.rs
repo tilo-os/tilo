@@ -9,7 +9,7 @@ use tilo_rich_edit::{BlockEditor, BlockKind, SlashCommand};
 use winit::event::WindowEvent;
 use winit::keyboard::{Key, NamedKey, SmolStr};
 
-use tilo_ui::synthetic_input::key_press;
+use tilo_ui_base::synthetic_input::key_press;
 
 fn char_press(c: &str) -> WindowEvent {
     key_press(Key::Character(SmolStr::new(c)), Some(c))
@@ -18,7 +18,7 @@ fn char_press(c: &str) -> WindowEvent {
 #[test]
 fn slash_menu_converts_the_focused_block_or_leaves_it_on_escape() {
     // Motion reads at its end: this test checks the resting frame.
-    let _settled = tilo_ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     {
         let mut editor = BlockEditor::new();
         editor.set_focus(true);

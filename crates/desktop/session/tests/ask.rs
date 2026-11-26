@@ -21,7 +21,7 @@ use tilo_session::Options;
 use tilo_session::Session;
 use tilo_session::platform::notice::{Notice, Notices};
 use tilo_session_core::desktop::state::{DesktopNotifications, HostAction, HostActionSource};
-use ui::a11y::Action;
+use tilo_ui_base::a11y::Action;
 use ui::accesskit::{Node, NodeId, Role, TreeUpdate};
 
 const SETTLE: Duration = Duration::from_millis(1);
@@ -152,7 +152,7 @@ fn avatar(tree: &TreeUpdate) -> (NodeId, (f64, f64, f64, f64)) {
 
 #[test]
 fn an_ask_about_the_person_waits_on_their_avatar_until_they_answer_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session();
     let quiet = session
         .compositor()
@@ -233,7 +233,7 @@ fn an_ask_about_the_person_waits_on_their_avatar_until_they_answer_it() {
 /// clear of the person's own face.
 #[test]
 fn an_ask_that_does_not_fit_the_bar_opens_clear_of_the_person_face() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_on(NARROW, HEIGHT);
     tilo_session::identity::offer(
         session.handle(),
@@ -285,7 +285,7 @@ fn an_ask_that_does_not_fit_the_bar_opens_clear_of_the_person_face() {
 /// which offers what the ask asks: the ask itself stays folded.
 #[test]
 fn a_folded_ask_leaves_the_avatar_to_open_the_own_card() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session_on(NARROW, HEIGHT);
     session.handle().set_host_actions(vec![keep_identity()]);
     tilo_session::identity::offer(

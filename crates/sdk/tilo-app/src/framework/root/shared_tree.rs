@@ -9,8 +9,8 @@ use std::rc::Rc;
 use std::any::Any;
 
 use tilo_resource::items::{ItemAction, ItemCollection};
+use tilo_ui_base::{published::SharedChildren, published::SharedResource};
 use ui_core::automerge::AutoCommit;
-use ui_core::published::{SharedChildren, SharedResource};
 
 use super::super::chain_of_resource_id;
 use super::super::rows::{LiveRow, join, outside_document};
@@ -65,7 +65,7 @@ impl ItemChildren {
         keep: bool,
         finish: &dyn Fn(tilo_actions::ResourceSpec) -> SharedResource,
     ) -> SharedChildren {
-        let i18n = ui_core::i18n::I18nManager::revision();
+        let i18n = tilo_ui_base::i18n::I18nManager::revision();
         if memo.as_ref().is_some_and(|last| last.i18n != i18n) {
             *memo = None;
         }
@@ -187,7 +187,7 @@ impl ResourceRoot {
         };
         let revision = (
             self.version(),
-            ui_core::i18n::I18nManager::revision(),
+            tilo_ui_base::i18n::I18nManager::revision(),
             epoch,
         );
         if let Some(cached) = self
@@ -365,7 +365,7 @@ impl ResourceRoot {
         views
     }
 
-    /// [`ui_core::widget::resources::PublishesResources::resources_for`] as a shared
+    /// [`tilo_ui_base::widget::resources::PublishesResources::resources_for`] as a shared
     /// forest, when it is one: nothing the view adds touches the tree's
     /// children beyond what [`Self::published_children`] keeps per child (no
     /// surface, which alone publishes rows or binds edits to them, and no
@@ -412,7 +412,9 @@ impl ResourceRoot {
             (head, children, chains)
         };
         let mut extras = Vec::new();
-        for extra in ui_core::widget::resources::resources_for(self.content.as_ref(), None, doc) {
+        for extra in
+            tilo_ui_base::widget::resources::resources_for(self.content.as_ref(), None, doc)
+        {
             if extra.id.as_str() == root.0.id.as_str() {
                 return None;
             }
@@ -501,7 +503,7 @@ impl ResourceRoot {
         if records.is_empty() {
             return (document, Vec::new());
         }
-        let i18n = ui_core::i18n::I18nManager::revision();
+        let i18n = tilo_ui_base::i18n::I18nManager::revision();
         let mut kept = self.resource_children.borrow_mut();
         if let Some(kept) = kept.as_ref().filter(|kept| {
             kept.document.ptr_eq(&document)

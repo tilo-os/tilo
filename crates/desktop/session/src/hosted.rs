@@ -5,7 +5,7 @@
 //! describes each row ([`HostedRow`]) while its section shows, and a press names which of a row's
 //! buttons it was ([`RowPart`]).
 
-use ui::icons::Icon;
+use tilo_ui_base::icons::Icon;
 
 pub use tilo_session_core::desktop::now_playing::Offer as MediaOffer;
 

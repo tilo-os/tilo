@@ -5,14 +5,14 @@ use ui::widget::{ButtonRole, Row};
 
 pub(super) struct Direct {
     pub active: bool,
-    pub navigation: ui::LocalState<bool>,
+    pub navigation: tilo_ui_base::LocalState<bool>,
 }
 
 impl Default for Direct {
     fn default() -> Self {
         Self {
             active: false,
-            navigation: ui::LocalState::new(false),
+            navigation: tilo_ui_base::LocalState::new(false),
         }
     }
 }
@@ -92,8 +92,11 @@ impl InstallerPreview {
                     return Some(crate::setup::strings::t_args(
                         "installer-review-storage-shortfall",
                         &[
-                            ("needed", ui::format::memory(needed_bytes).into()),
-                            ("available", ui::format::memory(available_bytes).into()),
+                            ("needed", tilo_ui_base::format::memory(needed_bytes).into()),
+                            (
+                                "available",
+                                tilo_ui_base::format::memory(available_bytes).into(),
+                            ),
                         ],
                     ));
                 }
@@ -131,8 +134,14 @@ impl InstallerPreview {
             t_args(
                 "installer-review-resize",
                 &[
-                    ("before", ui::format::memory(shrink.from_bytes).into()),
-                    ("after", ui::format::memory(shrink.to_bytes).into()),
+                    (
+                        "before",
+                        tilo_ui_base::format::memory(shrink.from_bytes).into(),
+                    ),
+                    (
+                        "after",
+                        tilo_ui_base::format::memory(shrink.to_bytes).into(),
+                    ),
                 ],
             )
         } else {
@@ -201,7 +210,7 @@ mod tests {
         phase review_allocation_tracks_selected_space_and_method_without_granting_approval;
         {
             use crate::setup::strings::{t, t_args};
-            use ui::theme::Theme;
+            use tilo_ui_base::theme::Theme;
             let mut preview = InstallerPreview::default();
             preview.journey.page = Page::Review;
             preview.journey.destination = Some(Destination::Computer);
@@ -248,8 +257,8 @@ mod tests {
             assert!(preview.review_storage_summary().contains(&t_args(
                 "installer-review-resize",
                 &[
-                    ("before", ui::format::memory(shrink.from_bytes).into()),
-                    ("after", ui::format::memory(shrink.to_bytes).into()),
+                    ("before", tilo_ui_base::format::memory(shrink.from_bytes).into()),
+                    ("after", tilo_ui_base::format::memory(shrink.to_bytes).into()),
                 ]
             )));
             preview
@@ -280,7 +289,7 @@ mod tests {
         phase live_review_blocker_matches_disabled_action_and_devices_edit_says_save;
         {
             use crate::setup::strings::t;
-            use ui::theme::Theme;
+            use tilo_ui_base::theme::Theme;
             let mut env = tilo_test_env::ScopedEnv::new();
             env.set("TILO_IMAGER_ALLOW_INTERNAL_INSTALL", "1");
             let mut preview = InstallerPreview {

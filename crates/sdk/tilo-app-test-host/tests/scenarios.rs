@@ -9,7 +9,7 @@ use tilo_app::advanced::{NodeId, TaffyTree, WindowEvent};
 use tilo_app::headless::Driver;
 use tilo_app::prelude::*;
 use tilo_app::winit::event::ElementState;
-use ui_core::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 
 #[derive(Model, Default, Debug, Clone, PartialEq)]
 pub struct Playlist {
@@ -227,7 +227,7 @@ impl Widget for Staged {
         }
     }
 
-    fn draw(&mut self, ctx: &mut ui_core::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,

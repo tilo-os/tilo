@@ -7,9 +7,10 @@
 use ui_core::peniko::Color;
 
 use tilo_resource::{MemberId, Origin};
-use ui_core::i18n::ArgValue;
-use ui_core::tokens::{PresenceHue, Rhythm, TextRole};
-use ui_core::widget::{Chip, Container, Element, Link, Row, Text};
+use tilo_ui_base::i18n::ArgValue;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::{tokens::PresenceHue, tokens::Rhythm, tokens::TextRole};
+use ui_core::{widget::Chip, widget::Container, widget::Link, widget::Row, widget::Text};
 
 use super::people::{Actor, People};
 
@@ -91,7 +92,7 @@ impl Provenance {
         jiff::Timestamp::from_millisecond(self.at_ms)
             .map(|at| {
                 let day = at.to_zoned(jiff::tz::TimeZone::UTC).date();
-                ui_core::format::Formats::current().date(day)
+                tilo_ui_base::format::Formats::current().date(day)
             })
             .unwrap_or_default()
     }
@@ -157,7 +158,7 @@ impl Provenance {
     /// reader.
     #[must_use]
     pub fn row(&self, id: &str) -> Element {
-        let (red, green, blue) = ui_core::presence::identity_rgb(self.hue);
+        let (red, green, blue) = tilo_ui_base::presence::identity_rgb(self.hue);
         let colour = Color::from_rgb8(red, green, blue);
         let who = self.actor.as_ref().map_or_else(
             || {
@@ -260,8 +261,8 @@ impl People {
 mod tests {
     use std::collections::HashMap;
 
+    use tilo_ui_base::widget::Widget;
     use ui_core::accesskit::Role as AkRole;
-    use ui_core::widget::Widget;
 
     use super::People;
 
@@ -376,11 +377,11 @@ mod tests {
     /// one group named by the whole description, and the same fields under it
     /// as their own elements.
     fn nodes(row: &mut dyn Widget) -> Vec<(ui_core::accesskit::NodeId, ui_core::accesskit::Node)> {
-        let theme = ui_core::theme::Theme::dark();
+        let theme = tilo_ui_base::theme::Theme::dark();
         let mut taffy = crate::advanced::TaffyTree::<()>::new();
         let mut node_map: HashMap<crate::advanced::NodeId, *mut dyn Widget> = HashMap::new();
         row.build_layout(&mut taffy, &theme, &mut node_map);
-        ui_core::accesskit_bridge::build_tree_update(&*row, &node_map, None, 1.0).nodes
+        tilo_ui_base::accesskit_bridge::build_tree_update(&*row, &node_map, None, 1.0).nodes
     }
 
     #[test]

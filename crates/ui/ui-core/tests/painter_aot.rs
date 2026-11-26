@@ -10,11 +10,12 @@ use std::fmt::Write as _;
 use std::time::{Duration, Instant};
 
 use tilo_theme_sdk::wire;
-use tilo_ui::part_paint::PartScene;
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
-use tilo_ui::theme_bundle;
-use tilo_ui::widget::{Button, Widget as _};
+use tilo_ui::widget::Button;
+use tilo_ui_base::part_paint::PartScene;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::theme_bundle;
+use tilo_ui_base::widget::Widget as _;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Rect};
 use vello::peniko::Color;
@@ -35,13 +36,13 @@ fn triangle_module(dx: f64) -> Vec<u8> {
     };
     part.fill(
         triangle,
-        tilo_ui::part_paint::Brush::Solid(Color::from_rgb8(0xd0, 0x30, 0x20)),
+        tilo_ui_base::part_paint::Brush::Solid(Color::from_rgb8(0xd0, 0x30, 0x20)),
     );
-    let painted = tilo_ui::part_paint::PaintedPart::new(part);
+    let painted = tilo_ui_base::part_paint::PaintedPart::new(part);
     let params = wire::params_answer(&[
-        tilo_ui::part_paint::ParamSpec::new("levels", Some(4.0), 2.0..=16.0),
-        tilo_ui::part_paint::ParamSpec::new("depth", Some(0.14), 0.0..=1.0),
-        tilo_ui::part_paint::ParamSpec::new("shadow", Some(3.0), 0.0..=10.0),
+        tilo_ui_base::part_paint::ParamSpec::new("levels", Some(4.0), 2.0..=16.0),
+        tilo_ui_base::part_paint::ParamSpec::new("depth", Some(0.14), 0.0..=1.0),
+        tilo_ui_base::part_paint::ParamSpec::new("shadow", Some(3.0), 0.0..=10.0),
     ]);
     let answer = wire::paint_answer(Some(&painted));
     let data = |bytes: &[u8]| {
@@ -78,12 +79,12 @@ fn frame(theme: &Theme) -> Scene {
     let mut button = Button::new("go", "Go");
     button.apply_layout_external(Rect::new(100.0, 50.0, 220.0, 90.0));
     let mut scene = Scene::new();
-    button.draw(&mut tilo_ui::draw::DrawCtx::new(
+    button.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         Affine::IDENTITY,
         &mut TextRenderer::new(),
         theme,
-        tilo_ui::presence::PresenceCtx::default().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::default().draw_env(),
     ));
     scene
 }
@@ -173,7 +174,7 @@ fn a_changed_theme_module_reaches_the_frame_on_the_daemon_s_compiled_code() {
 /// on the interpreter.
 #[test]
 fn a_bundle_on_disk_draws_on_the_store_the_daemon_compiled() {
-    use tilo_ui::tokens::SurfaceRole;
+    use tilo_ui_base::tokens::SurfaceRole;
     const SET: &str = "test.bundle-disk";
     let bundle = tempfile::tempdir().unwrap();
     let document = BAUHAUS.replace("\"bauhaus\"", &format!("{SET:?}"));

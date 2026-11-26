@@ -1,6 +1,9 @@
 //! [`Checkbox`] as a described component.
 
-use crate::component::{Bound, Component, Described, Event, Value};
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+    component::Value,
+};
 
 use super::Checkbox;
 
@@ -23,7 +26,7 @@ pub struct CheckboxProps {
     #[component(event(press))]
     pub check: Event,
     /// The pace its mark plays at: the theme's unless it says otherwise.
-    pub motion: crate::motion::Feel,
+    pub motion: tilo_ui_base::motion::Feel,
 }
 
 impl Default for CheckboxProps {
@@ -34,7 +37,7 @@ impl Default for CheckboxProps {
             indeterminate: false,
             enabled: true,
             check: Event::None,
-            motion: crate::motion::Feel::Standard,
+            motion: tilo_ui_base::motion::Feel::Standard,
         }
     }
 }

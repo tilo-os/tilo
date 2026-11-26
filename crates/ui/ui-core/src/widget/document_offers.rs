@@ -3,15 +3,15 @@
 //! whose windows each show a document of their own (a reader, a video player) puts in its
 //! empty state, so a document is one click away rather than a file chooser away.
 
-use crate::i18n::widget_text;
+use tilo_ui_base::i18n::widget_text;
 use vello::kurbo::{Point, Rect};
 
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::{Interaction, ListRowFace, RowLeading};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
 /// One document a person can open from the list: what it is called, what it is, and the
 /// target a press on it answers.
@@ -119,7 +119,7 @@ fn row_face<'a>(offer: &'a DocumentOffer<'a>) -> ListRowFace<'a> {
     }
 }
 
-fn heading_style(theme: &Theme) -> crate::text_render::TextStyle {
+fn heading_style(theme: &Theme) -> tilo_ui_base::text_render::TextStyle {
     theme.text(TextRole::Label)
 }
 

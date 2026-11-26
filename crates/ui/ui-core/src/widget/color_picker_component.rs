@@ -1,7 +1,10 @@
 //! [`ColorPicker`] as a described component.
 
-use crate::component::{Bound, Component, Described, Event, Value};
 use crate::widget::ColorSwatch;
+use tilo_ui_base::{
+    component::Bound, component::Component, component::Described, component::Event,
+    component::Value,
+};
 
 use super::ColorPicker;
 
@@ -62,7 +65,7 @@ impl Described for ColorPicker {
                 shown.edited(Value::Text(crate::color::to_hex(color)));
             })
             .with_accessible_name(label.as_deref().map_or_else(
-                || crate::i18n::widget_format("widget-color-name", &[]),
+                || tilo_ui_base::i18n::widget_format("widget-color-name", &[]),
                 str::to_owned,
             ));
         if !swatches.is_empty() {

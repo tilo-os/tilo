@@ -4,11 +4,11 @@
 use vello::kurbo::Rect;
 use vello::peniko::Color;
 
-use crate::component::{Component, PropType, Type, Value};
-use crate::paint::PaintCtx;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::nav_list::nav_row::nav_row_height;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{component::Component, component::PropType, component::Type, component::Value};
 
 #[must_use]
 pub fn height(theme: &Theme) -> f64 {
@@ -30,13 +30,13 @@ impl DividerTone {
         match self {
             Self::Quiet => DividerInk {
                 label: theme.text_dim,
-                rule: crate::surface::edge_on(ground),
+                rule: tilo_ui_base::surface::edge_on(ground),
             },
             Self::Accent => {
                 let accent = theme.tokens.colors.intent.accent_ink;
                 DividerInk {
                     label: accent,
-                    rule: crate::surface::rule_of(accent, ground),
+                    rule: tilo_ui_base::surface::rule_of(accent, ground),
                 }
             }
         }
@@ -105,7 +105,7 @@ pub fn paint(
     let ink = tone.ink_on(theme, theme.tokens.colors.surfaces.content);
     let style = theme.text(TextRole::Caption);
     let gap = f64::from(theme.tokens.spacing.s3);
-    let spare = crate::num::f32_of_f64((trailing - leading).max(0.0));
+    let spare = tilo_ui_base::num::f32_of_f64((trailing - leading).max(0.0));
     // A label wider than the band (a long date at 1.5× in a narrow window) is elided rather than
     // drawn over the column's edges.
     let shown = paint.text.elide_to_width_style(label, spare, &style);
@@ -114,8 +114,8 @@ pub fn paint(
     let left_edge = centre - width / 2.0 - gap;
     let right_edge = centre + width / 2.0 + gap;
     let rule_y = band.center().y;
-    let lead = crate::surface::separator_rect(leading, left_edge, rule_y, 0.0);
-    let trail = crate::surface::separator_rect(right_edge, trailing, rule_y, 0.0);
+    let lead = tilo_ui_base::surface::separator_rect(leading, left_edge, rule_y, 0.0);
+    let trail = tilo_ui_base::surface::separator_rect(right_edge, trailing, rule_y, 0.0);
     // The rule is the ink the tone derived against the ground it lands on, painted as it comes:
     // deriving it again here would derive it of its own wash, and a wash of a wash moves
     // nothing.
@@ -153,7 +153,7 @@ pub fn unread_label() -> String {
 
 #[must_use]
 pub fn day_with_unread(day: &str) -> String {
-    crate::i18n::widget_format("conversation-day-new", &[("day", day.into())])
+    tilo_ui_base::i18n::widget_format("conversation-day-new", &[("day", day.into())])
 }
 
 #[must_use]
@@ -292,7 +292,7 @@ pub struct SectionDividerProps {
     pub tone: DividerTone,
 }
 
-impl crate::component::Described for SectionDivider {
+impl tilo_ui_base::component::Described for SectionDivider {
     type Props = SectionDividerProps;
 
     fn from_props(_key: &str, props: SectionDividerProps) -> Self {
@@ -315,28 +315,33 @@ impl crate::component::Described for SectionDivider {
     }
 }
 
-impl crate::widget::Widget for SectionDivider {
-    crate::described!();
+impl tilo_ui_base::widget::Widget for SectionDivider {
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
         theme: &Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn crate::widget::Widget>,
+        node_map: &mut std::collections::HashMap<
+            taffy::NodeId,
+            *mut dyn tilo_ui_base::widget::Widget,
+        >,
     ) -> taffy::NodeId {
-        use crate::widget::TaffyTreeExt as _;
+        use tilo_ui_base::widget::TaffyTreeExt as _;
         let style = taffy::Style {
             flex_shrink: 0.0,
             size: taffy::Size {
                 width: taffy::style_helpers::percent(1.0_f32),
-                height: taffy::style_helpers::length(crate::num::f32_of_f64(Self::height(theme))),
+                height: taffy::style_helpers::length(tilo_ui_base::num::f32_of_f64(Self::height(
+                    theme,
+                ))),
             },
             ..Default::default()
         };
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
     /// Its band is a height and a full width the theme gives it, so it asks layout only until it
     /// is placed.
@@ -344,7 +349,7 @@ impl crate::widget::Widget for SectionDivider {
         self.rect == Rect::ZERO
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -378,8 +383,8 @@ impl crate::widget::Widget for SectionDivider {
         self.drawn = true;
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         Some(AccessNode::new(Role::Heading { level: 3 }).with_name(self.label.clone()))
     }
 }

@@ -7,14 +7,16 @@ use vello::kurbo::{Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::component::{Component, Described, Event, Person};
-use crate::icons::Icon;
-use crate::paint::PaintCtx;
-use crate::presence::{Face, FaceStack};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
 use crate::widget::primitives::BarChipFace;
-use crate::widget::{TaffyTreeExt, Widget};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Person,
+};
+use tilo_ui_base::{presence::Face, presence::FaceStack};
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 /// A bar control for people: their faces, a label and a press, with faces opening who is here
 /// and an invite opening the host's invite flow.
@@ -85,7 +87,7 @@ pub struct BarChip {
     props: BarChipProps,
     /// Pointer precision; a coarse pointer grows the face to the minimum
     /// target, as every other control does.
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     icon_run: Vec<Icon>,
     press: Option<Box<dyn FnMut()>>,
     rect: Rect,
@@ -133,7 +135,7 @@ impl BarChip {
             chip = chip.label_width(width);
         }
         if let Some(who) = &self.props.tone {
-            chip = chip.tone(crate::presence::identity_colour(who.identity.id()));
+            chip = chip.tone(tilo_ui_base::presence::identity_colour(who.identity.id()));
         }
         chip
     }
@@ -160,7 +162,7 @@ impl BarChip {
 }
 
 impl Widget for BarChip {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -168,7 +170,7 @@ impl Widget for BarChip {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let height = crate::num::f32_of_f64(self.face_height(theme));
+        let height = tilo_ui_base::num::f32_of_f64(self.face_height(theme));
         taffy.widget_leaf(
             Style {
                 flex_shrink: 0.0,
@@ -191,7 +193,7 @@ impl Widget for BarChip {
     ) -> bool {
         let theme = Theme::default();
         let faces = self.props.faces(&theme);
-        let width = crate::num::f32_of_f64(self.face(&theme, &faces).width(text, &theme));
+        let width = tilo_ui_base::num::f32_of_f64(self.face(&theme, &faces).width(text, &theme));
         let Ok(style) = taffy.style(node) else {
             return false;
         };
@@ -205,7 +207,7 @@ impl Widget for BarChip {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
     }
 
     /// It measures its faces and its label for its width, so it asks layout until it is placed and
@@ -220,7 +222,7 @@ impl Widget for BarChip {
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         if self.interaction != environment {
             self.interaction = environment;
@@ -230,7 +232,7 @@ impl Widget for BarChip {
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -257,7 +259,7 @@ impl Widget for BarChip {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if !self.props.enabled {
             return;
         }
@@ -320,8 +322,8 @@ impl Widget for BarChip {
         self.focused
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let mut node = AccessNode::new(Role::Button)
             .with_name(&self.props.name)
             .with_bounds(self.rect)
@@ -376,7 +378,7 @@ impl Described for BarChip {
             icon_run: props.icon.into_iter().collect(),
             props,
             press,
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             rect: Rect::ZERO,
             hovered: false,
             pressed: false,
@@ -413,8 +415,8 @@ mod tests {
 
         phase a_chip_carries_its_press_into_who_it_names;
         {
-            let queue = crate::Intents::default();
-            let press = Event::View(crate::component::Intent::new(&queue, "chip", "press"));
+            let queue = tilo_ui_base::Intents::default();
+            let press = Event::View(tilo_ui_base::component::Intent::new(&queue, "chip", "press"));
             let props = BarChipProps {
                 name: "Who is here".into(),
                 press,

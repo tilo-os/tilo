@@ -359,7 +359,7 @@ impl Background {
             return false;
         };
         let scan = desktop_entry::cache::cached_scan(&desktop_entry::locale::language_candidates(
-            ui::i18n::preferred_language().as_deref(),
+            tilo_ui_base::i18n::preferred_language().as_deref(),
         ));
         let Some(entry) = scan.find(&app_id) else {
             tracing::debug!(app_id, "autostart refused: the app has no installed entry");

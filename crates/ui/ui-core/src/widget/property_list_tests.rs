@@ -90,7 +90,7 @@ tilo_test_env::scenario! {
                     .perform_semantic_named(
                         "evidence-properties",
                         Some("tilo.key-action:evidence-properties:0/9"),
-                        &crate::a11y::Action::Activate
+                        &tilo_ui_base::a11y::Action::Activate
                     )
                     .is_err()
             );
@@ -288,7 +288,7 @@ tilo_test_env::scenario! {
                 Tone::Danger.colour(&theme),
                 SMALL_TEXT_MIN_CONTRAST,
             );
-            assert!(crate::a11y::contrast_ratio(ink, ground) >= SMALL_TEXT_MIN_CONTRAST);
+            assert!(tilo_ui_base::a11y::contrast_ratio(ink, ground) >= SMALL_TEXT_MIN_CONTRAST);
         }
     }
 
@@ -311,13 +311,13 @@ fn painted(
     };
     let (w, h) = text.measure_style(
         row.label,
-        geo.label_wrap.map(crate::num::f32_of_f64),
+        geo.label_wrap.map(tilo_ui_base::num::f32_of_f64),
         label_style,
     );
     let label = Rect::from_origin_size(geo.label, (f64::from(w), f64::from(h)));
     let (w, h) = text.measure_style(
         row.value,
-        Some(crate::num::f32_of_f64(geo.value_width)),
+        Some(tilo_ui_base::num::f32_of_f64(geo.value_width)),
         &m.value_style(row),
     );
     let value = Rect::from_origin_size(geo.value, (f64::from(w), f64::from(h)));
@@ -360,7 +360,7 @@ fn published_property_action_bounds_follow_the_painted_hit_target() {
 
 #[test]
 fn a_bound_property_action_runs_the_apps_action_on_every_path() {
-    use crate::widget::controls::ActionControls;
+    use tilo_ui_base::widget::controls::ActionControls;
     let resource = tilo_actions::ResourceSpec::new("contact", "test", "Contact").with_action(
         tilo_actions::ActionSpec::operation(
             "edit",
@@ -394,7 +394,7 @@ fn a_bound_property_action_runs_the_apps_action_on_every_path() {
         .expect("the bound action is the button's control");
     assert!(matches!(
         &bound.kind,
-        crate::widget::ControlBindingKind::Action(address) if address.action == "edit"
+        tilo_ui_base::widget::ControlBindingKind::Action(address) if address.action == "edit"
     ));
     assert!(list.has_action_control_bindings());
     drop(root);

@@ -153,6 +153,7 @@ tilo-dialogs = { version = "0.1.0", path = "../../platform/tilo-dialogs" }
 # The person's clipboard, over the connection the session opens for each instance: what an app
 # copies and pastes, since its process holds no display of its own.
 tilo-clipboard = { version = "0.1.0", path = "../../platform/tilo-clipboard" }
+tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 # Presence as every window decodes it: who is where in a document, and who is writing there.
 ui-core = { package = "tilo-ui", path = "../../ui/ui-core", default-features = false, features = ["model"] }
 # An app's windows (`app-launch`): the toolkit's framework, the app window's half of each window,

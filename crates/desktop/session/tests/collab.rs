@@ -198,10 +198,10 @@ fn pointer(sync: &Client, from: u8, x: f32, y: f32) {
     reason = "milliseconds since the epoch are exact in an f64 for the life of a session"
 )]
 fn done_by(sync: &Client, tiles: &[tilo_live::presence::Tile]) -> Vec<(u64, f64, f64)> {
-    let mut chats = ui::presence::CursorChats::default();
+    let mut chats = tilo_ui_base::presence::CursorChats::default();
     let members = sync.members(WORKSPACE);
     let faces = sync.here().borrow().faces();
-    let presence = ui::presence::PresenceCtx::empty();
+    let presence = tilo_ui_base::presence::PresenceCtx::empty();
     let pointers = tilo_session_core::presence::pointers(
         &members,
         &faces,
@@ -210,7 +210,7 @@ fn done_by(sync: &Client, tiles: &[tilo_live::presence::Tile]) -> Vec<(u64, f64,
         &presence,
         ui::time::Instant::now(),
         ui::time::unix_now_ms() as f64,
-        ui::tokens::EffectiveMotion::default(),
+        tilo_ui_base::tokens::EffectiveMotion::default(),
     );
     pointers
         .drawn
@@ -408,7 +408,7 @@ fn palette_rows(session: &mut Session) -> Vec<String> {
 /// another device of theirs says so, as the presence a device publishes when it joins a call does.
 #[test]
 fn a_call_is_offered_until_this_person_is_in_it_on_another_device() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mine = OwnPresence {
         label: "Quinten".to_owned(),
         user: Some(person(QUINTEN)),
@@ -459,7 +459,7 @@ fn a_call_is_offered_until_this_person_is_in_it_on_another_device() {
 
 #[test]
 fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let own = OwnPresence {
         label: "Quinten".to_owned(),
         ..OwnPresence::default()
@@ -526,7 +526,7 @@ fn the_people_button_lists_who_is_here_and_where_their_pointers_are() {
 
 #[test]
 fn someone_away_is_dimmed_in_the_roster_and_someone_here_is_not() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let own = OwnPresence {
         label: "Quinten".to_owned(),
         ..OwnPresence::default()
@@ -833,7 +833,7 @@ fn message_pressed_by_name_leaves_the_roster_too() {
         // it reads.
         let (place, message) = a11y_node(session, "Message");
         assert!(
-            session.a11y_perform(place, message, &ui::a11y::Action::Activate),
+            session.a11y_perform(place, message, &tilo_ui_base::a11y::Action::Activate),
             "the shell took the press its window offers"
         );
         session.step(REFRESH).expect("a turn of the session");
@@ -843,7 +843,7 @@ fn message_pressed_by_name_leaves_the_roster_too() {
 /// Open Ada's card from her face, press its Message with `press_message`, and check what came of
 /// it.
 fn message_from_the_card(press_message: impl FnOnce(&mut Session, (f64, f64, f64, f64))) {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = tempfile::tempdir().expect("a home for this test's app store");
     let store = home.path().join("tilo-apps");
     install(&store, CHAT, "Chat");
@@ -946,7 +946,7 @@ fn message_from_the_card(press_message: impl FnOnce(&mut Session, (f64, f64, f64
 /// (a phone's bar), the roster is one press from the person, not two.
 #[test]
 fn a_persons_card_offers_everyone_here() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = crate::common::headless(Options::default());
     ada_arrives(&mut session);
     press_faces(&mut session);
@@ -987,11 +987,11 @@ fn a_persons_card_offers_everyone_here() {
 /// Your avatar opens a card with the name others see and ways to add or manage devices.
 #[test]
 fn your_own_avatar_opens_your_card() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     own_card(ui::headless::fixture_runner_inputs, "own-card");
     own_card(
         || ui::application::ComponentRunnerInputs {
-            theme: ui::Theme::light(),
+            theme: tilo_ui_base::Theme::light(),
             ..ui::headless::fixture_runner_inputs()
         },
         "own-card-light",
@@ -1078,7 +1078,7 @@ fn own_card(presentation: fn() -> ui::application::ComponentRunnerInputs, captur
 /// following, and the workspace hears this device follows nobody.
 #[test]
 fn following_someone_brings_forward_the_window_of_the_app_they_work_in() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let own = OwnPresence {
         label: "Quinten".to_owned(),
         ..OwnPresence::default()
@@ -1214,7 +1214,7 @@ fn app_session(
 /// member's view this person follows, and told when following ends.
 #[test]
 fn following_someone_tells_the_window_app_whose_view_is_theirs() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = crate::common::private_home();
     let socket = home.path().join("collab.sock");
     let held = crate::common::held::fixture();
@@ -1364,7 +1364,7 @@ fn settings_home() -> (tempfile::TempDir, tilo_test_env::ScopedEnv) {
 /// follows their view, and the panel's own button puts it back in the bar.
 #[test]
 fn the_roster_kept_on_screen_shows_who_is_here_and_follows_them() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, _settings) = settings_home();
     let own = OwnPresence {
         label: "Quinten".to_owned(),
@@ -1467,7 +1467,7 @@ fn the_roster_kept_on_screen_shows_who_is_here_and_follows_them() {
 /// was.
 #[test]
 fn the_follow_banner_opens_the_followed_persons_card() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, _settings) = settings_home();
     let own = OwnPresence {
         label: "Quinten".to_owned(),
@@ -1675,7 +1675,7 @@ fn follow_from_who_is_here(session: &mut Session, name: &str) {
 /// person's own input ended it.
 #[test]
 fn stopping_the_follow_from_the_chip_ends_it_and_the_bar_says_so() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, _settings) = settings_home();
     let own = OwnPresence {
         label: "Quinten".to_owned(),
@@ -1738,7 +1738,7 @@ fn stopping_the_follow_from_the_chip_ends_it_and_the_bar_says_so() {
 /// their face and the way to stop stay on a phone, where the bar shows no other face of them.
 #[test]
 fn the_follow_chip_folds_into_their_face_on_a_narrow_bar() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, _settings) = settings_home();
     let own = OwnPresence {
         label: "Quinten".to_owned(),
@@ -1835,7 +1835,7 @@ fn the_follow_chip_folds_into_their_face_on_a_narrow_bar() {
 /// without a label over them; one person shares their screen and one keeps where they are.
 #[test]
 fn the_roster_kept_on_screen_from_the_start_names_its_workspace() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, _settings) = settings_home();
     // Kept on a device whose session is not running yet, as the CLI keeps it there: the session
     // that follows starts with the roster on screen. The overlay is the device's own setting, and
@@ -1936,7 +1936,7 @@ fn differing(
 /// is the person's work, not a card saying there is no one to show. Someone arriving brings it in.
 #[test]
 fn a_pinned_roster_waits_off_the_shell_while_the_person_is_alone() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, _settings) = settings_home();
     let own = OwnPresence {
         label: "Quinten".to_owned(),
@@ -1990,7 +1990,7 @@ fn a_pinned_roster_waits_off_the_shell_while_the_person_is_alone() {
 /// the frame is shown, so a still shell does not keep a flat card and repaint it a frame later.
 #[test]
 fn the_rosters_first_frame_on_the_shell_is_final() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (_home, _settings) = settings_home();
     let own = OwnPresence {
         label: "Quinten".to_owned(),
@@ -2028,7 +2028,7 @@ fn the_rosters_first_frame_on_the_shell_is_final() {
 /// list it searches is what the session publishes, and a member at their own device is in it.
 #[test]
 fn a_send_to_box_finds_a_person_here_by_name() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let own = OwnPresence {
         label: "Quinten".to_owned(),
         ..OwnPresence::default()

@@ -9,10 +9,11 @@ use tilo_actions::{
 use vello::Scene;
 use vello::kurbo::{Affine, Rect};
 
-use crate::i18n::I18nManager;
-use crate::theme::Theme;
+use crate::widget::Button;
 use crate::widget::window_header::HistoryControl;
-use crate::widget::{Button, HistoryEntryId};
+use tilo_ui_base::i18n::I18nManager;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::HistoryEntryId;
 
 pub(crate) const HISTORY_OPERATION: &str = "tilo.host.history.view";
 pub(crate) const HISTORY_RESOURCE: &str = "tilo.host:history";
@@ -32,11 +33,11 @@ pub(crate) enum HistoryCommand {
 /// The look of the window's History control: the History glyph as a Plain icon button, announced and
 /// tooltipped as "History" with its shortcut, reading as on while History shows.
 pub(crate) fn history_control_face(id: &str, control: HistoryControl) -> Button {
-    let platform = crate::platform::PlatformConventions::default();
-    let shortcut = crate::platform::HostShortcut::History
+    let platform = tilo_ui_base::platform::PlatformConventions::default();
+    let shortcut = tilo_ui_base::platform::HostShortcut::History
         .shortcut(platform)
         .label(platform);
-    Button::icon_only(id, crate::icons::Icon::History, "history-mode-title")
+    Button::icon_only(id, tilo_ui_base::icons::Icon::History, "history-mode-title")
         .tooltip(format!(
             "{} ({shortcut})",
             I18nManager::lookup_plain("history-mode-title")
@@ -77,7 +78,7 @@ pub(crate) fn bar_edge(scene: &mut Scene, transform: Affine, theme: &Theme, bar:
     scene.fill(
         vello::peniko::Fill::NonZero,
         transform,
-        crate::surface::edge_on(theme.tokens.colors.surfaces.content),
+        tilo_ui_base::surface::edge_on(theme.tokens.colors.surfaces.content),
         None,
         &Rect::new(bar.x0, bar.y1 - rule, bar.x1, bar.y1),
     );
@@ -173,7 +174,7 @@ fn open_at_operation() -> ActionSpec {
 }
 /// The change `id` in 32 lowercase hex digits, as [`decode_entry`] reads it.
 pub(crate) fn encode_entry(id: HistoryEntryId) -> String {
-    crate::HistoryEntryId::hex(&id)
+    tilo_ui_base::HistoryEntryId::hex(&id)
 }
 /// The change `value` names in its 32 lowercase hex digits, if it is one.
 pub(crate) fn decode_entry(value: &str) -> Option<HistoryEntryId> {

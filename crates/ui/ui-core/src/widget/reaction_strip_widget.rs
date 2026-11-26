@@ -10,14 +10,14 @@ use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::{ReactionStrip, StripHit, StripMetrics, layout};
-use crate::paint::PaintCtx;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::{
-    ActionEmitter, ControlBindingKind, ControlBindingMetadata, EventCtx, ModelPath, TaffyTreeExt,
-    Widget,
-};
 use tilo_action_policy::MemberId;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{
+    widget::ActionEmitter, widget::ControlBindingKind, widget::ControlBindingMetadata,
+    widget::EventCtx, widget::ModelPath, widget::TaffyTreeExt, widget::Widget,
+};
 
 /// A person reacting with an emoji (`react`), or taking their reaction
 /// back: what a pill or a pick in the picker asks for.
@@ -54,7 +54,7 @@ pub struct ReactionStripWidget {
     action: Option<ActionEmitter<ReactionToggle>>,
     test_id: Option<String>,
     /// The input it is used with: how large a target must be.
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     dirty: bool,
     layout_dirty: bool,
 }
@@ -81,12 +81,13 @@ impl ReactionStripWidget {
             on_toggle: None,
             on_person: None,
             picker: Some(
-                crate::widget::Popover::with_content(crate::widget::EmojiPicker::new())
-                    .with_label(crate::i18n::widget_format("emoji-chooser-title", &[])),
+                crate::widget::Popover::with_content(crate::widget::EmojiPicker::new()).with_label(
+                    tilo_ui_base::i18n::widget_format("emoji-chooser-title", &[]),
+                ),
             ),
             action: None,
             test_id: None,
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             dirty: true,
             layout_dirty: true,
         }
@@ -107,12 +108,18 @@ impl ReactionStripWidget {
     /// Who the members that reacted are: the faces each pill ends in show them, in their
     /// colour and with their picture. A member it does not name shows the face their id gives.
     #[must_use]
-    pub fn with_people(mut self, people: HashMap<MemberId, crate::component::Person>) -> Self {
+    pub fn with_people(
+        mut self,
+        people: HashMap<MemberId, tilo_ui_base::component::Person>,
+    ) -> Self {
         self.strip.set_people(people);
         self
     }
 
-    pub(crate) fn set_people(&mut self, people: HashMap<MemberId, crate::component::Person>) {
+    pub(crate) fn set_people(
+        &mut self,
+        people: HashMap<MemberId, tilo_ui_base::component::Person>,
+    ) {
         self.strip.set_people(people);
         self.dirty = true;
     }
@@ -222,7 +229,7 @@ impl ReactionStripWidget {
             react,
         };
         if react {
-            crate::emoji_catalogue::record_used(emoji);
+            tilo_ui_base::emoji_catalogue::record_used(emoji);
         }
         if let Some(action) = &mut self.action
             && let Err(error) = action.emit(toggle.clone())
@@ -286,9 +293,9 @@ impl ReactionStripWidget {
 }
 
 impl Widget for ReactionStripWidget {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls);
 
     fn build_layout(
         &mut self,
@@ -327,8 +334,8 @@ impl Widget for ReactionStripWidget {
         );
         let bounds = laid.bounds();
         taffy::Size {
-            width: crate::num::f32_of_f64(bounds.width()),
-            height: crate::num::f32_of_f64(bounds.height()),
+            width: tilo_ui_base::num::f32_of_f64(bounds.width()),
+            height: tilo_ui_base::num::f32_of_f64(bounds.height()),
         }
     }
 
@@ -338,7 +345,7 @@ impl Widget for ReactionStripWidget {
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         if self.interaction != environment {
             self.interaction = environment;
@@ -351,7 +358,7 @@ impl Widget for ReactionStripWidget {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.dirty = true;
     }
 
@@ -363,7 +370,7 @@ impl Widget for ReactionStripWidget {
         self.rect
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -391,7 +398,7 @@ impl Widget for ReactionStripWidget {
             || self.picker.as_ref().is_some_and(Widget::needs_redraw)
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -399,7 +406,7 @@ impl Widget for ReactionStripWidget {
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
         if let Some(picker) = &mut self.picker {
-            picker.draw_overlay(&mut crate::draw::DrawCtx::new(
+            picker.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text,
@@ -539,13 +546,13 @@ impl Widget for ReactionStripWidget {
         self.focused
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let mut children = self.strip.accessibility();
         if let Some(picker) = self.picker.as_ref().filter(|picker| picker.is_open()) {
             children.extend(picker.content().accessibility());
         }
         Some(
-            crate::a11y::AccessNode::new(crate::a11y::Role::Group)
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
                 .with_bounds(self.rect)
                 .with_children(children),
         )
@@ -553,14 +560,14 @@ impl Widget for ReactionStripWidget {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         if !matches!(
             action,
-            crate::a11y::Action::Activate | crate::a11y::Action::ToggleCheck
+            tilo_ui_base::a11y::Action::Activate | tilo_ui_base::a11y::Action::ToggleCheck
         ) {
             return false;
         }
@@ -578,10 +585,12 @@ impl Widget for ReactionStripWidget {
             .map(|(_, hit)| hit)
             .chain(faces)
             .find(|hit| match hit {
-                StripHit::Toggle(emoji) => crate::a11y::hash_key(&("reaction", emoji)) == *key,
-                StripHit::Add { .. } => crate::a11y::hash_key(&"reaction-add") == *key,
+                StripHit::Toggle(emoji) => {
+                    tilo_ui_base::a11y::hash_key(&("reaction", emoji)) == *key
+                }
+                StripHit::Add { .. } => tilo_ui_base::a11y::hash_key(&"reaction-add") == *key,
                 StripHit::Person(who) => {
-                    crate::a11y::hash_key(&("reaction-person", who.id())) == *key
+                    tilo_ui_base::a11y::hash_key(&("reaction-person", who.id())) == *key
                 }
             });
         match hit {
@@ -602,8 +611,8 @@ impl Widget for ReactionStripWidget {
     }
 }
 
-impl crate::widget::controls::ActionControls for ReactionStripWidget {
-    crate::widget::controls::optional_emitter_controls!();
+impl tilo_ui_base::widget::controls::ActionControls for ReactionStripWidget {
+    tilo_ui_base::optional_emitter_controls!();
     fn control_action_bindings(&self) -> Vec<ControlBindingMetadata> {
         let control_id = self.test_id().unwrap_or("reaction_strip");
         if let Some(action) = &self.action {

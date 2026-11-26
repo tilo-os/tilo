@@ -19,9 +19,9 @@ pub use shown::ShownTabs;
 use tilo_desktop_model::{
     GroupId, IdMinter, Layout, StripId, Tab, TabId, TileContent, Workspace, WorkspaceId,
 };
-use ui::collaboration::PresencePayload;
+use tilo_ui_base::collaboration::PresencePayload;
+use tilo_ui_base::presence::PresenceKey;
 use ui::kurbo::{Point, Rect};
-use ui::presence::PresenceKey;
 use ui::time::Duration;
 use ui::widget::TileHost;
 
@@ -282,7 +282,7 @@ pub struct Shared {
     /// The shown strip, the area it is drawn in and how far it is panned, as last laid out.
     pub shown_strip: Option<(StripId, Rect, f64)>,
     /// Carets and selections of the focused window's editors, as last laid out
-    /// ([`ui::presence::capability::subtree_presence`]).
+    /// ([`tilo_ui_base::presence::capability::subtree_presence`]).
     pub focused_presence: Vec<(PresenceKey, PresencePayload)>,
     /// Tabs whose content the host asked to build again.
     pub rebuild: Vec<TabId>,
@@ -348,7 +348,7 @@ pub struct Shared {
     pub presented: u64,
     /// The artwork each window brought of its own, by the compositor's id for it
     /// ([`DesktopHandle::set_window_artwork`]).
-    pub artwork: std::collections::BTreeMap<u64, ui::icons::AppImage>,
+    pub artwork: std::collections::BTreeMap<u64, tilo_ui_base::icons::AppImage>,
     /// The apps whose windows keep what they show to themselves
     /// ([`DesktopHandle::set_withheld_apps`]).
     pub withheld: std::collections::BTreeSet<String>,

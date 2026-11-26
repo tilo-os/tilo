@@ -1,0 +1,77 @@
+//! Where a control's value lives.
+
+use super::{AppModel, ModelPath};
+
+/// What a binding reports for the value to present.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Pulled<T> {
+    /// The model holds this value.
+    Value(T),
+    /// Nothing changed since the last pull; keep the presented value.
+    Unchanged,
+    /// The model holds no value; the control shows its empty state.
+    Missing,
+}
+
+/// A read source and optional process-local storage for a control's value.
+pub trait ValueBinding<T> {
+    /// The value to present, read in the sync pass before layout.
+    fn pull(&mut self, model: &AppModel, path: &ModelPath) -> Pulled<T>;
+
+    /// Publish a value the app set programmatically, with no model at hand.
+    fn publish(&mut self, _value: &T) {}
+
+    /// [`Self::publish`] when `equal` says the value differs from the one the binding holds: a colour
+    /// published from a picker's own floats is the one it was given.
+    fn publish_by(&mut self, _value: &T, _equal: fn(&T, &T) -> bool) {}
+
+    /// The document key this binding reads, reported to the action directory as the control's
+    /// collaborative binding.
+    fn document_key(&self) -> Option<&str> {
+        None
+    }
+}
+
+impl<T: Clone + PartialEq> ValueBinding<T> for crate::local_state::LocalBinding<T> {
+    fn pull(&mut self, _model: &AppModel, _path: &ModelPath) -> Pulled<T> {
+        self.poll().map_or(Pulled::Unchanged, Pulled::Value)
+    }
+
+    fn publish(&mut self, value: &T) {
+        Self::publish(self, value);
+    }
+
+    fn publish_by(&mut self, value: &T, equal: fn(&T, &T) -> bool) {
+        crate::local_state::LocalBinding::publish_by(self, value, equal);
+    }
+}
+
+/// A boxed binding, as controls store them.
+pub type BoxedBinding<T> = Box<dyn ValueBinding<T>>;
+
+/// The process-local binding for `state`, with the value it holds now.
+pub fn local<T: Clone + PartialEq + 'static>(state: &crate::LocalState<T>) -> (T, BoxedBinding<T>) {
+    let (value, binding) = crate::local_state::LocalBinding::new(state);
+    (value, Box::new(binding))
+}
+
+/// What `derive` makes of `state` ("the draft parses"), followed as `state` changes: the value now,
+/// and its binding.
+pub fn derived<S: Clone + 'static, T: 'static>(
+    state: &crate::LocalState<S>,
+    derive: impl Fn(&S) -> T + 'static,
+) -> (T, BoxedBinding<T>) {
+    struct Derived<S, F> {
+        source: crate::local_state::LocalBinding<S>,
+        derive: F,
+    }
+    impl<S: Clone, T, F: Fn(&S) -> T> ValueBinding<T> for Derived<S, F> {
+        fn pull(&mut self, _model: &AppModel, _path: &ModelPath) -> Pulled<T> {
+            self.source.poll().map_or(Pulled::Unchanged, |value| {
+                Pulled::Value((self.derive)(&value))
+            })
+        }
+    }
+    let (value, source) = crate::local_state::LocalBinding::new(state);
+    (derive(&value), Box::new(Derived { source, derive }))
+}

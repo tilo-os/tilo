@@ -1,6 +1,6 @@
 use super::*;
-use crate::a11y::{AccessNode, AccessState};
 use crate::composition::Picture;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState};
 
 fn text(path: &str, words: &str) -> Composed {
     let mut node = Composed::new(path.to_owned(), "Label", [13.0, 27.0, 200.0, 20.0]);
@@ -320,7 +320,10 @@ fn a_canvas_places_what_it_holds_and_a_host_fills_its_wells() {
 
 /// A real widget's frame, laid out at `size`, as a page reads it: its composition with the
 /// pictures of what only paints.
-fn framed(root: Box<dyn crate::widget::Widget>, size: (u32, u32)) -> crate::headless::Driver {
+fn framed(
+    root: Box<dyn tilo_ui_base::widget::Widget>,
+    size: (u32, u32),
+) -> crate::headless::Driver {
     let mut frame = crate::headless::Driver::new(crate::State::new(), root, size);
     frame.relayout();
     frame
@@ -359,7 +362,7 @@ fn a_call_tile_is_a_canvas_the_page_decodes_and_never_a_picture() {
     use crate::widget::{CallSource, CallTile};
     let person = "ab".repeat(32);
     let tile = CallTile::of(
-        crate::component::Person::new(tilo_actions::MemberId::person(&person), "Ada"),
+        tilo_ui_base::component::Person::new(tilo_actions::MemberId::person(&person), "Ada"),
         CallSource::Camera,
     );
     let mut frame = framed(Box::new(tile), (640, 360));
@@ -467,7 +470,7 @@ fn a_fields_focus_words_and_caret_come_from_the_page() {
     let path = page.path(id).expect("the field's widget").to_owned();
 
     frame
-        .perform_semantic_named(&path, None, &crate::a11y::Action::Focus)
+        .perform_semantic_named(&path, None, &tilo_ui_base::a11y::Action::Focus)
         .expect("the field takes the keyboard");
     let html = page.render(&shown(&mut frame));
     let body = html.split('>').next().expect("the body's tag");
@@ -480,7 +483,7 @@ fn a_fields_focus_words_and_caret_come_from_the_page() {
         .perform_semantic_named(
             &path,
             None,
-            &crate::a11y::Action::SetValue("Buy oat milk".to_owned()),
+            &tilo_ui_base::a11y::Action::SetValue("Buy oat milk".to_owned()),
         )
         .expect("the words are set");
     let patches = page.patch(&shown(&mut frame));
@@ -495,7 +498,7 @@ fn a_fields_focus_words_and_caret_come_from_the_page() {
         .perform_semantic_named(
             &path,
             None,
-            &crate::a11y::Action::SetSelection {
+            &tilo_ui_base::a11y::Action::SetSelection {
                 anchor: 4,
                 focus: 7,
             },
@@ -515,8 +518,8 @@ fn a_fields_focus_words_and_caret_come_from_the_page() {
 /// take the theme's colours and its type's spacing.
 #[test]
 fn a_dark_theme_is_a_dark_page() {
-    let light = theme_css(&crate::Theme::light());
-    let dark = theme_css(&crate::Theme::dark());
+    let light = theme_css(&tilo_ui_base::Theme::light());
+    let dark = theme_css(&tilo_ui_base::Theme::dark());
     assert!(light.contains("color-scheme:light"), "{light}");
     assert!(dark.contains("color-scheme:dark"), "{dark}");
     let text = |css: &str| {
@@ -537,7 +540,7 @@ fn a_dark_theme_is_a_dark_page() {
             "the {role} type's spacing: {dark}"
         );
     }
-    let html = document("Notes", &crate::Theme::dark(), "", "");
+    let html = document("Notes", &tilo_ui_base::Theme::dark(), "", "");
     assert!(html.contains(&dark), "the page carries its theme");
 }
 
@@ -553,7 +556,7 @@ fn the_page_moves_by_the_themes_motion() {
             .unwrap_or_else(|| panic!("--tilo-{name} in {css}"))
             .to_owned()
     };
-    let theme = crate::Theme::light();
+    let theme = tilo_ui_base::Theme::light();
     let fast = format!("{}ms", theme.tokens.motion.durations.fast_ms);
     let css = theme_css(&theme);
     assert_eq!(prop(&css, "fade"), fast);
@@ -629,7 +632,7 @@ fn the_page_moves_by_the_themes_motion() {
         "it eases out, most of the way there by half its time: {settle}"
     );
 
-    let mut reduced = crate::Theme::light();
+    let mut reduced = tilo_ui_base::Theme::light();
     reduced.reduce_motion = true;
     let css = theme_css(&reduced);
     assert_eq!(prop(&css, "fade"), fast, "reduced motion still fades");
@@ -640,7 +643,7 @@ fn the_page_moves_by_the_themes_motion() {
         "under reduced motion a menu only fades in, over `fast`"
     );
 
-    let mut still = crate::Theme::light();
+    let mut still = tilo_ui_base::Theme::light();
     still.tokens.motion.still = true;
     let css = theme_css(&still);
     assert_eq!(prop(&css, "fade"), "0ms");
@@ -698,7 +701,7 @@ fn a_screenshot_being_marked_up_is_its_picture_with_its_tools_over_it() {
         crate::State::new(),
         crate::widget::ScreenshotMarkup::new(rgba, 64, 64),
         (900, 700),
-        crate::Theme::dark().with_reduce_motion(true),
+        tilo_ui_base::Theme::dark().with_reduce_motion(true),
     );
     frame.relayout();
     let html = Page::new().render(&shown(&mut frame));
@@ -770,8 +773,8 @@ fn a_widget_with_no_picture_shows_the_words_it_says() {
 /// button. A press on one of its rows, on the page, runs the row's action.
 #[test]
 fn a_menu_buttons_menu_is_a_layer_of_its_own_that_grows_from_the_button() {
-    use crate::icons::Icon;
     use crate::widget::{Button, Column, MenuItem, Text};
+    use tilo_ui_base::icons::Icon;
     let pinned = std::rc::Rc::new(std::cell::Cell::new(false));
     let pin = std::rc::Rc::clone(&pinned);
     let tree = Column::new()
@@ -881,7 +884,7 @@ fn a_menu_buttons_menu_is_a_layer_of_its_own_that_grows_from_the_button() {
     // The row is the row the app paints: its pin glyph, then its words.
     let start = element_start(&shown, row).unwrap_or_default();
     let words = start.find(">Pin to the top<").unwrap_or(usize::MAX);
-    let pin = crate::icons::glyph_svg(Icon::Pin);
+    let pin = tilo_ui_base::icons::glyph_svg(Icon::Pin);
     assert!(
         start.find(&pin).is_some_and(|glyph| glyph < words),
         "the row shows its glyph before its words: {start}"

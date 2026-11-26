@@ -1043,10 +1043,12 @@ fn foreign_tab(session: &Session) -> u64 {
 
 /// `started` , or the completed answer it is.
 #[track_caller]
-fn completed(started: ui::host_operation::ResourceOperationStart) -> tilo_actions::ActionOutput {
+fn completed(
+    started: tilo_ui_base::host_operation::ResourceOperationStart,
+) -> tilo_actions::ActionOutput {
     match started {
-        ui::host_operation::ResourceOperationStart::Completed(output) => output,
-        ui::host_operation::ResourceOperationStart::Accepted => {
+        tilo_ui_base::host_operation::ResourceOperationStart::Completed(output) => output,
+        tilo_ui_base::host_operation::ResourceOperationStart::Accepted => {
             panic!("a read action answers at once")
         }
     }

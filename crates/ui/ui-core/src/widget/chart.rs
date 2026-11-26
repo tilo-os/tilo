@@ -1,22 +1,22 @@
 //! Time-series charts — [`Chart`] (a full line/area plot with grid lines, axis ticks and a legend) and
 //! [`Sparkline`] (a compact, chromeless variant for inline trend cells).
 
-use crate::num::f64_of_usize;
 use std::collections::HashMap;
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::num::f64_of_usize;
 use vello::Scene;
 use vello::kurbo::{Affine, BezPath, Circle, Line, Point, Rect, Stroke};
 use vello::peniko::{Brush, Color, Fill, Gradient};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::TaffyTreeExt;
-use crate::widget::Widget;
 use crate::widget::chart_legend::SeriesToggles;
 use crate::widget::chart_navigation::{ChartInspection, InteractiveChart, handle_chart_event};
 use crate::widget::chart_readout::{Highlight, Readout};
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
 
 /// Number of horizontal grid divisions (so `DIVISIONS + 1` rules).
 const GRID_DIVISIONS: usize = 4;
@@ -125,7 +125,7 @@ impl RollingSeries {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum TrendFill {
     None,
-    /// The series' area fill ([`ChartPalette::area_of`](crate::chart_palette::ChartPalette::area_of)).
+    /// The series' area fill ([`ChartPalette::area_of`](tilo_ui_base::chart_palette::ChartPalette::area_of)).
     Area,
     Gradient {
         top: f32,
@@ -329,7 +329,7 @@ fn paint_trend(
             scene.fill(
                 Fill::NonZero,
                 transform,
-                crate::chart_palette::ChartPalette::area_of(color),
+                tilo_ui_base::chart_palette::ChartPalette::area_of(color),
                 None,
                 &area(),
             );
@@ -542,7 +542,7 @@ impl TrendMarks {
             return 0;
         }
         let step = self.plot.width() / (f64_of_usize(len) - 1.0);
-        crate::num::usize_of_f64(((x - self.plot.x0) / step).round()).min(len - 1)
+        tilo_ui_base::num::usize_of_f64(((x - self.plot.x0) / step).round()).min(len - 1)
     }
 
     /// Each shown line's reading at position `at` of the longest line: its place, its reading's
@@ -727,7 +727,7 @@ impl PlotMarks for TrendMarks {
         let grid = self
             .style
             .grid_color
-            .unwrap_or_else(|| crate::surface::edge_on(tokens.colors.surfaces.raised));
+            .unwrap_or_else(|| tilo_ui_base::surface::edge_on(tokens.colors.surfaces.raised));
         let divisions = self.style.grid_divisions.max(1);
         for i in 0..=divisions {
             let y = plot.y0 + plot.height() * (f64_of_usize(i) / f64_of_usize(divisions));
@@ -856,7 +856,7 @@ pub struct Sparkline {
     style: TrendStyle,
     rect: Rect,
     pub(crate) label: Option<String>,
-    pub(crate) tone: Option<crate::widget::Tone>,
+    pub(crate) tone: Option<tilo_ui_base::widget::Tone>,
     /// What its readings count, written after them in the hover readout ("/s", "h").
     unit: String,
     /// What the pointer reads: the nearest sample.
@@ -954,7 +954,7 @@ impl Sparkline {
         }
         let step = self.rect.width() / (f64_of_usize(len) - 1.0);
         let at = ((x - self.rect.x0) / step).round();
-        Some(crate::num::usize_of_f64(at).min(len - 1))
+        Some(tilo_ui_base::num::usize_of_f64(at).min(len - 1))
     }
 
     /// Where the sample `at` stands, as the line is drawn.
@@ -1063,7 +1063,7 @@ impl Sparkline {
 }
 
 impl Widget for Sparkline {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn build_layout(
         &mut self,
@@ -1079,16 +1079,16 @@ impl Widget for Sparkline {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, tr, theme, mut env) = ctx.parts();
-        crate::scene_parts::picture();
+        tilo_ui_base::scene_parts::picture();
         Sparkline::paint(
             scene,
             transform,
@@ -1106,26 +1106,26 @@ impl Widget for Sparkline {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.dirty = true;
         handle_chart_event(self, event, ctx);
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
         "Sparkline"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         Some(AccessNode::new(Role::Image).with_optional_name(self.label.clone()))
     }
 

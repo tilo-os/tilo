@@ -1,7 +1,10 @@
 //! [`NavShell`] as a described component.
 
-use crate::component::{Component, Described, Event, PartViews, PropType, Type, Value};
-use crate::widget::Element;
+use tilo_ui_base::widget::Element;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::PartViews,
+    component::PropType, component::Type, component::Value,
+};
 
 use super::{Column, ContentKind, InspectorCollapse, NavPane, NavShell, SidebarCollapse};
 
@@ -85,34 +88,8 @@ pub struct NavShellProps {
     /// Files were dropped on the window, anywhere no component of its own took them: each as a
     /// `File` — its name, its media type, its size and where its bytes are — kept by the window.
     /// What an app takes a dropped document with, wherever on it the person lets go.
-    #[component(event(value = Vec<crate::component::File>))]
+    #[component(event(value = Vec<tilo_ui_base::component::File>))]
     pub drop: Event,
-}
-
-impl PropType for ContentKind {
-    fn ty() -> Type {
-        Type::Choice {
-            name: "ContentKind".into(),
-            cases: ["list", "reading", "page", "grid", "document", "canvas"]
-                .map(String::from)
-                .to_vec(),
-        }
-    }
-
-    fn from_value(value: &Value) -> Result<Self, String> {
-        let (Value::Choice(case) | Value::Text(case)) = value else {
-            return Err(format!("takes ContentKind, not {}", value.kind()));
-        };
-        Ok(match case.as_str() {
-            "list" => Self::List,
-            "reading" => Self::Reading,
-            "page" => Self::Page,
-            "grid" => Self::Grid,
-            "document" => Self::Document,
-            "canvas" => Self::Canvas,
-            other => return Err(format!("has no case `{other}`")),
-        })
-    }
 }
 
 impl PropType for NavPane {
@@ -495,7 +472,7 @@ impl PartViews for NavShell {
             if column == Column::Content {
                 if self.content_shown {
                     self.set_content_shown(false);
-                    self.stage_body(column, Some(Box::new(crate::widget::Spacer::new())));
+                    self.stage_body(column, Some(Box::new(tilo_ui_base::widget::Spacer::new())));
                 }
             } else {
                 self.stage_body(column, None);

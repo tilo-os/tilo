@@ -1,4 +1,4 @@
-use ui::widget::{EventCtx, Widget};
+use tilo_ui_base::{widget::EventCtx, widget::Widget};
 use winit::event::{KeyEvent, Modifiers, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 

@@ -7,9 +7,10 @@ use std::rc::Rc;
 use vello::peniko::Color;
 
 use super::{NavItem, NavSection};
-use crate::icons::Icon;
 use crate::widget::nav_list::nav_row::NavCount;
-use crate::widget::{ListModel, RowStatus, Tone};
+use crate::{widget::ListModel, widget::RowStatus};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::widget::Tone;
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub(crate) struct NavItemSpec {
@@ -101,7 +102,7 @@ impl NavRowKind {
 /// The sections as the filter `query` shows them: filterable sections
 /// narrowed, the others whole.
 pub(crate) fn filtered(sections: &[NavSection], query: &str) -> Vec<NavSection> {
-    let query = crate::text_match::normalize_search_text(query.trim());
+    let query = tilo_ui_base::text_match::normalize_search_text(query.trim());
     if query.is_empty() {
         return sections.to_vec();
     }
@@ -127,7 +128,8 @@ pub(super) fn narrow(items: &[NavItem], query: &str) -> Vec<NavItem> {
         .iter()
         .filter_map(|item| {
             let children = narrow(&item.children, query);
-            let by_label = crate::text_match::normalize_search_text(&item.label).contains(query);
+            let by_label =
+                tilo_ui_base::text_match::normalize_search_text(&item.label).contains(query);
             let by_term = if by_label {
                 None
             } else {
@@ -386,7 +388,7 @@ impl NavState {
 pub(crate) fn build(sections: &[NavSection], query: &str, state: &NavState) -> NavModel {
     let shown = filtered(sections, query);
     let mut model = NavModel::default();
-    let filtering = !crate::text_match::normalize_search_text(query.trim()).is_empty();
+    let filtering = !tilo_ui_base::text_match::normalize_search_text(query.trim()).is_empty();
     for section in &shown {
         let badges: Rc<Vec<String>> = Rc::new(
             section

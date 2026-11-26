@@ -2,11 +2,11 @@
 //! those survive a reorder while their key stays visible.
 
 use crate::time::Instant;
-use crate::widget::{AppModel, ModelPath};
 use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::hash::Hash;
 use std::ops::Range;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use taffy::style_helpers::percent;
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -17,19 +17,25 @@ use winit::keyboard::{Key, NamedKey};
 use std::cell::Cell;
 use std::rc::Rc;
 
-use crate::arriving::Arrival;
-use crate::collection_transition::ListModelChange;
+use tilo_ui_base::arriving::Arrival;
+use tilo_ui_base::collection_transition::ListModelChange;
 
-use crate::reorder::{DropCandidate, DropPlacement, DropTarget, ReorderController, ReorderDrop};
-use crate::selection::KeySelection;
-use crate::theme::Theme;
-use crate::virtual_viewport::{
-    DragScroller, ScrollAlignment, SparseAnchor, SparseVirtualViewport, WheelStep,
-};
-use crate::widget::ScrollMetrics;
+use crate::widget::ArrivingRows;
 use crate::widget::rows::RowStep;
 use crate::widget::scrollbar::{PressOutcome, Scrollbar};
-use crate::widget::{ArrivingRows, Element, TaffyTreeExt, Widget};
+use tilo_ui_base::selection::KeySelection;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::ScrollMetrics;
+use tilo_ui_base::{
+    reorder::DropCandidate, reorder::DropPlacement, reorder::DropTarget,
+    reorder::ReorderController, reorder::ReorderDrop,
+};
+use tilo_ui_base::{
+    virtual_viewport::DragScroller, virtual_viewport::ScrollAlignment,
+    virtual_viewport::SparseAnchor, virtual_viewport::SparseVirtualViewport,
+    virtual_viewport::WheelStep,
+};
+use tilo_ui_base::{widget::Element, widget::TaffyTreeExt, widget::Widget};
 
 #[path = "virtual_list_groups.rs"]
 mod groups;
@@ -78,7 +84,7 @@ const DEFAULT_VIEWPORT_HEIGHT: f64 = 320.0;
 /// to give ([`VirtualList::natural_style`]), in logical pixels: a tall screen's height. Past it the
 /// list scrolls in whatever room it is given, and a list never says a height that would have every
 /// one of thousands of rows mounted.
-const NATURAL_MOST: f64 = crate::tokens::Layout::BASE.natural_most as f64;
+const NATURAL_MOST: f64 = tilo_ui_base::tokens::Layout::BASE.natural_most as f64;
 const END_SLACK: f64 = 0.5;
 /// How much of the last screen counts as the end of a list, in viewport heights: the person is
 /// read to its end while a page that would follow it is still worth asking for.
@@ -206,11 +212,11 @@ impl std::error::Error for DuplicateListKey {}
 
 type RowBuilder = Box<dyn FnMut(&dyn AnyModel, usize, &ListKey, RowBuild) -> Element>;
 type KeyCallback<K> = Box<dyn FnMut(K)>;
-type ShortcutCallback<K> = Box<dyn FnMut(&K, &crate::platform::Shortcut) -> bool>;
+type ShortcutCallback<K> = Box<dyn FnMut(&K, &tilo_ui_base::platform::Shortcut) -> bool>;
 type FoldCallback<K> = Box<dyn FnMut(&K, bool)>;
 type SemanticKey<K> = Box<dyn Fn(&K) -> String>;
 type RowPresence =
-    Box<dyn Fn(&dyn AnyModel, usize, &ListKey) -> Option<crate::presence::PresenceKey>>;
+    Box<dyn Fn(&dyn AnyModel, usize, &ListKey) -> Option<tilo_ui_base::presence::PresenceKey>>;
 type SelectCallback<K> = Box<dyn FnMut(K, bool)>;
 type SelectedCallback<K> = Box<dyn FnMut(&[K])>;
 
@@ -302,7 +308,7 @@ pub(super) enum RowStance {
     clippy::struct_excessive_bools,
     reason = "focus, drag threshold, fetch, structural, and layout invalidation are independent widget states"
 )]
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "the rows of a `VirtualList`, which reads them as its model's"
 )]
@@ -326,7 +332,7 @@ pub struct VirtualRows {
     focused_key: Option<ListKey>,
     /// The group's heading holding the keyboard, with the index of the first row under it.
     focused_group: Option<(String, usize)>,
-    typing: crate::type_ahead::TypeAhead,
+    typing: tilo_ui_base::type_ahead::TypeAhead,
     on_select: Option<SelectCallback<ListKey>>,
     on_selected: Option<SelectedCallback<ListKey>>,
     reported_many: bool,
@@ -351,7 +357,7 @@ pub struct VirtualRows {
     /// The items a host chose for its person, held while the rows cannot answer for every one
     /// of them: a row that arrives selects its item then, as a row the host holds open opens.
     held_chosen: Option<Vec<String>>,
-    growth: Vec<(ListKey, crate::motion::MotionValue<f64>)>,
+    growth: Vec<(ListKey, tilo_ui_base::motion::MotionValue<f64>)>,
     growing: HashSet<ListKey>,
     menus: RowMenus,
     clicks: super::rows::Clicks<ListKey>,
@@ -370,8 +376,8 @@ pub struct VirtualRows {
     reorder_commit: Option<ReorderCommit>,
     scroll: super::rows::RowScroll,
     indent_guides: bool,
-    motion: crate::tokens::EffectiveMotion,
-    feel: crate::motion::Feel,
+    motion: tilo_ui_base::tokens::EffectiveMotion,
+    feel: tilo_ui_base::motion::Feel,
     reduce_motion: bool,
     vbar: Scrollbar,
     overlay_bar: Option<crate::widget::OverlayScrollbar>,
@@ -415,7 +421,7 @@ pub struct VirtualRows {
     box_dirty: bool,
     layout_dirty: bool,
     scroll_dirty: bool,
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     /// The scroll offset the rows' layout was built at: a scroll that brings no row near
     /// moves them without a rebuild.
     layout_offset: f64,
@@ -425,8 +431,8 @@ pub struct VirtualRows {
     row_builds: u64,
     access_rows: std::cell::RefCell<a11y::KeptAccessRows<ListKey>>,
     layout_node: Option<NodeId>,
-    shown: crate::scroll_copy::ShownFrames<ListShown>,
-    row_motion: crate::collection_transition::RowMotions<ListKey>,
+    shown: tilo_ui_base::scroll_copy::ShownFrames<ListShown>,
+    row_motion: tilo_ui_base::collection_transition::RowMotions<ListKey>,
     arrivals: ArrivingRows<ListKey>,
     retry_asked: Rc<Cell<Option<usize>>>,
     placed: Option<Range<usize>>,
@@ -536,7 +542,7 @@ impl VirtualRows {
             follow_focus: false,
             focused_key: None,
             focused_group: None,
-            typing: crate::type_ahead::TypeAhead::default(),
+            typing: tilo_ui_base::type_ahead::TypeAhead::default(),
             on_select: None,
             on_selected: None,
             reported_many: false,
@@ -572,24 +578,25 @@ impl VirtualRows {
             reorder_validator: None,
             reorder_commit: None,
             scroll: super::rows::RowScroll::default(),
-            motion: crate::tokens::EffectiveMotion::default(),
-            feel: crate::motion::Feel::Standard,
+            motion: tilo_ui_base::tokens::EffectiveMotion::default(),
+            feel: tilo_ui_base::motion::Feel::Standard,
             reduce_motion: false,
             vbar: Scrollbar::vertical(),
             overlay_bar: None,
-            gutter: f64::from(crate::tokens::Metrics::BASE.scrollbar_gutter),
+            gutter: f64::from(tilo_ui_base::tokens::Metrics::BASE.scrollbar_gutter),
             corners: crate::widget::scrollbar::SurfaceCorners::default(),
-            bleed: f64::from(crate::tokens::Spacing::BASE.s2),
+            bleed: f64::from(tilo_ui_base::tokens::Spacing::BASE.s2),
             lead: 0.0,
             chevron_column: 0.0,
             disclosure: f64::from(
-                crate::tokens::Metrics::BASE.icon_sm + crate::tokens::Spacing::BASE.rhythm.related,
+                tilo_ui_base::tokens::Metrics::BASE.icon_sm
+                    + tilo_ui_base::tokens::Spacing::BASE.rhythm.related,
             ),
-            lift: f64::from(crate::tokens::Spacing::BASE.s2),
+            lift: f64::from(tilo_ui_base::tokens::Spacing::BASE.s2),
             painted_lifts: Vec::new(),
             painted_chevrons: Vec::new(),
             in_place: true,
-            row_line: f64::from(crate::tokens::Metrics::BASE.row_single),
+            row_line: f64::from(tilo_ui_base::tokens::Metrics::BASE.row_single),
             stance: RowStance::Bleed,
             edges: None,
             content_gutter: 0.0,
@@ -609,15 +616,15 @@ impl VirtualRows {
             structure_dirty: true,
             box_dirty: false,
             layout_dirty: true,
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             layout_offset: 0.0,
             mounted_range: 0..0,
             remount: false,
             invalidated: HashSet::new(),
             scroll_dirty: false,
             layout_node: None,
-            shown: crate::scroll_copy::ShownFrames::default(),
-            row_motion: crate::collection_transition::RowMotions::default(),
+            shown: tilo_ui_base::scroll_copy::ShownFrames::default(),
+            row_motion: tilo_ui_base::collection_transition::RowMotions::default(),
             arrivals: ArrivingRows::new(),
             retry_asked: Rc::new(Cell::new(None)),
             placed: None,
@@ -670,7 +677,7 @@ impl VirtualRows {
         let Some(index) = self.model.index_of(key) else {
             return false;
         };
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let width = self.rect.width();
         let before = self.viewport.offset();
         match self
@@ -836,12 +843,12 @@ impl VirtualRows {
     }
 
     #[must_use]
-    pub fn with_feel(mut self, feel: crate::motion::Feel) -> Self {
+    pub fn with_feel(mut self, feel: tilo_ui_base::motion::Feel) -> Self {
         self.feel = feel;
         self
     }
 
-    pub fn set_feel(&mut self, feel: crate::motion::Feel) {
+    pub fn set_feel(&mut self, feel: tilo_ui_base::motion::Feel) {
         if self.feel != feel {
             self.feel = feel;
             self.layout_dirty = true;
@@ -1021,7 +1028,7 @@ impl VirtualRows {
     #[must_use]
     pub fn with_row_presence(
         mut self,
-        presence: impl Fn(&dyn AnyModel, usize, &ListKey) -> Option<crate::presence::PresenceKey>
+        presence: impl Fn(&dyn AnyModel, usize, &ListKey) -> Option<tilo_ui_base::presence::PresenceKey>
         + 'static,
     ) -> Self {
         self.row_presence = Some(Box::new(presence));
@@ -1052,7 +1059,7 @@ impl VirtualRows {
     /// list hands it the key its model wrote ([`typed::VirtualList::set_on_row_shortcut`]).
     pub(super) fn set_on_row_shortcut(
         &mut self,
-        callback: impl FnMut(&ListKey, &crate::platform::Shortcut) -> bool + 'static,
+        callback: impl FnMut(&ListKey, &tilo_ui_base::platform::Shortcut) -> bool + 'static,
     ) {
         self.on_row_shortcut = Some(Box::new(callback));
     }
@@ -1250,7 +1257,7 @@ impl VirtualRows {
             // A list as tall as its rows shows what the scroll view around it shows of it: the
             // rows of a tall screen from its top until its first layout says where it stands.
             let (top, bottom) = match self.fit_shown {
-                FitShown::Unplaced => (0.0, crate::virtual_viewport::UNPLACED_VIEWPORT),
+                FitShown::Unplaced => (0.0, tilo_ui_base::virtual_viewport::UNPLACED_VIEWPORT),
                 FitShown::Whole => return 0..count,
                 FitShown::Band(top, bottom) => (top, bottom),
             };
@@ -1366,7 +1373,7 @@ impl VirtualRows {
     }
 
     fn give(&self) -> f64 {
-        self.scroll.momentum.give(crate::motion::frame_now())
+        self.scroll.momentum.give(tilo_ui_base::motion::frame_now())
     }
 
     #[must_use]
@@ -1772,14 +1779,14 @@ impl crate::widget::PaintedRowLifts for VirtualRows {
 }
 
 impl Widget for VirtualRows {
-    crate::provides!(
+    tilo_ui_base::provides!(
         dyn crate::widget::PaintedRowLifts,
         dyn crate::widget::virtual_list::PaintedRowChevrons
     );
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         if self.interaction == environment {
             return;
@@ -1818,7 +1825,7 @@ impl Widget for VirtualRows {
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         // A glide steps on the frame's instant, the one its layout and paint read the list at: on
         // the clock, a frame that came late moved the rows past where its layout had mounted them.
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let elapsed = self
             .last_tick
             .replace(now)
@@ -1835,9 +1842,9 @@ impl Widget for VirtualRows {
                 self.scroll.momentum.stop();
             }
         }
-        self.follow_scroll_to(crate::motion::frame_now());
+        self.follow_scroll_to(tilo_ui_base::motion::frame_now());
         if self.viewport.offset().to_bits() != offset.to_bits() {
-            crate::widget::note_layout_moved();
+            tilo_ui_base::widget::note_layout_moved();
         }
         if self.reorder.is_active() {
             let motion = self.reorder.tick(self.rect, elapsed, now);
@@ -1873,15 +1880,15 @@ impl Widget for VirtualRows {
         }
         self.bleed = match self.stance {
             RowStance::Flush => 0.0,
-            RowStance::Bleed => crate::chrome::row_bleed(theme),
-            RowStance::Column => crate::chrome::column_gutter(theme),
+            RowStance::Bleed => tilo_ui_base::chrome::row_bleed(theme),
+            RowStance::Column => tilo_ui_base::chrome::column_gutter(theme),
         };
-        self.lift = crate::chrome::row_bleed(theme);
+        self.lift = tilo_ui_base::chrome::row_bleed(theme);
         self.content_gutter = match self.stance {
-            RowStance::Column => crate::chrome::column_gutter(theme),
+            RowStance::Column => tilo_ui_base::chrome::column_gutter(theme),
             RowStance::Bleed | RowStance::Flush => 0.0,
         };
-        let disclosure = crate::chrome::disclosure_gutter(theme);
+        let disclosure = tilo_ui_base::chrome::disclosure_gutter(theme);
         if (disclosure - self.disclosure).abs() > 0.5 {
             let mounted: Vec<ListKey> = self.mounted.iter().map(|row| row.key.clone()).collect();
             self.invalidate_rows(mounted);
@@ -1899,7 +1906,7 @@ impl Widget for VirtualRows {
         // A pill floats over the rows it covers, so its width is the one its words need: measured
         // here, where the face's theme is known, so a list laid out and never drawn offers the
         // words whole.
-        self.pill_widths = crate::text_render::with_layout_renderer(theme, |text| {
+        self.pill_widths = tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
             crate::widget::conversation::Jump::ALL.map(|jump| jump.width(text, theme))
         });
         // A way back the list no longer offers keeps no focus: what was the keyboard's is gone.
@@ -2001,7 +2008,7 @@ impl Widget for VirtualRows {
                 continue;
             }
             let (index, key) = (row.index, row.key.clone());
-            let laid = crate::widget::layout::snap_to_device_pixels(f64::from(
+            let laid = tilo_ui_base::widget::layout::snap_to_device_pixels(f64::from(
                 styles.laid(child).size.height,
             ));
             let height = self.grouped_height(index, laid);
@@ -2027,7 +2034,7 @@ impl Widget for VirtualRows {
         true
     }
 
-    fn remount_children(&mut self, remount: &mut crate::widget::Remount<'_>) -> bool {
+    fn remount_children(&mut self, remount: &mut tilo_ui_base::widget::Remount<'_>) -> bool {
         if self.remount || self.structure_dirty {
             return self.remount_rows(remount);
         }
@@ -2037,7 +2044,7 @@ impl Widget for VirtualRows {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if !self.in_place {
             self.set_open(None);
         }
@@ -2060,17 +2067,17 @@ impl Widget for VirtualRows {
             }
         }
         let slack = self.end_slack();
-        let content = crate::widget::layout::snap_to_device_pixels(
+        let content = tilo_ui_base::widget::layout::snap_to_device_pixels(
             slack + self.layout_offset - self.viewport.offset(),
         );
         let child_origin = Point::new(self.rect.x0, self.rect.y0 + content);
         if self.fit_rows {
-            self.fit_shown = crate::widget::layout_clip().map_or(FitShown::Whole, |clip| {
+            self.fit_shown = tilo_ui_base::widget::layout_clip().map_or(FitShown::Whole, |clip| {
                 FitShown::Band(clip.y0 - child_origin.y, clip.y1 - child_origin.y)
             });
         }
         let near = self.mounted_near();
-        let again = crate::widget::placing_again(taffy);
+        let again = tilo_ui_base::widget::placing_again(taffy);
         let before = std::mem::replace(&mut self.near_placed, near.clone());
         let placing: Vec<usize> = if again {
             near.clone()
@@ -2146,14 +2153,14 @@ impl Widget for VirtualRows {
         self.scroll_dirty = false;
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.paint(&mut crate::draw::DrawCtx::new(
+        self.paint(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -2166,7 +2173,7 @@ impl Widget for VirtualRows {
         clippy::too_many_lines,
         reason = "keeps child, scrollbar, reorder, scroll, selection, and keyboard precedence explicit"
     )]
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.scroll.momentum.set_device_scale(ctx.scale_factor);
         self.scroll.device_scale = ctx.scale_factor;
         if self.route_menu(event, ctx) {
@@ -2184,7 +2191,7 @@ impl Widget for VirtualRows {
         ) && self
             .scroll
             .to
-            .take_over(crate::motion::frame_now())
+            .take_over(tilo_ui_base::motion::frame_now())
             .is_some()
         {
             self.refresh_anchor();
@@ -2250,7 +2257,7 @@ impl Widget for VirtualRows {
         {
             let reached = self.rows_reached(event);
             if let Some(rows) = self.mounted.get_mut(reached) {
-                crate::widget::route_to_mounted(
+                tilo_ui_base::widget::route_to_mounted(
                     rows,
                     |mounted| (&mut mounted.widget, mounted.node),
                     event,
@@ -2410,7 +2417,7 @@ impl Widget for VirtualRows {
                     WheelStep::Ignored => false,
                 };
                 if *ctx.handled {
-                    crate::widget::note_view_only_pan();
+                    tilo_ui_base::widget::note_view_only_pan();
                 }
             }
             WindowEvent::KeyboardInput { event, .. }
@@ -2456,10 +2463,10 @@ impl Widget for VirtualRows {
                     // list is not the one the keyboard is on, and its row's commands wait.
                     let mut answered = false;
                     if self.is_focused
-                        && let Some(pressed) = crate::platform::Shortcut::pressed(
+                        && let Some(pressed) = tilo_ui_base::platform::Shortcut::pressed(
                             &event.logical_key,
                             ctx.modifiers.state(),
-                            crate::platform::PlatformConventions::default(),
+                            tilo_ui_base::platform::PlatformConventions::default(),
                         )
                         && let Some(row) = self.focused_row_key()
                         && let Some(run) = self.on_row_shortcut.as_mut()
@@ -2634,19 +2641,19 @@ impl Widget for VirtualRows {
         self.row_box(self.model.index_of(&key)?)
     }
 
-    fn touch_claim(&self, point: vello::kurbo::Point) -> crate::interaction::TouchClaim {
+    fn touch_claim(&self, point: vello::kurbo::Point) -> tilo_ui_base::interaction::TouchClaim {
         // A list whose rows reorder lifts a row under a held finger, as a pointer press does: the
         // finger then moves it, and a drag before the hold still scrolls.
         if self.reorder_validator.is_some()
             && self.reorder_commit.is_some()
             && self.row_at(point).is_some()
         {
-            return crate::interaction::TouchClaim::HoldDrag;
+            return tilo_ui_base::interaction::TouchClaim::HoldDrag;
         }
         self.mounted
             .iter()
             .find(|row| row.widget.get_rect().contains(point))
-            .map_or(crate::interaction::TouchClaim::Pointer, |row| {
+            .map_or(tilo_ui_base::interaction::TouchClaim::Pointer, |row| {
                 row.widget.touch_claim(point)
             })
     }
@@ -2666,7 +2673,7 @@ impl Widget for VirtualRows {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.overlay_bar
             .as_ref()
             .is_some_and(crate::widget::OverlayScrollbar::needs_animation_frame)
@@ -2674,8 +2681,8 @@ impl Widget for VirtualRows {
             || self
                 .scroll
                 .momentum
-                .give_needs_frame(crate::motion::frame_now())
-            || self.reveal_in_progress(crate::motion::frame_now())
+                .give_needs_frame(tilo_ui_base::motion::frame_now())
+            || self.reveal_in_progress(tilo_ui_base::motion::frame_now())
             || self.growth.iter().any(|(_, growth)| growth.is_moving(now))
             || self.row_motion.is_moving(now)
             || self.arrivals.is_moving(now)
@@ -2698,8 +2705,8 @@ impl Widget for VirtualRows {
         dirty
     }
 
-    fn take_structure_change(&mut self) -> crate::widget::StructureChange {
-        use crate::widget::StructureChange;
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
+        use tilo_ui_base::widget::StructureChange;
         let mut change = if std::mem::take(&mut self.box_dirty) {
             StructureChange::Rebuild
         } else if (self.structure_dirty || self.remount) && self.layout_node.is_some() {
@@ -2723,15 +2730,15 @@ impl Widget for VirtualRows {
             regions.push(self.drawn());
             return;
         }
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let own_redraw =
             self.scroll.momentum.give_needs_frame(now) || self.arrivals.needs_redraw(now);
         match self.shown.compare(self, regions) {
-            crate::scroll_copy::Since::Copied => self.collect_row_damage(regions),
-            crate::scroll_copy::Since::Still if !shown_changed && !own_redraw => {
+            tilo_ui_base::scroll_copy::Since::Copied => self.collect_row_damage(regions),
+            tilo_ui_base::scroll_copy::Since::Still if !shown_changed && !own_redraw => {
                 self.collect_row_damage(regions);
             }
-            crate::scroll_copy::Since::Still | crate::scroll_copy::Since::Repaint => {
+            tilo_ui_base::scroll_copy::Since::Still | tilo_ui_base::scroll_copy::Since::Repaint => {
                 if shown_changed || (self.needs_redraw() || self.needs_animation_frame()) {
                     regions.push(self.drawn());
                 }
@@ -2742,14 +2749,16 @@ impl Widget for VirtualRows {
     fn needs_redraw(&self) -> bool {
         self.scroll
             .momentum
-            .give_needs_frame(crate::motion::frame_now())
-            || self.arrivals.needs_redraw(crate::motion::frame_now())
+            .give_needs_frame(tilo_ui_base::motion::frame_now())
+            || self
+                .arrivals
+                .needs_redraw(tilo_ui_base::motion::frame_now())
             || self.rename_needs_redraw()
             || self.menu_needs_redraw()
             || super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2758,9 +2767,15 @@ impl Widget for VirtualRows {
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         super::defaults::draw_overlay(
             self.children_mut(),
-            &mut crate::draw::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ),
         );
-        self.paint_menu(&mut crate::draw::DrawCtx::new(
+        self.paint_menu(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -2791,7 +2806,7 @@ impl Widget for VirtualRows {
     fn has_pending_visual_work(&self) -> bool {
         self.arrivals.revealing(crate::time::now())
             || super::defaults::has_pending_visual_work(&|visit| {
-                crate::widget::Widget::for_each_child(self, visit);
+                tilo_ui_base::widget::Widget::for_each_child(self, visit);
             })
     }
 
@@ -2824,18 +2839,20 @@ impl Widget for VirtualRows {
                 .any(|row| row.widget.layout_needs_measure())
     }
 
-    fn layout_info(&self) -> Option<crate::widget::LayoutInfo> {
-        Some(crate::widget::LayoutInfo::List(crate::widget::ListLayout {
-            heads_rows: groups::group_of(&*self.model, 0, self.tail_title.as_deref()).is_some(),
-            lead: crate::num::f32_of_f64(self.viewport.edges().0),
-            pill: self.pill_layout(),
-        }))
+    fn layout_info(&self) -> Option<tilo_ui_base::widget::LayoutInfo> {
+        Some(tilo_ui_base::widget::LayoutInfo::List(
+            tilo_ui_base::widget::ListLayout {
+                heads_rows: groups::group_of(&*self.model, 0, self.tail_title.as_deref()).is_some(),
+                lead: tilo_ui_base::num::f32_of_f64(self.viewport.edges().0),
+                pill: self.pill_layout(),
+            },
+        ))
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let enabled = self.is_enabled();
         Some(
-            crate::a11y::SharedAccessNode {
+            tilo_ui_base::a11y::SharedAccessNode {
                 node: self.access_root(enabled),
                 children: self.accessibility_children(enabled),
             }
@@ -2845,7 +2862,7 @@ impl Widget for VirtualRows {
 
     /// The list's own node, without reading a row: what a walk asking whether the list takes
     /// focus or hides from assistive technology needs of it.
-    fn accessibility_root(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility_root(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         Some(self.access_root(self.is_enabled()))
     }
 
@@ -2853,9 +2870,9 @@ impl Widget for VirtualRows {
         self.access_root(self.is_enabled()).state.hidden
     }
 
-    fn accessibility_shared(&self) -> Option<crate::a11y::SharedAccessNode> {
+    fn accessibility_shared(&self) -> Option<tilo_ui_base::a11y::SharedAccessNode> {
         let enabled = self.is_enabled();
-        Some(crate::a11y::SharedAccessNode {
+        Some(tilo_ui_base::a11y::SharedAccessNode {
             node: self.access_root(enabled),
             children: self.accessibility_children(enabled),
         })
@@ -2864,8 +2881,8 @@ impl Widget for VirtualRows {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.perform_a11y_action(target, action, state, path)

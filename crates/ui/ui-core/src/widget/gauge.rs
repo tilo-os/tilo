@@ -9,12 +9,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Arc, Cap, Circle, Join, Point, Rect, RoundedRect, Stroke, Vec2};
 use vello::peniko::{Brush, Color, Fill};
 
-use crate::paint::PaintCtx;
+use tilo_ui_base::paint::PaintCtx;
 
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::TaffyTreeExt;
-use crate::widget::{Tone, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{widget::Tone, widget::Widget};
 
 const BAR_TRACK_H: f64 = 8.0;
 
@@ -217,7 +217,7 @@ impl<'a> ProgressRingFace<'a> {
         match self.fill {
             RingFill::Progress => {
                 let colors = &theme.tokens.colors;
-                crate::tokens::colors::value_fill_on(
+                tilo_ui_base::tokens::colors::value_fill_on(
                     colors.intent.accent_ink,
                     colors.surfaces.content,
                     colors.intent.value_track,
@@ -299,7 +299,7 @@ impl<'a> ProgressRingFace<'a> {
         let value_h = self.value.map_or(0.0, |v| {
             f64::from(ctx.text.measure_style(v, None, &value_style).1)
         });
-        let inner = crate::num::f32_of_f64(chord(value_h + caption_h).max(1.0));
+        let inner = tilo_ui_base::num::f32_of_f64(chord(value_h + caption_h).max(1.0));
         let value = self
             .value
             .map(|v| ctx.text.elide_to_width_style(v, inner, &value_style));
@@ -362,7 +362,7 @@ pub struct ProgressRing {
     frac: f64,
     /// What the ring is drawn at: it follows `frac` on the motion a reading settles on, so a value
     /// that steps (a speed test's dial, a scan's progress) eases there instead of jumping.
-    drawn: crate::motion::MotionValue<f64>,
+    drawn: tilo_ui_base::motion::MotionValue<f64>,
     value: String,
     caption: String,
     size: ProgressRingSize,
@@ -388,7 +388,7 @@ impl ProgressRing {
                 } else {
                     0.0
                 };
-                crate::motion::MotionValue::new(at)
+                tilo_ui_base::motion::MotionValue::new(at)
             },
             value: String::new(),
             caption: String::new(),
@@ -404,7 +404,7 @@ impl ProgressRing {
     /// A ring bound to `state`: `read` turns the state into what the ring shows, and the
     /// ring follows every change on its own.
     pub fn from_state<T: 'static>(
-        state: &crate::LocalState<T>,
+        state: &tilo_ui_base::LocalState<T>,
         mut read: impl FnMut(&T) -> RingReading + 'static,
     ) -> Self {
         let first = state.with(&mut read);
@@ -492,8 +492,8 @@ impl ProgressRing {
     }
 
     fn face(&self) -> ProgressRingFace<'_> {
-        let mut face =
-            ProgressRingFace::new(self.drawn.get(crate::motion::frame_now())).size(self.size);
+        let mut face = ProgressRingFace::new(self.drawn.get(tilo_ui_base::motion::frame_now()))
+            .size(self.size);
         face.fill = self.fill;
         if !self.value.is_empty() {
             face = face.value(&self.value);
@@ -506,9 +506,13 @@ impl ProgressRing {
 }
 
 impl Widget for ProgressRing {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        _state: &tilo_ui_base::widget::AppModel,
+        _path: &tilo_ui_base::widget::ModelPath,
+    ) {
         if let Some(reading) = self.source.as_mut().and_then(|read| read()) {
             self.apply_reading(reading);
         }
@@ -520,7 +524,7 @@ impl Widget for ProgressRing {
         theme: &Theme,
         node_map: &mut HashMap<NodeId, *mut dyn Widget>,
     ) -> NodeId {
-        let side = crate::num::f32_of_f64(self.face().diameter(theme));
+        let side = tilo_ui_base::num::f32_of_f64(self.face().diameter(theme));
         let style = Style {
             size: Size::from_lengths(side, side),
             flex_shrink: 0.0,
@@ -530,14 +534,14 @@ impl Widget for ProgressRing {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if rect != self.rect {
             self.dirty = true;
         }
         self.rect = rect;
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -552,12 +556,12 @@ impl Widget for ProgressRing {
         if !self.drawn.target().total_cmp(&self.frac).is_eq() {
             self.drawn.set(
                 self.frac,
-                crate::motion::Follow::READING.timing(
-                    crate::motion::Direction::of(self.frac >= self.drawn.target()),
+                tilo_ui_base::motion::Follow::READING.timing(
+                    tilo_ui_base::motion::Direction::of(self.frac >= self.drawn.target()),
                     theme.motion(),
-                    crate::tokens::MotionSource::Pointer,
+                    tilo_ui_base::tokens::MotionSource::Pointer,
                 ),
-                crate::motion::frame_now(),
+                tilo_ui_base::motion::frame_now(),
             );
         }
         self.face().paint(
@@ -566,12 +570,14 @@ impl Widget for ProgressRing {
         );
     }
 
-    crate::redraw_flag!();
+    tilo_ui_base::redraw_flag!();
 
     fn needs_animation_frame(&self) -> bool {
         // The ring keeps asking for frames while its fill is on its way to the value it shows.
-        self.drawn.is_moving(crate::motion::frame_now())
-            || crate::widget::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+        self.drawn.is_moving(tilo_ui_base::motion::frame_now())
+            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
+                self.for_each_child(visit)
+            })
     }
 
     fn name(&self) -> &'static str {
@@ -582,8 +588,8 @@ impl Widget for ProgressRing {
         self.rect
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a 0..=1 fraction narrows to f32 for the percentage"
@@ -806,11 +812,11 @@ impl BarGauge {
 }
 
 impl Widget for BarGauge {
-    crate::described!();
+    tilo_ui_base::described!();
 
     crate::widget::chart_navigation::chart_leaf!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -831,19 +837,19 @@ impl Widget for BarGauge {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
         "BarGauge"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
         // `label` names it; `value` is the caller's readout when present
         // (e.g. "3.2 GB"), else the fraction as a percentage. Both are
         // display strings, not FTL keys, so no lookup.
@@ -865,7 +871,7 @@ impl Widget for BarGauge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::text_render::TextRenderer;
+    use tilo_ui_base::text_render::TextRenderer;
     use vello_encoding::DrawTag;
 
     fn count_color_tags(scene: &Scene) -> usize {
@@ -901,7 +907,7 @@ mod tests {
         {
             // What a person reads is the indicator: the fill. The track is one light neutral
             // under every bar, ring and gauge; the fill stands out from it and from the page.
-            let min = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
+            let min = tilo_ui_base::tokens::colors::NON_TEXT_MIN_CONTRAST;
             for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
                 let ground = theme.tokens.colors.surfaces.content;
                 let track = theme.tokens.colors.intent.value_track;
@@ -952,7 +958,7 @@ mod tests {
                 "the seconds paint inside a small ring"
             );
 
-            let state = crate::LocalState::new(30_u32);
+            let state = tilo_ui_base::LocalState::new(30_u32);
             let mut ring = ProgressRing::from_state(&state, |left| {
                 RingReading::new(f64::from(*left) / 30.0, left.to_string()).caption("seconds")
             })
@@ -996,7 +1002,7 @@ mod tests {
             assert_eq!(hot.fill_colour(&theme), theme.tokens.colors.semantic.danger);
             let ring = ProgressRing::new(0.42).value("42%").caption("CPU");
             let node = Widget::accessibility(&ring).unwrap();
-            assert_eq!(node.role, crate::a11y::Role::ProgressBar);
+            assert_eq!(node.role, tilo_ui_base::a11y::Role::ProgressBar);
             assert_eq!(node.name.as_deref(), Some("CPU"));
             assert_eq!(node.value.as_deref(), Some("42%"));
         }
@@ -1008,15 +1014,15 @@ mod tests {
             ring.set(0.8, "8.0");
             assert_eq!(ring.frac, 0.8, "the reading is what it is going to");
             // Drawing starts the motion, and the frames it asks for carry it there.
-            let frame = crate::motion::pin_frame();
-            let start = crate::motion::frame_now();
+            let frame = tilo_ui_base::motion::pin_frame();
+            let start = tilo_ui_base::motion::frame_now();
             let drawn = {
                 ring.drawn.set(
                     ring.frac,
-                    crate::motion::Follow::READING.timing(
-                        crate::motion::Direction::Enter,
+                    tilo_ui_base::motion::Follow::READING.timing(
+                        tilo_ui_base::motion::Direction::Enter,
                         Theme::dark().motion(),
-                        crate::tokens::MotionSource::Pointer,
+                        tilo_ui_base::tokens::MotionSource::Pointer,
                     ),
                     start,
                 );
@@ -1024,7 +1030,7 @@ mod tests {
             };
             assert!(drawn < 0.8, "it has not jumped to the value: {drawn}");
             drop(frame);
-            let _later = crate::motion::pin_frame_at(start + crate::time::Duration::from_millis(40));
+            let _later = tilo_ui_base::motion::pin_frame_at(start + crate::time::Duration::from_millis(40));
             assert!(ring.face().frac > drawn, "it eases there");
         }
 

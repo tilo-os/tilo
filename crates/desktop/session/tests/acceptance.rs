@@ -35,7 +35,7 @@ use crate::common::{
 /// or strips stands beside it.
 #[test]
 fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
         collab: false,
@@ -89,7 +89,7 @@ fn step_1_the_session_starts_with_the_shell_as_the_whole_screen() {
 /// action as a program calls it.
 #[test]
 fn step_2_the_repl_connects_and_lists_the_sessions_resources() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     until(&mut session, "the bar", |session| {
@@ -146,7 +146,7 @@ fn step_2_the_repl_connects_and_lists_the_sessions_resources() {
 /// and the screen changes with it.
 #[test]
 fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     until(&mut session, "the bar", |session| {
@@ -186,7 +186,7 @@ fn step_3_the_repl_switches_the_layout_and_the_screen_changes() {
 /// Step 4: "my mails" places Mail's root, drawn as the inbox with its threads.
 #[test]
 fn step_4_my_mails_places_the_inbox_with_its_threads() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let mut repl = Api::open(&mut session, root.path());
@@ -224,7 +224,7 @@ fn step_4_my_mails_places_the_inbox_with_its_threads() {
 /// Step 5: an inline edit of a placed record commits, through the session's owner of the record.
 #[test]
 fn step_5_an_inline_edit_of_a_placed_record_commits() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let note = seeded_note(&session, "Groceries");
@@ -248,7 +248,11 @@ fn step_5_an_inline_edit_of_a_placed_record_commits() {
     });
     let edited = "Groceries and lemons";
     assert!(
-        session.a11y_perform(place, field, &ui::a11y::Action::SetValue(edited.to_owned())),
+        session.a11y_perform(
+            place,
+            field,
+            &tilo_ui_base::a11y::Action::SetValue(edited.to_owned())
+        ),
         "the place takes the edit its field offers"
     );
 
@@ -267,7 +271,7 @@ fn step_5_an_inline_edit_of_a_placed_record_commits() {
 /// same, whether the person typed it or an agent ran it.
 #[test]
 fn step_7_what_the_repl_types_runs_the_same_as_the_agents_program() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     until(&mut session, "the bar", |session| {
@@ -324,7 +328,7 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
             }
         })
     }
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
 
@@ -392,7 +396,7 @@ fn step_8_a_dock_press_opens_its_item_and_the_bar_shows_the_windows_actions() {
 /// Step 9: a theme switch changes how the session looks and nothing of its layout.
 #[test]
 fn step_9_a_theme_switch_changes_looks_only() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let mut repl = Api::open(&mut session, root.path());
@@ -511,7 +515,7 @@ fn title_field(session: &Session, value: &str) -> Option<(usize, ui::accesskit::
 /// words while the shell's record moves under it.
 #[test]
 fn typing_at_the_canvas_caret_shows_what_is_typed() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let root = private_home();
     let mut session = seeded_session(root.path());
     let at = crate::common::free_point(&mut session);

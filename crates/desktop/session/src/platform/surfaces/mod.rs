@@ -13,7 +13,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_session_core::surfaces::Published;
-use ui::widget::Widget;
+use tilo_ui_base::widget::Widget;
 
 pub use tilo_session_core::surface::Placement;
 
@@ -114,7 +114,7 @@ pub trait Layer {
     fn relayout(&self);
 
     /// Draw it in `theme`.
-    fn set_theme(&self, theme: ui::Theme);
+    fn set_theme(&self, theme: tilo_ui_base::Theme);
 
     /// What it shows, as a number that moves when its frame changed.
     fn revision(&self) -> u64;
@@ -123,7 +123,11 @@ pub trait Layer {
     fn a11y_tree(&self) -> Option<ui::accesskit::TreeUpdate>;
 
     /// Assistive technology acted on `target`.
-    fn a11y_action(&self, target: ui::accesskit::NodeId, action: &ui::a11y::Action) -> bool;
+    fn a11y_action(
+        &self,
+        target: ui::accesskit::NodeId,
+        action: &tilo_ui_base::a11y::Action,
+    ) -> bool;
 
     /// What it says to assistive technology, as its own widgets name it.
     fn accessible_labels(&self) -> Vec<String>;

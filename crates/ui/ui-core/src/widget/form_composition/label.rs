@@ -1,8 +1,8 @@
 //! A field label aligned to its first control, independent of supporting rows: its field sets the
 //! inset that centres it on the control's first line.
 use super::{
-    HashMap, NodeId, Parts, Point, Rect, Size, Style, TaffyTree, TextRenderer, Theme, Widget,
-    column_style, measure_owned, retained_parts,
+    HashMap, NodeId, Parts, Size, Style, TaffyTree, TextRenderer, Theme, Widget, column_style,
+    measure_owned,
 };
 
 pub(super) struct FieldLabel {
@@ -12,7 +12,7 @@ impl Widget for FieldLabel {
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
     }
-    retained_parts!("FieldLabel");
+    tilo_ui_base::retained_parts!("FieldLabel");
     fn build_layout(
         &mut self,
         tree: &mut TaffyTree<()>,
@@ -37,14 +37,14 @@ impl Widget for FieldLabel {
             measure_owned(label.as_mut(), available.width, text)
         })
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.parts.draw(&mut crate::draw::DrawCtx::new(
+        self.parts.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,

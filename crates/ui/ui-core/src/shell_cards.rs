@@ -15,8 +15,8 @@ use crate::floating_surface::{
     FloatingSource, FloatingSurfaceHostMessage, FloatingSurfaceRequest, protocol_rect_array,
 };
 use crate::live_activity::{Kind, Summary};
-use crate::widget::{EventCtx, Widget};
 use crate::winit::event::{ElementState, WindowEvent};
+use tilo_ui_base::{widget::EventCtx, widget::Widget};
 
 /// One card an app presents over the shell.
 #[derive(Debug)]
@@ -250,7 +250,7 @@ impl ShellCards {
 
     /// Draw each card by the app in `surface` that owns it, over what the
     /// shell drew.
-    pub fn draw(&self, surface: &mut dyn Widget, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub fn draw(&self, surface: &mut dyn Widget, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -260,7 +260,7 @@ impl ShellCards {
         for shown in &self.shown {
             surface.draw_floating_surface(
                 &shown.id,
-                &mut crate::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
+                &mut tilo_ui_base::draw::DrawCtx::new(scene, transform, text, theme, env.clone()),
             );
         }
     }
@@ -272,7 +272,7 @@ impl ShellCards {
     pub fn accessibility(
         &self,
         surface: &dyn Widget,
-    ) -> Vec<(&str, Rect, crate::a11y::AccessNode)> {
+    ) -> Vec<(&str, Rect, tilo_ui_base::a11y::AccessNode)> {
         self.shown
             .iter()
             .filter_map(|shown| {
@@ -289,8 +289,8 @@ impl ShellCards {
         &self,
         surface: &mut dyn Widget,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> bool {
         self.shown.iter().any(|shown| {
@@ -309,8 +309,8 @@ mod tests {
     use taffy::{NodeId, Style, TaffyTree};
 
     use super::*;
-    use crate::Theme;
-    use crate::widget::TaffyTreeExt as _;
+    use tilo_ui_base::Theme;
+    use tilo_ui_base::widget::TaffyTreeExt as _;
 
     /// A surface with one card up, which keeps what the shell told it.
     struct CardSurface {
@@ -340,7 +340,7 @@ mod tests {
     }
 
     impl Widget for CardSurface {
-        crate::provides!(dyn crate::floating_surface::FloatingSurfaceProvider);
+        tilo_ui_base::provides!(dyn crate::floating_surface::FloatingSurfaceProvider);
 
         fn build_layout(
             &mut self,
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn keys_follow_the_pressed_card_and_a_card_the_app_drops_is_handed_back() {
-        use crate::synthetic_input::{mouse_press, named_key};
+        use tilo_ui_base::{synthetic_input::mouse_press, synthetic_input::named_key};
 
         let told = Rc::new(RefCell::new(Vec::new()));
         let mut surface = CardSurface {

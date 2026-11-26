@@ -5,7 +5,7 @@ use crate::window_toolbar::{ToolbarEvent, deliver, notice, notify};
 const DOC: Option<&str> = Some("Launch checklist");
 
 fn init() {
-    crate::i18n::I18nManager::init("en-US");
+    tilo_ui_base::i18n::I18nManager::init("en-US");
     notify(None);
 }
 

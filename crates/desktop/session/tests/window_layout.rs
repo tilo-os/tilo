@@ -78,7 +78,7 @@ const OPEN_APP: &str = "open-app";
 /// this device's, and the person hears nothing.
 #[test]
 fn a_shell_this_device_cannot_seal_is_not_said_to_have_been_refused() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // What the session says about the layout's write: the log is where a write that was not made says
     // why, and this test reads it too.
     let logged = std::sync::Arc::new(std::sync::Mutex::new(String::new()));

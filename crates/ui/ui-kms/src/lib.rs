@@ -22,8 +22,9 @@ use std::sync::{Arc, Mutex, PoisonError};
 use ui::time::Instant;
 
 use rustix::event::{EventfdFlags, PollFd, PollFlags};
+use tilo_ui_base::{InputDevice as Device, InteractionEnvironment};
+use ui::App;
 use ui::app::{AppSurface, SurfaceDamage};
-use ui::{App, InputDevice as Device, InteractionEnvironment};
 use winit::event::TouchPhase;
 
 pub use display::{Display, DisplayError};
@@ -73,7 +74,7 @@ impl Proxy {
     }
 
     /// Hand `payload` to the app as an external event
-    /// ([`ui::widget::Widget::on_external_event`]).
+    /// ([`tilo_ui_base::widget::Widget::on_external_event`]).
     pub fn send_external(&self, payload: String) {
         self.0.ask(|asked| asked.external.push(payload));
     }
@@ -153,7 +154,7 @@ pub struct Host {
     touches: HashMap<u64, (f64, f64)>,
     /// Taps, drags and pinches as pointer events, as the platform window
     /// makes them.
-    emulator: ui::TouchPointerEmulator,
+    emulator: tilo_ui_base::TouchPointerEmulator,
 }
 
 /// Cores the rasterizer uses for a large region.
@@ -188,7 +189,7 @@ impl Host {
                 redraw: std::cell::Cell::new(true),
             },
             touches: HashMap::new(),
-            emulator: ui::TouchPointerEmulator::default(),
+            emulator: tilo_ui_base::TouchPointerEmulator::default(),
         })
     }
 
@@ -205,7 +206,7 @@ impl Host {
     /// them: exactly what is there, so a screen with no keyboard knows.
     fn environment(&self, current: InteractionEnvironment) -> InteractionEnvironment {
         let present = self.input.present();
-        let mut available = ui::InputAvailability::NONE;
+        let mut available = tilo_ui_base::InputAvailability::NONE;
         if present.keyboard {
             available = available.with(Device::Keyboard);
         }

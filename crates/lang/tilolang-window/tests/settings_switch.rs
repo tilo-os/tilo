@@ -22,7 +22,7 @@ const LAPTOP: (u32, u32) = (1280, 800);
 fn places_in_front(window: &tilolang_window::Window) -> Vec<String> {
     accessible(window)
         .into_iter()
-        .filter(|node| node.role == ui::a11y::Role::TreeItem)
+        .filter(|node| node.role == tilo_ui_base::a11y::Role::TreeItem)
         .filter(|node| {
             node.bounds.is_some_and(|b| {
                 b.x0 >= -0.5
@@ -41,7 +41,7 @@ fn places_in_front(window: &tilolang_window::Window) -> Vec<String> {
 /// forward in its place.
 #[test]
 fn the_pane_an_app_opens_comes_forward_on_a_phone() {
-    let mut window = open(PHONE, ui::Theme::light());
+    let mut window = open(PHONE, tilo_ui_base::Theme::light());
     assert!(
         !places_in_front(&window).is_empty(),
         "a phone's window opens on the list of places: {:?}",
@@ -70,12 +70,12 @@ fn the_pane_an_app_opens_comes_forward_on_a_phone() {
 /// A wide window keeps its places beside the pane it shows, whichever pane that is.
 #[test]
 fn a_wide_window_keeps_its_places_beside_the_pane() {
-    let mut window = open(LAPTOP, ui::Theme::light());
+    let mut window = open(LAPTOP, tilo_ui_base::Theme::light());
     open_pane(&mut window, "power");
     assert!(shows(&window, "Power mode"), "{:?}", said(&window));
     let places: Vec<String> = accessible(&window)
         .into_iter()
-        .filter(|node| node.role == ui::a11y::Role::TreeItem)
+        .filter(|node| node.role == tilo_ui_base::a11y::Role::TreeItem)
         .filter_map(|node| node.name)
         .collect();
     assert!(

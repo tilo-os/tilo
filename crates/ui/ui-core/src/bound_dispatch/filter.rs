@@ -21,7 +21,7 @@ pub(crate) fn filter_shared(
     token: u64,
     resource: &SharedResource,
 ) -> Option<SharedResource> {
-    use crate::published::Filtered;
+    use tilo_ui_base::published::Filtered;
     let filtered = resource.filtered(token).unwrap_or_else(|| {
         let filtered = filter_shared_node(binding, token, resource);
         resource.remember_filtered(token, filtered.clone());
@@ -43,7 +43,7 @@ pub(super) fn inherit_filtered(
     last: &SharedResource,
     next: &SharedResource,
 ) {
-    use crate::published::Filtered;
+    use tilo_ui_base::published::Filtered;
     if next.filtered(token).is_some()
         || !matches!(last.filtered(token), Some(Filtered::Same))
         || !same_offer(last, next)
@@ -63,8 +63,8 @@ fn filter_shared_node(
     binding: &CallbackBinding,
     token: u64,
     resource: &SharedResource,
-) -> crate::published::Filtered<SharedResource> {
-    use crate::published::{Filtered, SharedChildren};
+) -> tilo_ui_base::published::Filtered<SharedResource> {
+    use tilo_ui_base::{published::Filtered, published::SharedChildren};
     let _phase = tilo_actions::profiling::Phase::start("ui.filtered_resource");
     let head = resource.head();
     let permissions = binding.permissions.borrow();
@@ -99,9 +99,9 @@ fn filter_shared_node(
 fn filter_shared_children(
     binding: &CallbackBinding,
     token: u64,
-    children: &crate::published::SharedChildren,
-) -> crate::published::Filtered<crate::published::SharedChildren> {
-    use crate::published::{Filtered, SharedChildren};
+    children: &tilo_ui_base::published::SharedChildren,
+) -> tilo_ui_base::published::Filtered<tilo_ui_base::published::SharedChildren> {
+    use tilo_ui_base::{published::Filtered, published::SharedChildren};
     if let Some(filtered) = children.filtered(token) {
         return filtered;
     }
@@ -144,7 +144,7 @@ pub(super) fn insert_available_permitted(
 }
 
 fn insert_available(
-    decider: &crate::permissions::ActionDecider<'_>,
+    decider: &tilo_ui_base::permissions::ActionDecider<'_>,
     resources: &[ResourceSpec],
     allowed: &mut std::collections::HashSet<tilo_actions::ActionAddress>,
 ) {

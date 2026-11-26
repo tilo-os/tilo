@@ -10,9 +10,9 @@ use std::time::Instant;
 
 use tilo_compositor::{Compositor, WindowEffect};
 
+use tilo_ui_base::{motion::Direction, motion::WindowMotion};
+use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource};
 use ui::kurbo::{Point, Rect};
-use ui::motion::{Direction, WindowMotion};
-use ui::tokens::{EffectiveMotion, MotionSource};
 
 /// How far a window `elapsed` into its motion `direction` has come.
 fn progress(motion: EffectiveMotion, direction: Direction, elapsed: std::time::Duration) -> f64 {
@@ -102,9 +102,10 @@ impl WindowMotions {
             if let std::collections::btree_map::Entry::Vacant(appearing) = self.known.entry(info.id)
             {
                 appearing.insert(Some(now));
-                if let Some(control) =
-                    control(ui::motion::recent_input(now), compositor.pointer_location())
-                {
+                if let Some(control) = control(
+                    tilo_ui_base::motion::recent_input(now),
+                    compositor.pointer_location(),
+                ) {
                     self.controls.insert(info.id, control);
                 }
             }
@@ -259,7 +260,7 @@ mod tests {
 
         phase reduced_motion_only_fades_in_place;
         {
-            let motions = WindowMotions::new(EffectiveMotion::new(ui::tokens::Motion::default(), true));
+            let motions = WindowMotions::new(EffectiveMotion::new(tilo_ui_base::tokens::Motion::default(), true));
             let half = motions.effect(0.5, Some(window()), Some(CONTROL));
             assert_eq!(half.offset, (0.0, 0.0), "it does not travel: {half:?}");
             assert!((half.scale - 1.0).abs() < f64::EPSILON, "{half:?}");

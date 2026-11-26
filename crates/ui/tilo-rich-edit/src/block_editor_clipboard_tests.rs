@@ -9,12 +9,18 @@ use ui::widget::marks::{Mark, MarkSpan};
 use winit::keyboard::ModifiersState;
 
 fn chord(editor: &mut BlockEditor, doc: &mut AutoCommit, modifiers: ModifiersState, key: &str) {
-    let event =
-        ui::synthetic_input::key_event(Key::Character(key.into()), None, ElementState::Pressed);
+    let event = tilo_ui_base::synthetic_input::key_event(
+        Key::Character(key.into()),
+        None,
+        ElementState::Pressed,
+    );
     let handled = Dispatch::new()
         .modifiers(modifiers)
         .doc(doc)
-        .send(editor, &ui::synthetic_input::keyboard_input(event))
+        .send(
+            editor,
+            &tilo_ui_base::synthetic_input::keyboard_input(event),
+        )
         .handled;
     assert!(handled, "the editor takes {modifiers:?}+{key}");
     editor.sync(doc, &ROOT);
@@ -82,7 +88,7 @@ tilo_test_env::scenario! {
         fn ctrl_v_brings_in_headings_lists_and_marks() {
             let (services, _recorder) = ui::process::ProcessServices::recording();
             let _host = ui::process::enter(&services);
-            assert!(ui::clipboard_copy_rich_accepted(
+            assert!(tilo_ui_base::clipboard_copy_rich_accepted(
                 "<h2>Agenda</h2><p>Be <b>brief</b></p><ol><li>one</li></ol>",
                 "Agenda\nBe brief\none",
             ));
@@ -107,7 +113,7 @@ tilo_test_env::scenario! {
         fn a_paste_inside_words_joins_them_at_both_ends() {
             let (services, _recorder) = ui::process::ProcessServices::recording();
             let _host = ui::process::enter(&services);
-            assert!(ui::clipboard_copy_rich_accepted("<i>very</i> ", "very "));
+            assert!(tilo_ui_base::clipboard_copy_rich_accepted("<i>very</i> ", "very "));
             let mut editor = editing(&[BlockContent::paragraph("", "a good day")]);
             editor.focus_block(0, CursorPlacement::Byte(2));
             let mut doc = AutoCommit::new();
@@ -125,7 +131,7 @@ tilo_test_env::scenario! {
         fn ctrl_shift_v_pastes_the_words_alone() {
             let (services, _recorder) = ui::process::ProcessServices::recording();
             let _host = ui::process::enter(&services);
-            assert!(ui::clipboard_copy_rich_accepted(
+            assert!(tilo_ui_base::clipboard_copy_rich_accepted(
                 "<h1><b>Loud</b></h1>",
                 "Loud"
             ));
@@ -147,7 +153,7 @@ tilo_test_env::scenario! {
         fn code_takes_the_words_not_the_formatting() {
             let (services, _recorder) = ui::process::ProcessServices::recording();
             let _host = ui::process::enter(&services);
-            assert!(ui::clipboard_copy_rich_accepted(
+            assert!(tilo_ui_base::clipboard_copy_rich_accepted(
                 "<h1>x = <b>1</b></h1>",
                 "x = 1"
             ));
@@ -166,7 +172,7 @@ tilo_test_env::scenario! {
         fn plain_words_still_paste_as_words() {
             let (services, _recorder) = ui::process::ProcessServices::recording();
             let _host = ui::process::enter(&services);
-            ui::clipboard_copy("<b>not html</b>");
+            tilo_ui_base::clipboard_copy("<b>not html</b>");
             let mut editor = editing(&[BlockContent::paragraph("", "")]);
             editor.focus_block(0, CursorPlacement::End);
             let mut doc = AutoCommit::new();
@@ -237,9 +243,9 @@ tilo_test_env::scenario! {
     phase the_text_menu_is_accessible;
     {
         fn find<'a>(
-            node: &'a ui::a11y::AccessNode,
+            node: &'a tilo_ui_base::a11y::AccessNode,
             key: &str,
-        ) -> Option<&'a ui::a11y::AccessNode> {
+        ) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
             if node.semantic_key.as_deref() == Some(key) {
                 return Some(node);
             }
@@ -255,7 +261,7 @@ tilo_test_env::scenario! {
         assert!(editor.open_text_menu(Point::new(10.0, 12.0)));
         let tree = Widget::accessibility(&editor).expect("the editor is in the tree");
         let menu = find(&tree, "editor.text-menu").expect("the open menu is in the tree");
-        assert_eq!(menu.role, ui::a11y::Role::Menu);
+        assert_eq!(menu.role, tilo_ui_base::a11y::Role::Menu);
         let row = |name: &str| {
             menu.children
                 .iter()
@@ -270,8 +276,8 @@ tilo_test_env::scenario! {
         let mut doc = AutoCommit::new();
         assert!(editor.perform_semantic_action(
             &copy,
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
+            &tilo_ui_base::a11y::Action::Activate,
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &ROOT,
         ));
         assert!(
@@ -302,13 +308,13 @@ impl WithKind for BlockContent {
 /// menu, so the box is the menu's to show and to hear.
 #[test]
 fn a_click_on_send_to_opens_the_box_in_the_text_menus_place() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     ui::shared_selection::set_send_host_available(true);
     let mut editor = editing(&[para("plan for friday", Vec::new())]);
     editor.blocks[0]
         .line
         .apply_layout_external(Rect::new(0.0, 0.0, 300.0, 24.0));
-    ui::widget::context_menu::note_input(&ui::synthetic_input::mouse_input(
+    ui::widget::context_menu::note_input(&tilo_ui_base::synthetic_input::mouse_input(
         ElementState::Pressed,
         MouseButton::Right,
     ));
@@ -317,7 +323,7 @@ fn a_click_on_send_to_opens_the_box_in_the_text_menus_place() {
     let send = menu.items().len() - 1;
     assert_eq!(
         menu.items()[send].label(),
-        Some(ui::i18n::widget_text("menu-send").as_str())
+        Some(tilo_ui_base::i18n::widget_text("menu-send").as_str())
     );
     let row = menu
         .item_rect(send)
@@ -325,9 +331,9 @@ fn a_click_on_send_to_opens_the_box_in_the_text_menus_place() {
         .center();
     let mut doc = AutoCommit::new();
     for event in [
-        ui::synthetic_input::cursor_moved(row.x, row.y),
-        ui::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Left),
-        ui::synthetic_input::mouse_input(ElementState::Released, MouseButton::Left),
+        tilo_ui_base::synthetic_input::cursor_moved(row.x, row.y),
+        tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Left),
+        tilo_ui_base::synthetic_input::mouse_input(ElementState::Released, MouseButton::Left),
     ] {
         Dispatch::new().doc(&mut doc).send(&mut editor, &event);
     }

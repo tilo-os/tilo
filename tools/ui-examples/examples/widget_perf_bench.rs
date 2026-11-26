@@ -10,20 +10,22 @@ use std::collections::HashMap;
 use automerge::AutoCommit;
 use jiff::civil::Date;
 use taffy::{AvailableSpace, NodeId, Size, TaffyTree};
-use tilo_ui::component::{Described, ResourceId};
-use tilo_ui::i18n::I18nManager;
-use tilo_ui::offscreen::OffscreenRenderer;
-use tilo_ui::presence::PresenceCtx;
-use tilo_ui::text_render::TextRenderer;
-use tilo_ui::theme::Theme;
-use tilo_ui::widget::DrawChild;
 use tilo_ui::widget::toggle_group::Segment;
 use tilo_ui::widget::toolbar::Orientation as ToolbarOrientation;
-use tilo_ui::widget::{
-    Avatar, Badge, Breadcrumb, ColorPicker, Column, DatePicker, DescribedTreeView, ProgressBar,
-    Row, ScrollAxis, Scrollable, Spinner, Text, TimePicker, ToggleGroup, Toolbar,
-    TreeViewNodeProps, TreeViewProps, Widget,
+use tilo_ui::{
+    widget::Avatar, widget::Badge, widget::Breadcrumb, widget::ColorPicker, widget::Column,
+    widget::DatePicker, widget::DescribedTreeView, widget::ProgressBar, widget::Row,
+    widget::Scrollable, widget::Spinner, widget::Text, widget::TimePicker, widget::ToggleGroup,
+    widget::Toolbar, widget::TreeViewNodeProps, widget::TreeViewProps,
 };
+use tilo_ui_base::i18n::I18nManager;
+use tilo_ui_base::offscreen::OffscreenRenderer;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{component::Described, component::ResourceId};
+use tilo_ui_base::{widget::ScrollAxis, widget::Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::{Color, ImageData as PenikoImage};
@@ -197,7 +199,7 @@ impl Bench {
         };
         // SAFETY: the tree, its node map and the text renderer above stay exclusively borrowed.
         let layout_result = unsafe {
-            tilo_ui::widget::solve_built_layout(
+            tilo_ui_base::widget::solve_built_layout(
                 root.as_ref(),
                 taffy,
                 root_node,
@@ -356,10 +358,10 @@ impl Bench {
         };
         root.handle_event(
             &move_evt,
-            &mut tilo_ui::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: tilo_ui::widget::Edits::lend(doc),
+                state: tilo_ui_base::widget::Edits::lend(doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -375,10 +377,10 @@ impl Bench {
         };
         root.handle_event(
             &press_evt,
-            &mut tilo_ui::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: tilo_ui::widget::Edits::lend(doc),
+                state: tilo_ui_base::widget::Edits::lend(doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,
@@ -394,10 +396,10 @@ impl Bench {
         };
         root.handle_event(
             &release_evt,
-            &mut tilo_ui::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor: 1.0,
                 modifiers: &modifiers,
-                state: tilo_ui::widget::Edits::lend(doc),
+                state: tilo_ui_base::widget::Edits::lend(doc),
                 path: &automerge::ObjId::Root,
                 handled: &mut handled,
                 focus_target: &mut focus_target,

@@ -7,7 +7,7 @@ use crate::setup::view::{FullOsCheck, SetupApp};
 #[derive(Default)]
 pub(super) struct Compatibility {
     pub pending: bool,
-    result: Option<ui::LocalState<Option<FullOsCheck>>>,
+    result: Option<tilo_ui_base::LocalState<Option<FullOsCheck>>>,
 }
 
 impl InstallerPreview {
@@ -52,7 +52,7 @@ impl InstallerPreview {
         {
             return Err("installer-review-installation-unavailable");
         }
-        let result = ui::LocalState::new(None);
+        let result = tilo_ui_base::LocalState::new(None);
         self.show_desktop(SetupApp::for_full_os_check(result.clone()))?;
         self.compatibility.result = Some(result);
         Ok(())
@@ -142,7 +142,7 @@ mod tests {
             let mut preview = linux_preview();
             preview.journey.destination = Some(Destination::Computer);
             let history = preview.journey.history.clone();
-            preview.compatibility.result = Some(ui::LocalState::new(None));
+            preview.compatibility.result = Some(tilo_ui_base::LocalState::new(None));
             preview.direct.active = true;
             preview.direct.navigation.set(true);
             preview
@@ -165,7 +165,7 @@ mod tests {
             let facts = storage.facts.clone().unwrap();
             let plan = storage.plan.unwrap().unwrap();
             let guid = plan.basis.disk.guid.clone();
-            preview.compatibility.result = Some(ui::LocalState::new(Some(FullOsCheck { facts, plan })));
+            preview.compatibility.result = Some(tilo_ui_base::LocalState::new(Some(FullOsCheck { facts, plan })));
             preview.direct.active = true;
             assert!(preview.drain_compatibility());
             assert!(!preview.direct.active);

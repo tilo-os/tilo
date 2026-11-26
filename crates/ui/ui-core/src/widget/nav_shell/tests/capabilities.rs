@@ -1,6 +1,6 @@
 use super::*;
-use crate::component::Described;
 use crate::widget::{FilterCount, Filterable};
+use tilo_ui_base::component::Described;
 
 fn labelled(id: &'static str, label: &str, icon: Icon) -> Element {
     Box::new(Button::new(id, label).with_icon(icon).on_open(|| {}))
@@ -358,7 +358,7 @@ tilo_test_env::scenario! {
         at_mut(&mut h.root_mut::<NavShell>().headers, Column::Content)
             .more
             .choose(row);
-        h.send(&crate::synthetic_input::cursor_moved(10.0, 300.0));
+        h.send(&tilo_ui_base::synthetic_input::cursor_moved(10.0, 300.0));
         assert!(deleted.get(), "the chosen action ran through its api");
     }
 }
@@ -373,7 +373,7 @@ tilo_test_env::scenario! {
     // chip, and a press pops the stack.
     phase back_follows_the_apps_page_stack;
     {
-        let pages = LocalState::new(crate::NavStack::new("dashboard"));
+        let pages = LocalState::new(tilo_ui_base::NavStack::new("dashboard"));
         let shell = NavShell::new()
             .content(TestLeaf::fill("content").boxed().0)
             .content_header("Dashboard", Vec::new())
@@ -396,7 +396,7 @@ tilo_test_env::scenario! {
         settle(&mut h, 1024, 700);
         assert_eq!(geometry(&h).back, Rect::ZERO);
 
-        let pages = LocalState::new(crate::NavStack::new("watch"));
+        let pages = LocalState::new(tilo_ui_base::NavStack::new("watch"));
         pages.update(|stack| stack.push("creator"));
         let shell = NavShell::new()
             .sidebar(TestLeaf::fill("sidebar").boxed().0)
@@ -634,7 +634,7 @@ tilo_test_env::scenario! {
             .sidebar(Box::new(filtered(&other)))
             .content(TestLeaf::fill("content").boxed().0);
         assert!(
-            crate::widget::capability::capability_mut::<dyn Filterable>(&mut plain).is_none(),
+            tilo_ui_base::widget::capability::capability_mut::<dyn Filterable>(&mut plain).is_none(),
             "a shell answers for its sidebar's list only when it searches it"
         );
     }
@@ -643,7 +643,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn an_enlarged_inspector_sheet_leaves_the_content_above_it_in_reach() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     for theme in [Theme::light(), Theme::dark().with_text_scale(2.0)] {
         let band = f64::from(theme.tokens.metrics.min_pointer_target + theme.tokens.spacing.s4);
         let (content, events) = TestLeaf::fill("content").boxed();
@@ -698,9 +698,9 @@ impl Widget for Capturing {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if matches!(event, WindowEvent::MouseInput { .. }) {
             self.events.set(self.events.get().saturating_add(1));
             *ctx.handled = true;
@@ -765,7 +765,7 @@ impl Filterable for Filtered {
 }
 
 impl Widget for Filtered {
-    crate::provides!(dyn Filterable);
+    tilo_ui_base::provides!(dyn Filterable);
 
     fn build_layout(
         &mut self,
@@ -818,7 +818,7 @@ fn a_headers_parts_keep_their_places_beside_each_other() {
     assert!(leading.y1 <= g.header_height);
 
     let theme = Theme::dark();
-    let gutter = crate::chrome::column_gutter(&theme);
+    let gutter = tilo_ui_base::chrome::column_gutter(&theme);
     let shell = NavShell::new()
         .overview(TestLeaf::fill("overview").boxed().0)
         .content(TestLeaf::fill("content").boxed().0)
@@ -860,7 +860,7 @@ fn a_headers_parts_keep_their_places_beside_each_other() {
     assert_eq!(
         TextRenderer::new().elide_to_width_style(
             "Notes",
-            crate::num::f32_of_f64(title.width()),
+            tilo_ui_base::num::f32_of_f64(title.width()),
             &style
         ),
         "Notes",

@@ -59,7 +59,7 @@ tilo_test_env::scenario! {
             micros += 16_667;
             s.advance_momentum(at(micros));
         }
-        let rest = tilo_ui::virtual_viewport::glide_rest_distance(1500.0);
+        let rest = tilo_ui_base::virtual_viewport::glide_rest_distance(1500.0);
         assert!(
             (f64::from(s.offset_y()) - rest).abs() <= 1.0,
             "the flick glides the whole way to its rest: {} of {rest}",
@@ -70,9 +70,9 @@ tilo_test_env::scenario! {
 
 use tilo_ui::State;
 use tilo_ui::headless::Driver;
-use tilo_ui::local_state::LocalState;
-use tilo_ui::theme::Theme;
 use tilo_ui::widget::{Button, Column, Container, Text, TextInput};
+use tilo_ui_base::local_state::LocalState;
+use tilo_ui_base::theme::Theme;
 
 fn editor_driver(text: &LocalState<String>, fill: bool, scale: f32) -> Driver {
     let mut scroll = Scrollable::new_vertical().fill_parent_height();
@@ -204,9 +204,9 @@ fn writing_surface_fills_the_viewport_and_settles_across_changes() {
     {
         use std::collections::HashMap;
         use taffy::{AvailableSpace, Dimension, Size, TaffyTree};
-        use tilo_ui::text_render::TextRenderer;
-        use tilo_ui::widget::bound_nodes::BoundNodeMap;
-        use tilo_ui::widget::{Widget, compute_widget_layout};
+        use tilo_ui_base::text_render::TextRenderer;
+        use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
+        use tilo_ui_base::{widget::Widget, widget::compute_widget_layout};
         use vello::kurbo::Point;
 
         let text = LocalState::new(String::new());
@@ -283,7 +283,7 @@ fn scrollable_editor_routes_wheel_and_keeps_focus() {
                 TextInput::local()
                     .with_id("fractional-editor")
                     .multiline(true)
-                    .with_text_role(tilo_ui::TextRole::Reading)
+                    .with_text_role(tilo_ui_base::TextRole::Reading)
                     .with_initial_value(&("A line of text.\n".repeat(46) + "Final line")),
             ));
         let mut driver = Driver::new(State::new(), Box::new(root), (416, 300));
@@ -325,7 +325,7 @@ fn scrollable_editor_routes_wheel_and_keeps_focus() {
             driver.click_at(x, 20.0);
             assert_eq!(
                 driver.focused_access_node().unwrap().role,
-                tilo_ui::a11y::Role::Group
+                tilo_ui_base::a11y::Role::Group
             );
             let before = driver.targets().get("content").unwrap().y0;
             driver.key("ArrowDown");
@@ -344,7 +344,7 @@ fn tall_scroll_driver(theme: Theme) -> Driver {
                 .with_child(Box::new(Text::new("Tall content").with_id("content"))),
         ));
     let mut driver = Driver::new_with_theme(State::new(), Box::new(root), (400, 300), theme);
-    driver.send(&tilo_ui::synthetic_input::cursor_moved(150.0, 150.0));
+    driver.send(&tilo_ui_base::synthetic_input::cursor_moved(150.0, 150.0));
     driver
 }
 

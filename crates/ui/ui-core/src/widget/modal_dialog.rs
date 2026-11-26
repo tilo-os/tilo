@@ -28,9 +28,6 @@
 //! screen reader presses them but they are never published to an agent: that consent stays
 //! with the person.
 
-use crate::i18n::widget_text;
-use crate::widget::DrawChild;
-use crate::widget::{AppModel, ModelPath};
 #[cfg(test)]
 use automerge::AutoCommit;
 use automerge::ObjId;
@@ -39,22 +36,26 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use taffy::{NodeId, Size, Style, TaffyTree};
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Vec2};
 use vello::peniko::{BlendMode, Color, Fill};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::icons::Icon;
-use crate::interaction::InteractionEnvironment;
-use crate::platform::{DialogActionOrder, PlatformConventions};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::Widget;
 use crate::widget::button::{Button, ButtonFace, ButtonRole};
 use crate::widget::control_size::ControlSize;
-use crate::widget::{TaffyTreeExt, floating_surface};
+use crate::widget::floating_surface;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::interaction::InteractionEnvironment;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{platform::DialogActionOrder, platform::PlatformConventions};
 
 pub const MODAL_MAX_WIDTH: f64 = 520.0;
 /// Narrowest a modal sheet is drawn, in design pixels, before it elides.
@@ -293,8 +294,8 @@ pub enum ModalHit {
 }
 
 pub fn ink(theme: &Theme) -> (Color, Color) {
-    let ground = crate::chrome::panel_ground(theme);
-    if crate::a11y::contrast_ratio(theme.text_primary, ground) >= MODAL_MIN_INK_CONTRAST {
+    let ground = tilo_ui_base::chrome::panel_ground(theme);
+    if tilo_ui_base::a11y::contrast_ratio(theme.text_primary, ground) >= MODAL_MIN_INK_CONTRAST {
         (theme.text_primary, theme.text_dim)
     } else {
         let on = theme.on_content();
@@ -360,7 +361,7 @@ fn title_lines(
         return Vec::new();
     }
     let style = theme.text(TextRole::Title);
-    text_renderer.clamp_to_lines(title, &style, crate::num::f32_of_f64(width), 2)
+    text_renderer.clamp_to_lines(title, &style, tilo_ui_base::num::f32_of_f64(width), 2)
 }
 
 /// Paint the scrim, the sheet, the title and the close control. Call
@@ -392,7 +393,7 @@ pub fn paint_scrim(
     } else {
         1.0
     };
-    crate::overlay::scrim::behind_panel(
+    tilo_ui_base::overlay::scrim::behind_panel(
         scene,
         transform,
         layout.scrim,
@@ -411,11 +412,11 @@ pub fn paint_sheet(
 ) {
     if layout.foot {
     } else if layout.card == layout.scrim {
-        crate::part_paint::material::paint_material(
+        tilo_ui_base::part_paint::material::paint_material(
             scene,
             transform,
             &layout.card,
-            crate::part_paint::material::Material::Opaque,
+            tilo_ui_base::part_paint::material::Material::Opaque,
             theme,
         );
     } else {
@@ -425,13 +426,13 @@ pub fn paint_sheet(
     if let Some(icon) = spec.icon.filter(|_| layout.title.height() > 0.0) {
         let (ink, _) = ink(theme);
         let rect = title_icon_rect(layout, theme);
-        crate::icons::draw_icon(
+        tilo_ui_base::icons::draw_icon(
             scene,
             transform,
             rect,
             icon,
             ink,
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
     }
     if !spec.title.is_empty() {
@@ -442,7 +443,7 @@ pub fn paint_sheet(
         let mut y = if lines.len() > 1 {
             layout.title.y0
         } else {
-            crate::text_metrics::centered_text_top(
+            tilo_ui_base::text_metrics::centered_text_top(
                 layout.title.y0,
                 title_row_height(theme).min(layout.title.height()),
                 line_h,
@@ -462,7 +463,7 @@ pub fn paint_sheet(
     }
 
     if let Some(c) = layout.close {
-        let name = crate::i18n::widget_format("widget-dialog-close", &[]);
+        let name = tilo_ui_base::i18n::widget_format("widget-dialog-close", &[]);
         let face = ButtonFace::icon_only(c, Icon::X, &name)
             .hovered(spec.close_hovered)
             .focused(spec.close_focused);
@@ -471,7 +472,7 @@ pub fn paint_sheet(
 }
 
 fn on_sheet(theme: &Theme) -> Theme {
-    theme.on_ground(crate::chrome::panel_ground(theme))
+    theme.on_ground(tilo_ui_base::chrome::panel_ground(theme))
 }
 
 /// Paint the footer actions. Call after drawing the body.
@@ -544,7 +545,7 @@ pub struct ModalSheet {
     focus: Option<usize>,
     enabled: Vec<bool>,
     visual: Vec<usize>,
-    appear: crate::motion::Appearing,
+    appear: tilo_ui_base::motion::Appearing,
 }
 
 impl ModalSheet {
@@ -577,7 +578,7 @@ impl ModalSheet {
         if message.is_empty() {
             return 0.0;
         }
-        let width = crate::num::f32_of_f64(body_width(window, max_width, theme));
+        let width = tilo_ui_base::num::f32_of_f64(body_width(window, max_width, theme));
         let (_, h) = text_renderer.measure_style(message, Some(width), &theme.text(TextRole::Body));
         f64::from(h)
     }
@@ -608,7 +609,7 @@ impl ModalSheet {
                     message,
                     dim,
                     transform.pre_translate(Vec2::new(body.x0, body.y0)),
-                    Some(crate::num::f32_of_f64(body.width())),
+                    Some(tilo_ui_base::num::f32_of_f64(body.width())),
                     &theme.text(TextRole::Body),
                 );
             },
@@ -668,7 +669,7 @@ impl ModalSheet {
         if layout.card == layout.scrim {
             pose.transform = Affine::IDENTITY;
         }
-        let scrim = crate::motion::Pose {
+        let scrim = tilo_ui_base::motion::Pose {
             opacity: pose.opacity,
             transform: Affine::IDENTITY,
         };
@@ -842,7 +843,7 @@ struct LayoutKey {
     clippy::struct_excessive_bools,
     reason = "independent open, presentation, hosting and invalidation flags"
 )]
-#[crate::component::not_a_component(
+#[tilo_ui_base::component::not_a_component(
     part,
     "the dialog `ui.ModalDialog` is built from, around the view's content"
 )]
@@ -899,7 +900,7 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     structure_dirty: bool,
     platform: PlatformConventions,
     layout_theme: Theme,
-    appear: crate::motion::Appearance,
+    appear: tilo_ui_base::motion::Appearance,
     anchor: Option<Rect>,
     foot: Option<super::BottomSheet>,
     environment: InteractionEnvironment,
@@ -955,7 +956,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
             structure_dirty: false,
             platform: PlatformConventions::default(),
             layout_theme: Theme::dark(),
-            appear: crate::motion::Appearance::default(),
+            appear: tilo_ui_base::motion::Appearance::default(),
             anchor: None,
             foot: None,
         }
@@ -1046,7 +1047,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
     }
 
     #[must_use]
-    pub fn appearing(mut self, appearance: crate::motion::Appearance) -> Self {
+    pub fn appearing(mut self, appearance: tilo_ui_base::motion::Appearance) -> Self {
         self.appear = appearance;
         self
     }
@@ -1066,7 +1067,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
     /// first control.
     pub fn set_open(&mut self, open: bool) {
         if !open {
-            self.shut(crate::motion::input_source());
+            self.shut(tilo_ui_base::motion::input_source());
             return;
         }
         if !self.up() {
@@ -1251,7 +1252,7 @@ impl<C: Widget + ?Sized> ModalDialog<C> {
         }
     }
 
-    fn shut(&mut self, source: crate::tokens::MotionSource) -> bool {
+    fn shut(&mut self, source: tilo_ui_base::tokens::MotionSource) -> bool {
         if !self.up() {
             return false;
         }
@@ -1524,7 +1525,7 @@ impl ModalDialog<dyn Widget> {
         }
         let body_w = body_width(self.window, self.max_width, theme);
         let available = Size {
-            width: taffy::AvailableSpace::Definite(crate::num::f32_of_f64(body_w)),
+            width: taffy::AvailableSpace::Definite(tilo_ui_base::num::f32_of_f64(body_w)),
             height: taffy::AvailableSpace::MaxContent,
         };
         let content = floating_surface::DetachedContent::lay_out(
@@ -1580,7 +1581,7 @@ impl ModalDialog<dyn Widget> {
     fn forward_to_header(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         let Some(header) = self.header.as_mut() else {
             return false;
@@ -1621,7 +1622,7 @@ impl ModalDialog<dyn Widget> {
     fn forward_to_content(
         &mut self,
         event: &WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         floating_surface::DetachedContent::forward(
             &mut self.content,
@@ -1696,7 +1697,7 @@ impl ModalDialog<dyn Widget> {
         let body = layout.body;
         let card = layout.card;
         let rule = f64::from(theme.tokens.metrics.chrome_rule_px).max(1.0);
-        let hairline = crate::chrome::chrome_hairline(theme);
+        let hairline = tilo_ui_base::chrome::chrome_hairline(theme);
         let max_scroll = (self.content_size.1 - body.height()).max(0.0);
         if self.scroll > 0.5 {
             scene.fill(
@@ -1722,7 +1723,11 @@ impl ModalDialog<dyn Widget> {
             scene,
             transform,
             track,
-            crate::widget::ScrollMetrics::new(self.content_size.1, body.height(), self.scroll),
+            tilo_ui_base::widget::ScrollMetrics::new(
+                self.content_size.1,
+                body.height(),
+                self.scroll,
+            ),
             theme,
             false,
         );
@@ -1739,7 +1744,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
         event: &WindowEvent,
         scale_factor: f64,
         modifiers: Modifiers,
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ObjId,
     ) -> bool {
         if !self.up() {
@@ -1753,7 +1758,7 @@ impl<C: Widget + 'static> ModalDialog<C> {
         let mut focus_target = None;
         self.handle_event(
             event,
-            &mut crate::widget::EventCtx {
+            &mut tilo_ui_base::widget::EventCtx {
                 scale_factor,
                 modifiers: &modifiers,
                 state: state.reborrow(),
@@ -1791,7 +1796,7 @@ impl Widget for ModalDialog<dyn Widget> {
         }
         self.laid_out_for = None;
         let theme = self.layout_theme.clone();
-        crate::text_render::with_layout_renderer(&theme, |tr| {
+        tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| {
             if self.host_content.is_some() {
                 self.resolve(&theme, tr);
             } else {
@@ -1806,9 +1811,9 @@ impl Widget for ModalDialog<dyn Widget> {
 
     fn update(&mut self, state: &AppModel, path: &ModelPath) -> bool {
         if self.up() && (self.stale || self.remeasure) {
-            crate::widget::note_layout_moved();
+            tilo_ui_base::widget::note_layout_moved();
         }
-        super::defaults::update(self.children_mut(), state, path)
+        tilo_ui_base::widget::defaults::update(self.children_mut(), state, path)
     }
 
     fn build_layout(
@@ -1894,7 +1899,7 @@ impl Widget for ModalDialog<dyn Widget> {
                 }
             });
         let body_w = body_width(window, self.max_width, &self.layout_theme);
-        let pad = crate::num::f32_of_f64((node_w - body_w).max(0.0));
+        let pad = tilo_ui_base::num::f32_of_f64((node_w - body_w).max(0.0));
         let Ok(mut style) = taffy.style(node).cloned() else {
             return false;
         };
@@ -1912,7 +1917,7 @@ impl Widget for ModalDialog<dyn Widget> {
         if !self.presented {
             self.window = host_window.map(|(_, rect)| rect).unwrap_or_else(|| {
                 tree_window(taffy, node)
-                    .unwrap_or_else(|| crate::widget::layout_rect(taffy, node, origin))
+                    .unwrap_or_else(|| tilo_ui_base::widget::layout_rect(taffy, node, origin))
             });
         }
         let Some(content_node) = taffy
@@ -1936,7 +1941,7 @@ impl Widget for ModalDialog<dyn Widget> {
                 (f64::from(l.size.width), f64::from(l.size.height))
             });
         let theme = self.layout_theme.clone();
-        crate::text_render::with_layout_renderer(&theme, |tr| self.resolve(&theme, tr));
+        tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| self.resolve(&theme, tr));
         self.content_laid_out_in = self.body_rect().width();
         let place = |dialog: &mut Self| {
             let target = dialog.content_target();
@@ -1959,7 +1964,7 @@ impl Widget for ModalDialog<dyn Widget> {
         self.remeasure = false;
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2018,7 +2023,7 @@ impl Widget for ModalDialog<dyn Widget> {
         if layout.card == layout.scrim || layout.foot {
             pose.transform = Affine::IDENTITY;
         }
-        let scrim = crate::motion::Pose {
+        let scrim = tilo_ui_base::motion::Pose {
             opacity: pose.opacity,
             transform: Affine::IDENTITY,
         };
@@ -2076,17 +2081,18 @@ impl Widget for ModalDialog<dyn Widget> {
             scene.pop_layer();
         }
         self.paint_scroll_edges(scene, transform, theme);
-        self.content.draw_overlay(&mut crate::draw::DrawCtx::new(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            env.clone(),
-        ));
+        self.content
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
         pose.end(scene);
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if !self.up() {
             return;
         }
@@ -2133,7 +2139,7 @@ impl Widget for ModalDialog<dyn Widget> {
                     let enter = *key == NamedKey::Enter;
                     let content_handled = self.forward_to_header(event, ctx)
                         || self.forward_to_content(event, ctx)
-                        || crate::widget::activate_focused(
+                        || tilo_ui_base::widget::activate_focused(
                             &mut self.content,
                             &mut ctx.state,
                             ctx.path,
@@ -2236,7 +2242,7 @@ impl Widget for ModalDialog<dyn Widget> {
     }
 
     fn dismiss_presented_modal(&mut self) -> bool {
-        self.shut(crate::tokens::MotionSource::Pointer)
+        self.shut(tilo_ui_base::tokens::MotionSource::Pointer)
     }
 
     fn presents_modal(&self) -> bool {
@@ -2364,8 +2370,8 @@ impl Widget for ModalDialog<dyn Widget> {
         !self.is_drawn()
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let title = widget_text(&self.title);
         let name = (!title.is_empty()).then_some(title);
         let mut node = AccessNode::new(Role::Dialog)
@@ -2419,7 +2425,10 @@ impl Widget for ModalDialog<dyn Widget> {
         if self.up() && self.closable() {
             node.children.push(
                 AccessNode::new(Role::Button)
-                    .with_name(crate::i18n::widget_format("widget-dialog-close", &[]))
+                    .with_name(tilo_ui_base::i18n::widget_format(
+                        "widget-dialog-close",
+                        &[],
+                    ))
                     .with_key(3)
                     .with_state(AccessState::new().focusable(true))
                     .with_bounds(self.close_rect().unwrap_or(Rect::ZERO))
@@ -2440,11 +2449,11 @@ impl Widget for ModalDialog<dyn Widget> {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        _: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &ModelPath,
     ) -> bool {
-        if !self.up() || !matches!(action, crate::a11y::Action::Activate) {
+        if !self.up() || !matches!(action, tilo_ui_base::a11y::Action::Activate) {
             return false;
         }
         let id = self.action_identity;
@@ -2474,7 +2483,7 @@ impl Widget for ModalDialog<dyn Widget> {
             .children
             .get(*index)?
             .bounds
-            .map(super::super::a11y::AccessBounds::to_rect)
+            .map(tilo_ui_base::a11y::AccessBounds::to_rect)
     }
 }
 
@@ -2483,7 +2492,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         Some(self)
     }
 
-    crate::provides!(dyn crate::widget::controls::ActionControls,);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls,);
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
         Some(self)
@@ -2529,7 +2538,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         self.as_dyn_mut().apply_layout(taffy, node, origin);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2537,7 +2546,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.as_dyn_mut()
-            .draw_overlay(&mut crate::draw::DrawCtx::new(
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -2546,7 +2555,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
             ));
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.as_dyn_mut().handle_event(event, ctx);
     }
 
@@ -2599,7 +2608,7 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
     }
 
     fn needs_redraw(&self) -> bool {
-        self.as_dyn().needs_redraw() || crate::widget::Widget::needs_animation_frame(self)
+        self.as_dyn().needs_redraw() || tilo_ui_base::widget::Widget::needs_animation_frame(self)
     }
 
     fn needs_animation_frame(&self) -> bool {
@@ -2614,15 +2623,15 @@ impl<C: Widget + 'static> Widget for ModalDialog<C> {
         self.as_dyn().traps_focus()
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.as_dyn().accessibility()
     }
 
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        arg2: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        arg2: &mut tilo_ui_base::widget::Edits<'_>,
         arg3: &ModelPath,
     ) -> bool {
         self.as_dyn_mut()

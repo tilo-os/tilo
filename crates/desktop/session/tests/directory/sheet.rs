@@ -36,7 +36,7 @@ fn sheet_over_a_window() -> (Session, Client) {
 /// window: the list narrows to what was typed.
 #[test]
 fn typing_reaches_the_sheets_field_and_not_the_window_behind_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, mut client) = sheet_over_a_window();
     let seen_before = client.seen.keys.clone();
     // "salon" is on no listing, so the list says nothing matches.
@@ -74,7 +74,7 @@ fn typing_reaches_the_sheets_field_and_not_the_window_behind_it() {
 /// the key.
 #[test]
 fn escape_closes_the_sheet_and_never_reaches_the_window() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, mut client) = sheet_over_a_window();
     assert!(
         session
@@ -103,7 +103,7 @@ fn escape_closes_the_sheet_and_never_reaches_the_window() {
 /// and the window sees no button.
 #[test]
 fn a_click_outside_the_sheet_never_reaches_the_window() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, mut client) = sheet_over_a_window();
     let buttons_before = client.seen.buttons.clone();
     // The card is drawn before a press is decided against it: its layout is what the press lands
@@ -141,7 +141,7 @@ fn a_click_outside_the_sheet_never_reaches_the_window() {
 /// typing after it narrows the list.
 #[test]
 fn a_click_inside_the_sheet_reaches_its_controls() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (mut session, mut client) = sheet_over_a_window();
     // The sheet publishes its field as the screen reader reads it: the shared search field, named
     // by the words it stands for.
@@ -201,7 +201,7 @@ fn sheet_control(session: &Session, name: &str) -> Option<(f64, f64, f64, f64)> 
 /// so the sheet stays up and says which one to ask for.
 #[test]
 fn choosing_join_says_the_workspace_needs_an_invitation() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut env = tilo_test_env::ScopedEnv::new();
     let (_identity, _person) = this_computer(&mut env);
     let responder = joining_site(vec![community_entry(34, now_ms()), club_entry(now_ms())]);
@@ -245,7 +245,7 @@ fn choosing_join_says_the_workspace_needs_an_invitation() {
 /// A sheet the session closed stops being drawn: nothing is left on screen taking no input.
 #[test]
 fn a_sheet_the_session_closed_stops_being_drawn() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut env = tilo_test_env::ScopedEnv::new();
     let _config = community_site(&mut env, "http://127.0.0.1:1/");
     let mut session = session();

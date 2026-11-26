@@ -10,7 +10,7 @@ use super::{
     BandCopy, FrameCache, Layer, LayerTexture, LayerWork, Shown, StripLayers, WorkspaceWork,
     append_panned, plan, warm_bands,
 };
-use crate::damage::area;
+use tilo_ui_base::damage::area;
 
 /// What a [`LayerPresenter`] rasterises with and composites through.
 pub trait LayerRaster {

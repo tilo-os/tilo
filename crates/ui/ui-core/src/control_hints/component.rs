@@ -17,12 +17,14 @@ use super::coach::{MAX_SHOWINGS, Phase};
 use super::performed::{self, Performed};
 use super::shell::{HINTS, Signal};
 use super::{Gesture, HintLayer, HintLook, HintPlace, HintSpec, Learned, Quiet};
-use crate::component::{Component, Described, Event, Value};
-use crate::theme::Theme;
 use crate::time::{Duration, Instant};
-use crate::tokens::EffectiveMotion;
 use crate::widget::floating_surface::PopoverSide;
-use crate::widget::{TaffyTreeExt, Widget};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::EffectiveMotion;
+use tilo_ui_base::{
+    component::Component, component::Described, component::Event, component::Value,
+};
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
 /// How long after search closes a window that appears counts as opened from it.
 const OPENED_FROM_SEARCH: Duration = Duration::from_secs(3);
@@ -149,7 +151,7 @@ pub struct ControlHints {
     reading_ink: bool,
     /// They were just asked: one more frame brings what they read.
     ink_frame: Cell<bool>,
-    said: Option<crate::a11y::AccessNode>,
+    said: Option<tilo_ui_base::a11y::AccessNode>,
 }
 
 impl Described for ControlHints {
@@ -182,7 +184,7 @@ impl Described for ControlHints {
     }
 
     fn set_props(&mut self, props: ControlHintsProps) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let record = record(&props);
         if record != self.record {
             self.take_record(&record, now);
@@ -343,7 +345,7 @@ impl ControlHints {
         };
         let area = self.rect;
         let words = |spec: &HintSpec<Signal>| {
-            crate::i18n::widget_format(
+            tilo_ui_base::i18n::widget_format(
                 spec.touch_words
                     .filter(|_| self.touch)
                     .unwrap_or(spec.words),
@@ -509,7 +511,7 @@ fn place(
 }
 
 impl Widget for ControlHints {
-    crate::described!();
+    tilo_ui_base::described!();
 
     fn name(&self) -> &'static str {
         "ControlHints"
@@ -531,7 +533,7 @@ impl Widget for ControlHints {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
     /// It fills the box it is given and measures nothing, so it asks layout only until it is
     /// placed.
@@ -539,14 +541,14 @@ impl Widget for ControlHints {
         self.rect == Rect::ZERO
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.motion = theme.motion();
         let seen = Self::seen(transform);
         let ink = self.reading_ink;
@@ -573,18 +575,18 @@ impl Widget for ControlHints {
             || performed::pending()
             || self
                 .layer
-                .needs_frame(crate::motion::frame_now(), self.motion)
+                .needs_frame(tilo_ui_base::motion::frame_now(), self.motion)
     }
 
     fn needs_animation_frame(&self) -> bool {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.ink_frame.replace(false)
             || performed::pending()
             || self.layer.needs_frame(now, self.motion)
     }
 
     fn next_wake_deadline(&self) -> Option<Instant> {
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         self.layer.next_wake(now, self.motion)
     }
 
@@ -592,7 +594,7 @@ impl Widget for ControlHints {
         regions.extend(self.painted.iter().flatten().copied());
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.said.clone()
     }
 }

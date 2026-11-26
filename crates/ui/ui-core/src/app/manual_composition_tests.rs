@@ -1,5 +1,6 @@
 use super::*;
-use crate::widget::{Button, Field, Form, FormSection, Manual, MeasureConstraint, TextInput};
+use crate::{widget::Button, widget::Field, widget::Form, widget::FormSection, widget::TextInput};
+use tilo_ui_base::{widget::Manual, widget::MeasureConstraint};
 
 #[test]
 fn manual_composition_preserves_focus_selection_clicks_and_children_across_frames() {
@@ -81,7 +82,7 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
             run(&mut app, 900);
             app.set_focused_node(Some(app.focusable_order[0]));
             app.mutate_node(app.focused_node.unwrap(), |widget| {
-                crate::widget::undo_points::set_state(widget, "8:b:2")
+                tilo_ui_base::widget::undo_points::set_state(widget, "8:b:2")
             })
             .unwrap();
             for (width, x) in [(340, 0.25), (900, 5.75), (900, 0.25)] {
@@ -91,7 +92,7 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
                 assert_eq!(
                     app.inspect_node(focused, |widget| (
                         widget.test_id().map(str::to_owned),
-                        crate::widget::undo_points::get_state(widget),
+                        tilo_ui_base::widget::undo_points::get_state(widget),
                         widget.text_review().unwrap().1
                     ))
                     .unwrap(),
@@ -207,7 +208,7 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
             let save_node = app.focusable_order[1];
             app.set_focused_node(Some(input_node));
             app.mutate_node(input_node, |widget| {
-                crate::widget::undo_points::set_state(widget, "8:b:2")
+                tilo_ui_base::widget::undo_points::set_state(widget, "8:b:2")
             })
             .unwrap();
             paint(&mut app);
@@ -240,7 +241,7 @@ fn manual_composition_preserves_focus_selection_clicks_and_children_across_frame
             assert_eq!(app.focused_node, Some(input_node));
             assert_eq!(
                 app.inspect_node(input_node, |widget| (
-                    crate::widget::undo_points::get_state(widget),
+                    tilo_ui_base::widget::undo_points::get_state(widget),
                     widget.text_review().unwrap().1
                 ))
                 .unwrap(),

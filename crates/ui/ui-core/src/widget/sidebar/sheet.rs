@@ -46,7 +46,7 @@ impl SidebarDrawer {
     /// Back's step on the sheet while it shows ([`BottomSheet::lower`]):
     /// from the whole window it comes down to half and this returns `true`;
     /// otherwise `false`, and the holder puts the drawer away.
-    pub fn lower_sheet(&mut self, motion: crate::tokens::EffectiveMotion) -> bool {
+    pub fn lower_sheet(&mut self, motion: tilo_ui_base::tokens::EffectiveMotion) -> bool {
         if !self.rises_as_sheet() || !self.is_open() {
             return false;
         }
@@ -62,8 +62,8 @@ impl SidebarDrawer {
     pub fn handle_sheet_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &crate::widget::EventCtx<'_>,
-        motion: crate::tokens::EffectiveMotion,
+        ctx: &tilo_ui_base::widget::EventCtx<'_>,
+        motion: tilo_ui_base::tokens::EffectiveMotion,
     ) -> SheetInput {
         if !self.rises_as_sheet() || !self.is_open() {
             return SheetInput::Ignored;
@@ -87,7 +87,7 @@ impl SidebarDrawer {
     /// The sheet as a region named `name`, its grip a slider holding the
     /// detent; `None` unless it shows.
     #[must_use]
-    pub fn sheet_accessibility(&self, name: &str) -> Option<crate::a11y::AccessNode> {
+    pub fn sheet_accessibility(&self, name: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
         let sheet = self.sheet().filter(|_| self.is_open())?;
         Some(sheet.accessibility(name, self.sheet_target()))
     }
@@ -96,8 +96,8 @@ impl SidebarDrawer {
     pub fn perform_sheet_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        motion: crate::tokens::EffectiveMotion,
+        action: &tilo_ui_base::a11y::Action,
+        motion: tilo_ui_base::tokens::EffectiveMotion,
     ) -> bool {
         if target != self.sheet_target() || !self.rises_as_sheet() || !self.is_open() {
             return false;

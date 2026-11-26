@@ -9,7 +9,7 @@ impl TextInput {
     }
 
     pub(crate) fn shown_scroll_y(&self) -> f64 {
-        self.scroll_y + self.wheel_glide.give(crate::motion::frame_now())
+        self.scroll_y + self.wheel_glide.give(tilo_ui_base::motion::frame_now())
     }
 
     pub fn scroll_by(&mut self, dy: f64) {
@@ -25,7 +25,7 @@ impl TextInput {
     /// move the text 1:1 in logical pixels and, lifted while moving, leave
     /// it gliding to a stop (the shared [`ScrollMomentum`]).
     ///
-    /// [`ScrollMomentum`]: crate::virtual_viewport::ScrollMomentum
+    /// [`ScrollMomentum`]: tilo_ui_base::virtual_viewport::ScrollMomentum
     pub(super) fn handle_mouse_wheel(
         &mut self,
         delta: &winit::event::MouseScrollDelta,
@@ -33,7 +33,7 @@ impl TextInput {
         scale_factor: f64,
         handled: &mut bool,
     ) {
-        use crate::virtual_viewport::WheelStep;
+        use tilo_ui_base::virtual_viewport::WheelStep;
         let dy = match delta {
             winit::event::MouseScrollDelta::LineDelta(_, y) => {
                 self.wheel_glide.stop();
@@ -46,8 +46,8 @@ impl TextInput {
                 self.wheel_glide.set_view(
                     view_h,
                     self.multiline && spare > 0.0,
-                    crate::tokens::EffectiveMotion::new(
-                        crate::tokens::Motion::default(),
+                    tilo_ui_base::tokens::EffectiveMotion::new(
+                        tilo_ui_base::tokens::Motion::default(),
                         self.reduce_motion,
                     ),
                 );
@@ -74,7 +74,7 @@ impl TextInput {
         if !self.wheel_glide.is_active() {
             return;
         }
-        let delta = self.wheel_glide.advance(crate::motion::frame_now());
+        let delta = self.wheel_glide.advance(tilo_ui_base::motion::frame_now());
         let before = self.scroll_y;
         self.scroll_by(delta);
         if self.scroll_y.to_bits() == before.to_bits() {

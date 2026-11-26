@@ -227,7 +227,7 @@ fn doing_window() -> (App, Rc<Cell<u32>>) {
     let count = Rc::clone(&pressed);
     let button =
         crate::widget::Button::new("go", "Play").on_click(move || count.set(count.get() + 1));
-    let identified = crate::widget::Identified::new(Box::new(button), doing());
+    let identified = tilo_ui_base::widget::Identified::new(Box::new(button), doing());
     let column = crate::widget::Column::new().push(Box::new(identified));
     let mut app = app_with_root(crate::State::new(), Box::new(column));
     layout(&mut app);
@@ -281,17 +281,19 @@ fn composer_window() -> App {
     let send = format!("chat.Channel{}send", '\u{1f}');
     let field = crate::testing::OwnedText::new(
         "draft",
-        crate::widget::TextInput::new(vec![crate::presence::PathSegment::Field("draft".into())])
-            .with_id("draft")
-            .with_accessible_name("Message #general"),
+        crate::widget::TextInput::new(vec![tilo_ui_base::presence::PathSegment::Field(
+            "draft".into(),
+        )])
+        .with_id("draft")
+        .with_accessible_name("Message #general"),
     );
-    let button = crate::widget::Button::icon_only("send", crate::icons::Icon::Send, "Send");
+    let button = crate::widget::Button::icon_only("send", tilo_ui_base::icons::Icon::Send, "Send");
     let row = crate::widget::Row::new()
-        .push(Box::new(crate::widget::Identified::new(
+        .push(Box::new(tilo_ui_base::widget::Identified::new(
             Box::new(field),
             send.clone(),
         )))
-        .push(Box::new(crate::widget::Identified::new(
+        .push(Box::new(tilo_ui_base::widget::Identified::new(
             Box::new(button),
             send,
         )));
@@ -328,7 +330,7 @@ fn an_icon_only_button_in_a_composer_row_is_listed_by_its_label() {
 /// What a window shows that has no menu of its own, counting the keys that reach it.
 struct Keys(Rc<Cell<u32>>);
 
-impl crate::widget::Widget for Keys {
+impl tilo_ui_base::widget::Widget for Keys {
     crate::testing::inert_widget_methods!(leaf_layout);
     fn name(&self) -> &'static str {
         "keys"
@@ -336,7 +338,7 @@ impl crate::widget::Widget for Keys {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        _ctx: &mut crate::widget::EventCtx<'_>,
+        _ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         if matches!(event, winit::event::WindowEvent::KeyboardInput { .. }) {
             self.0.set(self.0.get() + 1);
@@ -393,9 +395,9 @@ fn the_box_a_send_key_opens_tells_the_shell_its_controls() {
     let targets = told(&mut app, &mut shell);
     let names: Vec<&str> = targets.iter().map(|target| target.name.as_str()).collect();
     for wanted in [
-        crate::i18n::I18nManager::lookup_plain("send-to-recipients-name"),
-        crate::i18n::I18nManager::lookup_plain("send-to-message-name"),
-        crate::i18n::I18nManager::lookup_plain("send-to-send"),
+        tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-recipients-name"),
+        tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-message-name"),
+        tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-send"),
     ] {
         assert!(
             names.contains(&wanted.as_str()),
@@ -404,7 +406,7 @@ fn the_box_a_send_key_opens_tells_the_shell_its_controls() {
     }
     let send = targets
         .iter()
-        .find(|target| target.name == crate::i18n::I18nManager::lookup_plain("send-to-send"))
+        .find(|target| target.name == tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-send"))
         .expect("Send");
     assert_eq!(send.role, "Button");
     assert!(
@@ -415,7 +417,7 @@ fn the_box_a_send_key_opens_tells_the_shell_its_controls() {
     let field = targets
         .iter()
         .find(|target| {
-            target.name == crate::i18n::I18nManager::lookup_plain("send-to-recipients-name")
+            target.name == tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-recipients-name")
         })
         .expect("the field that names whom it goes to");
     assert_eq!(field.role, "TextInput");
@@ -450,7 +452,7 @@ fn the_sends_send_is_pressed_through_the_target_and_sends_what_the_box_holds() {
     );
     let send = targets
         .iter()
-        .find(|target| target.name == crate::i18n::I18nManager::lookup_plain("send-to-send"))
+        .find(|target| target.name == tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-send"))
         .expect("Send");
     assert!(
         send.actions.contains(&TargetAction::Activate),
@@ -459,7 +461,7 @@ fn the_sends_send_is_pressed_through_the_target_and_sends_what_the_box_holds() {
 
     press(
         &mut shell,
-        crate::i18n::I18nManager::lookup_plain("send-to-send").as_str(),
+        tilo_ui_base::i18n::I18nManager::lookup_plain("send-to-send").as_str(),
         "Button",
         TargetAction::Activate,
     );
@@ -509,12 +511,12 @@ fn a_window_with_no_menu_of_its_own_stands_the_box_and_it_takes_the_keys() {
         app.window_box.is_open(),
         "the box hears the pointer while it stands"
     );
-    app.surface_input(&Window, crate::synthetic_input::char_key("w"), false);
+    app.surface_input(&Window, tilo_ui_base::synthetic_input::char_key("w"), false);
     assert_eq!(keys.get(), 0, "the key typed next went to the box");
     // The key went to the message, so Enter sends it to the new agent the box opened with.
     app.surface_input(
         &Window,
-        crate::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
+        tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
         false,
     );
     let sent = crate::shared_selection::take_send_to();
@@ -536,11 +538,11 @@ fn escape_puts_the_shells_box_away() {
     assert!(app.window_box.is_open(), "the box stands");
     app.surface_input(
         &Window,
-        crate::synthetic_input::named_key(winit::keyboard::NamedKey::Escape),
+        tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::Escape),
         false,
     );
     assert!(!app.window_box.is_open(), "Escape put it away");
-    app.surface_input(&Window, crate::synthetic_input::char_key("w"), false);
+    app.surface_input(&Window, tilo_ui_base::synthetic_input::char_key("w"), false);
     assert_eq!(keys.get(), 1, "the content hears the keys again");
 }
 
@@ -551,7 +553,7 @@ fn an_agent_writes_in_the_shells_box_and_sends_it() {
     let (mut app, _shell, keys) = shells_box();
     let control = |app: &mut App, name: &str| {
         app.refresh_semantic_tree();
-        let wanted = crate::i18n::I18nManager::lookup_plain(name);
+        let wanted = tilo_ui_base::i18n::I18nManager::lookup_plain(name);
         app.semantic_tree()
             .iter()
             .find(|node| node.name.as_deref() == Some(wanted.as_str()))

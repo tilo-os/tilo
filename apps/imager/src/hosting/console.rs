@@ -2,11 +2,11 @@
 //! every window's effects and rows, answered on the UI thread like a click.
 
 use console_control::{Asked, ConsoleServer};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath, widget::Widget};
 use ui::tilo_actions::remote::{
     ActionCallError, CataloguePage, Completer, InvocationReceipt, ReceiptStatus,
 };
 use ui::tilo_actions::{ActionFailure, ActionOutput, InvocationId};
-use ui::widget::{AppModel, ModelPath, Widget};
 
 use super::effect::Answer;
 use super::{Reply, Store, invoke, published, state};
@@ -100,7 +100,7 @@ impl Console {
     }
 }
 
-impl ui::widget::Decorator for Console {
+impl tilo_ui_base::widget::Decorator for Console {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {

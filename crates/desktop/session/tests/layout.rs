@@ -433,7 +433,7 @@ fn installed_probe_package(home: &mut tilo_test_env::TestHome) {
 
 #[test]
 fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     // The widths, the maximized group and what is in front are the person's own view of the
     // workspace, a record beside the layout's: the session that leaves them is the one after the
@@ -489,7 +489,7 @@ fn a_restart_brings_back_the_strips_groups_widths_and_the_window_in_front() {
 /// is that strip in the next, at the width it was left.
 #[test]
 fn a_restart_brings_back_the_shell_the_session_kept() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let device = Device::in_home(&mut home);
     let state = device.state.clone();
@@ -529,7 +529,7 @@ fn a_restart_brings_back_the_shell_the_session_kept() {
 /// can hold it, is there in the next session and is written as the person's steps.
 #[test]
 fn a_shell_a_session_ends_before_it_can_be_written_is_kept() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let state = crate::common::device_in(&mut home);
     // The device's first session: the workspace it shows is founded a moment after it starts.
@@ -593,7 +593,7 @@ fn a_window_moved_to_a_workspace_behind_on_the_network_comes_back_there() {
 /// A window moved to the workspace behind, by a session taking part in the peer network when
 /// `network` says so, is there in the next one.
 fn moved_behind_comes_back(network: bool) {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let (device, workspace_ids) = Device::with_layout(&mut home, &wide_shell());
     let mail = device.id(200);
@@ -646,7 +646,7 @@ const SIGNALLED_SCENE: &str = "TILO_TEST_SIGNALLED_RESTART";
 /// workspace the person sent it to when the next desktop opens: the signal does not end the save.
 #[test]
 fn a_window_moved_just_before_the_restart_signal_comes_back_there() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let (device, workspace_ids) = Device::with_layout(&mut home, &wide_shell());
     let mail = device.id(200);
@@ -739,7 +739,7 @@ fn signalled_restart_directory() -> tempfile::TempDir {
 
 #[test]
 fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let launcher = installed_probe(&mut home, &started);
@@ -788,7 +788,7 @@ fn a_running_app_is_asked_again_and_its_window_takes_the_tab_it_was_in() {
 /// is, which what it reports of the window names.
 #[test]
 fn a_window_that_opens_again_is_told_which_tab_it_is_in() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let instances = home.home().join("instances");
@@ -828,7 +828,7 @@ fn a_window_that_opens_again_is_told_which_tab_it_is_in() {
 /// that tab, so the restart that brings the tab back finds it.
 #[test]
 fn a_window_opened_on_content_is_told_the_tab_it_lands_in() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let instances = home.home().join("instances");
@@ -914,7 +914,7 @@ fn a_window_of_the_persons_own_opens_again_after_a_restart() {
 /// The person opens `app`, its window maps into the tab the launch made, the session restarts, and
 /// the next session asks `app` for its window again, into that tab.
 fn opens_again_after_a_restart(app: &str) {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     crate::common::probe_app(&mut home, app, "Probe");
@@ -992,7 +992,7 @@ fn opens_again_after_a_restart(app: &str) {
 /// put it back.
 #[test]
 fn a_window_of_the_persons_own_stays_closed() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     crate::common::probe_app(&mut home, SETTINGS, "Settings");
@@ -1103,7 +1103,7 @@ fn a_window_of_the_persons_own_stays_closed() {
 /// session left unfilled. It stays, and the window takes it.
 #[test]
 fn a_launch_before_the_first_layout_keeps_its_place() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let launcher = installed_probe(&mut home, &started);
@@ -1177,7 +1177,7 @@ fn a_launch_before_the_first_layout_keeps_its_place() {
 
 #[test]
 fn a_launch_before_the_restore_asks_starts_the_app_into_the_saved_tab() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let launcher = installed_probe(&mut home, &started);
@@ -1225,7 +1225,7 @@ fn a_launch_before_the_restore_asks_starts_the_app_into_the_saved_tab() {
 
 #[test]
 fn a_launch_while_the_saved_window_is_coming_does_not_start_the_app_again() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let launcher = installed_probe(&mut home, &started);
@@ -1272,7 +1272,7 @@ fn a_launch_while_the_saved_window_is_coming_does_not_start_the_app_again() {
 
 #[test]
 fn a_window_whose_app_is_gone_says_so_in_its_tab_and_that_tab_closes() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let device = Device::in_home(&mut home);
     save_layout(&device.state, &one_window(GONE, "Gone"));
@@ -1384,7 +1384,7 @@ fn showing(session: &mut Session, apps: &Apps, started: &Path) -> TabId {
 /// the tab they moved.
 #[test]
 fn a_window_moved_to_another_workspace_runs_its_app_there() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let arguments = home.home().join("arguments");
@@ -1447,7 +1447,7 @@ fn a_window_moved_to_another_workspace_runs_its_app_there() {
 /// they say so.
 #[test]
 fn moving_a_window_into_a_shared_workspace_asks_first() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let arguments = home.home().join("arguments");
@@ -1548,7 +1548,7 @@ fn item_launcher(
 #[test]
 fn a_window_a_send_opened_on_an_item_opens_there_again_after_a_restart() {
     const ITEM: &str = "probe:conversation/7";
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut home = tilo_test_env::TestHome::new().unwrap();
     let started = home.home().join("started");
     let instances = home.home().join("instances");

@@ -129,7 +129,7 @@ pub fn changes<R: FolderChunks>(
 fn chunk_changes(source: &HistorySource, doc: &AutoCommit) -> Vec<(ChangeHash, HistoryEntry)> {
     let mut doc = doc.clone();
     let rows = source.entries(&mut doc);
-    let hashes: std::collections::HashMap<crate::HistoryEntryId, ChangeHash> = doc
+    let hashes: std::collections::HashMap<tilo_ui_base::HistoryEntryId, ChangeHash> = doc
         .get_changes_meta(&[])
         .into_iter()
         .map(|change| {
@@ -190,7 +190,7 @@ fn file_sentence(context: &tilo_actions::ActionContext, path: &str) -> Option<St
     ]
     .into_iter()
     .find(|verb| verbs.iter().any(|did| did == verb))?;
-    Some(crate::i18n::widget_format(
+    Some(tilo_ui_base::i18n::widget_format(
         &format!("history-folder-did-{verb}"),
         &[("file", path.into())],
     ))

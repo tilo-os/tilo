@@ -102,7 +102,7 @@ tilo_test_env::scenario! {
 
     phase every_display_has_a_shell_on_its_own_rectangle;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = session(&[(0, 0), (WIDTH, 0)]);
         until(&mut session, |session| session.shell_parts().len() == 2);
         let parts = session.shell_parts();
@@ -139,7 +139,7 @@ tilo_test_env::scenario! {
 
     phase a_display_added_later_gets_its_own_shell;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = session(&[(0, 0)]);
         until(&mut session, |session| session.shell_parts().len() == 1);
         assert!(part(&session, "HEADLESS-1").is_some());
@@ -163,7 +163,7 @@ tilo_test_env::scenario! {
     // panel shows, so the bar and the shell are as crisp as the display allows rather than one scale's
     // worth stretched over twice the area.
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut session = Session::headless(
             options(),
             &[
@@ -194,7 +194,7 @@ tilo_test_env::scenario! {
 
 #[test]
 fn a_display_turned_off_takes_its_part_and_brings_it_back() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(&[(0, 0), (WIDTH, 0)]);
     until(&mut session, |session| session.shell_parts().len() == 2);
     let offered = session.resources().len();
@@ -225,7 +225,7 @@ fn a_display_turned_off_takes_its_part_and_brings_it_back() {
 
 #[test]
 fn a_part_steps_aside_on_the_display_a_fullscreen_window_owns() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = session(&[(0, 0), (WIDTH, 0)]);
     until(&mut session, |session| session.shell_parts().len() == 2);
     let mut client = Client::connect(session.compositor());
@@ -276,7 +276,7 @@ fn a_part_steps_aside_on_the_display_a_fullscreen_window_owns() {
 /// window and draws the same way.
 #[test]
 fn a_shell_on_a_fractional_scale_display_draws_at_that_scale() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     // The display's mode is its logical size times its scale, as `--size WxH --scale 1.75` names
     // them: a 1600x1000 desktop at 1.75 is a 2800x1750 output.
     let (logical_width, logical_height) = (1600, 1000);
@@ -330,7 +330,7 @@ fn a_shell_on_a_fractional_scale_display_draws_at_that_scale() {
 /// scale and stretched over twice the area (which puts its edge where the panel's pixels say not).
 #[test]
 fn the_shell_bar_band_sits_at_the_top_of_the_display_at_every_scale() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut bands = Vec::new();
     for (scale, pixels) in [(1.0, 1), (2.0, 2)] {
         let mut session = crate::common::headless_on(
@@ -383,7 +383,7 @@ fn the_shell_bar_band_sits_at_the_top_of_the_display_at_every_scale() {
 /// bar and the bezel rather than as the bar reaching the edge.
 #[test]
 fn a_bar_flush_with_the_display_paints_its_edges_its_own_colour() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let width = WIDTH * 2;
     let height = HEIGHT * 2;
     let mut session = crate::common::headless_on(
@@ -676,7 +676,7 @@ fn move_to(session: &mut Session, place: u64) {
 
 #[test]
 fn each_display_draws_its_own_strip_and_only_the_primary_carries_the_whole_bar() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (notebook, titles) = notebook(&TITLES[..2]);
     let mut session = shell_on(&[(0, 0), (WIDTH, 0)], vec![Box::new(notebook)]);
     until(&mut session, |session| session.shell_parts().len() == 2);
@@ -788,7 +788,7 @@ fn each_display_draws_its_own_strip_and_only_the_primary_carries_the_whole_bar()
 
 #[test]
 fn unplugging_a_display_keeps_its_windows_on_the_one_left() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (notebook, titles) = notebook(&TITLES[..2]);
     let mut session = shell_on(&[(0, 0), (WIDTH, 0)], vec![Box::new(notebook)]);
     until(&mut session, |session| session.shell_parts().len() == 2);
@@ -847,7 +847,7 @@ fn unplugging_a_display_keeps_its_windows_on_the_one_left() {
 
 #[test]
 fn a_part_made_before_a_layout_reads_it_too() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (notebook, titles) = notebook(&TITLES[..2]);
     let mut session = shell_on(&[(0, 0)], vec![Box::new(notebook)]);
     until(&mut session, |session| session.shell_parts().len() == 1);
@@ -896,7 +896,7 @@ fn a_part_made_before_a_layout_reads_it_too() {
 
 #[test]
 fn the_shell_is_the_window_its_view_names() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = shell_on(&[(0, 0)], Vec::new());
     until(&mut session, |session| session.shell_parts().len() == 1);
     until(&mut session, |session| {
@@ -917,7 +917,7 @@ fn the_shell_is_the_window_its_view_names() {
 
 #[test]
 fn a_view_marks_the_unread_count_as_a_polite_live_region() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = shell_on(&[(0, 0)], Vec::new());
     until(&mut session, |session| {
         session.shell_control("Notifications").is_some()
@@ -946,7 +946,7 @@ fn a_view_marks_the_unread_count_as_a_polite_live_region() {
         .expect("the shell's window");
     let bell = labelled(&tree, "Notifications, 1 unread").expect("the bell names what is waiting");
     assert!(
-        session.a11y_perform(place, bell, &ui::a11y::Action::Activate),
+        session.a11y_perform(place, bell, &tilo_ui_base::a11y::Action::Activate),
         "the export takes the activation"
     );
     let waiting =
@@ -978,7 +978,7 @@ fn a_view_marks_the_unread_count_as_a_polite_live_region() {
 
 #[test]
 fn an_arrangement_from_another_device_reaches_every_part() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (notebook, titles) = notebook(&TITLES[..2]);
     let mut session = shell_on(&[(0, 0), (WIDTH, 0)], vec![Box::new(notebook)]);
     until(&mut session, |session| session.shell_parts().len() == 2);
@@ -1074,7 +1074,7 @@ fn holds(words: &[String], text: &str) -> bool {
 
 #[test]
 fn identifying_the_displays_says_each_one_its_own_number() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut session = shell_on(&[(0, 0), (WIDTH, 0)], Vec::new());
     until(&mut session, |session| session.shell_parts().len() == 2);
     until(&mut session, |session| partitioned(session));

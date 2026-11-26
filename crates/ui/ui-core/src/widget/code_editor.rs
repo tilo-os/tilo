@@ -16,9 +16,9 @@
 //! editor.set_text("fn main() {\n    println!(\"hi\");\n}\n");
 //! ```
 
-use crate::widget::{AppModel, ModelPath};
 use std::ops::Range;
 use tilo_sort::CompactSort as _;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 use automerge::{AutoCommit, ObjId};
 use taffy::{Dimension, NodeId, Size, Style, TaffyTree};
@@ -26,14 +26,15 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use winit::event::WindowEvent;
 
+use crate::{widget::TextInput, widget::TextInputKind};
 #[cfg(test)]
-use crate::presence::PresenceCtx;
-use crate::presence::{PathSegment, PresenceKey};
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::DrawChild;
-use crate::widget::TaffyTreeExt;
-use crate::widget::{TextInput, TextInputKind, Widget};
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 
 pub mod syntax;
 pub mod tilolang;
@@ -95,7 +96,7 @@ pub enum Language {
     Tilolang,
 }
 
-crate::component::choice!(Language, "Language", {
+tilo_ui_base::choice!(Language, "Language", {
     PlainText => "plain_text",
     Rust => "rust",
     Typst => "typst",
@@ -239,7 +240,7 @@ impl CodeEditor {
 
     /// Non-CRDT, following `state`: the editor shows the code it holds and writes each edit back to it,
     /// so code set elsewhere shows in place.
-    pub fn from_state(state: &crate::LocalState<String>) -> Self {
+    pub fn from_state(state: &tilo_ui_base::LocalState<String>) -> Self {
         Self::wrap(Self::configure(TextInput::from_state(state)))
     }
 
@@ -318,7 +319,7 @@ impl CodeEditor {
             .multiline(true)
             .with_kind(TextInputKind::Code)
             .with_mono()
-            .with_text_role(crate::tokens::TextRole::Code)
+            .with_text_role(tilo_ui_base::tokens::TextRole::Code)
             .with_plain_chrome()
             .with_gutter(true)
             .with_current_line_highlight(true)
@@ -561,7 +562,7 @@ impl CodeEditor {
     /// A monolithic host that owns its own layout calls [`set_rect`] then this each frame,
     /// with the presence it draws for: `presence` names the person, so their own writes are not
     /// tinted as someone else's.
-    pub fn draw_embedded(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub fn draw_embedded(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -606,11 +607,11 @@ impl CodeEditor {
         theme: &Theme,
         window: Rect,
     ) {
-        let env = crate::draw::DrawEnv {
+        let env = tilo_ui_base::draw::DrawEnv {
             viewport: Some(window),
-            ..crate::draw::DrawEnv::default()
+            ..tilo_ui_base::draw::DrawEnv::default()
         };
-        self.draw_diagnostic_hover(&mut crate::draw::DrawCtx::new(
+        self.draw_diagnostic_hover(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -629,11 +630,11 @@ impl CodeEditor {
 }
 
 impl Widget for CodeEditor {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(
-        dyn crate::presence::capability::PublishesPresence,
-        dyn crate::widget::undo_points::UndoPoints
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::presence::capability::PublishesPresence,
+        dyn tilo_ui_base::widget::undo_points::UndoPoints
     );
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
@@ -693,14 +694,14 @@ impl Widget for CodeEditor {
                 if let Some(max) = self.max_lines {
                     height = height.min(lines(max));
                 }
-                size.height = crate::num::f32_of_f64(height.ceil());
+                size.height = tilo_ui_base::num::f32_of_f64(height.ceil());
             }
         }
         size
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        let rect = crate::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.inner.apply_layout_external(rect);
     }
 
@@ -713,7 +714,7 @@ impl Widget for CodeEditor {
         self.inner.layout_measured();
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -725,21 +726,22 @@ impl Widget for CodeEditor {
         self.draw_diagnostics(scene, transform, theme);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.inner.draw_overlay(&mut crate::draw::DrawCtx::new(
-            scene,
-            transform,
-            text_renderer,
-            theme,
-            env.clone(),
-        ));
-        self.draw_diagnostic_hover(&mut crate::draw::DrawCtx::new(
+        self.inner
+            .draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
+                scene,
+                transform,
+                text_renderer,
+                theme,
+                env.clone(),
+            ));
+        self.draw_diagnostic_hover(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -768,7 +770,7 @@ impl Widget for CodeEditor {
         Widget::needs_animation_frame(&self.inner)
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.hover = Some(ctx.logical(position));
         }
@@ -819,7 +821,7 @@ impl Widget for CodeEditor {
         Widget::ime_cursor_rect(&self.inner)
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         if self.read_only || !self.inner.is_focused() {
             return None;
         }
@@ -836,7 +838,7 @@ impl Widget for CodeEditor {
         self.inner.ime_edit_fingerprint(key)
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let mut node = self.inner.accessibility()?;
         node.state.read_only |= self.read_only;
         Some(node)
@@ -844,12 +846,12 @@ impl Widget for CodeEditor {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        state: &mut crate::widget::Edits<'_>,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        if self.read_only && matches!(action, crate::a11y::Action::SetValue(_)) {
+        if self.read_only && matches!(action, tilo_ui_base::a11y::Action::SetValue(_)) {
             return false;
         }
         self.inner.perform_action(action, &[], state, path)
@@ -918,7 +920,7 @@ impl CodeEditor {
 
     /// The message of the diagnostic under the pointer, on a floating surface just below its line, in
     /// the window's top layer.
-    fn draw_diagnostic_hover(&self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw_diagnostic_hover(&self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -929,12 +931,12 @@ impl CodeEditor {
         let Some(d) = self.diagnostic_at(point) else {
             return;
         };
-        let style = theme.text(crate::tokens::TextRole::Caption);
+        let style = theme.text(tilo_ui_base::tokens::TextRole::Caption);
         let pad = f64::from(theme.tokens.spacing.s3);
         let max_w = f64::from(theme.tokens.metrics.panel_width_utility);
         let (w, h) = text_renderer.measure_style(
             &d.message,
-            Some(crate::num::f32_of_f64(max_w - pad * 2.0)),
+            Some(tilo_ui_base::num::f32_of_f64(max_w - pad * 2.0)),
             &style,
         );
         let size = (f64::from(w) + pad * 2.0, f64::from(h) + pad * 2.0);
@@ -951,13 +953,13 @@ impl CodeEditor {
             crate::widget::floating_surface::panel_area(window, theme),
         );
         crate::widget::floating_surface::paint(scene, transform, panel, theme);
-        let ink = theme.on_ground(crate::chrome::panel_ground(theme));
+        let ink = theme.on_ground(tilo_ui_base::chrome::panel_ground(theme));
         text_renderer.draw_style(
             scene,
             &d.message,
             ink.text_primary,
             transform.pre_translate(vello::kurbo::Vec2::new(panel.x0 + pad, panel.y0 + pad)),
-            Some(crate::num::f32_of_f64(panel.width() - pad * 2.0)),
+            Some(tilo_ui_base::num::f32_of_f64(panel.width() - pad * 2.0)),
             &style,
         );
     }
@@ -996,7 +998,7 @@ pub fn paint_diagnostic_underline(
     );
 }
 
-impl crate::widget::undo_points::UndoPoints for CodeEditor {
+impl tilo_ui_base::widget::undo_points::UndoPoints for CodeEditor {
     fn get_state(&self) -> Option<String> {
         self.inner.get_state()
     }
@@ -1005,7 +1007,7 @@ impl crate::widget::undo_points::UndoPoints for CodeEditor {
     }
 }
 
-impl crate::presence::capability::PublishesPresence for CodeEditor {
+impl tilo_ui_base::presence::capability::PublishesPresence for CodeEditor {
     fn presence_key(&self) -> Option<PresenceKey> {
         self.inner.presence_key()
     }
@@ -1013,11 +1015,11 @@ impl crate::presence::capability::PublishesPresence for CodeEditor {
     /// The code's own caret and band geometry, as the field it wraps draws them.
     fn presence_range_rects(
         &self,
-        theme: &crate::theme::Theme,
+        theme: &tilo_ui_base::theme::Theme,
         key: &PresenceKey,
-        range: crate::presence::SelectionRange,
+        range: tilo_ui_base::presence::SelectionRange,
     ) -> Vec<vello::kurbo::Rect> {
-        crate::presence::capability::PublishesPresence::presence_range_rects(
+        tilo_ui_base::presence::capability::PublishesPresence::presence_range_rects(
             &self.inner,
             theme,
             key,
@@ -1175,7 +1177,7 @@ fn next_char_len(s: &str, i: usize) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::theme::Theme;
+    use tilo_ui_base::theme::Theme;
 
     tilo_test_env::scenario! {
         /// The code editor's highlighting, typing, selection and geometry.
@@ -1285,7 +1287,7 @@ mod tests {
             }
 
             fn accessibility_reports_a_multiline_text_input() {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 let ed = CodeEditor::local().with_initial_value("fn main() {}");
                 let node = ed
                     .accessibility()
@@ -1379,7 +1381,7 @@ mod tests {
             let presence = PresenceCtx::empty();
             let mut renderer = TextRenderer::new();
             let mut scene = Scene::new();
-            editor.draw_embedded(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &theme, presence.draw_env()));
+            editor.draw_embedded(&mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &theme, presence.draw_env()));
             let colour = theme.tokens.colors.presence.of_rgb(presence.color_for(&writer));
             let drawn = &scene.encoding().draw_data;
             assert!(
@@ -1411,9 +1413,9 @@ mod tests {
         Modifiers::from(s)
     }
 
-    use crate::synthetic_input::char_key;
+    use tilo_ui_base::synthetic_input::char_key;
 
-    use crate::synthetic_input::named_key;
+    use tilo_ui_base::synthetic_input::named_key;
 
     fn drive(ed: &mut CodeEditor, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
         Dispatch::new().doc(doc).modifiers(m).send(ed, ev).handled
@@ -1450,7 +1452,7 @@ mod tests {
         let mut scene = Scene::new();
         Widget::draw(
             ed,
-            &mut crate::draw::DrawCtx::new(
+            &mut tilo_ui_base::draw::DrawCtx::new(
                 &mut scene,
                 Affine::IDENTITY,
                 renderer,
@@ -1461,7 +1463,7 @@ mod tests {
         height
     }
 
-    use crate::text_render::TextRenderer;
+    use tilo_ui_base::text_render::TextRenderer;
 }
 
 #[cfg(test)]
@@ -1480,7 +1482,7 @@ mod document_tests {
             editor.set_focused(true);
             editor.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
             // Source is text over many lines; the input method is told so.
-            let mut source = crate::ime::InputContent::TEXT;
+            let mut source = tilo_ui_base::ime::InputContent::TEXT;
             source.hints.multiline = true;
             assert_eq!(Widget::ime_content(&editor), Some(source));
             let key = [19; 32];
@@ -1511,15 +1513,15 @@ mod document_tests {
         {
             let services = crate::process::ProcessServices::null();
             let _host = crate::process::enter(&services);
-            crate::text_selection::clipboard_copy_primary("pasted");
+            tilo_ui_base::text_selection::clipboard_copy_primary("pasted");
             let mut editor = CodeEditor::local().with_initial_value("source").read_only();
             editor.set_focused(true);
             editor.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
             dispatch(
                 &mut editor,
-                &crate::synthetic_input::cursor_moved(50.0, 15.0),
+                &tilo_ui_base::synthetic_input::cursor_moved(50.0, 15.0),
             );
-            let paste = crate::synthetic_input::mouse_input(
+            let paste = tilo_ui_base::synthetic_input::mouse_input(
                 ElementState::Pressed,
                 winit::event::MouseButton::Middle,
             );
@@ -1614,7 +1616,7 @@ mod document_tests {
             editor.set_rect(Rect::new(0.0, 0.0, 400.0, 100.0));
             let mut scene = Scene::new();
             let mut tr = TextRenderer::new();
-            Widget::draw(&mut editor, &mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
+            Widget::draw(&mut editor, &mut tilo_ui_base::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, PresenceCtx::default().draw_env()));
             let caret = editor.caret_rect(&theme, 1);
             let at = Point::new(caret.x0 + 1.0, caret.center().y);
             let hit = editor.diagnostic_at(at).map(|d| d.severity);
@@ -1642,7 +1644,7 @@ mod document_tests {
     use winit::keyboard::{Key, NamedKey};
 
     fn key_event(key: Key, text: Option<&str>) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+        tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
             key,
             text.map(Into::into),
             ElementState::Pressed,

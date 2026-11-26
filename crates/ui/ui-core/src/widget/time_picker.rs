@@ -1,19 +1,19 @@
 //! `TimePicker` — three side-by-side vertical spinners for `HH : MM : SS`.
-use crate::i18n::widget_text;
-use crate::widget::{AppModel, ModelPath};
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::i18n::widget_text;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Stroke};
 use winit::event::{ElementState, KeyEvent, Modifiers, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::widget::TaffyTreeExt;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::TaffyTreeExt;
 #[path = "time_picker_component.rs"]
 mod component;
-use crate::widget::Widget;
 pub use component::TimePickerProps;
+use tilo_ui_base::widget::Widget;
 
 const HOUR_MAX: u8 = 23;
 const MINSEC_MAX: u8 = 59;
@@ -93,7 +93,7 @@ pub struct TimePicker {
     /// Minutes the pointer steppers move the minute cell by.
     step: u8,
     on_change: Option<TimeChange>,
-    local_state: Option<crate::widget::binding::BoxedBinding<TimeValue>>,
+    local_state: Option<tilo_ui_base::widget::binding::BoxedBinding<TimeValue>>,
     rect: Rect,
     hour_rect: Rect, // populated in apply_layout
     minute_rect: Rect,
@@ -137,8 +137,8 @@ impl TimePicker {
         }
     }
 
-    pub fn from_state(state: &crate::LocalState<TimeValue>) -> Self {
-        let (value, binding) = crate::widget::binding::local(state);
+    pub fn from_state(state: &tilo_ui_base::LocalState<TimeValue>) -> Self {
+        let (value, binding) = tilo_ui_base::widget::binding::local(state);
         let value = value.normalized();
         let mut picker = Self::new(value.hours, value.minutes);
         picker.seconds = value.seconds;
@@ -147,8 +147,8 @@ impl TimePicker {
         picker
     }
 
-    pub fn from_text_state(state: &crate::LocalState<String>) -> Self {
-        let (time, binding) = crate::widget::binding::derived(state, |text| {
+    pub fn from_text_state(state: &tilo_ui_base::LocalState<String>) -> Self {
+        let (time, binding) = tilo_ui_base::widget::binding::derived(state, |text| {
             time_of(text).unwrap_or_else(|| TimeValue::new(9, 0))
         });
         let time = time.normalized();
@@ -346,7 +346,10 @@ impl TimePicker {
 
     /// Whether the person's clock reads 12-hour with an AM/PM token.
     fn twelve_hour() -> bool {
-        matches!(crate::clock::configured(), crate::clock::TimeStyle::H12)
+        matches!(
+            tilo_ui_base::clock::configured(),
+            tilo_ui_base::clock::TimeStyle::H12
+        )
     }
 
     pub fn intrinsic_size(&self) -> (f64, f64) {
@@ -443,33 +446,33 @@ impl TimePicker {
             );
         }
         let edge = f64::from(theme.tokens.metrics.icon_sm);
-        crate::icons::draw_icon(
+        tilo_ui_base::icons::draw_icon(
             scene,
             transform,
             Rect::from_center_size(cell.center(), (edge, edge)),
             if up {
-                crate::icons::Icon::ChevronUp
+                tilo_ui_base::icons::Icon::ChevronUp
             } else {
-                crate::icons::Icon::ChevronDown
+                tilo_ui_base::icons::Icon::ChevronDown
             },
             if hovered {
                 colors.text_primary
             } else {
                 theme.text_dim
             },
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
     }
 }
 
 impl Widget for TimePicker {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(dyn crate::widget::controls::ActionControls);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls);
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
         if let Some(binding) = &mut self.local_state
-            && let crate::widget::binding::Pulled::Value(value) = binding.pull(state, path)
+            && let tilo_ui_base::widget::binding::Pulled::Value(value) = binding.pull(state, path)
         {
             let value = value.normalized();
             if self.value() != value {
@@ -500,14 +503,14 @@ impl Widget for TimePicker {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.apply_layout_external(crate::widget::layout_rect(taffy, node, origin));
+        self.apply_layout_external(tilo_ui_base::widget::layout_rect(taffy, node, origin));
     }
 
     fn is_layout_dirty(&self) -> bool {
         false
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -542,11 +545,11 @@ impl Widget for TimePicker {
                 1 => TimeCell::Minutes,
                 _ => TimeCell::Seconds,
             };
-            let outline = crate::surface::edge_outline(value_rect, radius);
+            let outline = tilo_ui_base::surface::edge_outline(value_rect, radius);
             let (width, color) = if self.is_focused && self.focused_cell == Some(cell_kind) {
                 (2.0, colors.border_focus)
             } else {
-                (1.0, crate::surface::edge_on(colors.surfaces.raised))
+                (1.0, tilo_ui_base::surface::edge_on(colors.surfaces.raised))
             };
             scene.stroke(&Stroke::new(width), transform, color, None, &outline);
 
@@ -636,7 +639,7 @@ impl Widget for TimePicker {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -662,11 +665,11 @@ impl Widget for TimePicker {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -698,14 +701,14 @@ impl Widget for TimePicker {
         self.is_focused
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let value = match self.seconds {
-            Some(s) => crate::format::machine!(
+            Some(s) => tilo_ui_base::format::machine!(
                 "the value an assistive tool sets this picker to",
                 format!("{:02}:{:02}:{:02}", self.hours, self.minutes, s)
             ),
-            None => crate::format::machine!(
+            None => tilo_ui_base::format::machine!(
                 "the value an assistive tool sets this picker to",
                 format!("{:02}:{:02}", self.hours, self.minutes)
             ),
@@ -726,12 +729,12 @@ impl Widget for TimePicker {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _root: &ModelPath,
     ) -> bool {
-        let crate::a11y::Action::SetValue(value) = action else {
+        let tilo_ui_base::a11y::Action::SetValue(value) = action else {
             return false;
         };
         let mut fields = value.trim().split(':');
@@ -768,9 +771,9 @@ impl Widget for TimePicker {
     }
 }
 
-impl crate::widget::controls::ActionControls for TimePicker {
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
-        vec![crate::widget::ControlBindingMetadata::semantic(
+impl tilo_ui_base::widget::controls::ActionControls for TimePicker {
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
+        vec![tilo_ui_base::widget::ControlBindingMetadata::semantic(
             self.id.clone(),
         )]
     }
@@ -870,7 +873,7 @@ impl TimePicker {
             }
             Key::Named(NamedKey::Backspace) => {
                 if let Some(cell) = self.focused_cell {
-                    crate::text_edit::delete_last_grapheme(&mut self.digit_buffer);
+                    tilo_ui_base::text_edit::delete_last_grapheme(&mut self.digit_buffer);
                     let v: u8 = self.digit_buffer.parse().unwrap_or(0);
                     match cell {
                         TimeCell::Hours => self.hours = v,
@@ -977,7 +980,8 @@ mod tests {
     fn a_moment_on_the_minute_shows_no_seconds_spinner() {
         let at = time_of("09:30").expect("a time of day");
         assert_eq!((at.hours, at.minutes, at.seconds), (9, 30, None));
-        let picker = TimePicker::from_text_state(&crate::LocalState::new("09:30".to_owned()));
+        let picker =
+            TimePicker::from_text_state(&tilo_ui_base::LocalState::new("09:30".to_owned()));
         assert_eq!(
             picker.value().seconds,
             None,
@@ -987,10 +991,10 @@ mod tests {
     use crate::testing::dispatch;
     use automerge::AutoCommit;
 
-    use crate::synthetic_input::cursor_moved;
+    use tilo_ui_base::synthetic_input::cursor_moved;
 
     fn wheel(dy: f32) -> WindowEvent {
-        crate::synthetic_input::mouse_wheel(0.0, dy)
+        tilo_ui_base::synthetic_input::mouse_wheel(0.0, dy)
     }
 
     fn picker_with_layout(tp: &mut TimePicker) {
@@ -998,7 +1002,11 @@ mod tests {
         let mut taffy = TaffyTree::<()>::new();
         let mut node_map: std::collections::HashMap<NodeId, *mut dyn Widget> =
             std::collections::HashMap::new();
-        let node = tp.build_layout(&mut taffy, &crate::theme::Theme::dark(), &mut node_map);
+        let node = tp.build_layout(
+            &mut taffy,
+            &tilo_ui_base::theme::Theme::dark(),
+            &mut node_map,
+        );
         let root = taffy.parent_node(Style::default(), &[node]);
         taffy
             .compute_layout(root, taffy::Size::MAX_CONTENT)
@@ -1012,7 +1020,7 @@ mod tests {
         phase time_values_clamp_and_are_announced;
         {
             {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 let tp = TimePicker::new(9, 5);
                 let node = Widget::accessibility(&tp).expect("time picker is a selector");
                 assert_eq!(node.role, Role::ComboBox);
@@ -1099,7 +1107,7 @@ mod tests {
 
                 let centre = tp.hour_rect.center();
                 dispatch(&mut tp, &cursor_moved(centre.x, centre.y));
-                dispatch(&mut tp, &crate::synthetic_input::mouse_press());
+                dispatch(&mut tp, &tilo_ui_base::synthetic_input::mouse_press());
                 assert_eq!(tp.focused_cell(), Some(TimeCell::Hours));
             }
 
@@ -1161,15 +1169,15 @@ mod tests {
                 let mut tp = TimePicker::new(9, 50);
                 Widget::set_focus(&mut tp, true);
                 tp.focused_cell = Some(TimeCell::Minutes);
-                dispatch(&mut tp, &crate::synthetic_input::named_key(NamedKey::PageUp));
+                dispatch(&mut tp, &tilo_ui_base::synthetic_input::named_key(NamedKey::PageUp));
                 assert_eq!((tp.hours(), tp.minutes()), (10, 50), "an hour later");
-                dispatch(&mut tp, &crate::synthetic_input::named_key(NamedKey::PageDown));
+                dispatch(&mut tp, &tilo_ui_base::synthetic_input::named_key(NamedKey::PageDown));
                 assert_eq!((tp.hours(), tp.minutes()), (9, 50), "an hour earlier");
-                dispatch(&mut tp, &crate::synthetic_input::named_key(NamedKey::End));
+                dispatch(&mut tp, &tilo_ui_base::synthetic_input::named_key(NamedKey::End));
                 assert_eq!(tp.minutes(), 59);
-                dispatch(&mut tp, &crate::synthetic_input::named_key(NamedKey::Home));
+                dispatch(&mut tp, &tilo_ui_base::synthetic_input::named_key(NamedKey::Home));
                 assert_eq!(tp.minutes(), 0);
-                dispatch(&mut tp, &crate::synthetic_input::named_key(NamedKey::PageDown));
+                dispatch(&mut tp, &tilo_ui_base::synthetic_input::named_key(NamedKey::PageDown));
                 assert_eq!(tp.hours(), 8);
             }
         }
@@ -1177,7 +1185,7 @@ mod tests {
         phase time_changes_sync_bound_state_and_callbacks;
         {
             {
-                let state = crate::LocalState::new(TimeValue::new(8, 30));
+                let state = tilo_ui_base::LocalState::new(TimeValue::new(8, 30));
                 let mut left = TimePicker::from_state(&state);
                 let mut right = TimePicker::from_state(&state);
                 let expected = TimeValue::new(16, 45).with_seconds(12);
@@ -1193,7 +1201,7 @@ mod tests {
                 use std::cell::RefCell;
                 use std::rc::Rc;
 
-                let state = crate::LocalState::new(TimeValue::new(8, 30));
+                let state = tilo_ui_base::LocalState::new(TimeValue::new(8, 30));
                 let captured = Rc::new(RefCell::new(None));
                 let callback = Rc::clone(&captured);
                 let mut picker = TimePicker::from_state(&state).on_change(move |h, m, s| {
@@ -1208,9 +1216,9 @@ mod tests {
 
                 assert!(Widget::perform_action(
                     &mut picker,
-                    &crate::a11y::Action::SetValue("21:07:09".into()),
+                    &tilo_ui_base::a11y::Action::SetValue("21:07:09".into()),
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
                 assert_eq!(state.with(|value| *value), expected);
@@ -1218,9 +1226,9 @@ mod tests {
 
                 assert!(!Widget::perform_action(
                     &mut picker,
-                    &crate::a11y::Action::SetValue("24:00".into()),
+                    &tilo_ui_base::a11y::Action::SetValue("24:00".into()),
                     &[],
-                    &mut crate::widget::Edits::lend(&mut doc),
+                    &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                     &automerge::ROOT,
                 ));
                 assert_eq!(state.with(|value| *value), expected);
@@ -1229,7 +1237,7 @@ mod tests {
 
         phase a_bound_text_time_is_shown_and_followed;
         {
-            let state = crate::LocalState::new("2026-06-30T09:30:00Z".to_owned());
+            let state = tilo_ui_base::LocalState::new("2026-06-30T09:30:00Z".to_owned());
             let mut picker = TimePicker::from_text_state(&state);
             assert_eq!(
                 (picker.value().hours, picker.value().minutes),

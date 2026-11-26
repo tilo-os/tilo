@@ -123,7 +123,7 @@ tilo_test_env::scenario! {
         lifted(&mut row, &taffy, root, to);
         let flight = crate::widget::drag_bus::current().expect("the drag carries the window");
         assert_eq!(flight.source, "window:100", "the flight is the window's own");
-        let crate::dnd::DragPayload::Custom { kind, blob } = flight.payload else {
+        let tilo_ui_base::dnd::DragPayload::Custom { kind, blob } = flight.payload else {
             panic!("a window's bar carries a resource");
         };
         assert_eq!(kind, crate::widget::drag_source::RESOURCE_PAYLOAD);

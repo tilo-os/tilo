@@ -146,12 +146,12 @@ impl ShellSurface for ShellPart {
                 Some(tilo_session_core::surface::WindowCover {
                     window: desktop.window_of_tab(tab)?,
                     rect: (
-                        ui::num::i32_of_f64(card.x0.round()),
-                        ui::num::i32_of_f64(card.y0.round()),
-                        ui::num::i32_of_f64(card.width().round()).max(1),
-                        ui::num::i32_of_f64(card.height().round()).max(1),
+                        tilo_ui_base::num::i32_of_f64(card.x0.round()),
+                        tilo_ui_base::num::i32_of_f64(card.y0.round()),
+                        tilo_ui_base::num::i32_of_f64(card.width().round()).max(1),
+                        tilo_ui_base::num::i32_of_f64(card.height().round()).max(1),
                     ),
-                    shadows: ui::surface::floating_lift(theme)
+                    shadows: tilo_ui_base::surface::floating_lift(theme)
                         .iter()
                         .map(|shadow| frame_of(shadow, radius))
                         .collect(),
@@ -358,7 +358,7 @@ impl super::ShellPart {
         };
         let (x, y) = self.pointer;
         if desktop.carried_tab().is_none() {
-            let ui::dnd::DragPayload::Custom { kind, blob } = &flight.payload else {
+            let tilo_ui_base::dnd::DragPayload::Custom { kind, blob } = &flight.payload else {
                 return;
             };
             // What any other lift carries (a file, a message, a place of another app) is no
@@ -383,7 +383,10 @@ impl super::ShellPart {
 
 /// A shadow a floating window's card casts on the windows under it, as the compositor draws it
 /// round the card.
-fn frame_of(shadow: &ui::tokens::Shadow, radius: f64) -> tilo_session_core::surface::WindowFrame {
+fn frame_of(
+    shadow: &tilo_ui_base::tokens::Shadow,
+    radius: f64,
+) -> tilo_session_core::surface::WindowFrame {
     let colour = |color: vello::peniko::Color| color.to_rgba8().to_u8_array();
     tilo_session_core::surface::WindowFrame {
         radius,

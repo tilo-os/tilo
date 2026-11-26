@@ -3,7 +3,7 @@
 //! the app or host already publishes ("Keep editing", "Cancel"). Escape, a click outside and
 //! the close button all take that way.
 
-use super::{ActionEmitter, ControlBindingMetadata};
+use tilo_ui_base::{widget::ActionEmitter, widget::ControlBindingMetadata};
 
 pub(crate) enum Dismissal {
     /// The app's handler, run at once.
@@ -37,8 +37,8 @@ impl Dismissal {
 
     pub(crate) fn attach(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         if let Self::Through(action) = self {
             let _ = action.attach(domain, attachment);

@@ -23,8 +23,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use serde_json::{Map, Value};
-use tilo_actions::{ApiError, ResourceSpec};
 use tilo_action_policy::Grantee;
+use tilo_actions::{ApiError, ResourceSpec};
 use tilo_desktop_model::Workspace;
 use tilo_dialogs::chosen::{AppKey, ChosenTable, Kind as ChosenKind};
 use tilo_service::{Service, Started};
@@ -157,7 +157,9 @@ pub(crate) fn declared_outside() -> Vec<(String, Vec<String>)> {
         std::collections::BTreeMap::new();
     for (app, surface) in collab_types::app_surface::Surfaces::process().resources() {
         for verb in &surface.verbs {
-            apps.entry(app.clone()).or_default().extend(verb.outside.iter().cloned());
+            apps.entry(app.clone())
+                .or_default()
+                .extend(verb.outside.iter().cloned());
         }
     }
     apps.into_iter()
@@ -266,9 +268,8 @@ impl Served {
         let mounts = self.mounts.revision();
         let outside = (self.outside)();
         let mut paths = self.paths.borrow_mut();
-        self.handle.read(|tree| {
-            reading_of(tree, person, &chosen, &outside, &mut paths, mounts)
-        })
+        self.handle
+            .read(|tree| reading_of(tree, person, &chosen, &outside, &mut paths, mounts))
     }
 
     /// The reading, read again when what it is made from moved since it was last read.
@@ -328,9 +329,9 @@ impl Served {
             return Err(ApiError::Failed(t("session-access-already-gone")));
         }
         let view = self.view.clone();
-        let written = view.as_ref().map(|view| {
-            crate::membership::Membership::of(&**view, held.id()).changes(held, &edit)
-        });
+        let written = view
+            .as_ref()
+            .map(|view| crate::membership::Membership::of(&**view, held.id()).changes(held, &edit));
         let workspace_id = held.id();
         self.write(tree, workspace_id, view, written, output(&id))
     }
@@ -510,12 +511,8 @@ impl Service for Served {
         action: &str,
         arguments: &Map<String, Value>,
     ) -> Result<Started, ApiError> {
-        match tilo_service::decode::<AccessEffect>(
-            &self.resources(),
-            resource,
-            action,
-            arguments,
-        )? {
+        match tilo_service::decode::<AccessEffect>(&self.resources(), resource, action, arguments)?
+        {
             AccessEffect::Revoke { id } => {
                 if id.is_empty() {
                     return Err(ApiError::InvalidArguments(
@@ -754,7 +751,7 @@ fn holder_kind(grantee: &tilo_action_policy::Grantee) -> &'static str {
 /// One device-record choice, as an entry of the same list: a file or folder an app was given
 /// outside any workspace, which the person who chose it may take back.
 fn chosen_entry(key: &AppKey, token: &str, held: &tilo_dialogs::chosen::Chosen) -> Value {
-    let name = ui::local_identity::load()
+    let name = tilo_ui_base::local_identity::load()
         .map(|identity| identity.display_name.trim().to_owned())
         .filter(|name| !name.is_empty())
         .unwrap_or_else(|| t("session-access-you"));
@@ -769,7 +766,7 @@ fn chosen_entry(key: &AppKey, token: &str, held: &tilo_dialogs::chosen::Chosen) 
         "section": tilo_session_core::desktop::workspace_settings::RecipientKind::App.section_label(),
         "holder": crate::app_names::claimant(key.app()),
         "allows": allows,
-        "expiry": ui::format::lifetime(tilo_action_policy::Lifetime::UntilRevoked),
+        "expiry": tilo_ui_base::format::lifetime(tilo_action_policy::Lifetime::UntilRevoked),
         "granted_by": name,
         "app": key.app(),
         "path": held.host.to_string_lossy(),
@@ -927,7 +924,14 @@ mod tests {
     #[test]
     fn the_service_publishes_the_reading_where_a_view_reads_it() {
         let handle = DesktopHandle::new(workspace_with_caps(Vec::new()), 1);
-        let served = Served::new(handle, "ada".into(), None, None, no_outside(), MountMoves::default());
+        let served = Served::new(
+            handle,
+            "ada".into(),
+            None,
+            None,
+            no_outside(),
+            MountMoves::default(),
+        );
         let published = served.resources();
         assert_eq!(published.len(), 1);
         assert_eq!(published[0].id.as_str(), RESOURCE);
@@ -936,7 +940,10 @@ mod tests {
             "the view's one action is published"
         );
         assert!(
-            published[0].actions.iter().any(|spec| spec.id == SET_OUTSIDE),
+            published[0]
+                .actions
+                .iter()
+                .any(|spec| spec.id == SET_OUTSIDE),
             "and the app page's capability switch"
         );
         let read = served.read(RESOURCE).expect("the reading");
@@ -990,10 +997,8 @@ mod tests {
     fn turning_a_capability_off_and_on_writes_and_revokes_the_one_grants_denial() {
         let handle = DesktopHandle::new(workspace_owned_by("ada"), 1);
         let workspace = handle.read(|tree| tree.workspaces[0].id().to_string());
-        let capability = tilo_action_policy::roles::outside_capability_grant_id(
-            "so.tilo.mail",
-            "smtp.send",
-        );
+        let capability =
+            tilo_action_policy::roles::outside_capability_grant_id("so.tilo.mail", "smtp.send");
         let declared = declares("so.tilo.mail", &["imap.search", "smtp.send"]);
         let mut served = Served::new(
             handle.clone(),
@@ -1013,11 +1018,7 @@ mod tests {
         );
 
         served
-            .invoke(
-                RESOURCE,
-                SET_OUTSIDE,
-                &set_outside_args(&workspace, false),
-            )
+            .invoke(RESOURCE, SET_OUTSIDE, &set_outside_args(&workspace, false))
             .expect("the capability is turned off");
         assert!(
             served.poll(),
@@ -1054,8 +1055,7 @@ mod tests {
             "and it goes again"
         );
         assert!(
-            handle.read(|tree| tree
-                .workspaces[0]
+            handle.read(|tree| tree.workspaces[0]
                 .policy
                 .grants
                 .iter()
@@ -1088,12 +1088,11 @@ mod tests {
             served.invoke(RESOURCE, SET_OUTSIDE, &args),
             Err(ApiError::InvalidArguments(_))
         ));
-        assert!(handle.read(|tree| tree.workspaces[0]
-            .policy
-            .grants
-            .iter()
-            .all(|grant| tilo_action_policy::roles::outside_capability_of(grant.id.as_str())
-                .is_none())));
+        assert!(
+            handle.read(|tree| tree.workspaces[0].policy.grants.iter().all(|grant| {
+                tilo_action_policy::roles::outside_capability_of(grant.id.as_str()).is_none()
+            }))
+        );
     }
 
     /// A workspace that lands on the shell reaches the reading on the session's next pass, with no

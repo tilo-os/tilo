@@ -133,7 +133,7 @@ const DRAWN: [u8; 4] = [200, 40, 40, 255];
 /// PNG of every display, side by side.
 #[test]
 fn the_portals_screenshot_is_a_picture_of_every_display() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let directory = tempfile::tempdir().unwrap();
     let external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT).at(WIDTH, 0);
     let (mut session, capture) = serving(
@@ -155,7 +155,7 @@ fn the_portals_screenshot_is_a_picture_of_every_display() {
 /// shell around it.
 #[test]
 fn the_portals_screenshot_of_the_active_window_is_that_window_alone() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let directory = tempfile::tempdir().unwrap();
     let (mut session, capture) = serving(
         directory.path(),
@@ -196,7 +196,7 @@ fn the_portals_screenshot_of_the_active_window_is_that_window_alone() {
 /// private windows included.
 #[test]
 fn the_portals_colour_pick_is_the_pixel_under_the_pointer() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let directory = tempfile::tempdir().unwrap();
     let (mut session, capture) = serving(
         directory.path(),
@@ -229,7 +229,7 @@ fn the_portals_colour_pick_is_the_pixel_under_the_pointer() {
 /// the second is the second one's colour, not what the first shows at the same place on it.
 #[test]
 fn the_portals_colour_pick_is_the_display_under_the_pointer() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let directory = tempfile::tempdir().unwrap();
     let external = OutputConfig::new("HDMI-A-1", WIDTH, HEIGHT).at(WIDTH, 0);
     let (mut session, capture) = serving(
@@ -265,7 +265,7 @@ fn the_portals_colour_pick_is_the_display_under_the_pointer() {
 /// rather than that the person cancelled.
 #[test]
 fn the_portals_colour_pick_with_no_display_under_the_pointer_says_where_to_move_it() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let directory = tempfile::tempdir().unwrap();
     let (mut session, capture) = serving(
         directory.path(),

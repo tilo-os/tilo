@@ -10,17 +10,18 @@ use vello::peniko::{Color, Fill};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::color_compat::ColorCompat;
-use crate::icons::Icon;
-use crate::text_render::{TextRenderer, TextStyle};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
-use crate::tokens::colors::{
-    NON_TEXT_MIN_CONTRAST, ON_FILL_MIN_CONTRAST, SMALL_TEXT_MIN_CONTRAST, mix8,
-};
-use crate::widget::TaffyTreeExt;
-use crate::widget::Tone;
-use crate::widget::Widget;
 use crate::widget::activation::Activation;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Tone;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::{
+    tokens::colors::NON_TEXT_MIN_CONTRAST, tokens::colors::ON_FILL_MIN_CONTRAST,
+    tokens::colors::SMALL_TEXT_MIN_CONTRAST, tokens::colors::mix8,
+};
 
 pub(crate) const TINT_FILL: f32 = 0.15;
 pub(crate) const TINT_EDGE: f32 = 0.38;
@@ -75,10 +76,10 @@ impl ChipStyle {
                 } else if hovered {
                     (
                         colors.lift_on(raised, 0.5),
-                        Some(crate::surface::edge_on(raised)),
+                        Some(tilo_ui_base::surface::edge_on(raised)),
                     )
                 } else {
-                    (raised, Some(crate::surface::edge_on(raised)))
+                    (raised, Some(tilo_ui_base::surface::edge_on(raised)))
                 };
                 let ink = colors.ink_on_any(&[fill], colors.text_primary, SMALL_TEXT_MIN_CONTRAST);
                 ChipColors {
@@ -380,7 +381,7 @@ pub(crate) struct PillPaint<'a> {
     pub rect: Rect,
     pub label: &'a str,
     /// Who a [`ChipLead::Face`] shows; without one, the label names them.
-    pub face: Option<&'a crate::component::Person>,
+    pub face: Option<&'a tilo_ui_base::component::Person>,
     pub lead: ChipLead,
     pub style: ChipStyle,
     pub selected: bool,
@@ -481,7 +482,7 @@ pub(crate) fn paint_pill(
                 transform,
                 fade(edge),
                 None,
-                &crate::surface::edge_outline(rect, radius),
+                &tilo_ui_base::surface::edge_outline(rect, radius),
             );
         }
     }
@@ -521,7 +522,7 @@ pub(crate) fn paint_pill(
         } else {
             text_renderer.elide_to_width_style(
                 pill.label,
-                crate::num::f32_of_f64(spare + 0.5),
+                tilo_ui_base::num::f32_of_f64(spare + 0.5),
                 &metrics.label,
             )
         }
@@ -559,10 +560,11 @@ pub(crate) fn paint_pill(
         ChipLead::Face(colour) => {
             let side = metrics.face();
             let face = Rect::from_center_size(Point::new(x + side / 2.0, cy), (side, side));
-            let mut ctx = crate::paint::PaintCtx::new(scene, transform, text_renderer, theme);
+            let mut ctx =
+                tilo_ui_base::paint::PaintCtx::new(scene, transform, text_renderer, theme);
             match pill.face {
-                Some(who) => crate::widget::avatar_face::AvatarFace::of(who),
-                None => crate::widget::avatar_face::AvatarFace::new(pill.label, pill.label),
+                Some(who) => tilo_ui_base::widget::avatar_face::AvatarFace::of(who),
+                None => tilo_ui_base::widget::avatar_face::AvatarFace::new(pill.label, pill.label),
             }
             .presence(colour)
             .paint(&mut ctx, face);
@@ -579,20 +581,20 @@ pub(crate) fn paint_pill(
                 transform,
                 glyph,
                 fade(ink),
-                crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+                tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
             );
             x += metrics.glyph + metrics.gap;
         }
         ChipLead::Agent(colour) => {
             let side = metrics.face();
             let mark = Rect::from_center_size(Point::new(x + side / 2.0, cy), (side, side));
-            crate::agent_identity::draw_agent_identity_mark(
+            tilo_ui_base::agent_identity::draw_agent_identity_mark(
                 scene,
                 transform,
                 mark,
                 fade(theme.tokens.colors.presence.of(colour)),
                 theme,
-                crate::agent_identity::AgentIdentityStyle::Solid,
+                tilo_ui_base::agent_identity::AgentIdentityStyle::Solid,
             );
             x += side + metrics.gap;
         }
@@ -621,7 +623,7 @@ pub(crate) fn paint_pill(
             transform,
             glyph,
             fade(ink),
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
     } else if pill.menu {
         let x1 = rect.x1 - inset;
@@ -634,7 +636,7 @@ pub(crate) fn paint_pill(
             transform,
             glyph,
             fade(colors.lead),
-            crate::icons::LUCIDE_DEFAULT_STROKE_PX,
+            tilo_ui_base::icons::LUCIDE_DEFAULT_STROKE_PX,
         );
     }
 }
@@ -652,14 +654,14 @@ pub use component::ChipProps;
 
 pub struct Chip {
     label: String,
-    face: Option<crate::component::Person>,
+    face: Option<tilo_ui_base::component::Person>,
     /// The hue the face lead wears in this theme's palette, where the face names a member: set by
     /// [`Chip::with_face_of`], resolved when the chip paints.
-    face_hue: Option<crate::tokens::PresenceHue>,
+    face_hue: Option<tilo_ui_base::tokens::PresenceHue>,
     selectable: bool,
     selected: bool,
     /// How chosen the chip shows: it eases between the looks when a person picks it.
-    chosen: Option<crate::motion::Mark>,
+    chosen: Option<tilo_ui_base::motion::Mark>,
     removable: bool,
     menu: bool,
     lead: ChipLead,
@@ -670,7 +672,7 @@ pub struct Chip {
     on_toggle: Option<Box<dyn FnMut(bool)>>,
     /// Told each time a person presses the "×".
     on_remove: Option<Box<dyn FnMut()>>,
-    remove_press: crate::widget::Press,
+    remove_press: tilo_ui_base::widget::Press,
     rect: Rect,
     x_rect: Rect,
     last_cursor: Point,
@@ -683,14 +685,14 @@ pub struct Chip {
     accessible_name: Option<String>,
     /// Wait for a pause, or speak at once, when what it says changes without focus moving: what a
     /// chip that appears to say something new is announced by.
-    live: Option<crate::a11y::Politeness>,
+    live: Option<tilo_ui_base::a11y::Politeness>,
     metrics: PillMetrics,
     /// `metrics.min_pointer_target`: the hit rect grows to this even though
     /// the painted pill stays at the 28 px selector height.
     min_target: f64,
     /// Pointer precision; a coarse pointer raises the target past the
     /// theme's metric (48 px), as it does for every other control.
-    interaction: crate::interaction::InteractionEnvironment,
+    interaction: tilo_ui_base::interaction::InteractionEnvironment,
     /// Settled pill size — real measured width, height following the label
     /// line — seeding the next `build_layout` so a stable label costs no
     /// extra pass. Cleared when the theme's geometry changes.
@@ -709,7 +711,8 @@ impl Chip {
     #[must_use]
     pub fn reference(label: impl Into<String>, id: &str) -> Self {
         let label = label.into();
-        let name = crate::i18n::widget_format("reference-open", &[("label", label.clone().into())]);
+        let name =
+            tilo_ui_base::i18n::widget_format("reference-open", &[("label", label.clone().into())]);
         Self::new_owned(label)
             .with_id(format!("reference:{id}"))
             .with_lead(REFERENCE_LEAD)
@@ -742,34 +745,34 @@ impl Chip {
             removed: false,
             on_toggle: None,
             on_remove: None,
-            remove_press: crate::widget::Press::default(),
+            remove_press: tilo_ui_base::widget::Press::default(),
             rect: Rect::ZERO,
             x_rect: Rect::ZERO,
             last_cursor: Point::ZERO,
             hovered: false,
             focused: false,
             metrics: STOCK.clone(),
-            min_target: f64::from(crate::tokens::Metrics::BASE.min_pointer_target),
-            interaction: crate::interaction::InteractionEnvironment::default(),
+            min_target: f64::from(tilo_ui_base::tokens::Metrics::BASE.min_pointer_target),
+            interaction: tilo_ui_base::interaction::InteractionEnvironment::default(),
             footprint: None,
         }
     }
 
     #[must_use]
-    pub fn with_face(mut self, who: crate::component::Person, colour: Color) -> Self {
+    pub fn with_face(mut self, who: tilo_ui_base::component::Person, colour: Color) -> Self {
         self.face = Some(who);
         self.lead = ChipLead::Face(colour);
         self
     }
 
-    /// Lead with `who`'s face as every surface draws it ([`crate::widget::avatar_face::AvatarFace::of`]),
+    /// Lead with `who`'s face as every surface draws it ([`tilo_ui_base::widget::avatar_face::AvatarFace::of`]),
     /// in the theme's palette colour for the hue they wear: a person's picture or initials, or an
     /// agent's mark, as the bar's faces show them.
     #[must_use]
-    pub fn with_face_of(mut self, who: crate::component::Person) -> Self {
+    pub fn with_face_of(mut self, who: tilo_ui_base::component::Person) -> Self {
         self.face_hue = Some(who.hue);
-        self.lead = ChipLead::Face(crate::presence::presence_colour(
-            crate::presence::identity_rgb(who.hue),
+        self.lead = ChipLead::Face(tilo_ui_base::presence::presence_colour(
+            tilo_ui_base::presence::identity_rgb(who.hue),
         ));
         self.face = Some(who);
         self
@@ -778,7 +781,7 @@ impl Chip {
     /// Announce what it says without moving focus when it changes: a polite wait for a pause, or
     /// assertive speech, for a chip whose words are the news ([`AccessNode::live`]).
     #[must_use]
-    pub fn with_live(mut self, politeness: crate::a11y::Politeness) -> Self {
+    pub fn with_live(mut self, politeness: tilo_ui_base::a11y::Politeness) -> Self {
         self.live = Some(politeness);
         self
     }
@@ -980,7 +983,7 @@ impl Chip {
     fn choosing(&self) -> bool {
         self.chosen
             .as_ref()
-            .is_some_and(|mark| mark.is_moving(crate::motion::frame_now()))
+            .is_some_and(|mark| mark.is_moving(tilo_ui_base::motion::frame_now()))
     }
 
     pub fn is_selected(&self) -> bool {
@@ -1014,13 +1017,13 @@ impl Chip {
     }
 
     #[must_use]
-    pub fn with_remove_press(self, press: crate::widget::Press) -> Self {
+    pub fn with_remove_press(self, press: tilo_ui_base::widget::Press) -> Self {
         let mut chip = self;
         chip.set_remove_press(press);
         chip
     }
 
-    pub fn set_remove_press(&mut self, press: crate::widget::Press) {
+    pub fn set_remove_press(&mut self, press: tilo_ui_base::widget::Press) {
         if press.is_none() {
             return;
         }
@@ -1115,13 +1118,13 @@ impl Chip {
 }
 
 impl Widget for Chip {
-    crate::described!();
+    tilo_ui_base::described!();
 
-    crate::provides!(dyn crate::widget::controls::ActionControls,);
+    tilo_ui_base::provides!(dyn tilo_ui_base::widget::controls::ActionControls,);
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         if self.interaction != environment {
             self.interaction = environment;
@@ -1227,7 +1230,7 @@ impl Widget for Chip {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.place_remove();
     }
 
@@ -1237,7 +1240,7 @@ impl Widget for Chip {
         self.rect == Rect::ZERO || self.footprint.is_none()
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1253,16 +1256,21 @@ impl Widget for Chip {
         // above and below the glyph.
         let remove_hovered = self.remove_hit_rect().contains(self.last_cursor);
         let chosen = self.shows_chosen();
-        let now = crate::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let selecting = match &mut self.chosen {
             // The first look is the chip's own; a change after it moves.
             None => {
-                self.chosen = Some(crate::motion::Mark::at(chosen));
+                self.chosen = Some(tilo_ui_base::motion::Mark::at(chosen));
                 None
             }
             Some(mark) => {
                 if mark.is_on() != chosen {
-                    mark.set(chosen, theme.motion(), crate::motion::input_source(), now);
+                    mark.set(
+                        chosen,
+                        theme.motion(),
+                        tilo_ui_base::motion::input_source(),
+                        now,
+                    );
                 }
                 mark.is_moving(now).then(|| mark.level(now))
             }
@@ -1304,7 +1312,7 @@ impl Widget for Chip {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         match event {
             WindowEvent::CursorMoved { position, .. } => {
@@ -1376,12 +1384,12 @@ impl Widget for Chip {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _root: &crate::widget::ModelPath,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _root: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         match action {
             Action::Activate if key_path == [REMOVE_KEY] && self.removable => {
                 self.remove_pressed();
@@ -1393,14 +1401,14 @@ impl Widget for Chip {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty || self.choosing(), self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty || self.choosing(), self)
     }
     fn needs_animation_frame(&self) -> bool {
         self.choosing()
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
@@ -1419,7 +1427,7 @@ impl Widget for Chip {
         self.rect
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let node = self.own_accessibility()?;
         if !self.removable {
             return Some(node);
@@ -1431,10 +1439,13 @@ impl Widget for Chip {
         Some(
             node.with_semantic_key(self.activation.id())
                 .with_children(vec![
-                    crate::a11y::AccessNode::new(crate::a11y::Role::Button)
+                    tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button)
                         .with_key(REMOVE_KEY)
                         .with_action_target(format!("{}/remove", self.activation.id()))
-                        .with_name(format!("{} {name}", crate::i18n::widget_text("Remove")))
+                        .with_name(format!(
+                            "{} {name}",
+                            tilo_ui_base::i18n::widget_text("Remove")
+                        ))
                         .with_bounds(self.remove_hit_rect()),
                 ]),
         )
@@ -1445,8 +1456,8 @@ impl Widget for Chip {
 const REMOVE_KEY: u64 = 1;
 
 impl Chip {
-    fn own_accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn own_accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let name = self
             .accessible_name
             .clone()
@@ -1500,16 +1511,16 @@ impl Chip {
     }
 }
 
-impl crate::widget::controls::ActionControls for Chip {
+impl tilo_ui_base::widget::controls::ActionControls for Chip {
     fn attach_controls(
         &mut self,
-        domain: &crate::ControlDomain,
-        attachment: crate::control_domain::DomainAttachment,
+        domain: &tilo_ui_base::ControlDomain,
+        attachment: tilo_ui_base::control_domain::DomainAttachment,
     ) {
         self.activation.attach(domain, attachment);
         self.remove_press.attach(domain, attachment);
-        for child in crate::widget::Widget::children_mut(self) {
-            crate::widget::controls::attach_controls(child, domain, attachment);
+        for child in tilo_ui_base::widget::Widget::children_mut(self) {
+            tilo_ui_base::widget::controls::attach_controls(child, domain, attachment);
         }
     }
     fn take_control_invocation(&mut self) -> Option<tilo_actions::ControlInvocation> {
@@ -1517,17 +1528,19 @@ impl crate::widget::controls::ActionControls for Chip {
             .take_invocation()
             .or_else(|| self.remove_press.take())
             .or_else(|| {
-                crate::widget::Widget::children_mut(self)
+                tilo_ui_base::widget::Widget::children_mut(self)
                     .into_iter()
-                    .find_map(crate::widget::controls::take_control_invocation)
+                    .find_map(tilo_ui_base::widget::controls::take_control_invocation)
             })
     }
-    fn control_action_bindings(&self) -> Vec<crate::widget::ControlBindingMetadata> {
+    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
         let mut bindings = self.activation.bindings();
         let control_id = self.activation.id();
         bindings.extend(self.remove_press.metadata(control_id));
-        for child in crate::widget::Widget::children(self) {
-            bindings.extend(crate::widget::controls::control_action_bindings(child));
+        for child in tilo_ui_base::widget::Widget::children(self) {
+            bindings.extend(tilo_ui_base::widget::controls::control_action_bindings(
+                child,
+            ));
         }
         bindings
     }
@@ -1537,8 +1550,8 @@ impl crate::widget::controls::ActionControls for Chip {
     ) {
         self.activation.refresh_availability(allowed);
         self.remove_press.refresh_availability(allowed);
-        for child in crate::widget::Widget::children_mut(self) {
-            crate::widget::controls::refresh_control_action_availability(child, allowed);
+        for child in tilo_ui_base::widget::Widget::children_mut(self) {
+            tilo_ui_base::widget::controls::refresh_control_action_availability(child, allowed);
         }
     }
 }
@@ -1546,8 +1559,8 @@ impl crate::widget::controls::ActionControls for Chip {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
     use crate::testing::dispatch;
+    use tilo_ui_base::presence::PresenceCtx;
 
     /// A chip in a bar's row: whatever it says, its row is 60 high.
     fn lay_out(w: &mut dyn Widget) {
@@ -1581,10 +1594,10 @@ mod tests {
                     Tone::Success,
                     Tone::Warning,
                     Tone::Danger,
-                    Tone::Presence(crate::tokens::PresenceHue::from_slot(3)),
+                    Tone::Presence(tilo_ui_base::tokens::PresenceHue::from_slot(3)),
                 ] {
                     let colors = ChipStyle::Tinted(tone).colors(&theme, ground, false, false);
-                    let ratio = crate::a11y::contrast_ratio(colors.ink, colors.fill);
+                    let ratio = tilo_ui_base::a11y::contrast_ratio(colors.ink, colors.fill);
                     assert!(
                         ratio >= SMALL_TEXT_MIN_CONTRAST,
                         "{} {tone:?}: label {ratio:.2}:1",
@@ -1597,20 +1610,20 @@ mod tests {
                 let live = ChipStyle::Live.colors(&theme, ground, false, false);
                 assert_eq!(live.fill, theme.tokens.colors.intent.you);
                 assert_ne!(live.fill, theme.tokens.colors.semantic.danger);
-                assert!(crate::a11y::contrast_ratio(live.ink, live.fill) >= ON_FILL_MIN_CONTRAST);
+                assert!(tilo_ui_base::a11y::contrast_ratio(live.ink, live.fill) >= ON_FILL_MIN_CONTRAST);
                 // A numbered pick is the accent with its own label, as a
                 // primary action's: never ink measured onto a lighter fill.
                 let picked = ChipStyle::Accent.colors(&theme, ground, false, false);
                 assert_eq!(picked.fill, theme.tokens.colors.intent.accent);
                 assert_eq!(picked.ink, theme.tokens.colors.intent.on_accent);
-                assert!(crate::a11y::contrast_ratio(picked.ink, picked.fill) >= ON_FILL_MIN_CONTRAST);
+                assert!(tilo_ui_base::a11y::contrast_ratio(picked.ink, picked.fill) >= ON_FILL_MIN_CONTRAST);
                 let neutral = ChipStyle::Neutral.colors(&theme, ground, false, false);
                 assert_eq!(neutral.fill, theme.tokens.colors.surfaces.raised);
                 let chosen = ChipStyle::Neutral.colors(&theme, ground, true, false);
                 assert_ne!(chosen.fill, neutral.fill, "a selected chip is tinted");
                 assert!(chosen.edge.is_some() && chosen.edge != neutral.edge);
                 assert!(
-                    crate::a11y::contrast_ratio(chosen.ink, chosen.fill) >= SMALL_TEXT_MIN_CONTRAST
+                    tilo_ui_base::a11y::contrast_ratio(chosen.ink, chosen.fill) >= SMALL_TEXT_MIN_CONTRAST
                 );
             }
         }
@@ -1635,7 +1648,7 @@ mod tests {
             draw(&mut c);
             assert!(!c.needs_animation_frame(), "the first look is not a change");
             let center = c.get_rect().center();
-            crate::motion::note_source(crate::tokens::MotionSource::Pointer);
+            tilo_ui_base::motion::note_source(tilo_ui_base::tokens::MotionSource::Pointer);
             dispatch(&mut c, &cursor(center));
             dispatch(&mut c, &mouse_press());
             assert!(c.is_selected());
@@ -1649,7 +1662,7 @@ mod tests {
         phase chip_pointer_toggles_and_removes_by_kind;
         {
             fn accessibility_toggle_vs_static() {
-                use crate::a11y::Role;
+                use tilo_ui_base::a11y::Role;
                 let sel = Chip::new("Filter").selected(true);
                 let node = Widget::accessibility(&sel).unwrap();
                 assert_eq!(node.role, Role::ToggleButton);
@@ -1682,9 +1695,9 @@ mod tests {
             /// its node carries is what a screen reader reads it as, on a value chip and a
             /// pressable one alike.
             fn accessibility_a_chip_whose_words_are_news_is_a_live_region() {
-                let value = Chip::new("Stopped following").with_live(crate::a11y::Politeness::Polite);
+                let value = Chip::new("Stopped following").with_live(tilo_ui_base::a11y::Politeness::Polite);
                 let node = Widget::accessibility(&value).unwrap();
-                assert_eq!(node.live, Some(crate::a11y::Politeness::Polite));
+                assert_eq!(node.live, Some(tilo_ui_base::a11y::Politeness::Polite));
                 assert_eq!(node.name.as_deref(), Some("Stopped following"));
                 assert!(
                     node.bounds.is_some(),
@@ -1694,9 +1707,9 @@ mod tests {
                 let urgent = Chip::new("The connection dropped")
                     .with_id("view-chip:offline")
                     .on_click(|| {})
-                    .with_live(crate::a11y::Politeness::Assertive);
+                    .with_live(tilo_ui_base::a11y::Politeness::Assertive);
                 let node = Widget::accessibility(&urgent).unwrap();
-                assert_eq!(node.live, Some(crate::a11y::Politeness::Assertive));
+                assert_eq!(node.live, Some(tilo_ui_base::a11y::Politeness::Assertive));
             }
 
             /// A chip showing whether it is chosen and naming what a press does (a choice among
@@ -1713,7 +1726,7 @@ mod tests {
                 let center = c.get_rect().center();
                 dispatch(&mut c, &cursor(center));
                 assert!(dispatch(&mut c, &mouse_press()), "the press is the chip's");
-                dispatch(&mut c, &crate::synthetic_input::mouse_release());
+                dispatch(&mut c, &tilo_ui_base::synthetic_input::mouse_release());
                 assert_eq!(pressed.get(), 1, "the press runs");
                 assert!(!c.is_selected(), "the selection is what it is bound to");
                 assert!(!c.take_toggled(), "nothing flipped");
@@ -1734,19 +1747,19 @@ mod tests {
                 let binding =
                     tilo_actions::ActionBinding::unit_for(&spec, "remove").expect("published");
                 let address = binding.address().clone();
-                let mut chip = Chip::new("tag").with_remove_press(crate::widget::Press::of(
-                    crate::component::Event::Action(binding),
+                let mut chip = Chip::new("tag").with_remove_press(tilo_ui_base::widget::Press::of(
+                    tilo_ui_base::component::Event::Action(binding),
                 ));
                 chip.remove_pressed();
                 assert!(chip.removed, "the press removes the chip");
-                let taken = crate::widget::controls::take_control_invocation(&mut chip);
+                let taken = tilo_ui_base::widget::controls::take_control_invocation(&mut chip);
                 assert_eq!(
                     taken.as_ref().map(|taken| taken.address.clone()),
                     Some(address),
                     "one press runs the remove once"
                 );
                 assert!(
-                    crate::widget::controls::take_control_invocation(&mut chip).is_none(),
+                    tilo_ui_base::widget::controls::take_control_invocation(&mut chip).is_none(),
                     "the press is taken once"
                 );
             }
@@ -1767,7 +1780,7 @@ mod tests {
         let mut tr = TextRenderer::new();
         let presence = PresenceCtx::default();
         let mut scene = Scene::new();
-        w.draw(&mut crate::draw::DrawCtx::new(
+        w.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             &mut scene,
             Affine::IDENTITY,
             &mut tr,
@@ -1782,7 +1795,7 @@ mod tests {
             position: winit::dpi::PhysicalPosition::new(p.x, p.y),
         }
     }
-    use crate::synthetic_input::mouse_press;
+    use tilo_ui_base::synthetic_input::mouse_press;
 }
 
 #[cfg(test)]
@@ -1805,15 +1818,15 @@ mod activation_tests {
                 .on_open(move || counter.set(counter.get() + 1));
             assert!(chip.is_focusable());
             let node = Widget::accessibility(&chip).unwrap();
-            assert_eq!(node.role, crate::a11y::Role::Button);
+            assert_eq!(node.role, tilo_ui_base::a11y::Role::Button);
             assert_eq!(node.name.as_deref(), Some("design"));
             assert_eq!(chip.test_id(), Some("tag-design"));
             let mut doc = automerge::AutoCommit::new();
             assert!(Widget::perform_action(
                 &mut chip,
-                &crate::a11y::Action::Activate,
+                &tilo_ui_base::a11y::Action::Activate,
                 &[],
-                &mut crate::widget::Edits::lend(&mut doc),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT,
             ));
             assert_eq!(opened.get(), 1, "Enter, Space and AT press the chip");
@@ -1834,8 +1847,8 @@ mod activation_tests {
         // mouse, keeps the pill's height.
         phase a_pressed_chip_takes_a_fingers_area_on_touch;
         {
-            use crate::interaction::InteractionEnvironment;
-            let pill = f64::from(crate::tokens::Metrics::BASE.selector_height);
+            use tilo_ui_base::interaction::InteractionEnvironment;
+            let pill = f64::from(tilo_ui_base::tokens::Metrics::BASE.selector_height);
             let finger = f64::from(InteractionEnvironment::TOUCH.minimum_target());
             let chips: [(&str, fn() -> Chip, bool); 3] = [
                 (
@@ -1925,7 +1938,7 @@ mod activation_tests {
             let press = harness.a11y_nodes_named("Book: The Tideglass");
             assert_eq!(press.len(), 1, "the chip itself is one control");
             harness
-                .perform_a11y_action(press[0], &crate::a11y::Action::Activate)
+                .perform_a11y_action(press[0], &tilo_ui_base::a11y::Action::Activate)
                 .expect("the press answers");
             assert_eq!(opened.get(), 1, "the chip's own press handler ran");
         }

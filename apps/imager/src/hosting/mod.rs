@@ -22,8 +22,8 @@ use std::sync::{Arc, Mutex};
 
 use serde_json::Value;
 use tilo_resource::{Effect, EffectStatus, LiveRow};
+use tilo_ui_base::widget::Widget;
 use ui::tilo_actions::{EncodedAction, ResourceSpec};
-use ui::widget::Widget;
 
 pub(crate) use effect::{EffectAnswer, EffectCx, Effected, JobProgress, Progress, Reply};
 pub(crate) use run::{Flow, Opened, run};
@@ -374,7 +374,7 @@ pub(crate) fn each_served(
     root: &mut dyn Widget,
     visit: &mut dyn FnMut(&mut dyn Served) -> bool,
 ) -> bool {
-    if let Some(served) = ui::widget::capability::capability_mut::<dyn Served>(root)
+    if let Some(served) = tilo_ui_base::widget::capability::capability_mut::<dyn Served>(root)
         && visit(served)
     {
         return true;
@@ -430,7 +430,7 @@ pub(crate) fn invoke(store: &Store, root: &mut dyn Widget, encoded: &EncodedActi
     }
 }
 
-impl<W: Window> ui::widget::Decorator for Hosted<W> {
+impl<W: Window> tilo_ui_base::widget::Decorator for Hosted<W> {
     type Inner = W;
 
     fn inner(&self) -> &W {
@@ -441,14 +441,22 @@ impl<W: Window> ui::widget::Decorator for Hosted<W> {
         &mut self.0
     }
 
-    ui::provides!(dyn Served; decorated);
+    tilo_ui_base::provides!(dyn Served; decorated);
 
-    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+    fn sync(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) {
         serve(&mut self.0);
         self.0.sync(state, path);
     }
 
-    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         let served = serve(&mut self.0);
         self.0.update(state, path) || served
     }
@@ -456,13 +464,13 @@ impl<W: Window> ui::widget::Decorator for Hosted<W> {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.0.handle_event(event, ctx);
         serve(&mut self.0);
     }
 
-    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &automerge::ObjId) {
+    fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, path: &automerge::ObjId) {
         self.0.settle(edits, path);
         serve(&mut self.0);
     }

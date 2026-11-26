@@ -1,0 +1,1116 @@
+//! Async image loading, decode and cache — keyed by URL. Displaying remote thumbnails on the UI thread
+//! would jank every frame, so loads run off the UI thread — fetched through a caller-supplied
+//! [`Fetcher`] and decoded as [`crate::background::Background`] jobs, or fetched by the host through a
+//! [`HostImageLoader`] — and the decoded `peniko::ImageData` is cached and handed back on a later
+//! frame; until then the caller paints a placeholder.
+
+use std::collections::HashMap;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::mpsc::{Receiver, SyncSender, TrySendError};
+use std::sync::{Arc, Mutex};
+use tilo_sort::CompactSort as _;
+
+use crate::background::Background;
+use crate::time::Duration;
+use crate::wake::WakeHandle;
+
+use tilo_lock::MutexRecover as _;
+use vello::Scene;
+use vello::kurbo::{Affine, Rect, RoundedRect};
+use vello::peniko::{BlendMode, Fill, ImageBrush, ImageData as PenikoImage};
+
+/// Pixels a host decoded itself, for [`HostImageLoader::complete_decoded`] (the browser's own decoders,
+/// so the page's module carries none).
+pub use tilo_image_codec::DecodedImage;
+
+/// Fetches the raw encoded bytes for a URL, or `None` on failure.
+pub type Fetcher = Arc<dyn Fn(&str) -> Option<Vec<u8>> + Send + Sync>;
+
+enum Slot {
+    Loading(Arc<RequestIdentity>),
+    Ready(PenikoImage),
+    Failed,
+}
+
+struct SlotEntry {
+    slot: Slot,
+    last_used: u64,
+}
+
+#[derive(Default)]
+struct CacheState {
+    slots: HashMap<String, SlotEntry>,
+    clock: u64,
+}
+
+impl CacheState {
+    fn next_tick(&mut self) -> u64 {
+        if self.clock == u64::MAX {
+            self.rebase_lru_clock();
+        }
+        if let Some(next) = self.clock.checked_add(1) {
+            self.clock = next;
+            return next;
+        }
+        // A defensive retry keeps this total even if the cache bound changes
+        // in the future: LRU eviction quality may reset, but timestamps never
+        // wrap into a value belonging to a live entry.
+        self.rebase_lru_clock();
+        self.next_tick()
+    }
+
+    fn rebase_lru_clock(&mut self) {
+        // This is a process-local LRU clock, not a persisted identity.
+        // Rebase the (at most 64) live timestamps in their existing order
+        // before issuing another tick, so no two cache entries become
+        // indistinguishable through counter wraparound.
+        let mut order: Vec<_> = self.slots.keys().cloned().collect();
+        order.compact_sort_by_key(|url| self.slots.get(url).map_or(0, |entry| entry.last_used));
+        for (tick, url) in (1_u64..).zip(order) {
+            if let Some(entry) = self.slots.get_mut(&url) {
+                entry.last_used = tick;
+            }
+        }
+        self.clock = u64::try_from(self.slots.len()).unwrap_or(u64::MAX);
+    }
+}
+
+const DEFAULT_IMAGE_WORKERS: usize = 2;
+const MAX_IMAGE_WORKERS: usize = 4;
+const IMAGE_JOB_QUEUE_LIMIT: usize = 64;
+/// How many positions the store keeps: a window's pictures, and the screenfuls a map of the
+/// world has just left (a tile is 256 pixels a side) so going back needs no load.
+const IMAGE_CACHE_ENTRY_LIMIT: usize = 256;
+const IMAGE_CACHE_BYTE_LIMIT: u64 = 64 * 1024 * 1024;
+const THUMBNAIL_MAX_DIMENSION: u32 = 600;
+// A single RGBA image must fit within the existing 64 MiB cache ceiling.
+const IMAGE_MAX_DIMENSION: u32 = 4096;
+
+fn slot_bytes(slot: &Slot) -> u64 {
+    match slot {
+        Slot::Ready(image) => u64::from(image.width)
+            .saturating_mul(u64::from(image.height))
+            .saturating_mul(4),
+        Slot::Loading(_) | Slot::Failed => 0,
+    }
+}
+
+fn cache_bytes(cache: &CacheState) -> u64 {
+    cache
+        .slots
+        .values()
+        .map(|entry| slot_bytes(&entry.slot))
+        .sum()
+}
+
+fn evict_one_settled(cache: &mut CacheState) -> bool {
+    let victim = cache
+        .slots
+        .iter()
+        .filter(|(_, entry)| !matches!(entry.slot, Slot::Loading(_)))
+        .min_by_key(|(_, entry)| entry.last_used)
+        .map(|(url, _)| url.clone());
+    victim.is_some_and(|url| cache.slots.remove(&url).is_some())
+}
+
+fn insert_settled(cache: &mut CacheState, url: String, slot: Slot) {
+    cache.slots.remove(&url);
+    let incoming_bytes = slot_bytes(&slot);
+    while (cache.slots.len() >= IMAGE_CACHE_ENTRY_LIMIT
+        || cache_bytes(cache).saturating_add(incoming_bytes) > IMAGE_CACHE_BYTE_LIMIT)
+        && evict_one_settled(cache)
+    {}
+    let last_used = cache.next_tick();
+    cache.slots.insert(url, SlotEntry { slot, last_used });
+}
+
+/// Loads in flight across every store in the process, so a capture can wait for the thumbnails a frame
+/// asked for before it is written ([`loads_in_flight`]).
+static LOADS_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// Loads in flight (queued or decoding) across every [`ImageStore`] in the process.
+#[must_use]
+pub fn loads_in_flight() -> usize {
+    LOADS_IN_FLIGHT.load(Ordering::SeqCst)
+}
+
+struct Pending(AtomicUsize);
+
+impl Pending {
+    fn add(&self, n: usize) {
+        self.0.fetch_add(n, Ordering::SeqCst);
+        LOADS_IN_FLIGHT.fetch_add(n, Ordering::SeqCst);
+    }
+    fn sub(&self, n: usize) {
+        self.0.fetch_sub(n, Ordering::SeqCst);
+        LOADS_IN_FLIGHT.fetch_sub(n, Ordering::SeqCst);
+    }
+    fn get(&self) -> usize {
+        self.0.load(Ordering::SeqCst)
+    }
+}
+
+#[derive(Default)]
+struct RequestIdentity {
+    reserved: AtomicBool,
+}
+
+struct Shared {
+    slots: Mutex<CacheState>,
+    /// Count of in-flight (queued or decoding) loads, for `is_idle` / `block_until_idle` and to know
+    /// when to keep animation frames flowing.
+    pending: Pending,
+    wake: WakeHandle,
+}
+
+impl Shared {
+    fn new() -> Arc<Self> {
+        Arc::new(Self {
+            slots: Mutex::new(CacheState::default()),
+            pending: Pending(AtomicUsize::new(0)),
+            wake: WakeHandle::new(),
+        })
+    }
+
+    /// Exact request identity, rather than its URL, owns pending ownership.
+    fn settle(&self, url: &str, request: &Arc<RequestIdentity>, slot: Slot) -> bool {
+        let mut cache = self.slots.lock_recover();
+        if !cache.slots.get(url).is_some_and(
+            |entry| matches!(&entry.slot, Slot::Loading(current) if Arc::ptr_eq(current, request)),
+        ) {
+            return false;
+        }
+        let authorized = self.wake.authorize_publication();
+        if authorized {
+            insert_settled(&mut cache, url.to_owned(), slot);
+        } else {
+            cache.slots.remove(url);
+        }
+        self.pending.sub(1);
+        drop(cache);
+        if authorized {
+            self.wake.wake();
+        }
+        authorized
+    }
+}
+
+/// A cheap-to-clone handle to a shared image cache whose loads run off the UI thread — on the toolkit's
+/// [`Background`] for [`ImageStore::new`], or in the host for [`ImageStore::host_driven`].
+#[derive(Clone)]
+pub struct ImageStore {
+    shared: Arc<Shared>,
+    tx: SyncSender<String>,
+    native: Option<Arc<NativeLoader>>,
+    background: Background,
+}
+
+/// The loading half of a host-driven [`ImageStore`]. The host drains requested URLs with
+/// [`take_requests`](Self::take_requests), fetches them however it can (asynchronously, from its own
+/// cache, over its own transport) and hands the bytes back through [`complete`](Self::complete), which
+/// decodes them under the same size and cache limits as the native loader and wakes the component that
+/// owns the store.
+pub struct HostImageLoader {
+    shared: Arc<Shared>,
+    requests: Option<Receiver<String>>,
+    in_flight: HashMap<String, Arc<RequestIdentity>>,
+    max_dimension: u32,
+}
+
+/// Opaque ownership for one admitted asynchronous image decode.
+pub struct ImageCompletionTicket {
+    shared: Arc<Shared>,
+    request: Arc<RequestIdentity>,
+    url: String,
+    max_dimension: u32,
+}
+
+impl ImageCompletionTicket {
+    /// The output dimension bound captured for this request.
+    pub fn max_dimension(&self) -> u32 {
+        self.max_dimension
+    }
+}
+
+impl Drop for ImageCompletionTicket {
+    fn drop(&mut self) {
+        self.shared.settle(&self.url, &self.request, Slot::Failed);
+    }
+}
+
+impl HostImageLoader {
+    /// Reserve a request already handed out by this loader for off-thread decode.
+    pub fn reserve(&mut self, url: &str) -> Option<ImageCompletionTicket> {
+        let request = self.in_flight.get(url)?.clone();
+        let cache = self.shared.slots.lock_recover();
+        if !cache.slots.get(url).is_some_and(
+            |entry| matches!(&entry.slot, Slot::Loading(current) if Arc::ptr_eq(current, &request)),
+        ) {
+            return None;
+        }
+        drop(cache);
+        if !self.shared.wake.authorize_publication() {
+            self.settle(url, &request, Slot::Failed);
+            return None;
+        }
+        if request.reserved.swap(true, Ordering::AcqRel) {
+            return None;
+        }
+        Some(ImageCompletionTicket {
+            shared: self.shared.clone(),
+            request,
+            url: url.to_owned(),
+            max_dimension: self.max_dimension,
+        })
+    }
+
+    /// Settle an exact reservation with decoded pixels, or `None` on failure.
+    pub fn complete_decoded(
+        &mut self,
+        ticket: &ImageCompletionTicket,
+        decoded: Option<tilo_image_codec::DecodedImage>,
+    ) -> bool {
+        if !Arc::ptr_eq(&self.shared, &ticket.shared) {
+            return false;
+        }
+        self.settle(
+            &ticket.url,
+            &ticket.request,
+            validated_slot(decoded, ticket.max_dimension),
+        )
+    }
+
+    fn complete_slot(&mut self, ticket: &ImageCompletionTicket, slot: Slot) -> bool {
+        if !Arc::ptr_eq(&self.shared, &ticket.shared) {
+            return false;
+        }
+        self.settle(&ticket.url, &ticket.request, slot)
+    }
+
+    /// Cancel one exact reservation. A late result or later ticket drop is inert.
+    pub fn cancel(&mut self, ticket: &ImageCompletionTicket) -> bool {
+        if !Arc::ptr_eq(&self.shared, &ticket.shared) {
+            return false;
+        }
+        self.settle(&ticket.url, &ticket.request, Slot::Failed)
+    }
+
+    /// Every URL requested since the last call. Each must eventually be passed to
+    /// [`complete`](Self::complete).
+    pub fn take_requests(&mut self) -> Vec<String> {
+        std::iter::from_fn(|| self.next_request()).collect()
+    }
+
+    pub fn next_request(&mut self) -> Option<String> {
+        loop {
+            let url = self.requests.as_ref()?.try_recv().ok()?;
+            let slots = self.shared.slots.lock_recover();
+            let Some(SlotEntry {
+                slot: Slot::Loading(request),
+                ..
+            }) = slots.slots.get(&url)
+            else {
+                continue;
+            };
+            self.in_flight.retain(|url, request| {
+                slots.slots.get(url).is_some_and(|entry| {
+                    matches!(&entry.slot, Slot::Loading(current) if Arc::ptr_eq(current, request))
+                })
+            });
+            self.in_flight.insert(url.clone(), request.clone());
+            return Some(url);
+        }
+    }
+
+    /// Settle a request taken from this loader with fetched bytes, or `None` on failure. Reserved
+    /// asynchronous requests must instead use [`complete_decoded`](Self::complete_decoded).
+    pub fn complete(&mut self, url: &str, bytes: Option<&[u8]>) -> bool {
+        let Some(request) = self.in_flight.get(url).cloned() else {
+            return false;
+        };
+        if request.reserved.load(Ordering::Acquire) {
+            return false;
+        }
+        let slot = decoded_slot(bytes, self.max_dimension);
+        self.settle(url, &request, slot)
+    }
+
+    /// Reopen only a previously admitted failed slot; arbitrary URLs cannot enter here.
+    pub fn retry(&mut self, url: &str) -> bool {
+        if !self.shared.wake.authorize_publication() {
+            return false;
+        }
+        let Ok(mut slots) = self.shared.slots.lock() else {
+            return false;
+        };
+        let Some(entry) = slots.slots.get_mut(url) else {
+            return false;
+        };
+        if !matches!(entry.slot, Slot::Failed) {
+            return false;
+        }
+        let request = Arc::new(RequestIdentity::default());
+        entry.slot = Slot::Loading(request.clone());
+        self.in_flight.insert(url.into(), request);
+        self.shared.pending.add(1);
+        true
+    }
+
+    /// Whether `url` has settled with a decoded image.
+    pub fn loaded(&self, url: &str) -> bool {
+        self.shared
+            .slots
+            .lock_recover()
+            .slots
+            .get(url)
+            .is_some_and(|entry| matches!(entry.slot, Slot::Ready(_)))
+    }
+
+    fn settle(&mut self, url: &str, request: &Arc<RequestIdentity>, slot: Slot) -> bool {
+        let published = self.shared.settle(url, request, slot);
+        if self
+            .in_flight
+            .get(url)
+            .is_some_and(|current| Arc::ptr_eq(current, request))
+        {
+            self.in_flight.remove(url);
+        }
+        published
+    }
+}
+
+impl Drop for HostImageLoader {
+    fn drop(&mut self) {
+        // Disconnect first: concurrent admission either belongs to the cache
+        // sweep below, or observes disconnection and settles its own identity.
+        self.requests.take();
+        let unfinished: Vec<_> = {
+            let slots = self.shared.slots.lock_recover();
+            slots
+                .slots
+                .iter()
+                .filter_map(|(url, entry)| {
+                    if let Slot::Loading(request) = &entry.slot {
+                        Some((url.clone(), request.clone()))
+                    } else {
+                        None
+                    }
+                })
+                .collect()
+        };
+        for (url, request) in unfinished {
+            self.shared.settle(&url, &request, Slot::Failed);
+        }
+    }
+}
+
+/// Pairs a [`HostImageLoader`] with a [`Fetcher`] on a [`Background`]: at most `workers` loads run at
+/// once, one background job per URL.
+struct NativeLoader {
+    state: Mutex<NativeState>,
+    fetch: Fetcher,
+    background: Background,
+    workers: usize,
+}
+
+struct NativeState {
+    loader: HostImageLoader,
+    running: usize,
+}
+
+impl NativeLoader {
+    fn state(&self) -> std::sync::MutexGuard<'_, NativeState> {
+        self.state.lock_recover()
+    }
+
+    /// Start a job for each queued request while a worker slot is free.
+    fn start_queued(self: &Arc<Self>) {
+        loop {
+            let ticket = {
+                let mut state = self.state();
+                if state.running >= self.workers {
+                    return;
+                }
+                let Some(url) = state.loader.next_request() else {
+                    return;
+                };
+                let Some(ticket) = state.loader.reserve(&url) else {
+                    continue;
+                };
+                state.running = state.running.saturating_add(1);
+                ticket
+            };
+            let this = Arc::clone(self);
+            let job_url = ticket.url.clone();
+            let spawned = self.background.spawn("ui-image", move || {
+                let slot = decoded_slot((this.fetch)(&job_url).as_deref(), ticket.max_dimension());
+                {
+                    let mut state = this.state();
+                    state.loader.complete_slot(&ticket, slot);
+                    state.running = state.running.saturating_sub(1);
+                }
+                this.start_queued();
+            });
+            if spawned.is_err() {
+                // This host runs no background work: settle instead of
+                // leaving the request loading forever.
+                let mut state = self.state();
+                state.running = state.running.saturating_sub(1);
+            }
+        }
+    }
+}
+
+/// A window a host serves ([`ImageStore::serve_window`]), as the host's factory sees it: what the
+/// stores it builds draw for.
+#[derive(Clone, Default)]
+pub struct ServedWindow {
+    content: std::rc::Rc<std::cell::RefCell<Option<tilo_content::ContentStore>>>,
+}
+
+impl ServedWindow {
+    /// The content store the window reads its record's content from, once the window is built: where
+    /// its pictures' bytes are read and, when they are not here yet, asked for, on the window's own
+    /// content requests.
+    #[must_use]
+    pub fn content(&self) -> Option<tilo_content::ContentStore> {
+        self.content.borrow().clone()
+    }
+}
+
+/// How a host builds one window's image stores: a store whose loading the host drives, for the
+/// decoded-image bound the store asked for, drawing for the window it is built in.
+pub type HostImageFactory = std::rc::Rc<dyn Fn(u32, &ServedWindow) -> ImageStore>;
+
+type Serving = (WakeHandle, HostImageFactory, ServedWindow);
+
+thread_local! {
+    /// The factories hosts keep for their windows, by each window's wake scope
+    /// ([`ImageStore::serve_window`]).
+    static HOST_FACTORIES: std::cell::RefCell<Vec<Serving>> =
+        const { std::cell::RefCell::new(Vec::new()) };
+}
+
+fn host_factory() -> Option<(HostImageFactory, ServedWindow)> {
+    serving_of(&WakeHandle::new())
+}
+
+fn serving_of(window: &WakeHandle) -> Option<(HostImageFactory, ServedWindow)> {
+    HOST_FACTORIES.with_borrow_mut(|kept| {
+        kept.retain(|(kept, _, _)| kept.same_open_scope(kept));
+        kept.iter()
+            .find(|(kept, _, _)| kept.same_open_scope(window))
+            .map(|(_, factory, served)| (std::rc::Rc::clone(factory), served.clone()))
+    })
+}
+
+/// `window` is built, reading its record's content from `content`: the pictures its host loads for it
+/// are read, and asked for, there.
+pub fn window_built(window: &WakeHandle, content: Option<tilo_content::ContentStore>) {
+    if let Some((_, served)) = serving_of(window) {
+        *served.content.borrow_mut() = content;
+    }
+}
+
+impl ImageStore {
+    /// Serve the image stores `window` builds through `factory` for as long as its wake scope is open:
+    /// every store built while that scope is entered comes from the host, whether the window builds it
+    /// as it is constructed or later (a view part built once the window's workspace arrived, a part
+    /// built again). A store the window built on its own would load through the toolkit's decoders on
+    /// its background, which a browser page leaves to the host: its pictures would never show.
+    pub fn serve_window(window: &WakeHandle, factory: HostImageFactory) {
+        HOST_FACTORIES.with_borrow_mut(|kept| {
+            kept.retain(|(kept, _, _)| kept.same_open_scope(kept) && !kept.same_open_scope(window));
+            kept.push((window.clone(), factory, ServedWindow::default()));
+        });
+    }
+
+    /// Serve `successor`, a window opened in `window`'s place (the window a record opens in once it is
+    /// had, another record opened here), the way `window` is served: it shows in the same host, which
+    /// never built it.
+    pub fn serve_successor(window: &WakeHandle, successor: &WakeHandle) {
+        if let Some((factory, _)) = serving_of(window) {
+            Self::serve_window(successor, factory);
+        }
+    }
+
+    /// Build a store with the default worker count.
+    pub fn new(fetch: &Fetcher) -> Self {
+        Self::with_workers(fetch, DEFAULT_IMAGE_WORKERS)
+    }
+
+    /// Build a store that runs at most `workers` fetch/decode jobs at once, clamped to 1..=4 so one
+    /// store cannot monopolise the background pool.
+    pub fn with_workers(fetch: &Fetcher, workers: usize) -> Self {
+        if let Some((factory, window)) = host_factory() {
+            return factory(THUMBNAIL_MAX_DIMENSION, &window);
+        }
+        Self::with_decode_options(fetch, workers, THUMBNAIL_MAX_DIMENSION)
+    }
+
+    /// Build a store for document images instead of small thumbnails.
+    pub fn with_max_dimension(fetch: &Fetcher, max_dimension: u32) -> Self {
+        let max_dimension = max_dimension.clamp(1, IMAGE_MAX_DIMENSION);
+        if let Some((factory, window)) = host_factory() {
+            return factory(max_dimension, &window);
+        }
+        Self::with_decode_options(fetch, DEFAULT_IMAGE_WORKERS, max_dimension)
+    }
+
+    /// A thumbnail store whose loading the host drives through the returned [`HostImageLoader`]; no
+    /// background work is spawned.
+    pub fn host_driven() -> (Self, HostImageLoader) {
+        Self::host_driven_with_max_dimension(THUMBNAIL_MAX_DIMENSION)
+    }
+
+    /// A host-driven store with a bounded document-image decode dimension (clamped to 1..=4096).
+    pub fn host_driven_with_max_dimension(max_dimension: u32) -> (Self, HostImageLoader) {
+        let (tx, requests) = std::sync::mpsc::sync_channel(IMAGE_JOB_QUEUE_LIMIT);
+        let shared = Shared::new();
+        let loader = HostImageLoader {
+            shared: Arc::clone(&shared),
+            requests: Some(requests),
+            in_flight: HashMap::new(),
+            max_dimension: max_dimension.clamp(1, IMAGE_MAX_DIMENSION),
+        };
+        let store = Self {
+            shared,
+            tx,
+            native: None,
+            background: Background::current(),
+        };
+        (store, loader)
+    }
+
+    fn with_decode_options(fetch: &Fetcher, workers: usize, max_dimension: u32) -> Self {
+        let (mut store, loader) = Self::host_driven_with_max_dimension(max_dimension);
+        store.native = Some(Arc::new(NativeLoader {
+            state: Mutex::new(NativeState { loader, running: 0 }),
+            fetch: fetch.clone(),
+            background: store.background.clone(),
+            workers: workers.clamp(1, MAX_IMAGE_WORKERS),
+        }));
+        store
+    }
+
+    /// The decoded image at `url` when it is here, admitting nothing: what a map draws of a
+    /// coarser tile under one that is still on its way, without asking the network for it.
+    #[must_use]
+    pub fn loaded(&self, url: &str) -> Option<PenikoImage> {
+        let slots = self.shared.slots.lock().ok()?;
+        match &slots.slots.get(url)?.slot {
+            Slot::Ready(image) => Some(image.clone()),
+            Slot::Loading(_) | Slot::Failed => None,
+        }
+    }
+
+    /// Decoded image for `url`, kicking off an async load the first time a URL is seen. Returns `None`
+    /// while loading or after a failure — the caller paints a placeholder until a later frame returns
+    /// `Some`.
+    pub fn get(&self, url: &str) -> Option<PenikoImage> {
+        if url.is_empty() || !self.shared.wake.authorize_publication() {
+            return None;
+        }
+        // A poisoned lock means some other thread already panicked while
+        // holding it; there is nothing sane left to cache, so degrade to
+        // "no image yet" rather than taking the caller down with it.
+        let Ok(mut slots) = self.shared.slots.lock() else {
+            return None;
+        };
+        let last_used = slots.next_tick();
+        if let Some(entry) = slots.slots.get_mut(url) {
+            entry.last_used = last_used;
+            match &entry.slot {
+                Slot::Ready(img) => return Some(img.clone()),
+                _ => return None,
+            }
+        }
+        if slots.slots.len() >= IMAGE_CACHE_ENTRY_LIMIT && !evict_one_settled(&mut slots) {
+            // Every slot is still loading. Avoid an unbounded work queue; a
+            // later frame can retry after one of those requests settles.
+            return None;
+        }
+        let request = Arc::new(RequestIdentity::default());
+        slots.slots.insert(
+            url.to_string(),
+            SlotEntry {
+                slot: Slot::Loading(request.clone()),
+                last_used,
+            },
+        );
+        self.shared.pending.add(1);
+        drop(slots);
+        // Never block the UI thread behind image I/O. A full queue removes the
+        // provisional Loading slot so a later frame can retry; a loader that
+        // is gone will never answer, so the request settles as failed.
+        match self.tx.try_send(url.to_string()) {
+            Ok(()) => {
+                if let Some(native) = &self.native {
+                    native.start_queued();
+                }
+            }
+            Err(TrySendError::Full(_)) => {
+                let mut cache = self.shared.slots.lock_recover();
+                if cache.slots.get(url).is_some_and(|entry| {
+                    matches!(&entry.slot, Slot::Loading(current) if Arc::ptr_eq(current, &request))
+                }) {
+                    cache.slots.remove(url);
+                    self.shared.pending.sub(1);
+                }
+            }
+            Err(TrySendError::Disconnected(_)) => {
+                self.shared.settle(url, &request, Slot::Failed);
+            }
+        }
+        None
+    }
+
+    /// Forget every load that failed, so the next [`get`](Self::get) of its URL asks the fetcher again.
+    /// A failure is cached (it would otherwise be re-fetched every frame), which is wrong for a source
+    /// whose bytes were not available yet and now are: a caller that knows they changed calls this.
+    pub fn forget_failed(&self) -> bool {
+        let Ok(mut slots) = self.shared.slots.lock() else {
+            return false;
+        };
+        let before = slots.slots.len();
+        slots
+            .slots
+            .retain(|_, entry| !matches!(entry.slot, Slot::Failed));
+        slots.slots.len() != before
+    }
+
+    /// Whether the last load of `url` failed: its bytes are not here, or do not decode.
+    pub fn failed(&self, url: &str) -> bool {
+        self.shared.slots.lock().is_ok_and(|slots| {
+            slots
+                .slots
+                .get(url)
+                .is_some_and(|entry| matches!(entry.slot, Slot::Failed))
+        })
+    }
+
+    /// Whether `url` has been requested yet (Ready/Loading/Failed all count).
+    pub fn is_known(&self, url: &str) -> bool {
+        // Same poisoned-lock degrade as `get`: unknown is the safe answer.
+        self.shared
+            .slots
+            .lock()
+            .is_ok_and(|slots| slots.slots.contains_key(url))
+    }
+
+    /// Number of in-flight loads (queued or decoding).
+    pub fn pending(&self) -> usize {
+        self.shared.pending.get()
+    }
+
+    /// Whether every requested load has settled.
+    pub fn is_idle(&self) -> bool {
+        self.pending() == 0
+    }
+
+    /// Block until all in-flight loads settle or `timeout` elapses on the store's executor clock. For
+    /// the synchronous `--shots` pre-warm and tests only — never call this on a live app's UI thread.
+    pub fn block_until_idle(&self, timeout: Duration) {
+        let start = self.background.now();
+        let deadline = start.checked_add(timeout).unwrap_or(start);
+        loop {
+            let now = self.background.now();
+            if self.is_idle() || now >= deadline {
+                return;
+            }
+            // Loads also settle outside the executor's view (a host loader
+            // on another thread), so re-check at least this often.
+            let slice = now
+                .checked_add(Duration::from_millis(10))
+                .unwrap_or(deadline);
+            self.background.park(slice.min(deadline));
+        }
+    }
+}
+
+fn validated_slot(decoded: Option<tilo_image_codec::DecodedImage>, max_dimension: u32) -> Slot {
+    let Some(decoded) = decoded else {
+        return Slot::Failed;
+    };
+    let limits = tilo_image_codec::AdmissionLimits {
+        max_dimension,
+        max_rgba_bytes: IMAGE_CACHE_BYTE_LIMIT,
+        ..tilo_image_codec::AdmissionLimits::default()
+    };
+    if limits.validate(&decoded).is_err() {
+        return Slot::Failed;
+    }
+    Slot::Ready(crate::raster::rgba8(
+        decoded.rgba,
+        decoded.width,
+        decoded.height,
+    ))
+}
+
+/// A small picture held in memory, decoded ([`decode_held`]).
+pub(crate) enum HeldPicture {
+    Ready(PenikoImage),
+    /// It does not decode.
+    Broken,
+}
+
+/// Decode a small picture held in memory (a workspace emoji) at most `max_dimension` wide and tall.
+pub(crate) fn decode_held(encoded: &[u8], max_dimension: u32) -> HeldPicture {
+    match decoded_slot(Some(encoded), max_dimension) {
+        Slot::Ready(image) => HeldPicture::Ready(image),
+        Slot::Failed | Slot::Loading(_) => HeldPicture::Broken,
+    }
+}
+
+/// A picture made small ([`small_png`]).
+pub(crate) enum SmallPicture {
+    /// The PNG, at most the size asked.
+    Ready(Vec<u8>),
+    /// It does not decode.
+    Broken,
+}
+
+/// `encoded` (PNG, JPEG or WebP) as a PNG at most `max_dimension` wide and tall, aspect kept.
+pub(crate) fn small_png(encoded: &[u8], max_dimension: u32) -> SmallPicture {
+    crate::image_decoders::small_png(encoded, max_dimension)
+        .map_or(SmallPicture::Broken, SmallPicture::Ready)
+}
+
+fn decoded_slot(bytes: Option<&[u8]>, max_dimension: u32) -> Slot {
+    let Some(encoded) = bytes else {
+        return Slot::Failed;
+    };
+    validated_slot(
+        crate::image_decoders::bounded(encoded, max_dimension),
+        max_dimension,
+    )
+}
+
+/// Decode encoded image bytes (JPEG/PNG/WebP) into 8-bit RGBA + dimensions. Oversized sources are
+/// downscaled after native decoding to the store's output dimension limit; resizing does not bound
+/// source decoder allocations.
+#[cfg(test)]
+fn decode_rgba(bytes: &[u8], max_dimension: u32) -> Option<(Vec<u8>, u32, u32)> {
+    let decoded = tilo_image_codec::DecodeImage {
+        encoded: bytes,
+        max_dimension,
+    }
+    .decode_native()
+    .ok()?;
+    Some((decoded.rgba, decoded.width, decoded.height))
+}
+
+/// Paint `img` into `rect` with a `contain` fit (the whole picture, aspect kept, centred; whatever it
+/// leaves shows what is under it), clipped to a rounded rectangle: a shared screen, of which nothing
+/// may be cut off.
+pub fn paint_image_contain(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    img: &PenikoImage,
+    radius: f64,
+) {
+    paint_image_fitted(scene, transform, rect, img, radius, false);
+}
+
+/// Paint `img` into `rect` with a `cover` fit (fill the rect, preserve aspect, crop the overflow)
+/// clipped to a rounded rectangle, matching the shape a procedural placeholder occupied.
+pub fn paint_image_cover(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    img: &PenikoImage,
+    radius: f64,
+) {
+    paint_image_fitted(scene, transform, rect, img, radius, true);
+}
+
+fn paint_image_fitted(
+    scene: &mut Scene,
+    transform: Affine,
+    rect: Rect,
+    img: &PenikoImage,
+    radius: f64,
+    cover: bool,
+) {
+    if rect.width() <= 0.0 || rect.height() <= 0.0 {
+        return;
+    }
+    let iw = f64::from(img.width);
+    let ih = f64::from(img.height);
+    if iw <= 0.0 || ih <= 0.0 {
+        return;
+    }
+    let rw = rect.width();
+    let rh = rect.height();
+    let scale = if cover {
+        (rw / iw).max(rh / ih)
+    } else {
+        (rw / iw).min(rh / ih)
+    };
+    let dw = iw * scale;
+    let dh = ih * scale;
+    let dx = rect.x0 + (rw - dw) * 0.5;
+    let dy = rect.y0 + (rh - dh) * 0.5;
+    // `Affine`'s `Mul` composes two transforms; it has no failure mode, but
+    // clippy can't see that for a non-primitive operator overload.
+    #[allow(
+        clippy::arithmetic_side_effects,
+        reason = "Affine's Mul composes transform matrices and cannot overflow/panic"
+    )]
+    let brush_transform = Affine::translate((dx, dy)) * Affine::scale(scale);
+
+    let clip = RoundedRect::from_rect(rect, radius);
+    scene.push_layer(Fill::NonZero, BlendMode::default(), 1.0, transform, &clip);
+    let brush = ImageBrush::new(img.clone());
+    let painted = Rect::new(dx, dy, dx + dw, dy + dh).intersect(rect);
+    scene.fill(
+        Fill::NonZero,
+        transform,
+        &brush,
+        Some(brush_transform),
+        &painted,
+    );
+    scene.pop_layer();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    tilo_test_env::scenario! {
+        fn a_store_loads_each_image_once_and_settles_it_ready_or_failed;
+
+        phase forgetting_failures_lets_an_image_whose_bytes_arrived_load;
+        {
+            use std::sync::{Arc, RwLock};
+            let bytes = Arc::new(RwLock::new(None::<Vec<u8>>));
+            let source = Arc::clone(&bytes);
+            let fetch: Fetcher = Arc::new(move |_| source.read().ok()?.clone());
+            let store = ImageStore::new(&fetch);
+            store.get("asset:late");
+            store.block_until_idle(tilo_test_env::hang_bound());
+            assert!(store.get("asset:late").is_none(), "no bytes yet: failed");
+            *bytes.write().unwrap() = Some(png_bytes(4, 3, [9, 9, 9]));
+            store.block_until_idle(tilo_test_env::hang_bound());
+            assert!(store.get("asset:late").is_none(), "a failure is cached");
+            assert!(store.forget_failed());
+            assert!(!store.forget_failed(), "nothing left to forget");
+            store.get("asset:late");
+            store.block_until_idle(tilo_test_env::hang_bound());
+            assert!(store.get("asset:late").is_some());
+        }
+
+        phase failed_host_image_can_retry_only_its_admitted_request_and_decode_real_bytes;
+        {
+            let (store, mut host) = ImageStore::host_driven();
+            store.get("retained");
+            host.take_requests();
+            assert!(host.complete("retained", None));
+            assert!(store.get("retained").is_none());
+            assert!(!host.retry("unknown"));
+            assert!(host.retry("retained"));
+            assert!(!host.retry("retained"));
+            assert!(host.complete("retained", Some(&png_bytes(9, 7, [1, 2, 3]))));
+            assert!(host.loaded("retained"));
+            let image = store.get("retained").unwrap();
+            assert_eq!((image.width, image.height), (9, 7));
+            assert_eq!(store.pending(), 0);
+            assert!(!host.retry("retained"));
+        }
+
+        phase store_schedules_one_load_per_url_and_settles_ready_or_failed;
+        {
+            {
+                let bytes = png_bytes(12, 8, [10, 200, 30]);
+                // Asserting `!is_idle()` right after the miss is a race: the worker
+                // may finish this tiny decode first. Counting fetches makes the
+                // real claim regardless of who wins that race.
+                let fetches = Arc::new(AtomicUsize::new(0));
+                let seen = Arc::clone(&fetches);
+                let fetch: Fetcher = Arc::new(move |_url: &str| {
+                    seen.fetch_add(1, Ordering::SeqCst);
+                    Some(bytes.clone())
+                });
+                let store = ImageStore::new(&fetch);
+
+                assert!(store.get("http://example.test/cover.png").is_none());
+
+                store.block_until_idle(tilo_test_env::hang_bound());
+                assert!(store.is_idle(), "load settled");
+                assert_eq!(
+                    fetches.load(Ordering::SeqCst),
+                    1,
+                    "the cache miss scheduled exactly one load"
+                );
+
+                let img = store
+                    .get("http://example.test/cover.png")
+                    .expect("decoded image is cached after the async load");
+                assert_eq!((img.width, img.height), (12, 8));
+
+                // Painting the cached image must not panic.
+                let mut scene = Scene::new();
+                paint_image_cover(
+                    &mut scene,
+                    Affine::IDENTITY,
+                    Rect::new(0.0, 0.0, 40.0, 40.0),
+                    &img,
+                    8.0,
+                );
+            }
+
+            {
+                let fetch: Fetcher = Arc::new(|_url: &str| None);
+                let store = ImageStore::new(&fetch);
+                assert!(store.get("http://example.test/missing.jpg").is_none());
+                store.block_until_idle(tilo_test_env::hang_bound());
+                assert!(store.is_idle(), "a failed fetch still settles");
+                assert!(store.get("http://example.test/missing.jpg").is_none());
+                assert!(store.is_known("http://example.test/missing.jpg"));
+            }
+
+            {
+                let fetch: Fetcher = Arc::new(|_url: &str| Some(png_bytes(2, 2, [0, 0, 0])));
+                let store = ImageStore::new(&fetch);
+                assert!(store.get("").is_none());
+                assert!(store.is_idle(), "empty url schedules nothing");
+            }
+        }
+
+        phase host_and_background_loaders_settle_only_what_they_run;
+        {
+            {
+                let (store, mut loader) = ImageStore::host_driven();
+                assert!(store.get("a.png").is_none());
+                assert!(store.get("b.png").is_none());
+                assert_eq!(store.pending(), 2);
+                assert_eq!(loader.take_requests(), ["a.png", "b.png"]);
+                assert!(loader.take_requests().is_empty());
+                assert!(loader.complete("a.png", Some(&png_bytes(3, 2, [1, 2, 3]))));
+                assert!(!loader.complete("a.png", None), "a request settles once");
+                assert!(!loader.complete("never-requested.png", None));
+                let image = store.get("a.png").expect("completed image is cached");
+                assert_eq!((image.width, image.height), (3, 2));
+                assert_eq!(store.pending(), 1);
+                drop(loader);
+                assert!(store.is_idle(), "dropping the loader settles what it left");
+                assert!(store.get("b.png").is_none());
+                assert!(store.is_known("b.png"));
+                assert!(store.get("c.png").is_none());
+                assert!(
+                    store.is_idle(),
+                    "a store without a loader fails new requests"
+                );
+            }
+
+            {
+                let pumped = crate::background::Pumped::new();
+                let bytes = png_bytes(4, 4, [9, 9, 9]);
+                let fetch: Fetcher = Arc::new(move |_| Some(bytes.clone()));
+                let store = {
+                    let _background = pumped.background().enter();
+                    ImageStore::with_workers(&fetch, 1)
+                };
+                let urls = ["one.png", "two.png", "three.png"];
+                for url in urls {
+                    assert!(store.get(url).is_none());
+                }
+                assert_eq!(store.pending(), 3);
+                assert_eq!(pumped.run_pending(), 3);
+                assert!(store.is_idle());
+                for url in urls {
+                    assert!(store.get(url).is_some(), "{url} decoded");
+                }
+                assert!(store.get("four.png").is_none());
+                store.block_until_idle(tilo_test_env::hang_bound());
+                assert!(store.get("four.png").is_some(), "parking pumps the queue");
+            }
+
+            {
+                let fetch: Fetcher = Arc::new(|_| Some(png_bytes(2, 2, [0, 0, 0])));
+                let store = {
+                    let _background = Background::new(crate::background::NoBackground).enter();
+                    ImageStore::new(&fetch)
+                };
+                assert!(store.get("x.png").is_none());
+                assert!(store.is_idle());
+                assert!(store.is_known("x.png"));
+            }
+        }
+    }
+
+    /// Encode a solid `w`×`h` RGBA PNG in-memory (no network) so the store's fetch+decode+cache path is
+    /// exercised deterministically.
+    fn png_bytes(w: u32, h: u32, rgb: [u8; 3]) -> Vec<u8> {
+        let pixels = w.saturating_mul(h);
+        let mut rgba = Vec::with_capacity(pixels.saturating_mul(4) as usize);
+        for _ in 0..pixels {
+            rgba.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 255]);
+        }
+        crate::png::encode_rgba8(w, h, &rgba).unwrap()
+    }
+
+    tilo_test_env::scenario! {
+        fn the_decoded_cache_keeps_within_its_entry_byte_and_dimension_limits;
+
+        phase decode_dimension_limits_fit_thumbnails_documents_and_the_cache_budget;
+        {
+            {
+                let bytes = png_bytes(700, 2, [20, 40, 60]);
+                let (_, width, height) =
+                    decode_rgba(&bytes, THUMBNAIL_MAX_DIMENSION).expect("valid PNG decodes");
+                assert!(width <= 600 && height <= 600);
+            }
+
+            {
+                let bytes = png_bytes(5000, 2, [20, 40, 60]);
+                let (_, width, height) = decode_rgba(&bytes, u32::MAX).unwrap();
+                assert_eq!(width, IMAGE_MAX_DIMENSION);
+                assert!(u64::from(width) * u64::from(height) * 4 <= IMAGE_CACHE_BYTE_LIMIT);
+            }
+
+            {
+                let bytes = png_bytes(1200, 760, [20, 40, 60]);
+                let fetch: Fetcher = Arc::new(move |_| Some(bytes.clone()));
+                for (store, expected) in [
+                    (ImageStore::new(&fetch), (600, 380)),
+                    (ImageStore::with_max_dimension(&fetch, 4096), (1200, 760)),
+                ] {
+                    assert!(store.get("scan.png").is_none());
+                    store.block_until_idle(tilo_test_env::hang_bound());
+                    let image = store.get("scan.png").expect("scan must finish decoding");
+                    assert_eq!((image.width, image.height), expected);
+                    assert!(cache_bytes(&store.shared.slots.lock().unwrap()) <= IMAGE_CACHE_BYTE_LIMIT);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn document_images_can_remain_resident_together_without_redecoding() {
+        let bytes = png_bytes(2100, 2100, [20, 40, 60]);
+        let fetches = Arc::new(AtomicUsize::new(0));
+        let counter = fetches.clone();
+        let fetch: Fetcher = Arc::new(move |_| {
+            counter.fetch_add(1, Ordering::SeqCst);
+            Some(bytes.clone())
+        });
+        let store = ImageStore::with_max_dimension(&fetch, 2048);
+        assert!(store.get("first-scan.png").is_none());
+        assert!(store.get("second-scan.png").is_none());
+        store.block_until_idle(tilo_test_env::hang_bound());
+        for _ in 0..3 {
+            for url in ["first-scan.png", "second-scan.png"] {
+                let image = store.get(url).expect("both scans stay resident");
+                assert_eq!((image.width, image.height), (2048, 2048));
+            }
+        }
+        assert!(store.is_idle());
+        assert_eq!(fetches.load(Ordering::SeqCst), 2);
+        assert!(cache_bytes(&store.shared.slots.lock().unwrap()) <= IMAGE_CACHE_BYTE_LIMIT);
+    }
+}
+
+#[cfg(test)]
+mod decoded_completion_tests;

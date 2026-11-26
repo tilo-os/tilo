@@ -16,14 +16,15 @@ use super::nav_row::{
     nav_rail_item_height, nav_rail_row_height, nav_row_height, nav_row_layout, nav_section_height,
     nav_section_layout, paint_nav_row, paint_nav_section,
 };
-use crate::a11y::{AccessNode, AccessState, Role};
-use crate::chrome::SelectionState;
-use crate::icons::Icon;
-use crate::interaction::InteractionEnvironment;
-use crate::text_render::TextRenderer;
-use crate::tokens::TextRole;
 use crate::widget::row_selection::{RowSelection, RowSelectionSink};
-use crate::widget::{RowActionRects, RowRenameField, TaffyTreeExt, Theme, Widget};
+use crate::{widget::RowActionRects, widget::RowRenameField};
+use tilo_ui_base::chrome::SelectionState;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::interaction::InteractionEnvironment;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+use tilo_ui_base::{widget::TaffyTreeExt, widget::Theme, widget::Widget};
 
 /// What every row of one list paints from beyond its own data: kept by the
 /// list, read by its rows at paint time.
@@ -105,7 +106,7 @@ impl NavPaint {
                 } else {
                     f64::from(theme.tokens.metrics.rail_width)
                 };
-                crate::text_render::with_layout_renderer(theme, |text| {
+                tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
                     nav_rail_item_height(theme, text, label, width)
                 })
             }
@@ -135,7 +136,7 @@ impl NavPaint {
         let mut face = plain_face(spec, rect, label);
         if spec.badge.is_some() {
             let codes: Vec<&str> = spec.section_badges.iter().map(String::as_str).collect();
-            face.badge_column = Some(crate::text_render::with_layout_renderer(
+            face.badge_column = Some(tilo_ui_base::text_render::with_layout_renderer(
                 &self.theme,
                 |text| nav_badge_column(&self.theme, text, &codes),
             ));
@@ -152,7 +153,7 @@ impl NavPaint {
         }
         let icons: Vec<Icon> = self.actions.iter().map(|(icon, _)| *icon).collect();
         let face = NavRowFace::new(rect, "").actions(&icons, None);
-        crate::text_render::with_layout_renderer(&self.theme, |text| {
+        tilo_ui_base::text_render::with_layout_renderer(&self.theme, |text| {
             let painted = nav_row_layout(&self.theme, text, &face).actions;
             painted.into_iter().map(|rect| self.target(rect)).collect()
         })
@@ -178,7 +179,7 @@ impl NavPaint {
                 branch: true, open, ..
             } => {
                 let face = NavRowFace::new(rect, "").disclosure(*open);
-                crate::text_render::with_layout_renderer(&self.theme, |text| {
+                tilo_ui_base::text_render::with_layout_renderer(&self.theme, |text| {
                     nav_row_layout(&self.theme, text, &face).disclosure
                 })
             }
@@ -209,7 +210,7 @@ impl NavPaint {
         match &row.kind {
             NavRowKind::Item { label, spec, .. } => {
                 let face = self.item_face(spec, rect, label);
-                Some(crate::text_render::with_layout_renderer(
+                Some(tilo_ui_base::text_render::with_layout_renderer(
                     &self.theme,
                     |text| nav_row_layout(&self.theme, text, &face).selection,
                 ))
@@ -240,7 +241,7 @@ fn plain_face<'a>(spec: &'a NavItemSpec, row: Rect, label: &'a str) -> NavRowFac
     face.badge = spec.badge.as_deref();
     face.swatch = spec.swatch;
     face.avatar = spec.art.as_ref().map(|art| {
-        crate::widget::AvatarFace::new(&art.name, &art.name)
+        tilo_ui_base::widget::AvatarFace::new(&art.name, &art.name)
             .square()
             .neutral()
             .image(art.image.as_ref())
@@ -248,8 +249,8 @@ fn plain_face<'a>(spec: &'a NavItemSpec, row: Rect, label: &'a str) -> NavRowFac
     if let Some(person) = &spec.person {
         let name = person.name.as_deref().unwrap_or(label);
         let mut avatar = match person.who.member_id() {
-            Some(member) => crate::widget::AvatarFace::member(name, member),
-            None => crate::widget::AvatarFace::new(name, person.who.id()),
+            Some(member) => tilo_ui_base::widget::AvatarFace::member(name, member),
+            None => tilo_ui_base::widget::AvatarFace::new(name, person.who.id()),
         }
         .image(person.image.as_ref())
         .presence_ring();
@@ -527,7 +528,7 @@ impl NavRow {
     fn elided_label(&self, paint: &NavPaint) -> Option<String> {
         let theme = &paint.theme;
         let row = self.rect;
-        crate::text_render::with_layout_renderer(theme, |text| match &self.row.kind {
+        tilo_ui_base::text_render::with_layout_renderer(theme, |text| match &self.row.kind {
             NavRowKind::Section { title, .. } if !paint.rail => {
                 let layout = nav_section_layout(theme, &NavSectionFace::new(row, title));
                 let style = theme.text(TextRole::Subheading);
@@ -574,7 +575,7 @@ impl RowRenameField for NavRow {
         match &self.row.kind {
             NavRowKind::Item { label, spec, .. } => {
                 let face = paint.item_face(spec, self.rect, label);
-                let layout = crate::text_render::with_layout_renderer(theme, |text| {
+                let layout = tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
                     nav_row_layout(theme, text, &face)
                 });
                 Some((
@@ -608,7 +609,7 @@ impl RowRenameField for NavRow {
 }
 
 impl Widget for NavRow {
-    crate::provides!(dyn RowActionRects, dyn RowSelectionSink, dyn RowRenameField);
+    tilo_ui_base::provides!(dyn RowActionRects, dyn RowSelectionSink, dyn RowRenameField);
 
     /// The input the list lays its rows out for, kept where the list reads
     /// its hit targets: a finger's target is larger than a mouse's, and the
@@ -650,9 +651,9 @@ impl Widget for NavRow {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -707,14 +708,14 @@ impl Widget for NavRow {
                 .set(Some(NavPose::of(self.look(&self.paint.borrow()))));
         }
         self.changed.set(false);
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn needs_animation_frame(&self) -> bool {
         self.paint
             .borrow()
             .faces
-            .needs_redraw(crate::motion::frame_now())
+            .needs_redraw(tilo_ui_base::motion::frame_now())
     }
 
     /// The row's name, what it explains of itself (the secondary line, the
@@ -846,7 +847,7 @@ fn paint_nav_caption(
     )]
     let line = text_renderer.elide_to_width_style(caption, max_w as f32, &style);
     let (_, line_h) = text_renderer.measure_style(&line, None, &style);
-    let y = crate::text_metrics::centered_text_top(row.y0, row.height(), f64::from(line_h));
+    let y = tilo_ui_base::text_metrics::centered_text_top(row.y0, row.height(), f64::from(line_h));
     text_renderer.draw_style(
         scene,
         &line,

@@ -134,7 +134,7 @@ tilo_test_env::scenario! {
 
     phase a_notice_lights_the_screen_edge_when_visual_alerts_are_on;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let _home = tilo_test_env::TestHome::new().expect("a home of its own");
         let (mut session, desktop) = session(true);
         let plain = frame(&mut session);
@@ -165,7 +165,7 @@ tilo_test_env::scenario! {
 
     phase nothing_lights_when_visual_alerts_are_off;
     {
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let _home = tilo_test_env::TestHome::new().expect("a home of its own");
         let (mut session, desktop) = session(false);
         let plain = frame(&mut session);

@@ -1,6 +1,6 @@
 //! The setup collected on the Confirm step and written with the image.
 
-use ui::local_state::LocalState;
+use tilo_ui_base::local_state::LocalState;
 use ui::widget::{Field, Form, FormSection, TextInput, TextInputKind, Toggle};
 
 use crate::hosting::{Presses, Store};
@@ -160,9 +160,9 @@ mod tests {
     #[test]
     fn shared_form_stacks_write_setup_fields_below_its_caption() {
         for theme in [
-            ui::Theme::light(),
-            ui::Theme::dark(),
-            ui::Theme::high_contrast(),
+            tilo_ui_base::Theme::light(),
+            tilo_ui_base::Theme::dark(),
+            tilo_ui_base::Theme::high_contrast(),
         ] {
             for width in [400, 760] {
                 let ssh_key = LocalState::new(String::new());

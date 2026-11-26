@@ -9,7 +9,7 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect, Shape};
 use vello::peniko::{Color, Fill};
 
-use crate::theme::Theme;
+use tilo_ui_base::theme::Theme;
 
 /// `rect` with its edges on the device pixels the frame draws on: a panel
 /// placed against a measured label width or a rounded row would otherwise
@@ -18,7 +18,7 @@ use crate::theme::Theme;
 /// from a row.
 #[must_use]
 pub fn on_device_pixels(rect: Rect) -> Rect {
-    let scale = f64::from(crate::widget::device_scale()).max(f64::MIN_POSITIVE);
+    let scale = f64::from(tilo_ui_base::widget::device_scale()).max(f64::MIN_POSITIVE);
     let down = |edge: f64| (edge * scale).floor() / scale;
     let up = |edge: f64| (edge * scale).ceil() / scale;
     Rect::new(down(rect.x0), down(rect.y0), up(rect.x1), up(rect.y1))
@@ -42,7 +42,7 @@ pub fn shadow_reach(theme: &Theme) -> f64 {
 /// where one appears, changes or goes.
 #[must_use]
 pub fn painted_bounds(rect: Rect, theme: &Theme) -> Rect {
-    crate::surface::shadow_bounds(rect, &theme.tokens.elevation.floating)
+    tilo_ui_base::surface::shadow_bounds(rect, &theme.tokens.elevation.floating)
         .map_or(rect, |shadow| shadow.union(rect))
 }
 
@@ -61,19 +61,7 @@ pub fn card_radius(rect: Rect, theme: &Theme) -> f64 {
 /// A floating card's ground ([`card_radius`]): the panel ground.
 #[must_use]
 pub fn card_ground(theme: &Theme) -> Color {
-    crate::chrome::panel_ground(theme)
-}
-
-impl crate::theme::Theme {
-    /// This theme in a window floating over the shell as a card
-    /// ([`crate::window_toolbar::floats`]): its ground is the card's, so the app under
-    /// the card's header draws on the same surface as the header and every other card in
-    /// the column, not on a window's darker ground.
-    #[must_use]
-    pub fn as_card(mut self) -> Self {
-        self.tokens.colors.surfaces.content = card_ground(&self);
-        self
-    }
+    tilo_ui_base::chrome::panel_ground(theme)
 }
 
 /// Paint a floating card's shadow, `alpha` of its strength (a card that is still arriving).
@@ -84,7 +72,7 @@ pub fn paint_card_shadow(
     alpha: f32,
     theme: &Theme,
 ) {
-    crate::surface::floating_shadow(
+    tilo_ui_base::surface::floating_shadow(
         scene,
         transform,
         rect,
@@ -122,7 +110,7 @@ pub fn paint_card_body_with(
 /// A floating card's edge, drawn over its content: the inner hairline.
 pub fn paint_card_edge(scene: &mut Scene, transform: Affine, rect: Rect, theme: &Theme) {
     let radius = card_radius(rect, theme);
-    crate::surface::floating_edge(scene, transform, rect, radius, theme);
+    tilo_ui_base::surface::floating_edge(scene, transform, rect, radius, theme);
 }
 
 /// Paint a whole floating card: its shadow and body.
@@ -149,9 +137,9 @@ pub fn paint_rounded(scene: &mut Scene, transform: Affine, rect: Rect, radius: f
     let mut exterior = rect.inflate(reach, reach).to_path(0.1);
     exterior.extend(RoundedRect::from_rect(rect, radius).path_elements(0.1));
     scene.push_clip_layer(Fill::EvenOdd, transform, &exterior);
-    crate::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
+    tilo_ui_base::surface::floating_shadow(scene, transform, rect, radius, 1.0, theme);
     scene.pop_layer();
-    crate::surface::panel(scene, transform, rect, radius, theme);
+    tilo_ui_base::surface::panel(scene, transform, rect, radius, theme);
 }
 
 /// How far a menu's rows sit inside its Panel, on every side: the `s2` step.
@@ -174,11 +162,11 @@ pub fn armed_row(theme: &Theme) -> (Color, Color) {
     } else {
         OVERLAY_LIFT_LIGHT
     };
-    let fill = colors.lift_on(crate::chrome::panel_ground(theme), steps);
+    let fill = colors.lift_on(tilo_ui_base::chrome::panel_ground(theme), steps);
     let ink = colors.ink_on_any(
         &[fill],
         colors.text_primary,
-        crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+        tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST,
     );
     (fill, ink)
 }
@@ -209,8 +197,8 @@ pub fn paint_armed_row_in(
 ) -> Color {
     let radii = &theme.tokens.radii;
     let radius = f64::from(radii.concentric(
-        crate::num::f32_of_f64(panel_radius),
-        crate::num::f32_of_f64(inset),
+        tilo_ui_base::num::f32_of_f64(panel_radius),
+        tilo_ui_base::num::f32_of_f64(inset),
     ))
     .min(row.height() / 2.0);
 
@@ -272,7 +260,7 @@ pub enum PopoverSide {
     Right,
 }
 
-crate::component::choice!(PopoverSide, "PopoverSide", {
+tilo_ui_base::choice!(PopoverSide, "PopoverSide", {
     Above => "above",
     Below => "below",
     Left => "left",
@@ -438,7 +426,7 @@ pub fn place_aligned(
 /// technology and its tooltip.
 #[derive(Clone, Copy, Debug)]
 pub struct BarControl<'a> {
-    pub icon: crate::icons::Icon,
+    pub icon: tilo_ui_base::icons::Icon,
     pub name: &'a str,
     pub toggled: bool,
     pub enabled: bool,
@@ -446,7 +434,7 @@ pub struct BarControl<'a> {
 
 impl<'a> BarControl<'a> {
     #[must_use]
-    pub fn new(icon: crate::icons::Icon, name: &'a str) -> Self {
+    pub fn new(icon: tilo_ui_base::icons::Icon, name: &'a str) -> Self {
         Self {
             icon,
             name,
@@ -519,7 +507,7 @@ impl ControlBar {
         &mut self,
         scene: &mut Scene,
         transform: Affine,
-        text: &mut crate::text_render::TextRenderer,
+        text: &mut tilo_ui_base::text_render::TextRenderer,
         theme: &Theme,
         rect: Rect,
         controls: &[BarControl<'_>],
@@ -528,7 +516,7 @@ impl ControlBar {
         self.controls.clear();
         self.enabled = controls.iter().map(|c| c.enabled).collect();
         paint(scene, transform, rect, theme);
-        let on_panel = theme.on_ground(crate::chrome::panel_ground(theme));
+        let on_panel = theme.on_ground(tilo_ui_base::chrome::panel_ground(theme));
         let side = crate::widget::ControlSize::Regular.height(theme);
         let gap = f64::from(theme.tokens.spacing.s1);
         let inset = control_inset(theme);
@@ -628,20 +616,20 @@ pub(crate) struct DetachedContent {
 impl DetachedContent {
     /// Lay `content` out in `available` with the production solver.
     pub(crate) fn lay_out(
-        content: &mut dyn crate::widget::Widget,
+        content: &mut dyn tilo_ui_base::widget::Widget,
         theme: &Theme,
         available: taffy::Size<taffy::AvailableSpace>,
-        text_renderer: &mut crate::text_render::TextRenderer,
+        text_renderer: &mut tilo_ui_base::text_render::TextRenderer,
     ) -> Self {
         let mut taffy = taffy::TaffyTree::<()>::new();
         let mut nodes = std::collections::HashMap::new();
         let node = content.build_layout(&mut taffy, theme, &mut nodes);
-        let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
+        let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::new();
         // SAFETY: `nodes` describes the tree just built from `content`, which
         // the caller holds exclusively for the whole call; no pointer escapes.
         let _ = unsafe {
             bindings.rebuild(content, &taffy, node, &nodes);
-            crate::widget::compute_widget_layout(
+            tilo_ui_base::widget::compute_widget_layout(
                 &mut taffy,
                 node,
                 available,
@@ -658,13 +646,13 @@ impl DetachedContent {
     /// in a tree of its own. Its node is `content`'s, placed at that node's
     /// top left.
     pub(crate) fn lay_out_across(
-        content: &mut dyn crate::widget::Widget,
+        content: &mut dyn tilo_ui_base::widget::Widget,
         theme: &Theme,
         width: f64,
-        text_renderer: &mut crate::text_render::TextRenderer,
+        text_renderer: &mut tilo_ui_base::text_render::TextRenderer,
     ) -> Self {
-        use crate::widget::TaffyTreeExt as _;
-        let width = crate::num::f32_of_f64(width.max(0.0));
+        use tilo_ui_base::widget::TaffyTreeExt as _;
+        let width = tilo_ui_base::num::f32_of_f64(width.max(0.0));
         let mut taffy = taffy::TaffyTree::<()>::new();
         let mut nodes = std::collections::HashMap::new();
         let node = content.build_layout(&mut taffy, theme, &mut nodes);
@@ -679,12 +667,12 @@ impl DetachedContent {
             },
             &[node],
         );
-        let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
+        let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::new();
         // SAFETY: `nodes` describes the tree just built from `content`, which
         // the caller holds exclusively for the whole call; no pointer escapes.
         let _ = unsafe {
             bindings.rebuild(content, &taffy, node, &nodes);
-            crate::widget::compute_widget_layout(
+            tilo_ui_base::widget::compute_widget_layout(
                 &mut taffy,
                 across,
                 taffy::Size {
@@ -703,11 +691,11 @@ impl DetachedContent {
     /// `hosted` or else in `detached`'s own tree. Reports whether the content
     /// handled it, while leaving `ctx.handled` set if it already was.
     pub(crate) fn forward(
-        content: &mut dyn crate::widget::Widget,
+        content: &mut dyn tilo_ui_base::widget::Widget,
         hosted: Option<taffy::NodeId>,
         detached: Option<&Self>,
         event: &winit::event::WindowEvent,
-        ctx: &mut crate::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) -> bool {
         let before = std::mem::replace(ctx.handled, false);
         if let Some(node) = hosted {
@@ -716,7 +704,7 @@ impl DetachedContent {
             let mut detached_focus = None;
             content.handle_event(
                 event,
-                &mut crate::widget::EventCtx {
+                &mut tilo_ui_base::widget::EventCtx {
                     scale_factor: ctx.scale_factor,
                     modifiers: ctx.modifiers,
                     state: ctx.state.reborrow(),
@@ -746,7 +734,7 @@ mod tests {
     use super::*;
 
     fn lightness(c: Color) -> f64 {
-        let y = crate::a11y::relative_luminance(c);
+        let y = tilo_ui_base::a11y::relative_luminance(c);
         let f = if y > 216.0 / 24389.0 {
             y.cbrt()
         } else {
@@ -763,7 +751,7 @@ mod tests {
             for name in Theme::ALL {
                 let theme = Theme::named(name).expect("shipped preset resolves");
                 let colors = &theme.tokens.colors;
-                let ground = crate::chrome::panel_ground(&theme);
+                let ground = tilo_ui_base::chrome::panel_ground(&theme);
                 let (fill, ink) = armed_row(&theme);
                 let delta = (lightness(fill) - lightness(ground)).abs();
                 assert!(
@@ -778,8 +766,8 @@ mod tests {
                 );
                 assert_ne!(fill, colors.intent.accent, "{name}: not the inverted fill");
                 assert!(
-                    crate::a11y::contrast_ratio(ink, fill)
-                        >= crate::tokens::colors::ON_FILL_MIN_CONTRAST,
+                    tilo_ui_base::a11y::contrast_ratio(ink, fill)
+                        >= tilo_ui_base::tokens::colors::ON_FILL_MIN_CONTRAST,
                     "{name}: the armed row's label is legible on it"
                 );
             }
@@ -823,7 +811,7 @@ mod tests {
 #[cfg(test)]
 mod control_bar_tests {
     use super::*;
-    use crate::icons::Icon;
+    use tilo_ui_base::icons::Icon;
 
     tilo_test_env::scenario! {
         fn a_control_bar_lays_out_and_reports_its_clicks;
@@ -848,7 +836,7 @@ mod control_bar_tests {
             bar.paint(
                 &mut Scene::new(),
                 Affine::IDENTITY,
-                &mut crate::text_render::TextRenderer::new(),
+                &mut tilo_ui_base::text_render::TextRenderer::new(),
                 &theme,
                 rect,
                 &controls,
@@ -857,9 +845,9 @@ mod control_bar_tests {
             assert!((first.x0 - (rect.x0 + inset)).abs() < 1e-9);
             assert!((first.y0 - (rect.y0 + inset)).abs() < 1e-9);
             let click = |bar: &mut ControlBar, p: Point| {
-                bar.handle(&crate::synthetic_input::cursor_moved(p.x, p.y), 1.0);
-                bar.handle(&crate::synthetic_input::mouse_press(), 1.0);
-                bar.handle(&crate::synthetic_input::mouse_release(), 1.0)
+                bar.handle(&tilo_ui_base::synthetic_input::cursor_moved(p.x, p.y), 1.0);
+                bar.handle(&tilo_ui_base::synthetic_input::mouse_press(), 1.0);
+                bar.handle(&tilo_ui_base::synthetic_input::mouse_release(), 1.0)
             };
             assert_eq!(click(&mut bar, first.center()), Some(0));
             let disabled = bar.control_rect(2).unwrap();

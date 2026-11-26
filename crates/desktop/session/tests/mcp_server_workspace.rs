@@ -415,7 +415,7 @@ fn refusal(refused: &Value) -> String {
 /// closes, one that connects again is served, whichever way either came.
 #[test]
 fn the_server_serves_sixteen_connections_however_they_came_and_tells_the_next_there_is_no_room() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut shell = Shell::start();
     let dev = shell.environment("dev");
 

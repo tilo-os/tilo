@@ -1,7 +1,7 @@
 //! Drag-to-reorder for a list that reflows as the dragged item moves: one model that a list
 //! drives from its event handler and paints from.
 
-use crate::num::f64_of_usize;
+use tilo_ui_base::num::f64_of_usize;
 use vello::kurbo::{Point, Rect, Size};
 
 /// Which way a reorderable list runs. The controller pins the *cross* axis
@@ -210,7 +210,7 @@ impl DragController {
     }
 
     /// Whether a press has latched (active or not). Wire this to
-    /// [`Widget::wants_pointer_capture`](crate::widget::Widget::wants_pointer_capture)
+    /// [`Widget::wants_pointer_capture`](tilo_ui_base::widget::Widget::wants_pointer_capture)
     /// so the drag keeps receiving events after the cursor leaves the item.
     pub fn is_pending(&self) -> bool {
         self.session.is_some()

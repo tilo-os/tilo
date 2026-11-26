@@ -16,14 +16,15 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use tilo_resource::{ActionKey, Binds, Resource};
-use ui_core::LocalState;
-use ui_core::icons::Icon;
+use tilo_ui_base::LocalState;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::tokens::PresenceHue;
+use tilo_ui_base::{widget::Element, widget::Tone};
 use ui_core::peniko::Color;
-use ui_core::presence::PresenceCtx;
-use ui_core::tokens::PresenceHue;
 use ui_core::widget::arrange::Stack as Arranged;
 use ui_core::widget::mention_picker::MentionCandidate;
-use ui_core::widget::{Button, ButtonRole, Chip, Element, Tone};
+use ui_core::{widget::Button, widget::ButtonRole, widget::Chip};
 
 use super::ViewCx;
 use tilo_resource::MemberId;
@@ -88,19 +89,19 @@ impl Actor {
     /// they go by.
     #[must_use]
     pub fn chip(&self) -> Chip {
-        let (red, green, blue) = ui_core::presence::identity_rgb(self.hue);
+        let (red, green, blue) = tilo_ui_base::presence::identity_rgb(self.hue);
         Chip::new(self.name.clone()).with_face(self.person(), Color::from_rgb8(red, green, blue))
     }
 
-    /// Them as a face shows them ([`ui_core::widget::AvatarFace::of`]); someone outside the
+    /// Them as a face shows them ([`tilo_ui_base::widget::AvatarFace::of`]); someone outside the
     /// workspace as a person by their name.
     #[must_use]
-    pub fn person(&self) -> ui_core::component::Person {
+    pub fn person(&self) -> tilo_ui_base::component::Person {
         let member = self
             .member
             .clone()
             .unwrap_or_else(|| MemberId::person(self.name.clone()));
-        ui_core::component::Person {
+        tilo_ui_base::component::Person {
             identity: tilo_actions::Actor::Member(member),
             name: self.name.clone(),
             hue: self.hue,
@@ -114,7 +115,7 @@ impl People {
         Self {
             revision: LocalState::new(0),
             local: me
-                .and_then(|_| ui_core::local_identity::own_name())
+                .and_then(|_| tilo_ui_base::local_identity::own_name())
                 .map(Rc::from),
             me: me.cloned(),
             devices: Rc::default(),
@@ -141,7 +142,7 @@ impl People {
     /// ([`tilo_resource::members::name_of`]): the names the app's code reads, which every surface
     /// shows. A person the list holds unnamed reads as the page says someone unnamed, never as
     /// their key; software it holds unnamed goes by its own name where one names it, else its id
-    /// ([`ui_core::presence::unnamed_label`]).
+    /// ([`tilo_ui_base::presence::unnamed_label`]).
     fn lent(member: &MemberId) -> Option<String> {
         let name = tilo_resource::members::name_of(member)?;
         if !name.trim().is_empty() {
@@ -149,7 +150,7 @@ impl People {
         }
         member
             .is_person()
-            .then(ui_core::presence::unnamed_person_label)
+            .then(tilo_ui_base::presence::unnamed_person_label)
     }
 
     /// The hue `member` wears: the one their identity derives, so a view paints a face, a card
@@ -159,7 +160,7 @@ impl People {
         reason = "a window's colour rule is its own, though it needs no state to answer"
     )]
     pub fn hue(&self, member: &MemberId) -> PresenceHue {
-        ui_core::tokens::PresenceHue::of_member(member)
+        tilo_ui_base::tokens::PresenceHue::of_member(member)
     }
 
     /// The workspace's people and agents, this window's own member among
@@ -170,7 +171,7 @@ impl People {
             .into_iter()
             .map(|(member, name)| MentionCandidate {
                 is_self: self.is_me(&member),
-                hue: ui_core::tokens::PresenceHue::of_member(&member),
+                hue: tilo_ui_base::tokens::PresenceHue::of_member(&member),
                 id: member,
                 name,
             })
@@ -186,7 +187,7 @@ impl People {
             is_self: self.is_me(member),
             id: member.clone(),
             name: Self::lent(member)?,
-            hue: ui_core::tokens::PresenceHue::of_member(member),
+            hue: tilo_ui_base::tokens::PresenceHue::of_member(member),
         })
     }
 
@@ -359,7 +360,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
                         &format!("{id}-{kind}-{}", member.id.id()),
                         &member.name,
                         Some(value),
-                        Some(ui_core::component::Person {
+                        Some(tilo_ui_base::component::Person {
                             identity: tilo_actions::Actor::Member(member.id.clone()),
                             name: member.name.clone(),
                             hue: member.hue,
@@ -406,7 +407,7 @@ impl<R: Resource, T: 'static> ViewCx<R, T> {
         id: &str,
         label: &str,
         value: Option<String>,
-        face: Option<ui_core::component::Person>,
+        face: Option<tilo_ui_base::component::Person>,
         action: B,
     ) -> Element {
         let agent = face
@@ -597,11 +598,11 @@ mod tests {
             tilo_resource::members::know([(nobody.clone(), "  ".to_owned())]);
             assert_eq!(
                 people.name(&nobody),
-                ui_core::presence::unnamed_person_label()
+                tilo_ui_base::presence::unnamed_person_label()
             );
             assert_eq!(
                 people.registry().resolve_entry(nobody.id(), None).name,
-                ui_core::presence::unnamed_person_label(),
+                tilo_ui_base::presence::unnamed_person_label(),
                 "a row an unnamed member wrote reads as the unnamed, not as their key"
             );
             assert!(

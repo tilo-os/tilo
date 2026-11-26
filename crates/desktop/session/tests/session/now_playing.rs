@@ -238,7 +238,7 @@ const PHONE: i32 = 420;
 /// The song's pill and card on the dark shell.
 #[test]
 fn the_song_stands_in_the_bar_and_opens_as_its_card() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = super::shell::held_clock();
     let dir = shots_dir();
     let mut session = session();
@@ -249,7 +249,7 @@ fn the_song_stands_in_the_bar_and_opens_as_its_card() {
 /// the one a playing song draws.
 #[test]
 fn a_paused_song_offers_to_play_again() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = super::shell::held_clock();
     let dir = shots_dir();
     let mut paused = session();
@@ -276,7 +276,7 @@ fn a_paused_song_offers_to_play_again() {
 /// the row keeps its shape.
 #[test]
 fn a_song_without_a_cover_keeps_the_card_its_shape() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = super::shell::held_clock();
     let dir = shots_dir();
     let mut session = session();
@@ -287,7 +287,7 @@ fn a_song_without_a_cover_keeps_the_card_its_shape() {
 /// bar.
 #[test]
 fn a_phone_names_the_song_in_the_pill_and_drops_its_card_from_the_bar() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = super::shell::held_clock();
     let dir = shots_dir();
     let mut session = session_wide(PHONE);
@@ -297,7 +297,7 @@ fn a_phone_names_the_song_in_the_pill_and_drops_its_card_from_the_bar() {
 /// The same on a phone drawing the light theme.
 #[test]
 fn a_phone_in_the_light_theme_drops_the_song_card_from_the_bar() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = super::shell::held_clock();
     let dir = shots_dir();
     let mut session = light_session_wide(PHONE);
@@ -307,7 +307,7 @@ fn a_phone_in_the_light_theme_drops_the_song_card_from_the_bar() {
 /// The song's pill and card on the light shell.
 #[test]
 fn the_song_stands_in_the_light_bar_and_opens_as_its_card() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = super::shell::held_clock();
     let dir = shots_dir();
     let mut session = super::shell::light_session();
@@ -369,7 +369,7 @@ fn shell() -> (i32, i32, i32, i32) {
 /// nowhere on the shell it covers.
 #[test]
 fn the_card_paints_the_songs_cover() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let _clock = super::shell::held_clock();
     let mut session = session();
     settle(&mut session, 8);
@@ -460,8 +460,8 @@ fn app_capture(
         .env("TILO_SHOTS_THEME", theme);
     // The app beside this test was built beside another build directory, whose prepared catalog
     // this run may not hold: it sets text in the one this process verified.
-    if let Some(catalog) = ui::font_catalog::catalog_root() {
-        command.env(ui::font_catalog::OVERRIDE_ENV, catalog);
+    if let Some(catalog) = tilo_ui_base::font_catalog::catalog_root() {
+        command.env(tilo_ui_base::font_catalog::OVERRIDE_ENV, catalog);
     }
     let drawn = command.output_locked().expect("the app draws its capture");
     assert!(
@@ -516,7 +516,7 @@ fn lock_card(name: &str, song: serde_json::Value, media: fn(&serde_json::Value) 
 /// picture than the English one, written beside it for the words to be read.
 #[test]
 fn the_lock_screen_reads_in_the_persons_language() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let dir = shots_dir();
     let said = |value: &serde_json::Value| value["title"] == "Glasslight";
     let english = lock_frame(playing_song(), said);
@@ -556,7 +556,7 @@ fn the_lock_screen_reads_in_the_persons_language() {
 /// The song the lock screen shows, on the shell as the session draws it.
 #[test]
 fn the_lock_screen_shows_the_song_that_plays() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     lock_card("u2-lock", playing_song(), |media| {
         media["title"] == "Glasslight" && media["playing"] == true
     });
@@ -565,7 +565,7 @@ fn the_lock_screen_shows_the_song_that_plays() {
 /// The same song, paused: the middle control offers to play it.
 #[test]
 fn the_lock_screen_shows_a_paused_song() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     lock_card("u2-lock-paused", paused_song(), |media| {
         media["title"] == "Glasslight" && media["playing"] == false
     });
@@ -574,7 +574,7 @@ fn the_lock_screen_shows_a_paused_song() {
 /// The same song whose player has not sent its cover: the artwork stands as the song's glyph.
 #[test]
 fn the_lock_screen_shows_a_song_without_a_cover() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     lock_card("u2-lock-no-art", song_without_a_cover(), |media| {
         media["title"] == "Glasslight" && media["artwork"] == ""
     });
@@ -584,7 +584,7 @@ fn the_lock_screen_shows_a_song_without_a_cover() {
 /// playing.
 #[test]
 fn the_lock_screen_shows_the_song_in_the_light_theme() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let dir = shots_dir();
     std::fs::create_dir_all(&dir).expect("create the shots directory");
     let beside = tempfile::Builder::new()

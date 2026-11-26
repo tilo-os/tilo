@@ -137,7 +137,7 @@ impl SaveIndicator {
             // (a path, an errno), which goes to the log.
             ResourceSaveStatus::Failed(reason) => {
                 tracing::warn!(%reason, "the window's record failed to save");
-                SaveState::Failed(ui_core::i18n::widget_text("save-status-failed-detail"))
+                SaveState::Failed(tilo_ui_base::i18n::widget_text("save-status-failed-detail"))
             }
             status => SaveState::from(status),
         });
@@ -274,7 +274,7 @@ mod tests {
     }
 
     fn init() {
-        ui_core::i18n::I18nManager::init("en-US");
+        tilo_ui_base::i18n::I18nManager::init("en-US");
         ui_core::window_toolbar::notify(None);
     }
 
@@ -598,7 +598,7 @@ mod window_tests {
 
     #[test]
     fn a_window_is_silent_until_a_save_stalls_then_offers_try_again_when_it_fails() {
-        ui_core::i18n::I18nManager::init("en-US");
+        tilo_ui_base::i18n::I18nManager::init("en-US");
         let mut app = HeadlessApp::<DraftApp>::new().unwrap();
         app.settle();
         assert_eq!(bar(), None, "a stored record says nothing");

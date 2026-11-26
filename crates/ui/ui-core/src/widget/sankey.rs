@@ -13,14 +13,14 @@ use vello::kurbo::{Affine, BezPath, Point, Rect, RoundedRect, Shape as _, Stroke
 use vello::peniko::{Color, Fill};
 
 use crate::color_compat::ColorCompat;
-use crate::text_render::{TextRenderer, TextWeight};
-use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::chart_data::{ChartLink, ChartNode, graph_items};
 use crate::widget::chart_labels::format_compact;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextWeight};
 
 /// The height the flow draws at: its nodes share the room between its labels, so a flow whose
 /// labels break over two lines at a narrow width grows to keep them whole.
@@ -482,7 +482,7 @@ impl SankeyMarks {
         placed
     }
 
-    fn label_style(theme: &Theme) -> crate::text_render::TextStyle {
+    fn label_style(theme: &Theme) -> tilo_ui_base::text_render::TextStyle {
         theme
             .text(TextRole::Caption)
             .with_weight(TextWeight::Medium)
@@ -504,7 +504,7 @@ impl SankeyMarks {
             self.style.link_alpha
         };
         let wash = Color::from_rgb8(base.r(), base.g(), base.b());
-        Some(crate::tokens::colors::over(
+        Some(tilo_ui_base::tokens::colors::over(
             theme.tokens.colors.surfaces.base,
             wash,
             f32::from(alpha) / 255.0,
@@ -535,7 +535,7 @@ impl SankeyMarks {
         theme.tokens.colors.ink_on_any(
             &grounds,
             tone,
-            crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
+            tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST,
         )
     }
 
@@ -674,7 +674,8 @@ impl PlotMarks for SankeyMarks {
         let content = (width - reserve).max(0.0);
         let columns = last.saturating_add(1);
         let step = if columns > 1 {
-            (content - self.style.node_width) / crate::num::f64_of_usize(columns.saturating_sub(1))
+            (content - self.style.node_width)
+                / tilo_ui_base::num::f64_of_usize(columns.saturating_sub(1))
         } else {
             0.0
         };
@@ -709,7 +710,7 @@ impl PlotMarks for SankeyMarks {
             if let Some(total) = needed.get_mut(*depth) {
                 // Each label stands a step past its node's top and keeps air above the node
                 // below it, so it needs those along with its lines and value.
-                *total += crate::num::f64_of_usize(lines) * line
+                *total += tilo_ui_base::num::f64_of_usize(lines) * line
                     + value
                     + self.style.node_gap
                     + pad

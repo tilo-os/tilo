@@ -1,11 +1,12 @@
 use super::*;
-use crate::widget::TaffyTreeExt;
+use crate::widget::Button;
 use crate::widget::modal_dialog::ModalDialog;
-use crate::widget::{AppModel, ModelPath};
-use crate::widget::{Button, Widget};
 use std::cell::Cell;
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::widget::Widget;
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 
 struct TwoKids {
     kids: Vec<Box<dyn Widget>>,
@@ -429,7 +430,7 @@ tilo_test_env::scenario! {
         }
 
         {
-            use crate::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let m = ModalDialog::new("Delete file?", TwoKids::new()).open(true);
             let node = Widget::accessibility(&m).expect("an open dialog is in the tree");
             assert_eq!(node.role, Role::Dialog);
@@ -599,7 +600,7 @@ tilo_test_env::scenario! {
 /// Enter on what holds the keyboard, through the widget tree and the host's own fallback: the
 /// same two steps a window runs.
 fn press_enter(app: &mut App) {
-    let event = crate::synthetic_input::key_input(
+    let event = tilo_ui_base::synthetic_input::key_input(
         &winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
         ElementState::Pressed,
     );

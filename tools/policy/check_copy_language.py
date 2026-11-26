@@ -731,6 +731,7 @@ LIBRARY_SKIP += (
     "crates/ui/tilo-cpu-raster/",
     "crates/ui/tilo-formats/",
     "crates/ui/tilo-rich-edit/",
+    "crates/ui/ui-base/",
     "crates/ui/ui-core/",
     "crates/ui/ui-kms/",
     "crates/ui/ui-macros/",
@@ -836,12 +837,21 @@ def english_words(value: str) -> bool:
     return spaced or capitalised
 
 
+# Crates whose words resolve through another crate's catalogue, by the crate that holds it:
+# the toolkit's widgets speak through the base's.
+CATALOGUE_USERS = {"crates/ui/ui-base": ("crates/ui/ui-core",)}
+
+
 def translated_units(root: Path) -> list[str]:
-    """The crates that ship a language beyond their source catalogue."""
+    """The crates that ship a language beyond their source catalogue, and the crates that
+    speak through one of theirs."""
     units = set()
     for catalogue in catalogues(root):
         if catalogue.stem != SOURCE_LOCALE:
             units.add(catalogue.parents[1].relative_to(root).as_posix())
+    for holder, users in CATALOGUE_USERS.items():
+        if holder in units:
+            units.update(users)
     return sorted(units)
 
 

@@ -1,6 +1,9 @@
 use crate::support_collab::{TypedBroker, change_carrying, changes_of};
-use ui_core::collaboration::{CollabEvent, CollabRequest, PresencePayload, RouteSpec};
-use ui_core::presence::PresenceKey;
+use tilo_ui_base::presence::PresenceKey;
+use tilo_ui_base::{
+    collaboration::CollabEvent, collaboration::CollabRequest, collaboration::PresencePayload,
+    collaboration::RouteSpec,
+};
 use uuid::Uuid;
 
 #[test]
@@ -54,7 +57,7 @@ fn typed_socket_fans_out_on_its_own_route_only() {
             peer_b.poll().iter().any(|event| matches!(
                 event,
                 CollabEvent::RemotePresenceUpdate { member, key: PresenceKey::Workspace { id }, payload: PresencePayload::Arrived }
-                    if *member == ui_core::permissions::MemberId::person("peer-a") && id == "77"
+                    if *member == tilo_ui_base::permissions::MemberId::person("peer-a") && id == "77"
             ))
         });
     }

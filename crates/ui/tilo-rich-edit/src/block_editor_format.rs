@@ -9,7 +9,7 @@ use ui::widget::marks::{Mark, MarkSpan};
 /// style it is set in.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ParagraphChange {
-    Align(ui::richtext::TextAlign),
+    Align(tilo_ui_base::richtext::TextAlign),
     SpaceBefore(Option<f32>),
     SpaceAfter(Option<f32>),
     Indent(Option<f32>),
@@ -694,7 +694,7 @@ impl BlockEditor {
 mod tests {
     use super::*;
     use crate::{Block, CursorPlacement};
-    use ui::richtext::TextAlign;
+    use tilo_ui_base::richtext::TextAlign;
 
     /// A toolbar's ask formats once: the same ask again is the command it already ran, and what
     /// the ask names is what it formats.
@@ -761,14 +761,14 @@ mod tests {
         assert!(editor.set_look_mark(Mark::Color([0x09, 0x69, 0xda])));
         assert!(editor.set_look_mark(Mark::Size(14)));
         assert!(editor.set_look_mark(Mark::Highlight([0xff, 0xf8, 0xc5])));
-        assert!(editor.set_look_mark(Mark::Font(ui::richtext::FontFamily::Serif)));
+        assert!(editor.set_look_mark(Mark::Font(tilo_ui_base::richtext::FontFamily::Serif)));
         assert_eq!(
             editor.blocks[0].line.marks(),
             [
                 MarkSpan::new(0..5, Mark::Color([0x09, 0x69, 0xda])),
                 MarkSpan::new(0..5, Mark::Size(14)),
                 MarkSpan::new(0..5, Mark::Highlight([0xff, 0xf8, 0xc5])),
-                MarkSpan::new(0..5, Mark::Font(ui::richtext::FontFamily::Serif)),
+                MarkSpan::new(0..5, Mark::Font(tilo_ui_base::richtext::FontFamily::Serif)),
             ]
         );
     }
@@ -796,7 +796,7 @@ mod tests {
         assert!(
             editor
                 .active_marks()
-                .contains(&Mark::Font(ui::richtext::FontFamily::Serif))
+                .contains(&Mark::Font(tilo_ui_base::richtext::FontFamily::Serif))
         );
         assert!(
             editor

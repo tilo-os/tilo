@@ -157,7 +157,7 @@ fn workspace_here(
                             || PersonHere {
                                 id: caller.id.clone(),
                                 name: caller.label.clone(),
-                                colour: ui::presence::user_color(&caller.id),
+                                colour: tilo_ui_base::presence::user_color(&caller.id),
                                 agent: false,
                                 away: false,
                                 tab: None,

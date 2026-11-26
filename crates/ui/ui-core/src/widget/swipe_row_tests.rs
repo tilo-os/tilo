@@ -5,9 +5,9 @@ use vello::kurbo::Point;
 use winit::event::TouchPhase;
 
 use super::*;
-use crate::component::{Event, Fired, Intent};
 use crate::time::testing::with_monotonic_time;
 use crate::time::{Duration, Instant, now};
+use tilo_ui_base::{component::Event, component::Fired, component::Intent};
 
 const WIDTH: f32 = 400.0;
 
@@ -21,11 +21,11 @@ fn touch(phase: TouchPhase, at: Point) -> WindowEvent {
     })
 }
 
-struct Runs(crate::Intents<Fired>);
+struct Runs(tilo_ui_base::Intents<Fired>);
 
 impl Runs {
     fn new() -> Self {
-        Self(crate::Intents::default())
+        Self(tilo_ui_base::Intents::default())
     }
 
     fn get(&self) -> usize {
@@ -66,7 +66,7 @@ fn row(leading: Option<SwipeActionProps>, trailing: Option<SwipeActionProps>) ->
         Box::new(
             crate::widget::arrange::Stack::stack()
                 .fill_width()
-                .push(Box::new(crate::widget::Spacer::fixed(48.0))),
+                .push(Box::new(tilo_ui_base::widget::Spacer::fixed(48.0))),
         ),
         leading,
         trailing,
@@ -197,10 +197,10 @@ tilo_test_env::scenario! {
         let spot = Point::new(f64::from(WIDTH) / 2.0, 24.0);
         with_monotonic_time(at, || {
             row.send(&touch(TouchPhase::Started, spot));
-            row.send(&crate::synthetic_input::cursor_moved(spot.x, spot.y));
-            row.send(&crate::synthetic_input::mouse_press());
+            row.send(&tilo_ui_base::synthetic_input::cursor_moved(spot.x, spot.y));
+            row.send(&tilo_ui_base::synthetic_input::mouse_press());
             assert!(
-                !row.send(&crate::synthetic_input::mouse_release()),
+                !row.send(&tilo_ui_base::synthetic_input::mouse_release()),
                 "the tap is not the swipe's"
             );
             assert!(row.offset().abs() < 0.5, "and the row did not move");
@@ -240,9 +240,9 @@ tilo_test_env::scenario! {
         for theme in [Theme::light(), Theme::dark()] {
             for (destructive, armed) in [(false, true), (true, false), (true, true)] {
                 let (fill, ink) = super::uncovered_colors(&theme, destructive, armed);
-                let ratio = crate::a11y::contrast_ratio(ink, fill);
+                let ratio = tilo_ui_base::a11y::contrast_ratio(ink, fill);
                 assert!(
-                    ratio >= crate::tokens::contrast::BODY_TEXT_MIN_CONTRAST,
+                    ratio >= tilo_ui_base::tokens::contrast::BODY_TEXT_MIN_CONTRAST,
                     "destructive {destructive}, armed {armed}: {ratio:.2}"
                 );
             }

@@ -14,16 +14,16 @@ use crate::state::StateHistory as _;
     reason = "three outcomes: replace with a message, clear it, or leave the current status"
 )]
 pub(super) fn outbound_failure(
-    result: &Result<(), crate::collaboration::CollabSendError>,
+    result: &Result<(), tilo_ui_base::collaboration::CollabSendError>,
 ) -> Option<Option<String>> {
     match result {
         Ok(()) => Some(None),
-        Err(crate::collaboration::CollabSendError::TooLarge { actual, max }) => {
+        Err(tilo_ui_base::collaboration::CollabSendError::TooLarge { actual, max }) => {
             Some(Some(format!(
                 "Changes are no longer shared: one change is {}, above the {} collaboration limit. \
              They remain on this device.",
-                crate::format::size(u64::try_from(*actual).unwrap_or(u64::MAX)),
-                crate::format::size(u64::try_from(*max).unwrap_or(u64::MAX)),
+                tilo_ui_base::format::size(u64::try_from(*actual).unwrap_or(u64::MAX)),
+                tilo_ui_base::format::size(u64::try_from(*max).unwrap_or(u64::MAX)),
             )))
         }
         Err(_) => None,
@@ -110,7 +110,7 @@ impl App {
             event,
             CollabEvent::Document { .. } | CollabEvent::CommittedDocument { .. }
         ) {
-            crate::widget::handle_collab_event(self.root_widget.as_mut(), event);
+            tilo_ui_base::widget::handle_collab_event(self.root_widget.as_mut(), event);
         }
     }
     /// Local queue state, not an acknowledgement of remote delivery/durability.
@@ -157,7 +157,7 @@ impl App {
         // Writes this device holds for the workspace's hosts, which none of
         // them carries now or kept: not yet synced, as the workspace's sync
         // says.
-        if let Some(unsynced) = crate::workspace_sync::unsynced_status() {
+        if let Some(unsynced) = tilo_ui_base::workspace_sync::unsynced_status() {
             return Some(Cow::Owned(unsynced));
         }
         // A change still on its way to the history says nothing.
@@ -169,7 +169,7 @@ impl App {
             // The broker refused the workspace's join: say why. The app
             // keeps working on what this device holds.
             if let Some(reason) = manager.join_refusal() {
-                return Some(Cow::Owned(crate::i18n::I18nManager::format(
+                return Some(Cow::Owned(tilo_ui_base::i18n::I18nManager::format(
                     "history-sync-join-refused",
                     &[("reason", reason.to_owned().into())],
                 )));
@@ -197,7 +197,7 @@ impl App {
         } else {
             None
         };
-        key.map(|key| Cow::Owned(crate::i18n::I18nManager::lookup_plain(key)))
+        key.map(|key| Cow::Owned(tilo_ui_base::i18n::I18nManager::lookup_plain(key)))
     }
     /// Queue acceptance may have advanced producer heads before a later
     /// worker failure. Restore history obligations before observing another
@@ -513,7 +513,7 @@ impl App {
     /// The workspace's hosts have nothing of the on-demand record on `route`, or
     /// none is connected: every store a live owner reads from is told
     /// ([`crate::resource::ResourceStore::note_workspace_answered`]).
-    pub(super) fn resource_unavailable(&mut self, route: &crate::collaboration::RouteSpec) {
+    pub(super) fn resource_unavailable(&mut self, route: &tilo_ui_base::collaboration::RouteSpec) {
         let Some(id) = route
             .document
             .as_deref()
@@ -539,7 +539,10 @@ impl App {
     /// has no owner to take it, and would wait forever for the next reading of
     /// it without this: it is not here, so nothing it holds is published, and
     /// nothing that names it is offered.
-    pub(super) fn unheld_resource_arrived(&mut self, route: &crate::collaboration::RouteSpec) {
+    pub(super) fn unheld_resource_arrived(
+        &mut self,
+        route: &tilo_ui_base::collaboration::RouteSpec,
+    ) {
         let held = self
             .document_routes
             .owners
@@ -581,7 +584,7 @@ impl App {
     /// sent, into the record the route belongs to.
     pub(super) fn apply_routed_document(
         &mut self,
-        route: &crate::collaboration::RouteSpec,
+        route: &tilo_ui_base::collaboration::RouteSpec,
         mutation: collab_types::DocumentMutation,
     ) {
         self.refresh_document_routes();
@@ -643,7 +646,7 @@ pub(super) struct Published {
 /// One unit's part of a publication pass: what changed in it, and the route
 /// it travels on.
 struct Part {
-    route: crate::collaboration::RouteSpec,
+    route: tilo_ui_base::collaboration::RouteSpec,
     mutation: collab_types::DocumentMutation,
     heads: Vec<automerge::ChangeHash>,
     document: automerge::AutoCommit,
@@ -723,7 +726,7 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
     /// window's document, which an owner of the window's own record reads.
     pub(super) fn publish_owned(
         &mut self,
-        manager: &mut crate::collaboration::CollaborationManager,
+        manager: &mut tilo_ui_base::collaboration::CollaborationManager,
         outer: &automerge::AutoCommit,
     ) -> Published {
         let mut blocked = None;
@@ -935,7 +938,7 @@ impl crate::history_mode::routes::OwnerDocumentRoutes {
     /// record's route carried it.
     pub(super) fn admit_owned(
         &mut self,
-        route: &crate::collaboration::RouteSpec,
+        route: &tilo_ui_base::collaboration::RouteSpec,
         mutation: collab_types::DocumentMutation,
     ) -> Result<bool, collab_types::DocumentMutation> {
         let Some(entry) = self.owners.iter_mut().find(|entry| entry.route == *route) else {
@@ -995,7 +998,7 @@ mod tests {
     }
 
     fn part(
-        route: crate::collaboration::RouteSpec,
+        route: tilo_ui_base::collaboration::RouteSpec,
         mutation: collab_types::DocumentMutation,
     ) -> Part {
         Part {
@@ -1019,11 +1022,11 @@ mod tests {
             let other = uuid::Uuid::new_v4();
             let mut parts = vec![
                 part(
-                    crate::collaboration::RouteSpec::app("so.tilo.test-tasks", workspace),
+                    tilo_ui_base::collaboration::RouteSpec::app("so.tilo.test-tasks", workspace),
                     action_mutation("title", "a", invocation),
                 ),
                 part(
-                    crate::collaboration::RouteSpec::document(
+                    tilo_ui_base::collaboration::RouteSpec::document(
                         "so.tilo.test-discussion",
                         workspace,
                         "thread",
@@ -1031,11 +1034,11 @@ mod tests {
                     action_mutation("body", "b", invocation),
                 ),
                 part(
-                    crate::collaboration::RouteSpec::app("so.tilo.test-notes", workspace),
+                    tilo_ui_base::collaboration::RouteSpec::app("so.tilo.test-notes", workspace),
                     action_mutation("title", "c", other),
                 ),
                 part(
-                    crate::collaboration::RouteSpec::app("so.tilo.test-books", workspace),
+                    tilo_ui_base::collaboration::RouteSpec::app("so.tilo.test-books", workspace),
                     collab_types::DocumentMutation::Snapshot(Vec::new()),
                 ),
             ];

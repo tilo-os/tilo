@@ -25,7 +25,7 @@ pub use units::{
 /// A vertical scroll view around `child`: the constraint on its axis is unbounded, so the child
 /// hugs.
 #[must_use]
-pub fn scroll(child: super::Element) -> super::Scrollable {
+pub fn scroll(child: tilo_ui_base::widget::Element) -> super::Scrollable {
     super::Scrollable::new_vertical().with_child(child)
 }
 

@@ -7,8 +7,9 @@ use taffy::{NodeId, Style, TaffyTree};
 use vello::kurbo::{Point, Rect};
 use winit::event::WindowEvent;
 
-use crate::theme::Theme;
-use crate::widget::{Banner, EventCtx, TaffyTreeExt, Widget};
+use crate::widget::Banner;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::EventCtx, widget::TaffyTreeExt, widget::Widget};
 
 /// The failure face: `title` says what failed (never an app's name, which
 /// its window already shows), `reason` says why. The caller adds the way to
@@ -21,7 +22,7 @@ pub fn arrival_failure(title: impl Into<String>, reason: impl Into<String>) -> B
 /// The failure face filling a window: the banner centred in the area at the
 /// readable width, at rest from its first frame (the window's
 /// arrival brings it in).
-#[crate::component::not_a_component(framework, "a window whose content failed to arrive")]
+#[tilo_ui_base::component::not_a_component(framework, "a window whose content failed to arrive")]
 pub struct WindowFailure {
     face: Box<dyn Widget>,
     rect: Rect,
@@ -54,13 +55,13 @@ impl Widget for WindowFailure {
             .tokens
             .spacing
             .rhythm
-            .get(crate::tokens::Rhythm::Group);
+            .get(tilo_ui_base::tokens::Rhythm::Group);
         let style = Style {
             display: taffy::Display::Flex,
             flex_direction: taffy::FlexDirection::Column,
             justify_content: Some(taffy::JustifyContent::Center),
             align_items: Some(taffy::AlignItems::Center),
-            padding: super::layout::insets_all(gutter),
+            padding: tilo_ui_base::widget::layout::insets_all(gutter),
             size: taffy::Size {
                 width: percent(1.0_f32),
                 height: percent(1.0_f32),
@@ -73,20 +74,20 @@ impl Widget for WindowFailure {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if let Some(&face) = taffy.children(node).unwrap_or_default().first() {
             self.face.apply_layout(taffy, face, self.rect.origin());
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        crate::widget::draw_child(
+        tilo_ui_base::widget::draw_child(
             self.face.as_mut(),
             scene,
             transform,

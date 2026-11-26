@@ -58,8 +58,8 @@ fn shown_for_a_person(kind: &str, value: &str) -> String {
         kind,
         value,
         &moment,
-        ui_core::format::region::current(),
-        ui_core::format::words(),
+        tilo_ui_base::format::region::current(),
+        tilo_ui_base::format::words(),
     )
 }
 
@@ -71,8 +71,8 @@ fn sentence_for_a_person(kind: &str, value: &str) -> String {
         kind,
         value,
         &moment,
-        ui_core::format::region::current(),
-        ui_core::format::words(),
+        tilo_ui_base::format::region::current(),
+        tilo_ui_base::format::words(),
     )
 }
 

@@ -14,7 +14,7 @@ use vello::kurbo::{Point, Rect, Vec2};
 #[derive(Clone, Debug)]
 pub struct InFlight {
     pub source: String,
-    pub payload: crate::dnd::DragPayload,
+    pub payload: tilo_ui_base::dnd::DragPayload,
     pub label: String,
     pub pointer: Point,
     pub runs: Vec<(String, Rect)>,
@@ -24,7 +24,7 @@ pub struct InFlight {
 #[derive(Clone, Debug)]
 pub struct Landed {
     pub source: String,
-    pub payload: crate::dnd::DragPayload,
+    pub payload: tilo_ui_base::dnd::DragPayload,
     pub pointer: Point,
 }
 
@@ -34,7 +34,7 @@ pub struct Landed {
 #[derive(Clone, Debug)]
 struct Offered {
     source: String,
-    payload: crate::dnd::DragPayload,
+    payload: tilo_ui_base::dnd::DragPayload,
     label: String,
     /// The files not yet dropped back: the desktop hands a drop of several over one by one.
     files: Vec<std::path::PathBuf>,
@@ -93,7 +93,7 @@ pub fn revision() -> u64 {
 pub fn carry(source: String, address: Vec<u8>, label: String, pointer: Point, rect: Rect) {
     carry_payload(
         source,
-        crate::dnd::DragPayload::Custom {
+        tilo_ui_base::dnd::DragPayload::Custom {
             kind: crate::widget::drag_source::RESOURCE_PAYLOAD.to_owned(),
             blob: address,
         },
@@ -106,7 +106,7 @@ pub fn carry(source: String, address: Vec<u8>, label: String, pointer: Point, re
 /// `source` lifted `payload` over `rect`: a resource, or device files a view stands for.
 pub fn carry_payload(
     source: String,
-    payload: crate::dnd::DragPayload,
+    payload: tilo_ui_base::dnd::DragPayload,
     label: String,
     pointer: Point,
     rect: Rect,
@@ -189,7 +189,7 @@ pub fn carry_away() {
 /// land as that drag ([`came_back`]); a drag offered since replaces it.
 pub fn offer(
     source: String,
-    payload: crate::dnd::DragPayload,
+    payload: tilo_ui_base::dnd::DragPayload,
     label: String,
     files: Vec<std::path::PathBuf>,
 ) {
@@ -298,7 +298,7 @@ mod tests {
     fn flight(pointer: Point) -> InFlight {
         InFlight {
             source: "elsewhere".into(),
-            payload: crate::dnd::DragPayload::Custom {
+            payload: tilo_ui_base::dnd::DragPayload::Custom {
                 kind: "resource".into(),
                 blob: b"notes.page:one".to_vec(),
             },

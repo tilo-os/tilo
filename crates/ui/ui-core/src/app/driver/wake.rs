@@ -23,11 +23,11 @@ impl Driver {
         let handle = self.wake_handle();
         handle.settle(|| {
             self.relayout();
-            let before = crate::doc::settle_mark(&self.app.state.doc);
+            let before = tilo_ui_base::doc::settle_mark(&self.app.state.doc);
             self.take_up_acted();
             // As the live window idles: a frame after the idle pass only when it changed the
             // document or something asked for one.
-            if crate::doc::settle_mark(&self.app.state.doc) != before
+            if tilo_ui_base::doc::settle_mark(&self.app.state.doc) != before
                 || self.frame_schedule_demands_frame()
             {
                 self.relayout();
@@ -42,9 +42,9 @@ impl Driver {
     /// app is owed a reply or one landed and woke it. An action that only changed the document
     /// costs that change: whoever reads the view next lays it out.
     pub fn settle_if_owed(&mut self) -> OwedSettle {
-        let before = crate::doc::settle_mark(&self.app.state.doc);
+        let before = tilo_ui_base::doc::settle_mark(&self.app.state.doc);
         self.take_up_acted();
-        let moved = crate::doc::settle_mark(&self.app.state.doc) != before;
+        let moved = tilo_ui_base::doc::settle_mark(&self.app.state.doc) != before;
         let owes = self.wake_handle().owes();
         if !owes && !self.app.wake_pending() {
             return OwedSettle::Unframed { moved };
@@ -93,8 +93,8 @@ mod tests {
 
     use crate::app::driver::Driver;
     use crate::state::State;
-    use crate::theme::Theme;
-    use crate::widget::{TaffyTreeExt, Widget};
+    use tilo_ui_base::theme::Theme;
+    use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
 
     /// A root that starts a read on another thread on its first sync or layout, as Settings starts
     /// a device read for the pane it builds, and takes its result in at a sync.
@@ -110,7 +110,11 @@ mod tests {
     }
 
     impl Widget for Reader {
-        fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
+        fn sync(
+            &mut self,
+            _state: &tilo_ui_base::widget::AppModel,
+            _path: &tilo_ui_base::widget::ModelPath,
+        ) {
             self.syncs += 1;
             if let Some(landed) = &self.landed
                 && let Ok(value) = landed.try_recv()
@@ -140,8 +144,8 @@ mod tests {
             taffy.widget_leaf(style, node_map, self)
         }
 
-        crate::rect_geometry!(measured);
-        crate::redraw_flag!();
+        tilo_ui_base::rect_geometry!(measured);
+        tilo_ui_base::redraw_flag!();
 
         fn name(&self) -> &'static str {
             "Reader"

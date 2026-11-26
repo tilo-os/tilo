@@ -3,8 +3,8 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use crate::testing::Dispatch;
-use crate::theme::Theme;
 use crate::widget::section::band_height;
+use tilo_ui_base::theme::Theme;
 
 struct Grouped {
     groups: Vec<Option<RowGroup>>,
@@ -114,11 +114,11 @@ fn mounted_indexes(list: &VirtualList<Grouped>) -> Vec<usize> {
 }
 
 fn press(list: &mut VirtualList<Grouped>, y: f64, taffy: &TaffyTree<()>, node: NodeId) -> bool {
-    let at = crate::synthetic_input::cursor_moved(20.0, y);
+    let at = tilo_ui_base::synthetic_input::cursor_moved(20.0, y);
     let hovered = Dispatch::new().layout(taffy, node).send(list, &at).handled;
     let mut handled = hovered;
     for state in [ElementState::Pressed, ElementState::Released] {
-        let event = crate::synthetic_input::mouse_input(state, MouseButton::Left);
+        let event = tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left);
         handled |= Dispatch::new()
             .layout(taffy, node)
             .send(list, &event)
@@ -176,9 +176,9 @@ tilo_test_env::scenario! {
 
         // Under a finger the band is tall enough to press, and pressing it folds.
         let mut list = week();
-        list.set_interaction_environment(crate::interaction::InteractionEnvironment::TOUCH);
+        list.set_interaction_environment(tilo_ui_base::interaction::InteractionEnvironment::TOUCH);
         let (taffy, node) = settle(&mut list);
-        let target = f64::from(crate::interaction::InteractionEnvironment::TOUCH.minimum_target());
+        let target = f64::from(tilo_ui_base::interaction::InteractionEnvironment::TOUCH.minimum_target());
         assert!(
             list.groups.height >= target - 0.5,
             "the band is a target a finger presses: {} of {target}",
@@ -292,7 +292,7 @@ fn key(
 ) -> bool {
     Dispatch::new()
         .layout(taffy, node)
-        .send(list, &crate::synthetic_input::named_key(key))
+        .send(list, &tilo_ui_base::synthetic_input::named_key(key))
         .handled
 }
 
@@ -314,7 +314,7 @@ tilo_test_env::scenario! {
         let headings: Vec<_> = tree
             .children
             .iter()
-            .filter(|child| child.role == crate::a11y::Role::Button)
+            .filter(|child| child.role == tilo_ui_base::a11y::Role::Button)
             .map(|child| (child.name.clone().unwrap_or_default(), child.value.clone()))
             .collect();
         assert_eq!(
@@ -415,7 +415,7 @@ tilo_test_env::scenario! {
         let headings: Vec<_> = tree
             .children
             .iter()
-            .filter(|child| child.role == crate::a11y::Role::Button)
+            .filter(|child| child.role == tilo_ui_base::a11y::Role::Button)
             .map(|child| (child.name.clone().unwrap_or_default(), child.value.clone()))
             .collect();
         assert_eq!(
@@ -429,12 +429,16 @@ tilo_test_env::scenario! {
     }
 }
 
-fn send(list: &mut VirtualList<Grouped>, target: &str, action: &crate::a11y::Action) -> bool {
+fn send(
+    list: &mut VirtualList<Grouped>,
+    target: &str,
+    action: &tilo_ui_base::a11y::Action,
+) -> bool {
     Widget::perform_semantic_action(
         list,
         target,
         action,
-        &mut crate::widget::Edits::lend(&mut automerge::AutoCommit::new()),
+        &mut tilo_ui_base::widget::Edits::lend(&mut automerge::AutoCommit::new()),
         &automerge::ROOT,
     )
 }
@@ -467,7 +471,7 @@ tilo_test_env::scenario! {
             "each heading stands before the rows it holds"
         );
         let monday = &tree.children[0];
-        assert_eq!(monday.role, crate::a11y::Role::Button);
+        assert_eq!(monday.role, tilo_ui_base::a11y::Role::Button);
         assert_eq!(monday.value.as_deref(), Some("2"));
         assert_eq!(monday.state.expanded, Some(true));
         assert!(monday.state.focusable);
@@ -506,7 +510,7 @@ tilo_test_env::scenario! {
         let mut list = week();
         let _ = settle(&mut list);
         let name = |heading: &str| format!("group:{heading}");
-        assert!(send(&mut list, &name("Done"), &crate::a11y::Action::Activate));
+        assert!(send(&mut list, &name("Done"), &tilo_ui_base::a11y::Action::Activate));
         assert_eq!(focused_heading(&list), Some("Done"));
         let _ = settle(&mut list);
         assert!(
@@ -521,7 +525,7 @@ tilo_test_env::scenario! {
             .find(|child| child.name.as_deref() == Some("Done"))
             .expect("the tail's heading");
         assert_eq!(done.state.expanded, Some(true));
-        assert!(send(&mut list, &name("Monday"), &crate::a11y::Action::Collapse));
+        assert!(send(&mut list, &name("Monday"), &tilo_ui_base::a11y::Action::Collapse));
         let _ = settle(&mut list);
         assert!(
             bands(&list)
@@ -530,7 +534,7 @@ tilo_test_env::scenario! {
             "Monday folded: {:?}",
             bands(&list)
         );
-        assert!(send(&mut list, &name("Monday"), &crate::a11y::Action::Expand));
+        assert!(send(&mut list, &name("Monday"), &tilo_ui_base::a11y::Action::Expand));
         let _ = settle(&mut list);
         assert!(
             bands(&list)
@@ -539,10 +543,10 @@ tilo_test_env::scenario! {
             "Monday unfolded: {:?}",
             bands(&list)
         );
-        assert!(send(&mut list, &name("Tuesday"), &crate::a11y::Action::Focus));
+        assert!(send(&mut list, &name("Tuesday"), &tilo_ui_base::a11y::Action::Focus));
         assert_eq!(focused_heading(&list), Some("Tuesday"));
         // A heading that is not there is not acted on.
-        assert!(!send(&mut list, &name("Wednesday"), &crate::a11y::Action::Activate));
+        assert!(!send(&mut list, &name("Wednesday"), &tilo_ui_base::a11y::Action::Activate));
     }
 }
 
@@ -552,7 +556,7 @@ fn access_nodes(list: &mut VirtualList<Grouped>) -> Vec<(accesskit::NodeId, acce
     let mut taffy = TaffyTree::<()>::new();
     let mut node_map = std::collections::HashMap::new();
     let _ = list.build_layout(&mut taffy, &theme, &mut node_map);
-    crate::accesskit_bridge::build_tree_update(&*list, &node_map, None, 1.0).nodes
+    tilo_ui_base::accesskit_bridge::build_tree_update(&*list, &node_map, None, 1.0).nodes
 }
 
 tilo_test_env::scenario! {
@@ -572,7 +576,7 @@ tilo_test_env::scenario! {
         );
         let row = f64::from(ROW);
         assert_eq!(mounted_indexes(&list), vec![0, 1], "both rows are built");
-        let inset = crate::chrome::column_gutter(&Theme::dark());
+        let inset = tilo_ui_base::chrome::column_gutter(&Theme::dark());
         assert!(
             (list.band_gap(0) - 0.0).abs() < 0.5,
             "the list keeps no heading's area over its first row: {}",
@@ -705,7 +709,7 @@ fn open_count(list: &mut VirtualList<Grouped>) -> Option<usize> {
 /// the list represents in its own nodes are never a second line beside them.
 #[test]
 fn an_agents_outline_reads_each_row_and_heading_once() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let mut list = week();
     let _ = settle(&mut list);
     let outline = crate::semantic_outline::outline(&list);
@@ -726,18 +730,18 @@ fn an_agents_outline_reads_each_row_and_heading_once() {
 }
 
 fn painted(list: &mut VirtualList<Grouped>, theme: &Theme) -> Vec<u8> {
-    let mut text = crate::text_render::TextRenderer::new();
+    let mut text = tilo_ui_base::text_render::TextRenderer::new();
     text.set_text_scale(theme.text_scale);
     let mut scene = vello::Scene::new();
-    list.draw(&mut crate::draw::DrawCtx::new(
+    list.draw(&mut tilo_ui_base::draw::DrawCtx::new(
         &mut scene,
         vello::kurbo::Affine::IDENTITY,
         &mut text,
         theme,
-        crate::presence::PresenceCtx::empty().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
     ));
     let mut renderer =
-        crate::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(300, 400)
+        tilo_ui_base::offscreen::OffscreenRenderer::try_new_with_cpu_preprocessing(300, 400)
             .expect("the offscreen renderer");
     renderer.render_rgba(&scene)
 }
@@ -746,7 +750,7 @@ fn painted(list: &mut VirtualList<Grouped>, theme: &Theme) -> Vec<u8> {
 fn ring_pixels(rgba: &[u8], theme: &Theme, row: usize) -> usize {
     let ring = theme.border_focus;
     let wanted = [0, 1, 2]
-        .map(|channel| crate::num::i32_of_f64(f64::from(ring.components[channel]) * 255.0));
+        .map(|channel| tilo_ui_base::num::i32_of_f64(f64::from(ring.components[channel]) * 255.0));
     (0..300)
         .filter(|x| *x < 5 || *x >= 295)
         .filter(|x| {
@@ -763,13 +767,13 @@ fn ring_pixels(rgba: &[u8], theme: &Theme, row: usize) -> usize {
 
 #[test]
 fn the_heading_holding_the_keyboard_wears_a_focus_ring() {
-    let _settled = crate::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let theme = Theme::dark();
     let mut list = week();
     let (taffy, node) = settle(&mut list);
     let band = list.groups.height;
     let unfocused = painted(&mut list, &theme);
-    let middle = crate::num::usize_of_f64(band / 2.0);
+    let middle = tilo_ui_base::num::usize_of_f64(band / 2.0);
     assert_eq!(
         ring_pixels(&unfocused, &theme, middle),
         0,

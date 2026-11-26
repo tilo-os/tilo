@@ -10,12 +10,12 @@ use vello::kurbo::{Affine, Line, Point, Rect, RoundedRect, Stroke};
 use vello::peniko::{Color, Fill};
 
 use crate::color_compat::ColorCompat;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::chart_readout::{Highlight, Readout};
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks, ValueAxis};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
 #[derive(Clone, Debug)]
 pub struct Candle {
@@ -471,7 +471,7 @@ impl CandlestickMarks {
         // The stride is the one at which the shortest readable name fits its share, so a chart
         // with many periods names some of them rather than losing the axis to collisions.
         let every = label_stride(min_label_width(tr, &style) + gap, slot);
-        let room = slot * crate::num::f64_of_usize(every) - gap;
+        let room = slot * tilo_ui_base::num::f64_of_usize(every) - gap;
         let last = self.candles.len().saturating_sub(1);
         let mut labels = Vec::new();
         for (index, candle) in self.candles.iter().enumerate() {
@@ -553,7 +553,7 @@ mod tests {
                     CandlestickChart::new(two_weeks()).titled("Closing price, last two weeks");
                 crate::testing::lay_out_in(&mut chart, width, 160.0, &theme)
                     .expect("the chart lays out");
-                let labels = crate::text_render::with_layout_renderer(&theme, |tr| {
+                let labels = tilo_ui_base::text_render::with_layout_renderer(&theme, |tr| {
                     chart.marks.axis_labels(tr, &theme)
                 });
                 assert!(!labels.is_empty(), "the axis names its periods");

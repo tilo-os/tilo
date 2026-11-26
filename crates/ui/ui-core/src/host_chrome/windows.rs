@@ -30,8 +30,8 @@ use windows::core::{GUID, HSTRING, Interface, PCWSTR};
 use super::menus::{self, Entry, MenuKind};
 use super::model::HostCommand;
 use super::windows_items::{JumpTask, jump_tasks, menu_text};
-use crate::i18n::I18nManager;
-use crate::platform::{Platform, PlatformConventions};
+use tilo_ui_base::i18n::I18nManager;
+use tilo_ui_base::{platform::Platform, platform::PlatformConventions};
 
 const FIRST_ID: usize = 0x100;
 const SUBCLASS_ID: usize = 0x7110;

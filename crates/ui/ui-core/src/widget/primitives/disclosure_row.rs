@@ -10,14 +10,14 @@ use vello::kurbo::{Affine, Point, Rect};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::icons::Icon;
-use crate::motion::{Disclose, Presence};
-use crate::paint::PaintCtx;
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::paint::PaintCtx;
+use tilo_ui_base::{motion::Disclose, motion::Presence};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::EffectiveMotion;
-use crate::widget::{Element, TaffyTreeExt, Widget};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::EffectiveMotion;
+use tilo_ui_base::{widget::Element, widget::TaffyTreeExt, widget::Widget};
 
 use super::TextStackFace;
 
@@ -93,21 +93,27 @@ impl DisclosureState {
             open,
             Disclose::SPEC,
             motion,
-            crate::motion::input_source(),
-            crate::motion::frame_now(),
+            tilo_ui_base::motion::input_source(),
+            tilo_ui_base::motion::frame_now(),
         );
         if let Some(until) = state.reveal.settles_at() {
-            crate::motion::want_frames_until(until);
+            tilo_ui_base::motion::want_frames_until(until);
         }
         true
     }
 
     fn progress(&self) -> f64 {
-        self.0.borrow().reveal.progress(crate::motion::frame_now())
+        self.0
+            .borrow()
+            .reveal
+            .progress(tilo_ui_base::motion::frame_now())
     }
 
     fn is_moving(&self) -> bool {
-        self.0.borrow().reveal.is_moving(crate::motion::frame_now())
+        self.0
+            .borrow()
+            .reveal
+            .is_moving(tilo_ui_base::motion::frame_now())
     }
 
     fn body_height(&self) -> f64 {
@@ -270,7 +276,7 @@ pub struct DisclosureRow {
     dense_words: std::cell::Cell<f64>,
     /// How the person points: a finger's coarse press needs a header a finger can hit, however
     /// few lines it has.
-    environment: crate::interaction::InteractionEnvironment,
+    environment: tilo_ui_base::interaction::InteractionEnvironment,
     rect: Rect,
     header: Rect,
     header_px: f64,
@@ -281,7 +287,7 @@ pub struct DisclosureRow {
     dirty: bool,
     layout_dirty: bool,
     motion: EffectiveMotion,
-    feel: crate::motion::Feel,
+    feel: tilo_ui_base::motion::Feel,
 }
 
 impl DisclosureRow {
@@ -307,7 +313,7 @@ impl DisclosureRow {
             separator: false,
             dense: false,
             dense_words: std::cell::Cell::new(0.0),
-            environment: crate::interaction::InteractionEnvironment::default(),
+            environment: tilo_ui_base::interaction::InteractionEnvironment::default(),
             rect: Rect::ZERO,
             header: Rect::ZERO,
             header_px: 0.0,
@@ -316,7 +322,7 @@ impl DisclosureRow {
             dirty: true,
             layout_dirty: true,
             motion: EffectiveMotion::default(),
-            feel: crate::motion::Feel::Standard,
+            feel: tilo_ui_base::motion::Feel::Standard,
         }
     }
 
@@ -495,7 +501,7 @@ impl DisclosureRow {
 
     fn header_height(&self, theme: &Theme) -> f64 {
         let own = if self.dense {
-            let line = f64::from(theme.text(crate::TextRole::Caption).line_height_px());
+            let line = f64::from(theme.text(tilo_ui_base::TextRole::Caption).line_height_px());
             line + 2.0 * f64::from(theme.tokens.spacing.rhythm.tight)
         } else {
             let m = &theme.tokens.metrics;
@@ -518,7 +524,10 @@ impl DisclosureRow {
     fn reveal_layout(&self) -> (f32, bool) {
         let shut = !self.state.is_open() && !self.state.is_moving();
         let revealed = Disclose::reveal(self.progress(), self.state.body_height()).height;
-        (crate::num::f32_of_f64(self.header_px + revealed), shut)
+        (
+            tilo_ui_base::num::f32_of_f64(self.header_px + revealed),
+            shut,
+        )
     }
 
     fn reveal_unlaid(&self) -> bool {
@@ -569,7 +578,7 @@ impl DisclosureRow {
         let theme = ctx.theme;
         let colors = &theme.tokens.colors;
         let radius = f64::from(theme.tokens.radii.item);
-        let bleed = crate::chrome::row_bleed(theme);
+        let bleed = tilo_ui_base::chrome::row_bleed(theme);
         let outer = self.header.inflate(bleed, 0.0);
         if self.hovered || self.pressed {
             let fill = colors.lift_on(
@@ -599,13 +608,15 @@ impl DisclosureRow {
         };
         let mut text = Rect::new(x, self.header.y0, text_end - gap, self.header.y1);
         if !self.side.is_empty() {
-            let style = theme.text(crate::TextRole::Caption);
+            let style = theme.text(tilo_ui_base::TextRole::Caption);
             let natural = f64::from(ctx.text.measure_style(&self.side, None, &style).0);
             let spare = Self::side_width(natural, text.width());
             let start = text.x1 - spare;
-            let shown =
-                ctx.text
-                    .elide_to_width_style(&self.side, crate::num::f32_of_f64(spare), &style);
+            let shown = ctx.text.elide_to_width_style(
+                &self.side,
+                tilo_ui_base::num::f32_of_f64(spare),
+                &style,
+            );
             let top = self.face().title_top(text, ctx.text, theme);
             ctx.text.draw_style(
                 ctx.scene,
@@ -636,17 +647,17 @@ impl DisclosureRow {
                     slot,
                 ),
                 Leading::Avatar { name, identity } => {
-                    crate::widget::AvatarFace::new(name, identity)
+                    tilo_ui_base::widget::AvatarFace::new(name, identity)
                         .ringed_on(colors.surfaces.content)
                         .paint(ctx, slot)
                 }
             }
         }
         if self.dense {
-            let style = theme.text(crate::TextRole::Caption);
+            let style = theme.text(tilo_ui_base::TextRole::Caption);
             let shown = ctx.text.elide_to_width_style(
                 &self.title,
-                crate::num::f32_of_f64(text.width().max(0.0)),
+                tilo_ui_base::num::f32_of_f64(text.width().max(0.0)),
                 &style,
             );
             let (w, h) = ctx.text.measure_style(&shown, None, &style);
@@ -679,13 +690,13 @@ impl DisclosureRow {
 
     /// Play the row's reveal at `feel` rather than the theme's pace.
     #[must_use]
-    pub fn with_feel(mut self, feel: crate::motion::Feel) -> Self {
+    pub fn with_feel(mut self, feel: tilo_ui_base::motion::Feel) -> Self {
         self.feel = feel;
         self
     }
 
     /// [`Self::with_feel`] on a row already built.
-    pub fn set_feel(&mut self, feel: crate::motion::Feel) {
+    pub fn set_feel(&mut self, feel: tilo_ui_base::motion::Feel) {
         self.feel = feel;
     }
 
@@ -695,7 +706,7 @@ impl DisclosureRow {
         }
         let theme = ctx.theme;
         let x0 = self.header.x0 + Self::text_inset(self.leading.as_ref(), theme);
-        crate::surface::separator(
+        tilo_ui_base::surface::separator(
             ctx.scene,
             ctx.transform,
             x0,
@@ -747,7 +758,9 @@ impl Widget for DisclosureRow {
                 style.position = taffy::Position::Absolute;
                 style.inset = taffy::Rect {
                     left: taffy::LengthPercentageAuto::auto(),
-                    right: taffy::LengthPercentageAuto::length(crate::num::f32_of_f64(icon + gap)),
+                    right: taffy::LengthPercentageAuto::length(tilo_ui_base::num::f32_of_f64(
+                        icon + gap,
+                    )),
                     top: taffy::LengthPercentageAuto::length(0.0),
                     bottom: taffy::LengthPercentageAuto::auto(),
                 };
@@ -765,12 +778,11 @@ impl Widget for DisclosureRow {
                 height: taffy::Dimension::length(height),
             },
             padding: taffy::Rect {
-                left: taffy::LengthPercentage::length(crate::num::f32_of_f64(Self::text_inset(
-                    self.leading.as_ref(),
-                    theme,
-                ))),
+                left: taffy::LengthPercentage::length(tilo_ui_base::num::f32_of_f64(
+                    Self::text_inset(self.leading.as_ref(), theme),
+                )),
                 right: taffy::LengthPercentage::length(0.0),
-                top: taffy::LengthPercentage::length(crate::num::f32_of_f64(header)),
+                top: taffy::LengthPercentage::length(tilo_ui_base::num::f32_of_f64(header)),
                 bottom: taffy::LengthPercentage::length(0.0),
             },
             overflow: taffy::Point {
@@ -831,21 +843,27 @@ impl Widget for DisclosureRow {
     /// its own.
     fn layout_needs_measure(&self) -> bool {
         self.reveal_unlaid()
-            || crate::widget::defaults::layout_needs_measure(&|visit| self.for_each_child(visit))
-                .unwrap_or(false)
+            || tilo_ui_base::widget::defaults::layout_needs_measure(&|visit| {
+                self.for_each_child(visit)
+            })
+            .unwrap_or(false)
     }
 
     /// A reveal in progress moves what the row lays out: the window is laid
     /// out again on each of its frames.
-    fn update(&mut self, state: &crate::widget::AppModel, path: &crate::widget::ModelPath) -> bool {
+    fn update(
+        &mut self,
+        state: &tilo_ui_base::widget::AppModel,
+        path: &tilo_ui_base::widget::ModelPath,
+    ) -> bool {
         if self.reveal_unlaid() {
-            crate::widget::note_layout_moved();
+            tilo_ui_base::widget::note_layout_moved();
         }
-        crate::widget::defaults::update(self.children_mut(), state, path)
+        tilo_ui_base::widget::defaults::update(self.children_mut(), state, path)
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.layout_dirty = false;
         self.header = Rect::new(
             self.rect.x0,
@@ -876,11 +894,11 @@ impl Widget for DisclosureRow {
             self.trailing_rect = control.get_rect();
         }
         if self.state.is_moving() {
-            crate::widget::note_layout_moved();
+            tilo_ui_base::widget::note_layout_moved();
         }
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -891,7 +909,7 @@ impl Widget for DisclosureRow {
         self.paint_header(&mut ctx);
         self.paint_separator(&mut ctx);
         if let Some(control) = &mut self.trailing {
-            crate::widget::draw_child(
+            tilo_ui_base::widget::draw_child(
                 control.as_mut(),
                 scene,
                 transform,
@@ -906,9 +924,9 @@ impl Widget for DisclosureRow {
         }
         let reveal = Disclose::reveal(progress, self.state.body_height());
         let clip = Rect::new(
-            self.rect.x0 - crate::chrome::row_bleed(theme),
+            self.rect.x0 - tilo_ui_base::chrome::row_bleed(theme),
             self.header.y1,
-            self.rect.x1 + crate::chrome::row_bleed(theme),
+            self.rect.x1 + tilo_ui_base::chrome::row_bleed(theme),
             self.header.y1 + reveal.height,
         );
         scene.push_layer(
@@ -918,7 +936,7 @@ impl Widget for DisclosureRow {
             transform,
             &clip,
         );
-        crate::widget::draw_child(
+        tilo_ui_base::widget::draw_child(
             self.body.as_mut(),
             scene,
             transform,
@@ -929,7 +947,7 @@ impl Widget for DisclosureRow {
         scene.pop_layer();
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         let children = ctx.taffy.children(ctx.node_id).unwrap_or_default();
         if let Some(control) = &mut self.trailing
             && let Some(&node) = children.get(1)
@@ -996,12 +1014,12 @@ impl Widget for DisclosureRow {
 
     fn perform_action(
         &mut self,
-        action: &crate::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _state: &mut crate::widget::Edits<'_>,
-        _path: &crate::widget::ModelPath,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _path: &tilo_ui_base::widget::ModelPath,
     ) -> bool {
-        use crate::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         let open = match action {
             Action::Activate => !self.is_open(),
             Action::Expand => true,
@@ -1072,7 +1090,7 @@ impl Widget for DisclosureRow {
 
     fn set_interaction_environment(
         &mut self,
-        environment: crate::interaction::InteractionEnvironment,
+        environment: tilo_ui_base::interaction::InteractionEnvironment,
     ) {
         if self.environment != environment {
             self.environment = environment;
@@ -1147,8 +1165,8 @@ impl Widget for DisclosureRow {
         Some(self)
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         Some(
             AccessNode::new(Role::Button)
                 .with_name(self.face().spoken())
@@ -1172,9 +1190,9 @@ mod tests {
 
         phase one_row_of_a_group_is_open_at_a_time;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let group = DisclosureGroup::new();
-            let body = || Box::new(crate::widget::Spacer::fixed(40.0)) as Box<dyn Widget>;
+            let body = || Box::new(tilo_ui_base::widget::Spacer::fixed(40.0)) as Box<dyn Widget>;
             let mut a = DisclosureRow::new("Wi-Fi", body()).in_group(&group);
             let mut b = DisclosureRow::new("Bluetooth", body()).in_group(&group);
             a.set_open(true);
@@ -1191,9 +1209,9 @@ mod tests {
         // the height its body had, until they close it.
         phase a_keyed_row_rebuilt_from_fresh_data_stays_open_at_its_height;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let group = DisclosureGroup::new();
-            let body = || Box::new(crate::widget::Spacer::fixed(40.0)) as Box<dyn Widget>;
+            let body = || Box::new(tilo_ui_base::widget::Spacer::fixed(40.0)) as Box<dyn Widget>;
             let mut first = DisclosureRow::keyed("Headphones", body(), &group, "AA:01");
             first.set_open(true);
             assert!(first.state.set_body_height(40.0));
@@ -1213,9 +1231,9 @@ mod tests {
 
         phase opening_a_keyed_row_closes_the_open_one_across_rebuilds;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let group = DisclosureGroup::new();
-            let body = || Box::new(crate::widget::Spacer::fixed(40.0)) as Box<dyn Widget>;
+            let body = || Box::new(tilo_ui_base::widget::Spacer::fixed(40.0)) as Box<dyn Widget>;
             DisclosureRow::keyed("Headphones", body(), &group, "AA:01").set_open(true);
             DisclosureRow::keyed("Keyboard", body(), &group, "AA:02").set_open(true);
             assert!(!DisclosureRow::keyed("Headphones", body(), &group, "AA:01").is_open());
@@ -1230,9 +1248,9 @@ mod tests {
 
         phase a_lone_row_shows_the_state_its_view_keeps;
         {
-            let _settled = crate::motion::testing::settled();
+            let _settled = tilo_ui_base::motion::testing::settled();
             let state = DisclosureState::new();
-            let body = || Box::new(crate::widget::Spacer::fixed(40.0)) as Box<dyn Widget>;
+            let body = || Box::new(tilo_ui_base::widget::Spacer::fixed(40.0)) as Box<dyn Widget>;
             DisclosureRow::new("Details", body())
                 .with_state(&state)
                 .set_open(true);

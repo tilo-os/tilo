@@ -1,7 +1,7 @@
 //! Telling the person when someone mentions them, wherever in the workspace.
 //!
 //! A mention is a run of a record's rich text marked with a member's id, whichever app wrote
-//! it ([`ui::mentions::in_resource_for`]). Every record a change reaches is looked at as the change
+//! it ([`tilo_ui_base::mentions::in_resource_for`]). Every record a change reaches is looked at as the change
 //! arrives, and each new mention of the person here is one [`Notice`]. A mention is never told
 //! twice, is taken back when it is edited away, and one that was already there when this device
 //! started following the record is not news. What was told is kept in one of the device's records,
@@ -29,7 +29,7 @@ const LOOK_EVERY_MS: u64 = 750;
 const NOTICE_SECONDS: u64 = 8;
 
 /// What a member is called.
-pub type Names = Rc<dyn Fn(&ui::MemberId) -> String>;
+pub type Names = Rc<dyn Fn(&tilo_ui_base::MemberId) -> String>;
 
 /// Whether a window on screen shows an item of an app, by the app and the item's address.
 pub type OnScreen = Rc<dyn Fn(&str, &str) -> bool>;
@@ -58,8 +58,8 @@ pub struct Look<'a> {
     /// before this device first followed it.
     pub quiet: bool,
     /// How a reference in its text reads for the person told: what a notice's excerpt says of it
-    /// ([`ui::mentions::reading_nothing`] where nobody here can tell what they hold).
-    pub read: ui::mentions::Reader<'a>,
+    /// ([`tilo_ui_base::mentions::reading_nothing`] where nobody here can tell what they hold).
+    pub read: tilo_ui_base::mentions::Reader<'a>,
     /// Whether a window on screen shows an item of an app, by the app and the item's address
     /// ([`Given::shown`]).
     pub shown: &'a dyn Fn(&str, &str) -> bool,
@@ -74,7 +74,10 @@ impl Look<'_> {
 }
 
 /// What a notice of `mention` says: who mentioned the person, and where.
-fn notice_title(mention: &ui::mentions::Mention, name: &dyn Fn(&ui::MemberId) -> String) -> String {
+fn notice_title(
+    mention: &tilo_ui_base::mentions::Mention,
+    name: &dyn Fn(&tilo_ui_base::MemberId) -> String,
+) -> String {
     let who = mention
         .by
         .as_ref()
@@ -121,13 +124,13 @@ impl Held {
     pub fn look(
         &mut self,
         look: &Look<'_>,
-        me: &BTreeSet<ui::MemberId>,
-        name: &dyn Fn(&ui::MemberId) -> String,
+        me: &BTreeSet<tilo_ui_base::MemberId>,
+        name: &dyn Fn(&tilo_ui_base::MemberId) -> String,
     ) -> Told {
         let route = look.record.to_owned();
         // Each live mention's notice, and whether the person sees what it is in already.
         let mut live_tags: BTreeMap<String, (Notice, bool)> = BTreeMap::new();
-        for mention in ui::mentions::in_resource_for(look.doc, look.read) {
+        for mention in tilo_ui_base::mentions::in_resource_for(look.doc, look.read) {
             // What the person wrote themselves, on any of their devices, is no news to them.
             if !me.contains(&mention.person)
                 || mention.by.as_ref().is_some_and(|by| me.contains(by))
@@ -285,7 +288,7 @@ pub struct Given {
 }
 
 struct Inner {
-    me: BTreeSet<ui::MemberId>,
+    me: BTreeSet<tilo_ui_base::MemberId>,
     kept: Option<DeviceRecord>,
     /// What another of the person's tools wrote to the record since the last pass.
     arrived: Arrived,
@@ -467,7 +470,7 @@ impl Mentions {
                 quiet,
                 // Nobody here can tell what the person holds of what a text refers to: an
                 // excerpt names no resource, never a title they may not read.
-                read: &ui::mentions::reading_nothing,
+                read: &tilo_ui_base::mentions::reading_nothing,
                 shown: &*self.0.shown,
             },
             &self.0.me,
@@ -519,7 +522,7 @@ impl Mentions {
                 kind,
                 doc: &before,
                 quiet: true,
-                read: &ui::mentions::reading_nothing,
+                read: &tilo_ui_base::mentions::reading_nothing,
                 shown: &*self.0.shown,
             },
             &self.0.me,
@@ -569,7 +572,7 @@ pub(crate) fn member_names(
     place_here: Rc<dyn Fn(&mut tilo_desktop_model::Layout)>,
     search: Rc<crate::search::SessionSearch>,
 ) -> Names {
-    Rc::new(move |who: &ui::MemberId| {
+    Rc::new(move |who: &tilo_ui_base::MemberId| {
         Some(who)
             .filter(|who| who.is_agent())
             .and_then(|agent| search.agent_name(agent))
@@ -582,8 +585,8 @@ pub(crate) fn member_names(
                     .find(|member| member.id == *who)
                     .map(|member| member.name.clone())
             })
-            .filter(|name| ui::presence::shown_name(name).is_some())
-            .unwrap_or_else(|| ui::presence::unnamed_label(who))
+            .filter(|name| tilo_ui_base::presence::shown_name(name).is_some())
+            .unwrap_or_else(|| tilo_ui_base::presence::unnamed_label(who))
     })
 }
 
@@ -629,7 +632,12 @@ enum Fetched {
 /// something away where a mention of them stands; one the workspace held before this device
 /// followed it is taken as seen where it stands. So a large document's changes cost what they
 /// hold.
-fn fetch(from: &dyn Records, changed: &Changed, ask: &Ask, me: &BTreeSet<ui::MemberId>) -> Fetched {
+fn fetch(
+    from: &dyn Records,
+    changed: &Changed,
+    ask: &Ask,
+    me: &BTreeSet<tilo_ui_base::MemberId>,
+) -> Fetched {
     let (app, workspace, route) = (
         changed.app.as_str(),
         changed.workspace.as_str(),
@@ -640,7 +648,7 @@ fn fetch(from: &dyn Records, changed: &Changed, ask: &Ask, me: &BTreeSet<ui::Mem
             Since::Unchanged => return Fetched::Unchanged,
             Since::Whole => {}
             Since::Changes { heads, bytes } => {
-                let apart = ui::mentions::touched_by(&bytes, me).is_some_and(|touched| {
+                let apart = tilo_ui_base::mentions::touched_by(&bytes, me).is_some_and(|touched| {
                     !(touched.names || (touched.removes && ask.told) || heads.is_empty())
                 });
                 if apart {
@@ -715,7 +723,11 @@ impl Reads {
 
     /// Start the worker these reads are made on, reading for `me` and waking the session's loop
     /// through `wake` as each lands.
-    fn started(self, me: &BTreeSet<ui::MemberId>, wake: Option<tilo_service::Wake>) -> Self {
+    fn started(
+        self,
+        me: &BTreeSet<tilo_ui_base::MemberId>,
+        wake: Option<tilo_service::Wake>,
+    ) -> Self {
         #[cfg(target_os = "linux")]
         if let Way::Apart(from) = self.0 {
             use std::sync::{Arc, Mutex, PoisonError, mpsc};
@@ -796,7 +808,12 @@ impl Reads {
             reason = "the desktop's pending read takes the ask; a page's answers at once"
         )
     )]
-    fn fetch(&self, changed: &Changed, ask: Ask, me: &BTreeSet<ui::MemberId>) -> Poll<Fetched> {
+    fn fetch(
+        &self,
+        changed: &Changed,
+        ask: Ask,
+        me: &BTreeSet<tilo_ui_base::MemberId>,
+    ) -> Poll<Fetched> {
         match &self.0 {
             Way::Here(from) => Poll::Ready(fetch(from.as_ref(), changed, &ask, me)),
             #[cfg(target_os = "linux")]
@@ -834,10 +851,10 @@ impl Reads {
 }
 
 /// The members `ids` name, without the empty one.
-fn people(ids: &[String]) -> BTreeSet<ui::MemberId> {
+fn people(ids: &[String]) -> BTreeSet<tilo_ui_base::MemberId> {
     ids.iter()
         .filter(|id| !id.is_empty())
-        .map(ui::MemberId::person)
+        .map(tilo_ui_base::MemberId::person)
         .collect()
 }
 

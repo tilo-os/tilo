@@ -1,8 +1,8 @@
 //! [`Treemap`] as a described component: a hierarchy as rectangles, and [`ChartPart`] as one of
 //! its parts.
 
-use crate::component::{Component, Described};
 use crate::widget::{ChartItem, ChartPart, hierarchy};
+use tilo_ui_base::{component::Component, component::Described};
 
 use super::Treemap;
 

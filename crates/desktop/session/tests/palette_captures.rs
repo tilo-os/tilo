@@ -183,7 +183,7 @@ fn invoke(session: &mut Session, resource: &str, action: &str, arguments: serde_
 /// app's action, and the sentence is its line.
 #[test]
 fn a_line_typed_into_the_palette_runs_an_app_s_capture_with_no_window_open() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let home = crate::common::private_home();
     let socket = home.path().join("collab.sock");
     let fixture = fixture();

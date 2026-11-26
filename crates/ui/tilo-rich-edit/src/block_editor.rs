@@ -5,10 +5,10 @@
 use std::collections::HashMap;
 use std::fmt::Write as _;
 use tilo_sort::CompactSort as _;
-use ui::i18n::{widget_format, widget_text};
-use ui::num::f32_of_f64;
+use tilo_ui_base::num::f32_of_f64;
+use tilo_ui_base::{i18n::widget_format, i18n::widget_text};
+use tilo_ui_base::{widget::AppModel, widget::ModelPath};
 use ui::widget::document_line::DocumentLine as _;
-use ui::widget::{AppModel, ModelPath};
 
 use automerge::{AutoCommit, ObjId, ObjType, ReadDoc, Value};
 use serde::{Deserialize, Serialize};
@@ -22,20 +22,23 @@ use winit::keyboard::{Key, NamedKey};
 
 use crate::rich_text_line::{LineSignal, RichTextLine, TransientColorSpan};
 use crate::slash_menu::{SlashCommand, SlashHostCommand, SlashMenu};
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::TaffyTreeExt;
+use tilo_ui_base::{icons::Icon, icons::draw_icon};
+use tilo_ui_base::{presence::PathSegment, presence::PresenceCtx, presence::PresenceKey};
+use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
+use tilo_ui_base::{
+    text_selection::clipboard_copy, text_selection::clipboard_copy_accepted,
+    text_selection::clipboard_paste,
+};
+use tilo_ui_base::{widget::EventCtx, widget::Remount, widget::StructureChange, widget::Widget};
 use ui::color_compat::ColorCompat;
-use ui::icons::{Icon, draw_icon};
-use ui::presence::{PathSegment, PresenceCtx, PresenceKey};
-use ui::text_render::{TextRenderer, TextStyle};
-use ui::text_selection::{clipboard_copy, clipboard_copy_accepted, clipboard_paste};
-use ui::theme::Theme;
-use ui::tokens::TextRole;
 use ui::widget::Button;
-use ui::widget::DrawChild;
-use ui::widget::TaffyTreeExt;
 use ui::widget::code_editor::{SyntaxHighlighter, TokenKind};
 use ui::widget::link_popover::{LinkPopover, PageEntry};
 use ui::widget::marks::{Mark, MarkSpan, PageId};
-use ui::widget::{EventCtx, Remount, StructureChange, Widget};
 
 pub const MAX_LIST_INDENT: u8 = 5;
 /// The smallest and largest a view can zoom the document: 40% to 300%, as a page's zoom field
@@ -246,7 +249,7 @@ impl BlockKind {
     /// accessibility text scale and the document zoom are applied where this
     /// is consumed (`RichTextLine`, the prefix painters).
     pub(crate) fn font_size(&self) -> f32 {
-        ui::tokens::typography::stock().size(self.text_role())
+        tilo_ui_base::tokens::typography::stock().size(self.text_role())
     }
 
     pub fn supports_indent(&self) -> bool {
@@ -639,7 +642,7 @@ pub struct BlockEditor {
     mention_paint: Option<ui::widget::marks::MentionPaint>,
     /// How every line is aligned within the editor's width (a centred
     /// slide title); left unless the owner says otherwise.
-    text_align: ui::richtext::TextAlign,
+    text_align: tilo_ui_base::richtext::TextAlign,
     /// The bound document's named styles, by the name a paragraph's style names: the look a
     /// paragraph set in one takes where it says nothing of its own.
     named_styles: std::collections::BTreeMap<String, styles::StyleLook>,
@@ -760,12 +763,12 @@ pub struct BlockEditor {
     /// Reordering begins only from the quiet six-dot handle, preserving normal
     /// text selection drags everywhere else in a block.
     block_drag: Option<BlockDrag>,
-    block_drag_scroll: ui::reorder::ReorderController<usize>,
+    block_drag_scroll: tilo_ui_base::reorder::ReorderController<usize>,
     tooltip_viewport: Option<Rect>,
     /// `Some`: backed by this Automerge block-Map list, bound per-line
     /// so edits sync. `None`: local-only (examples/tests).
     blocks_list: Option<ObjId>,
-    local_author: Option<ui::permissions::MemberId>,
+    local_author: Option<tilo_ui_base::permissions::MemberId>,
     kbd_sel_anchor: Option<(usize, usize)>,
     empty_hint: String,
     /// Reserved preview geometry for the final source line in each TeX/Typst
@@ -780,14 +783,14 @@ pub struct BlockEditor {
     #[cfg(any(test, feature = "test-support"))]
     access_row_builds: std::cell::Cell<usize>,
     image_preview_rects: Vec<Option<Rect>>,
-    image_store: Option<ui::ImageStore>,
+    image_store: Option<tilo_ui_base::ImageStore>,
     /// Where a picture pasted or dropped into the document goes: the host keeps its bytes and
     /// answers the address they are at, and the editor puts the picture in at the caret. Unset:
     /// the picture is left to the host as an [`ImagePasteRequest`], which places it itself.
     pub(crate) image_inserter: Option<ImageInserter>,
     /// The view's `image` event: a picture written into the document names it, by its name and
     /// the address its bytes are at, as one part of the same gesture the edit is.
-    pub(crate) image_event: Option<ui::component::Event>,
+    pub(crate) image_event: Option<tilo_ui_base::component::Event>,
     link_pages_offered: bool,
     host_commands: Vec<SlashHostCommand>,
     view_commands: Vec<String>,
@@ -848,11 +851,11 @@ pub struct BlockEditor {
     pages: Option<Pages>,
     /// The view asking how many sheets the document fills (`page_count`), and the count it was
     /// last told: a layout that fills the same number says nothing.
-    page_count_event: Option<ui::component::Event>,
+    page_count_event: Option<tilo_ui_base::component::Event>,
     published_page_count: Option<i64>,
     /// The view asking which sheet the caret stands on (`page_shown`), and the sheet it was last
     /// told: a caret that stays on its sheet says nothing.
-    page_shown_event: Option<ui::component::Event>,
+    page_shown_event: Option<tilo_ui_base::component::Event>,
     published_page_shown: Option<i64>,
     /// Presence keys from the host whose model owns the blocks
     /// ([`Self::set_presence_key`]); the editor's own block-id keys otherwise.
@@ -922,7 +925,7 @@ const TRANSCLUSION_MIN_HEIGHT: f32 = 76.0;
 impl BlockEditor {
     /// Starts with one empty paragraph — there must be a block to focus.
     pub fn new() -> Self {
-        ui::i18n::I18nManager::register_widget_messages();
+        tilo_ui_base::i18n::I18nManager::register_widget_messages();
         let mut s = Self {
             id: None,
             blocks: Vec::new(),
@@ -956,7 +959,7 @@ impl BlockEditor {
             flush: false,
             handle_reveal: handle_reveal::HandleReveal::default(),
             mention_paint: None,
-            text_align: ui::richtext::TextAlign::Left,
+            text_align: tilo_ui_base::richtext::TextAlign::Left,
             named_styles: std::collections::BTreeMap::new(),
             ink: None,
             font_scale: 1.0,
@@ -1015,7 +1018,7 @@ impl BlockEditor {
             copied_code_feedback: None,
             opening_code_fence: None,
             block_drag: None,
-            block_drag_scroll: ui::reorder::ReorderController::new(),
+            block_drag_scroll: tilo_ui_base::reorder::ReorderController::new(),
             tooltip_viewport: None,
             blocks_list: None,
             local_author: None,
@@ -1737,7 +1740,7 @@ impl BlockEditor {
     /// Align every line within the editor's width: a text box whose
     /// alignment belongs to the box rather than to each paragraph.
     #[must_use]
-    pub fn with_text_align(mut self, align: ui::richtext::TextAlign) -> Self {
+    pub fn with_text_align(mut self, align: tilo_ui_base::richtext::TextAlign) -> Self {
         self.set_text_align(align);
         self
     }
@@ -1755,7 +1758,7 @@ impl BlockEditor {
             self.set_body_size(px as f32);
         }
         if let Some(align) = align {
-            use ui::richtext::TextAlign;
+            use tilo_ui_base::richtext::TextAlign;
             let align = match align {
                 "center" | "centre" => TextAlign::Center,
                 "right" => TextAlign::Right,
@@ -1766,7 +1769,7 @@ impl BlockEditor {
         }
     }
 
-    pub fn set_text_align(&mut self, align: ui::richtext::TextAlign) {
+    pub fn set_text_align(&mut self, align: tilo_ui_base::richtext::TextAlign) {
         if self.text_align != align {
             self.text_align = align;
             self.dirty = true;
@@ -1774,7 +1777,7 @@ impl BlockEditor {
     }
 
     #[must_use]
-    pub fn text_align(&self) -> ui::richtext::TextAlign {
+    pub fn text_align(&self) -> tilo_ui_base::richtext::TextAlign {
         self.text_align
     }
 
@@ -1878,11 +1881,11 @@ impl BlockEditor {
     }
 
     #[must_use]
-    pub fn local_author(&self) -> Option<&ui::permissions::MemberId> {
+    pub fn local_author(&self) -> Option<&tilo_ui_base::permissions::MemberId> {
         self.local_author.as_ref()
     }
 
-    pub fn set_local_author(&mut self, author: Option<ui::permissions::MemberId>) {
+    pub fn set_local_author(&mut self, author: Option<tilo_ui_base::permissions::MemberId>) {
         for b in &mut self.blocks {
             b.line.set_local_author(author.clone());
         }
@@ -3491,8 +3494,8 @@ impl BlockEditor {
     pub fn accessibility_shared_with(
         &self,
         control: Option<&RowControl<'_>>,
-    ) -> Option<ui::a11y::SharedAccessNode> {
-        use ui::a11y::{AccessNode, AccessState, Role};
+    ) -> Option<tilo_ui_base::a11y::SharedAccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let mut children: Vec<AccessNode> = self
             .formula_chrome
             .iter()
@@ -3578,14 +3581,14 @@ impl BlockEditor {
         }
         let mentions = self.mention_picker.access_rows();
         if !mentions.is_empty() {
-            let mut list =
-                AccessNode::new(ui::a11y::Role::List).with_name(widget_text("widget-mention-list"));
+            let mut list = AccessNode::new(tilo_ui_base::a11y::Role::List)
+                .with_name(widget_text("widget-mention-list"));
             list.semantic_key = Some("editor.mention-picker".into());
             list.bounds = self.mention_picker.rect().map(Into::into);
             list.children = mentions;
             children.push(std::sync::Arc::new(list));
         }
-        Some(ui::a11y::SharedAccessNode {
+        Some(tilo_ui_base::a11y::SharedAccessNode {
             node: self.document_access_node(),
             children,
         })
@@ -3598,7 +3601,7 @@ impl BlockEditor {
     fn access_rows(
         &self,
         control: Option<&RowControl<'_>>,
-    ) -> Vec<std::sync::Arc<ui::a11y::AccessNode>> {
+    ) -> Vec<std::sync::Arc<tilo_ui_base::a11y::AccessNode>> {
         let total = self.blocks.len();
         let selected_blocks = self
             .retained_block_selection
@@ -3608,10 +3611,10 @@ impl BlockEditor {
         // not once per block per frame.
         let labels = AccessRowContext {
             change_type: widget_text("block-editor-change-type"),
-            text: ui::i18n::widget_text("widget-block-text"),
-            indent: ui::i18n::widget_text("widget-block-indent"),
-            outdent: ui::i18n::widget_text("widget-block-outdent"),
-            revision: ui::i18n::I18nManager::revision(),
+            text: tilo_ui_base::i18n::widget_text("widget-block-text"),
+            indent: tilo_ui_base::i18n::widget_text("widget-block-indent"),
+            outdent: tilo_ui_base::i18n::widget_text("widget-block-outdent"),
+            revision: tilo_ui_base::i18n::I18nManager::revision(),
             control,
         };
         let ordinals = numbered_ordinals(&self.blocks);
@@ -3748,8 +3751,8 @@ impl BlockEditor {
         block: &Block,
         inputs: &AccessRowInputs<'_>,
         labels: &AccessRowContext<'_>,
-    ) -> ui::a11y::AccessNode {
-        use ui::a11y::{AccessNode, AccessState, Role};
+    ) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let AccessRowInputs {
             indent,
             ordinal,
@@ -3993,11 +3996,11 @@ impl BlockEditor {
                     external_link_action_target(url),
                 ),
                 Mark::ResourceLink(href) => (
-                    ui::i18n::widget_format(
+                    tilo_ui_base::i18n::widget_format(
                         "block-a11y-open-resource",
                         &[(
                             "label",
-                            ui::i18n::ArgValue::from(
+                            tilo_ui_base::i18n::ArgValue::from(
                                 block
                                     .text()
                                     .get(span.range.clone())
@@ -4464,7 +4467,7 @@ impl BlockEditor {
 
     /// Supply an asynchronous, host-policy-owned image loader. The editor
     /// never performs filesystem or network access itself.
-    pub fn set_image_store(&mut self, store: Option<ui::ImageStore>) {
+    pub fn set_image_store(&mut self, store: Option<tilo_ui_base::ImageStore>) {
         self.image_store = store;
         self.image_dimensions.clear();
         self.dirty = true;
@@ -4557,7 +4560,8 @@ impl BlockEditor {
                     .map_or(f64::INFINITY, |rect| rect.width() / scale);
                 let width = (resize.start_width + (point.x - resize.start_x) / scale)
                     .clamp(f64::from(*IMAGE_WIDTH_RANGE.start()), column.max(48.0));
-                let width = ui::num::u32_of_i64(ui::num::i64_of_f64(width.round()));
+                let width =
+                    tilo_ui_base::num::u32_of_i64(tilo_ui_base::num::i64_of_f64(width.round()));
                 if width != resize.width {
                     resize.width = width;
                     self.structure_dirty = true;
@@ -4587,7 +4591,9 @@ impl BlockEditor {
                     index,
                     start_x: self.last_mouse_pos.x,
                     start_width,
-                    width: ui::num::u32_of_i64(ui::num::i64_of_f64(start_width.round())),
+                    width: tilo_ui_base::num::u32_of_i64(tilo_ui_base::num::i64_of_f64(
+                        start_width.round(),
+                    )),
                 });
                 *ctx.handled = true;
                 self.dirty = true;
@@ -4861,8 +4867,8 @@ impl BlockEditor {
         }
     }
 
-    fn document_access_node(&self) -> ui::a11y::AccessNode {
-        use ui::a11y::{AccessNode, AccessState, Role};
+    fn document_access_node(&self) -> tilo_ui_base::a11y::AccessNode {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         AccessNode::new(Role::Document)
             .with_description(widget_text("block-a11y-document"))
             .with_state(
@@ -5040,7 +5046,7 @@ impl BlockEditor {
         if !in_prose {
             return false;
         }
-        let Some(image) = ui::clipboard_paste_image() else {
+        let Some(image) = tilo_ui_base::clipboard_paste_image() else {
             return false;
         };
         let Some(target) = self.image_paste_target() else {
@@ -5627,12 +5633,18 @@ struct HandleMetrics {
 
 impl Default for HandleMetrics {
     fn default() -> Self {
-        Self::from_tokens(&ui::tokens::Spacing::BASE, &ui::tokens::Metrics::BASE)
+        Self::from_tokens(
+            &tilo_ui_base::tokens::Spacing::BASE,
+            &tilo_ui_base::tokens::Metrics::BASE,
+        )
     }
 }
 
 impl HandleMetrics {
-    fn from_tokens(spacing: &ui::tokens::Spacing, metrics: &ui::tokens::Metrics) -> Self {
+    fn from_tokens(
+        spacing: &tilo_ui_base::tokens::Spacing,
+        metrics: &tilo_ui_base::tokens::Metrics,
+    ) -> Self {
         Self {
             width: f64::from(spacing.s4),
             height: f64::from(metrics.icon_md),
@@ -5668,7 +5680,7 @@ struct TablePreviewLayout {
 
 struct AccessRow {
     inputs: AccessRowInputs<'static>,
-    node: std::sync::Arc<ui::a11y::AccessNode>,
+    node: std::sync::Arc<tilo_ui_base::a11y::AccessNode>,
 }
 
 /// Everything a plain block's accessibility row is built from
@@ -5770,7 +5782,7 @@ struct AccessRowContext<'a> {
 
 pub struct RowControl<'a> {
     pub key: u64,
-    pub build: &'a dyn Fn(&str, Rect) -> ui::a11y::AccessNode,
+    pub build: &'a dyn Fn(&str, Rect) -> tilo_ui_base::a11y::AccessNode,
 }
 
 struct TableModeControl {
@@ -5893,7 +5905,7 @@ fn markdown_table_layout(
     renderer: &mut TextRenderer,
     theme: &Theme,
 ) -> TablePreviewLayout {
-    use ui::text_render::TextWeight;
+    use tilo_ui_base::text_render::TextWeight;
     let mut rows = markdown_table_data_rows(source);
     let columns = rows.iter().map(Vec::len).max().unwrap_or(1).max(1);
     let scale = f64::from(theme.text_scale);
@@ -5910,7 +5922,7 @@ fn markdown_table_layout(
                 .0
                 > text_width
             {
-                for (index, grapheme) in ui::text_break::grapheme_indices(word)
+                for (index, grapheme) in tilo_ui_base::text_break::grapheme_indices(word)
                     .map(|(_, grapheme)| grapheme)
                     .enumerate()
                 {
@@ -5981,9 +5993,10 @@ fn markdown_table_layout(
                             .0
                             > text_width
                         {
-                            for (index, grapheme) in ui::text_break::grapheme_indices(word)
-                                .map(|(_, grapheme)| grapheme)
-                                .enumerate()
+                            for (index, grapheme) in
+                                tilo_ui_base::text_break::grapheme_indices(word)
+                                    .map(|(_, grapheme)| grapheme)
+                                    .enumerate()
                             {
                                 if index > 0 {
                                     display.push('\u{200b}');
@@ -6537,7 +6550,7 @@ pub fn document_selection_presence_key(start_block_id: &str, span: usize) -> Pre
 
 fn line_range_rects(
     line: &RichTextLine,
-    theme: &ui::theme::Theme,
+    theme: &tilo_ui_base::theme::Theme,
     start: usize,
     end: usize,
 ) -> Vec<vello::kurbo::Rect> {
@@ -7459,13 +7472,13 @@ struct BlockDrawCtx<'a> {
     transform: Affine,
     theme: &'a Theme,
     presence: &'a PresenceCtx,
-    env: &'a ui::draw::DrawEnv<'a>,
+    env: &'a tilo_ui_base::draw::DrawEnv<'a>,
     line_rects: &'a [Rect],
     ordinals: &'a [u32],
     table_previews: &'a [Option<Rect>],
     image_previews: &'a [Option<Rect>],
     image_attachments: &'a HashMap<String, ImageAttachment>,
-    image_store: Option<&'a ui::ImageStore>,
+    image_store: Option<&'a tilo_ui_base::ImageStore>,
     /// While `Some`, a table draws each cell's text (each row's card, when
     /// its cells stack) into a scene of its own here, with where it paints,
     /// instead of into `scene`: the editor damages a cell, not the table.
@@ -7557,7 +7570,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
                 ctx.scene.stroke(
                     &vello::kurbo::Stroke::new(scale),
                     ctx.transform,
-                    ui::surface::edge_on(ctx.theme.tokens.colors.surfaces.raised),
+                    tilo_ui_base::surface::edge_on(ctx.theme.tokens.colors.surfaces.raised),
                     None,
                     &shape,
                 );
@@ -7573,7 +7586,8 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
                             ctx.theme.tokens.colors.text_primary,
                             ctx.transform.pre_translate((x, y).into()),
                             width,
-                            &TextStyle::new(14.0).with_weight(ui::text_render::TextWeight::Bold),
+                            &TextStyle::new(14.0)
+                                .with_weight(tilo_ui_base::text_render::TextWeight::Bold),
                         );
                     }
                     let label_height = layout.label_heights.get(column).copied().unwrap_or(0.0);
@@ -7627,7 +7641,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         ctx.scene.stroke(
             &stroke,
             ctx.transform,
-            ui::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
+            tilo_ui_base::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
             None,
             &vello::kurbo::Line::new((x, table_rect.y0), (x, table_rect.y1)),
         );
@@ -7642,7 +7656,7 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         ctx.scene.stroke(
             &stroke,
             ctx.transform,
-            ui::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
+            tilo_ui_base::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
             None,
             &vello::kurbo::Line::new((table_rect.x0, y), (table_rect.x1, y)),
         );
@@ -7662,9 +7676,9 @@ fn draw_markdown_table(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
                     ctx.transform.pre_translate((x, y).into()),
                     Some((column_width - 2.0 * layout.padding_x).max(1.0) as f32),
                     &TextStyle::new(14.0).with_weight(if row_index == 0 {
-                        ui::text_render::TextWeight::Bold
+                        tilo_ui_base::text_render::TextWeight::Bold
                     } else {
-                        ui::text_render::TextWeight::Regular
+                        tilo_ui_base::text_render::TextWeight::Regular
                     }),
                 );
             });
@@ -7698,7 +7712,7 @@ fn paint_picture(
     radius: f64,
 ) {
     if !set.flipped() && !set.cropped() {
-        ui::image_store::paint_image_cover(scene, transform, plate, image, radius);
+        tilo_ui_base::image_store::paint_image_cover(scene, transform, plate, image, radius);
         return;
     }
     let (width, height) = (f64::from(image.width), f64::from(image.height));
@@ -7785,7 +7799,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
         ctx.scene.stroke(
             &vello::kurbo::Stroke::new(scale),
             ctx.transform,
-            ui::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
+            tilo_ui_base::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
             None,
             &shape,
         );
@@ -7794,7 +7808,7 @@ fn draw_markdown_image(ctx: &mut BlockDrawCtx<'_>, rect: Rect, source: &str) {
     ctx.scene.stroke(
         &vello::kurbo::Stroke::new(scale),
         ctx.transform,
-        ui::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
+        tilo_ui_base::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
         None,
         &shape,
     );
@@ -7892,7 +7906,7 @@ fn draw_block(
             ctx.scene.fill(
                 vello::peniko::Fill::NonZero,
                 ctx.transform,
-                ui::surface::edge_on(ctx.theme.tokens.colors.surfaces.content),
+                tilo_ui_base::surface::edge_on(ctx.theme.tokens.colors.surfaces.content),
                 None,
                 &rule,
             );
@@ -7987,7 +8001,7 @@ fn draw_block(
             ctx.scene.fill(
                 vello::peniko::Fill::NonZero,
                 ctx.transform,
-                ui::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
+                tilo_ui_base::surface::edge_on(ctx.theme.tokens.colors.surfaces.base),
                 None,
                 &rule,
             );
@@ -8342,7 +8356,7 @@ fn flows_beside_picture(block: &Block) -> bool {
 }
 
 /// The bands rows whose top stands at `text_top` are laid out in beside `floats`.
-fn bands_beside(floats: &[FloatBand], text_top: f32) -> ui::text_render::RowBands {
+fn bands_beside(floats: &[FloatBand], text_top: f32) -> tilo_ui_base::text_render::RowBands {
     let mut bands = Vec::with_capacity(floats.len());
     for float in floats {
         if float.bottom <= text_top + 0.01 {
@@ -8354,9 +8368,9 @@ fn bands_beside(floats: &[FloatBand], text_top: f32) -> ui::text_render::RowBand
             PictureWrap::Left => (reach, 0.0),
             PictureWrap::Right => (0.0, reach),
         };
-        bands.push(ui::text_render::RowBand::new(until, left, right));
+        bands.push(tilo_ui_base::text_render::RowBand::new(until, left, right));
     }
-    ui::text_render::RowBands::new(bands)
+    tilo_ui_base::text_render::RowBands::new(bands)
 }
 
 /// The paper a document is written on, and the words its pages carry in the margins: what a
@@ -8468,7 +8482,7 @@ struct BlockStack {
     floats: Vec<FloatBand>,
     /// The bands each block's rows were stacked in, so a probe at another width can leave the
     /// lines stacked in the bands the recorded stack belongs to.
-    bands: Vec<ui::text_render::RowBands>,
+    bands: Vec<tilo_ui_base::text_render::RowBands>,
 }
 
 /// The leaf that stands for the editor's block stack in the layout tree. A
@@ -8674,7 +8688,7 @@ impl BlockEditor {
             })
             .collect();
         let max_image_height = self.viewport_height.map(|height| {
-            ui::num::u32_of_i64(ui::num::i64_of_f64(
+            tilo_ui_base::num::u32_of_i64(tilo_ui_base::num::i64_of_f64(
                 (height * IMAGE_VIEWPORT_FRACTION).round(),
             ))
         });
@@ -8920,7 +8934,7 @@ impl BlockEditor {
         // picture to the next page with the block it is written in: measure in the bands the
         // pictures leave, break the pages, and measure again beside them where the pages put
         // them, until the breaks and the bands agree.
-        let mut given: Option<Vec<ui::text_render::RowBands>> = None;
+        let mut given: Option<Vec<tilo_ui_base::text_render::RowBands>> = None;
         for _ in 0..3 {
             let (floats, bands) = self.stack_pass(
                 width,
@@ -8958,9 +8972,9 @@ impl BlockEditor {
         width: f32,
         font_scale: f32,
         pictures: &[Option<FloatingPicture>],
-        given: Option<&[ui::text_render::RowBands]>,
+        given: Option<&[tilo_ui_base::text_render::RowBands]>,
         mut text_renderer: Option<&mut TextRenderer>,
-    ) -> (Vec<FloatBand>, Vec<ui::text_render::RowBands>) {
+    ) -> (Vec<FloatBand>, Vec<tilo_ui_base::text_render::RowBands>) {
         let count = self.blocks.len();
         let mut tops = Vec::with_capacity(count);
         let mut heights = Vec::with_capacity(count);
@@ -9061,11 +9075,11 @@ impl BlockEditor {
         if !self.wrap_lines {
             return vec![None; self.blocks.len()];
         }
-        let pad = ui::num::f32_of_f64(self.text_pad);
+        let pad = tilo_ui_base::num::f32_of_f64(self.text_pad);
         let column = (width - 2.0 * pad).max(1.0);
-        let max_height = self
-            .viewport_height
-            .map(|height| ui::num::f32_of_f64((height * IMAGE_VIEWPORT_FRACTION).round()));
+        let max_height = self.viewport_height.map(|height| {
+            tilo_ui_base::num::f32_of_f64((height * IMAGE_VIEWPORT_FRACTION).round())
+        });
         self.blocks
             .iter()
             .map(|block| self.floating_picture(block, column, max_height))
@@ -9090,9 +9104,9 @@ impl BlockEditor {
         // The side the text wraps down is what lets it run beside the picture: a picture stood
         // free of the text without a side takes the column, nothing flowing around it.
         let side = set.wrap?;
-        let scale = ui::num::f32_of_f64(self.text_scale);
+        let scale = tilo_ui_base::num::f32_of_f64(self.text_scale);
         let mut width = sized
-            .map(|pixels| ui::num::f32_of_u32(pixels) * scale)
+            .map(|pixels| tilo_ui_base::num::f32_of_u32(pixels) * scale)
             .unwrap_or(column * FLOAT_PICTURE_SHARE)
             .min(column * FLOAT_PICTURE_MAX_SHARE)
             .max(1.0);
@@ -9100,7 +9114,7 @@ impl BlockEditor {
             .image_dimensions
             .get(destination)
             .map_or(1.0, |&(w, h)| {
-                ui::num::f32_of_u32(h.max(1)) / ui::num::f32_of_u32(w.max(1))
+                tilo_ui_base::num::f32_of_u32(h.max(1)) / tilo_ui_base::num::f32_of_u32(w.max(1))
             });
         let mut height = if self.image_dimensions.contains_key(destination) {
             width * aspect
@@ -9137,7 +9151,7 @@ impl BlockEditor {
         &mut self,
         width: f32,
         floats: &[FloatBand],
-    ) -> (Vec<ui::text_render::RowBands>, Vec<FloatBand>) {
+    ) -> (Vec<tilo_ui_base::text_render::RowBands>, Vec<FloatBand>) {
         self.stack.pages = PageGrid::default();
         let Some(spec) = self.pages.clone() else {
             let shifted = self.stack.tops.clone();
@@ -9218,14 +9232,18 @@ impl BlockEditor {
     /// The bands each block's rows stand in beside `floats`, whose rects are in the same space as
     /// `tops`: a block below a picture's top and above its bottom narrows by the picture and the
     /// gap that follows it.
-    fn bands_beside(&self, floats: &[FloatBand], tops: &[f32]) -> Vec<ui::text_render::RowBands> {
+    fn bands_beside(
+        &self,
+        floats: &[FloatBand],
+        tops: &[f32],
+    ) -> Vec<tilo_ui_base::text_render::RowBands> {
         // A picture beside rows ends with the page it stands on: the rows of another page are
         // not beside it, however tall it is.
         let page_writing = (!self.stack.pages.pages.is_empty()).then(|| {
             (self.stack.pages.sheet - self.stack.pages.margin_top - self.stack.pages.margin_bottom)
                 .max(0.0)
         });
-        let mut beside: Vec<Vec<ui::text_render::RowBand>> = vec![Vec::new(); tops.len()];
+        let mut beside: Vec<Vec<tilo_ui_base::text_render::RowBand>> = vec![Vec::new(); tops.len()];
         for float in floats {
             let bottom = page_writing.map_or(float.bottom, |content| {
                 let start = self
@@ -9253,13 +9271,13 @@ impl BlockEditor {
                     PictureWrap::Right => (0.0, reach),
                 };
                 if let Some(slot) = beside.get_mut(index) {
-                    slot.push(ui::text_render::RowBand::new(until, left, right));
+                    slot.push(tilo_ui_base::text_render::RowBand::new(until, left, right));
                 }
             }
         }
         beside
             .into_iter()
-            .map(ui::text_render::RowBands::new)
+            .map(tilo_ui_base::text_render::RowBands::new)
             .collect()
     }
 
@@ -9278,7 +9296,7 @@ impl BlockEditor {
         }
         self.published_page_count = Some(pages);
         if let Some(event) = &self.page_count_event {
-            event.fire(Some(ui::component::Value::Int(pages)));
+            event.fire(Some(tilo_ui_base::component::Value::Int(pages)));
         }
     }
 
@@ -9296,7 +9314,7 @@ impl BlockEditor {
         }
         self.published_page_shown = Some(page);
         if let Some(event) = &self.page_shown_event {
-            event.fire(Some(ui::component::Value::Int(page)));
+            event.fire(Some(tilo_ui_base::component::Value::Int(page)));
         }
     }
 
@@ -9312,7 +9330,7 @@ impl BlockEditor {
         }
         let caret = self
             .document_caret_rect()
-            .map(|caret| ui::num::f32_of_f64(caret.y0 - self.rect.y0));
+            .map(|caret| tilo_ui_base::num::f32_of_f64(caret.y0 - self.rect.y0));
         let y = caret
             .or(view_top)
             .or_else(|| {
@@ -9381,14 +9399,14 @@ impl BlockEditor {
     }
 }
 
-impl ui::widget::TextFits for BlockEditor {
+impl tilo_ui_base::widget::TextFits for BlockEditor {
     /// A block's box is the height its text measured at the width it is applied at, so a box
     /// that cannot hold its text means the stack gave the line another width's height: rows
     /// laid out and never painted.
-    fn cut_text(&mut self, text: &mut TextRenderer) -> Option<ui::widget::CutText> {
+    fn cut_text(&mut self, text: &mut TextRenderer) -> Option<tilo_ui_base::widget::CutText> {
         self.blocks
             .iter_mut()
-            .find_map(|block| ui::widget::TextFits::cut_text(&mut block.line, text))
+            .find_map(|block| tilo_ui_base::widget::TextFits::cut_text(&mut block.line, text))
     }
 }
 
@@ -9517,10 +9535,10 @@ impl ui::widget::find_bar::Findable for BlockEditor {
 }
 
 impl Widget for BlockEditor {
-    ui::provides!(
-        dyn ui::presence::capability::PublishesPresence,
+    tilo_ui_base::provides!(
+        dyn tilo_ui_base::presence::capability::PublishesPresence,
         dyn ui::widget::find_bar::Findable,
-        dyn ui::widget::TextFits
+        dyn tilo_ui_base::widget::TextFits
     );
 
     fn as_any_mut(&mut self) -> Option<&mut dyn std::any::Any> {
@@ -9535,7 +9553,7 @@ impl Widget for BlockEditor {
 
     /// The editor's popovers, in the window's top layer — unless its owner
     /// painted them itself this frame, inside its own scroll and clip.
-    fn draw_overlay(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -9543,7 +9561,7 @@ impl Widget for BlockEditor {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         for child in self.children_mut() {
-            child.draw_overlay(&mut tilo_ui::DrawCtx::new(
+            child.draw_overlay(&mut tilo_ui_base::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -9556,7 +9574,7 @@ impl Widget for BlockEditor {
         }
     }
 
-    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, path: &ObjId) {
+    fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, path: &ObjId) {
         self.settle_typing();
         for child in self.children_mut() {
             child.settle(edits, path);
@@ -9564,9 +9582,9 @@ impl Widget for BlockEditor {
     }
 
     fn sync(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, _) = ui::doc::document_ref(state, path);
+        let (state, _) = tilo_ui_base::doc::document_ref(state, path);
         self.retire_finished_handle_fade();
-        self.settle_caret_suggestion_at(ui::motion::frame_now());
+        self.settle_caret_suggestion_at(tilo_ui_base::motion::frame_now());
         self.refresh_image_attachments();
         let Some(list) = self.blocks_list.clone() else {
             return;
@@ -9684,7 +9702,7 @@ impl Widget for BlockEditor {
         reason = "the five-pass widget contract applies one index-aligned layout projection with finite pixel dimensions"
     )]
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = ui::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.table_relayout = false;
         self.settle_restack();
         let new_origin = Point::new(self.rect.x0, self.rect.y0);
@@ -9913,7 +9931,7 @@ impl Widget for BlockEditor {
         clippy::cast_precision_loss,
         reason = "one cohesive paint pass uses aligned caches and bounded viewport arithmetic"
     )]
-    fn draw(&mut self, ctx: &mut tilo_ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -9929,7 +9947,7 @@ impl Widget for BlockEditor {
             recoloured
         });
         let theme = recoloured.as_ref().unwrap_or(theme);
-        let fallback_presence = ui::presence::PresenceCtx::default();
+        let fallback_presence = tilo_ui_base::presence::PresenceCtx::default();
         let presence = env.presence.unwrap_or(&fallback_presence);
         #[cfg(test)]
         let setup_probe = ui::frame_probe::span("block_setup");
@@ -9970,7 +9988,7 @@ impl Widget for BlockEditor {
         };
         self.refresh_image_dimensions();
         let single_block = self.blocks.len() == 1;
-        let aligns: Vec<Option<ui::richtext::TextAlign>> = self
+        let aligns: Vec<Option<tilo_ui_base::richtext::TextAlign>> = self
             .blocks
             .iter()
             .map(|block| self.paragraph_look(block).align)
@@ -10295,13 +10313,13 @@ impl Widget for BlockEditor {
                 // Each block is an element of its own on a page shown as
                 // HTML, kept by the block's id as blocks come and go.
                 let block_origin = b.line.get_rect().origin();
-                let begun = ui::scene_parts::begin_item(
+                let begun = tilo_ui_base::scene_parts::begin_item(
                     ctx.scene,
-                    ui::scene_parts::item_key("ui.block", &b.id),
+                    tilo_ui_base::scene_parts::item_key("ui.block", &b.id),
                     ctx.transform * Affine::translate((block_origin.x, block_origin.y)),
                 );
                 draw_block(b, idx, &mut ctx, &mut formulas);
-                ui::scene_parts::end_widget(ctx.scene, begun);
+                tilo_ui_base::scene_parts::end_widget(ctx.scene, begun);
                 ctx.collect_code_ground = false;
                 for &(start, end, current) in find_spans.get(idx).into_iter().flatten() {
                     for rect in b.line.mark_rects(ctx.theme, start..end) {
@@ -10351,7 +10369,7 @@ impl Widget for BlockEditor {
                 );
                 if preceding.is_none() {
                     table.draw_projected_focus(
-                        &mut tilo_ui::DrawCtx::new(
+                        &mut tilo_ui_base::DrawCtx::new(
                             ctx.scene,
                             transform,
                             ctx.text_renderer,
@@ -10638,7 +10656,7 @@ impl Widget for BlockEditor {
             ctx.scene.stroke(
                 &vello::kurbo::Stroke::new(1.0),
                 ghost_transform,
-                ui::surface::edge_on(theme.tokens.colors.surfaces.raised),
+                tilo_ui_base::surface::edge_on(theme.tokens.colors.surfaces.raised),
                 None,
                 &card,
             );
@@ -10828,11 +10846,11 @@ impl Widget for BlockEditor {
         // With no caret to ask, the sheet the view shows is the one its top stands on.
         self.publish_page_shown(
             env.viewport
-                .map(|view| ui::num::f32_of_f64(view.y0 - self.rect.y0)),
+                .map(|view| tilo_ui_base::num::f32_of_f64(view.y0 - self.rect.y0)),
         );
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if self.activate_card(event) {
             *ctx.handled = true;
             return;
@@ -11090,12 +11108,12 @@ impl Widget for BlockEditor {
     /// by a line break.
     fn perform_action(
         &mut self,
-        action: &ui::a11y::Action,
+        action: &tilo_ui_base::a11y::Action,
         _key_path: &[u64],
-        _state: &mut ui::widget::Edits<'_>,
+        _state: &mut tilo_ui_base::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
-        use ui::a11y::Action;
+        use tilo_ui_base::a11y::Action;
         if self.read_only {
             return false;
         }
@@ -11135,7 +11153,7 @@ impl Widget for BlockEditor {
                     .collect::<Vec<_>>()
                     .join("\n");
                 let byte_at = |index: usize| {
-                    ui::text_break::grapheme_indices(&text)
+                    tilo_ui_base::text_break::grapheme_indices(&text)
                         .nth(index)
                         .map_or(text.len(), |(byte, _)| byte)
                 };
@@ -11222,7 +11240,7 @@ impl Widget for BlockEditor {
             };
             (block.id.as_bytes(), field)
         };
-        let mut stamp = ui::ime::scoped_fingerprint(scope, field, key);
+        let mut stamp = tilo_ui_base::ime::scoped_fingerprint(scope, field, key);
         if let Some(selection) = self.document_selection {
             for offset in [
                 selection.anchor.block,
@@ -11230,14 +11248,14 @@ impl Widget for BlockEditor {
                 selection.cursor.block,
                 selection.cursor.byte,
             ] {
-                stamp = ui::ime::scoped_fingerprint(&offset.to_le_bytes(), stamp, key);
+                stamp = tilo_ui_base::ime::scoped_fingerprint(&offset.to_le_bytes(), stamp, key);
             }
         }
         match &self.retained_block_selection {
             Some(RetainedBlockSelection::Active(ids)) => {
-                stamp = ui::ime::scoped_fingerprint(b"retained", stamp, key);
+                stamp = tilo_ui_base::ime::scoped_fingerprint(b"retained", stamp, key);
                 for id in ids {
-                    stamp = ui::ime::scoped_fingerprint(id.as_bytes(), stamp, key);
+                    stamp = tilo_ui_base::ime::scoped_fingerprint(id.as_bytes(), stamp, key);
                 }
             }
             Some(RetainedBlockSelection::Refused) => return None,
@@ -11246,8 +11264,8 @@ impl Widget for BlockEditor {
         Some(stamp)
     }
 
-    fn ime_content(&self) -> Option<ui::ime::InputContent> {
-        Some(ui::ime::InputContent::TEXT)
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
+        Some(tilo_ui_base::ime::InputContent::TEXT)
     }
 
     fn ime_multiline(&self) -> bool {
@@ -11267,18 +11285,18 @@ impl Widget for BlockEditor {
 
     /// Block contents are not surfaced as a `value` — a screen reader
     /// walks the per-block subtree instead.
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.accessibility_shared()
-            .map(ui::a11y::SharedAccessNode::into_owned)
+            .map(tilo_ui_base::a11y::SharedAccessNode::into_owned)
     }
 
-    fn accessibility_shared(&self) -> Option<ui::a11y::SharedAccessNode> {
+    fn accessibility_shared(&self) -> Option<tilo_ui_base::a11y::SharedAccessNode> {
         self.accessibility_shared_with(None)
     }
 
     /// The document's own node without its blocks: what focus capture and
     /// focus order ask of the editor on every frame.
-    fn accessibility_root(&self) -> Option<ui::a11y::AccessNode> {
+    fn accessibility_root(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         Some(self.document_access_node())
     }
 
@@ -11296,13 +11314,13 @@ impl Widget for BlockEditor {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &ui::a11y::Action,
-        state: &mut ui::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         self.edit_scope = EditScope::Anywhere;
         if let Some(id) = target.strip_prefix("notes.block-type:")
-            && matches!(action, ui::a11y::Action::Activate)
+            && matches!(action, tilo_ui_base::a11y::Action::Activate)
             && let Some(index) = self.blocks.iter().position(|block| block.id == id)
         {
             return self.open_block_type_menu(index);
@@ -11331,7 +11349,7 @@ impl Widget for BlockEditor {
                 return false;
             };
             return match action {
-                ui::a11y::Action::Activate | ui::a11y::Action::ToggleCheck => {
+                tilo_ui_base::a11y::Action::Activate | tilo_ui_base::a11y::Action::ToggleCheck => {
                     if self.try_toggle_check(index).is_none() {
                         return false;
                     }
@@ -11340,7 +11358,7 @@ impl Widget for BlockEditor {
                     self.pending_semantic_ops.extend(ops);
                     true
                 }
-                ui::a11y::Action::Focus => {
+                tilo_ui_base::a11y::Action::Focus => {
                     self.focus_block(index, CursorPlacement::Start);
                     true
                 }
@@ -11352,11 +11370,11 @@ impl Widget for BlockEditor {
                 return false;
             };
             return match action {
-                ui::a11y::Action::Activate | ui::a11y::Action::Focus => {
+                tilo_ui_base::a11y::Action::Activate | tilo_ui_base::a11y::Action::Focus => {
                     self.focus_block(index, CursorPlacement::Start);
                     true
                 }
-                ui::a11y::Action::ScrollIntoView => {
+                tilo_ui_base::a11y::Action::ScrollIntoView => {
                     self.blocks[index].line.get_rect().height() > 0.0
                 }
                 _ => false,
@@ -11368,22 +11386,26 @@ impl Widget for BlockEditor {
             }) else {
                 return false;
             };
-            if matches!(action, ui::a11y::Action::SetValue(value) if value == self.blocks[index].text())
+            if matches!(action, tilo_ui_base::a11y::Action::SetValue(value) if value == self.blocks[index].text())
             {
                 return true;
             }
-            if matches!(action, ui::a11y::Action::Focus | ui::a11y::Action::Activate) {
+            if matches!(
+                action,
+                tilo_ui_base::a11y::Action::Focus | tilo_ui_base::a11y::Action::Activate
+            ) {
                 let cursor = self.blocks[index].line.cursor_pos();
                 self.focus_block(index, CursorPlacement::Byte(cursor));
                 return true;
             }
             if !matches!(
                 action,
-                ui::a11y::Action::SetValue(_) | ui::a11y::Action::SetSelection { .. }
+                tilo_ui_base::a11y::Action::SetValue(_)
+                    | tilo_ui_base::a11y::Action::SetSelection { .. }
             ) {
                 return false;
             }
-            if matches!(action, ui::a11y::Action::SetSelection { .. }) {
+            if matches!(action, tilo_ui_base::a11y::Action::SetSelection { .. }) {
                 let cursor = self.blocks[index].line.cursor_pos();
                 self.focus_block(index, CursorPlacement::Byte(cursor));
             }
@@ -11393,7 +11415,7 @@ impl Widget for BlockEditor {
                 .perform_action(action, &[], state, path);
             if handled {
                 self.dirty = true;
-                if matches!(action, ui::a11y::Action::SetValue(_)) {
+                if matches!(action, tilo_ui_base::a11y::Action::SetValue(_)) {
                     self.edit_pending = true;
                     self.commit_pending = true;
                 }
@@ -11413,7 +11435,7 @@ impl Widget for BlockEditor {
             let Some(index) = self.blocks.iter().position(|block| block.id == id) else {
                 return false;
             };
-            if let ui::a11y::Action::SetValue(value) = action {
+            if let tilo_ui_base::a11y::Action::SetValue(value) = action {
                 if self.blocks[index].text() == value {
                     return true;
                 }
@@ -11427,7 +11449,10 @@ impl Widget for BlockEditor {
                 self.pending_semantic_ops.extend(ops);
                 return true;
             }
-            if matches!(action, ui::a11y::Action::Focus | ui::a11y::Action::Activate) {
+            if matches!(
+                action,
+                tilo_ui_base::a11y::Action::Focus | tilo_ui_base::a11y::Action::Activate
+            ) {
                 self.focus_block(index, CursorPlacement::Start);
                 return true;
             }
@@ -11438,7 +11463,7 @@ impl Widget for BlockEditor {
             ("notes.table-add-column:", "table-add-column"),
         ] {
             if let Some(id) = target.strip_prefix(prefix)
-                && matches!(action, ui::a11y::Action::Activate)
+                && matches!(action, tilo_ui_base::a11y::Action::Activate)
                 && let Some(index) = self.blocks.iter().position(|block| block.id == id)
             {
                 let (row, column) = self
@@ -11460,14 +11485,14 @@ impl Widget for BlockEditor {
                 && let Some(index) = self.blocks.iter().position(|block| block.id == id)
             {
                 match action {
-                    ui::a11y::Action::SetValue(value) => {
+                    tilo_ui_base::a11y::Action::SetValue(value) => {
                         self.begin_edit();
                         let changed = self.apply_table_cell_edit(index, row, column, value);
                         let ops = self.take_edit_ops();
                         self.pending_semantic_ops.extend(ops);
                         return changed;
                     }
-                    ui::a11y::Action::Focus | ui::a11y::Action::Activate
+                    tilo_ui_base::a11y::Action::Focus | tilo_ui_base::a11y::Action::Activate
                         if self
                             .table_editors
                             .get_mut(id)
@@ -11493,12 +11518,12 @@ impl Widget for BlockEditor {
             return false;
         }
         if let Some(id) = target.strip_prefix("notes.table-mode:")
-            && matches!(action, ui::a11y::Action::Activate)
+            && matches!(action, tilo_ui_base::a11y::Action::Activate)
             && let Some(index) = self.blocks.iter().position(|block| block.id == id)
         {
             return self.toggle_table_mode(index, true);
         }
-        if !matches!(action, ui::a11y::Action::Activate) {
+        if !matches!(action, tilo_ui_base::a11y::Action::Activate) {
             return false;
         }
         if let Some((id, direction)) = target
@@ -11552,7 +11577,7 @@ impl Widget for BlockEditor {
             // A link a document carries opens as any link does, when its scheme is one the
             // system opens; a document can say anything, so the others stay inert.
             if opens_safely(url) {
-                ui::platform::os_open(url);
+                tilo_ui_base::platform::os_open(url);
             }
             self.pending_external_link_opens.push(url.to_string());
             self.dirty = true;
@@ -11693,9 +11718,11 @@ impl BlockEditor {
     }
 }
 
-impl ui::presence::capability::PublishesPresence for BlockEditor {
-    fn presence_payload(&self) -> Option<(PresenceKey, ui::collaboration::PresencePayload)> {
-        use ui::collaboration::PresencePayload;
+impl tilo_ui_base::presence::capability::PublishesPresence for BlockEditor {
+    fn presence_payload(
+        &self,
+    ) -> Option<(PresenceKey, tilo_ui_base::collaboration::PresencePayload)> {
+        use tilo_ui_base::collaboration::PresencePayload;
         let idx = self.focused?;
         let block = self.blocks.get(idx)?;
         if !block.line.is_focused() {
@@ -11811,9 +11838,9 @@ impl ui::presence::capability::PublishesPresence for BlockEditor {
     /// line's own caret and selection geometry.
     fn presence_range_rects(
         &self,
-        theme: &ui::theme::Theme,
+        theme: &tilo_ui_base::theme::Theme,
         key: &PresenceKey,
-        range: ui::presence::SelectionRange,
+        range: tilo_ui_base::presence::SelectionRange,
     ) -> Vec<vello::kurbo::Rect> {
         let named = self
             .blocks
@@ -11938,8 +11965,8 @@ impl BlockEditor {
     ) -> Vec<(
         usize,
         usize,
-        &'p ui::permissions::MemberId,
-        ui::presence::SelectionRange,
+        &'p tilo_ui_base::permissions::MemberId,
+        tilo_ui_base::presence::SelectionRange,
     )> {
         let mut out = Vec::new();
         for (key, list) in &presence.selections {
@@ -13251,7 +13278,7 @@ impl BlockEditor {
                 &mut control.add_row,
                 &mut control.add_column,
             ] {
-                ui::widget::controls::start_pending_control_invocations(
+                tilo_ui_base::widget::controls::start_pending_control_invocations(
                     button,
                     &mut ctx.edits(),
                     path,

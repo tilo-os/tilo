@@ -338,7 +338,7 @@ fn window_comes(session: &mut Session, handed: &Path) {
 /// took the first turn's tab on the canvas for Chat's own.
 #[test]
 fn a_message_opening_chat_leaves_every_turn_in_place() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (home, mut session, _launcher, turn_tab) = session_with_a_turn();
     let handed = home.home().join("handed");
     let before = turns(&session);
@@ -397,7 +397,7 @@ fn a_message_opening_chat_leaves_every_turn_in_place() {
 /// turn stands, and the later ask stands a turn place of its own.
 #[test]
 fn an_open_from_the_launcher_leaves_the_turn_and_the_next_ask_stands_its_own() {
-    let _settled = ui::motion::testing::settled();
+    let _settled = tilo_ui_base::motion::testing::settled();
     let (home, mut session, _launcher, turn_tab) = session_with_a_turn();
     let handed = home.home().join("handed");
     let before = turns(&session);

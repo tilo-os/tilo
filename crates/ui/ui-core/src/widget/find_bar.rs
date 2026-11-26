@@ -10,16 +10,19 @@ use vello::peniko::Fill;
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
-use crate::icons::Icon;
-use crate::platform::PlatformConventions;
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::widget::DrawChild;
-use crate::widget::capability::capability_mut;
 use crate::widget::search_field::FilterCount;
-use crate::widget::{
-    AppModel, Button, ButtonFace, ButtonRole, ControlSize, Element, ModelPath, SearchField,
-    SegmentedFace, TaffyTreeExt, ToggleGroup, Widget,
+use crate::{
+    widget::Button, widget::ButtonFace, widget::ButtonRole, widget::ControlSize,
+    widget::SearchField, widget::SegmentedFace, widget::ToggleGroup,
+};
+use tilo_ui_base::icons::Icon;
+use tilo_ui_base::platform::PlatformConventions;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::widget::DrawChild;
+use tilo_ui_base::widget::capability::capability_mut;
+use tilo_ui_base::{
+    widget::AppModel, widget::Element, widget::ModelPath, widget::TaffyTreeExt, widget::Widget,
 };
 
 #[derive(
@@ -276,7 +279,7 @@ impl Part {
 }
 
 fn tr(key: &str) -> String {
-    crate::i18n::widget_format(key, &[])
+    tilo_ui_base::i18n::widget_format(key, &[])
 }
 
 /// What a find over one [`Findable`] has found: how many matches, which is current, and the
@@ -457,7 +460,7 @@ impl FindSession {
 
 /// The find bar: a query field with a match counter, option chips, previous/next and close,
 /// and an optional replace row.
-#[crate::component::not_a_component(system, "find in a window is the system's")]
+#[tilo_ui_base::component::not_a_component(system, "find in a window is the system's")]
 pub struct FindBar {
     field: SearchField,
     replace_field: SearchField,
@@ -844,7 +847,7 @@ impl FindBar {
     }
 
     /// Paint the bar. `layout` must have run.
-    pub fn paint(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    pub fn paint(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -855,7 +858,7 @@ impl FindBar {
             return;
         }
         let ground = theme.tokens.colors.surfaces.content;
-        crate::surface::separator(
+        tilo_ui_base::surface::separator(
             scene,
             transform,
             self.rect.x0,
@@ -927,7 +930,11 @@ impl FindBar {
     }
 
     /// Route one event; `node` is the bar's own layout node (its fields have none).
-    pub fn route(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) -> bool {
+    pub fn route(
+        &mut self,
+        event: &WindowEvent,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+    ) -> bool {
         if let WindowEvent::CursorMoved { position, .. } = event {
             self.last_cursor = ctx.logical(position);
             self.hover = self.part_at(self.last_cursor);
@@ -1038,9 +1045,9 @@ impl Widget for FindBar {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    crate::rect_geometry!();
+    tilo_ui_base::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1049,7 +1056,7 @@ impl Widget for FindBar {
         let (scene, transform, text, theme, mut env) = ctx.parts();
         let rect = self.rect;
         self.layout(rect, theme, text);
-        self.paint(&mut crate::draw::DrawCtx::new(
+        self.paint(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -1058,7 +1065,7 @@ impl Widget for FindBar {
         ));
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         self.dirty = true;
         self.route(event, ctx);
     }
@@ -1100,10 +1107,10 @@ impl Widget for FindBar {
         } else {
             (b"find".as_slice(), self.field.ime_edit_fingerprint(key)?)
         };
-        Some(crate::ime::scoped_fingerprint(scope, field, key))
+        Some(tilo_ui_base::ime::scoped_fingerprint(scope, field, key))
     }
 
-    fn ime_content(&self) -> Option<crate::ime::InputContent> {
+    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
         self.field.ime_content()
     }
 
@@ -1145,23 +1152,23 @@ impl Widget for FindBar {
     }
 
     fn needs_redraw(&self) -> bool {
-        crate::widget::redraw_or_children(self.dirty, self)
+        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
     }
     fn mark_drawn(&mut self) {
         self.dirty = false;
-        crate::widget::Widget::mark_children_drawn(self);
+        tilo_ui_base::widget::Widget::mark_children_drawn(self);
     }
 
     fn name(&self) -> &'static str {
         "FindBar"
     }
 
-    fn accessibility(&self) -> Option<crate::a11y::AccessNode> {
-        use crate::a11y::{AccessNode, AccessState, Role};
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
         let mut children = Vec::new();
         if let Some(field) = self.field.accessibility() {
             let position = match self.position() {
-                Some((current, total)) => crate::i18n::widget_format(
+                Some((current, total)) => tilo_ui_base::i18n::widget_format(
                     "find-bar-position",
                     &[("current", current.into()), ("total", total.into())],
                 ),
@@ -1216,8 +1223,8 @@ impl Widget for FindBar {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &crate::a11y::Action,
-        state: &mut crate::widget::Edits<'_>,
+        action: &tilo_ui_base::a11y::Action,
+        state: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let replacement = match target {
@@ -1226,7 +1233,7 @@ impl Widget for FindBar {
             _ => None,
         };
         if let Some(replacement) = replacement {
-            if matches!(action, crate::a11y::Action::Focus) {
+            if matches!(action, tilo_ui_base::a11y::Action::Focus) {
                 self.replace_focused = replacement;
                 self.set_focus(true);
                 return true;
@@ -1238,7 +1245,7 @@ impl Widget for FindBar {
             };
             return field.perform_action(action, &[], state, path);
         }
-        if !matches!(action, crate::a11y::Action::Activate) {
+        if !matches!(action, tilo_ui_base::a11y::Action::Activate) {
             return false;
         }
         let Some(part) = self
@@ -1273,13 +1280,13 @@ pub fn with_findable<R>(
 
 /// Content with find: a [`FindBar`] that Ctrl+F (⌘F) opens as a band at the top of the
 /// content, driving the first [`Findable`] inside it.
-#[crate::component::not_a_component(system, "find in a window is the system's")]
+#[tilo_ui_base::component::not_a_component(system, "find in a window is the system's")]
 pub struct FindScope {
     bar: FindBar,
     content: Element,
     open: bool,
-    disclosure: crate::motion::Disclosure,
-    motion: crate::tokens::EffectiveMotion,
+    disclosure: tilo_ui_base::motion::Disclosure,
+    motion: tilo_ui_base::tokens::EffectiveMotion,
     laid_sliding: bool,
     structure_dirty: bool,
     rect: Rect,
@@ -1287,7 +1294,7 @@ pub struct FindScope {
     bar_node: Option<NodeId>,
     content_node: Option<NodeId>,
     platform: PlatformConventions,
-    shortcut: Option<crate::platform::Shortcut>,
+    shortcut: Option<tilo_ui_base::platform::Shortcut>,
 }
 
 impl FindScope {
@@ -1296,8 +1303,8 @@ impl FindScope {
             bar: FindBar::new(),
             content,
             open: false,
-            disclosure: crate::motion::Disclosure::closed(),
-            motion: crate::tokens::EffectiveMotion::default(),
+            disclosure: tilo_ui_base::motion::Disclosure::closed(),
+            motion: tilo_ui_base::tokens::EffectiveMotion::default(),
             laid_sliding: false,
             structure_dirty: false,
             rect: Rect::ZERO,
@@ -1305,14 +1312,14 @@ impl FindScope {
             bar_node: None,
             content_node: None,
             platform: PlatformConventions::default(),
-            shortcut: Some(crate::platform::Shortcut::command("F")),
+            shortcut: Some(tilo_ui_base::platform::Shortcut::command("F")),
         }
     }
 
     /// Open the bar with `shortcut` instead of Ctrl+F (⌘F): a terminal, whose Ctrl+F
     /// belongs to the program it runs, uses `Shortcut::command("F").shift()`.
     #[must_use]
-    pub fn with_shortcut(mut self, shortcut: crate::platform::Shortcut) -> Self {
+    pub fn with_shortcut(mut self, shortcut: tilo_ui_base::platform::Shortcut) -> Self {
         self.shortcut = Some(shortcut);
         self
     }
@@ -1483,7 +1490,7 @@ impl Widget for FindScope {
         let content = self.content.build_layout(taffy, theme, node_map);
         children.push(content);
         self.content_node = Some(content);
-        let style = crate::widget::layout::filling(
+        let style = tilo_ui_base::widget::layout::filling(
             Style {
                 display: taffy::Display::Flex,
                 flex_direction: taffy::FlexDirection::Column,
@@ -1504,7 +1511,7 @@ impl Widget for FindScope {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         let inner = Point::new(self.rect.x0, self.rect.y0);
         if let Some(bar) = self.bar_node {
             self.bar.apply_layout(taffy, bar, inner);
@@ -1524,7 +1531,7 @@ impl Widget for FindScope {
         self.structure_dirty || self.layout_stale() || self.content.is_layout_dirty()
     }
 
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1573,16 +1580,18 @@ impl Widget for FindScope {
     fn needs_animation_frame(&self) -> bool {
         self.disclosure.is_moving()
             || self.layout_stale()
-            || super::defaults::needs_animation_frame(&|visit| self.for_each_child(visit))
+            || tilo_ui_base::widget::defaults::needs_animation_frame(&|visit| {
+                self.for_each_child(visit)
+            })
     }
 
     fn needs_redraw(&self) -> bool {
         self.disclosure.is_moving()
             || self.layout_stale()
-            || super::defaults::needs_redraw(&|visit| self.for_each_child(visit))
+            || tilo_ui_base::widget::defaults::needs_redraw(&|visit| self.for_each_child(visit))
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut crate::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         if self.is_find_shortcut(event, *ctx.modifiers)
             && with_findable(self.content.as_mut(), &mut |_| ()).is_some()
         {
@@ -1626,7 +1635,7 @@ impl Widget for FindScope {
             }
         }
         let content = self.content_node.unwrap_or(ctx.node_id);
-        let event = super::event_offset(
+        let event = tilo_ui_base::widget::event_offset(
             event,
             vello::kurbo::Vec2::new(0.0, self.content_offset()),
             ctx.scale_factor,
@@ -1819,7 +1828,7 @@ mod tests {
                 rect: Rect::ZERO,
             };
             let mut scope = FindScope::new(Box::new(page));
-            scope.set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+            scope.set_platform_conventions(PlatformConventions::new(tilo_ui_base::platform::Platform::Linux));
             let ctrl = winit::event::Modifiers::from(winit::keyboard::ModifiersState::CONTROL);
             let plain = winit::event::Modifiers::default();
 
@@ -1867,7 +1876,7 @@ mod tests {
     }
 
     impl Widget for Page {
-        crate::provides!(dyn Findable);
+        tilo_ui_base::provides!(dyn Findable);
         fn build_layout(
             &mut self,
             taffy: &mut TaffyTree<()>,
@@ -1883,7 +1892,7 @@ mod tests {
             };
             taffy.widget_leaf(style, node_map, self)
         }
-        crate::rect_geometry!();
+        tilo_ui_base::rect_geometry!();
         fn name(&self) -> &'static str {
             "page"
         }
@@ -1898,7 +1907,7 @@ mod tests {
     }
 
     fn key(logical: Key) -> WindowEvent {
-        crate::synthetic_input::keyboard_input(crate::synthetic_input::key_event(
+        tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
             logical,
             None,
             ElementState::Pressed,
@@ -1940,7 +1949,9 @@ mod tests {
             rect: Rect::ZERO,
         };
         let mut scope = FindScope::new(Box::new(page));
-        scope.set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+        scope.set_platform_conventions(PlatformConventions::new(
+            tilo_ui_base::platform::Platform::Linux,
+        ));
         scope
     }
 
@@ -1968,24 +1979,24 @@ mod tests {
         let plain = winit::event::Modifiers::default();
         lay_out(&mut scope);
 
-        crate::motion::note_input(&ctrl_f());
+        tilo_ui_base::motion::note_input(&ctrl_f());
         let _ = send(&mut scope, &ctrl_f(), ctrl);
         assert!(scope.is_open());
         assert!(!scope.disclosure.is_moving(), "Ctrl+F lands at once");
         lay_out(&mut scope);
         assert!(scope.content_offset().abs() < f64::EPSILON);
 
-        crate::motion::note_input(&escape());
+        tilo_ui_base::motion::note_input(&escape());
         let _ = send(&mut scope, &escape(), plain);
         assert!(!scope.is_open());
         assert!(!scope.disclosure.is_moving(), "Escape lands at once");
 
-        crate::motion::note_input(&ctrl_f());
+        tilo_ui_base::motion::note_input(&ctrl_f());
         let _ = send(&mut scope, &ctrl_f(), ctrl);
         lay_out(&mut scope);
         let full = scope.bar.get_rect().height();
-        let _frame = crate::motion::pin_frame();
-        crate::motion::note_input(&pointer_press());
+        let _frame = tilo_ui_base::motion::pin_frame();
+        tilo_ui_base::motion::note_input(&pointer_press());
         scope.bar.toggle(Part::Close);
         scope.drive();
         assert!(!scope.is_open(), "the bar is closed at once for input");
@@ -2007,8 +2018,8 @@ mod tests {
         let mut scope = page_scope();
         lay_out(&mut scope);
         scope.motion = Theme::dark().with_reduce_motion(true).motion();
-        let _frame = crate::motion::pin_frame();
-        crate::motion::note_input(&pointer_press());
+        let _frame = tilo_ui_base::motion::pin_frame();
+        tilo_ui_base::motion::note_input(&pointer_press());
         scope.open();
         lay_out(&mut scope);
         let full = scope.bar.get_rect().height();
@@ -2067,19 +2078,19 @@ mod tests {
         }
         let query = field(&harness, &tr("find-bar-placeholder"));
         harness
-            .perform_a11y_action(query, &crate::a11y::Action::SetValue("one".into()))
+            .perform_a11y_action(query, &tilo_ui_base::a11y::Action::SetValue("one".into()))
             .expect("the exported query enters the real find scope");
         assert_eq!(harness.root::<FindScope>().bar.query(), "one");
         assert_eq!(harness.root::<FindScope>().bar.position(), Some((1, 2)));
         let query = field(&harness, &tr("find-bar-placeholder"));
         harness
-            .perform_a11y_action(query, &crate::a11y::Action::Focus)
+            .perform_a11y_action(query, &tilo_ui_base::a11y::Action::Focus)
             .expect("the exported query can take keyboard focus");
         let query = field(&harness, &tr("find-bar-placeholder"));
         harness
             .perform_a11y_action(
                 query,
-                &crate::a11y::Action::SetSelection {
+                &tilo_ui_base::a11y::Action::SetSelection {
                     anchor: 0,
                     focus: 3,
                 },
@@ -2090,7 +2101,10 @@ mod tests {
         assert_eq!(harness.root::<FindScope>().bar.position(), Some((1, 1)));
         let replacement = field(&harness, &tr("find-bar-replace-placeholder"));
         harness
-            .perform_a11y_action(replacement, &crate::a11y::Action::SetValue("three".into()))
+            .perform_a11y_action(
+                replacement,
+                &tilo_ui_base::a11y::Action::SetValue("three".into()),
+            )
             .unwrap();
         assert_eq!(
             harness.root::<FindScope>().bar.replace_field.value(),
@@ -2100,7 +2114,7 @@ mod tests {
         let query = field(&harness, &tr("find-bar-placeholder"));
         assert!(
             harness
-                .perform_a11y_action(query, &crate::a11y::Action::ToggleCheck)
+                .perform_a11y_action(query, &tilo_ui_base::a11y::Action::ToggleCheck)
                 .is_err()
         );
         assert_eq!(harness.root::<FindScope>().bar.query(), "two");
@@ -2110,8 +2124,8 @@ mod tests {
 #[cfg(test)]
 mod host_driven_tests {
     use super::*;
-    use crate::presence::PresenceCtx;
     use crate::testing::Dispatch;
+    use tilo_ui_base::presence::PresenceCtx;
 
     #[derive(Default)]
     struct Log {
@@ -2279,7 +2293,7 @@ mod host_driven_tests {
             );
             assert_eq!(parts.iter().filter(|p| **p == Part::Close).count(), 1);
             bar.field.set_query("needle");
-            bar.paint(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, PresenceCtx::default().draw_env()));
+            bar.paint(&mut tilo_ui_base::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, PresenceCtx::default().draw_env()));
             assert_eq!(
                 bar.field.clear_rect(),
                 Rect::ZERO,
@@ -2299,7 +2313,7 @@ mod host_driven_tests {
                 node.children
                     .iter()
                     .any(|c| c.name.as_deref() == Some("Regular expression")
-                        && c.role == crate::a11y::Role::ToggleButton),
+                        && c.role == tilo_ui_base::a11y::Role::ToggleButton),
                 "named from the toolkit's catalogue"
             );
             bar.focus_replace();
@@ -2318,7 +2332,7 @@ mod host_driven_tests {
                 }
             }
             impl Widget for Page {
-                crate::provides!(dyn Findable);
+                tilo_ui_base::provides!(dyn Findable);
                 fn build_layout(
                     &mut self,
                     taffy: &mut TaffyTree<()>,
@@ -2332,19 +2346,19 @@ mod host_driven_tests {
                 }
             }
             let press = |scope: &mut FindScope, modifiers: winit::keyboard::ModifiersState| {
-                let ev = crate::synthetic_input::key_event(
+                let ev = tilo_ui_base::synthetic_input::key_event(
                     Key::Character("f".into()),
                     None,
                     ElementState::Pressed,
                 );
-                let event = crate::synthetic_input::keyboard_input(ev);
+                let event = tilo_ui_base::synthetic_input::keyboard_input(ev);
                 Dispatch::new().modifiers(modifiers).send(scope, &event);
             };
             use winit::keyboard::ModifiersState;
             let mut terminal = FindScope::new(Box::new(Page(Log::default())))
-                .with_shortcut(crate::platform::Shortcut::command("F").shift());
+                .with_shortcut(tilo_ui_base::platform::Shortcut::command("F").shift());
             terminal
-                .set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+                .set_platform_conventions(PlatformConventions::new(tilo_ui_base::platform::Platform::Linux));
             press(&mut terminal, ModifiersState::CONTROL);
             assert!(!terminal.is_open(), "Ctrl+F stays with the program");
             press(
@@ -2354,7 +2368,7 @@ mod host_driven_tests {
             assert!(terminal.is_open(), "its own chord opens find");
 
             let mut quiet = FindScope::new(Box::new(Page(Log::default()))).without_shortcut();
-            quiet.set_platform_conventions(PlatformConventions::new(crate::platform::Platform::Linux));
+            quiet.set_platform_conventions(PlatformConventions::new(tilo_ui_base::platform::Platform::Linux));
             press(&mut quiet, ModifiersState::CONTROL);
             assert!(!quiet.is_open());
             quiet.open();

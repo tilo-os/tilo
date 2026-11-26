@@ -38,7 +38,7 @@ use tilo_compositor::{Compositor, InputEvent, Selection};
 
 use crate::hosted::ClipboardCopy;
 use tilo_service::{Service, Started, decode, offer, reading};
-use ui::dnd::CopiedFiles;
+use tilo_ui_base::dnd::CopiedFiles;
 
 pub(crate) mod paste;
 mod surface;
@@ -282,8 +282,8 @@ impl Clipboard {
         self.seen.set(change);
         self.shell.read(change, text_of(&mime, &bytes));
         let now = ui::time::unix_now_ms();
-        let files = ui::dnd::is_file_mime(&mime)
-            .then(|| ui::dnd::copied_files(&mime, &String::from_utf8_lossy(&bytes)))
+        let files = tilo_ui_base::dnd::is_file_mime(&mime)
+            .then(|| tilo_ui_base::dnd::copied_files(&mime, &String::from_utf8_lossy(&bytes)))
             .filter(|files| !files.paths.is_empty());
         // What is not kept is still on the clipboard, as the app in front offered it: only the
         // history the person can paste from again is off.
@@ -854,10 +854,10 @@ fn payload_of(payload: &ClipboardPayload) -> (String, Vec<u8>) {
 
 /// The first file a copy of files names.
 fn first_name(copy: &Copy) -> Option<String> {
-    if !ui::dnd::is_file_mime(&copy.mime) {
+    if !tilo_ui_base::dnd::is_file_mime(&copy.mime) {
         return None;
     }
-    let files = ui::dnd::copied_files(&copy.mime, copy.utf8()?);
+    let files = tilo_ui_base::dnd::copied_files(&copy.mime, copy.utf8()?);
     let name = files.paths.first()?.file_name()?;
     Some(name.to_string_lossy().into_owned())
 }
@@ -889,12 +889,12 @@ const KEY_V: u32 = 47;
 pub(crate) fn offer_files(compositor: &mut Compositor, files: &CopiedFiles) {
     let offer = vec![
         (
-            ui::dnd::COPIED_FILES_MIME.to_owned(),
-            ui::dnd::copied_files_list(&files.paths, files.cut).into_bytes(),
+            tilo_ui_base::dnd::COPIED_FILES_MIME.to_owned(),
+            tilo_ui_base::dnd::copied_files_list(&files.paths, files.cut).into_bytes(),
         ),
         (
-            ui::dnd::URI_LIST_MIME.to_owned(),
-            ui::dnd::uri_list(&files.paths).into_bytes(),
+            tilo_ui_base::dnd::URI_LIST_MIME.to_owned(),
+            tilo_ui_base::dnd::uri_list(&files.paths).into_bytes(),
         ),
     ];
     if let Err(error) = compositor.set_selection(Selection::Clipboard, offer) {

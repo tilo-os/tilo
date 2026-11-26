@@ -9,12 +9,12 @@ use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect, RoundedRect};
 use vello::peniko::{Color, Fill};
 
-use crate::text_render::TextRenderer;
-use crate::theme::Theme;
-use crate::tokens::TextRole;
 use crate::widget::chart_navigation::draw_title;
 use crate::widget::chart_readout::Readout;
 use crate::widget::plot::{Margins, Plot, PlotFrame, PlotItem, PlotMarks};
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 
 #[derive(Clone, Debug)]
 pub struct HeatmapCell {
@@ -283,7 +283,7 @@ impl PlotMarks for HeatmapMarks {
                     theme.tokens.colors.text_dim,
                     transform
                         * Affine::translate((x - f64::from(width) / 2.0, grid.y0 - step - line)),
-                    Some(crate::num::f32_of_f64(column_width.max(0.0))),
+                    Some(tilo_ui_base::num::f32_of_f64(column_width.max(0.0))),
                     &theme.text(TextRole::Caption),
                 );
             }
@@ -295,7 +295,7 @@ impl PlotMarks for HeatmapMarks {
                     label,
                     theme.tokens.colors.text_dim,
                     transform * Affine::translate((self.frame.rect.x0, y - line / 2.0)),
-                    Some(crate::num::f32_of_f64(
+                    Some(tilo_ui_base::num::f32_of_f64(
                         (grid.x0 - self.frame.rect.x0 - step).max(1.0),
                     )),
                     &theme.text(TextRole::Caption),
@@ -307,10 +307,10 @@ impl PlotMarks for HeatmapMarks {
                 continue;
             };
             let color = if cell.value.is_finite() {
-                crate::tokens::colors::mix8(
+                tilo_ui_base::tokens::colors::mix8(
                     low,
                     high,
-                    crate::num::f32_of_f64((cell.value - min) / (max - min)),
+                    tilo_ui_base::num::f32_of_f64((cell.value - min) / (max - min)),
                 )
             } else {
                 missing

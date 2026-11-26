@@ -2,20 +2,21 @@
 //! equivalent control in its place, and only there; and the headless host replays a pointer a relayout
 //! slid a control under.
 
-use crate::i18n::widget_text;
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
+use tilo_ui_base::i18n::widget_text;
 
 use taffy::{NodeId, TaffyTree};
 use vello::kurbo::{Point, Rect, Vec2};
 use winit::event::{ElementState, MouseButton, WindowEvent};
 
 use crate::headless::Driver;
-use crate::icons::Icon;
+use tilo_ui_base::icons::Icon;
 
-use crate::theme::Theme;
-use crate::widget::{EventCtx, PaintedTargets, TaffyTreeExt as _, Widget};
+use crate::widget::PaintedTargets;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::{widget::EventCtx, widget::TaffyTreeExt as _, widget::Widget};
 
 type Clicks = Rc<RefCell<Vec<&'static str>>>;
 type Staged = Rc<RefCell<Option<Box<dyn Widget>>>>;
@@ -24,11 +25,11 @@ type Build = fn(&Clicks, &'static str) -> Box<dyn Widget>;
 const VIEWPORT: (u32, u32) = (480, 320);
 
 fn moved(point: Point) -> WindowEvent {
-    crate::synthetic_input::cursor_moved(point.x, point.y)
+    tilo_ui_base::synthetic_input::cursor_moved(point.x, point.y)
 }
 
 fn button(state: ElementState) -> WindowEvent {
-    crate::synthetic_input::mouse_input(state, MouseButton::Left)
+    tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left)
 }
 
 fn log(clicks: &Clicks, generation: &'static str) -> impl FnMut() + 'static {
@@ -82,14 +83,14 @@ impl Widget for Shows {
             self.child.apply_layout(taffy, child, at);
         }
     }
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::draw::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text, theme, mut env) = ctx.parts();
-        self.child.draw(&mut crate::draw::DrawCtx::new(
+        self.child.draw(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             transform,
             text,
@@ -408,9 +409,9 @@ fn a_property_value_copy_carries_its_press_across_a_rebuild() {
         )
     };
     let copied = |mut scene: Stage, offset| {
-        crate::text_selection::clipboard_copy("");
+        tilo_ui_base::text_selection::clipboard_copy("");
         scene.press_rebuild_release(offset);
-        crate::text_selection::clipboard_paste().unwrap_or_default()
+        tilo_ui_base::text_selection::clipboard_paste().unwrap_or_default()
     };
     let mut scene = Stage::new(build);
     let point = pressable_centre(&scene.harness);
@@ -469,7 +470,7 @@ impl Widget for Keypad {
         taffy.widget_node(style, &[], node_map, self)
     }
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
+        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         self.targets.begin_frame();
         self.targets.target("seven", self.rect, "7");
     }
@@ -529,8 +530,8 @@ fn a_control_a_relayout_slides_under_a_still_pointer_takes_the_click() {
 
 /// The centre of the place named `name` in a navigation list the harness shows.
 fn place_centre(harness: &mut Driver, name: &str) -> Point {
-    fn find(node: &crate::a11y::AccessNode, name: &str) -> Option<Point> {
-        if node.role == crate::a11y::Role::TreeItem && node.name.as_deref() == Some(name) {
+    fn find(node: &tilo_ui_base::a11y::AccessNode, name: &str) -> Option<Point> {
+        if node.role == tilo_ui_base::a11y::Role::TreeItem && node.name.as_deref() == Some(name) {
             let b = node.bounds?;
             return Some(Point::new(
                 f64::midpoint(b.x0, b.x1),

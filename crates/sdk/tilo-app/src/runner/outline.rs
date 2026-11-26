@@ -8,15 +8,15 @@
 //! of leaving the caller wondering.
 
 use tilo_actions::ActionOutput;
+use tilo_ui_base::widget::Widget;
 use ui_core::automerge::AutoCommit;
 use ui_core::automerge::transaction::Transactable as _;
-use ui_core::widget::Widget;
 
 /// What `content` shows now, as the operation answers it, with no picture of it.
 pub(crate) fn answer(
     content: &dyn Widget,
     doc: &AutoCommit,
-    theme: &ui_core::Theme,
+    theme: &tilo_ui_base::Theme,
 ) -> ActionOutput {
     let outline = ui_core::semantic_outline::outline(content);
     let rect = content.get_rect();

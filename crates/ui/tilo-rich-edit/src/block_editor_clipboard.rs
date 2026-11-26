@@ -11,8 +11,11 @@ use super::{
     Block, BlockContent, BlockEditor, BlockKind, CursorPlacement, DocumentPosition,
     DocumentSelection, marks_after, marks_before, normalize_replacement,
 };
-use ui::text_selection::{clipboard_copy_rich_accepted, clipboard_paste, clipboard_paste_rich};
-use ui::widget::EventCtx;
+use tilo_ui_base::widget::EventCtx;
+use tilo_ui_base::{
+    text_selection::clipboard_copy_rich_accepted, text_selection::clipboard_paste,
+    text_selection::clipboard_paste_rich,
+};
 use ui::widget::marks::{MarkSpan, add_mark_to_range};
 
 enum Pasted {

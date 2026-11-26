@@ -31,7 +31,7 @@ fn could_not_be_read(window: &tilolang_window::Window, id: &str, ty: &str, why: 
 /// output, input and meter sections it would draw from a reading that answered.
 #[test]
 fn a_pane_whose_device_could_not_be_read_says_so() {
-    let mut window = open(LAPTOP, ui::Theme::light());
+    let mut window = open(LAPTOP, tilo_ui_base::Theme::light());
     open_pane(&mut window, "sound");
     assert!(
         shows(&window, "Output"),
@@ -79,7 +79,7 @@ fn a_pane_whose_device_could_not_be_read_says_so() {
 /// said in the pane's own words.
 #[test]
 fn a_pane_says_a_reading_of_its_own_could_not_be_read() {
-    let mut window = open(LAPTOP, ui::Theme::light());
+    let mut window = open(LAPTOP, tilo_ui_base::Theme::light());
     open_pane(&mut window, "power");
     assert!(shows(&window, "Power mode"), "{:?}", said(&window));
 
@@ -107,7 +107,7 @@ fn a_pane_says_a_reading_of_its_own_could_not_be_read() {
 /// they could not be read.
 #[test]
 fn a_settings_pane_says_it_could_not_be_read() {
-    let mut window = open(LAPTOP, ui::Theme::light());
+    let mut window = open(LAPTOP, tilo_ui_base::Theme::light());
     let settings_pane = "Accessibility";
     open_pane(&mut window, "accessibility");
     assert!(

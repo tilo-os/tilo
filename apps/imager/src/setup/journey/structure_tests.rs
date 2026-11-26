@@ -112,7 +112,7 @@ fn native_handoff_report_is_independent_of_page_composition() {
     app.with_widget::<InstallerPreview, _>(|preview| {
         preview
             .show_desktop(crate::setup::view::SetupApp::for_full_os_check(
-                ui::LocalState::new(None),
+                tilo_ui_base::LocalState::new(None),
             ))
             .unwrap();
         assert!(!preview.dirty, "the native surface owns its composition");

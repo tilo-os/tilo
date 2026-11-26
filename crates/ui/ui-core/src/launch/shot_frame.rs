@@ -1,24 +1,25 @@
 //! One offscreen frame of a widget, for app-specific screenshot handlers.
 //! [`LaunchSpec::shot_root`](super::LaunchSpec::shot_root) captures through the full headless harness.
 
-use crate::widget::DrawChild;
 use std::collections::HashMap;
 #[cfg(not(target_arch = "wasm32"))]
 use std::path::Path;
+use tilo_ui_base::widget::DrawChild;
 
 use taffy::prelude::{AvailableSpace, NodeId, Size, Style, TaffyTree};
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 
+use crate::State;
 use crate::floating_surface::FloatingSurfaceWidgetExt;
+use tilo_ui_base::Theme;
 #[cfg(not(target_arch = "wasm32"))]
-use crate::offscreen::OffscreenRenderer;
+use tilo_ui_base::offscreen::OffscreenRenderer;
 #[cfg(feature = "model")]
-use crate::permissions::PermissionContext;
-use crate::presence::PresenceCtx;
-use crate::text_render::TextRenderer;
-use crate::widget::{Widget, WidgetLayoutError};
-use crate::{State, Theme};
+use tilo_ui_base::permissions::PermissionContext;
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::{widget::Widget, widget::WidgetLayoutError};
 
 /// The document, theme, text renderer and layout tree of one offscreen frame.
 pub struct ShotFrame {
@@ -40,7 +41,7 @@ pub struct ShotFrame {
     /// The floating surfaces the last [`ShotFrame::draw`] and the [`ShotFrame::draw_overlay`] after it
     /// drew over the blurred material, with what lay below each; the PNG blurs them as a live window
     /// does.
-    backdrop: Vec<crate::part_paint::backdrop::RecordedBackdrop>,
+    backdrop: Vec<tilo_ui_base::part_paint::backdrop::RecordedBackdrop>,
 }
 
 impl ShotFrame {
@@ -82,7 +83,7 @@ impl ShotFrame {
     pub fn sync(&mut self, widget: &mut dyn Widget) {
         widget.sync(&self.state.doc, &self.state.root);
         widget.settle(
-            &mut crate::widget::Edits::lend(&mut self.state.doc),
+            &mut tilo_ui_base::widget::Edits::lend(&mut self.state.doc),
             &self.state.root,
         );
         widget.sync(&self.state.doc, &self.state.root);
@@ -124,7 +125,7 @@ impl ShotFrame {
         // SAFETY: the tree, its node map and the text renderer above stay
         // exclusively borrowed for the layout.
         unsafe {
-            crate::widget::solve_built_layout(
+            tilo_ui_base::widget::solve_built_layout(
                 widget,
                 &mut self.taffy,
                 root,
@@ -158,8 +159,8 @@ impl ShotFrame {
     /// culls.
     pub fn draw(&mut self, widget: &mut dyn Widget) -> Scene {
         let mut scene = Scene::new();
-        let recording = crate::part_paint::backdrop::BackdropRecording::begin();
-        crate::part_paint::backdrop::layer_scene(&scene, 0);
+        let recording = tilo_ui_base::part_paint::backdrop::BackdropRecording::begin();
+        tilo_ui_base::part_paint::backdrop::layer_scene(&scene, 0);
         let previous = self.presence.push_viewport(self.window());
         #[cfg(feature = "model")]
         self.presence.with_permissions(self.permission.clone(), || {
@@ -187,12 +188,12 @@ impl ShotFrame {
     /// Composite the widget's top layer (open menus, popovers, modals) onto `scene` over the frame's
     /// window, as the live host does after the main pass and the window chrome.
     pub fn draw_overlay(&mut self, widget: &mut dyn Widget, scene: &mut Scene) {
-        let recording = crate::part_paint::backdrop::BackdropRecording::continuing(std::mem::take(
-            &mut self.backdrop,
-        ));
-        crate::part_paint::backdrop::layer_scene(scene, 0);
+        let recording = tilo_ui_base::part_paint::backdrop::BackdropRecording::continuing(
+            std::mem::take(&mut self.backdrop),
+        );
+        tilo_ui_base::part_paint::backdrop::layer_scene(scene, 0);
         let previous = self.presence.push_viewport(self.window());
-        widget.draw_overlay(&mut crate::draw::DrawCtx::new(
+        widget.draw_overlay(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             Affine::IDENTITY,
             &mut self.text,
@@ -206,7 +207,7 @@ impl ShotFrame {
     /// Paint app-owned floating surfaces onto `scene`, in the order the live compositor stacks them
     /// above the window.
     pub fn draw_floating_surfaces(&mut self, widget: &mut dyn Widget, scene: &mut Scene) {
-        widget.draw_floating_surfaces(&mut crate::draw::DrawCtx::new(
+        widget.draw_floating_surfaces(&mut tilo_ui_base::draw::DrawCtx::new(
             scene,
             Affine::IDENTITY,
             &mut self.text,
@@ -232,7 +233,9 @@ impl ShotFrame {
         let (w, h) = self.viewport;
         let mut renderer = OffscreenRenderer::new(w, h);
         renderer.set_backdrop(Some(std::sync::Arc::new(
-            crate::part_paint::backdrop::BackdropFrame::from_single_scene(self.backdrop.clone()),
+            tilo_ui_base::part_paint::backdrop::BackdropFrame::from_single_scene(
+                self.backdrop.clone(),
+            ),
         )));
         renderer.render_png(scene, background, out);
     }
@@ -259,7 +262,7 @@ pub fn render_widget_png(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::widget::Spacer;
+    use tilo_ui_base::widget::Spacer;
 
     tilo_test_env::scenario! {
         fn shot_frames_follow_the_theme_scale_and_lay_out_inside_the_viewport;

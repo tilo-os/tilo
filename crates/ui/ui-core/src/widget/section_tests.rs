@@ -177,7 +177,7 @@ fn a_disclosure_header_is_a_bound_view_local_control() {
                 )),
         ),
         (400, 300),
-        crate::theme::Theme::light(),
+        tilo_ui_base::theme::Theme::light(),
     );
     let audit = harness.native_app_audit();
     assert!(audit.issues.is_empty(), "{audit:?}");
@@ -217,9 +217,9 @@ fn a_collapsible_section_hides_its_items_and_toggles_from_its_header() {
     assert!(header.is_focusable());
     let mut doc = AutoCommit::new();
     assert!(header.perform_action(
-        &crate::a11y::Action::Activate,
+        &tilo_ui_base::a11y::Action::Activate,
         &[],
-        &mut crate::widget::Edits::lend(&mut doc),
+        &mut tilo_ui_base::widget::Edits::lend(&mut doc),
         &automerge::ROOT
     ));
     assert!(header.take_structure_dirty(), "the section relays out");
@@ -292,14 +292,17 @@ fn a_section_says_whether_the_pointer_is_over_it() {
     let whole = rect(&harness.inspection().root.children[0]);
     let rows = whole;
     assert!(whole.y1 < 380.0, "the section is shorter than the window");
-    harness.send(&crate::synthetic_input::cursor_moved(
+    harness.send(&tilo_ui_base::synthetic_input::cursor_moved(
         rows.center().x,
         rows.center().y,
     ));
     assert!(over.get(), "over a row");
-    harness.send(&crate::synthetic_input::cursor_moved(10.0, whole.y1 + 10.0));
+    harness.send(&tilo_ui_base::synthetic_input::cursor_moved(
+        10.0,
+        whole.y1 + 10.0,
+    ));
     assert!(!over.get(), "below the section");
-    harness.send(&crate::synthetic_input::cursor_moved(
+    harness.send(&tilo_ui_base::synthetic_input::cursor_moved(
         rows.center().x,
         rows.center().y,
     ));
@@ -313,10 +316,10 @@ fn a_section_says_whether_the_pointer_is_over_it() {
 /// follows them down, rather than being zero tall in the section and painting over the next.
 #[test]
 fn a_player_a_page_and_a_rail_push_what_follows_down_in_a_section() {
-    use crate::component::Described;
     use crate::widget::{
         DeclaredRail, DeclaredVideo, PageSidebarProps, VideoPlayerProps, WebView, WebViewProps,
     };
+    use tilo_ui_base::component::Described;
     let theme = Theme::light();
     let views: Vec<(&str, Element)> = vec![
         (
@@ -400,7 +403,7 @@ fn an_aspect_shapes_a_view_placed_straight_in_a_section() {
     let section = Section::new(vec![
         Box::new(Text::new("Above")) as Element,
         Box::new(crate::widget::Fitted::new(
-            Box::new(crate::widget::Spacer::new()),
+            Box::new(tilo_ui_base::widget::Spacer::new()),
             fit,
         )),
         Box::new(Text::new("Below")) as Element,

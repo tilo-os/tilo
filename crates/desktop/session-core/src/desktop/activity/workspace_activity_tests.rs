@@ -129,7 +129,7 @@ mod workspace_activity {
             let ada = MemberId::person("ada");
             presence.names.insert(ada.clone(), "Ada".into());
             presence.set_pointer(
-                &ui::presence::PresenceKey::shell_pointer("design-workspace"),
+                &tilo_ui_base::presence::PresenceKey::shell_pointer("design-workspace"),
                 ada,
                 (420., 260.),
             );

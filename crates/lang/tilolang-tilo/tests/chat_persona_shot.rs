@@ -195,7 +195,7 @@ fn a_chat_reply_by_an_agent_with_a_persona_and_a_members_face_in_both_themes() {
         ui::State::new(),
         Box::new(window),
         (1280, 800),
-        ui::Theme::dark(),
+        tilo_ui_base::Theme::dark(),
     );
     harness.relayout();
     // The captures stand beside the build, as the other shots do: a source tree read from a
@@ -204,7 +204,7 @@ fn a_chat_reply_by_an_agent_with_a_persona_and_a_members_face_in_both_themes() {
     std::fs::create_dir_all(&out).expect("the captures' directory");
     harness.render_png(&out.join("chat-persona-dark.png"));
     harness
-        .relayout_themed((1280, 800), ui::Theme::light())
+        .relayout_themed((1280, 800), tilo_ui_base::Theme::light())
         .expect("the light frame");
     harness.render_png(&out.join("chat-persona-light.png"));
     for theme in ["dark", "light"] {
