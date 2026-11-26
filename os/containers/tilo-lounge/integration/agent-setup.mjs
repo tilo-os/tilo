@@ -381,17 +381,18 @@ report.claudeConfig = kept;
 if (!JSON.parse(kept)?.mcpServers?.tilo?.command?.endsWith('tilo')) {
   await fail(`the tool's own configuration holds no Tilo server: ${kept}`);
 }
-const steps = await following;
+// The agent's own end is the tab's clock for what it last reported: the screen leaves once it
+// has heard it all, so what the tab drew is read after that, never before.
+await until(first, `document.documentElement.dataset.firstScreen === undefined`, 'the first screen leaving', stepLimit(2));
+await following;
+const steps = await first.evaluate('globalThis.__checkSteps ?? []').catch(() => []);
 report.steps = steps;
 if (steps.length < 2) await fail(`the tab showed no steps as the agent went: ${JSON.stringify(steps)}`);
 // The tools the tab says are added are the ones the agent's check found in
 // its own configuration; a step the command did not report is never claimed.
 if (!steps.some(line => line.includes(`Tilo’s tools are added to ${agentName}`))) {
-  await fail(`the tab never showed Tilo's tools added, though the agent's check confirmed them: ${JSON.stringify(steps)}`);
+  await fail(`the tab never showed Tilo's tools added, though the agent's check confirmed them: ${JSON.stringify(steps)}; the login said: ${loggedIn.stderr}`);
 }
-
-// The screen leaves for the person's own workspace.
-await until(first, `document.documentElement.dataset.firstScreen === undefined`, 'the first screen leaving', stepLimit(2));
 // The person's own workspace, drawn, as the page publishes it: the shell its
 // host admitted it to is presented, and the tab is titled after that
 // workspace, never the Lounge.
