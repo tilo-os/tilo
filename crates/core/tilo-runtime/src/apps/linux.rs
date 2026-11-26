@@ -104,18 +104,20 @@ pub(super) fn spawn(
         std::thread::Builder::new()
             .name("app-start-stderr".into())
             .spawn(move || {
-                use std::io::Read as _;
+                use std::io::{Read as _, Write as _};
                 let mut chunk = [0_u8; 512];
                 while let Ok(read) = pipe.read(&mut chunk) {
-                    if read == 0 {
+                    let Some(read_bytes) = chunk.get(..read).filter(|bytes| !bytes.is_empty())
+                    else {
                         break;
-                    }
+                    };
+                    // The app's words still go where the daemon's own go, its log among them,
+                    // as they did when the app wrote to the daemon's standard error itself.
+                    let _ = std::io::stderr().write_all(read_bytes);
                     let mut said = captured
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    if said.len() < 8192
-                        && let Some(read_bytes) = chunk.get(..read)
-                    {
+                    if said.len() < 8192 {
                         said.push_str(&String::from_utf8_lossy(read_bytes));
                     }
                 }
