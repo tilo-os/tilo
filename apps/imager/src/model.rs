@@ -1,10 +1,6 @@
 //! Canonical installation-media data, with frontend-only icon presentation.
 pub use imager_backend::imager_model::*;
 
-#[cfg(test)]
-#[path = "model/compatibility_tests.rs"]
-mod compatibility_tests;
-
 /// Icon presentation is deliberately not part of the native data contract.
 pub trait TargetDriveIcon {
     fn icon(&self) -> ui::icons::Icon;

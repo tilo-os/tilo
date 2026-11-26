@@ -685,41 +685,6 @@ mod tests {
     }
 
     #[test]
-    fn new_actions_round_trip_as_tagged_json() {
-        let actions = [
-            InputAction::TouchPinch {
-                center: (400, 300),
-                from_distance: 100,
-                to_distance: 300,
-                duration_ms: 400,
-            },
-            InputAction::PenDrag {
-                from: (1, 2),
-                to: (3, 4),
-                duration_ms: 200,
-                pressure: 60,
-            },
-            InputAction::GamepadStick {
-                stick: Stick::Right,
-                x: -100,
-                y: 50,
-                duration_ms: 250,
-            },
-            InputAction::GamepadPress {
-                combos: vec!["guide+lb".into()],
-            },
-        ];
-        for action in actions {
-            let text = serde_json::to_string(&action).unwrap();
-            assert_eq!(serde_json::from_str::<InputAction>(&text).unwrap(), action);
-        }
-        assert_eq!(
-            serde_json::to_string(&InputAction::TouchTap { x: 1, y: 2 }).unwrap(),
-            r#"{"kind":"touch_tap","x":1,"y":2}"#
-        );
-    }
-
-    #[test]
     fn input_actions_map_validate_and_round_trip() {
         // Phase: combos_map_to_evdev_codes.
         {

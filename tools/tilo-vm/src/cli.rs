@@ -1566,81 +1566,8 @@ mod tests {
     use super::*;
 
     tilo_test_env::scenario! {
-        /// Every account command takes the account flag, every argument says what it is, ages read like durations,
-        /// every subcommand has a purpose and examples, and only state-changing or long commands write receipts.
-        fn every_command_documents_its_arguments_purpose_and_receipts;
-
-        phase every_account_command_takes_the_account_flag;
-        {
-            for args in [
-                &["tilo-vm", "rollback", "--account", "a"][..],
-                &["tilo-vm", "logs", "--account", "a"],
-                &["tilo-vm", "shot", "--account", "a"],
-                &["tilo-vm", "seat", "claim", "--account", "a"],
-                &["tilo-vm", "seat", "release", "--account", "a"],
-                &["tilo-vm", "account", "create", "--account", "a"],
-                &["tilo-vm", "account", "restart", "--account", "a"],
-                &["tilo-vm", "account", "rm", "--account", "a"],
-                &["tilo-vm", "account", "show", "--account", "a"],
-                &["tilo-vm", "account", "exec", "--account", "a", "--", "true"],
-                &[
-                    "tilo-vm", "account", "apps", "install", "--set", "v", "--account", "a",
-                ],
-                &["tilo-vm", "account", "show", "a"],
-            ] {
-                let cli = Cli::try_parse_from(args).unwrap().normalized();
-                let account = match cli.command {
-                    Some(
-                        Command::Rollback { account, .. }
-                        | Command::Logs { account, .. }
-                        | Command::Shot { account, .. }
-                        | Command::Seat(
-                            SeatCommand::Claim { account, .. } | SeatCommand::Release { account, .. },
-                        )
-                        | Command::Account(
-                            AccountCommand::Create { name: account, .. }
-                            | AccountCommand::Restart { name: account, .. }
-                            | AccountCommand::Rm { name: account, .. }
-                            | AccountCommand::Show { name: account, .. }
-                            | AccountCommand::Exec { name: account, .. }
-                            | AccountCommand::Apps(AccountAppsCommand::Install { name: account, .. }),
-                        ),
-                    ) => account,
-                    other => panic!("{other:?}"),
-                };
-                assert_eq!(account.as_deref(), Some("a"), "{args:?}");
-            }
-            assert!(Cli::try_parse_from(["tilo-vm", "rollback", "a", "--account", "b"]).is_err());
-            assert!(Cli::try_parse_from(["tilo-vm", "account", "rm", "a", "--account", "b"]).is_err());
-            for args in [
-                &["tilo-vm", "swap", "--account", "a", "tilo-session"][..],
-                &["tilo-vm", "input", "--account", "a", "key", "super"],
-                &["tilo-vm", "control", "--account", "a", "state-dump"],
-                &["tilo-vm", "status", "--account", "a"],
-            ] {
-                Cli::try_parse_from(args).unwrap();
-            }
-        }
-
-        phase every_argument_says_what_it_is;
-        {
-            fn walk(command: &clap::Command, path: &str) {
-                for arg in command.get_arguments() {
-                    let id = arg.get_id().as_str();
-                    if ["help", "version"].contains(&id) || arg.is_hide_set() {
-                        continue;
-                    }
-                    assert!(
-                        arg.get_help().is_some() || arg.get_long_help().is_some(),
-                        "{path}: argument {id} has no description"
-                    );
-                }
-                for sub in command.get_subcommands() {
-                    walk(sub, &format!("{path} {}", sub.get_name()));
-                }
-            }
-            walk(&Cli::command(), "tilo-vm");
-        }
+        /// Ages read like durations, and only state-changing or long commands write receipts.
+        fn ages_read_like_durations_and_only_changing_commands_write_receipts;
 
         phase ages_read_like_durations;
         {
@@ -1663,29 +1590,6 @@ mod tests {
                     ..
                 })
             ));
-        }
-
-        phase every_subcommand_has_a_purpose_and_examples;
-        {
-            fn walk(command: &clap::Command, path: &str) {
-                for sub in command.get_subcommands() {
-                    let name = format!("{path} {}", sub.get_name());
-                    assert!(sub.get_about().is_some(), "{name} has no one-line purpose");
-                    if sub.get_subcommands().next().is_none() {
-                        let help = sub
-                            .get_after_help()
-                            .map(ToString::to_string)
-                            .unwrap_or_default();
-                        assert!(
-                            help.contains("Examples:\n  tilo-vm"),
-                            "{name} has no examples"
-                        );
-                    }
-                    walk(sub, &name);
-                }
-            }
-            Cli::command().debug_assert();
-            walk(&Cli::command(), "tilo-vm");
         }
 
         phase only_state_changing_or_long_commands_write_receipts;

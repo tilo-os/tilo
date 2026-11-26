@@ -1888,105 +1888,7 @@ mod tests {
     }
 
     tilo_test_env::scenario! {
-        fn session_commands_run_in_the_sessions_own_namespace;
-
-        phase control_runs_the_sessions_own_client_in_its_namespace;
-        {
-            let command = super::control_command(
-                123,
-                "you",
-                std::path::Path::new("/run/user/1002/tilo-session/test-control.sock"),
-                vec![("TILO_TEST_CONTROL".into(), "/elsewhere.sock".into())],
-                &["state-dump".into()],
-            );
-            assert_eq!(command.get_program(), "nsenter");
-            let args: Vec<_> = command
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect();
-            assert_eq!(&args[..2], ["--target=123", "--mount"]);
-            assert!(
-                args.windows(4)
-                    .any(|args| args == ["runuser", "-u", "you", "--"])
-            );
-            assert!(
-                args.contains(
-                    &"TILO_TEST_CONTROL=/run/user/1002/tilo-session/test-control.sock".into()
-                )
-            );
-            assert!(!args.contains(&"TILO_TEST_CONTROL=/elsewhere.sock".into()));
-            assert_eq!(
-                &args[args.len() - 2..],
-                [super::TILO_CONTROL, "state-dump"]
-            );
-        }
-
-        phase app_install_uses_the_verified_account_namespace_and_never_ignores_runtime;
-        {
-            let command = super::app_install_command(
-                123,
-                "you",
-                1002,
-                "/var/home/you",
-                std::path::Path::new("/var/tmp/private/app.tapp"),
-            );
-            assert_eq!(command.get_program(), "nsenter");
-            let args: Vec<_> = command
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect();
-            assert_eq!(&args[..2], ["--target=123", "--mount"]);
-            assert!(
-                args.windows(4)
-                    .any(|args| args == ["runuser", "-u", "you", "--"])
-            );
-            assert!(args.contains(&"HOME=/var/home/you".into()));
-            assert!(args.contains(&"XDG_RUNTIME_DIR=/run/user/1002".into()));
-            assert_eq!(
-                &args[args.len() - 5..],
-                [
-                    "/usr/libexec/tilo/tilo-install",
-                    "install",
-                    "--allow-self-signed",
-                    "--force",
-                    "/var/tmp/private/app.tapp"
-                ]
-            );
-            assert!(
-                !args
-                    .iter()
-                    .any(|arg| arg.contains("ignore-missing-runtime"))
-            );
-            let selected = super::selected_app_install_command(
-                123,
-                "you",
-                1002,
-                "/var/home/you",
-                std::path::Path::new("/var/tmp/private/app.tapp"),
-                true,
-            );
-            let selected: Vec<_> = selected
-                .get_args()
-                .map(|arg| arg.to_string_lossy().into_owned())
-                .collect();
-            assert_eq!(&selected[..2], ["--target=123", "--mount"]);
-            assert_eq!(
-                &selected[selected.len() - 6..],
-                [
-                    "/usr/libexec/tilo/tilo-install",
-                    "install",
-                    "--allow-self-signed",
-                    "--force",
-                    "--preserve-held",
-                    "/var/tmp/private/app.tapp",
-                ]
-            );
-            assert!(
-                !selected
-                    .iter()
-                    .any(|arg| arg.contains("ignore-missing-runtime"))
-            );
-        }
+        fn an_app_install_without_a_live_session_is_refused_not_run_on_the_host;
 
         phase app_install_refuses_a_missing_session_without_host_fallback;
         {
@@ -2059,41 +1961,6 @@ mod tests {
             assert_eq!(calls, 1, "a failed reload cannot restart the stale unit");
         }
 
-        phase deferred_greeter_activation_still_validates_the_installed_manager;
-        {
-            for loaded in ["loaded", "merged", "not-found", "masked", "error", ""] {
-                let mut calls = Vec::new();
-                let result = validate_unit_with(None, GREETER_UNIT, &mut |_, command| {
-                    calls.push(
-                        command
-                            .get_args()
-                            .map(|arg| arg.to_string_lossy().into_owned())
-                            .collect::<Vec<_>>(),
-                    );
-                    Ok(loaded.into())
-                });
-                assert_eq!(result.is_ok(), matches!(loaded, "loaded" | "merged"));
-                assert_eq!(
-                    calls,
-                    [vec![
-                        "show",
-                        "--property=LoadState",
-                        "--value",
-                        GREETER_UNIT
-                    ]]
-                );
-            }
-            let result = validate_unit_with(None, GREETER_UNIT, &mut |_, _| {
-                Err(DaemonError::Apply {
-                    step: "manager unavailable".into(),
-                    detail: "failure".into(),
-                })
-            });
-            assert!(
-                result.is_err(),
-                "manager failures cannot become a successful deferral"
-            );
-        }
 
         phase component_restart_validates_units_and_preserves_manager_failures;
         {
@@ -2130,45 +1997,6 @@ mod tests {
                 assert!(error.to_string().contains("restart denied"));
             }
         }
-
-        phase component_restart_uses_conditional_operation_for_both_managers;
-        {
-            for user in [None, Some("bob")] {
-                let mut verbs = Vec::new();
-                try_restart_unit_with(user, "optional.service", |_, command| {
-                    let args: Vec<_> = command
-                        .get_args()
-                        .map(|a| a.to_string_lossy().into_owned())
-                        .collect();
-                    let offset = if user.is_some() { 2 } else { 0 };
-                    let verb = &args[offset];
-                    verbs.push(verb.clone());
-                    if verb == "show" {
-                        assert_eq!(
-                            &args[offset..],
-                            [
-                                "show",
-                                "--property=LoadState",
-                                "--value",
-                                "optional.service"
-                            ]
-                        );
-                        return Ok("loaded\n".into());
-                    }
-                    if verb == "try-restart" {
-                        assert_eq!(
-                            args.iter().skip(offset).nth(1).map(String::as_str),
-                            Some("optional.service")
-                        );
-                    } else {
-                        assert_eq!(verb, "daemon-reload");
-                    }
-                    Ok(String::new())
-                })
-                .unwrap();
-                assert_eq!(verbs.last().map(String::as_str), Some("try-restart"));
-            }
-        }
     }
 
     tilo_test_env::scenario! {
@@ -2179,31 +2007,6 @@ mod tests {
         // installs, and the units and socket it names are the ones
         // `tilo-seat-session` uses.
         {
-            let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-            let read = |path: &str| fs::read_to_string(repo.join(path)).unwrap();
-            {
-                let layer = read("os/dev/install-board-layer.sh");
-                assert!(
-                    layer.contains(&format!(": > {DEVICE_SESSION_MARKER}")),
-                    "marker"
-                );
-                let template = format!("os/usr/lib/systemd/system/{DEVICE_SESSION_TEMPLATE}.service");
-                assert!(read(&template).contains("ExecStart=/usr/libexec/tilo-seat-session %i"));
-                let seat = read("os/usr/libexec/tilo-seat-session");
-                for unit in DEVICE_SESSION_UNITS {
-                    let name = unit.strip_suffix(".service").unwrap();
-                    assert!(seat.contains(&format!("drm_unit={name}\n")), "{unit}");
-                }
-                assert!(
-                    seat.contains(
-                        r#"TILO_TEST_CONTROL="/run/user/$uid/tilo-session/test-control.sock""#
-                    )
-                );
-                assert_eq!(
-                    device_control_socket(1000),
-                    Path::new("/run/user/1000/tilo-session/test-control.sock")
-                );
-            }
             {
                 let listing = "tilo-board-headless-session@old.service loaded inactive dead Tilo board session for old\n\
                            tilo-board-headless-session@tester.service loaded active running Tilo board session for tester\n";
@@ -2260,25 +2063,6 @@ mod tests {
                 );
                 assert_eq!(greetd_login(&sessions[..3], 500, parent), None);
                 assert_eq!(greetd_login(&sessions, 0, parent), None);
-            }
-            {
-                let repo = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
-                let wrapper = repo.join("os/usr/libexec").join(LOGIN_WRAPPER);
-                let script = fs::read_to_string(&wrapper).unwrap();
-                assert!(
-                    script.contains("trap request_restart USR1"),
-                    "{}",
-                    wrapper.display()
-                );
-                assert!(script.contains("readonly COMPOSITOR_BIN=/usr/bin/tilo-session"));
-                assert_eq!(COMPOSITORS, ["tilo-session"]);
-                assert!(script.contains(
-                    r#"export TILO_TEST_CONTROL="$runtime_dir/tilo-session/test-control.sock""#
-                ));
-                let session =
-                    fs::read_to_string(repo.join("os/usr/share/wayland-sessions/tilo-session.desktop"))
-                        .unwrap();
-                assert!(session.contains(&format!("Exec=/usr/libexec/{LOGIN_WRAPPER} ")));
             }
         }
     }

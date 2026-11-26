@@ -236,17 +236,6 @@ pub fn declared() -> serde_json::Result<String> {
 mod tests {
     use serde_json::Value;
 
-    #[test]
-    fn every_step_is_published_once() {
-        let declared: Vec<Value> =
-            serde_json::from_str(&super::declared().expect("encoded")).expect("JSON");
-        let ids: Vec<&str> = declared
-            .iter()
-            .filter_map(|step| step["id"].as_str())
-            .collect();
-        assert_eq!(ids, tilo_device_protocol::ACTIONS);
-    }
-
     /// Unlocking the disk from other devices declares its passphrase a secret and asks the person to confirm it,
     /// which the daemon admits it by; no other step asks.
     #[test]

@@ -416,41 +416,6 @@ fn a_call_is_served_after_the_host_it_used_goes_away() {
     });
 }
 
-/// Nothing that can read the workspace is online: the call is refused in plain words, with
-/// what to do about it.
-///
-/// The fixture's daemon serves the workspace from its own process, so there is no list of
-/// servers to name one that does not answer: the flow is a server that holds the workspace and
-/// then stops, which this device-native fixture cannot put a key in front of.
-#[test]
-#[ignore = "the daemon-host fixture serves the workspace from its own process; there is no list \
-            of servers to name one that does not answer"]
-fn no_host_that_can_read_the_workspace_is_a_typed_refusal() {
-    host::run(|_host| async move {
-        panic!(
-            "the daemon-host fixture serves the workspace from its own process; there is no \
-             list of servers to name one that does not answer"
-        );
-    });
-}
-
-/// A computer `tilo login` made a device of keeps that device's one session with its server,
-/// and its commands are calls to the API the computer serves over that session.
-///
-/// The fixture's daemon has no login and no session with a server: a logged-in computer is the
-/// two-device proof's shape, not this device-native fixture's.
-#[test]
-#[ignore = "the fixture's daemon has no login and has no session with a server; its person's \
-            programs reach the API served over the daemon's own workspace"]
-fn a_logged_in_computers_commands_go_over_its_one_session() {
-    host::run(|_host| async move {
-        panic!(
-            "the fixture's daemon has no login and has no session with a server; its person's \
-             programs reach the API served over the daemon's own workspace"
-        );
-    });
-}
-
 /// The computer's agent, over the session its computer keeps, reads a workspace's people and
 /// invites someone; its person is asked first, and their answer stands.
 #[test]

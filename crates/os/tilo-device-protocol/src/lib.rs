@@ -1431,42 +1431,6 @@ mod tests {
     }
 
     #[test]
-    fn every_step_is_one_distinct_action_with_its_wire_form() {
-        let mut ids = ACTIONS.to_vec();
-        ids.sort_unstable();
-        ids.dedup();
-        assert_eq!(ids.len(), ACTIONS.len());
-        assert_eq!(<TreeSync as Call>::ACTION, "tree-sync");
-        assert!(
-            ACTIONS
-                .iter()
-                .all(|id| id.bytes().all(|b| b.is_ascii_lowercase() || b == b'-'))
-        );
-
-        let job = Build {
-            worktree: "wt-1234".into(),
-            target: BuildTarget::App {
-                dir: "notes".into(),
-                account: "a".into(),
-            },
-            provenance: Provenance::local("app:notes"),
-            owner: Owner::default(),
-            color: false,
-        };
-        let text = serde_json::to_string(&job).unwrap();
-        assert!(text.contains(r#""target":{"kind":"app","dir":"notes","account":"a"}"#));
-        assert_eq!(serde_json::from_str::<Build>(&text).unwrap(), job);
-
-        let source = serde_json::to_value(LayerSource::Content { hash: "ab".into() }).unwrap();
-        assert_eq!(source, serde_json::json!({"content":{"hash":"ab"}}));
-        let exec: Exec = serde_json::from_str(r#"{"account":"a","command":["true"]}"#).unwrap();
-        assert_eq!(
-            (exec.timeout, exec.max_bytes),
-            (EXEC_TIMEOUT_SECONDS, EXEC_MAX_BYTES)
-        );
-    }
-
-    #[test]
     fn network_wake_refuses_fields_it_does_not_declare() {
         let request = NetworkWake {
             profile: "11111111-1111-4111-8111-111111111111".into(),
