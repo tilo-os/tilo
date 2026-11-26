@@ -12,6 +12,8 @@ use crate::language::host;
 
 /// Discussion's package id: the system's comments on any resource of the workspace.
 const DISCUSSION: &str = "so.tilo.lang.discussion";
+/// tilolang Tasks, whose tasks a member's role lets them make or not.
+const TASKS: &str = "so.tilo.tasks";
 /// Chat's package id, as the workspace runs it.
 const CHAT: &str = ui::apps::CHAT;
 /// Chat's package under the tree's `apps/tl`, which the device installs to run it.
@@ -74,7 +76,7 @@ fn a_computers_own_tasks_are_made_and_answered_done() {
 /// What the role refuses is answered refused, saying why, never as no such action.
 #[test]
 fn a_members_device_takes_what_its_role_lets_it() {
-    host::run(|host| async move {
+    host::run_with(&["tasks", "discussion"], |host| async move {
         let workspace = host.workspace().to_owned();
         let owner_device = host.member("its owner's computer", &workspace).await;
         let owner = host.agent();
@@ -94,18 +96,32 @@ fn a_members_device_takes_what_its_role_lets_it() {
             .unwrap_or_else(|| panic!("the create answers the issue it made: {words}"))
             .to_owned();
 
-        // The record the create made the issue in, which its address names before the item.
-        let record = issue
-            .split('/')
-            .next()
-            .unwrap_or_else(|| panic!("the issue names its record: {issue}"));
-        let tasks = format!(
-            "{}:so.tilo.tasks:{record}",
-            tilo_actions::remote::RESOURCE_PROVIDER
+        // Tasks' own create, at the address it publishes it: what a member's device calls to
+        // make a task, and what a role that may not is refused.
+        host::start_app(host.as_ref(), TASKS)
+            .await
+            .unwrap_or_else(|refused| panic!("Tasks starts with no window: {refused:?}"));
+        let page = host::listed(host.as_ref(), TASKS)
+            .await
+            .expect("Tasks lists what it publishes");
+        let new_task = page
+            .rows
+            .iter()
+            .filter_map(|row| row.action.as_ref())
+            .find(|action| action.address.action == "new_task")
+            .unwrap_or_else(|| panic!("Tasks publishes new_task: {page:?}"));
+        let tasks = host::app_action(
+            host.as_ref(),
+            TASKS,
+            &new_task.address.resource,
+            &new_task.address.action,
         );
         let refused = |called: &Result<InvocationUpdate, ActionCallError>| {
             matches!(called, Ok(InvocationUpdate::Failed { .. }))
-                || matches!(called, Err(ActionCallError::NotPermitted))
+                || matches!(
+                    called,
+                    Err(ActionCallError::NotPermitted | ActionCallError::Refused { .. })
+                )
         };
 
         let viewer = guest(&host, &owner_device, "viewer", "Vic").await;
@@ -134,8 +150,8 @@ fn a_members_device_takes_what_its_role_lets_it() {
         );
         let created = viewer
             .call(
-                &tasks,
-                tilo_actions::ActionAddress::new("tasks.issues", "create"),
+                &tasks.provider,
+                tasks.address.clone(),
                 &json!({"title": "Not theirs"}),
             )
             .await;
@@ -144,8 +160,8 @@ fn a_members_device_takes_what_its_role_lets_it() {
         let commenter = guest(&host, &owner_device, "commenter", "Cyd").await;
         let created = commenter
             .call(
-                &tasks,
-                tilo_actions::ActionAddress::new("tasks.issues", "create"),
+                &tasks.provider,
+                tasks.address.clone(),
                 &json!({"title": "Not theirs"}),
             )
             .await;
@@ -263,7 +279,10 @@ fn a_filed_report_reads_back_in_the_feedback_channel_and_its_filer_is_refused_tr
             .await;
         assert!(
             matches!(triage, Ok(InvocationUpdate::Failed { .. }))
-                || matches!(triage, Err(ActionCallError::NotPermitted)),
+                || matches!(
+                    triage,
+                    Err(ActionCallError::NotPermitted | ActionCallError::Refused { .. })
+                ),
             "a member does not triage: {triage:?}"
         );
     });
