@@ -20,17 +20,11 @@ fn ns(now: SystemTime) -> u64 {
 fn guest() -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[41; 32]);
     let key = SigningKey::from_bytes(&[42; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "Guest".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, &root).unwrap();
+    let cert = crate::fixture::cert(
+        &root,
+        &key,
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
     (key, cert)
 }
 
@@ -437,17 +431,11 @@ fn a_key_made_to_act_for_a_person_never_names_them() {
     let mut log = JoinLog::default();
     // Ada joins on a device of her own, going by her own name.
     let ada_key = SigningKey::from_bytes(&[52; 32]);
-    let mut ada = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: ada_key.verifying_key().to_bytes(),
-        device_label: "Ada".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut ada, &root).unwrap();
+    let ada = crate::fixture::cert(
+        &root,
+        &ada_key,
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
     let joined_ada = joined(
         &mut log,
         &workspace,
@@ -693,17 +681,11 @@ impl Client {
         let editor_root = SigningKey::from_bytes(&[5; 32]);
         crate::admission_tests::add_member_with(&mut peer, &owner_key, now, 5, 6);
         let page_key = SigningKey::from_bytes(&[9; 32]);
-        let mut page_cert = DeviceCert {
-            user_public_key: editor_root.verifying_key().to_bytes(),
-            device_public_key: page_key.verifying_key().to_bytes(),
-            device_label: "Page".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut page_cert, &editor_root).unwrap();
+        let page_cert = crate::fixture::cert(
+            &editor_root,
+            &page_key,
+            tilo_user_identity::DeviceCapabilities::member(),
+        );
         assert!(
             peer.governance_mut()
                 .admit_member_device(&page_cert, &page_key, now)

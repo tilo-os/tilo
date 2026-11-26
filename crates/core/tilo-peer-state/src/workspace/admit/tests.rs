@@ -1305,17 +1305,11 @@ tilo_test_env::scenario! {
 fn rooted(seed: u8) -> (ed25519_dalek::SigningKey, DeviceCert) {
     let root = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
     let key = ed25519_dalek::SigningKey::from_bytes(&[seed.wrapping_add(1); 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("device {seed}"),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    let cert = crate::fixture::cert(
+        &root,
+        &key,
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
     (key, cert)
 }
 
@@ -1525,17 +1519,11 @@ fn two_devices_first_durability_receipts_both_survive_a_merge() {
 fn owners_other_device(seed: u8) -> DeviceCert {
     let root = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
     let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("device {seed}"),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    let cert = crate::fixture::cert(
+        &root,
+        &key,
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
     cert
 }
 

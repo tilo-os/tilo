@@ -3,7 +3,7 @@ use super::*;
 use automerge::{AutoCommit, ROOT};
 use collab_types::{CommitAuthor, CommitNamed as _, CommitPart, ContentRetention, WorkspaceCommit};
 use key_group::{ContentKeys, KeyGroup, MemberKey};
-use tilo_user_identity::{DeviceCapabilities, RevocationList, sign_device_cert};
+use tilo_user_identity::RevocationList;
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const APP: &str = "test.app";
@@ -18,17 +18,11 @@ fn workspace() -> (StatePeer, SigningKey, SystemTime) {
         .unwrap();
     let device = |n: u8| {
         let key = SigningKey::from_bytes(&[n; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: format!("device-{n}"),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
+        let cert = crate::fixture::cert(
+            &root,
+            &key,
+            tilo_user_identity::DeviceCapabilities::member(),
+        );
         (key, cert)
     };
     let (a, a_cert) = device(2);

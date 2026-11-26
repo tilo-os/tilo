@@ -9,20 +9,14 @@ use std::collections::BTreeSet;
 
 /// A device of `root_seed`'s person, `device_seed`'s key, certified by that
 /// person's root.
-fn device_of(root_seed: u8, device_seed: u8, label: &str) -> (SigningKey, DeviceCert) {
+fn device_of(root_seed: u8, device_seed: u8, _: &str) -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[root_seed; 32]);
     let key = SigningKey::from_bytes(&[device_seed; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, &root).unwrap();
+    let cert = crate::fixture::cert(
+        &root,
+        &key,
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
     (key, cert)
 }
 
@@ -455,7 +449,6 @@ fn an_admission_naming_an_entry_the_workspace_never_had_admits_nobody() {
 #[test]
 fn many_entry_admissions_replay_by_the_entry_their_place_held() {
     use crate::members::{MembershipOpCommand, SignedMembershipOp, put_op};
-    use tilo_user_identity::sign_device_cert;
 
     const GUESTS: usize = 500;
     let (mut peer, authority_key, _, _, now) = seeded();
@@ -497,17 +490,11 @@ fn many_entry_admissions_replay_by_the_entry_their_place_held() {
         let mut device_seed = [0x5a; 32];
         device_seed[..8].copy_from_slice(&(index as u64 + 1).to_le_bytes());
         let key = SigningKey::from_bytes(&device_seed);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: "Guest".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
+        let cert = crate::fixture::cert(
+            &root,
+            &key,
+            tilo_user_identity::DeviceCapabilities::member(),
+        );
         let op = SignedMembershipOp::signed(
             &cert,
             &key,

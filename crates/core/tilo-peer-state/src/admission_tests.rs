@@ -21,17 +21,7 @@ fn fixtures() -> (SigningKey, DeviceCert, SigningKey, DeviceCert, SystemTime) {
         .unwrap();
     let make = |n: u8| {
         let key = SigningKey::from_bytes(&[n; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: root.verifying_key().to_bytes(),
-            device_public_key: key.verifying_key().to_bytes(),
-            device_label: format!("device-{n}"),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, &root).unwrap();
+        let cert = crate::fixture::cert(&root, &key, DeviceCapabilities::member());
         (key, cert)
     };
     let (a, ac) = make(2);
@@ -1040,17 +1030,7 @@ pub(crate) fn add_member_with(
     use crate::join::{InviteGrant, JoinChallenge, Role, issue_invitation, sign_join_proof};
     let root = SigningKey::from_bytes(&[root_seed; 32]);
     let device = SigningKey::from_bytes(&[device_seed; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: format!("Editor {root_seed}"),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, &root).unwrap();
+    let cert = crate::fixture::cert(&root, &device, DeviceCapabilities::member());
     let now_ns = u64::try_from(
         now.duration_since(SystemTime::UNIX_EPOCH)
             .unwrap()
@@ -1206,17 +1186,7 @@ fn redemption(
     let now_ns = unix_ns(now);
     let root = SigningKey::from_bytes(&[root_seed; 32]);
     let device = SigningKey::from_bytes(&[device_seed; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: format!("concurrent-{device_seed}"),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, &root).unwrap();
+    let cert = crate::fixture::cert(&root, &device, DeviceCapabilities::member());
     let join = decode_and_verify_invitation(
         signed,
         Some(cert.user_public_key),
@@ -1297,17 +1267,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
         .unwrap();
     let guest_root = SigningKey::from_bytes(&[41; 32]);
     let guest_key = SigningKey::from_bytes(&[42; 32]);
-    let mut guest_cert = DeviceCert {
-        user_public_key: guest_root.verifying_key().to_bytes(),
-        device_public_key: guest_key.verifying_key().to_bytes(),
-        device_label: "Independent guest".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut guest_cert, &guest_root).unwrap();
+    let guest_cert = crate::fixture::cert(&guest_root, &guest_key, DeviceCapabilities::member());
     let signed = issue_invitation(
         InviteGrant {
             workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),
@@ -1458,17 +1418,7 @@ fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access
             .unwrap()
     );
     let replay_key = SigningKey::from_bytes(&[54; 32]);
-    let mut replay_cert = DeviceCert {
-        user_public_key: guest_root.verifying_key().to_bytes(),
-        device_public_key: replay_key.verifying_key().to_bytes(),
-        device_label: "Replay device".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut replay_cert, &guest_root).unwrap();
+    let replay_cert = crate::fixture::cert(&guest_root, &replay_key, DeviceCapabilities::member());
     let replay_join = crate::join::decode_and_verify_invitation(
         &signed,
         Some(replay_cert.user_public_key),
@@ -1780,17 +1730,7 @@ fn distinct_invitations_one_device_redeems_keep_both_spends_after_restore() {
 
     let guest_root = SigningKey::from_bytes(&[81; 32]);
     let guest_key = SigningKey::from_bytes(&[82; 32]);
-    let mut guest = DeviceCert {
-        user_public_key: guest_root.verifying_key().to_bytes(),
-        device_public_key: guest_key.verifying_key().to_bytes(),
-        device_label: "same concurrent device".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut guest, &guest_root).unwrap();
+    let guest = crate::fixture::cert(&guest_root, &guest_key, DeviceCapabilities::member());
     let grant = |nonce, issuer| InviteGrant {
         workspace_id: WorkspaceId::parse(base.workspace_id()).unwrap(),
         issuer,
@@ -1981,17 +1921,7 @@ tilo_test_env::scenario! {
         let (mut receiver, _, _, _, now) = seeded();
         let rogue_root = SigningKey::from_bytes(&[99; 32]);
         let rogue = SigningKey::from_bytes(&[98; 32]);
-        let mut cert = DeviceCert {
-            user_public_key: rogue_root.verifying_key().to_bytes(),
-            device_public_key: rogue.verifying_key().to_bytes(),
-            device_label: "self issued".into(),
-            capabilities: DeviceCapabilities::member(),
-            issued_at_ns: 1,
-            expires_at_ns: None,
-            signature: [0; 64],
-            issuer: None,
-        };
-        sign_device_cert(&mut cert, &rogue_root).unwrap();
+        let cert = crate::fixture::cert(&rogue_root, &rogue, DeviceCapabilities::member());
         assert!(
             receiver
                 .receive_from(
@@ -2879,17 +2809,7 @@ fn a_banned_person_cannot_redeem_an_invitation_until_unbanned() {
     let (mut peer, authority_key, _, _, now) = seeded();
     let guest_root = SigningKey::from_bytes(&[61; 32]);
     let guest_key = SigningKey::from_bytes(&[62; 32]);
-    let mut guest_cert = DeviceCert {
-        user_public_key: guest_root.verifying_key().to_bytes(),
-        device_public_key: guest_key.verifying_key().to_bytes(),
-        device_label: "Guest".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut guest_cert, &guest_root).unwrap();
+    let guest_cert = crate::fixture::cert(&guest_root, &guest_key, DeviceCapabilities::member());
     let first = guest_redemption(&peer, &authority_key, &guest_key, &guest_cert, 70, now);
     let unused = guest_redemption(&peer, &authority_key, &guest_key, &guest_cert, 80, now);
     assert!(
@@ -2969,17 +2889,7 @@ fn admitted_guest(
     let now_ns = ns_since_epoch(now);
     let root = SigningKey::from_bytes(&[61; 32]);
     let key = SigningKey::from_bytes(&[62; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "Guest".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, &root).unwrap();
+    let cert = crate::fixture::cert(&root, &key, DeviceCapabilities::member());
     let signed = issue_invitation(
         InviteGrant {
             workspace_id: WorkspaceId::parse(peer.workspace_id()).unwrap(),

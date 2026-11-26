@@ -3,7 +3,6 @@
 //! second it was made. Nothing writes either again as a change message.
 use super::*;
 use automerge::Change;
-use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 const WORKSPACE: &str = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 /// The second the workspace is made and named at, so a stamp of 0 is the clock rather than
@@ -12,17 +11,11 @@ const MADE_AT: u64 = 1_800_000_000;
 
 fn device(root: &SigningKey, seed: u8) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&[seed; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("device-{seed}"),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
+    let cert = crate::fixture::cert(
+        &root,
+        &key,
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
     (key, cert)
 }
 

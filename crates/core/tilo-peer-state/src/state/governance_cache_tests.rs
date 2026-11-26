@@ -1,6 +1,5 @@
 //! Who holds a workspace's keys, as the workspace's governance says.
 use super::*;
-use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 
@@ -13,17 +12,11 @@ fn person_device(n: usize) -> (SigningKey, DeviceCert) {
     };
     let root = SigningKey::from_bytes(&seed(0x40));
     let key = SigningKey::from_bytes(&seed(0x80));
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("device-{n}"),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, &root).unwrap();
+    let cert = crate::fixture::cert(
+        &root,
+        &key,
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
     (key, cert)
 }
 

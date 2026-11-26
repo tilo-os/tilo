@@ -5,7 +5,7 @@ use crate::join::WorkspaceId;
 use crate::join::{sign_membership_proof, verify_membership_proof};
 use crate::state::now_ns;
 use ed25519_dalek::SigningKey;
-use tilo_user_identity::{DeviceCert, RevocationList, sign_device_cert};
+use tilo_user_identity::{DeviceCert, RevocationList};
 
 fn proof(
     peer: &StatePeer,
@@ -51,18 +51,12 @@ fn proof_through(
 }
 
 /// `key`'s certificate from `root`, a device the person holds themself.
-fn certified(root: &SigningKey, key: &SigningKey, label: &str) -> DeviceCert {
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: label.into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, root).unwrap();
+fn certified(root: &SigningKey, key: &SigningKey, _: &str) -> DeviceCert {
+    let cert = crate::fixture::cert(
+        &root,
+        &key,
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
     cert
 }
 

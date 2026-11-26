@@ -31,17 +31,11 @@ impl Device {
 pub(crate) fn device(root: u8, device: u8) -> Device {
     let root = SigningKey::from_bytes(&[root; 32]);
     let key = SigningKey::from_bytes(&[device; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: "Test device".into(),
-        capabilities: tilo_user_identity::DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    let cert = crate::fixture::cert(
+        &root,
+        &key,
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
     Device { root, cert, key }
 }
 

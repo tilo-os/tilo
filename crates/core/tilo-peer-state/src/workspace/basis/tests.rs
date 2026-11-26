@@ -2,21 +2,15 @@ use super::*;
 use automerge::{AutoCommit, ObjType, ROOT, ReadDoc, ScalarValue, transaction::Transactable};
 use ed25519_dalek::SigningKey;
 use tilo_automerge::ApplyIncoming;
-use tilo_user_identity::{DeviceCapabilities, DeviceCert, RevocationReason};
+use tilo_user_identity::RevocationReason;
 fn fixture() -> (AutoCommit, SigningKey, String) {
     let root = SigningKey::from_bytes(&[91; 32]);
     let device = SigningKey::from_bytes(&[92; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: device.verifying_key().to_bytes(),
-        device_label: "Host".into(),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    tilo_user_identity::sign_device_cert(&mut cert, &root).unwrap();
+    let cert = crate::fixture::cert(
+        &root,
+        &device,
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
     let changes = crate::state::seed_workspace(
         &uuid::Uuid::from_bytes([1; 16]).to_string(),
         &cert,

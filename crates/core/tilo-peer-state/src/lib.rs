@@ -11,6 +11,8 @@
     )
 )]
 pub mod device_answers;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixture;
 mod frames;
 pub mod governance;
 #[cfg(not(target_arch = "wasm32"))]

@@ -6,7 +6,6 @@ use collab_types::CommitNamed as _;
 use collab_types::{ContentRetention, EncryptionMetadata, SealedCompaction};
 use key_group::{ContentKeys, KeyGroup, MemberKey};
 use tilo_automerge::ApplyIncoming;
-use tilo_user_identity::{DeviceCapabilities, sign_device_cert};
 
 const WORKSPACE: &str = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 pub(super) const APP: &str = "test.app";
@@ -34,17 +33,11 @@ pub(super) struct Fixture {
 pub(super) fn device(root: u8, seed: u8) -> (SigningKey, DeviceCert) {
     let root = SigningKey::from_bytes(&[root; 32]);
     let key = SigningKey::from_bytes(&[seed; 32]);
-    let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
-        device_public_key: key.verifying_key().to_bytes(),
-        device_label: format!("device-{seed}"),
-        capabilities: DeviceCapabilities::member(),
-        issued_at_ns: 1,
-        expires_at_ns: None,
-        signature: [0; 64],
-        issuer: None,
-    };
-    sign_device_cert(&mut cert, &root).unwrap();
+    let cert = crate::fixture::cert(
+        &root,
+        &key,
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
     (key, cert)
 }
 
@@ -148,6 +141,27 @@ pub(super) fn fixture_holding(records: &[&str]) -> Fixture {
 }
 
 impl Fixture {
+    /// A replica that holds the workspace as the owner hosts it and none of the record.
+    fn fresh(&self) -> StatePeer {
+        let mut fresh = StatePeer::new(
+            WORKSPACE,
+            self.authority.clone(),
+            vec![],
+            RevocationList::new(),
+            self.now,
+        )
+        .unwrap();
+        fresh.select_exact_admissions().unwrap();
+        fresh
+            .receive_from(
+                origin(&self.owner),
+                self.replica.workspace_message(),
+                self.now,
+            )
+            .unwrap();
+        fresh
+    }
+
     pub(super) fn keys(&self) -> ContentKeys {
         self.group.content_keys().unwrap()
     }
@@ -374,6 +388,40 @@ fn checkpoint(
     ))
 }
 
+/// [`write`], admitted by `peer`.
+pub(super) fn put(
+    peer: &mut StatePeer,
+    key: &SigningKey,
+    keys: &ContentKeys,
+    plaintext: &[u8],
+    now: SystemTime,
+) -> NeighbourMsg {
+    let message = write(peer, key, keys, plaintext, now);
+    admit(peer, key, message.clone(), now);
+    message
+}
+
+/// The record as a holder of `keys` reads it from `peer`, and the writes it
+/// could not merge.
+pub(super) fn reading(peer: &StatePeer, keys: &ContentKeys) -> (AutoCommit, Vec<UnmergedWrite>) {
+    let opened = peer
+        .publication()
+        .opened_document(APP, RECORD, &mut |op: &SignedOp| open(keys, op))
+        .unwrap()
+        .expect("the record is held");
+    (AutoCommit::load(&opened.document).unwrap(), opened.unmerged)
+}
+
+/// The snapshot a compaction or checkpoint opens to under `keys`.
+fn snapshot(keys: &ContentKeys, op: &SignedOp) -> AutoCommit {
+    let DocumentMutation::Snapshot(bytes) =
+        DocumentMutation::decode(&open(keys, op).unwrap()).unwrap()
+    else {
+        panic!("a compaction opens to a snapshot")
+    };
+    AutoCommit::load(&bytes).unwrap()
+}
+
 pub(super) fn admit(
     peer: &mut StatePeer,
     key: &SigningKey,
@@ -534,24 +582,10 @@ tilo_test_env::scenario! {
         let now = f.now;
         let mut author = Author::new(&f.replica);
         let before_rotation = f.keys();
-        let first = write(
-            &f.replica,
-            &f.other,
-            &before_rotation,
-            &author.edit("first", SECRET),
-            now,
-        );
-        admit(&mut f.replica, &f.other, first, now);
+        put(&mut f.replica, &f.other, &before_rotation, &author.edit("first", SECRET), now);
         let current = f.rotate();
         assert!(current.epoch() > before_rotation.epoch());
-        let second = write(
-            &f.replica,
-            &f.owner,
-            &current,
-            &author.edit("second", "2"),
-            now,
-        );
-        admit(&mut f.replica, &f.owner, second, now);
+        put(&mut f.replica, &f.owner, &current, &author.edit("second", "2"), now);
         let mut replica = f.replica.clone();
 
         let minted = mint(&mut f.replica, &current, &f.owner, now).unwrap();
@@ -567,15 +601,10 @@ tilo_test_env::scenario! {
         assert_eq!(metadata.retention(), Some(ContentRetention::Checkpoint));
         // It opens, under the keys now current, to the whole record as its writer
         // saved it: every change folded is in it.
-        let DocumentMutation::Snapshot(bytes) =
-            DocumentMutation::decode(&open(&current, &compaction).unwrap()).unwrap()
-        else {
-            panic!("a compaction opens to a snapshot")
-        };
-        let merged = AutoCommit::load(&bytes).unwrap();
+        let merged = snapshot(&current, &compaction);
         for (key, value) in [("value", "base"), ("first", SECRET), ("second", "2")] {
             assert_eq!(
-                merged.get(ROOT, key).unwrap().unwrap().0.as_str(),
+                text(&merged, key).as_deref(),
                 Some(value),
                 "the compaction holds {key}"
             );
@@ -593,30 +622,17 @@ tilo_test_env::scenario! {
         assert_eq!(held(&restored), held(&f.replica), "survives restart");
 
         // The record goes on after the fold, and a key holder reads it whole.
-        let later = write(
-            &f.replica,
-            &f.other,
-            &current,
-            &author.edit("value", "3"),
-            now,
-        );
-        admit(&mut f.replica, &f.other, later.clone(), now);
+        let later = put(&mut f.replica, &f.other, &current, &author.edit("value", "3"), now);
         admit(&mut replica, &f.other, later, now);
         assert_eq!(held(&replica), held(&f.replica));
         let restored = f.restore(&replica.durable().unwrap()).unwrap();
-        let mut read_write = |op: &SignedOp| open(&current, op);
-        let opened = restored
-            .publication()
-            .opened_document(APP, RECORD, &mut read_write)
-            .unwrap()
-            .unwrap();
-        let read = AutoCommit::load(&opened.document).unwrap();
+        let (read, _) = reading(&restored, &current);
         assert_eq!(
-            read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            text(&read, "value").as_deref(),
             Some("3")
         );
         assert_eq!(
-            read.get(ROOT, "first").unwrap().unwrap().0.as_str(),
+            text(&read, "first").as_deref(),
             Some(SECRET),
             "what the compaction folded is read"
         );
@@ -633,8 +649,7 @@ tilo_test_env::scenario! {
         let editor = f.editor.clone();
         let mut author = Author::new(&f.replica);
         for value in ["1", "2"] {
-            let write = write(&f.replica, &f.other, &keys, &author.edit("value", value), now);
-            admit(&mut f.replica, &f.other, write, now);
+            put(&mut f.replica, &f.other, &keys, &author.edit("value", value), now);
         }
         let mut replica = f.replica.clone();
         let compaction = mint(&mut f.replica, &keys, &editor, now).unwrap();
@@ -685,26 +700,12 @@ tilo_test_env::scenario! {
         let checkpoint = mint(&mut f.replica, &keys, &editor, now).unwrap();
         assert_eq!(held(&f.replica), vec![envelope_of(&checkpoint)]);
         for value in MAX_SEALED_OPS..MAX_SEALED_OPS + 8 {
-            let sealed = write(
-                &f.replica,
-                &editor,
-                &keys,
-                &author.edit("value", &value.to_string()),
-                now,
-            );
-            admit(&mut f.replica, &editor, sealed, now);
+            put(&mut f.replica, &editor, &keys, &author.edit("value", &value.to_string()), now);
         }
         assert!(f.replica.publication().sealed_to_compact().is_empty());
-        let mut read_write = |op: &SignedOp| open(&keys, op);
-        let opened = f
-            .replica
-            .publication()
-            .opened_document(APP, RECORD, &mut read_write)
-            .unwrap()
-            .unwrap();
-        let read = AutoCommit::load(&opened.document).unwrap();
+        let (read, _) = reading(&f.replica, &keys);
         assert_eq!(
-            read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            text(&read, "value").as_deref(),
             Some((MAX_SEALED_OPS + 7).to_string().as_str()),
             "every write before the checkpoint is still in the record"
         );
@@ -785,8 +786,7 @@ tilo_test_env::scenario! {
         assert_eq!(held(&f.replica).len(), 1, "nothing folded comes back");
 
         // Above the mark the evidence is exact again.
-        let above = write(&f.replica, &f.other, &keys, &by[0].edit("value", "late"), now);
-        admit(&mut f.replica, &f.other, above.clone(), now);
+        let above = put(&mut f.replica, &f.other, &keys, &by[0].edit("value", "late"), now);
         let mut conflicting = envelope_of(&above);
         conflicting.timestamp += Duration::from_secs(1);
         collab_types::sign_op(&mut conflicting, &f.other).unwrap();
@@ -812,23 +812,9 @@ tilo_test_env::scenario! {
         let keys = f.keys();
         let mut author = Author::new(&f.replica);
         for index in 0..6 {
-            let message = write(
-                &f.replica,
-                &f.owner,
-                &keys,
-                &author.edit("value", &format!("own-{index}")),
-                now,
-            );
-            admit(&mut f.replica, &f.owner, message, now);
+            put(&mut f.replica, &f.owner, &keys, &author.edit("value", &format!("own-{index}")), now);
         }
-        let plain = write(
-            &f.replica,
-            &f.other,
-            &keys,
-            &author.edit("value", "a member's"),
-            now,
-        );
-        admit(&mut f.replica, &f.other, plain, now);
+        put(&mut f.replica, &f.other, &keys, &author.edit("value", "a member's"), now);
         let last = floor(&f.replica, &f.owner);
         let compaction = mint(&mut f.replica, &keys, &f.owner, now).unwrap();
         assert_eq!(
@@ -838,27 +824,9 @@ tilo_test_env::scenario! {
         );
         // A page that opens the record takes the compaction first, then the
         // host's next write: numbering it past the fold would stop the page.
-        let mut fresh = StatePeer::new(
-            WORKSPACE,
-            f.authority.clone(),
-            vec![],
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        fresh.select_exact_admissions().unwrap();
-        fresh
-            .receive_from(origin(&f.owner), f.replica.workspace_message(), now)
-            .unwrap();
+        let mut fresh = f.fresh();
         admit(&mut fresh, &f.owner, compaction, now);
-        let next = write(
-            &f.replica,
-            &f.owner,
-            &keys,
-            &author.edit("value", "after the fold"),
-            now,
-        );
-        admit(&mut f.replica, &f.owner, next.clone(), now);
+        let next = put(&mut f.replica, &f.owner, &keys, &author.edit("value", "after the fold"), now);
         admit(&mut fresh, &f.owner, next, now);
         assert_eq!(floor(&fresh, &f.owner), last.checked_add(1).unwrap());
     }
@@ -870,8 +838,7 @@ tilo_test_env::scenario! {
         let keys = f.keys();
         let mut author = Author::new(&f.replica);
         for value in ["1", "2"] {
-            let write = write(&f.replica, &f.other, &keys, &author.edit("value", value), now);
-            admit(&mut f.replica, &f.other, write, now);
+            put(&mut f.replica, &f.other, &keys, &author.edit("value", value), now);
         }
         let before = f.replica.durable().unwrap();
         let keys = &keys;
@@ -945,19 +912,12 @@ tilo_test_env::scenario! {
         let keys = f.keys();
         let mut author = Author::new(&f.replica);
         let (first, second) = (author.edit("value", "1"), author.edit("value", "2"));
-        let late = write(&f.replica, &f.other, &keys, &second, now);
-        admit(&mut f.replica, &f.other, late, now);
-        let early = write(&f.replica, &f.owner, &keys, &first, now);
-        admit(&mut f.replica, &f.owner, early, now);
+        put(&mut f.replica, &f.other, &keys, &second, now);
+        put(&mut f.replica, &f.owner, &keys, &first, now);
         let minted = envelope_of(&mint(&mut f.replica, &keys, &f.owner, now).unwrap());
-        let DocumentMutation::Snapshot(bytes) =
-            DocumentMutation::decode(&open(&keys, &minted).unwrap()).unwrap()
-        else {
-            panic!("a snapshot")
-        };
-        let merged = AutoCommit::load(&bytes).unwrap();
+        let merged = snapshot(&keys, &minted);
         assert_eq!(
-            merged.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            text(&merged, "value").as_deref(),
             Some("2")
         );
     }
@@ -970,25 +930,16 @@ tilo_test_env::scenario! {
         let mut author = Author::new(&f.replica);
         let (first, second) = (author.edit("first", "1"), author.edit("second", "2"));
         let unreadable = author.edit("third", "3");
-        let late = write(&f.replica, &f.other, &keys, &second, now);
-        admit(&mut f.replica, &f.other, late, now);
+        put(&mut f.replica, &f.other, &keys, &second, now);
         let foreign = KeyGroup::create(group(), MemberKey::generate("other").unwrap())
             .unwrap()
             .content_keys()
             .unwrap();
-        let sealed_apart = write(&f.replica, &f.other, &foreign, &unreadable, now);
-        admit(&mut f.replica, &f.other, sealed_apart, now);
-        let mut read_write = |op: &SignedOp| open(&keys, op);
+        put(&mut f.replica, &f.other, &foreign, &unreadable, now);
 
-        let opened = f
-            .replica
-            .publication()
-            .opened_document(APP, RECORD, &mut read_write)
-            .unwrap()
-            .expect("the record is held");
-        let read = AutoCommit::load(&opened.document).expect("what merges opens as a whole record");
+        let (read, unmerged) = reading(&f.replica, &keys);
         assert_eq!(
-            read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            text(&read, "value").as_deref(),
             Some("base"),
             "the record reads without what it lacks"
         );
@@ -996,14 +947,14 @@ tilo_test_env::scenario! {
         let other = *Ed25519PublicKey::from_bytes(f.other.verifying_key().to_bytes()).as_bytes();
         assert!(
             matches!(
-                opened.unmerged.as_slice(),
+                unmerged.as_slice(),
                 [
                     UnmergedWrite { author: a, seq: 1, reason: UnmergedReason::BehindUnsent { missing } },
                     UnmergedWrite { author: b, seq: 2, reason: UnmergedReason::Unreadable(_) },
                 ] if *a == other && *b == other && missing.len() == 1
             ),
             "{:?}",
-            opened.unmerged
+            unmerged
         );
         assert!(
             mint(&mut f.replica, &keys, &f.owner, now).is_err(),
@@ -1012,16 +963,10 @@ tilo_test_env::scenario! {
         let mut restored = f.restore(&f.replica.durable().unwrap()).unwrap();
         assert_eq!(held(&restored), held(&f.replica), "a restart keeps them too");
 
-        let early = write(&restored, &f.owner, &keys, &first, now);
-        admit(&mut restored, &f.owner, early, now);
-        let opened = restored
-            .publication()
-            .opened_document(APP, RECORD, &mut read_write)
-            .unwrap()
-            .unwrap();
-        let read = AutoCommit::load(&opened.document).unwrap();
+        put(&mut restored, &f.owner, &keys, &first, now);
+        let (read, _) = reading(&restored, &keys);
         assert_eq!(
-            read.get(ROOT, "second").unwrap().unwrap().0.as_str(),
+            text(&read, "second").as_deref(),
             Some("2"),
             "once what it waits for arrives the write is in the record"
         );
@@ -1053,24 +998,17 @@ tilo_test_env::scenario! {
         );
         admit(&mut f.replica, &f.owner, one, now);
         admit(&mut f.replica, &f.other, two, now);
-        let mut read_write = |op: &SignedOp| open(&keys, op);
 
-        let opened = f
-            .replica
-            .publication()
-            .opened_document(APP, RECORD, &mut read_write)
-            .unwrap()
-            .expect("the record is held");
-        let read = AutoCommit::load(&opened.document).expect("the record reads as a whole document");
+        let (read, unmerged) = reading(&f.replica, &keys);
         assert_eq!(
-            read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            text(&read, "value").as_deref(),
             Some("canonical"),
             "the record keeps the change of the sequence that reached it first"
         );
         let other = *Ed25519PublicKey::from_bytes(f.other.verifying_key().to_bytes()).as_bytes();
         assert!(
             matches!(
-                opened.unmerged.as_slice(),
+                unmerged.as_slice(),
                 [UnmergedWrite {
                     author: a,
                     seq: 1,
@@ -1078,7 +1016,7 @@ tilo_test_env::scenario! {
                 }] if *a == other && written == "42"
             ),
             "{:?}",
-            opened.unmerged
+            unmerged
         );
         assert_eq!(
             held(&f.replica).len(),
@@ -1089,16 +1027,10 @@ tilo_test_env::scenario! {
         // A compaction replaces the history, so it folds the sequence twice:
         // no reader can ever carry both changes.
         mint(&mut f.replica, &keys, &f.owner, now).expect("a fork does not block the compaction");
-        let opened = f
-            .replica
-            .publication()
-            .opened_document(APP, RECORD, &mut read_write)
-            .unwrap()
-            .unwrap();
-        assert!(opened.unmerged.is_empty());
-        let read = AutoCommit::load(&opened.document).unwrap();
+        let (read, unmerged) = reading(&f.replica, &keys);
+        assert!(unmerged.is_empty());
         assert_eq!(
-            read.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            text(&read, "value").as_deref(),
             Some("canonical")
         );
     }
@@ -1197,7 +1129,7 @@ tilo_test_env::scenario! {
             sealed_compaction::merge_sealed(&document, &mut read_write, &mut |_, _| Ok(()))
                 .unwrap();
         let (mut opened, mut merged) = (
-            AutoCommit::load(&opened.document).unwrap(),
+            read,
             AutoCommit::load(&merged).unwrap(),
         );
         let heads = |doc: &mut AutoCommit| {
@@ -1230,8 +1162,7 @@ tilo_test_env::scenario! {
         let now = f.now;
         let keys = f.keys();
         let mut author = Author::new(&f.replica);
-        let write = write(&f.replica, &f.other, &keys, &author.edit("value", "1"), now);
-        admit(&mut f.replica, &f.other, write, now);
+        put(&mut f.replica, &f.other, &keys, &author.edit("value", "1"), now);
         let history = held(&f.replica);
         let valid = wrapper(&f.replica, &keys, &history);
 
@@ -1286,8 +1217,7 @@ tilo_test_env::scenario! {
         let stale = f.keys();
         let current = f.rotate();
         let mut author = Author::new(&f.replica);
-        let write = write(&f.replica, &f.other, &current, &author.edit("value", "1"), now);
-        admit(&mut f.replica, &f.other, write, now);
+        put(&mut f.replica, &f.other, &current, &author.edit("value", "1"), now);
         let compaction = wrapper(&f.replica, &stale, &held(&f.replica));
         let owner = f.owner.clone();
         let forgery = forged(&f.replica, &owner, &compaction, now);
@@ -1302,8 +1232,7 @@ tilo_test_env::scenario! {
         let now = f.now;
         let workspace_keys = f.rotate();
         let mut author = Author::new(&f.replica);
-        let earlier = write(&f.replica, &f.other, &workspace_keys, &author.edit("first", SECRET), now);
-        admit(&mut f.replica, &f.other, earlier, now);
+        put(&mut f.replica, &f.other, &workspace_keys, &author.edit("first", SECRET), now);
         let scope = neighbour_wire::KeyScope::document(group(), APP, RECORD, None).unwrap();
         let mut document_group =
             KeyGroup::create(scope.group(), MemberKey::generate("owner").unwrap()).unwrap();
@@ -1328,7 +1257,7 @@ tilo_test_env::scenario! {
             panic!("a compaction opens to a snapshot");
         };
         let merged = AutoCommit::load(&bytes).unwrap();
-        assert_eq!(merged.get(ROOT, "first").unwrap().unwrap().0.as_str(), Some(SECRET));
+        assert_eq!(text(&merged, "first").as_deref(), Some(SECRET));
         // A replica without the keys takes it from its author as the history it holds.
         admit(&mut replica, &f.owner, minted, now);
         assert_eq!(held(&replica), held(&f.replica), "another replica supersedes");
@@ -1340,8 +1269,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let current = document_group.content_keys().unwrap();
         assert!(current.epoch() > stale.epoch());
-        let later = write(&f.replica, &f.other, &current, &author.edit("second", "2"), now);
-        admit(&mut f.replica, &f.other, later, now);
+        put(&mut f.replica, &f.other, &current, &author.edit("second", "2"), now);
         let forgery = forged(&f.replica, &f.owner, &wrapper(&f.replica, &stale, &held(&f.replica)), now);
         let owner = f.owner.clone();
         refused_with(&mut f.replica, &owner, forgery, now, "stale epoch");
@@ -1353,22 +1281,10 @@ tilo_test_env::scenario! {
         let now = f.now;
         let keys = f.keys();
         let mut author = Author::new(&f.replica);
-        let message = write(&f.replica, &f.other, &keys, &author.edit("value", "1"), now);
-        admit(&mut f.replica, &f.other, message, now);
+        put(&mut f.replica, &f.other, &keys, &author.edit("value", "1"), now);
         let compaction = mint(&mut f.replica, &keys, &f.owner, now).unwrap();
 
-        let mut fresh = StatePeer::new(
-            WORKSPACE,
-            f.authority.clone(),
-            vec![],
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        fresh.select_exact_admissions().unwrap();
-        fresh
-            .receive_from(origin(&f.owner), f.replica.workspace_message(), now)
-            .unwrap();
+        let mut fresh = f.fresh();
         assert!(
             fresh.document(APP, RECORD).is_none(),
             "the replica holds no history of the record"
@@ -1383,24 +1299,11 @@ tilo_test_env::scenario! {
         let now = f.now;
         let keys = f.keys();
         let mut author = Author::new(&f.replica);
-        let first = write(&f.replica, &f.other, &keys, &author.edit("value", "1"), now);
-        admit(&mut f.replica, &f.other, first, now);
-        let later = write(&f.replica, &f.other, &keys, &author.edit("value", "2"), now);
-        admit(&mut f.replica, &f.other, later.clone(), now);
+        put(&mut f.replica, &f.other, &keys, &author.edit("value", "1"), now);
+        let later = put(&mut f.replica, &f.other, &keys, &author.edit("value", "2"), now);
         let saved = checkpoint(&f.replica, &keys, &f.owner, now);
 
-        let mut fresh = StatePeer::new(
-            WORKSPACE,
-            f.authority.clone(),
-            vec![],
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        fresh.select_exact_admissions().unwrap();
-        fresh
-            .receive_from(origin(&f.owner), f.replica.workspace_message(), now)
-            .unwrap();
+        let mut fresh = f.fresh();
         // A change whose checkpoint this replica never saw waits for one.
         let waited = fresh
             .receive_from_report(origin(&f.other), later.clone(), now)
@@ -1431,8 +1334,7 @@ tilo_test_env::scenario! {
         let now = f.now;
         let keys = f.keys();
         let mut author = Author::new(&f.replica);
-        let first = write(&f.replica, &f.other, &keys, &author.edit("value", "1"), now);
-        admit(&mut f.replica, &f.other, first, now);
+        put(&mut f.replica, &f.other, &keys, &author.edit("value", "1"), now);
         let mut replica = f.replica.clone();
         let mut lagging = f.replica.clone();
         let older = mint(&mut f.replica, &keys, &f.owner, now).unwrap();
@@ -1444,8 +1346,7 @@ tilo_test_env::scenario! {
         assert!(!matches!(replay.primary(), InputDisposition::Accepted(_)));
         assert_eq!(f.replica.durable().unwrap(), after, "a replay changes nothing");
 
-        let second = write(&f.replica, &f.other, &keys, &author.edit("value", "2"), now);
-        admit(&mut f.replica, &f.other, second.clone(), now);
+        let second = put(&mut f.replica, &f.other, &keys, &author.edit("value", "2"), now);
         let newer = mint(&mut f.replica, &keys, &f.owner, now).unwrap();
         assert_eq!(held(&f.replica), vec![envelope_of(&newer)]);
 
@@ -1486,8 +1387,7 @@ tilo_test_env::scenario! {
         let writes: Vec<NeighbourMsg> = ["1", "2", "3"]
             .iter()
             .map(|value| {
-                let message = write(&holder, &f.other, &keys, &author.edit("value", value), now);
-                admit(&mut holder, &f.other, message.clone(), now);
+                let message = put(&mut holder, &f.other, &keys, &author.edit("value", value), now);
                 message
             })
             .collect();
@@ -1523,8 +1423,7 @@ tilo_test_env::scenario! {
         refused_with(&mut f.replica, &owner, forgery, now, "supersedes nothing");
 
         let first = mint(&mut f.replica, &keys, &owner, now).unwrap();
-        let third = write(&f.replica, &f.other, &keys, &author.edit("value", "4"), now);
-        admit(&mut f.replica, &f.other, third, now);
+        put(&mut f.replica, &f.other, &keys, &author.edit("value", "4"), now);
         let history = held(&f.replica);
         assert_eq!(history[0], envelope_of(&first));
         let forgery = forged(
@@ -1548,8 +1447,7 @@ tilo_test_env::scenario! {
         let now = f.now;
         let keys = f.keys();
         let mut author = Author::new(&f.replica);
-        let first = write(&f.replica, &f.other, &keys, &author.edit("value", "1"), now);
-        admit(&mut f.replica, &f.other, first, now);
+        put(&mut f.replica, &f.other, &keys, &author.edit("value", "1"), now);
         let one = held(&f.replica).remove(0);
         f.replica.core.documents.get_mut(&route()).unwrap().sealed = vec![one; MAX_SEALED_OPS].into();
         let more = write(&f.replica, &f.other, &keys, &author.edit("value", "2"), now);
@@ -1583,11 +1481,9 @@ tilo_test_env::scenario! {
         let now = f.now;
         let keys = f.keys();
         let mut author = Author::new(&f.replica);
-        let first = write(&f.replica, &f.other, &keys, &author.edit("value", "1"), now);
-        admit(&mut f.replica, &f.other, first.clone(), now);
+        let first = put(&mut f.replica, &f.other, &keys, &author.edit("value", "1"), now);
         mint(&mut f.replica, &keys, &f.owner, now).unwrap();
-        let second = write(&f.replica, &f.other, &keys, &author.edit("value", "2"), now);
-        admit(&mut f.replica, &f.other, second, now);
+        put(&mut f.replica, &f.other, &keys, &author.edit("value", "2"), now);
         let bytes = f.replica.durable().unwrap();
         assert_eq!(held(&f.restore(&bytes).unwrap()), held(&f.replica));
 
@@ -1685,8 +1581,7 @@ tilo_test_env::scenario! {
         let now = f.now;
         let keys = f.keys();
         let mut author = Author::by(&f.replica, &f.editor);
-        let first = write(&f.replica, &f.editor, &keys, &author.edit("value", "1"), now);
-        admit(&mut f.replica, &f.editor, first, now);
+        put(&mut f.replica, &f.editor, &keys, &author.edit("value", "1"), now);
         assert!(f.replica.publication().sealed_to_compact().is_empty());
         let one = held(&f.replica).remove(0);
         f.replica.core.documents.get_mut(&route()).unwrap().sealed =
@@ -1707,14 +1602,7 @@ tilo_test_env::scenario! {
         let keys = f.keys();
         let mut author = Author::new(&f.replica);
         for index in 0..super::sealed_compaction::PRESSED_HISTORY {
-            let next = write(
-                &f.replica,
-                &f.other,
-                &keys,
-                &author.edit("value", &index.to_string()),
-                now,
-            );
-            admit(&mut f.replica, &f.other, next, now);
+            put(&mut f.replica, &f.other, &keys, &author.edit("value", &index.to_string()), now);
         }
         assert!(f.replica.publication().sealed_to_compact().is_empty());
         let mut sequence = 0;
@@ -1842,7 +1730,7 @@ tilo_test_env::scenario! {
             .expect("a reader carries the change that reached the record first, never both");
         let mut restored = AutoCommit::load(&capture.into_bytes()).unwrap();
         assert_eq!(
-            restored.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            text(&restored, "value").as_deref(),
             Some("canonical")
         );
         // The reader continues that writer without writing its sequence twice.
@@ -1882,8 +1770,7 @@ tilo_test_env::scenario! {
             let mut plaintext = value.clone();
             plaintext[0] = u8::try_from(round).unwrap();
             let edit = author.edit_bytes(&format!("value-{round}"), plaintext);
-            let message = write(&f.replica, &f.owner, &keys, &edit, now);
-            admit(&mut f.replica, &f.owner, message, now);
+            put(&mut f.replica, &f.owner, &keys, &edit, now);
         }
         let joiner = f.restore(&f.replica.durable().unwrap()).unwrap();
         let read = |maximum: usize| {
@@ -2098,7 +1985,7 @@ tilo_test_env::scenario! {
             .unwrap();
         let restored = AutoCommit::load(&capture.into_bytes()).unwrap();
         assert_eq!(
-            restored.get(ROOT, "value").unwrap().unwrap().0.as_str(),
+            text(&restored, "value").as_deref(),
             Some("before rotation")
         );
         let mut wire: Durable<'_> = postcard::from_bytes(&before).unwrap();
@@ -2187,8 +2074,13 @@ fn a_compaction_by_a_member_who_may_not_write_is_refused() {
     let now = f.now;
     let keys = f.keys();
     let mut author = Author::new(&f.replica);
-    let write = write(&f.replica, &f.other, &keys, &author.edit("value", "1"), now);
-    admit(&mut f.replica, &f.other, write, now);
+    put(
+        &mut f.replica,
+        &f.other,
+        &keys,
+        &author.edit("value", "1"),
+        now,
+    );
     let viewer = SigningKey::from_bytes(&[110; 32])
         .verifying_key()
         .to_bytes();
@@ -2230,21 +2122,8 @@ tilo_test_env::scenario! {
             .unwrap();
         assert!(envelope_of(&message).encryption.is_some());
         assert!(sealing.publication().is_sealed_document(APP, RECORD));
-        let opened = sealing
-            .publication()
-            .opened_document(APP, RECORD, &mut |op| open(&keys, op))
-            .unwrap()
-            .unwrap();
-        assert_eq!(
-            AutoCommit::load(&opened.document)
-                .unwrap()
-                .get(ROOT, "value")
-                .unwrap()
-                .unwrap()
-                .0
-                .to_string(),
-            "\"sealed\""
-        );
+        let (read, _) = reading(&sealing, &keys);
+        assert_eq!(text(&read, "value").as_deref(), Some("sealed"));
         assert!(
             sealing.publication_mut()
                 .publish_incremental(APP, RECORD, Vec::new(), &f.owner, f.now)
@@ -2396,13 +2275,7 @@ tilo_test_env::scenario! {
             .receive_from_report(origin(&f.owner), first, now)
             .expect("a cleartext write before the seal is the record's base");
         assert!(f.replica.publication().is_sealed_document(APP, RECORD));
-        let opened = f
-            .replica
-            .publication()
-            .opened_document(APP, RECORD, &mut |op| open(&keys, op))
-            .unwrap()
-            .unwrap();
-        let read = AutoCommit::load(&opened.document).unwrap();
+        let (read, _) = reading(&f.replica, &keys);
         for (key, value) in [("first", "1"), ("second", "2"), ("sealed", "yes")] {
             assert_eq!(
                 read.get(ROOT, key)
@@ -2425,30 +2298,12 @@ tilo_test_env::scenario! {
         let mut author = Author::new(&f.replica);
         let mut changes = Vec::new();
         for n in 0..=held::MAX_HELD_INPUTS {
-            let change = write(
-                &f.replica,
-                &f.other,
-                &keys,
-                &author.edit("value", &n.to_string()),
-                now,
-            );
-            admit(&mut f.replica, &f.other, change.clone(), now);
+            let change = put(&mut f.replica, &f.other, &keys, &author.edit("value", &n.to_string()), now);
             changes.push(change);
         }
         let saved = checkpoint(&f.replica, &keys, &f.owner, now);
 
-        let mut fresh = StatePeer::new(
-            WORKSPACE,
-            f.authority.clone(),
-            vec![],
-            RevocationList::new(),
-            now,
-        )
-        .unwrap();
-        fresh.select_exact_admissions().unwrap();
-        fresh
-            .receive_from(origin(&f.owner), f.replica.workspace_message(), now)
-            .unwrap();
+        let mut fresh = f.fresh();
         let mut let_go = 0;
         for change in changes {
             let report = fresh
@@ -2510,13 +2365,8 @@ fn joins_late(f: &Fixture, last: &[NeighbourMsg], whole: &mut AutoCommit) {
         admit(&mut fresh, key, message(op), now);
     }
     assert_eq!(held(&fresh), held(&f.replica));
-    let opened = fresh
-        .publication()
-        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
-        .unwrap()
-        .unwrap();
-    assert!(opened.unmerged.is_empty(), "{:?}", opened.unmerged);
-    let mut read = AutoCommit::load(&opened.document).unwrap();
+    let (mut read, unmerged) = reading(&fresh, &keys);
+    assert!(unmerged.is_empty(), "{:?}", unmerged);
     assert_eq!(
         read.get_heads(),
         whole.get_heads(),
@@ -2595,31 +2445,24 @@ tilo_test_env::scenario! {
         let mut page = Author::new(&f.replica);
         let _let_go = page.edit("early-1", "first");
         let built_on = page.edit("early-2", "second");
-        let stuck = write(&f.replica, &f.other, &keys, &built_on, now);
-        admit(&mut f.replica, &f.other, stuck, now);
+        put(&mut f.replica, &f.other, &keys, &built_on, now);
         let mut member = Author::new(&f.replica);
-        let later = write(&f.replica, &f.owner, &keys, &member.edit("later", "kept"), now);
-        admit(&mut f.replica, &f.owner, later, now);
+        put(&mut f.replica, &f.owner, &keys, &member.edit("later", "kept"), now);
 
         let read = captured(&f, &f.replica, &keys).expect("the record reads");
         assert_eq!(text(&read, "value").as_deref(), Some("base"));
         assert_eq!(text(&read, "later").as_deref(), Some("kept"));
         assert_eq!(text(&read, "early-2"), None);
         let other = f.other.verifying_key().to_bytes();
-        let opened = f
-            .replica
-            .publication()
-            .opened_document(APP, RECORD, &mut |op| open(&keys, op))
-            .unwrap()
-            .unwrap();
+        let (_, unmerged) = reading(&f.replica, &keys);
         assert!(
             matches!(
-                opened.unmerged.as_slice(),
+                unmerged.as_slice(),
                 [UnmergedWrite { author, seq: 1, reason: UnmergedReason::BehindUnsent { missing } }]
                     if *author == other && missing.len() == 1
             ),
             "{:?}",
-            opened.unmerged
+            unmerged
         );
         assert!(
             mint(&mut f.replica, &keys, &f.owner, now).is_err(),
@@ -2661,13 +2504,8 @@ tilo_test_env::scenario! {
         let read = captured(&f, &f.replica, &keys).unwrap();
         assert_eq!(text(&read, "early-1").as_deref(), Some("first"));
         assert_eq!(text(&read, "early-2").as_deref(), Some("second"));
-        let opened = f
-            .replica
-            .publication()
-            .opened_document(APP, RECORD, &mut |op| open(&keys, op))
-            .unwrap()
-            .unwrap();
-        assert!(opened.unmerged.is_empty(), "{:?}", opened.unmerged);
+        let (_, unmerged) = reading(&f.replica, &keys);
+        assert!(unmerged.is_empty(), "{:?}", unmerged);
     }
 
     phase a_kept_reader_takes_a_write_it_read_without_in_once_its_base_arrives;
@@ -2682,8 +2520,7 @@ tilo_test_env::scenario! {
             page.edit("early-1", "first"),
             page.edit("early-2", "second"),
         );
-        let stuck = write(&f.replica, &f.other, &keys, &second, now);
-        admit(&mut f.replica, &f.other, stuck, now);
+        put(&mut f.replica, &f.other, &keys, &second, now);
         let mut kept = KeptDocument::default();
         let reader = f.authority.device_public_key;
         let mut opener = |op: &SignedOp| open(&keys, op);
@@ -2704,8 +2541,7 @@ tilo_test_env::scenario! {
             None
         );
 
-        let brought = write(&f.replica, &f.owner, &keys, &first, now);
-        admit(&mut f.replica, &f.owner, brought, now);
+        put(&mut f.replica, &f.owner, &keys, &first, now);
         let read = f
             .replica
             .open_document(
@@ -2741,30 +2577,17 @@ tilo_test_env::scenario! {
             AutoCommit::load(&base).unwrap().with_actor(actor.clone()),
         );
         let _let_go = page.edit("early-1", "first");
-        let stuck = write(
-            &f.replica,
-            &f.other,
-            &keys,
-            &page.edit("early-2", "second"),
-            now,
-        );
-        admit(&mut f.replica, &f.other, stuck, now);
+        put(&mut f.replica, &f.other, &keys, &page.edit("early-2", "second"), now);
 
         let mut reloaded = Author::of(&f.replica, AutoCommit::load(&base).unwrap().with_actor(actor));
-        let again = write(&f.replica, &f.other, &keys, &reloaded.edit("again", "1"), now);
-        admit(&mut f.replica, &f.other, again, now);
+        put(&mut f.replica, &f.other, &keys, &reloaded.edit("again", "1"), now);
         let read = captured(&f, &f.replica, &keys).expect("the record reads after one write");
         assert_eq!(text(&read, "again").as_deref(), Some("1"));
         assert_eq!(text(&read, "early-2"), None);
-        let opened = f
-            .replica
-            .publication()
-            .opened_document(APP, RECORD, &mut |op| open(&keys, op))
-            .unwrap()
-            .unwrap();
+        let (_, unmerged) = reading(&f.replica, &keys);
         assert!(
             matches!(
-                opened.unmerged.as_slice(),
+                unmerged.as_slice(),
                 [UnmergedWrite {
                     seq: 1,
                     reason: UnmergedReason::BehindUnsent { .. },
@@ -2772,23 +2595,17 @@ tilo_test_env::scenario! {
                 }]
             ),
             "{:?}",
-            opened.unmerged
+            unmerged
         );
 
-        let more = write(&f.replica, &f.other, &keys, &reloaded.edit("again", "2"), now);
-        admit(&mut f.replica, &f.other, more, now);
+        put(&mut f.replica, &f.other, &keys, &reloaded.edit("again", "2"), now);
         let read = captured(&f, &f.replica, &keys).expect("the record reads after two writes");
         assert_eq!(text(&read, "again").as_deref(), Some("2"));
         assert_eq!(text(&read, "early-2"), None);
-        let opened = f
-            .replica
-            .publication()
-            .opened_document(APP, RECORD, &mut |op| open(&keys, op))
-            .unwrap()
-            .unwrap();
+        let (_, unmerged) = reading(&f.replica, &keys);
         assert!(
             matches!(
-                opened.unmerged.as_slice(),
+                unmerged.as_slice(),
                 [UnmergedWrite {
                     seq: 1,
                     reason: UnmergedReason::BehindUnsent { .. },
@@ -2796,7 +2613,7 @@ tilo_test_env::scenario! {
                 }]
             ),
             "{:?}",
-            opened.unmerged
+            unmerged
         );
     }
 }
@@ -2856,8 +2673,7 @@ fn a_record_of_a_few_large_writes_opens_compacted_much_faster() {
     let body = "The service keeps its work beside its peers, and reads it back. ".repeat(250);
     for batch in 0..2 {
         let edit = author.texts(batch * 10, 10, &body);
-        let sealed = write(&f.replica, &editor, &keys, &edit, now);
-        admit(&mut f.replica, &editor, sealed, now);
+        put(&mut f.replica, &editor, &keys, &edit, now);
     }
     let replayed = time_to_open(&f, &keys);
     compact_set(&mut f, &keys, now);
@@ -3265,8 +3081,7 @@ tilo_test_env::scenario! {
             "its history is the one a replica that took the compaction first holds"
         );
         // What is written next lands, and the whole of it reads.
-        let next = write(&holder, &f.other, &keys, &author.edit("value", "4"), now);
-        admit(&mut holder, &f.other, next.clone(), now);
+        let next = put(&mut holder, &f.other, &keys, &author.edit("value", "4"), now);
         admit(&mut behind, &f.other, next, now);
         assert_eq!(
             text(&captured(&f, &behind, &keys).unwrap(), "value").as_deref(),
@@ -3295,8 +3110,7 @@ tilo_test_env::scenario! {
             .receive_from(origin(&f.owner), holder.workspace_message(), now)
             .unwrap();
         refused_with(&mut behind, &f.owner, fold.clone(), now, "has not admitted");
-        let next = write(&holder, &f.other, &keys, &author.edit("value", "4"), now);
-        admit(&mut holder, &f.other, next.clone(), now);
+        let next = put(&mut holder, &f.other, &keys, &author.edit("value", "4"), now);
         let _ = behind.receive_from_report(origin(&f.other), next.clone(), now);
         let reads = |peer: &StatePeer| {
             captured(&f, peer, &keys)
@@ -3377,12 +3191,10 @@ tilo_test_env::scenario! {
         let phone = f.other.clone();
         let (_, mut owner_copy, _, _) = three_writes(&f, &keys);
         let mut author = Author::new(&owner_copy);
-        let first = write(&owner_copy, &phone, &keys, &author.edit("first", "written"), now);
-        admit(&mut owner_copy, &phone, first, now);
+        put(&mut owner_copy, &phone, &keys, &author.edit("first", "written"), now);
         // A device that was ended holds the phone's first write and not its second.
         let mut behind = owner_copy.clone();
-        let second = write(&owner_copy, &phone, &keys, &author.edit("second", "written"), now);
-        admit(&mut owner_copy, &phone, second, now);
+        put(&mut owner_copy, &phone, &keys, &author.edit("second", "written"), now);
         let whole = owner_copy.clone();
         // The phone folds both into a compaction the workspace takes, and is removed: the
         // removal's cut keeps that compaction as the phone's history.
@@ -3479,16 +3291,9 @@ fn a_history_with_a_refused_write_compacts_without_it_and_takes_writes_again() {
         kept_open::reads_without_the_refused(&document);
         assert_eq!(refused, [], "nothing refused is left in the history");
         // The workspace's own reader reads the compacted record alike.
-        let opened = peer
-            .publication()
-            .opened_document(APP, RECORD, &mut |op| open(&keys, op))
-            .unwrap()
-            .unwrap();
-        assert_eq!(opened.unmerged, []);
-        assert_eq!(
-            text(&AutoCommit::load(&opened.document).unwrap(), "editor"),
-            text(&document, "editor")
-        );
+        let (read, unmerged) = reading(&peer, &keys);
+        assert_eq!(unmerged, []);
+        assert_eq!(text(&read, "editor"), text(&document, "editor"));
     }
 
     // The record takes writes again.
@@ -3574,13 +3379,8 @@ fn a_change_forged_into_a_members_sealed_checkpoint_is_not_read() {
     );
     // The checkpoint is read as the writes it stands in for merge, by every reader alike, and no
     // device with the keys gives its word for it.
-    let opened = f
-        .replica
-        .publication()
-        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
-        .unwrap()
-        .unwrap();
-    let opened = AutoCommit::load(&opened.document).unwrap();
+    let (read, _) = reading(&f.replica, &keys);
+    let opened = read;
     assert_eq!(text(&opened, "other").as_deref(), Some("kept"));
     assert_eq!(text(&opened, "value").as_deref(), Some("base"));
     let (_, holds) = f
@@ -3651,13 +3451,8 @@ fn an_honest_checkpoint_is_read_and_its_writes_go_once_every_device_with_its_key
 
     let read = captured(&f, &f.replica, &keys).unwrap();
     assert_eq!(text(&read, "other").as_deref(), Some("kept"));
-    let opened = f
-        .replica
-        .publication()
-        .opened_document(APP, RECORD, &mut |op| open(&keys, op))
-        .unwrap()
-        .unwrap();
-    assert_eq!(opened.unmerged, []);
+    let (_, unmerged) = reading(&f.replica, &keys);
+    assert_eq!(unmerged, []);
     assert!(
         f.replica
             .publication()
