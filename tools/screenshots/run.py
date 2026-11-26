@@ -334,6 +334,19 @@ def daemon_found(socket: Path) -> tuple[str, str]:
     return "", answer
 
 
+def daemon_serving(socket: Path) -> str:
+    """The workspace the daemon at `socket` serves: empty while its person's part is starting."""
+    try:
+        with socket_module.socket(socket_module.AF_UNIX) as native:
+            native.settimeout(5)
+            native.connect(str(socket))
+            native.sendall(b'{"native":"status"}\n')
+            answer = native.makefile().readline()
+        return str(json.loads(answer).get("workspace") or "")
+    except (OSError, ValueError):
+        return ""
+
+
 def staging_source(runtime: Path, plan: Plan) -> tuple[Path, str] | None:
     """Where `plan`'s tilolang app is built from, and the runtime its package names: what
     tools/screenshots/build.sh wrote for the app, which has no development build of its own
@@ -474,6 +487,17 @@ class Session:
             return "could not build", (
                 daemon_tail(self.log) + "\n— the build's own output —\n" + built.stdout + built.stderr)
         self._phase("build", started)
+        # The device answers its installs before its person's part runs, but an app starts in
+        # the workspace that part serves, and a development build is installed there too only
+        # while it serves it: the builds are installed once it does, which it began while the
+        # build ran.
+        started = time.monotonic()
+        deadline = time.monotonic() + 120
+        while not daemon_serving(socket):
+            if self.daemon.poll() is not None or time.monotonic() >= deadline:
+                return "no workspace", "the device serves no workspace\n" + daemon_tail(self.log)
+            time.sleep(0.1)
+        self._phase("serving", started)
         # The staging holds the app and every package it reads, each compiled for the id this
         # device names it: all of them are installed, as `tilolang dev` installs them, and the
         # app is the one of its own id.

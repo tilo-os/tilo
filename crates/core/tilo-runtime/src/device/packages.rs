@@ -63,7 +63,15 @@ struct Writer {
     followed: Arc<Mutex<()>>,
     /// Where a development build this device installs is installed too: the workspace its
     /// person's services serve, once they run ([`PackageCache::install_dev_builds_in`]).
-    dev_builds: Arc<Mutex<Option<Arc<super::dev_builds::DevBuilds>>>>,
+    dev_builds: Arc<Mutex<DevBuildsIn>>,
+}
+
+/// Where the device's development builds are installed beside it: the workspace its person's
+/// services serve once they run, and until then each build installed meanwhile, by its id.
+#[derive(Default)]
+struct DevBuildsIn {
+    workspace: Option<Arc<super::dev_builds::DevBuilds>>,
+    waiting: BTreeMap<String, Vec<u8>>,
 }
 
 /// The cache's rows: what its catalog has installed, and the packages on their way.
@@ -451,8 +459,37 @@ impl PackageCache {
 
     /// Install each development build this device installs from now on in the workspace
     /// `builds` names too, as its person: the person's services hand it over once they serve it.
-    pub(crate) fn install_dev_builds_in(&self, builds: super::dev_builds::DevBuilds) {
-        *self.writer.dev_builds.lock_recover() = Some(Arc::new(builds));
+    /// The builds the device installed before then are installed there now.
+    /// What installs them, when there are any: it runs on, and is joined only by a test.
+    pub(crate) fn install_dev_builds_in(
+        &self,
+        builds: super::dev_builds::DevBuilds,
+    ) -> Option<std::thread::JoinHandle<()>> {
+        let builds = Arc::new(builds);
+        let waiting = {
+            let mut dev_builds = self.writer.dev_builds.lock_recover();
+            dev_builds.workspace = Some(Arc::clone(&builds));
+            std::mem::take(&mut dev_builds.waiting)
+        };
+        if waiting.is_empty() {
+            return None;
+        }
+        // The workspace's install waits on the workspace's own service, which is starting with
+        // the person's services: it is asked off their start.
+        let started = std::thread::Builder::new()
+            .name("dev-builds".into())
+            .spawn(move || {
+                for (app, package) in waiting {
+                    if let Err(error) = builds.install(&package) {
+                        tracing::warn!(app, %error, "a development build is not installed in the workspace");
+                    }
+                }
+            });
+        started
+            .inspect_err(|error| {
+                tracing::warn!(%error, "the development builds are not installed in the workspace");
+            })
+            .ok()
     }
 
     /// Record that `app` was opened, as the cache's `opened` change does: what was used last is
@@ -601,10 +638,20 @@ impl Writer {
         let Some(package) = report.package.take() else {
             return Ok(report);
         };
-        let builds = self.dev_builds.lock_recover().clone();
-        if let Some(builds) = builds {
-            report.lines.push(builds.install(&package)?);
-        }
+        let mut dev_builds = self.dev_builds.lock_recover();
+        let Some(builds) = dev_builds.workspace.clone() else {
+            // The person's services are starting: the build is installed in the workspace they
+            // serve once they serve it.
+            if let Some(app) = report.installed.clone() {
+                dev_builds.waiting.insert(app, package);
+                report
+                    .lines
+                    .push("installed in the workspace once this device serves it".to_owned());
+            }
+            return Ok(report);
+        };
+        drop(dev_builds);
+        report.lines.push(builds.install(&package)?);
         Ok(report)
     }
 
@@ -1640,6 +1687,65 @@ mod tests {
             root,
             Arc::new(DeviceContent::at(root)),
         )
+    }
+
+    /// A development build the device installed while its person's services were starting is
+    /// installed in the workspace they serve once they serve it, as one installed after is.
+    #[test]
+    #[allow(
+        clippy::significant_drop_tightening,
+        reason = "the workspaces and their service stay up until the test ends"
+    )]
+    fn a_development_build_installed_before_the_workspace_is_served_reaches_it() {
+        let directory = tempfile::tempdir().unwrap();
+        let key = SigningKey::from_bytes(&[5; 32]);
+        let cache = PackageCache::new(
+            &key,
+            true,
+            &directory.path().join("packages"),
+            Arc::new(DeviceContent::at(&directory.path().join("content"))),
+        );
+        let device = tilo_app_package::SigningIdentity::from_signing_key(key);
+        let id = tilo_app_package::dev_app_id(
+            super::super::dev_builds::tests::OF,
+            &device.public_key_bytes(),
+        );
+        let report = cache
+            .writer
+            .in_workspace(package_actions::Report {
+                installed: Some(id.clone()),
+                package: Some(super::super::dev_builds::tests::dev_build(&device)),
+                ..package_actions::Report::default()
+            })
+            .unwrap();
+        assert_eq!(
+            report.lines,
+            ["installed in the workspace once this device serves it"],
+            "the person is told where it goes"
+        );
+        let placed = tilo_desktop_model::WorkspaceId::new();
+        let (workspaces, _home) = tilo_rt::app()
+            .block_on(super::super::workspaces::ServiceWorkspaces::test_hosting(
+                placed,
+            ))
+            .unwrap();
+        cache
+            .install_dev_builds_in(super::super::dev_builds::DevBuilds::new(
+                Arc::clone(&workspaces),
+                placed.to_string(),
+            ))
+            .expect("the waiting build is installed")
+            .join()
+            .unwrap();
+        assert!(
+            tilo_rt::app()
+                .block_on(workspaces.copies().app_versions(&placed.to_string()))
+                .unwrap()
+                .unwrap()
+                .iter()
+                .any(|installed| installed.release.app == id && installed.release.dev),
+            "the workspace runs the build it was handed once it served"
+        );
     }
 
     #[test]

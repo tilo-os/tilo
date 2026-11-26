@@ -61,19 +61,19 @@ impl DevBuilds {
         if manifest.dev.is_none() {
             return Err(format!("{app} is no development build"));
         }
+        let started = std::time::Instant::now();
         let surface = app_registry::publisher::entry::surface_hex(package)
             .map_err(|error| format!("the development build {app}: {error:#}"))?;
         let file = blake3::hash(package).to_hex().to_string();
         let total = package.len() as u64;
         let mut offset = 0_u64;
         for piece in package.chunks(PIECE) {
-            self.ask(
-                &app,
-                UPLOAD,
-                json!({"file": file, "offset": offset, "total": total, "data": hex::encode(piece)}),
-            )?;
+            let args =
+                json!({"file": file, "offset": offset, "total": total, "data": hex::encode(piece)});
+            self.ask(&app, UPLOAD, args)?;
             offset = offset.saturating_add(piece.len() as u64);
         }
+        let uploaded = started.elapsed();
         self.ask(
             &app,
             tilo_action_policy::roles::governance::INSTALL_APP,
@@ -88,7 +88,11 @@ impl DevBuilds {
             }),
         )?;
         Ok(format!(
-            "installed in the workspace as a development build: {app}"
+            "installed in the workspace as a development build: {app} ({} KiB handed over in {} \
+             ms, installed in {} ms)",
+            total / 1024,
+            uploaded.as_millis(),
+            started.elapsed().saturating_sub(uploaded).as_millis()
         ))
     }
 
@@ -162,4 +166,4 @@ fn refusal(app: &str, refused: &ActionCallError) -> String {
 
 #[cfg(test)]
 #[path = "dev_builds_tests.rs"]
-mod tests;
+pub(super) mod tests;

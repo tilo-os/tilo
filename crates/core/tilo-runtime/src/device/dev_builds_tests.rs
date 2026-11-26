@@ -12,10 +12,10 @@ use super::{DevBuilds, refusal};
 use crate::device::workspaces::ServiceWorkspaces;
 
 /// The app a development build is built of.
-const OF: &str = "org.example.notes";
+pub(in crate::device) const OF: &str = "org.example.notes";
 
 /// A development build of [`OF`] as a device signing with `device` packs one: its `.tapp`.
-fn dev_build(device: &SigningIdentity) -> Vec<u8> {
+pub(in crate::device) fn dev_build(device: &SigningIdentity) -> Vec<u8> {
     let directory = tempfile::tempdir().unwrap();
     let payload = directory.path().join("payload");
     std::fs::create_dir_all(payload.join("bin")).unwrap();

@@ -3000,10 +3000,14 @@ impl Daemon {
         match super::packages::PackageCache::this_device(&identity.key) {
             Ok(cache) => {
                 super::packages::follow(&cache, Arc::clone(&workspaces));
-                cache.install_dev_builds_in(super::dev_builds::DevBuilds::new(
-                    Arc::clone(&workspaces),
-                    workspace_id.clone(),
-                ));
+                // Builds installed while this start ran are installed in the workspace on a
+                // thread of their own.
+                drop(
+                    cache.install_dev_builds_in(super::dev_builds::DevBuilds::new(
+                        Arc::clone(&workspaces),
+                        workspace_id.clone(),
+                    )),
+                );
                 workspaces
                     .copies()
                     .provide(super::packages::PROVIDER, cache);
