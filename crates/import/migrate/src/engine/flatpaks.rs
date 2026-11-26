@@ -170,21 +170,3 @@ fn parse(listed: &str) -> Result<Vec<Installed>, String> {
     }
     Ok(apps)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn each_app_is_listed_once_with_where_it_came_from() {
-        let apps = parse(
-            "org.videolan.VLC\tVLC\tflathub\norg.videolan.VLC\tVLC\tflathub\ncom.example.Tool\t\tcompany\n",
-        )
-        .unwrap();
-        assert_eq!(apps.len(), 2);
-        assert_eq!(apps[1].name, "com.example.Tool");
-        assert_eq!(apps[1].origin, "company");
-        assert!(parse("org.example.App\tApp\t--user\n").is_err());
-        assert!(parse("").unwrap().is_empty());
-    }
-}

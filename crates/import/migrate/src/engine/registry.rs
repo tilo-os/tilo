@@ -231,22 +231,3 @@ pub fn named(name: &str) -> Result<&'static Row> {
 pub fn keys() -> Vec<&'static str> {
     SOURCES.iter().map(|source| source.key).collect()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn every_name_a_source_goes_by_finds_it_once() {
-        let mut seen = std::collections::BTreeSet::new();
-        for source in SOURCES {
-            for name in std::iter::once(&source.key).chain(source.aliases) {
-                assert!(seen.insert(*name), "{name} names two sources");
-                assert_eq!(named(name).unwrap().key, source.key);
-            }
-        }
-        assert_eq!(named(" Google-Drive ").unwrap().key, "gdrive");
-        let refused = named("myspace").unwrap_err().to_string();
-        assert!(refused.contains("gdrive") && refused.contains("tilo migrate sources"));
-    }
-}

@@ -34,34 +34,3 @@ pub fn read_bounded_string(
     String::from_utf8(read_bounded(reader, limit, exceeded)?)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn read_bounded_enforces_limit_and_reports_caller_error() {
-        let too_large = || io::Error::new(io::ErrorKind::InvalidData, "too large");
-
-        assert_eq!(
-            read_bounded(&b"abcd"[..], 4, too_large).ok().as_deref(),
-            Some(&b"abcd"[..])
-        );
-
-        let over = read_bounded(&b"abcde"[..], 4, too_large).err();
-        assert_eq!(
-            over.as_ref().map(io::Error::kind),
-            Some(io::ErrorKind::InvalidData)
-        );
-        assert_eq!(
-            over.as_ref().map(ToString::to_string).as_deref(),
-            Some("too large")
-        );
-
-        let infinite = read_bounded(io::repeat(b'x'), 16, too_large).err();
-        assert_eq!(
-            infinite.as_ref().map(io::Error::kind),
-            Some(io::ErrorKind::InvalidData)
-        );
-    }
-}

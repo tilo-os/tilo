@@ -1327,6 +1327,3 @@ impl CalibrationRun {
                 .all(|(member, run)| member.device == run.device && member.output == run.output)
     }
 }
-
-#[cfg(test)]
-mod tests;

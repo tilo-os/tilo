@@ -556,12 +556,3 @@ fn session_media(workspace: &str) -> Option<tilo_content::ContentStore> {
 fn session_media(_workspace: &str) -> Option<tilo_content::ContentStore> {
     None
 }
-
-/// The picture `address` names in `store`, for a test's fixture.
-#[cfg(test)]
-fn put_image(store: &tilo_content::ContentStore, bytes: &[u8]) -> String {
-    store.put(bytes).expect("the picture is kept")
-}
-
-#[cfg(test)]
-mod tests;

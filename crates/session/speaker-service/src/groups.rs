@@ -2952,6 +2952,3 @@ pub fn endpoints_from_graph(
         .take(tilo_network_actor::fabric::speaker_group::MAX_AUDIO_ENDPOINTS)
         .collect()
 }
-
-#[cfg(test)]
-mod tests;

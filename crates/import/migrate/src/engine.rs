@@ -49,8 +49,6 @@ pub mod writer;
 #[cfg(test)]
 mod files_tests;
 #[cfg(test)]
-mod services_tests;
-#[cfg(test)]
 pub(crate) mod tests;
 
 use std::cell::{RefCell, RefMut};

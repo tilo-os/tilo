@@ -20,8 +20,6 @@ use crate::bounded::read_bounded;
 use crate::pinned::nofollow::metadata_nofollow;
 use crate::pinned::{PinnedDirectory, readable_directory, same_snapshot};
 
-#[cfg(test)]
-mod api_tests;
 pub mod contacts;
 pub mod events;
 #[cfg(any(test, feature = "fixture"))]

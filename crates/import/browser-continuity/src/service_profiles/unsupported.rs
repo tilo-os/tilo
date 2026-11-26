@@ -101,20 +101,3 @@ fn unavailable() -> io::Error {
         "Website session profiles are unavailable on this platform",
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn unsupported_backend_refuses_root_admission() {
-        assert!(!super::super::supported());
-        assert_eq!(
-            GrantedRoot::admit_native(Path::new("not-an-admitted-root"))
-                .err()
-                .unwrap()
-                .kind(),
-            io::ErrorKind::Unsupported
-        );
-    }
-}

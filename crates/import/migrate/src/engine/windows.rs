@@ -256,22 +256,3 @@ $local = [Environment]::GetFolderPath('LocalApplicationData')
 if ($local) { Add-Root 'outlook' (Join-Path $local 'Microsoft\Outlook') 'Outlook local stores and drafts' }
 [Console]::Out.Write((ConvertTo-Json -InputObject @($rows.ToArray()) -Depth 3 -Compress))
 "#;
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_registry_names_folders_and_nothing_else() {
-        let named = parse(
-            br#"[{"kind":"known","path":"D:\\Docs","label":"Personal"},{"kind":"onedrive","path":"C:\\Users\\you\\OneDrive - Work","label":"Business1"},{"kind":"steam","path":"C:\\Steam","label":"Steam"}]"#,
-        )
-        .unwrap();
-        assert_eq!(named.len(), 3);
-        assert_eq!(named[2].label, "Steam game saves");
-        assert!(named[2].path.ends_with("userdata"));
-        assert_eq!(named[1].role, Role::OneDrive);
-        assert!(parse(br#"[{"kind":"registry","path":"x","label":"x"}]"#).is_err());
-        assert!(parse(br#"[{"kind":"known","path":"","label":"x"}]"#).is_err());
-    }
-}

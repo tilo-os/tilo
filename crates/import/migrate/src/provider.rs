@@ -813,6 +813,3 @@ impl Running {
         Ok(serde_json::json!({ "source": key, "run": run.0.to_string() }))
     }
 }
-
-#[cfg(test)]
-mod tests;

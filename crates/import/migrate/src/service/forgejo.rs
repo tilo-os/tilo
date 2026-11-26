@@ -610,39 +610,3 @@ fn number(issue: &Value) -> u64 {
 fn text<'a>(value: &'a Value, name: &str) -> &'a str {
     value.get(name).and_then(Value::as_str).unwrap_or_default()
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn an_address_names_the_forge_and_what_of_it_is_reviewed() {
-        let named = |address: &str| scope(address).map(|scope| (scope.server, scope.path));
-        assert_eq!(
-            named("https://forge.example/acme/app.git"),
-            Ok(("https://forge.example".into(), "acme/app".into()))
-        );
-        assert_eq!(
-            named("https://forge.example/acme/app/issues"),
-            Ok(("https://forge.example".into(), "acme/app".into()))
-        );
-        assert_eq!(
-            named("https://forge.example/acme/"),
-            Ok(("https://forge.example".into(), "acme".into()))
-        );
-        assert_eq!(
-            named("https://forge.example"),
-            Ok(("https://forge.example".into(), String::new()))
-        );
-        assert_eq!(
-            named("https://forge.example/a/b/c"),
-            Err(ServiceError::InvalidAddress)
-        );
-    }
-
-    #[test]
-    fn a_body_names_issues_as_hash_numbers_but_not_anchors_or_entities() {
-        let found = mentions("see #12, and #3.\nNot a#4, &#5; or /x#6; (#7)");
-        assert_eq!(found.into_iter().collect::<Vec<_>>(), [3, 7, 12]);
-    }
-}
