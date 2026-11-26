@@ -736,8 +736,8 @@ pub fn test_string_action_binding() -> tilo_actions::ActionBinding<String> {
     ))
 }
 
-#[cfg(test)]
-pub(crate) fn test_number_action_binding() -> tilo_actions::ActionBinding<f64> {
+#[cfg(any(test, feature = "test-support"))]
+pub fn test_number_action_binding() -> tilo_actions::ActionBinding<f64> {
     use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ParamType};
     test_action_binding(ActionSpec::typed_operation(
         "set",

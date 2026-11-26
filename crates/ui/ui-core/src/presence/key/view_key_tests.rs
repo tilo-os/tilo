@@ -1,4 +1,3 @@
-use tilo_ui_base::presence::key::*;
 use tilo_ui_base::presence::local_workspace_key;
 use crate::view::{ViewRect, ViewSubset};
 use tilo_presence::PresenceKey;

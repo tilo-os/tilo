@@ -1,8 +1,8 @@
-use tilo_ui_base::tokens::SurfaceRole;
-use tilo_ui_base::theme::Theme;
 //! A painter set loaded from wasm drawing through the toolkit's one path: the parts it draws, the
 //! parameters it names, and the shape that takes the pointer. What the interpreter refuses and bounds
 //! is tested beside it (crates/ui/theme-painter-wasm).
+use tilo_ui_base::tokens::SurfaceRole;
+use tilo_ui_base::theme::Theme;
 
 use std::fmt::Write as _;
 

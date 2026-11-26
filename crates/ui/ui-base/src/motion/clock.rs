@@ -279,7 +279,7 @@ pub fn frame_drawn(at: Instant) {
 
 /// Forget every frame wish and drawn frame on this thread: a test starts from a clock nothing has
 /// asked.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn forget_frames_for_tests() {
     WISHES.with(|wishes| wishes.borrow_mut().clear());
     DRAWN_AT.with(|drawn| drawn.borrow_mut().clear());

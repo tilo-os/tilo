@@ -386,7 +386,7 @@ impl tilo_ui_base::widget::ResourceOperations for Probe {
         doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &automerge::ObjId,
     ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
-        let crate::host_operation::OperationRequest { type_id, .. } = op.request();
+        let tilo_ui_base::host_operation::OperationRequest { type_id, .. } = op.request();
         if type_id == "bound.view" {
             if COMPOUND_MODE.get() == 1 {
                 // A refusal is the probe's to observe, not this view's.

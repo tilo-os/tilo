@@ -292,8 +292,8 @@ impl Default for Theme {
 }
 
 /// Every shipped theme, so an assertion about "a theme's surfaces" covers all of them.
-#[cfg(test)]
-pub(crate) const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
+#[cfg(any(test, feature = "test-support"))]
+pub const ALL_PRESETS_FOR_TEST: &[fn() -> Theme] = &[
     Theme::dark,
     Theme::light,
     || Theme::preset(Preset::PaperDark),

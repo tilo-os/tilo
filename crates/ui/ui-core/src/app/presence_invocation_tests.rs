@@ -88,7 +88,7 @@ impl tilo_ui_base::widget::ResourceOperations for TwoViews {
         _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &automerge::ObjId,
     ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
-        let crate::host_operation::OperationRequest { type_id, .. } = op.request();
+        let tilo_ui_base::host_operation::OperationRequest { type_id, .. } = op.request();
         let presence = crate::invocation_scope::current_presence();
         let mut probe = self.0.borrow_mut();
         if let Some(presence) = &presence {

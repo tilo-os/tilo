@@ -1,7 +1,7 @@
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::part_paint::wasm;
 //! Theme bundles: a document and the painter modules it names, loaded, registered and
 //! drawn through the one host; and the Bauhaus theme as shipped.
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::part_paint::wasm;
 
 use std::fmt::Write as _;
 use std::sync::Arc;

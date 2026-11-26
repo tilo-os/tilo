@@ -242,7 +242,7 @@ impl<'a> ResourceOperation<'a> {
 
 /// Offer `op` to `widget` for a caller that grants no document access. A handler that writes
 /// anyway is refused.
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 pub fn start_without_document_writes(
     widget: &mut (impl Widget + ?Sized),
     op: &ResourceOperation<'_>,

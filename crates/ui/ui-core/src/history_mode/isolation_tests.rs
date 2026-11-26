@@ -251,7 +251,7 @@ impl tilo_ui_base::widget::ResourceOperations for LiveOwner {
         _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &ObjId,
     ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
-        let crate::host_operation::OperationRequest {
+        let tilo_ui_base::host_operation::OperationRequest {
             invocation,
             type_id,
             ..

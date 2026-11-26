@@ -142,7 +142,7 @@ pub fn native_text_input() -> Input {
 }
 
 /// The input kind the last drain on this thread recorded, outside any drain.
-#[cfg(test)]
-pub(crate) fn drained_input() -> Input {
+#[cfg(any(test, feature = "test-support"))]
+pub fn drained_input() -> Input {
     DRAINED_INPUT.with(Cell::get)
 }

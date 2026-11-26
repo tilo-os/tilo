@@ -1666,8 +1666,8 @@ pub fn lay_out_detached(
 
 /// Solve `taffy` from `root` as a window does, for `widget` built into it at `node` with `nodes`:
 /// what a test that builds its own tree lays out.
-#[cfg(test)]
-pub(crate) fn solve_built(
+#[cfg(any(test, feature = "test-support"))]
+pub fn solve_built(
     widget: &mut dyn Widget,
     taffy: &mut TaffyTree<()>,
     (root, node): (NodeId, NodeId),

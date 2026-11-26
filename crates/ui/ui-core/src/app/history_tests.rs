@@ -2302,7 +2302,7 @@ impl tilo_ui_base::widget::ResourceOperations for PaletteHistoryOwner {
         _: &mut tilo_ui_base::widget::Edits<'_>,
         _: &automerge::ObjId,
     ) -> Result<Option<tilo_ui_base::widget::ResourceOperationStart>, String> {
-        let crate::host_operation::OperationRequest {
+        let tilo_ui_base::host_operation::OperationRequest {
             type_id, payload, ..
         } = op.request();
         if !tilo_ui_base::widget::resource_operation_handlers(self).contains(type_id) {

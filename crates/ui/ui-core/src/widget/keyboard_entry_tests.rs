@@ -1,5 +1,5 @@
 use crate::widget::*;
-use tilo_ui_base::widget::contract::Widget;
+use tilo_ui_base::widget::{keyboard_entry_rank, Widget};
 
 /// An editor whose whole accessibility subtree (a node per block of a long
 /// note) is too costly to build only to read its role.
