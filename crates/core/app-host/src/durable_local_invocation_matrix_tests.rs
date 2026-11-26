@@ -70,16 +70,13 @@ mod durable_local_matrix {
             reason = "the thread-bound identity guard stays separate from the Send broker fixture"
         )]
         fn new() -> ProvisionedEnvironment {
-            Self::with_owner_initializer_served(crate::test_owner::SessionOwner::initialize, true)
+            Self::provisioned(true)
         }
         /// An environment whose host opened none of its workspaces: its calls sign nothing.
         fn new_unserved() -> ProvisionedEnvironment {
-            Self::with_owner_initializer_served(crate::test_owner::SessionOwner::initialize, false)
+            Self::provisioned(false)
         }
-        fn with_owner_initializer_served(
-            initialize: impl FnOnce(&std::path::Path) -> Result<crate::test_owner::SessionOwner, String>,
-            served: bool,
-        ) -> ProvisionedEnvironment {
+        fn provisioned(served: bool) -> ProvisionedEnvironment {
             let root = tempfile::tempdir().unwrap();
             let mut identity_env = tilo_test_env::ScopedEnv::new();
             identity_env
@@ -95,7 +92,8 @@ mod durable_local_matrix {
                 tilo_identity::provisioning::IdentityStorage::Files,
             )
             .expect("provision real host receipt signer");
-            let mut owner = initialize(&root.path().join("owner")).unwrap();
+            let mut owner =
+                crate::test_owner::SessionOwner::initialize(&root.path().join("owner")).unwrap();
             let cert = owner.device();
             let key = owner.signing_key().clone();
             let person = owner.person_key().clone();

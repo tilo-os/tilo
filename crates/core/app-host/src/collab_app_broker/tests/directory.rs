@@ -24,6 +24,33 @@
 )]
 
 use super::*;
+use tilo_actions::remote::Caller;
+
+/// The fixture's owner asking as themselves, and the actor the broker reads them as.
+fn fixture_caller(fixture: &LocalDirectoryFixture) -> (Caller, BrokerActor) {
+    let caller = Caller::local_person("fixture-owner")
+        .in_workspace(fixture.cluster_id.clone())
+        .in_new_execution();
+    let actor = fixture.state.caller_actor(&caller);
+    (caller, actor)
+}
+
+/// One page of `fixture`'s directory as `cursor` names it, asked by `actor`.
+async fn directory_page(
+    fixture: &LocalDirectoryFixture,
+    actor: &BrokerActor,
+    cursor: &[u8],
+) -> Result<runtime_collab::ActionDirectoryPage, String> {
+    fixture
+        .state
+        .query_action_directory_for_actor(
+            &fixture.directories,
+            actor,
+            &fixture.cluster_id,
+            &page_query(fixture.peer_id, cursor),
+        )
+        .await
+}
 
 tilo_test_env::scenario! {
     fn the_local_directory_bounds_its_wire_and_cleans_up_after_a_connection;
@@ -315,13 +342,11 @@ tilo_test_env::scenario! {
 /// listed without its check, and nothing on that page is listed past it.
 #[tokio::test(flavor = "current_thread")]
 async fn a_row_whose_visibility_cannot_be_decoded_is_not_listed() {
-    use tilo_actions::remote::{Caller, CatalogueQuery};
+    use tilo_actions::remote::CatalogueQuery;
     tokio::task::LocalSet::new()
         .run_until(async {
             let fixture = local_directory_fixture();
-            let caller = Caller::local_person("fixture-owner")
-                .in_workspace(fixture.cluster_id.clone())
-                .in_new_execution();
+            let (caller, _) = fixture_caller(&fixture);
             let query = CatalogueQuery {
                 provider: Some(fixture.peer_id.to_string()),
                 max_results: 8,
@@ -355,30 +380,20 @@ async fn a_row_whose_visibility_cannot_be_decoded_is_not_listed() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn a_call_made_while_the_directory_is_republished_is_answered_from_the_next_one() {
-    use tilo_actions::remote::Caller;
     tokio::task::LocalSet::new()
         .run_until(async {
             let fixture = local_directory_fixture();
-            let caller = Caller::local_person("fixture-owner")
-                .in_workspace(fixture.cluster_id.clone())
-                .in_new_execution();
-            let actor = fixture.state.caller_actor(&caller);
+            let (_, actor) = fixture_caller(&fixture);
             // The app answers two asks as it does while it publishes a change, then its new
             // directory answers.
             fixture.directory_state.borrow_mut().publishing = 2;
-            let query = page_query(fixture.peer_id, &[]);
-            let page = tilo_test_env::within(
+            let listed = tilo_test_env::within(
                 "the listing made while the app republishes",
-                fixture.state.query_action_directory_for_actor(
-                    &fixture.directories,
-                    &actor,
-                    &fixture.cluster_id,
-                    &query,
-                ),
+                directory_page(&fixture, &actor, &[]),
             )
             .await
             .expect("the listing is answered from the app's next directory");
-            assert_eq!(page.rows.len(), 1);
+            assert_eq!(listed.rows.len(), 1);
             assert_eq!(
                 fixture.query_count(),
                 3,
@@ -413,7 +428,6 @@ async fn a_call_made_while_the_directory_is_republished_is_answered_from_the_nex
 /// resolves the session's live broker when the ask is made.
 #[tokio::test(flavor = "current_thread")]
 async fn a_queue_kept_from_before_the_host_replaced_its_owner_asks_the_live_one() {
-    use tilo_actions::remote::Caller;
     tokio::task::LocalSet::new()
         .run_until(async {
             let fanout = std::sync::Arc::new(crate::collab_broker::FanoutState::new());
@@ -423,13 +437,10 @@ async fn a_queue_kept_from_before_the_host_replaced_its_owner_asks_the_live_one(
             // takes its place on the same session's fanout.
             first.state.stop();
             let live = local_directory_fixture_on(std::sync::Arc::clone(&fanout));
-            let caller = Caller::local_person("fixture-owner")
-                .in_workspace(live.cluster_id.clone())
-                .in_new_execution();
-            let query = page_query(live.peer_id, &[]);
+            let (_, actor) = fixture_caller(&live);
             let asked = live.drive(
                 queue
-                    .try_query_pending(live.state.caller_actor(&caller), &live.cluster_id, query)
+                    .try_query_pending(actor, &live.cluster_id, page_query(live.peer_id, &[]))
                     .expect("the live broker takes the kept queue's ask"),
             );
             let answered = asked.await.expect("the live broker answers");
@@ -450,24 +461,12 @@ async fn a_queue_kept_from_before_the_host_replaced_its_owner_asks_the_live_one(
 /// refused as malformed. Neither is read as the level's first page.
 #[tokio::test(flavor = "current_thread")]
 async fn a_continuation_read_before_a_change_is_refused_and_one_never_issued_is_malformed() {
-    use tilo_actions::remote::Caller;
     tokio::task::LocalSet::new()
         .run_until(async {
             let fixture = local_directory_fixture();
-            let caller = Caller::local_person("fixture-owner")
-                .in_workspace(fixture.cluster_id.clone())
-                .in_new_execution();
-            let actor = fixture.state.caller_actor(&caller);
-            let malformed_query = page_query(fixture.peer_id, b"a page this host never issued");
-            let malformed = fixture
-                .state
-                .query_action_directory_for_actor(
-                    &fixture.directories,
-                    &actor,
-                    &fixture.cluster_id,
-                    &malformed_query,
-                )
-                .await;
+            let (_, actor) = fixture_caller(&fixture);
+            let malformed =
+                directory_page(&fixture, &actor, b"a page this host never issued").await;
             assert_eq!(
                 malformed.err().as_deref(),
                 Some("the directory cursor is malformed"),
@@ -475,19 +474,12 @@ async fn a_continuation_read_before_a_change_is_refused_and_one_never_issued_is_
             );
             // One this host issued, for a page read at a revision the app has
             // since left: the app's source cursor belongs to that revision.
-            let stale_query = page_query(
-                fixture.peer_id,
+            let stale = directory_page(
+                &fixture,
+                &actor,
                 b"continuation-v1:an entry this host has dropped",
-            );
-            let stale = fixture
-                .state
-                .query_action_directory_for_actor(
-                    &fixture.directories,
-                    &actor,
-                    &fixture.cluster_id,
-                    &stale_query,
-                )
-                .await;
+            )
+            .await;
             assert_eq!(
                 stale.err().as_deref(),
                 Some(super::super::directory_pagination::STALE_CONTINUATION),
@@ -499,13 +491,11 @@ async fn a_continuation_read_before_a_change_is_refused_and_one_never_issued_is_
 
 #[tokio::test(flavor = "current_thread")]
 async fn directory_fixture_preserves_scoped_uuid_through_actual_completion() {
-    use tilo_actions::remote::{Caller, InvokeArgument, InvokeRequest, RemoteActionTarget};
+    use tilo_actions::remote::{InvokeArgument, InvokeRequest, RemoteActionTarget};
     tokio::task::LocalSet::new()
         .run_until(async {
             let mut fixture = local_directory_fixture();
-            let caller = Caller::local_person("fixture-owner")
-                .in_workspace(fixture.cluster_id.clone())
-                .in_new_execution();
+            let (caller, _) = fixture_caller(&fixture);
             let request = InvokeRequest {
                 invocation: tilo_actions::InvocationId::new(),
                 target: RemoteActionTarget {
