@@ -1762,8 +1762,8 @@ impl Native {
             }
             crate::device::serve::refuse(
                 &stream,
-                "this computer has no person signed in yet: run `tilo status` to \
-                 see how it stands, then try again",
+                "Tilo on this computer isn't ready for its person yet: run `tilo status` \
+                 to see how it stands, then try again",
             );
             return;
         };
@@ -2191,7 +2191,8 @@ fn admit_within<H: tilo_actions::remote::ActionProvider + Send + Sync + 'static>
         Ok(admitted) => admitted,
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(io::Error::new(
             io::ErrorKind::TimedOut,
-            "this computer has no person signed in yet: its daemon admitted no session in time",
+            "Tilo on this computer didn't answer in time: run `tilo status` to see how it \
+             stands, then try again",
         )),
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
             Err(io::Error::other("this computer's daemon is stopping"))

@@ -2945,7 +2945,7 @@ fn a_session_that_cannot_be_made_is_refused_within_seconds() {
         panic!("a session that is not made is refused");
     };
     assert!(
-        refused.to_string().contains("no person signed in yet"),
+        refused.to_string().contains("didn't answer in time"),
         "the refusal says why: {refused}"
     );
     assert!(

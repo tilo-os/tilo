@@ -217,7 +217,7 @@ impl DaemonProfile {
 
     /// What a call in the workspace is told while the daemon is not serving it yet: its person's
     /// services start after it answers its device's actions.
-    const NOT_SERVING_YET: &'static str = "has no person signed in yet";
+    const NOT_SERVING_YET: &'static str = "run `tilo status` to see how it stands";
 
     /// Found the person's workspace here, as the first call of theirs in it does: this device's
     /// own client of the daemon asking in the workspace their key names. A key's run and a
