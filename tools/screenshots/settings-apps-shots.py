@@ -55,56 +55,56 @@ try:
     control = session.control
     session.control = lambda payload, timeout=120.0: control(payload, timeout)
 
-    # The ready handshake comes before the daemon and shell a fresh home starts: the desktop
-    # answers the control socket once it draws, which takes a few seconds on a scratch profile.
-    def answered() -> bool:
+    # The ready handshake comes before the daemon and shell a fresh home starts, and the action
+    # catalogue answers a little after the desktop's controls do: ask again until it does.
+    def rows(needle: str):
         try:
-            return bool(session.targets())
-        except Exception:  # noqa: BLE001 - not up yet, asked again
-            return False
+            return session.actions(needle)
+        except Exception:  # noqa: BLE001 - the dispatch is not up yet, asked again
+            return None
 
-    until("the desktop to answer", answered, 180)
-    session.open("so.tilo.settings")
+    def targets() -> list:
+        try:
+            return session.targets()
+        except Exception:  # noqa: BLE001 - not up yet, asked again
+            return []
+
+    def windows() -> list:
+        try:
+            return session.windows()
+        except Exception:  # noqa: BLE001 - not up yet, asked again
+            return []
+
+    def offered(needle: str, resource: str | None, action: str):
+        def row():
+            for found in rows(needle) or []:
+                where = address(found)
+                if where is not None and where[1] == action and (resource is None or where[0] == resource):
+                    return found
+            return None
+
+        return until(f"the session to offer {action}", row, 180)
+
+    until("the desktop's catalogue", lambda: rows("so.tilo.settings") is not None, 180)
+    session.invoke_row(
+        offered("so.tilo.settings", "app.so.tilo.settings", "open")
+    )
     until(
         "Settings' window",
-        lambda: any(window.get("app_id") == "so.tilo.settings" for window in session.windows()),
+        lambda: any(window.get("app_id") == "so.tilo.settings" for window in windows()),
         180,
     )
-    row = until(
-        "the App page's own action",
-        lambda: next(
-            (
-                row
-                for row in session.actions("open-pane")
-                if address(row) == ("settings.root", "open-pane")
-            ),
-            None,
-        ),
-        60,
-    )
-    session.invoke_row(row, {"page": "apps"})
+    session.invoke_row(offered("open-pane", "settings.root", "open-pane"), {"page": "apps"})
     until(
         "the Apps page's capabilities",
         lambda: any(
             "Send email" in target.get("name", "") or "Allowed" in target.get("name", "")
-            for target in session.targets()
+            for target in targets()
         ),
-        90,
+        180,
     )
     for dark in (False, True):
-        mode = until(
-            "the appearance mode's own action",
-            lambda: next(
-                (
-                    row
-                    for row in session.actions("set-dark-mode")
-                    if address(row) is not None and address(row)[1] == "set-dark-mode"
-                ),
-                None,
-            ),
-            30,
-        )
-        session.invoke_row(mode, {"on": dark})
+        session.invoke_row(offered("set-dark-mode", None, "set-dark-mode"), {"on": dark})
         # A snapshot waits for the frame the session paints: the page is shot after the restyle.
         session.snapshot(OUT / f"settings-apps-{'dark' if dark else 'light'}.png")
 finally:
