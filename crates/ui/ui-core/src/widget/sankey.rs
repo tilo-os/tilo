@@ -76,7 +76,13 @@ struct LinkBand {
 #[derive(Clone, Debug)]
 struct NodeLabel {
     /// Which node it names.
-    #[cfg_attr(not(test), allow(dead_code))]
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "only the label tests ask which node a painted label names"
+        )
+    )]
     index: usize,
     lines: Vec<(String, Rect)>,
     value: Option<(String, Rect)>,
