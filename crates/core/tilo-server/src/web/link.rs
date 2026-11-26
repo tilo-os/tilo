@@ -18,14 +18,18 @@
 //! - the actions path: devices asking the workspace to run actions
 //!   ([`tilo_peer_state::actions::ActionService`]), each request standing on
 //!   the signature of the device that made it, since a page's link proves
-//!   nothing of its opener.
+//!   nothing of its opener;
+//! - the join path: the workspace join exchange
+//!   ([`tilo_peer_state::join_answer::JoinAnswer`]), one request on each stream
+//!   after the device proves itself on the first, whoever's it is, as anyone
+//!   may dial the join ALPN over iroh.
 
 use std::sync::Arc;
 
 use tilo_net::webtransport::Answer;
 use tilo_server_client::link::Link;
 use tilo_server_protocol::web::{
-    LINK_ACTIONS_PATH, LINK_LIVE_SESSION_PATH, LINK_PAGE_PATH, LINK_RECORDS_PATH,
+    LINK_ACTIONS_PATH, LINK_JOIN_PATH, LINK_LIVE_SESSION_PATH, LINK_PAGE_PATH, LINK_RECORDS_PATH,
 };
 
 use crate::service::ServerProtocol;
@@ -46,7 +50,7 @@ pub(crate) struct Serving {
 /// ([`live_session`]). One that offers only others is refused.
 fn answer(path: &str, offered: &[String]) -> Answer {
     match path {
-        LINK_PAGE_PATH | LINK_RECORDS_PATH | LINK_ACTIONS_PATH => Answer::Accept,
+        LINK_PAGE_PATH | LINK_RECORDS_PATH | LINK_ACTIONS_PATH | LINK_JOIN_PATH => Answer::Accept,
         LINK_LIVE_SESSION_PATH
             if offered
                 .iter()
@@ -84,6 +88,52 @@ async fn proved(
     // The session names the device that proved itself on it from here on: it is
     // the transport's remote, and the admission above every frame decides by.
     Some(Link::web_as(session.clone(), device.device_public_key))
+}
+
+/// Answer the workspace join exchange on `session`: the device proves itself on the
+/// first stream, then each stream after carries one request, answered as the join
+/// service answers a connection from that device's endpoint over iroh.
+async fn serve_join(protocol: &ServerProtocol, session: tilo_net::webtransport::Session) {
+    use tilo_delivery_protocol::workspace_join::{
+        MAX_WORKSPACE_JOIN_REQUEST_BYTES, MAX_WORKSPACE_JOIN_RESPONSE_BYTES, WorkspaceJoinService,
+    };
+    use tilo_peer_state::join::{JoinTransportRequest, JoinTransportResponse};
+    use tilo_server_client::frame::{read_frame, write_frame};
+
+    let link = Link::web(session);
+    let Ok((mut send, mut recv)) = link.accept_bi().await else {
+        return;
+    };
+    let Ok(device) = protocol.authenticate_device(&mut recv, &mut send).await else {
+        link.close("the device did not prove itself");
+        return;
+    };
+    let Some(workspaces) = protocol.admin.get() else {
+        link.close("no workspace is served here");
+        return;
+    };
+    let join = workspaces.join_service();
+    while let Ok((mut send, mut recv)) = link.accept_bi().await {
+        let Ok(bytes) = read_frame(&mut recv, MAX_WORKSPACE_JOIN_REQUEST_BYTES).await else {
+            return;
+        };
+        let response = match postcard::from_bytes::<JoinTransportRequest>(&bytes) {
+            Ok(request) => join.handle(device.device_public_key, request).await,
+            Err(error) => JoinTransportResponse::Error {
+                code: 400,
+                message: format!("the join request does not read: {error}"),
+            },
+        };
+        let Ok(bytes) = postcard::to_allocvec(&response) else {
+            return;
+        };
+        if bytes.len() > MAX_WORKSPACE_JOIN_RESPONSE_BYTES
+            || write_frame(&mut send, &bytes).await.is_err()
+        {
+            return;
+        }
+        send.finish();
+    }
 }
 
 /// Serve `listener` until it is dropped.
@@ -125,6 +175,7 @@ pub(crate) async fn serve(listener: tilo_net::webtransport::Listener, serving: S
                         // stand on the signature of the device that made each ([`ActionService`]).
                         actions.serve_link(Arc::new(Link::web(session)));
                     }
+                    LINK_JOIN_PATH => serve_join(&serving.server, session).await,
                     _ => {}
                 }
             }

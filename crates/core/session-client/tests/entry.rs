@@ -145,6 +145,62 @@ async fn a_device_enters_a_listed_workspace_on_its_session_and_a_closed_entry_sa
     host.server.shutdown().await;
 }
 
+/// A new visitor's page, which has not named itself, opens a workspace whose entry takes anyone,
+/// over the browser's own transport to its host: the entry lets it in, the page proves its
+/// membership on the host's WebTransport listener (it has no iroh endpoint the host could
+/// answer), and the workspace's link opens. It is in the workspace with nothing asked of it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_visitors_page_lands_in_an_open_workspace_over_the_browsers_transport() {
+    let (alice, _) = UserIdentity::generate("Alice", 1);
+    let host_device = enrol(&alice, "lounge-host", DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let host = start_workspace_host(&alice, &host_device, state.path(), false).await;
+    let workspaces = host.server.workspaces().unwrap();
+    let lounge = workspaces.create("Lounge").await.unwrap();
+    workspaces
+        .publish(
+            &lounge.workspace,
+            &host_device.cert,
+            tilo_server_protocol::directory::Listing {
+                description: "Everyone".into(),
+                default_role: tilo_server_protocol::workspaces::Role::Editor,
+            },
+        )
+        .await
+        .unwrap();
+    let server_cert = host_device.cert.clone();
+    let visitor = new_key();
+    let page = new_key();
+    let (cert, entry) = entry_request(
+        &server_cert,
+        &lounge.workspace,
+        &page,
+        Entering {
+            held: None,
+            root: Some(&visitor),
+            label: "Firefox on Linux",
+            name: "",
+            token: None,
+        },
+    )
+    .await
+    .unwrap();
+    let peer = enter_page(
+        host.over(tilo_server_client::Carrier::WebTransport),
+        cert,
+        server_cert,
+        page,
+        Arc::new(MemoryPeerStore::default()),
+        entry,
+    );
+    peer.send(Cmd::Join(lounge.workspace_id)).unwrap();
+    assert_eq!(entered(&peer).await.unwrap().workspace, lounge.workspace);
+    in_workspace(&peer, lounge.workspace_id).await;
+    peer.close();
+    drop(host.web);
+    host.server.shutdown().await;
+}
+
 /// The entry of a device that has no root at hand: what it holds is all it can enter under.
 fn entering_without_a_root(held: Option<&Held>) -> Entering<'_> {
     Entering {

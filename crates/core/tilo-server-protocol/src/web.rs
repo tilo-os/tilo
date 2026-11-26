@@ -244,6 +244,12 @@ pub const LINK_RECORDS_PATH: &str = "/peer/v1/link/records";
 /// WebTransport: the first stream proves the asking device, then the actions
 /// protocol's own streams follow, as on [`crate::transport::ACTIONS_ALPN`].
 pub const LINK_ACTIONS_PATH: &str = "/peer/v1/link/actions";
+/// A device proving it a member of a workspace, over WebTransport: the first
+/// stream proves which device opened the session, whoever's it is (the
+/// handshake of `crate::auth`), then one stream carries one request of the
+/// workspace join exchange and its answer, as a connection on the join ALPN
+/// does over iroh.
+pub const LINK_JOIN_PATH: &str = "/peer/v1/link/join";
 
 /// Whether its owner deleted the workspace a device names by its id, below
 /// [`API_PREFIX`]: what a device the host no longer lets in (it was a member

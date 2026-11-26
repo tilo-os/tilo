@@ -7,6 +7,7 @@ use crate::join::{
     self, JoinChallengeRequest, JoinCompleteRequest, JoinTransportRequest, JoinTransportResponse,
 };
 use crate::join_transport::{WorkspaceJoinClient, invitation_host};
+use crate::membership::refused;
 use crate::owner::{
     DeviceWorkspaces, PendingEnrollmentId, PendingEnrollmentStatus, VerifiedNativeEnrollment,
     VerifiedNativeEnrollmentIntent,
@@ -14,7 +15,7 @@ use crate::owner::{
 use std::time::SystemTime;
 use tilo_delivery_protocol::workspace_join::WorkspaceDeviceHintV1;
 use tilo_identity::identity_store::DeviceIdentity;
-use tilo_user_identity::{DeviceCert, EndpointDelegation, RevocationList};
+use tilo_user_identity::{DeviceCert, RevocationList};
 
 fn current(
     identity: &DeviceIdentity,
@@ -351,13 +352,8 @@ fn expired(code: u16, message: &str) -> bool {
     code == 403 && message == tilo_user_identity::DeviceCertError::Expired.to_string()
 }
 
-/// The workspace's current state for a device that is a member: the membership
-/// exchange for `workspace` (its id and its server workspace), challenged and proven with
-/// the device's key and presenting `device`, the certificate it is a member
-/// with or the renewal of it. The answer is checked by whoever takes it in
-/// ([`VerifiedNativeEnrollment::finalize`],
-/// [`DeviceWorkspaces::renew_membership`]); a device's workspace service takes the same
-/// answer in as its member copy.
+/// The workspace's current state for a device that is a member
+/// ([`crate::membership::prove`]), asked of the host at `host` over iroh.
 ///
 /// # Errors
 /// The serving device cannot be reached, or refuses the proof.
@@ -373,86 +369,20 @@ pub async fn prove_membership(
         &mut getrandom::rand_core::UnwrapErr(getrandom::SysRng),
         &mut request_id,
     );
-    let delegation = endpoint_delegation(client.endpoint_public_key(), device, signer).await?;
-    let (challenge, governance) = match client
-        .request(
-            host.clone(),
-            JoinTransportRequest::MembershipChallenge(join::MembershipChallengeRequest {
-                workspace_id,
-                device_cert: device.clone(),
-                request_id,
-                delegation,
-            }),
-        )
-        .await
-        .map_err(|e| e.to_string())?
-    {
-        JoinTransportResponse::MembershipChallenge(value) => (value.challenge, value.governance),
-        JoinTransportResponse::Error { message, .. } => return Err(refused(&message)),
-        _ => return Err("the host answered no membership challenge".into()),
-    };
-    // A further device of a member writes its own row; a device the
-    // workspace lists already writes nothing.
-    let admission = crate::own_admission::sign_further_device_row(
-        &workspace_id.to_string(),
-        &governance,
+    crate::membership::prove(
+        client.endpoint_public_key(),
+        |request| async move {
+            client
+                .request(host.clone(), request)
+                .await
+                .map_err(|error| error.to_string())
+        },
+        request_id,
+        workspace_id,
         device,
         signer,
-        tilo_clock::wall(),
     )
-    .await?;
-    let proof = join::sign_membership_proof(challenge, signer).await?;
-    match client
-        .request(
-            host.clone(),
-            JoinTransportRequest::MembershipComplete(join::MembershipCompleteRequest {
-                proof,
-                admission,
-            }),
-        )
-        .await
-        .map_err(|e| e.to_string())?
-    {
-        JoinTransportResponse::MembershipComplete(bootstrap) => Ok(bootstrap),
-        JoinTransportResponse::Error { message, .. } => Err(refused(&message)),
-        _ => Err("the host answered no membership".into()),
-    }
-}
-
-/// How long the statement a membership request carries that its endpoint
-/// speaks for its device lasts: long enough for a session and its retries,
-/// short enough that a leaked endpoint key is bounded by the device that
-/// signed for it.
-const MEMBERSHIP_DELEGATION_LIFETIME_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
-
-/// This device's statement that `endpoint` speaks for it while that is not its
-/// own key, which is how a page dials: it keeps its device key unextractable
-/// and asks the key it can sign with to vouch for the transport key it holds.
-async fn endpoint_delegation(
-    endpoint: [u8; 32],
-    device: &DeviceCert,
-    signer: &dyn collab_types::signer::DeviceSigner,
-) -> Result<Option<EndpointDelegation>, String> {
-    if endpoint == device.device_public_key {
-        return Ok(None);
-    }
-    let now = tilo_clock::unix_now_ns();
-    let unsigned = EndpointDelegation::unsigned(
-        device.device_public_key,
-        endpoint,
-        now,
-        now.saturating_add(MEMBERSHIP_DELEGATION_LIFETIME_NS),
-    );
-    let digest = unsigned
-        .signing_digest()
-        .map_err(|error| error.to_string())?;
-    // A page's key signs through its promise, so this is awaited rather than
-    // taken from the turn.
-    let signature = signer
-        .sign(digest.to_vec())
-        .await
-        .map_err(|error| error.to_string())?;
-    Ok(Some(unsigned.with_signature(signature)))
+    .await
 }
 
 /// Take `workspace` in as one of this person's further devices: the workspace
@@ -525,19 +455,10 @@ pub async fn renew_membership(
     Ok(true)
 }
 
-/// The host's refusal, in its own words: what the person is shown.
-fn refused(message: &str) -> String {
-    let message: String = message
-        .chars()
-        .filter(|c| !c.is_control())
-        .take(240)
-        .collect();
-    format!("the workspace's host refused: {message}")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::membership::endpoint_delegation;
 
     tilo_test_env::scenario! {
         fn a_retained_proof_follows_what_its_host_answers;

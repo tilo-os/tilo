@@ -1199,25 +1199,56 @@ impl Task {
     /// Hold `workspace_id` here, as a member of it, before its link opens: a session told to
     /// join a workspace it does not hold yet asks its host's entry to let this device in, as the
     /// entry answers every device of a person the workspace has in it, and takes in the
-    /// membership the host that answered its address admits it with.
+    /// membership the host that answered its address admits it with. The membership is proved
+    /// over the host's carrier: its join service on iroh, or the join path of its WebTransport
+    /// listener for a page, which has no iroh endpoint of its own.
     ///
     /// # Errors
     ///
     /// The host refused the device or answered nothing, its answer does not read, or the
     /// membership it answered does not hold here.
-    #[cfg(not(target_arch = "wasm32"))]
     async fn take_in(&mut self, workspace_id: WorkspaceId) -> Result<(), LinkError> {
         let (served, hint) = self.entry_hint(workspace_id).await?;
         let dialer = self.dial.dialer(&self.config, self.signer.as_ref()).await?;
-        let endpoint = dialer.endpoint().await?;
-        let bootstrap = tilo_peer_state::owner::enroll::prove_membership(
-            &tilo_peer_state::join_transport::WorkspaceJoinClient::new(endpoint),
-            &served.endpoint_addr,
-            workspace_id,
-            &self.config.cert,
-            self.signer.as_ref(),
-        )
-        .await
+        let bootstrap = match dialer.server().carrier() {
+            tilo_server_client::Carrier::WebTransport => {
+                let link = dialer.link(Purpose::Join).await?;
+                link.prove_member(
+                    &self.config.cert,
+                    self.signer.as_ref(),
+                    &self.config.server_cert,
+                )
+                .await?;
+                let request_id: [u8; 32] = rand::random();
+                tilo_peer_state::membership::prove(
+                    self.config.cert.device_public_key,
+                    |request| ask_join(&link, request),
+                    request_id,
+                    workspace_id,
+                    &self.config.cert,
+                    self.signer.as_ref(),
+                )
+                .await
+            }
+            #[cfg(not(target_arch = "wasm32"))]
+            tilo_server_client::Carrier::Direct | tilo_server_client::Carrier::Relay => {
+                tilo_peer_state::owner::enroll::prove_membership(
+                    &tilo_peer_state::join_transport::WorkspaceJoinClient::new(
+                        dialer.endpoint().await?,
+                    ),
+                    &served.endpoint_addr,
+                    workspace_id,
+                    &self.config.cert,
+                    self.signer.as_ref(),
+                )
+                .await
+            }
+            #[cfg(target_arch = "wasm32")]
+            tilo_server_client::Carrier::Direct | tilo_server_client::Carrier::Relay => {
+                let _ = served;
+                Err("a page proves its membership only on its host's WebTransport listener".into())
+            }
+        }
         .map_err(LinkError::Unavailable)?;
         self.owner
             .install_member(
@@ -1229,20 +1260,6 @@ impl Task {
             )
             .map_err(LinkError::Unavailable)?;
         Ok(())
-    }
-
-    /// Hold `workspace_id` here: a page holds no workspace but the ones it is lent, so it asks
-    /// its host's entry and says it cannot.
-    ///
-    /// # Errors
-    ///
-    /// [`LinkError::Unavailable`], whatever the entry answered.
-    #[cfg(target_arch = "wasm32")]
-    async fn take_in(&self, workspace_id: WorkspaceId) -> Result<(), LinkError> {
-        let _ = self.entry_hint(workspace_id).await?;
-        Err(LinkError::Unavailable(
-            "a page holds no workspace but the ones it is lent".into(),
-        ))
     }
 
     /// What the entry answers for `workspace_id`: the workspace's host address, and the hint the
@@ -4870,6 +4887,27 @@ async fn ask_entry_once(
             "the host did not answer the entry".into(),
         )),
     }
+}
+
+/// One request of the workspace join exchange on `link`, the host's join path, which this
+/// device proved itself on: a stream of its own, and the host's answer on it.
+async fn ask_join(
+    link: &tilo_server_client::link::Link,
+    request: tilo_peer_state::join::JoinTransportRequest,
+) -> Result<tilo_peer_state::join::JoinTransportResponse, String> {
+    use tilo_delivery_protocol::workspace_join::MAX_WORKSPACE_JOIN_RESPONSE_BYTES;
+    let unreached = |error: &dyn std::fmt::Display| format!("the host's join service: {error}");
+    let bytes = postcard::to_allocvec(&request).map_err(|error| unreached(&error))?;
+    let (mut send, mut recv) = link.open_bi().await.map_err(|error| unreached(&error))?;
+    tilo_server_client::frame::write_frame(&mut send, &bytes)
+        .await
+        .map_err(|error| unreached(&error))?;
+    send.finish();
+    let answer =
+        tilo_server_client::frame::read_frame(&mut recv, MAX_WORKSPACE_JOIN_RESPONSE_BYTES)
+            .await
+            .map_err(|error| unreached(&error))?;
+    postcard::from_bytes(&answer).map_err(|error| unreached(&error))
 }
 
 #[cfg(test)]

@@ -1395,6 +1395,34 @@ impl ServerProtocol {
             )
             .await
     }
+
+    /// Prove which device opened a stream that does not say so itself, whoever's it
+    /// is: what the join exchange is asked on, as any endpoint may dial it over iroh,
+    /// before the workspace admits the device. Every request it then answers stands
+    /// on the device it proved here.
+    ///
+    /// # Errors
+    ///
+    /// The certificate is not valid, or the handshake failed.
+    pub async fn authenticate_device<R, W>(
+        &self,
+        recv: &mut R,
+        send: &mut W,
+    ) -> Result<crate::auth::AuthenticatedPeer, HandshakeError>
+    where
+        R: tokio::io::AsyncRead + Unpin + Send,
+        W: tokio::io::AsyncWrite + Unpin + Send,
+    {
+        use tilo_server_protocol::auth::HandshakeTrust::AnyCertifiedDevice;
+        self.identity
+            .authenticate(
+                EndpointTrust::Fixed(AnyCertifiedDevice),
+                recv,
+                send,
+                MAX_FRAME_BYTES,
+            )
+            .await
+    }
 }
 
 /// The device's own host, as its native owner joins the workspaces placed on it.

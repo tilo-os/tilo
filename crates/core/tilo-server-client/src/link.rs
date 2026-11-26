@@ -25,7 +25,7 @@ use std::task::{Context, Poll};
 
 use tilo_server_protocol::refusal::Refusal;
 use tilo_server_protocol::web::{
-    LINK_ACTIONS_PATH, LINK_LIVE_SESSION_PATH, LINK_RECORDS_PATH, WebLink,
+    LINK_ACTIONS_PATH, LINK_JOIN_PATH, LINK_LIVE_SESSION_PATH, LINK_RECORDS_PATH, WebLink,
 };
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 
@@ -56,6 +56,9 @@ pub enum Purpose {
     Records,
     /// Actions one device asks another of its workspace to run.
     Actions,
+    /// The workspace join exchange a device proves its membership with. Over iroh the
+    /// join client dials the host's join service itself, as it dials any host's.
+    Join,
 }
 
 impl Purpose {
@@ -66,6 +69,7 @@ impl Purpose {
             Self::LiveSession => LINK_LIVE_SESSION_PATH,
             Self::Records => LINK_RECORDS_PATH,
             Self::Actions => LINK_ACTIONS_PATH,
+            Self::Join => LINK_JOIN_PATH,
         }
     }
 
@@ -73,7 +77,7 @@ impl Purpose {
     /// iroh is dialled by the live session itself, which owns its ALPN.
     const fn alpn(self) -> Option<&'static [u8]> {
         match self {
-            Self::LiveSession => None,
+            Self::LiveSession | Self::Join => None,
             Self::Records => Some(tilo_server_protocol::transport::DIRECT_ALPN),
             Self::Actions => Some(tilo_server_protocol::transport::ACTIONS_ALPN),
         }
@@ -163,7 +167,8 @@ impl Dialer {
             Carrier::Direct | Carrier::Relay => {
                 let alpn = purpose.alpn().ok_or_else(|| {
                     LinkError::Unavailable(
-                        "the live session dials its own carrier over iroh".into(),
+                        "the live session and the join exchange dial their own carrier over iroh"
+                            .into(),
                     )
                 })?;
                 let endpoint = self.endpoint().await?;
