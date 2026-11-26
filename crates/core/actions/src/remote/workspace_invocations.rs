@@ -340,6 +340,10 @@ pub struct Invocation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub step: Option<String>,
     pub by: InvocationBy,
+    /// The work it is a step of, as its caller's context named it: an agent's session (every
+    /// call of one connection), an issue, a task. What a listing of one session's calls reads.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group: Option<crate::WorkGroup>,
     /// What its client called it, when it named it.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,

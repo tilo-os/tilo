@@ -252,6 +252,7 @@ fn described(recorded: &Recorded, addressed: Option<(&str, &str)>) -> Invocation
         spend: recorded.spend.clone(),
         step: None,
         by: by(&recorded.asked),
+        group: request.context.as_ref().and_then(|context| context.group.clone()),
         title: title(request),
         status: if recorded.undone {
             InvocationStatus::Undone

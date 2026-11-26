@@ -189,12 +189,8 @@ pub struct McpServer<H> {
     /// The documents whose window this session's changes showed the person
     /// ([`McpServer::changed_shown`]).
     showed: std::sync::Mutex<std::collections::HashSet<String>>,
-    /// The invocations of this session a watch follows, oldest first, each
-    /// with where its latest phase falls in the watch's sequence
-    /// ([`crate::watch`]).
-    pub(crate) invocations: std::sync::Mutex<Vec<agent::watch::WatchedInvocation>>,
-    /// Who waits for the next run event of this session: one of its invocations
-    /// starting, being held for its person, or ending ([`McpServer::invocations_moved`]).
+    /// Who waits for the next call of this session starting, being held for its person, or
+    /// ending ([`McpServer::invocations_moved`]).
     pub(crate) invocation_waiters: std::sync::Mutex<Vec<tilo_actions::remote::Completer<()>>>,
     /// The sources a watch of this session no longer follows because the host refused to tell
     /// when they change, each with why ([`McpServer::agent_watch`]).
@@ -622,7 +618,6 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             resolved_paths: std::sync::Mutex::default(),
             swept_reads: std::sync::Mutex::default(),
             showed: std::sync::Mutex::default(),
-            invocations: std::sync::Mutex::default(),
             invocation_waiters: std::sync::Mutex::default(),
             unfollowed: std::sync::Arc::default(),
             until_ended: false,
@@ -1300,9 +1295,10 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             ),
         );
         // A step that calls actions or asks its person is those calls' invocation already: it is
-        // listed as each one runs, and a record here would make one call into two.
-        let records_it =
-            self.records_tools && !matches!(tool.as_str(), "tilo_do" | "tilo" | "tilo_ask");
+        // listed as each one runs, and a record here would make one call into two. A watch only
+        // reads what moved, the invocations record among it: no call of its own.
+        let records_it = self.records_tools
+            && !matches!(tool.as_str(), "tilo_do" | "tilo" | "tilo_ask" | "tilo_watch");
         let started = records_it
             .then(|| {
                 self.host
@@ -2484,8 +2480,9 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         // in history and see in presence, and names the invocation's id, which
         // tells the agent's calls apart there.
         let group = self.agent_session(DeclaredInvocation::current().as_ref())?;
+        let watching = step::WATCH_READ.try_with(|()| ()).is_ok();
         Some(tilo_actions::ActionContext {
-            group: Some(group),
+            group: (!watching).then_some(group),
             // Who acts is the caller the session was admitted as: an agent for its person,
             // or the person themselves. Its actor names an agent `agent:<id>`, never a person.
             invoker: Some(tilo_actions::ActionInvoker::admitted(self.caller.acting())),

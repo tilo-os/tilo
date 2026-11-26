@@ -34,6 +34,9 @@ tokio::task_local! {
     /// which history keeps with each change, and the name history and presence
     /// show instead of the connection's own label.
     pub(super) static STEP_INVOCATION: Option<DeclaredInvocation>;
+    /// Set while a watch reads what it follows for itself (a path's history): those reads are
+    /// the watch's, never a call of the session's that its invocations list.
+    pub(super) static WATCH_READ: ();
 }
 
 /// The invocation a tool call says it is a step of
