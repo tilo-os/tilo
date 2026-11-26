@@ -1820,6 +1820,12 @@ impl Daemon {
         self.apps.attested(pid)
     }
 
+    /// [`Self::app_of`], for a connection process `pid` made to this device: the app it runs has
+    /// connected ([`crate::apps::Apps::connected_as`]).
+    pub(crate) fn app_connected(&self, pid: u32) -> Option<(String, String)> {
+        self.apps.connected_as(pid)
+    }
+
     /// The person's account at their server, asked as this device over the device action service
     /// ([`super::account`]): the server [`super::home::Home::get`] names. `None` while it names
     /// none; asked again then, so the account is there once the copy of the person's workspace

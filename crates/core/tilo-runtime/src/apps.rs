@@ -717,6 +717,16 @@ impl Apps {
         self.launched.of(pid)
     }
 
+    /// [`Self::attested`], for a connection process `pid` made to this device: the app it runs
+    /// has connected, so a start that waits for it to come up answers. An app that reaches the
+    /// device on its native endpoint alone (an SDK's) never makes the window connection the
+    /// start otherwise waits for.
+    pub(crate) fn connected_as(&self, pid: u32) -> Option<(String, String)> {
+        let attested = self.launched.of(pid)?;
+        self.launched.connects(pid);
+        Some(attested)
+    }
+
     /// What process of an app `pid` is, as [`Self::attested`] knows it: a sandboxed launch of the
     /// app's own package (and whether it is its held connection), or a tilolang process.
     pub(crate) fn process_of(&self, pid: u32) -> Option<ProcessOf> {
@@ -1651,6 +1661,13 @@ impl Launched {
         record.connected = true;
         drop(launches);
         true
+    }
+
+    /// The app launched as `pid` has connected.
+    fn connects(&self, pid: u32) {
+        if let Some(record) = self.0.lock_recover().get_mut(&pid) {
+            record.connected = true;
+        }
     }
 
     /// Whether the app launched as `pid` has connected.

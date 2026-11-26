@@ -1252,10 +1252,10 @@ const CLOSING_ENDPOINT: Duration = Duration::from_secs(5);
 const CLOSING_WORKSPACES: Duration = Duration::from_secs(10);
 
 /// What finds the app a process the daemon started runs, from the launch records `session`
-/// keeps.
+/// keeps, as the process connects: the app has connected once it reaches the native endpoint.
 fn app_of(session: &Arc<Daemon>) -> crate::seats::AppOf {
     let session = Arc::downgrade(session);
-    Arc::new(move |pid| session.upgrade()?.app_of(pid))
+    Arc::new(move |pid| session.upgrade()?.app_connected(pid))
 }
 
 /// What answers a connection from a process the daemon started, as the app it runs.
