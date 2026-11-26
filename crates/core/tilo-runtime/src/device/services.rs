@@ -3411,29 +3411,40 @@ fn published_here(parts: &BrokerParts<'_>) -> PublishedHere {
             parts.workspaces.copies().clone(),
             tilo_rt::app().handle().clone(),
         ));
+    // The workspace's machine environments, read where the workspace keeps their records and
+    // made again whenever one of them changes.
+    #[cfg(target_os = "linux")]
+    let environments: Arc<dyn PublishedResources> =
+        super::environment_readings::published(parts.workspaces);
     // What this device's daemon keeps itself, each resource served by the provider that keeps it.
     let kept_here = || {
-        super::published::Published::new()
-            .serving(
-                &[super::server_settings::SERVER],
-                Arc::clone(&server_settings),
-            )
-            .serving(&[super::nearby::RESOURCE], Arc::clone(&nearby))
-            .serving(&[tilo_workspace_service::live::RESOURCE], Arc::clone(&live))
-            .serving(
-                &[tilo_app_host::window_notes::RESOURCE],
-                Arc::clone(&window_notes),
-            )
-            .serving(&[super::mcp_server::SERVER], Arc::clone(&mcp_server))
-            .serving(
-                &[tilo_workspace_service::models::RESOURCE],
-                Arc::clone(&models),
-            )
-            .serving_prefix("vault.item:", Arc::clone(&vault_codes))
-            .serving(
-                &[tilo_workspace_service::workspace_accounts::RESOURCE],
-                Arc::clone(&accounts),
-            )
+        #[cfg(target_os = "linux")]
+        let kept = super::published::Published::new().serving(
+            &[tilo_actions::remote::environment_commands::ENVIRONMENTS],
+            Arc::clone(&environments),
+        );
+        #[cfg(not(target_os = "linux"))]
+        let kept = super::published::Published::new();
+        kept.serving(
+            &[super::server_settings::SERVER],
+            Arc::clone(&server_settings),
+        )
+        .serving(&[super::nearby::RESOURCE], Arc::clone(&nearby))
+        .serving(&[tilo_workspace_service::live::RESOURCE], Arc::clone(&live))
+        .serving(
+            &[tilo_app_host::window_notes::RESOURCE],
+            Arc::clone(&window_notes),
+        )
+        .serving(&[super::mcp_server::SERVER], Arc::clone(&mcp_server))
+        .serving(
+            &[tilo_workspace_service::models::RESOURCE],
+            Arc::clone(&models),
+        )
+        .serving_prefix("vault.item:", Arc::clone(&vault_codes))
+        .serving(
+            &[tilo_workspace_service::workspace_accounts::RESOURCE],
+            Arc::clone(&accounts),
+        )
     };
     // What the person's shell reads and changes over its link: what the daemon keeps, never what
     // the seat publishes. The seat is the shell's own, answered on its loop; a read the shell's

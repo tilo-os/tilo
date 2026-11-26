@@ -44,6 +44,9 @@ pub const PROVIDER: &str = "tilo.environment";
 pub const RESOURCE: &str = "environment";
 /// Run one command line in a session's shell.
 pub const RUN: &str = "run";
+/// The workspace's environments as a view reads and follows them: the reading a device
+/// publishes (`{"environments": [...]}`) and the root `tilo.environment` names `environments`.
+pub const ENVIRONMENTS: &str = "environments";
 
 /// The record's verbs an app, agent or script may ask of a workspace's environment, as the
 /// published surface names them: everything the record offers except `make` (the runtime makes a

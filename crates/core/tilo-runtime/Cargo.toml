@@ -230,6 +230,9 @@ fuser.workspace = true
 # The desktop's daemon runs the checks its projects' hosts approved, and a check's commands are
 # ush's own: a device with no Linux shell to run them with carries none of it.
 ush = { path = "../../vm/ush", features = ["quic"] }
+# The environment record a workspace's machine is: the daemon reads the records its workspace
+# keeps as any other record of it, and publishes them to the apps it serves.
+tilo-environment = { path = "../../vm/environment" }
 
 # App Sandbox or Seatbelt: how every app launches on stock macOS.
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -268,6 +271,10 @@ tilo-environment = { path = "../../vm/environment" }
 tilo-migrate = { path = "../../import/migrate", features = ["fixture"] }
 # Builds the tilolang apps a test's device has installed, and the runtime bundles they run on.
 tilolang-cli = { path = "../../lang/tilolang-cli" }
+# The package a view of the environments compiles as, and the host that follows its reading: the
+# same platform package an app reads, and the same source the session serves it from.
+tilolang = { path = "../../lang/tilolang" }
+tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 runtime-bundle = { package = "tilo-runtime-bundle", path = "../runtime-bundle" }
 # A server on this machine's loopback, which is what a test's devices relay through.
 test-server = { path = "../../../tools/test-server" }

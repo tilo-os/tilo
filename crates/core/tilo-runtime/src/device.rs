@@ -49,6 +49,10 @@ mod dispatch;
 mod environment_directory;
 #[cfg(all(test, target_os = "linux"))]
 mod environment_directory_tests;
+/// The workspace's environments as a view reads and follows them, kept current from the records
+/// the workspace holds.
+#[cfg(target_os = "linux")]
+mod environment_readings;
 #[cfg(target_os = "linux")]
 pub mod environments;
 /// This device's shell runtime (`ush`): what it asks the daemon, and the one client every

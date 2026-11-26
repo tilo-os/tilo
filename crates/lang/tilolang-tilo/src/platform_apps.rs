@@ -512,7 +512,13 @@ const PUBLISHED: &[Published] = &[
         app: ENVIRONMENT_APP,
         title: "Environments",
         kinds: &[],
-        roots: &[],
+        // The workspace's environments as a view reads and follows them: one reading, kept
+        // current from the records the workspace holds, never a copy of them.
+        roots: &[(
+            "environments",
+            "Environments",
+            tilo_actions::remote::environment_commands::ENVIRONMENTS,
+        )],
         files: &[include_str!("../../../vm/environment/surface.json")],
         described: true,
         listed: &[],

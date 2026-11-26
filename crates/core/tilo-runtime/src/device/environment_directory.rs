@@ -64,6 +64,12 @@ impl ActionProvider for Environments {
         _caller: &Caller,
         query: CatalogueQuery,
     ) -> Pending<Result<CataloguePage, ActionCallError>> {
+        let mut list = descriptor(LIST, "List the environments", ActionKind::Read, Vec::new());
+        // What the list answers, as its declaration types it: the environments, each as the
+        // reading a view follows publishes them.
+        list.contract.result = tilo_actions::ResultSpec::Json {
+            schema: environments_schema(),
+        };
         let mut actions = vec![
             descriptor(
                 CREATE,
@@ -75,7 +81,7 @@ impl ActionProvider for Environments {
                     "What it is called.",
                 )],
             ),
-            descriptor(LIST, "List the environments", ActionKind::Read, Vec::new()),
+            list,
         ];
         for action in environment_commands::APP_ACTIONS {
             actions.push(descriptor(
@@ -172,6 +178,37 @@ fn text(arguments: &mut Map<String, Value>, name: &str) -> Result<String, Action
             reason: format!("the call names no {name}"),
         }),
     }
+}
+
+/// The JSON schema of what `list` answers: the workspace's environments, each as the reading a
+/// view follows publishes them, and the record a create just made.
+fn environments_schema() -> Value {
+    json!({
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["result", "environments"],
+        "properties": {
+            "result": { "type": "string" },
+            "environments": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": ["key", "name", "tools", "grants"],
+                    "properties": {
+                        "key": { "type": "string" },
+                        "name": { "type": "string" },
+                        "tools": { "type": "array", "items": { "type": "string" } },
+                        "grants": {
+                            "type": "array",
+                            "items": { "type": "array", "items": {} },
+                        },
+                    },
+                },
+            },
+            "created": { "type": ["string", "null"] },
+        },
+    })
 }
 
 /// One action of the workspace's environments, as the catalogue offers it.
