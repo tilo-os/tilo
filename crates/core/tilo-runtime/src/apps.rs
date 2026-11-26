@@ -783,7 +783,8 @@ impl Apps {
 
     /// Start the app this computer has installed, as a window launch does, and watch its
     /// process: the launch is recorded before the app's connections are made, and forgotten
-    /// when the process ends.
+    /// when the process ends. A tilolang app's window is the person's layout's: what starts
+    /// here is the app's code, with no process of its own to watch.
     ///
     /// # Errors
     /// The app is not installed, has no window, or the launcher refuses it.
@@ -792,7 +793,14 @@ impl Apps {
         app_id: &str,
         workspace: &str,
         guard: Option<advisory_lock::FileLock>,
-    ) -> Result<u32, String> {
+    ) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        if crate::device::package_runs::runs_in_process(app_id) {
+            let started = self.start_tilolang_window(app_id, workspace);
+            // The lock is a launch's: no window process of its own runs to keep it.
+            drop(guard);
+            return started;
+        }
         let launch = self.start(app_id, workspace)?;
         let pid = launch.pid;
         let launched = Arc::clone(&self.launched);
@@ -806,7 +814,7 @@ impl Apps {
                 drop(guard);
             })
             .map_err(|error| format!("could not watch {app_id}: {error}"))?;
-        Ok(pid)
+        Ok(())
     }
 
     /// The installed package `app_id`, window or none.
@@ -995,6 +1003,17 @@ impl Apps {
             .map(|_| ticket)
             .map_err(|error| format!("could not watch the launched app: {error}"))
     }
+
+    /// Start what the window of the tilolang app `app` in `workspace` runs: an instance of the
+    /// app in this device's tilolang host, shown nowhere here. The window is the person's
+    /// layout's, drawn by the session that shows it; on Linux a window's process is a session's
+    /// alone, so a runtime with no session starts the app's code and never a window process that
+    /// would hold none of the app's data.
+    #[cfg(target_os = "linux")]
+    fn start_tilolang_window(&self, app: &str, workspace: &str) -> Result<(), String> {
+        self.instances
+            .start_window(app, workspace, self.origin_connection(app, workspace)?)
+    }
 }
 
 /// What an installed app answers search about one of its records: its own binary, started by
@@ -1112,7 +1131,9 @@ impl LauncherServices for Apps {
     }
 
     /// A standalone runtime draws no shell, so there is no place to open at;
-    /// it opens the app's default record.
+    /// it opens the app's default record. A tilolang app's window is a session's,
+    /// drawn where the person's layout shows it: this runtime starts the code behind
+    /// it, an instance of the app, and nothing waits for a process to connect.
     fn launch(
         &self,
         app: &str,
@@ -1120,6 +1141,10 @@ impl LauncherServices for Apps {
         _: Option<&str>,
         _: &LaunchPlace,
     ) -> Result<(), String> {
+        #[cfg(target_os = "linux")]
+        if crate::device::package_runs::runs_in_process(app) {
+            return self.start_tilolang_window(app, &workspace.id().to_string());
+        }
         self.start_watched(app, &workspace.id().to_string(), Shows::Window, None)
             .map(drop)
     }
@@ -1135,6 +1160,13 @@ impl LauncherServices for Apps {
     ) -> Result<LaunchOutcome, String> {
         if !content.hash.is_empty() {
             return Err("opening launch content is unsupported on this host".into());
+        }
+        #[cfg(target_os = "linux")]
+        if crate::device::package_runs::runs_in_process(app) {
+            self.start_tilolang_window(app, &workspace.id().to_string())?;
+            // The instance this runtime started answers for the app; it is no
+            // process of the app's with a launch ticket to connect with.
+            return Ok(LaunchOutcome::Unconfirmed);
         }
         Ok(self
             .start_watched(app, &workspace.id().to_string(), Shows::Window, None)?

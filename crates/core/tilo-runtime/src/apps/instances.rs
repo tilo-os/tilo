@@ -1,8 +1,9 @@
 //! The tilolang app instances this daemon starts itself, with no desktop session: an instance
 //! that shows nothing, for a call the device's dispatch delivers to an app with no instance
 //! running, an instance whose view the daemon opened for a caller (a page at
-//! `/w/<workspace>/<app>`), and the instance of a window the daemon launched itself (on macOS
-//! and Windows, where the daemon launches apps' windows).
+//! `/w/<workspace>/<app>`), and the instance of a window: the daemon launches the window's
+//! process itself on macOS and Windows, and on Linux, where only a session draws windows, it
+//! starts the code behind the window the person's layout holds.
 //!
 //! Each starts in the app's tilolang process, through the platform's launcher, in the sandbox
 //! every tilolang process runs in ([`crate::device::processes`]), exactly as a session's window
@@ -430,6 +431,25 @@ impl Instances {
         let (started, start) = tokio::sync::oneshot::channel();
         let _ = started.send(Ok(()));
         Ok(start)
+    }
+
+    /// Start the instance of `app`'s window in `workspace` here, with no process drawing it: the
+    /// person's layout holds the window, and the session that shows their layout draws it. What
+    /// starts is the app's code, on the app's own connection, exactly as a window's instance is.
+    pub(crate) fn start_window(
+        &self,
+        app: &str,
+        workspace: &str,
+        origin: Option<Descriptor>,
+    ) -> Result<(), String> {
+        self.start(
+            (app, workspace, origin),
+            self.person()?,
+            Shows::Window,
+            None,
+            (None, None),
+        )
+        .map(drop)
     }
 
     /// Open a view of `app` in `workspace` for `caller`, whom the device's dispatch admitted: an

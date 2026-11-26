@@ -732,14 +732,21 @@ fn opened_by(
     caller: &Caller,
     request: &InvokeRequest,
 ) -> Option<tilo_desktop_model::ownership::OpenedBy> {
-    let session = caller.agent_session()?;
-    // What the agent called the step that opened it, in its own words: never its session's
-    // name, which the mark says already.
-    let title = request
+    caller.acting().agent_id()?;
+    let session = request
         .context
         .as_ref()
         .and_then(|context| context.group.as_ref())
-        .filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP)
+        .filter(|group| group.kind == tilo_actions::context::AGENT_SESSION_GROUP);
+    // The session the call is a step of, as the request names it; the agent's own acting
+    // session where the caller keeps one (a run this device admitted with its execution).
+    let run = session.map_or_else(
+        || caller.agent_session().map(|session| session.id),
+        |group| Some(group.id.clone()),
+    )?;
+    // What the agent called the step that opened it, in its own words: never its session's
+    // name, which the mark says already.
+    let title = session
         .and_then(|group| group.label.as_deref())
         .and_then(|label| {
             tilo_actions::context::one_line(label, tilo_actions::context::MAX_LABEL_CHARS)
@@ -747,7 +754,7 @@ fn opened_by(
         .filter(|title| request.said_session_name().as_deref() != Some(title.as_str()))
         .unwrap_or_default();
     Some(tilo_desktop_model::ownership::OpenedBy {
-        run: session.id,
+        run,
         agent: caller
             .acting()
             .member_id()
