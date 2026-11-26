@@ -659,10 +659,27 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
     });
     println!("{}", logged_in_said(device.label(), days, &agent.name));
     let text = parsed.encode();
-    report(&text, Step::LoggedIn, &agent, None);
-    let added = add_and_report(&text, &agent);
-    let entered = entered_after_login(&device, added, wait_for_daemon_entry(&device))?;
-    if entered {
+    let ready = wait_for_daemon_entry(&device).is_ok();
+    let mut deferred = Vec::new();
+    let mut progress = |step, detail: Option<&str>| {
+        if ready {
+            report(&text, step, &agent, detail);
+        } else {
+            deferred.push((step, detail.map(str::to_owned)));
+        }
+    };
+    progress(Step::LoggedIn, None);
+    let added = add_and_report(&agent, progress);
+    // Registration is local and can finish while the daemon is offline. Only its present
+    // session can confirm the workspace the page is waiting for.
+    let mut entered = daemon_entry(&device);
+    if entered.is_ok() && !deferred.is_empty() {
+        for (step, detail) in deferred {
+            report(&text, step, &agent, detail.as_deref());
+        }
+        entered = daemon_entry(&device);
+    }
+    if entered.is_ok() {
         report(&text, Step::Entered, &agent, None);
     } else {
         report(
@@ -672,12 +689,13 @@ pub fn login(ticket: &str, agent: Option<&str>, named: Option<&str>) -> Result<E
             Some("this computer could not enter your workspace"),
         );
     }
+    entered_after_login(&device, added, entered)?;
     Ok(ExitCode::SUCCESS)
 }
 
 /// Add Tilo's tools to the agent's tool with the tool's own command, confirm them, and tell the
 /// tab that showed the ticket what became of them.
-fn add_and_report(ticket: &str, agent: &Agent) -> bool {
+fn add_and_report(agent: &Agent, mut progress: impl FnMut(Step, Option<&str>)) -> bool {
     let Some(tool) = agent.tool else {
         return false;
     };
@@ -688,8 +706,8 @@ fn add_and_report(ticket: &str, agent: &Agent) -> bool {
     let added = match agent::add_tools(tool, &tilo) {
         agent::Added::Verified => {
             println!("Tilo's tools are added to {}.", tool.title());
-            report(ticket, Step::ToolsAdded, agent, None);
-            report(ticket, Step::Check, agent, None);
+            progress(Step::ToolsAdded, None);
+            progress(Step::Check, None);
             true
         }
         agent::Added::Unverified => {
@@ -702,17 +720,15 @@ fn add_and_report(ticket: &str, agent: &Agent) -> bool {
         }
         agent::Added::Failed(said) => {
             println!("Tilo's tools are not in {} yet: {said}.", tool.title());
-            report(
-                ticket,
+            progress(
                 Step::Failed,
-                agent,
                 Some(&format!("adding Tilo's tools to {} failed", tool.title())),
             );
             false
         }
     };
     println!("Restart {}: {}", tool.title(), tool.restart());
-    report(ticket, Step::Restart, agent, None);
+    progress(Step::Restart, None);
     added
 }
 
@@ -803,16 +819,26 @@ fn wait_for_daemon_entry(device: &Device) -> Result<(), String> {
     use std::time::{Duration, Instant};
     const WAIT: Duration = Duration::from_secs(30);
     let start = Instant::now();
-    while start.elapsed() < WAIT {
-        if crate::mcp::ask_peer().is_some_and(|peer| daemon_entered(&peer, device)) {
-            return Ok(());
+    loop {
+        let entry = daemon_entry(device);
+        if entry.is_ok() || start.elapsed() >= WAIT {
+            return entry;
         }
         std::thread::sleep(Duration::from_millis(250));
     }
-    Err("Tilo's background sync hasn't confirmed entry yet. Run `tilo status` to check.".to_owned())
 }
 
-fn entered_after_login(device: &Device, added: bool, entered: Result<(), String>) -> Result<bool> {
+fn daemon_entry(device: &Device) -> Result<(), String> {
+    crate::mcp::ask_peer()
+        .filter(|peer| daemon_entered(peer, device))
+        .map(|_| ())
+        .ok_or_else(|| {
+            "Tilo's background sync hasn't confirmed entry yet. Run `tilo status` to check."
+                .to_owned()
+        })
+}
+
+fn entered_after_login(device: &Device, added: bool, entered: Result<(), String>) -> Result<()> {
     let tilo = std::env::current_exe().context("finding this program")?;
     let place = format!(
         "{} on {}",
@@ -838,7 +864,7 @@ fn entered_after_login(device: &Device, added: bool, entered: Result<(), String>
     }
     println!();
     println!("{}", next_steps(&tilo, http_mcp(device).as_deref(), added));
-    Ok(entered.is_ok())
+    Ok(())
 }
 
 /// A member device certificate for `key`, signed by the person's root.
@@ -964,6 +990,66 @@ mod tests {
             other[field] = value;
             assert!(!daemon_entered(&other, &device), "{field}");
         }
+    }
+
+    #[test]
+    fn the_key_holding_login_waits_for_its_workspace_and_rechecks_after_registration() {
+        use std::io::{BufRead as _, Write as _};
+        use std::os::unix::net::UnixListener;
+        tilo_test_env::in_own_process(
+            module_path!(),
+            "the_key_holding_login_waits_for_its_workspace_and_rechecks_after_registration",
+            || {
+                let mut home = tilo_test_env::TestHome::new().unwrap();
+                let root = home.root().to_owned();
+                home.env()
+                    .set(tilo_identity::provisioning::FILE_SECRETS_ENV, "1");
+                let (_, key, device) = device();
+                keep_for_test(home.env(), &root, &key, &device);
+                let keys = crate::identity::paths();
+                let _key = tilo_device_identity::persist::load_device_key(&keys).unwrap();
+                #[cfg(target_os = "linux")]
+                assert_eq!(
+                    rustix::process::dumpable_behavior().unwrap(),
+                    rustix::process::DumpableBehavior::NotDumpable
+                );
+                let place = Place::here(keys).unwrap();
+                let holder = DaemonPlace::of(place.dir(), &device.cert.device_public_key).unwrap();
+                let status_socket = UnixListener::bind(holder.socket()).unwrap();
+                let ready = json!({
+                    "session": "connected", "person": device.user(), "host": device.host_origin,
+                    "device_public_key": hex::encode(device.cert.device_public_key), "admitted_workspace": device.workspace,
+                });
+                let mut previous = ready.clone();
+                previous["admitted_workspace"] = json!("27f99b58-ed4c-4c79-b8c7-a28f3c8b5909");
+                let mut offline = ready.clone();
+                offline["session"] = json!("reconnecting");
+                let replies = std::thread::spawn(move || {
+                    for status in [previous, ready, offline] {
+                        let (mut stream, _) = status_socket.accept().unwrap();
+                        let mut line = String::new();
+                        std::io::BufReader::new(&stream)
+                            .read_line(&mut line)
+                            .unwrap();
+                        let request: serde_json::Value = serde_json::from_str(&line).unwrap();
+                        assert_eq!(request["method"], tilo_api::daemon::PEER_STATUS);
+                        writeln!(
+                            stream,
+                            "{}",
+                            json!({"jsonrpc": "2.0", "id": request["id"], "result": status})
+                        )
+                        .unwrap();
+                    }
+                });
+                wait_for_daemon_entry(&device)
+                    .expect("the holder moved into the certified workspace");
+                assert!(
+                    daemon_entry(&device).is_err(),
+                    "entry is checked again after local tool registration"
+                );
+                replies.join().unwrap();
+            },
+        );
     }
 
     #[test]

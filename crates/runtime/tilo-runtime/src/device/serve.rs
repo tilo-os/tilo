@@ -388,7 +388,7 @@ async fn serve_held<E: Enter>(
     let why = loop {
         tokio::select! {
             () = idle(&mut live, linger) => break "no connection came for as long as it lingers".to_owned(),
-            _ = login.tick() => if !place.serves_current_login() || place.logged_in() != logged_in {
+            _ = login.tick() => if !place.serves_current_login(shared.device.as_ref().ok()) || place.logged_in() != logged_in {
                 replaced = true;
                 break "this computer logged in again; the holder of the new login takes over"
                     .to_owned();

@@ -900,7 +900,12 @@ impl Tickets {
         // load also rejects an on-disk device key that no longer matches its kept certificate.
         let (_, here) = tilo_device_identity::login::load(&self.0.place)?
             .ok_or_else(|| anyhow!(tilo_api::daemon::enter::NOT_LOGGED_IN))?;
-        if here.cert != self.0.cert || self.0.login.as_ref().is_some_and(|(_, kept)| kept != &here)
+        if here.cert != self.0.cert
+            || self
+                .0
+                .login
+                .as_ref()
+                .is_some_and(|(_, kept)| !kept.same_login(&here))
         {
             bail!("this computer's login changed; use its current login");
         }

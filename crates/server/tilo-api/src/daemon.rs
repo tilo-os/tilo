@@ -119,22 +119,42 @@ impl DaemonPlace {
             .unwrap_or_default()
     }
 
-    /// Whether the login under this device's directory is still this daemon's: a login made
-    /// again makes another device, and the daemon of the one it replaced ends so that one
-    /// computer keeps one daemon and one live connection.
+    /// Whether this holder still serves the enrollment kept on this computer. Signing in again
+    /// can certify the same device key for a different person, workspace or host.
     #[must_use]
-    pub fn serves_current_login(&self) -> bool {
+    pub fn serves_current_login(
+        &self,
+        retained: Option<&tilo_device_identity::login::Device>,
+    ) -> bool {
         let Some(dir) = self.lock.parent() else {
             return true;
         };
-        match tilo_device_identity::login::load(&tilo_device_identity::login::Place::at(
-            dir.to_owned(),
-            tilo_identity::provisioning::collaboration_identity_paths(),
-        )) {
-            Ok(Some((key, _))) => key.verifying_key().to_bytes()[..8] == self.key,
-            // A login mid-write reads as none; the next look answers for it.
-            _ => true,
+        self.serves_login(
+            &tilo_device_identity::login::Place::at(
+                dir.to_owned(),
+                tilo_identity::provisioning::collaboration_identity_paths(),
+            ),
+            retained,
+        )
+    }
+
+    fn serves_login(
+        &self,
+        place: &tilo_device_identity::login::Place,
+        retained: Option<&tilo_device_identity::login::Device>,
+    ) -> bool {
+        let Ok(Some((key, current))) = tilo_device_identity::login::load(place) else {
+            // A login mid-write may not read yet. The next look answers for it.
+            return true;
+        };
+        if key.verifying_key().to_bytes()[..8] == self.key
+            && retained.is_none_or(|held| held.same_login(&current))
+        {
+            return true;
         }
+        // A damaged replacement certificate cannot retire the session that is still serving.
+        tilo_user_identity::verify_device_cert(&current.cert).is_err()
+            || tilo_user_identity::verify_device_cert(&current.server_cert).is_err()
     }
 
     /// Whether this computer is logged in, as the login under this device's directory says.
@@ -423,4 +443,117 @@ pub fn unreachable_answer(request: &serde_json::Value, problem: &str) -> Option<
         }
     };
     Some(json!({"jsonrpc": "2.0", "id": id, "result": result}))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::DaemonPlace;
+    use crate::tests::Person;
+    use tilo_device_identity::login::{self, Device, Place, ServerAddress};
+
+    fn address(public_key: &[u8; 32]) -> ServerAddress {
+        ServerAddress {
+            endpoint_addr: iroh::EndpointAddr::new(
+                iroh::EndpointId::from_bytes(public_key).unwrap(),
+            ),
+            relay_url: None,
+            web: None,
+        }
+    }
+
+    #[test]
+    fn a_changed_login_restarts_the_session_for_the_same_device_key() {
+        if !tilo_test_env::in_own_process_here(
+            module_path!(),
+            "a_changed_login_restarts_the_session_for_the_same_device_key",
+        ) {
+            return;
+        }
+        let dir = tempfile::tempdir_in(std::env::temp_dir().canonicalize().unwrap()).unwrap();
+        let place = Place::at(
+            dir.path().join("login"),
+            tilo_device_identity::IdentityPaths::under(dir.path().join("identity")),
+        );
+        let person = Person::new(11);
+        let server = Person::new(12);
+        let other_server = Person::new(13);
+        tilo_device_identity::persist::adopt_device_key(place.keys(), &person.device.to_bytes())
+            .unwrap();
+        let holder = DaemonPlace::at(dir.path(), place.dir(), &person.cert.device_public_key);
+        let retained = Device {
+            site: "https://tilo.test".into(),
+            host_origin: "https://host.tilo.test".into(),
+            workspace: "0f1e2d3c-4b5a-6978-8796-a5b4c3d2e1f0".into(),
+            workspace_name: Some("Studio".into()),
+            agent: "Codex".into(),
+            cert: person.cert,
+            server_address: Some(address(&server.cert.device_public_key)),
+            server_cert: server.cert,
+        };
+        assert!(holder.serves_login(&place, None));
+        assert!(
+            holder.serves_login(&place, Some(&retained)),
+            "a missing login defers"
+        );
+        let holds = |changed: &Device| {
+            login::store(&place, changed).unwrap();
+            holder.serves_login(&place, Some(&retained))
+        };
+        assert!(holds(&retained));
+        assert!(holds(&Device {
+            workspace_name: Some("Renamed studio".into()),
+            agent: "Another agent".into(),
+            server_address: Some(ServerAddress {
+                relay_url: Some("https://relay.tilo.test".into()),
+                ..address(&retained.server_cert.device_public_key)
+            }),
+            ..retained.clone()
+        }));
+
+        let mut renewed = retained.clone();
+        renewed.cert.issued_at_ns = renewed.cert.issued_at_ns.saturating_add(1);
+        assert!(
+            holds(&renewed),
+            "a changed certificate with an invalid signature defers"
+        );
+        tilo_user_identity::sign_device_cert(&mut renewed.cert, &person.root).unwrap();
+        assert!(
+            !holds(&renewed),
+            "a new signed certificate replaces this enrollment"
+        );
+        let mut damaged_host = retained.clone();
+        damaged_host.server_cert.issued_at_ns =
+            damaged_host.server_cert.issued_at_ns.saturating_add(1);
+        assert!(holds(&damaged_host), "an invalid server certificate defers");
+        assert!(!holds(&Device {
+            workspace: "8ae7da22-7a43-4f5f-b214-9ac61dc69481".into(),
+            ..retained.clone()
+        }));
+        assert!(!holds(&Device {
+            host_origin: "https://another.tilo.test".into(),
+            ..retained.clone()
+        }));
+        assert!(!holds(&Device {
+            server_cert: other_server.cert.clone(),
+            ..retained.clone()
+        }));
+        assert!(!holds(&Device {
+            server_address: Some(address(&other_server.cert.device_public_key)),
+            ..retained.clone()
+        }));
+        let other_holder = DaemonPlace::at(
+            dir.path(),
+            place.dir(),
+            &other_server.cert.device_public_key,
+        );
+        assert!(
+            !other_holder.serves_login(&place, None),
+            "a holder for another device steps down"
+        );
+        std::fs::write(place.dir().join("login.json"), b"{").unwrap();
+        assert!(
+            holder.serves_login(&place, Some(&retained)),
+            "a partial login defers"
+        );
+    }
 }

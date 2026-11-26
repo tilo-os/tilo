@@ -147,6 +147,24 @@ impl Device {
         hex::encode(self.cert.user_public_key)
     }
 
+    /// Whether the same device certificate is admitted to the same workspace at the same host.
+    /// Workspace names, agent names and network routes may change during an enrollment.
+    #[must_use]
+    pub fn same_login(&self, other: &Self) -> bool {
+        let endpoint = |login: &Self| {
+            login
+                .server_address
+                .as_ref()
+                .map(|server| server.endpoint_addr.id)
+        };
+        self.cert == other.cert
+            && self.workspace == other.workspace
+            && self.site == other.site
+            && self.host_origin == other.host_origin
+            && self.server_cert == other.server_cert
+            && endpoint(self) == endpoint(other)
+    }
+
     /// Whether the login names a server to enter through. One that names none, as logins
     /// older builds kept do, has ended: nothing this computer runs reaches its workspace again.
     #[must_use]

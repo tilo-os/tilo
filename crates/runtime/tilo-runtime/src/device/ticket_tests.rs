@@ -62,13 +62,13 @@ async fn a_member_device_cannot_issue_an_admin_ticket() {
 
 /// A device `root` certified, and its key.
 fn enrol(
-    root: &SigningKey,
+    root: &impl tilo_user_identity::StatementSigner,
     label: &str,
     capabilities: DeviceCapabilities,
 ) -> (SigningKey, DeviceCert) {
     let key = SigningKey::generate(&mut getrandom::rand_core::UnwrapErr(getrandom::SysRng));
     let mut cert = DeviceCert {
-        user_public_key: root.verifying_key().to_bytes(),
+        user_public_key: root.public_key(),
         device_public_key: key.verifying_key().to_bytes(),
         device_label: label.into(),
         capabilities,
@@ -662,7 +662,7 @@ struct ServersHost {
 
 /// The person's own server, holding their Servers workspace, and one of their devices entered
 /// into it: where a role's entry is written.
-async fn servers_host(root: &SigningKey) -> ServersHost {
+async fn servers_host(root: &impl tilo_user_identity::StatementSigner) -> ServersHost {
     let (server_key, server_cert) = enrol(root, "home-server", DeviceCapabilities::member());
     let (issuer_key, issuer_cert) = enrol(root, "laptop", DeviceCapabilities::primary());
     let state = tempfile::tempdir().unwrap();
@@ -672,7 +672,7 @@ async fn servers_host(root: &SigningKey) -> ServersHost {
             ..Default::default()
         },
         tilo_server::daemon::ServerIdentity {
-            user_public_key: root.verifying_key().to_bytes(),
+            user_public_key: root.public_key(),
             device_signing_key: server_key,
             device_cert: server_cert.clone(),
             revocations: RevocationList::new(),
@@ -700,6 +700,149 @@ async fn servers_host(root: &SigningKey) -> ServersHost {
         server_cert,
         _state: state,
     }
+}
+
+/// The legacy ticket a second enrolled computer issues on its own keyed endpoint, and the
+/// provider observing the signed reports it receives against the workspace's roster.
+async fn peer_report_ticket(
+    host: &ServersHost,
+    workspace: &str,
+    copy: tilo_peer_state::StatePeer,
+) -> (
+    Ticket,
+    iroh::protocol::Router,
+    Arc<tilo_actions::remote::TestProvider>,
+) {
+    use tilo_actions::remote::TestProvider;
+
+    let peer_endpoint = endpoint(&host.issuer_key).await;
+    let reports = Arc::new(TestProvider::new());
+    let peer_actions = ActionService::new(host.issuer_key.clone(), reports.clone());
+    assert!(copy.certificates().contains(&host.issuer_cert));
+    peer_actions.hold(tilo_peer_state::replica::Replica::new(copy));
+    let peer_login = login_to(
+        &host.server,
+        workspace,
+        (&host.issuer_cert, &host.server_cert),
+    );
+    let peer_state = tempfile::tempdir().unwrap();
+    let issuer = Tickets::new(
+        (host.issuer_key.clone(), host.issuer_cert.clone()),
+        peer_endpoint.clone(),
+        Some((host.issuer_key.clone(), peer_login)),
+        Arc::new(super::person::root),
+        None,
+        None,
+        tilo_device_identity::login::Place::at(
+            peer_state.path().to_path_buf(),
+            tilo_device_identity::IdentityPaths::under(peer_state.path().join("keys")),
+        ),
+        peer_actions.clone(),
+    );
+    let router = iroh::protocol::Router::builder(peer_endpoint)
+        .accept(ACTIONS_ALPN, peer_actions)
+        .spawn();
+    let issued = ask_device(&issuer, ISSUE, json!({})).await.unwrap();
+    let text = issued["ticket"].as_str().unwrap();
+    let ticket = Ticket::parse(text).unwrap();
+    (ticket, router, reports)
+}
+
+/// Once the daemon holds its workspace, its normal native provider still reaches a ticket
+/// issued by another enrolled device whose endpoint is keyed by that device's own certificate.
+#[test]
+fn a_workspace_on_this_device_reports_to_the_peer_that_issued_its_ticket() {
+    use super::services::{Daemon, tests::isolated_root};
+    use crate::RuntimeServices as _;
+    use tilo_device_identity::login::REPORTED;
+
+    let Some(profile) = isolated_root(
+        "device::ticket_tests::a_workspace_on_this_device_reports_to_the_peer_that_issued_its_ticket",
+    ) else {
+        return;
+    };
+    let runtime = tilo_rt::app();
+    let root = super::person::root().unwrap().unwrap();
+    let (desk_key, desk_cert) = tilo_identity::broker::trusted_current_device("").unwrap();
+    let host = runtime.handle().block_on(servers_host(&root));
+    let workspace = tilo_server_protocol::servers::person_workspace_id(&desk_cert.user_public_key);
+    let login = login_to(&host.server, &workspace, (&desk_cert, &host.server_cert));
+    let place = tilo_device_identity::login::Place::here(tilo_api::client::device_keys()).unwrap();
+    tilo_device_identity::login::store(&place, &login).unwrap();
+    let daemon = Arc::new(Daemon::start_reporting(&profile, &mut |_| {}).unwrap());
+    let api = daemon.api().unwrap();
+    runtime.handle().block_on(async {
+        let entered =
+            tilo_api::daemon::enter::connect(&desk_key, &login, Some(daemon.serving().lent()))
+                .await
+                .unwrap();
+        tilo_test_env::within(
+            "the daemon holds the signed workspace",
+            daemon.serving().hold(&entered),
+        )
+        .await;
+        let id = tilo_desktop_model::WorkspaceId::parse(&workspace).unwrap();
+        assert!(
+            daemon
+                .serving()
+                .workspaces()
+                .iter()
+                .any(|held| held.id() == id)
+        );
+
+        let copy = daemon
+            .serving()
+            .peer(id)
+            .expect("the workspace roster reached the desk");
+        let (ticket, router, reports) = peer_report_ticket(&host, &workspace, copy).await;
+        assert_eq!(ticket.issuer_device(), ticket.issuer.endpoint);
+        assert_ne!(ticket.issuer_device(), login.server_cert.device_public_key);
+        let report = json!({
+            "ticket": ticket.encode(),
+            "step": "entered",
+            "agent": "Codex",
+            "detail": "workspace open"
+        });
+        let answer = api
+            .answer(
+                "POST",
+                &format!("/v1/workspaces/{workspace}/resources/devices/actions/{REPORTED}"),
+                &[],
+                &serde_json::to_vec(&report).unwrap(),
+            )
+            .await;
+        let tilo_api::direct::AnswerBody::Whole(body) = answer.body else {
+            panic!("the device action answers with JSON");
+        };
+        assert_eq!(answer.status, 200, "{}", String::from_utf8_lossy(&body));
+        let result: Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(result["status"], "ok");
+        let calls = reports.asked();
+        assert_eq!(calls.len(), 1);
+        let called = &calls[0];
+        assert_eq!(called.target.provider, PROVIDER);
+        assert_eq!(
+            called.target.address,
+            tilo_actions::ActionAddress::new(RESOURCE, REPORTED)
+        );
+        assert_eq!(
+            called.argument,
+            InvokeArgument::Json(report.as_object().unwrap().clone())
+        );
+        let callers = reports.callers();
+        assert_eq!(callers[0].workspace(), Some(workspace.as_str()));
+        assert_eq!(
+            callers[0].device_public_key(),
+            Some(&desk_cert.device_public_key)
+        );
+        assert_eq!(
+            callers[0].user_public_key(),
+            Some(&desk_cert.user_public_key)
+        );
+        entered.close();
+        router.shutdown().await.unwrap();
+        host.server.shutdown().await;
+    });
 }
 
 /// A ticket that names a plan fills that plan's entry with the certified machine's key, as the
