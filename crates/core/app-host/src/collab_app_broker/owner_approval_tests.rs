@@ -279,13 +279,7 @@ tilo_test_env::scenario! {
                     request.invocation = tilo_actions::InvocationId::new();
                 }
                 request.confirmation = Some(confirmation);
-                if answer == Answer::Deny {
-                    assert_eq!(
-                        invoke(&state, &person, &request),
-                        Err(ActionCallError::NotPermitted)
-                    );
-                    assert!(service.calls.lock().unwrap().is_empty());
-                } else if written {
+                if written {
                     assert!(
                         matches!(
                             invoke(&state, &person, &request),
@@ -293,6 +287,12 @@ tilo_test_env::scenario! {
                         ),
                         "a confirmation the person's call writes itself is none"
                     );
+                } else if answer == Answer::Deny {
+                    assert_eq!(
+                        invoke(&state, &person, &request),
+                        Err(ActionCallError::NotPermitted)
+                    );
+                    assert!(service.calls.lock().unwrap().is_empty());
                 } else {
                     invoke(&state, &person, &request).unwrap();
                 }

@@ -119,10 +119,6 @@ pub type ActionDirectoryBridgeReply =
 pub(super) struct DirectoryReply(tilo_actions::remote::Completer<ActionDirectoryBridgeReply>);
 
 impl DirectoryReply {
-    /// The longest this asker is waited for. A remote caller has a deadline
-    /// of its own and gives up by dropping its answer, which ends the wait
-    /// sooner; the bound here only stops an owner that never answers from
-    /// pinning the request.
     /// `answer`, awaited for as long as this asker still wants it: the
     /// owning app answers on its next turn, and a turn running a heavy
     /// action or frame is busy, not gone. `Err(TimedOut)` once the asker's

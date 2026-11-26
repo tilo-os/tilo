@@ -617,11 +617,11 @@ impl AppBrokerState {
             return Err(ActionCallError::NotPermitted);
         }
         // Only the person's answer to the asked record this call was kept as is their yes.
-        let approved = super::approval::approved_by_person(caller, request.confirmation.as_ref());
-        if owner_action && !approved {
+        let answered = super::approval::approved_by_person(caller, request.confirmation.as_ref());
+        if owner_action && !answered {
             return Err(asking(&descriptor));
         }
-        let approved = owner_action && approved;
+        let approved = owner_action && answered;
         self.framework_policy(
             authority,
             (service.app_id(), &descriptor),
@@ -630,17 +630,6 @@ impl AppBrokerState {
             false,
         )
         .map_err(|error| stating(&descriptor, error))?;
-        if owner_action
-            && !Self::confirmed_as_asked(
-                authority.1,
-                &descriptor,
-                argument,
-                request.confirmation.as_ref(),
-                approved,
-            )
-        {
-            return Err(asking(&descriptor));
-        }
         let admitted = self.admit_host_action(
             caller,
             origin,
@@ -654,7 +643,7 @@ impl AppBrokerState {
         #[cfg(test)]
         tests::at_effect_barrier();
         let confirmation = match request.confirmation.as_ref() {
-            Some(Confirmation::Asked(_)) => serde_json::json!({"confirm": true}),
+            Some(Confirmation::Asked(_)) if approved => serde_json::json!({"confirm": true}),
             Some(Confirmation::Phrase(phrase)) => {
                 serde_json::json!({"confirmation_phrase": phrase})
             }

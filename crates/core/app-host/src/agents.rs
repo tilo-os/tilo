@@ -1482,20 +1482,7 @@ impl ServerAgents {
             Some(task) => task.ended_as(outcome, cost, clock.elapsed()).await,
             None => outcome,
         };
-        // An answer is logged where the model gives it; a turn that ends any other way says
-        // so here, or the log reads as if it were still going.
-        match &outcome {
-            Outcome::Answered(_) => {}
-            Outcome::Stopped(why) => {
-                tracing::info!(agent = %turn.agent.id.0, cost, %why, "an agent on the workspace's server stopped");
-            }
-            Outcome::Failed(why) => {
-                tracing::warn!(agent = %turn.agent.id.0, cost, %why, "an agent on the workspace's server could not go on");
-            }
-            Outcome::Cancelled => {
-                tracing::info!(agent = %turn.agent.id.0, cost, "an agent on the workspace's server was stopped by its person");
-            }
-        }
+        logged_ended(&outcome, &turn, cost);
         if cost > 0 {
             self.charge(workspace, sub_agents::payer(&turn), &day, cost)
                 .await;
@@ -1633,6 +1620,23 @@ impl ServerAgents {
     async fn charge(&self, workspace: &str, agent: &Agent, day: &str, cost: u64) {
         if let Err(error) = count_spend(&self.workspaces, workspace, agent, day, cost).await {
             tracing::warn!(%workspace, agent = %agent.id.0, %error, "an agent's spend is not counted");
+        }
+    }
+}
+
+/// Log how `turn` ended, at `cost`. An answer is logged where the model gives it; a turn that ends
+/// any other way says so here, or the log reads as if it were still going.
+fn logged_ended(outcome: &Outcome, turn: &Turn, cost: u64) {
+    match outcome {
+        Outcome::Answered(_) => {}
+        Outcome::Stopped(why) => {
+            tracing::info!(agent = %turn.agent.id.0, cost, %why, "an agent on the workspace's server stopped");
+        }
+        Outcome::Failed(why) => {
+            tracing::warn!(agent = %turn.agent.id.0, cost, %why, "an agent on the workspace's server could not go on");
+        }
+        Outcome::Cancelled => {
+            tracing::info!(agent = %turn.agent.id.0, cost, "an agent on the workspace's server was stopped by its person");
         }
     }
 }
