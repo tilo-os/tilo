@@ -30,9 +30,10 @@ pub struct DeviceDaemon {
 
 impl DeviceDaemon {
     /// The daemon of the device whose key is under the identity root
-    /// `identity` (made there when it has none), with its sockets in
-    /// `profile`.
-    pub fn start(identity: &Path, profile: &Path) -> Self {
+    /// `identity` (made there when it has none), serving the profile
+    /// `profile` for programs whose runtime directory is `runtime`: it
+    /// listens where those programs look for a daemon of that profile.
+    pub fn start(identity: &Path, profile: &Path, runtime: &Path) -> Self {
         let (key, _) = load_or_create_device_key(&IdentityPaths::under(identity)).unwrap();
         let seed = key.to_bytes();
         // Reading the key turned this process non-dumpable, as it does the
@@ -42,7 +43,12 @@ impl DeviceDaemon {
         // SAFETY: PR_SET_DUMPABLE takes scalar arguments only.
         assert_eq!(unsafe { libc::prctl(libc::PR_SET_DUMPABLE, 1, 0, 0, 0) }, 0);
         std::fs::create_dir_all(profile).unwrap();
-        let native = profile.join(tilo_paths::machine::DAEMON_NATIVE);
+        let sockets = {
+            let mut env = tilo_test_env::ScopedEnv::new();
+            env.set("XDG_RUNTIME_DIR", runtime);
+            tilo_device_identity::login::daemon::profile_sockets(identity, profile).unwrap()
+        };
+        let native = tilo_device_identity::login::daemon::native_in(&sockets);
         let listener = UnixListener::bind(&native).unwrap();
         let stopped = Arc::new(AtomicBool::new(false));
         let stopping = Arc::clone(&stopped);

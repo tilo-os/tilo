@@ -45,8 +45,11 @@ impl Session {
             }
         }
         let bus = tilo_test_env::PrivateBus::start_at(&root.path().join("run/bus"));
-        let device =
-            DeviceDaemon::start(&root.path().join("identity"), &root.path().join("daemon"));
+        let device = DeviceDaemon::start(
+            &root.path().join("identity"),
+            &root.path().join("daemon"),
+            &root.path().join("run"),
+        );
         let mut session = Self {
             root,
             bus,
@@ -99,6 +102,13 @@ impl Session {
         self.service = Some(service);
         let deadline = tilo_test_env::hang_deadline();
         loop {
+            if let Some(status) = self
+                .service
+                .as_mut()
+                .and_then(|service| service.try_wait().expect("the service's state is readable"))
+            {
+                panic!("the service ended before it claimed {NAME}: {status}");
+            }
             let owned = self
                 .command("busctl")
                 .args(["--user", "--no-pager", "status", NAME])

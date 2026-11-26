@@ -66,7 +66,10 @@ impl Bus {
             .map(|device| {
                 let identity = root.path().join(device);
                 let profile = root.path().join(format!("daemon-{device}"));
-                (device, DeviceDaemon::start(&identity, &profile))
+                (
+                    device,
+                    DeviceDaemon::start(&identity, &profile, &root.path().join("run")),
+                )
             })
             .collect();
         Self {
@@ -135,14 +138,19 @@ impl Bus {
 
     fn spawn_service(&mut self, mut command: Command) {
         assert!(self.service.is_none(), "a service is already running");
-        self.service = Some(command.spawn_locked().expect("the service binary starts"));
-        self.wait_for_owner();
+        let mut service = command.spawn_locked().expect("the service binary starts");
+        self.wait_for_owner(&mut service);
+        self.service = Some(service);
     }
 
-    /// Until something on the bus owns the Secret Service's name.
-    fn wait_for_owner(&self) {
+    /// Until something on the bus owns the Secret Service's name; a `service` that ends first
+    /// fails the test at once, saying how.
+    fn wait_for_owner(&self, service: &mut Child) {
         let deadline = tilo_test_env::hang_deadline();
         while !self.owned() {
+            if let Some(status) = service.try_wait().expect("the service's state is readable") {
+                panic!("the service ended before it claimed {NAME}: {status}");
+            }
             assert!(
                 Instant::now() < deadline,
                 "the service never claimed {NAME}"
@@ -816,7 +824,7 @@ fn a_client_holding_the_device_key_keeps_its_identity_key_out_of_files_though_th
 fn a_non_dumpable_portal_host_reaches_the_management_interface_only_by_proof() {
     let bus = Bus::start();
     let mut service = bus.child("serve", "device-a");
-    bus.wait_for_owner();
+    bus.wait_for_owner(&mut service);
     for (role, device) in [
         ("manager-dumpable", "device-a"),
         ("manager-unproven", "device-a"),
