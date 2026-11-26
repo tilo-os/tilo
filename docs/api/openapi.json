@@ -4158,80 +4158,6 @@
         "required": [],
         "description": ""
       },
-      "so.tilo.poker.table.sit.Arguments": {
-        "type": "object",
-        "properties": {
-          "seat": {
-            "maximum": 4294967295,
-            "minimum": 0,
-            "type": "integer"
-          }
-        },
-        "required": [
-          "seat"
-        ],
-        "description": ""
-      },
-      "so.tilo.poker.table.leave.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "so.tilo.poker.table.deal.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "so.tilo.poker.table.fold.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "so.tilo.poker.table.call.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "so.tilo.poker.table.raise.Arguments": {
-        "type": "object",
-        "properties": {
-          "to": {
-            "type": "number"
-          }
-        },
-        "required": [
-          "to"
-        ],
-        "description": ""
-      },
-      "so.tilo.poker.table.all-in.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "so.tilo.poker.table.show.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "so.tilo.poker.table.skip.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
-      "so.tilo.poker.table.rebuy.Arguments": {
-        "type": "object",
-        "properties": {},
-        "required": [],
-        "description": ""
-      },
       "terminal.session.run.Arguments": {
         "type": "object",
         "properties": {
@@ -67764,6 +67690,345 @@
         ],
         "description": "Sets how loud the place at `index` is."
       },
+      "tl.so.tilo.poker.InHand.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.poker.InHand.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.poker.InHand.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "folded",
+              "acted",
+              "shown"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.poker.InHand.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.poker.Award.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.poker.Award.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.poker.Award.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.poker.Award.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.poker.Hand.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.poker.Hand.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.poker.Hand.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.poker.Hand.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.poker.Player.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.poker.Player.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.poker.Player.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.poker.Player.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.poker.Table.$create.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The resource is made the first time it is wanted."
+      },
+      "tl.so.tilo.poker.Table.edit-text.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [
+              "title"
+            ],
+            "type": "string"
+          },
+          "value": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "field"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.poker.Table.edit-flag.Arguments": {
+        "type": "object",
+        "properties": {
+          "field": {
+            "description": "The name of the field to set.",
+            "enum": [],
+            "type": "string"
+          },
+          "value": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "field",
+          "value"
+        ],
+        "description": "A bound control changes the field it shows."
+      },
+      "tl.so.tilo.poker.Table.$scenario.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "The data the app's shots and demos start from is written."
+      },
+      "tl.so.tilo.poker.Table.sit.Arguments": {
+        "type": "object",
+        "properties": {
+          "seat": {
+            "type": "integer"
+          }
+        },
+        "required": [],
+        "description": "Takes a seat at the table, with a buy-in of chips."
+      },
+      "tl.so.tilo.poker.Table.leave.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Leaves the table."
+      },
+      "tl.so.tilo.poker.Table.deal.Arguments": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "description": "Deals the next hand: shuffles, moves the button and posts the blinds."
+      },
+      "tl.so.tilo.poker.Table.advance.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Moves the hand on once its street's betting is done: the next player's turn, the next cards\ndealt, or the hand paid out. Every move calls it; a call of its own changes only what the\ntable's rules have already decided, and refuses while a move is open."
+      },
+      "tl.so.tilo.poker.Table.close_bets.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Puts every player's bet back to zero for the next street: what closing a street's betting\nleaves behind."
+      },
+      "tl.so.tilo.poker.Table.settle_hand.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Pays the pots and ends the hand. The rules of the table call it once the hand is decided; a\ncall of its own pays what the showdown pays anyway and refuses while betting is open."
+      },
+      "tl.so.tilo.poker.Table.fold.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Folds your hand."
+      },
+      "tl.so.tilo.poker.Table.call.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Checks when nobody has bet, or calls the bet you face."
+      },
+      "tl.so.tilo.poker.Table.raise.Arguments": {
+        "type": "object",
+        "properties": {
+          "to": {
+            "type": "number"
+          }
+        },
+        "required": [
+          "to"
+        ],
+        "description": "Bets or raises to a total for this street."
+      },
+      "tl.so.tilo.poker.Table.all_in.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Puts all your chips in."
+      },
+      "tl.so.tilo.poker.Table.show.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Shows your cards to the table after the hand."
+      },
+      "tl.so.tilo.poker.Table.skip.Arguments": {
+        "type": "object",
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "type": "string"
+          }
+        },
+        "required": [],
+        "description": "Folds the hand of a player who has taken longer than their turn."
+      },
+      "tl.so.tilo.poker.Table.rebuy.Arguments": {
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "description": "Buys back in once you have no chips."
+      },
       "tl.so.tilo.print-centre.Defaults.$create.Arguments": {
         "type": "object",
         "properties": {},
@@ -100543,66 +100808,6 @@
       "arguments": "#/components/schemas/tilo.messages.export-content.Arguments"
     },
     {
-      "app": "so.tilo.poker",
-      "resource": "so.tilo.poker.table",
-      "action": "sit",
-      "arguments": "#/components/schemas/so.tilo.poker.table.sit.Arguments"
-    },
-    {
-      "app": "so.tilo.poker",
-      "resource": "so.tilo.poker.table",
-      "action": "leave",
-      "arguments": "#/components/schemas/so.tilo.poker.table.leave.Arguments"
-    },
-    {
-      "app": "so.tilo.poker",
-      "resource": "so.tilo.poker.table",
-      "action": "deal",
-      "arguments": "#/components/schemas/so.tilo.poker.table.deal.Arguments"
-    },
-    {
-      "app": "so.tilo.poker",
-      "resource": "so.tilo.poker.table",
-      "action": "fold",
-      "arguments": "#/components/schemas/so.tilo.poker.table.fold.Arguments"
-    },
-    {
-      "app": "so.tilo.poker",
-      "resource": "so.tilo.poker.table",
-      "action": "call",
-      "arguments": "#/components/schemas/so.tilo.poker.table.call.Arguments"
-    },
-    {
-      "app": "so.tilo.poker",
-      "resource": "so.tilo.poker.table",
-      "action": "raise",
-      "arguments": "#/components/schemas/so.tilo.poker.table.raise.Arguments"
-    },
-    {
-      "app": "so.tilo.poker",
-      "resource": "so.tilo.poker.table",
-      "action": "all-in",
-      "arguments": "#/components/schemas/so.tilo.poker.table.all-in.Arguments"
-    },
-    {
-      "app": "so.tilo.poker",
-      "resource": "so.tilo.poker.table",
-      "action": "show",
-      "arguments": "#/components/schemas/so.tilo.poker.table.show.Arguments"
-    },
-    {
-      "app": "so.tilo.poker",
-      "resource": "so.tilo.poker.table",
-      "action": "skip",
-      "arguments": "#/components/schemas/so.tilo.poker.table.skip.Arguments"
-    },
-    {
-      "app": "so.tilo.poker",
-      "resource": "so.tilo.poker.table",
-      "action": "rebuy",
-      "arguments": "#/components/schemas/so.tilo.poker.table.rebuy.Arguments"
-    },
-    {
       "app": "so.tilo.terminal",
       "resource": "terminal.session",
       "action": "run",
@@ -123053,6 +123258,222 @@
       "resource": "tl.so.tilo.playback.Playback",
       "action": "set_output_volume",
       "arguments": "#/components/schemas/tl.so.tilo.playback.Playback.set_output_volume.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.tilo.host.Notice",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.tilo.host.Notice.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.tilo.host.Notice",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.tilo.host.Notice.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.tilo.host.Notice",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.tilo.host.Notice.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.InHand",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.InHand.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.InHand",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.InHand.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.InHand",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.InHand.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.InHand",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.InHand.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Award",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Award.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Award",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Award.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Award",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Award.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Award",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Award.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Hand",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Hand.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Hand",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Hand.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Hand",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Hand.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Hand",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Hand.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Player",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Player.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Player",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Player.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Player",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Player.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Player",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Player.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "$create",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.$create.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "edit-text",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.edit-text.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "edit-flag",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.edit-flag.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "$scenario",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.$scenario.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "sit",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.sit.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "leave",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.leave.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "deal",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.deal.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "advance",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.advance.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "close_bets",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.close_bets.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "settle_hand",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.settle_hand.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "fold",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.fold.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "call",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.call.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "raise",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.raise.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "all_in",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.all_in.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "show",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.show.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "skip",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.skip.Arguments"
+    },
+    {
+      "app": "so.tilo.poker",
+      "resource": "tl.so.tilo.poker.Table",
+      "action": "rebuy",
+      "arguments": "#/components/schemas/tl.so.tilo.poker.Table.rebuy.Arguments"
     },
     {
       "app": "so.tilo.print-centre",

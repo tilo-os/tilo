@@ -16,7 +16,6 @@
 
 export * as discord from "./discord.ts";
 export * as messages from "./messages.ts";
-export * as poker from "./poker.ts";
 export * as terminal from "./terminal.ts";
 export * as activity from "./activity.ts";
 export * as apiTester from "./api_tester.ts";
@@ -60,6 +59,7 @@ export * as passwords from "./passwords.ts";
 export * as pdfViewer from "./pdf_viewer.ts";
 export * as photos from "./photos.ts";
 export * as playback from "./playback.ts";
+export * as poker from "./poker.ts";
 export * as printCentre from "./print_centre.ts";
 export * as publisher from "./publisher.ts";
 export * as remote from "./remote.ts";
