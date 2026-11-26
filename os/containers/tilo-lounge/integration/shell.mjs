@@ -3,8 +3,9 @@
 // screen reader (what a driver reads and presses by name, since what is drawn
 // is a picture), the shell's search, invitation links, what a page said while
 // it loaded, and the mails a stack's entry sends.
+import {execFile} from 'node:child_process';
 import {readdirSync, readFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {dirname, isAbsolute, join} from 'node:path';
 import {sleep} from '../../../../tools/web/chrome.mjs';
 import {SHELL, stepLimit} from './waits.mjs';
 // The command printed for the person to give their agent. A ticket ends before
@@ -16,6 +17,47 @@ export function agentCommand(prompt) {
   const ticket = text.startsWith('tilo1') ? text : null;
   if (kind === 'device add' && !ticket) return null;
   return {kind, text, ticket, code: ticket ? null : text, site: prompt.match(/--site ([^,\s]+)/)?.[1] ?? null};
+}
+
+/** The CLI the copied setup command installed, which the test agent uses for later calls. */
+export const hostedTiloPath = (home, version) => join(home, '.local/share/tilo/cli', version, 'tilo');
+
+/** Run the copied installer against the disposable stack, in the agent's own test home. */
+export async function runSetupPrompt(prompt, {site, version, env, agent}) {
+  const url = new URL(site);
+  const local = url.hostname === 'localhost' || url.hostname.endsWith('.localhost')
+    || /^127\.\d+\.\d+\.\d+$/.test(url.hostname) || url.hostname === '[::1]';
+  if (!local || !['http:', 'https:'].includes(url.protocol) || url.origin !== site) {
+    throw new Error('The installer needs the local stack origin.');
+  }
+  if (!/^v\d+\.\d+\.\d+-[0-9A-Za-z.]+$/.test(version) || !env?.HOME || !isAbsolute(env.HOME)) {
+    throw new Error('The installer needs a pinned prerelease and a test home.');
+  }
+  const setup = agentCommand(prompt);
+  if (!setup?.ticket) throw new Error('The setup prompt holds no device ticket.');
+  const login = setup.kind === 'login';
+  const instruction = login ? 'Set up Tilo for me' : 'Sign me in to Tilo';
+  const installer = `${site}/install/hosted-v1.sh`;
+  const source = url.hostname === '[::1]' ? `'${installer}'` : installer;
+  const selection = `TILO_VERSION=${version} TILO_HOSTED_SETUP=1 TILO_INSTALL_DIR="$HOME/.local/share/tilo/cli/${version}"`;
+  const command = `curl -fsSL ${source} | ${selection} sh -s ${setup.kind} ${setup.ticket}`;
+  if (prompt !== `${instruction}: run ${command}, then do what it tells you.`) {
+    throw new Error('The copied command does not select the expected local installer and CLI release.');
+  }
+  const args = login ? ['login', setup.ticket] : ['device', 'add', setup.ticket];
+  if (agent !== undefined) {
+    if (!login || typeof agent !== 'string' || !agent.trim()) throw new Error('An agent name is only supplied at login.');
+    args.push('--agent', agent);
+  }
+  // Only the fixed pipeline is shell code. The site, command and ticket are arguments.
+  // Fail on a refused download even if sh receives an empty script and exits successfully.
+  const pipeline = 'curl -fsSL --max-redirs 0 "$1" | sh -s "${@:2}"';
+  return new Promise(resolve => {
+    execFile('bash', ['-o', 'pipefail', '-c', pipeline, 'setup', installer, ...args], {
+      env: {...env, TILO_VERSION: version, TILO_HOSTED_SETUP: '1', TILO_INSTALL_DIR: dirname(hostedTiloPath(env.HOME, version))},
+      timeout: 180_000, maxBuffer: 1 << 20,
+    }, (error, stdout, stderr) => resolve({code: error ? (error.code || 1) : 0, stdout, stderr}));
+  });
 }
 
 // Keys as the desktop's search reads them (its own scripts drive it this

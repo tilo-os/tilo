@@ -368,9 +368,13 @@ resulting manifest edits stay in the disposable checkout for review.
 After admission, open **Devices and access**, choose **Connect an agent or computer**
 and copy the prompt into the agent on the computer you want to connect. Leave the
 setup tab open while the agent runs the command in the prompt. The installer
-downloads the CLI and runtime for that computer from
-`https://tilo.sh/releases/latest/`. The ticket in the prompt names the host and
-supplies the one-time login secret.
+downloads this host's CLI and runtime from `/releases/v0.3.1-assistant.1/`.
+The ticket in the prompt names the host and supplies the one-time login secret.
+The setup and returning sign-in prompts use `/install/hosted-v1.sh`, which
+requires OpenSSL and checks the signed archive before running the copy under
+`~/.local/share/tilo/cli/v0.3.1-assistant.1/`. Start on a fresh agent account
+or VM if this computer already uses a different Tilo login or daemon. After
+setup, use the same account to approve a returning browser.
 
 On a host with separate transport and device keys, setup requires a CLI that reads
 both identities from the ticket. The local browser checks serve their candidate CLI
@@ -379,16 +383,24 @@ proxies the CLI downloads to the separate package registry. Run the installer
 rehearsal on the same candidate commit.
 
 ```sh
-t test --rev "$candidate" cli-rehearsal
+t test --rev "$candidate" cli-rehearsal --input hosted_version=v0.3.1-assistant.1
 ```
 
-This builds the Linux x86-64 and arm64 archives, signs their checksums with a
-temporary key, and runs the installer against a local HTTPS site. For production,
-release the compatible CLI from a final `vX.Y.Z` tag before relying on the public
-setup prompt. The existing `sign-cli` and `publish-cli` jobs sign `SHA256SUMS`
-with the release key, publish the archives under the tag and advance `latest`
-for a newer final version. Check `https://tilo.sh/releases/latest/version` and
-the desired platform in `https://tilo.sh/releases/latest/SHA256SUMS`. The release
-signature is at `SHA256SUMS.sig`. An agent running on a Mac needs the matching
-`tilo-macos-*.tar.gz` to appear in that signed list. The default release requires
-both Linux architectures. The Mac cross-build checks are separate.
+This builds both Linux and Mac architectures. The rehearsal signs its checksums
+with a temporary key and runs the installer against a local HTTPS site. Production
+requires an immutable signed CLI package from the same source as the host.
+The public v0.5.0 CLI speaks a different device-action and workspace protocol.
+For promotion, the trusted `v+cli-0.3.1-assistant.1` source tag must name the
+verified commit. The operator releases its CLI with the existing publisher.
+
+```sh
+t dispatch --repo tilo --ref tag:v+cli-0.3.1-assistant.1 --publish publish-cli
+```
+
+The CLI-only tag selects this immutable prerelease. Stable installs continue
+to use the independent `latest` packages. Before promoting the web entry,
+read `/releases/v0.3.1-assistant.1/version`, verify
+`SHA256SUMS` with its `SHA256SUMS.sig` and `keys/cosign.pub`, and check
+the Linux and Mac archives for both x86-64 and arm64 in those signed sums.
+An operator can also confirm that `/releases/latest/version` and its signed
+checksums are identical before and after publishing the hosted CLI.

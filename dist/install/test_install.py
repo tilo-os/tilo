@@ -103,6 +103,20 @@ class Install(unittest.TestCase):
         self.assertNotIn("agent connect", done.stderr, "login adds Tilo's tools to the agent itself")
         self.assertEqual(sorted(p.name for p in self.installed.parent.iterdir()), ["tilo"], "no leftovers")
 
+    def test_a_pinned_prerelease_runs_its_own_login_and_keeps_the_default_release(self):
+        # Two independently signed archives, as served from /releases on the same site.
+        current = self.release
+        self.release = current.with_name("v0.3.1-assistant.1")
+        self.release.mkdir()
+        self.archive = self.release / machine()
+        self.publish(b'#!/bin/sh\nprintf "candidate %s\\n" "$*"\n')
+        selected = self.install("login", "ticket", TILO_VERSION=self.release.name)
+        self.assertEqual(selected.returncode, 0, selected.stderr)
+        self.assertEqual(selected.stdout, "candidate login ticket\n")
+        default = self.install()
+        self.assertEqual(default.returncode, 0, default.stderr)
+        self.assertEqual(run(self.installed).stdout, b"tilo 0.0.0\n")
+
     @property
     def task_program(self):
         return self.installed.parent / "tilolang-process"
@@ -244,6 +258,82 @@ class Install(unittest.TestCase):
                 (bin_dir / tool).symlink_to(found)
         return str(bin_dir)
 
+    def test_hosted_setup_keeps_the_other_cli_and_refuses_other_profiles(self):
+        version = "v0.3.1-assistant.1"
+        target = self.home / ".local/share/tilo/cli" / version
+        settings = {"TILO_VERSION": version, "TILO_HOSTED_SETUP": "1", "TILO_INSTALL_DIR": str(target)}
+        self.installed.parent.mkdir(parents=True)
+        self.installed.write_bytes(b"existing default CLI")
+        self.release = self.release.with_name(version)
+        self.release.mkdir()
+        self.archive = self.release / machine()
+        login_dir = (self.home / ("Library/Application Support" if os.uname().sysname == "Darwin" else ".local/state")) / "tilo/device"
+        login = login_dir / "login.json"
+        keys = self.home / "keys"
+        user = "ad" * 32
+        settings.update({"TILO_IDENTITY_ROOT": str(keys), "FIXTURE_LOGIN": str(login), "FIXTURE_USER": user})
+        self.publish(b'''#!/bin/sh
+if [ "$1" = login ]; then
+  mkdir -p "$TILO_IDENTITY_ROOT/device/certs" "$(dirname "$FIXTURE_LOGIN")"
+  printf '  "user": "%s",\\n' "$FIXTURE_USER" > "$FIXTURE_LOGIN"
+  printf 'this device' > "$TILO_IDENTITY_ROOT/device/certs/$FIXTURE_USER.bin"
+fi
+printf "%s %s" "$0" "$*"
+''', daemon=b"candidate daemon")
+        login.parent.mkdir(parents=True)
+        login.write_text("existing login")
+
+        refused = self.install("login", "ticket", **settings)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn("fresh agent account", refused.stderr)
+        self.assertFalse(target.exists())
+        self.assertEqual(login.read_text(), "existing login")
+        login.unlink()
+        self.assertNotEqual(self.install("login", "ticket", **{**settings, "TILO_INSTALL_DIR": str(self.installed.parent)}).returncode, 0)
+
+        missing = self.install("login", "ticket", PATH=self.without_openssl(), **settings)
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("openssl", missing.stderr)
+        self.assertFalse(target.exists())
+        # Installing identical signed files in advance cannot authorize someone else's device.
+        self.assertEqual(self.install(**settings).returncode, 0)
+        login.write_text("another installation's login")
+        denied = self.install("login", "ticket", **settings)
+        self.assertNotEqual(denied.returncode, 0)
+        self.assertIn("fresh agent account", denied.stderr)
+        self.assertEqual(login.read_text(), "another installation's login")
+        login.unlink()
+        private = keys / "device-private/keypair.bin"
+        private.parent.mkdir(parents=True)
+        private.write_bytes(b"another device key")
+        self.assertNotEqual(self.install("login", "ticket", **settings).returncode, 0)
+        private.unlink()
+        for args in (("login", "ticket"), ("device", "add", "another-ticket")):
+            ok = self.install(*args, **settings)
+            self.assertEqual(ok.returncode, 0, ok.stderr)
+            self.assertEqual(ok.stdout, f"{target}/tilo {' '.join(args)}")
+        # A different login, or a daemon started outside the service manager, cannot
+        # take over a returning candidate's installation.
+        cert = keys / "device/certs" / f"{user}.bin"
+        cert.write_bytes(b"replaced certificate")
+        self.assertNotEqual(self.install("device", "add", "ticket", **settings).returncode, 0)
+        cert.write_bytes(b"this device")
+        import fcntl
+        with (login_dir / "holder.lock").open("w") as lock:
+            lock.write(str(os.getpid()))
+            lock.flush()
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            blocked = self.install("device", "add", "ticket", **settings)
+            self.assertNotEqual(blocked.returncode, 0)
+            self.assertIn("fresh agent account", blocked.stderr)
+        self.assertEqual(self.install("device", "add", "ticket", **settings).returncode, 0)
+        (target / "tilo").write_bytes(b"different executable")
+        changed = self.install("login", "ticket", **settings)
+        self.assertNotEqual(changed.returncode, 0)
+        self.assertIn("differs from the signed CLI", changed.stderr)
+        self.assertEqual((target / "tilo").read_bytes(), b"different executable")
+        self.assertEqual(self.installed.read_bytes(), b"existing default CLI")
+
     def test_without_openssl_the_sums_alone_decide(self):
         (self.release / "SHA256SUMS.sig").unlink()
         done = self.install(PATH=self.without_openssl())
@@ -327,6 +417,39 @@ class Release(unittest.TestCase):
                 self.assertFalse(beside.exists(), "a Mac's archive holds no task program")
             names = sorted(line.split()[1] for line in (release / "SHA256SUMS").read_text().splitlines())
             self.assertEqual(names, sorted(f"tilo-{s}.tar.gz" for s in ("linux-aarch64", "linux-x86_64", "macos-aarch64", "macos-x86_64")))
+
+    def test_a_cli_only_tag_cannot_publish_a_final_release(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = pathlib.Path(scratch)
+            done = subprocess.run(
+                ["bash", self.RELEASE, "publish", root],
+                capture_output=True, text=True,
+                env={**os.environ, "TMPDIR": scratch, "T_REF": "tag:v+cli-1.2.3",
+                     "TILO_PUBLISH_DRY_RUN": str(root / "site")},
+            )
+            self.assertNotEqual(done.returncode, 0)
+            self.assertIn("a CLI-only tag must name a prerelease", done.stderr)
+            self.assertFalse((root / "site").exists())
+
+    def test_a_hosted_release_requires_every_platform_in_its_signed_manifest(self):
+        with tempfile.TemporaryDirectory() as scratch:
+            root = pathlib.Path(scratch)
+            names = [f"tilo-{system}-{arch}.tar.gz" for system in ("linux", "macos")
+                     for arch in ("x86_64", "aarch64")]
+            env = {**os.environ, "TMPDIR": scratch, "T_REF": "tag:v+cli-0.3.1-assistant.1",
+                   "TILO_PUBLISH_DRY_RUN": str(root / "site")}
+            for name in names:
+                (root / name).write_bytes(b"archive")
+            for missing in names:
+                with self.subTest(missing=missing):
+                    (root / "SHA256SUMS").write_text("".join(
+                        f"{hashlib.sha256(b'archive').hexdigest()}  {name}\n"
+                        for name in names if name != missing))
+                    done = subprocess.run(["bash", self.RELEASE, "sign", root], capture_output=True,
+                                          text=True, env=env)
+                    self.assertNotEqual(done.returncode, 0)
+                    self.assertIn(f"requires {missing} in the signed release", done.stderr)
+                    self.assertFalse((root / "SHA256SUMS.sig").exists())
 
     def test_a_release_without_both_linux_archives_is_refused(self):
         with tempfile.TemporaryDirectory() as scratch:

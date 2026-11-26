@@ -78,7 +78,7 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
     // Set up manually: the MCP server and the commands, with a code the press
     // makes.
     await click('first-screen-manual-toggle');
-    await tab.waitFor(`document.getElementById('first-screen-commands').textContent.includes('tilo login K7Q-MX2P')`, {timeout: 10000});
+    await tab.waitFor(`document.getElementById('first-screen-commands').textContent.includes('sh -s login K7Q-MX2P')`, {timeout: 10000});
     check(await tab.evaluate(`document.getElementById('first-screen-mcp').textContent === 'https://mcp.tilo.sh'`), `${name}: manual shows the MCP server`);
     check(!(await tab.evaluate(`document.getElementById('first-screen').scrollWidth > innerWidth`)), `${name}: manual fits without scrolling sideways`);
     await sleep(300);
@@ -86,7 +86,7 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
     await click('first-screen-manual-toggle');
 
     const shown = await tab.evaluate(`document.getElementById('first-screen-offer').textContent`);
-    check(shown.includes('tilo login K7Q-MX2P'), `${name}: the press made the prompt, and it shows`);
+    check(shown.includes('sh -s login K7Q-MX2P'), `${name}: the press made the prompt, and it shows`);
     check(!(await tab.evaluate(`document.getElementById('first-screen').scrollWidth > innerWidth`)), `${name}: the shown prompt wraps rather than scrolling sideways`);
     await sleep(300);
     if (shots) writeFileSync(`${shots}/first-screen-${name}-prompt.png`, await tab.screenshot());
@@ -167,10 +167,10 @@ for (const [width, height, mobile] of [[390, 844, true], [1280, 800, false]]) {
     for (const type of ['mousePressed', 'mouseReleased']) {
       await again.send('Input.dispatchMouseEvent', {type, x: button.x, y: button.y, button: 'left', clickCount: 1});
     }
-    await again.waitFor(`document.getElementById('first-screen-prompt').textContent.match(/(?:tilo|sh -s) login /)`, {timeout: 10000});
+    await again.waitFor(`document.getElementById('first-screen-prompt').textContent.includes('sh -s device add K7Q-MX2P')`, {timeout: 10000});
     await again.evaluate(`globalThis.polled = {resolved: true, expired: false, steps: ['resolved'], claimed: {user: '${'ab'.repeat(32)}', invite: '${'cd'.repeat(16)}', by: 'Claude Code on build-box'}}`);
     await again.waitFor(`document.getElementById('first-screen-steps').textContent.includes('vouched for you')`, {timeout: 5000});
-    check(await again.evaluate(`document.getElementById('first-screen-prompt').textContent.startsWith('Sign me in to Tilo: run tilo login K7Q-MX2P')`),
+    check(await again.evaluate(`document.getElementById('first-screen-prompt').textContent.startsWith('Sign me in to Tilo: run curl -fsSL ')`),
       `${name}: the returning prompt is the short sign-in one`);
     await sleep(300);
     if (shots) writeFileSync(`${shots}/first-screen-${name}-returning.png`, await again.screenshot());

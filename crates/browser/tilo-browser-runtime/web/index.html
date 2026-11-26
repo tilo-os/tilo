@@ -179,7 +179,7 @@ root.setAttribute('data-first-screen',step==='opening'?'connected':step);
 globalThis.__tiloSetupPaint=function(){
  var $=function(id){return document.getElementById(id);},screen=$('first-screen'),shown={};
  // What the screen showed last, kept apart from the setup (first-screen.mjs `SHOWN`), for the code it was drawn for.
- try{var drawn=JSON.parse(localStorage.getItem('tilo-setup-shown')||'null');if(drawn&&typeof drawn==='object'&&(drawn.code||null)===((code&&code.code)||null))shown=drawn;}catch(e){}
+ try{var drawn=JSON.parse(localStorage.getItem('tilo-setup-shown')||'null');var entry=document.querySelector('link[rel="modulepreload"][href]');if(drawn&&entry&&drawn.bundle===new URL('.',entry.href).href&&(drawn.code||null)===((code&&code.code)||null))shown=drawn;}catch(e){}
  // The prompt breaks only between its words, as first-screen.mjs `showPrompt` writes it.
  var put=function(id,text){var at=$(id);at.textContent='';String(text||'').split(/( +)/).forEach(function(part){if(!part)return;if(/^ +$/.test(part)){at.appendChild(document.createTextNode(part));return;}var word=document.createElement('span');word.className='fr-word';word.textContent=part;at.appendChild(word);});};
  if(!screen)return;

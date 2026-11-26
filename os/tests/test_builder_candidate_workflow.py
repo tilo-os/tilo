@@ -2,6 +2,7 @@
 """The CI builder's candidate policy: its recipe, the canaries that run inside each candidate
 (tools/ci/publish/ci-builder-canary.sh)."""
 
+from fnmatch import fnmatchcase
 import os
 from pathlib import Path
 import re
@@ -152,6 +153,28 @@ class BuilderCandidates(unittest.TestCase):
                                         text=True, capture_output=True)
                 self.assertNotEqual(result.returncode, 0)
 
+    def test_cli_tags_only_trigger_cli_builds(self):
+        checks = tomllib.loads((ROOT / 't.toml').read_text())['check']
+
+        def checks_on(tag):
+            return {check['name'] for check in checks
+                    if any(fnmatchcase(f'tag:{tag}', trigger) for trigger in check.get('on', []))}
+
+        for tag in ('v+cli-0.3.1-assistant.1', 'v+cli-1.2.3-preview.2'):
+            with self.subTest(tag=tag):
+                automatic = checks_on(tag)
+                self.assertLessEqual(automatic, {'cli-macos-cross-{arch}'})
+                for check in checks:
+                    if check['name'] in automatic:
+                        for privilege in ('publish', 'secrets', 'id_token', 'pointers'):
+                            self.assertFalse(check.get(privilege), (check['name'], privilege))
+        # Other v-prefixed tags keep both signatures, including nonnumeric tags
+        # used for a hosted guest or with a plus after the first two characters.
+        for tag in ('v0.5.0', 'v0.5.1-rc.1', 'vhosted-guest-2026.11.09',
+                    'v', 'vcli-0.3.1-assistant.1', 'vhost+preview'):
+            with self.subTest(tag=tag):
+                self.assertTrue({'sign-ci-builder', 'sign-host-loader'} <= checks_on(tag))
+
     def test_the_candidates_chromium_checks_every_publication_and_its_regressions_a_release(self):
         smoke = canary_arm('browser')
         # The smoke reads the image and a few files, so its verdict is kept until the image
@@ -178,7 +201,7 @@ class BuilderCandidates(unittest.TestCase):
         self.assertIn(tests_check, checks['sign-ci-builder']['needs'])
         # The release key's token is issued to release tags alone, so the release
         # signature applies there; a dispatch of main publishes the development one.
-        self.assertEqual(checks['sign-ci-builder']['on'], ['tag:v*'])
+        self.assertTrue(all(trigger.startswith('tag:v') for trigger in checks['sign-ci-builder']['on']))
         for name in ('sign-dev-ci-builder', 'publish-ci-builder'):
             self.assertIn(tests_check, checks[name]['optional_needs'], name)
             self.assertNotIn(tests_check, checks[name]['needs'], name)

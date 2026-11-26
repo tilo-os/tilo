@@ -44,7 +44,9 @@
 	# `curl -fsSL https://<site> | sh`: at /install.sh, and at / for curl and
 	# Wget, whose requests a browser never sends. Revalidated, so a new
 	# image's installer takes effect at once.
-	@installer path /install.sh
+	# The hosted setup route is present only on images whose installer supports
+	# signature-required, version-specific setup. Older images return 404 for it.
+	@installer path /install.sh /install/hosted-v1.sh
 	@fetcher {
 		path /
 		header_regexp User-Agent ^(curl|Wget)/
@@ -58,6 +60,7 @@
 		file_server
 	}
 	handle @installer {
+		rewrite * /install.sh
 		root * {$TILO_WEB_INSTALL:/srv/tilo-install}
 		header Content-Type "text/x-shellscript; charset=utf-8"
 		header Cache-Control "no-cache"

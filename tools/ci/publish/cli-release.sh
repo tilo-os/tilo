@@ -8,7 +8,8 @@
 # signature of SHA256SUMS by the release key (keys/cosign.pub, AWS KMS
 # alias/tilo-release-signing). It is published with the release tags (vX.Y.Z) that release the
 # server and the OS, so a command talks to the server of its own release; `latest` follows the
-# newest final version.
+# newest final version. A CLI-only prerelease uses the tag v+cli-X.Y.Z-PRE and publishes as
+# vX.Y.Z-PRE.
 #
 #   cli-release.sh build TARGET OUT    the program for TARGET, x86_64-unknown-linux-musl or
 #                                      aarch64-unknown-linux-musl (statically linked, both on the
@@ -29,7 +30,7 @@
 #                                      DIR/SHA256SUMS.sig, checked the way the installer checks
 #                                      it; with TILO_SIGN_TLOG=1 also entered in the public
 #                                      transparency log, its entry kept as SHA256SUMS.bundle.
-#                                      Releases only (a vX.Y.Z tag).
+#                                      Release tags and CLI-only prerelease tags.
 #   cli-release.sh publish DIR         the signed release to code.tilo.so's package registry as
 #                                      tilo-cli/<version>/<file>, and as tilo-cli/latest/<file>
 #                                      for a final version newer than latest's; tilo.sh serves
@@ -52,9 +53,14 @@ package=https://code.tilo.so/api/packages/tilo/generic/tilo-cli
 linux_archives=(tilo-linux-x86_64.tar.gz tilo-linux-aarch64.tar.gz)
 all_archives=("${linux_archives[@]}" tilo-macos-aarch64.tar.gz tilo-macos-x86_64.tar.gz)
 
-# The version this run releases: the release tag's name, vX.Y.Z or vX.Y.Z-<pre-release>.
+# A CLI-only tag v+cli-X.Y.Z-PRE publishes the same immutable package as vX.Y.Z-PRE.
+# It must have a prerelease suffix, so it can never move the default installer.
 version() {
-  if [[ ${T_REF:-} =~ ^tag:(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?)$ ]]; then
+  if [[ ${T_REF:-} == tag:v+* ]]; then
+    [[ $T_REF =~ ^tag:v[+]cli-([0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z]+(\.[0-9A-Za-z]+)*)$ ]] \
+      || die "a CLI-only tag must name a prerelease: $T_REF"
+    printf 'v%s' "${BASH_REMATCH[1]}"
+  elif [[ ${T_REF:-} =~ ^tag:(v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?)$ ]]; then
     printf '%s' "${BASH_REMATCH[1]}"
   elif [[ -n ${TILO_PUBLISH_DRY_RUN:-} ]]; then
     printf 'v0.0.0'
@@ -299,10 +305,22 @@ installer_verifies() {
   openssl dgst -sha256 -verify "$2" -signature "$1/SHA256SUMS.sig" "$1/SHA256SUMS" >/dev/null
 }
 
+# The hosted setup prompt runs on both supported operating systems. Each archive
+# must be present and named exactly once in the manifest that will be signed.
+require_hosted_archives() {
+  local dir=$1 name
+  [[ ${T_REF:-} == tag:v+cli-* ]] || return 0
+  for name in "${all_archives[@]}"; do
+    [[ -s $dir/$name ]] && awk -v name="$name" '$2 == name { count++ } END { exit count != 1 }' "$dir/SHA256SUMS" \
+      || die "$T_REF requires $name in the signed release"
+  done
+}
+
 cmd_sign() {
   local dir=${1:?$usage} public_key=$repo_root/keys/cosign.pub signature
   [[ -s $dir/SHA256SUMS ]] || die "no SHA256SUMS in $dir"
   version >/dev/null
+  require_hosted_archives "$dir"
   if [[ -z ${TILO_PUBLISH_DRY_RUN:-} ]]; then
     [[ $(channel) == release ]] || die "only releases are signed; this run is for $T_REF"
   fi
@@ -349,6 +367,7 @@ cmd_publish() {
   local dir=${1:?$usage} v name files=() current newest
   v=$(version)
   [[ -s $dir/SHA256SUMS && -s $dir/SHA256SUMS.sig ]] || die "$dir holds no signed SHA256SUMS"
+  require_hosted_archives "$dir"
   local key=$repo_root/keys/cosign.pub
   if [[ -n ${TILO_PUBLISH_DRY_RUN:-} && -s $dir/dry-run.pub ]]; then key=$dir/dry-run.pub; fi
   installer_verifies "$dir" "$key" || die "$dir's signature does not verify against $key"
@@ -441,16 +460,27 @@ site_port() {
 # Install the release the site at $1 serves, as a person does: the installer is what `curl` gets
 # from that site's root, piped into `sh`, and everything it runs with is the environment `$2`
 # gives. The site's certificate is trusted through CURL_CA_BUNDLE, which the installer's own
-# `curl` reads; $3 picks a release other than latest.
+# `curl` reads; $3 picks a release other than latest. The hosted mode runs the installer with
+# the setup prompt's signature check and the same version-specific install directory.
 install_from_site() {
-  local site=$1 path=$2 ref=$3 home=$4 dir=$5
+  local site=$1 path=$2 ref=$3 home=$4 dir=$5 mode=${6:-}
+  local selection=()
+  if [[ $ref != latest ]]; then selection=("TILO_VERSION=$ref"); fi
+  if [[ $mode == hosted ]]; then
+    selection+=("TILO_HOSTED_SETUP=1" "TILO_INSTALL_DIR=$home/.local/share/tilo/cli/$ref")
+  fi
   curl -fsSL --cacert "$dir/site.pem" "$site/" \
     | env -i PATH="$path" HOME="$home" CURL_CA_BUNDLE="$dir/site.pem" \
-        TILO_RELEASES="$site/releases" TILO_VERSION="$ref" TILO_RELEASE_KEY="$dir/dry-run.pub" sh
+        TILO_RELEASES="$site/releases" TILO_RELEASE_KEY="$dir/dry-run.pub" "${selection[@]}" sh
 }
 
 cmd_rehearse() {
   local release=${1:?$usage} installed ref machine command
+  local T_REF=${T_REF:-} hosted=${T_INPUT_HOSTED_VERSION:-}
+  if [[ -n $hosted ]]; then
+    [[ $hosted == v[0-9]* ]] || die "a hosted version starts with v: $hosted"
+    T_REF=tag:v+cli-${hosted#v}
+  fi
   # Not `local`: the EXIT trap below runs after this function has returned.
   server=
   site=$scratch/cli-rehearsal-site
@@ -459,8 +489,18 @@ cmd_rehearse() {
   mkdir -p "$site"
   cp -r "$release" "$dir"
   export TILO_PUBLISH_DRY_RUN=$site
+  local released pinned
+  released=$(version)
+  pinned=$released
+  if [[ -n $(final "$released") ]]; then pinned=$released-rehearsal.1; fi
   cmd_sign "$dir"
-  cmd_publish "$dir"
+  local prerelease_tag=tag:$pinned mode=
+  if [[ $T_REF == tag:v+cli-* ]]; then
+    prerelease_tag=$T_REF
+    mode=hosted
+  fi
+  T_REF="$prerelease_tag" cmd_publish "$dir"
+  [[ ! -e $site/releases/latest ]] || die "$prerelease_tag published a latest release"
   site_root "$site"
   # The site's certificate, made here: the name it answers to is this machine's loopback.
   openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes -days 1 \
@@ -483,27 +523,37 @@ cmd_rehearse() {
   curl -fsS --retry 30 --retry-connrefused --retry-delay 1 --cacert "$dir/site.pem" -o /dev/null "$url/install.sh" \
     || die "the rehearsal's site did not come up: $(cat "$scratch/cli-rehearsal-site.log" 2>/dev/null)"
   case $(uname -m) in x86_64) machine=x86_64 ;; aarch64) machine=aarch64 ;; *) die "no release for $(uname -m)" ;; esac
-  local refs=("$(version)")
-  if [[ -n $(final "$(version)") ]]; then refs+=(latest); fi
+  # Install the prerelease before a default exists, so a fallback to latest would fail.
+  local refs=("$pinned")
+  if [[ $pinned != "$released" ]]; then refs+=("$released" latest); fi
   home=$scratch/cli-rehearsal-home
   for ref in "${refs[@]}"; do
+    if [[ $ref == "$released" && $released != "$pinned" ]]; then
+      cmd_publish "$dir"
+      T_REF="$prerelease_tag" cmd_publish "$dir"
+      [[ $(<"$site/releases/latest/version") == "$released" ]] || die "$prerelease_tag replaced latest"
+    fi
     rm -rf "$home"
     mkdir -p "$home"
     # The installer as tilo.sh serves it, from the site's own layout, with the throwaway key as
     # the mirror's: it checks the signature and the archive's sum, then installs.
-    install_from_site "$url" /usr/bin:/bin "$ref" "$home" "$dir" \
+    install_from_site "$url" /usr/bin:/bin "$ref" "$home" "$dir" "$mode" \
       || die "the installer refused the rehearsed release at $ref"
     installed=$home/.local/bin/tilo
+    if [[ $mode == hosted ]]; then
+      [[ ! -e $installed ]] || die "the hosted install replaced the default CLI"
+      installed=$home/.local/share/tilo/cli/$ref/tilo
+    fi
     cmp --silent "$installed" <(tar -xzOf "$site/releases/$ref/tilo-linux-$machine.tar.gz" tilo) \
       || die "the installer installed something other than tilo-linux-$machine.tar.gz's program"
     HOME=$home "$installed" --help >/dev/null || die "the installed tilo does not run"
     # The program `tilo mcp` starts a task's programs in: beside the command, where it looks.
-    cmp --silent "$home/.local/bin/tilolang-process" \
+    cmp --silent "${installed%/tilo}/tilolang-process" \
       <(tar -xzOf "$site/releases/$ref/tilo-linux-$machine.tar.gz" tilolang-process) \
       || die "the installer did not install tilo-linux-$machine.tar.gz's task program beside tilo"
-    task_program_starts "$home/.local/bin/tilolang-process"
+    task_program_starts "${installed%/tilo}/tilolang-process"
     # The daemon `tilo login` starts: beside the command, where it looks.
-    cmp --silent "$home/.local/bin/tilo-runtime" \
+    cmp --silent "${installed%/tilo}/tilo-runtime" \
       <(tar -xzOf "$site/releases/$ref/tilo-linux-$machine.tar.gz" tilo-runtime) \
       || die "the installer did not install tilo-linux-$machine.tar.gz's daemon beside tilo"
   done
@@ -518,30 +568,37 @@ cmd_rehearse() {
   PATH=$tools command -v openssl >/dev/null && die 'openssl is on the PATH the rehearsal calls empty of it'
   rm -rf "$home"
   mkdir -p "$home"
-  install_from_site "$url" "$tools" latest "$home" "$dir" \
+  install_from_site "$url" "$tools" "$pinned" "$home" "$dir" \
     || die 'without openssl the installer refused the release'
-  cmp --silent "$home/.local/bin/tilo" <(tar -xzOf "$site/releases/latest/tilo-linux-$machine.tar.gz" tilo) \
+  cmp --silent "$home/.local/bin/tilo" <(tar -xzOf "$site/releases/$pinned/tilo-linux-$machine.tar.gz" tilo) \
     || die 'without openssl the installer installed something other than the release'
   cmp --silent "$home/.local/bin/tilolang-process" \
-    <(tar -xzOf "$site/releases/latest/tilo-linux-$machine.tar.gz" tilolang-process) \
+    <(tar -xzOf "$site/releases/$pinned/tilo-linux-$machine.tar.gz" tilolang-process) \
     || die 'without openssl the installer did not install the task program beside tilo'
+  if [[ $mode == hosted ]] && install_from_site "$url" "$tools" "$pinned" "$home" "$dir" hosted 2>/dev/null; then
+    die 'the hosted installer accepted a release without checking its signature'
+  fi
   # The site's files decide: one that does not match its sums, and a release the release key did
   # not sign, both install nothing.
-  printf 'x' >> "$site/releases/latest/tilo-linux-$machine.tar.gz"
+  printf 'x' >> "$site/releases/$pinned/tilo-linux-$machine.tar.gz"
   rm -rf "$home"
   mkdir -p "$home"
-  if install_from_site "$url" /usr/bin:/bin latest "$home" "$dir" 2>/dev/null; then
+  if install_from_site "$url" /usr/bin:/bin "$pinned" "$home" "$dir" "$mode" 2>/dev/null; then
     die 'the installer accepted an archive that does not match the release SHA256SUMS'
   fi
-  [[ ! -e $home/.local/bin/tilo && ! -e $home/.local/bin/tilolang-process ]] \
+  [[ ! -e $installed && ! -e ${installed%/tilo}/tilolang-process ]] \
     || die 'the installer wrote a program it refused'
-  rm -f "$site/releases/latest/SHA256SUMS.sig"
-  if install_from_site "$url" /usr/bin:/bin latest "$home" "$dir" 2>/dev/null; then
+  cp "$dir/tilo-linux-$machine.tar.gz" "$site/releases/$pinned/"
+  rm -f "$site/releases/$pinned/SHA256SUMS.sig"
+  if install_from_site "$url" /usr/bin:/bin "$pinned" "$home" "$dir" "$mode" 2>/dev/null; then
     die 'the installer accepted a release the release key did not sign'
   fi
-  [[ ! -e $home/.local/bin/tilo && ! -e $home/.local/bin/tilolang-process ]] \
+  [[ ! -e $installed && ! -e ${installed%/tilo}/tilolang-process ]] \
     || die 'the installer wrote a program it refused'
-  echo "the installer installs the rehearsed release $(version) from the rehearsal's own site, with and without openssl, and refuses a release its sums or the release key do not match"
+  if [[ $mode == hosted ]]; then
+    echo "the hosted installer required OpenSSL and installed $pinned in its version directory"
+  fi
+  echo "the ordinary installer also worked without OpenSSL; corrupt archives and missing signatures were refused on the signed install path"
 }
 
 case ${1:-} in

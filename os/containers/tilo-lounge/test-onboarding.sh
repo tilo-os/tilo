@@ -20,8 +20,8 @@
 # page's screenshots and console, the report, the mails the entry sent, and the
 # stack's logs. Needs node, chromium, curl, bwrap and the stack's environment:
 # TILO_SH_PROGRAMS, TILO_SH_LOUNGE, TILO_SH_SITE, TILO_SH_CADDY and
-# TILO_SH_CLI_DIR naming what t built, and TILO_CLI_BIN the tilo command an
-# agent runs.
+# TILO_SH_CLI_DIR naming the release archive the agent installs, and
+# TILO_CLI_BIN naming the stack operator's command.
 set -euo pipefail
 usage='usage: test-onboarding.sh BUNDLE WORK'
 here=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
@@ -31,7 +31,7 @@ driver=$here/integration/onboarding.mjs
 bundle=${1:?$usage}
 out=${2:?$usage}
 tilo_bin=${TILO_CLI_BIN:-}
-[[ -x $tilo_bin ]] || { echo 'TILO_CLI_BIN names no tilo command (an agent runs it here)' >&2; exit 2; }
+[[ -x $tilo_bin ]] || { echo 'TILO_CLI_BIN names no tilo command for the stack operator' >&2; exit 2; }
 rm -rf "$out"
 mkdir -p "$out"
 # The stack's state and its addresses: this run's own, beside every other
@@ -44,9 +44,8 @@ export TILO_SH_ADMISSION=invite
 export TILO_SH_HOME_APP=
 export TILO_SH_VM_HOST=0
 export TILO_SH_BUNDLE=$bundle
-# The site's /releases, packed as a release packs it, from the command this run
-# was handed, unless the caller packed one already: the stack serves it as the
-# web entry image does, and nothing here waits on the release's own build.
+# The standalone release gate supplies its archived CLI. The lighter e2e run
+# can also serve a locally packed CLI through the same installer.
 if [[ -z ${TILO_SH_CLI_DIR:-} ]]; then
   export TILO_SH_CLI_DIR=$out/release
   mkdir -p "$TILO_SH_CLI_DIR"
@@ -61,7 +60,7 @@ bash "$tilo_sh/stack.sh" up --fresh || { echo 'FAIL: the stack did not come up' 
 . "$tilo_sh/stack.sh"
 bash "$tilo_sh/stack.sh" status || true
 
-node "$driver" "$site_origin" "$server_origin" "$out" "$tilo_bin" "$tilo_sh/stack.sh" \
+node "$driver" "$site_origin" "$server_origin" "$out" "$tilo_sh/stack.sh" \
   || { echo 'FAIL: a stranger did not get from the wait list to a workspace of their own' >&2
        echo '--- the mails the entry sent:' >&2; bash "$tilo_sh/stack.sh" mail >&2 || true
        exit 1; }

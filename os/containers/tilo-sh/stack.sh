@@ -1809,9 +1809,9 @@ lay_out_web() {
   mkdir -p "$native/web"
   if [[ -n ${TILO_SH_SITE:-} ]]; then
     web_site=$TILO_SH_SITE/site
-    web_install=$TILO_SH_SITE
     [[ -f $web_site/index.html ]] || die "TILO_SH_SITE names $TILO_SH_SITE, which holds no site/index.html"
-    [[ -f $web_install/install.sh ]] || die "TILO_SH_SITE names $TILO_SH_SITE, which holds no install.sh"
+    [[ -f $TILO_SH_SITE/install.sh ]] || die "TILO_SH_SITE names $TILO_SH_SITE, which holds no install.sh"
+    lay_out_installer "$TILO_SH_SITE/install.sh"
     say "the site is the one given ($web_site)"
     return
   fi
@@ -1843,20 +1843,20 @@ lay_out_web() {
     fi
     printf '%s\n' "$stamp" > "$native/web/stamp"
   fi
-  mkdir -p "$native/web/install"
-  # The installer downloads from the site that serves it, as tilo.sh's does
-  # from tilo.sh: here this site's /releases, which serve this checkout's
-  # tilo command, never the one published on tilo.sh. It trusts the key this
-  # site signs them with in place of Tilo's release key, so the command the
-  # first screen gives works as pasted, in any shell.
-  local installer releases=https://tilo.sh/releases key
-  installer=$(<"$repo/dist/install/tilo.sh") key=$(<"$repo/keys/cosign.pub")
-  [[ $installer == *"$releases"* && $installer == *"$key"* ]] \
-    || die "dist/install/tilo.sh no longer names $releases and keys/cosign.pub; say here where it downloads from and what it trusts"
-  installer=${installer//"$releases"/"$site_origin/releases"}
-  printf '%s\n' "${installer//"$key"/"$(<"$state/release.pub")"}" > "$native/web/install/install.sh"
   web_site=$native/web/site
+  lay_out_installer "$repo/dist/install/tilo.sh"
+}
+
+# Serve the packaged installer with this stack's release origin and public key.
+lay_out_installer() {
+  local installer releases=https://tilo.sh/releases key
+  installer=$(<"$1") key=$(<"$repo/keys/cosign.pub")
+  [[ $installer == *"$releases"* && $installer == *"$key"* ]] \
+    || die "the installer at $1 no longer names $releases and keys/cosign.pub"
+  installer=${installer//"$releases"/"$site_origin/releases"}
   web_install=$native/web/install
+  mkdir -p "$web_install"
+  printf '%s\n' "${installer//"$key"/"$(<"$state/release.pub")"}" > "$web_install/install.sh"
 }
 
 # The site's /releases: this checkout's tilo command, packed as a release packs
@@ -1869,7 +1869,7 @@ lay_out_releases() {
     cp "$TILO_SH_CLI_DIR"/tilo-* "$dir/" || die "TILO_SH_CLI_DIR holds no tilo-* release files"
   else
     local stamp
-    stamp=$(made_from "$programs/tilo")
+    stamp=$(made_from "$programs/tilo" "$programs/tilo-runtime")
     if [[ $(cat "$dir/.made-from" 2>/dev/null) != "$stamp" || ! -s $dir/tilo-linux-x86_64.tar.gz ]]; then
       bash "$repo/tools/ci/publish/cli-release.sh" pack "$programs/tilo" "$dir/tilo-linux-x86_64.tar.gz" \
         || die 'could not pack the tilo command'
@@ -1877,6 +1877,19 @@ lay_out_releases() {
     fi
   fi
   sign_releases "$dir"
+
+  # The browser pins a CLI release for its host's protocol. Give that URL its
+  # own signed files so changing latest alone cannot change the pinned download.
+  local version pinned
+  version=$(cd -- "$repo" && node --input-type=module -e '
+    import {HOSTED_CLI_VERSION} from "./crates/browser/tilo-browser-runtime/web/first-screen.mjs";
+    process.stdout.write(HOSTED_CLI_VERSION);') || die 'the first screen names no CLI release'
+  [[ $version =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.]+)?$ ]] || die "invalid hosted CLI release: $version"
+  pinned=$state/releases/tilo-cli/$version
+  mkdir -p "$pinned"
+  cp "$dir"/tilo-*.tar.gz "$dir/SHA256SUMS.sig" "$pinned/"
+  printf '%s\n' "$version" > "$pinned/version"
+  cp "$dir/SHA256SUMS" "$pinned/"
 }
 
 # DIR's archives listed in SHA256SUMS and that signed, as a release is

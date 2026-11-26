@@ -128,34 +128,34 @@ export const HOME_SITE = 'https://tilo.sh';
 /** Tilo's MCP server, for an agent added by hand. */
 export const MCP_URL = 'https://mcp.tilo.sh';
 
-/** `site` as the curl command and `tilo login` read it: tilo.sh is the default. */
-const siteOf = site => (!site || site === HOME_SITE ? null : site);
-/** The command that installs `tilo` from `site`; with `args`, the installer
- * then runs the installed `tilo` with them by its full path, so the line works
- * on a machine whose PATH does not name where it went (a fresh one, or an
- * agent's shell, which never rereads the profile that would add it). */
-export const installCommand = (site, args = '') => `curl -fsSL ${siteOf(site) ?? 'tilo.sh'} | sh${args ? ` -s ${args}` : ''}`;
-/** `login <ticket>`: a ticket names the host it is served from, so no site is said. */
-const loginArgs = code => `login ${code}`;
-/** `tilo login <ticket>`. */
-export const loginCommand = code => `tilo ${loginArgs(code)}`;
+/** The signed CLI package used with this hosted entry's ticket protocol. */
+export const HOSTED_CLI_VERSION = 'v0.3.1-assistant.1';
 
-/** The prompt that has an agent set Tilo up: one line, complete on its own,
- * since `tilo login` tells the agent the rest. */
+const shellWord = value => /^[A-Za-z0-9._:/@+-]+$/.test(value) ? value
+  : "'" + String(value).replaceAll("'", "'\\''") + "'";
+/** An agent's shell runs the selected CLI by its installed path, including on
+ * a return to sign in another browser, where PATH may name a different CLI. */
+export const installCommand = (site, ...words) => {
+  const source = new URL('/install/hosted-v1.sh', site || HOME_SITE).href;
+  const args = words.length ? ` -s ${words.map(shellWord).join(' ')}` : '';
+  return `curl -fsSL ${shellWord(source)} | TILO_VERSION=${HOSTED_CLI_VERSION} TILO_HOSTED_SETUP=1 TILO_INSTALL_DIR="$HOME/.local/share/tilo/cli/${HOSTED_CLI_VERSION}" sh${args}`;
+};
+
+/** The command for an agent setting Tilo up with a ticket naming its own host. */
+export const loginCommand = code => `tilo login ${shellWord(code)}`;
+
 export function setupPrompt(code, {site} = {}) {
-  return `Set up Tilo for me: run ${installCommand(site, loginArgs(code))}, then do what it tells you.`;
+  return `Set up Tilo for me: run ${installCommand(site, 'login', code)}, then do what it tells you.`;
 }
 
-/** The prompt that has an agent sign this tab in as the person, on a computer
- * that is already one of their devices: it approves this tab with the ticket. */
-export function signInPrompt(code) {
-  return `Sign me in to Tilo: run tilo device add ${code}, then do what it tells you.`;
+/** The paired computer approves this browser using the same CLI as initial setup. */
+export function signInPrompt(code, {site} = {}) {
+  return `Sign me in to Tilo: run ${installCommand(site, 'device', 'add', code)}, then do what it tells you.`;
 }
 
-/** The command for someone who sets up by hand: their agent then adds the MCP server
- * (`MCP_URL`) where its own configuration keeps servers. */
+/** Install and log in for an agent whose MCP server is configured by hand. */
 export function manualCommands(code, {site} = {}) {
-  return installCommand(site, loginArgs(code));
+  return installCommand(site, 'login', code);
 }
 
 /** "10 more minutes", the time left until `expiresAt` (ms) at `now` in whole
@@ -370,7 +370,7 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
   let keptFrame = null;
   const keepFrame = () => {
     if (closed || !storage) return;
-    const next = JSON.stringify({...frame, code: state.code?.code ?? null});
+    const next = JSON.stringify({...frame, bundle: new URL('.', import.meta.url).href, code: state.code?.code ?? null});
     if (next === keptFrame) return;
     keptFrame = next;
     try { storage.setItem(SHOWN, next); } catch { /* The next first paint draws less of it. */ }

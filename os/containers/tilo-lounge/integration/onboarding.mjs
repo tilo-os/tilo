@@ -30,31 +30,33 @@
 // the run reads each one's link out of the file it landed in, so what the flow
 // proves is the mail a person would get.
 //
-// usage: node onboarding.mjs SITE SERVER WORK TILO_BIN STACK
+// usage: node onboarding.mjs SITE SERVER WORK STACK
 //
 // SITE is the web entry's origin (the site people visit), SERVER the workspace
 // host's, WORK the run's directory (the stack's state, the mail sink's files
-// and every page's screenshots and console live there), TILO_BIN the `tilo`
-// command an agent runs, and STACK os/containers/tilo-sh/stack.sh of the stack
+// and every page's screenshots and console live there), and STACK
+// os/containers/tilo-sh/stack.sh of the stack
 // the Lounge runs on: its own owner adds the operator as an owner with
 // `stack.sh owner KEY`. The stack is plain http on this machine, so no
 // certificate stands between the browsers, the agent's command and it.
 import {execFile, execFileSync, spawn} from 'node:child_process';
 import {chmodSync, mkdirSync, readFileSync, writeFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {join, resolve} from 'node:path';
 import {FIRST_SCREEN_SEEN, launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
 import {stepLimit, shellMetrics, machine, browserMemory, confirmRecoveryWords} from './waits.mjs';
-import {agentCommand, mailLink, poll, pressText, waitForMail, waitingCard} from './shell.mjs';
+import {HOSTED_CLI_VERSION} from '../../../../crates/browser/tilo-browser-runtime/web/first-screen.mjs';
+import {agentCommand, hostedTiloPath, mailLink, poll, pressText, runSetupPrompt, waitForMail, waitingCard} from './shell.mjs';
 
-const [site, server, work, tiloBin, stack] = process.argv.slice(2);
-if (!site || !server || !work || !tiloBin || !stack) {
-  console.error('usage: node onboarding.mjs SITE SERVER WORK TILO_BIN STACK');
+const [site, server, work, stack] = process.argv.slice(2);
+if (!site || !server || !work || !stack) {
+  console.error('usage: node onboarding.mjs SITE SERVER WORK STACK');
   process.exit(2);
 }
 // The mail sink the stack points the entry at (`stack.sh mail` reads the same).
 const mailDir = join(work, 'state', 'mail');
-const computer = join(work, 'computer');
+const computer = resolve(work, 'computer');
+const tiloBin = hostedTiloPath(computer, HOSTED_CLI_VERSION);
 mkdirSync(mailDir, {recursive: true});
 const mark = clock();
 const report = {site, server, at: new Date().toISOString(), steps: []};
@@ -652,12 +654,26 @@ try {
   await until(stranger.tab, `document.documentElement.dataset.firstScreen === 'waiting'`, 'the first screen answering the click', stepLimit(4));
   const prompt = await copied(stranger.tab, beforeCopy);
   report.prompt = prompt;
-  const setup = agentCommand(prompt);
-  if (!setup) await fail(`the prompt names no tilo login ticket: ${prompt}`);
   const env = await agentEnv();
-  const login = await tilo(env, setup.ticket ? ['login', setup.ticket] : ['login', setup.code, ...(setup.site ? ['--site', setup.site] : [])]);
+  const releasesLog = join(work, 'state', 'logs', 'releases.log');
+  const beforeInstall = readFileSync(releasesLog, 'utf8').length;
+  const login = await runSetupPrompt(prompt, {site: siteOrigin, version: HOSTED_CLI_VERSION, env});
   report.login = login;
   if (login.code !== 0) await fail(`tilo login failed (${login.code}): ${login.stderr}${login.stdout}`);
+  const archive = 'tilo-linux-x86_64.tar.gz';
+  const requests = readFileSync(releasesLog, 'utf8').slice(beforeInstall);
+  for (const file of ['SHA256SUMS', 'SHA256SUMS.sig', archive]) {
+    if (!requests.includes(`GET /tilo-cli/${HOSTED_CLI_VERSION}/${file} HTTP/`)) {
+      await fail(`the installer did not request ${file} from the selected release ${HOSTED_CLI_VERSION}`);
+    }
+  }
+  const checksum = execFileSync('sha256sum', [join(process.env.TILO_SH_CLI_DIR, archive)], {encoding: 'utf8'}).split(' ')[0];
+  const sums = readFileSync(join(work, 'state', 'releases', 'tilo-cli', HOSTED_CLI_VERSION, 'SHA256SUMS'), 'utf8');
+  if (!sums.split('\n').includes(`${checksum}  ${archive}`)) {
+    await fail('the signed release did not contain the supplied CLI archive');
+  }
+  report.installedRelease = {version: HOSTED_CLI_VERSION, archive, sha256: checksum};
+  console.log(`ok: the public installer selected ${HOSTED_CLI_VERSION} and verified ${archive} (${checksum})`);
   // The agent adds Tilo's server to its own configuration, as the login's
   // words ask, and confirms it: the setup leaves only once it has.
   writeFileSync(agentConfiguration, `${JSON.stringify({mcpServers: {tilo: {type: 'stdio', command: tiloBin, args: ['mcp'], env: {}}}})}\n`);
@@ -731,9 +747,7 @@ try {
   await dump(returning.tab, '5-sign-in-with-agent');
   const signIn = agentCommand(signInPrompt);
   if (!signIn) await fail(`the sign-in prompt names no ticket or code: ${signInPrompt}`);
-  const claimed = await tilo(env, signIn.kind === 'device add'
-    ? ['device', 'add', signIn.ticket]
-    : ['login', signIn.code, ...(signIn.site ? ['--site', signIn.site] : [])]);
+  const claimed = await runSetupPrompt(signInPrompt, {site: siteOrigin, version: HOSTED_CLI_VERSION, env});
   report.signInLogin = claimed;
   if (claimed.code !== 0) await fail(`tilo login of the sign-in code failed (${claimed.code}): ${claimed.stderr}${claimed.stdout}`);
   // The person's root stays in the tab that set it up, so the computer that ran `tilo device add`

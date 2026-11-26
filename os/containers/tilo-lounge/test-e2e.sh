@@ -102,7 +102,8 @@ print("ok: the directory lists the Lounge, joined at its entry as an editor")
 ' "$workspace"
       exit ;;
     boot) exec node "$integration/page-boot.mjs" "$site_origin" "$server_origin" "$out" ;;
-    agent-setup|setup-resume)
+    agent-setup) exec node "$integration/agent-setup.mjs" "$site_origin" "$server_origin" "$out" ;;
+    setup-resume)
       exec node "$integration/$flow.mjs" "$site_origin" "$server_origin" "$TILO_CLI_BIN" "$out" ;;
     signin|visa|entry) exec bash "$tilo_sh/check.sh" --flow "$flow" ;;
     wait-list)
@@ -166,10 +167,12 @@ export TILO_SH_VM_HOST=${TILO_SH_VM_HOST:-0}
 # The site's /releases: the command the flows run, packed as a release packs
 # it, so the stack serves a release without this check waiting on the
 # release's own statically linked build (cli-x86_64's).
-release=$work/release
-mkdir -p "$release"
-bash "$repo/tools/ci/publish/cli-release.sh" pack "$tilo_bin" "$release/tilo-linux-x86_64.tar.gz"
-export TILO_SH_CLI_DIR=$release TILO_SH_TILO_BIN=$tilo_bin
+if [[ -z ${TILO_SH_CLI_DIR:-} ]]; then
+  export TILO_SH_CLI_DIR=$work/release
+  mkdir -p "$TILO_SH_CLI_DIR"
+  bash "$repo/tools/ci/publish/cli-release.sh" pack "$tilo_bin" "$TILO_SH_CLI_DIR/tilo-linux-x86_64.tar.gz"
+fi
+export TILO_SH_TILO_BIN=$tilo_bin
 trap 'bash "$tilo_sh/stack.sh" down || true' EXIT
 # Its flows' people arrive as strangers and enter the Lounge as guests: the
 # entry open to anyone, not production's, which takes people by invitation.

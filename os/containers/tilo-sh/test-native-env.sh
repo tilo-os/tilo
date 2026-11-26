@@ -114,6 +114,23 @@ for pair in "XDG_DATA_HOME=$work/web/data" "XDG_CONFIG_HOME=$work/web/config"; d
   grep -Fqx "$pair" "$work/web.env" 2>/dev/null || fault "the web entry was not told $pair"
 done
 
+# A prebuilt web context contributes its own installer. Its scratch copy must
+# fetch this stack's releases and trust the key that signs them.
+TILO_SH_SITE=$work/packaged-web
+mkdir -p "$TILO_SH_SITE/site"
+: > "$TILO_SH_SITE/site/index.html"
+cp "$repo/dist/install/tilo.sh" "$TILO_SH_SITE/install.sh"
+printf '\n# from this packaged web context\n' >> "$TILO_SH_SITE/install.sh"
+printf 'scratch release public key\n' > "$state/release.pub"
+lay_out_web
+[[ $web_site == "$TILO_SH_SITE/site" && $web_install != "$TILO_SH_SITE" ]] \
+  || fault "the prebuilt site's installer was not given its own scratch location"
+for expected in "$site_origin/releases" 'scratch release public key' '# from this packaged web context'; do
+  grep -Fq "$expected" "$web_install/install.sh" || fault "the stack installer lost: $expected"
+done
+grep -Fq 'releases=${TILO_RELEASES:-https://tilo.sh/releases}' "$TILO_SH_SITE/install.sh" \
+  || fault "preparing the stack modified the supplied installer"
+
 # -- stack.sh vaults ----------------------------------------------------------
 
 # A state as a stack that is up leaves it, with one workspace's store under

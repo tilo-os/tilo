@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import test from 'node:test';
 import vm from 'node:vm';
 import {ASK_MS, domView, setupLater, showPrompt, CONNECTED_MS, KEPT_LOST_MS, QUIET_MS, createFirstScreen, FOLLOW_MS, MAKE_MS,
-  manualCommands, MCP_URL, OFFER_MS, openFirstScreen, openSignIn, RENEW_MS, readSetup, readShown, SETUP, setupFailure, setupPrompt, SHOWN_FOLLOW_MS,
+  HOSTED_CLI_VERSION, manualCommands, MCP_URL, OFFER_MS, openFirstScreen, openSignIn, RENEW_MS, readSetup, readShown, SETUP, setupFailure, setupPrompt, SHOWN_FOLLOW_MS,
   signInPrompt, startFirstScreen, stepLines, minutesLeft} from './first-screen.mjs';
 
 const here = name => new URL(name, import.meta.url);
@@ -67,15 +67,24 @@ const settle = () => new Promise(resolve => setTimeout(resolve, 0));
 test('the setup prompt is one line: install, log in with the ticket by the installed path, follow what tilo says', () => {
   // The installer starts `login` with the `tilo` it just put in place, by its full path: an agent's
   // shell on a fresh machine has no ~/.local/bin on its PATH (dist/install/tilo.sh).
+  const selected = `TILO_VERSION=${HOSTED_CLI_VERSION} TILO_HOSTED_SETUP=1 TILO_INSTALL_DIR="$HOME/.local/share/tilo/cli/${HOSTED_CLI_VERSION}" sh`;
+  assert.match(HOSTED_CLI_VERSION, /^v\d+\.\d+\.\d+-[a-zA-Z0-9.]+$/);
   assert.equal(setupPrompt(TICKET),
-    `Set up Tilo for me: run curl -fsSL tilo.sh | sh -s login ${TICKET}, then do what it tells you.`);
+    `Set up Tilo for me: run curl -fsSL https://tilo.sh/install/hosted-v1.sh | ${selected} -s login ${TICKET}, then do what it tells you.`);
   assert.equal(setupPrompt(TICKET, {site: 'https://tilo.sh'}), setupPrompt(TICKET), 'tilo.sh is the default site');
   // A ticket names the host it is served from, so no site is said, even on a site of another name.
   assert.equal(setupPrompt(TICKET, {site: 'https://dev.tilo.example'}),
-    `Set up Tilo for me: run curl -fsSL https://dev.tilo.example | sh -s login ${TICKET}, then do what it tells you.`);
-  assert.equal(signInPrompt(TICKET), `Sign me in to Tilo: run tilo device add ${TICKET}, then do what it tells you.`);
-  assert.equal(manualCommands(TICKET), `curl -fsSL tilo.sh | sh -s login ${TICKET}`);
+    `Set up Tilo for me: run curl -fsSL https://dev.tilo.example/install/hosted-v1.sh | ${selected} -s login ${TICKET}, then do what it tells you.`);
+  assert.equal(signInPrompt(TICKET), `Sign me in to Tilo: run curl -fsSL https://tilo.sh/install/hosted-v1.sh | ${selected} -s device add ${TICKET}, then do what it tells you.`);
+  assert.equal(manualCommands(TICKET), `curl -fsSL https://tilo.sh/install/hosted-v1.sh | ${selected} -s login ${TICKET}`);
+  assert.equal(signInPrompt(TICKET, {site: 'https://dev.tilo.example'}),
+    `Sign me in to Tilo: run curl -fsSL https://dev.tilo.example/install/hosted-v1.sh | ${selected} -s device add ${TICKET}, then do what it tells you.`);
   assert.equal(MCP_URL, 'https://mcp.tilo.sh');
+});
+
+test('a ticket containing shell punctuation stays one argument', () => {
+  const code = 'unexpected ; echo text';
+  assert.ok(manualCommands(code).endsWith("sh -s login 'unexpected ; echo text'"));
 });
 
 test('time left reads in whole minutes, counted up, never none while the code works', () => {
@@ -817,6 +826,23 @@ test('the kept setup alone decides the step a bare entry opens on, whatever the 
   assert.equal(shows('https://tilo.example/#/@workspaces.example/w/abc?invite=x', {stored: kept({step: 'waiting', code}), secrets: {invite: 'x'}}), false,
     'an invitation still opens what it names');
   assert.equal(shows('https://tilo.example/?embed=1', {stored: kept({step: 'waiting', code})}), false, 'inside another site: never');
+});
+
+test('first paint restores a setup prompt only from the loaded entry bundle', () => {
+  const bundle = 'https://tilo.sh/v/123/';
+  for (const cached of [undefined, 'https://tilo.sh/v/old/', bundle]) {
+    const {document, screen} = stubDocument();
+    document.querySelector = () => ({href: bundle + 'entry-page.mjs'});
+    const stored = {
+      ...kept({step: 'start', offer: {expiresAt: Date.now() + 300_000}}),
+      'tilo-setup-shown': JSON.stringify({bundle: cached, offer: 'cached command'}),
+    };
+    const page = {document, location: new URL('https://tilo.sh/'), URL, Date,
+      localStorage: {getItem: key => stored[key] ?? null}};
+    vm.runInNewContext(readFileSync(here('first-screen.inline.js'), 'utf8'), page);
+    page.__tiloSetupPaint();
+    assert.equal(screen().dataset.setup === 'ready', cached === bundle);
+  }
 });
 
 test('the desktop entry page inlines the first screen’s script unchanged, after the scrubber, and carries its screen', () => {

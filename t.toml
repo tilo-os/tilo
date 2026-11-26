@@ -2636,7 +2636,8 @@ env = { COSIGN_KEY_REF = "awskms:///arn:aws:kms:us-east-1:125650147312:alias/til
 outputs = ["/target/publish/ci-builder/x86_64/payload.json", "/target/publish/ci-builder/x86_64/signature", "/target/publish/ci-builder/x86_64/dry-run.pub", "/target/publish/ci-builder/x86_64/bundle.json", "/target/publish/ci-builder/aarch64/payload.json", "/target/publish/ci-builder/aarch64/signature", "/target/publish/ci-builder/aarch64/dry-run.pub", "/target/publish/ci-builder/aarch64/bundle.json", "/target/publish/ci-builder/index/payload.json", "/target/publish/ci-builder/index/signature", "/target/publish/ci-builder/index/dry-run.pub", "/target/publish/ci-builder/index/bundle.json"]
 # The release key's token reaches release tags only (a dispatch of main is refused it), so
 # this applies there; a dispatch of main publishes the builder with the development signature.
-on = ["tag:v*"]
+# t matches positive globs. Keep every v-prefixed tag except the reserved v+ namespace.
+on = ["tag:v", "tag:v[!+]*"]
 id_token = ["sts.amazonaws.com"]
 
 [[check]]
@@ -3445,7 +3446,9 @@ id_token = ["registry.tilo.so"]
 # tags: sign-cli alone holds the release key, publish-cli alone the package token, and neither
 # runs anywhere else. Either may also be dispatched, on a release tag whose own run did not
 # publish it (`t dispatch publish-cli --ref tag:vX.Y.Z`): the release key's token is issued for
-# tags only and cli-release.sh refuses any other ref, so a dispatch elsewhere publishes nothing.
+# tags only and cli-release.sh refuses any other ref. A CLI-only prerelease uses a
+# v+cli-X.Y.Z-PRE tag, then an explicit `t dispatch publish-cli --repo tilo --ref tag:v+cli-X.Y.Z-PRE --publish`.
+# The installer selects that immutable package with TILO_VERSION=vX.Y.Z-PRE.
 # cli-rehearsal signs the same release with a throwaway key, publishes it into a directory laid
 # out as tilo.sh serves it, serves that at a local HTTPS site, and installs it the way a person
 # does (`curl -fsSL https://<site>/ | sh`): with openssl on the machine, and again with a PATH
@@ -3456,8 +3459,8 @@ id_token = ["registry.tilo.so"]
 # the program against link stubs of the frameworks it uses (tools/ci/macos-frameworks.py), and no
 # Apple SDK -- Apple's to license on Apple hardware -- is involved. These checks build and pack
 # them, and check the Mach-O they are; nothing else here builds, signs or publishes them. A Mac
-# archive joins a release once it has run on a Mac: until then cli-release does not wait for them,
-# and the installer tells a Mac that the release has none.
+# archive joins ordinary releases separately. Hosted CLI prereleases always carry both Mac
+# archives as well as Linux: their tag brings both cross-builds into the signed manifest.
 
 [[check]]
 name = "cli-{arch}"
@@ -3495,6 +3498,7 @@ run = "bash tools/ci/publish/cli-release.sh build {arch}-apple-darwin /target/pu
 setup = { run = "bash tools/ci/install-cli-toolchain.sh {arch}-apple-darwin", egress = { to = ["0.0.0.0/0", "::/0"], pinned = true } }
 requires = ["arch=x86_64"]
 outputs = ["/target/publish/cli/macos-{arch}/*"]
+on = ["tag:v+cli-*"]
 default = false
 [check.matrix]
 arch = ["aarch64", "x86_64"]
@@ -3503,6 +3507,7 @@ arch = ["aarch64", "x86_64"]
 name = "cli-release"
 run = "bash tools/ci/publish/cli-release.sh sums /target/publish/cli/release /target/publish/cli/linux-x86_64 /target/publish/cli/linux-aarch64 /target/publish/cli/macos-aarch64 /target/publish/cli/macos-x86_64"
 needs = ["cli-x86_64", "cli-aarch64"]
+optional_needs = ["cli-macos-cross-aarch64", "cli-macos-cross-x86_64"]
 requires = ["arch=any"]
 outputs = ["/target/publish/cli/release/*"]
 default = false
@@ -3512,6 +3517,9 @@ name = "cli-rehearsal"
 # dnf installs from Fedora's mirrors, which are no fixed host list.
 egress = { to = ["0.0.0.0/0", "::/0"] }
 run = "bash tools/ci/publish/cli-release.sh rehearse /target/publish/cli/release"
+# A named hosted prerelease rehearses the four-platform manifest and version-only installation
+# before the corresponding tag exists. Rehearsal signs solely with its temporary key.
+dispatch_inputs = { hosted_version = "" }
 # openssl makes the rehearsal site's certificate and verifies the signature as the installer does;
 # the image lacks it, so it is installed here.
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
@@ -6873,11 +6881,13 @@ timeout_secs = 1800
 name = "onboarding"
 # No egress: the entry, the stack and the people's browsers meet on loopback alone.
 run = "bash os/containers/tilo-lounge/test-onboarding.sh /target/publish/web-entry/bundle /target/onboarding"
-needs = ["lounge-check-cli", "web-entry-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
+# The person installs the exact Linux release package from this run. The stack's operator uses
+# the local check binary. The disposable package registry signs its checksums with its own key.
+needs = ["cli-x86_64", "lounge-check-cli", "web-entry-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
 setup = { run = "dnf install -y --setopt=install_weak_deps=False python3-httpx openssl && dnf clean all", egress = { to = ["0.0.0.0/0", "::/0"] } }
-env = { TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/onboarding/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
+env = { TILO_CLI_BIN = "/target/publish/lounge-check/cli/tilo", TILO_SH_CLI_DIR = "/target/publish/cli/linux-x86_64", TILO_SH_PROGRAMS = "/target/publish/tilo-sh/bin", TILO_SH_LOUNGE = "/target/publish/tilo-sh/lounge", TILO_SH_SITE = "/target/publish/web-entry/context", TILO_SH_CADDY = "/target/publish/tilo-sh-caddy/caddy", TILO_SH_STATE = "/target/onboarding/state", TILO_SH_FRESH = "1", TILO_SH_VM_HOST = "0", TILO_OWNED_BROWSER_MAX_CONCURRENT = "0", TILO_OWNED_BROWSER_MAX_LIFETIME_SECS = "0" }
 requires = ["arch=x86_64"]
 isolation = "nested"
 outputs = ["/target/onboarding/**"]
@@ -7590,7 +7600,8 @@ outputs = ["/target/publish/host-loader-signed/**"]
 # The release key's token reaches release tags only (a dispatch of main is refused it), so this
 # applies there; a dispatch of main seals the host image as it is, as seal-host's own fallback
 # says.
-on = ["tag:v*"]
+# Match the same release tags as sign-ci-builder, leaving v+ to separately dispatched releases.
+on = ["tag:v", "tag:v[!+]*"]
 id_token = ["sts.amazonaws.com"]
 
 # The image sealed: its UKI's composefs digest the one `bootc install` computes from its layers,

@@ -1,8 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import {mkdtemp, rm} from 'node:fs/promises';
+import {createServer} from 'node:http';
+import {tmpdir} from 'node:os';
+import {join} from 'node:path';
 import {reloaded} from './waits.mjs';
-import {agentCommand} from './shell.mjs';
-import {setupPrompt, signInPrompt} from '../../../../crates/browser/tilo-browser-runtime/web/first-screen.mjs';
+import {agentCommand, hostedTiloPath, runSetupPrompt} from './shell.mjs';
+import {HOSTED_CLI_VERSION, setupPrompt, signInPrompt} from '../../../../crates/browser/tilo-browser-runtime/web/first-screen.mjs';
 
 test('the page drivers run the ticket displayed in the setup and sign-in prompts', () => {
   const ticket = `tilo1${'ab'.repeat(80)}`;
@@ -13,6 +17,59 @@ test('the page drivers run the ticket displayed in the setup and sign-in prompts
   assert.equal(agentCommand(signInPrompt(ticket + 'x')), null);
   assert.deepEqual(agentCommand('tilo login D9B-X4GK --site https://node.example, then follow the instructions.'),
     {kind: 'login', text: 'D9B-X4GK', ticket: null, code: 'D9B-X4GK', site: 'https://node.example'});
+});
+
+test('the copied commands run the pinned installer in the agent’s test home', async t => {
+  const home = await mkdtemp(join(tmpdir(), 'tilo prompt '));
+  t.after(() => rm(home, {recursive: true, force: true}));
+  const paths = [];
+  const installer = '/install/hosted-v1.sh';
+  let available = true;
+  const server = createServer((request, response) => {
+    paths.push(request.url);
+    if (!available || request.url !== installer) {
+      response.writeHead(404);
+      response.end('echo the missing route response reached the shell\n');
+      return;
+    }
+    response.end('printf "%s\\n" "$TILO_VERSION" "$TILO_HOSTED_SETUP" "$TILO_INSTALL_DIR" "$@"\n');
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const site = `http://127.0.0.1:${server.address().port}`;
+  const version = HOSTED_CLI_VERSION;
+  const options = {site, version, env: {HOME: home, PATH: process.env.PATH}};
+  const ticket = `tilo1${'ab'.repeat(80)}`;
+  const installDir = join(home, '.local/share/tilo/cli', version);
+  assert.equal(hostedTiloPath(home, version), join(installDir, 'tilo'));
+  const setup = setupPrompt(ticket, {site});
+  const signIn = signInPrompt(ticket, {site});
+  for (const [prompt, extra, args] of [
+    [setup, {}, ['login', ticket]],
+    [setup, {agent: 'Review agent'}, ['login', ticket, '--agent', 'Review agent']],
+    [signIn, {}, ['device', 'add', ticket]],
+  ]) {
+    const result = await runSetupPrompt(prompt, {...options, ...extra});
+    assert.equal(result.code, 0, result.stderr);
+    assert.deepEqual(result.stdout.trimEnd().split('\n'), [version, '1', installDir, ...args]);
+  }
+  for (const [prompt, settings] of [
+    [setup.replaceAll(version, 'v1.0.0-wrong.1'), options],
+    [setup.replace(installer, '/install.sh'), options],
+    [setup.replace(site, 'http://localhost:1'), options],
+    [setup.replace('sh -s', 'echo wrong | sh -s'), options],
+    [setup.replace('TILO_INSTALL_DIR="$HOME/.local/share', 'TILO_INSTALL_DIR="$HOME/.local/bin'), options],
+    [setup.replace(site, 'https://public.example'), {...options, site: 'https://public.example'}],
+    [setup, {...options, env: {HOME: 'relative'}}],
+  ]) {
+    await assert.rejects(runSetupPrompt(prompt, settings));
+  }
+  available = false;
+  const missing = await runSetupPrompt(setup, options);
+  assert.notEqual(missing.code, 0, 'curl failing while sh reads an empty pipe must fail the check');
+  assert.match(missing.stderr, /404/);
+  assert.equal(missing.stdout, '', 'the response body of an unavailable route must never run');
+  assert.deepEqual(paths, [installer, installer, installer, installer], 'only the versioned installer was requested');
 });
 
 /** A tab reloading in `turns` reads: the document it loads answers as arrived

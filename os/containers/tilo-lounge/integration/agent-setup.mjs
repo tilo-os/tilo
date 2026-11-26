@@ -1,10 +1,9 @@
 // A person sets Tilo up through their agent, as the first screen asks: a
 // fresh browser opens the site, the person clicks "Set up with your agent"
-// and the page copies a prompt. What the prompt tells an agent to run runs
-// here, headless, as an agent would run it: `tilo login <code>` with the
-// `tilo` command this commit builds (the installer's download is the release
-// pipeline's to prove, not this check's). The tab must follow each step and
-// end in the person's own workspace, with the agent there and what it does
+// and the page copies a prompt. The agent downloads the signed package the
+// prompt names, logs in through its installer and keeps its installed MCP
+// server running. The tab must follow each step and end in the person's own
+// workspace, with the agent there and what it does
 // shown beside its name.
 //
 // Then the same person comes back on a browser that keeps nothing of them
@@ -18,21 +17,22 @@
 // stack is plain HTTP on this machine, so the command needs
 // no test certificate to reach it.
 //
-// usage: node agent-setup.mjs SITE_URL SERVER_ORIGIN TILO_BIN OUT_DIR
+// usage: node agent-setup.mjs SITE_URL SERVER_ORIGIN OUT_DIR
 //
 // Prints a JSON report and saves what each page showed; exits non-zero when a
 // step of either path did not happen.
-import {execFile, spawn} from 'node:child_process';
+import {spawn} from 'node:child_process';
 import {chmodSync, mkdirSync, readFileSync, readdirSync, writeFileSync} from 'node:fs';
-import {join} from 'node:path';
+import {join, resolve} from 'node:path';
 import {launch, sleep} from '../../../../tools/web/chrome.mjs';
 import {clock} from './timing.mjs';
-import {agentCommand} from './shell.mjs';
+import {HOSTED_CLI_VERSION} from '../../../../crates/browser/tilo-browser-runtime/web/first-screen.mjs';
+import {agentCommand, hostedTiloPath, runSetupPrompt} from './shell.mjs';
 import {stepLimit, shellMetrics, machine, browserMemory, reloaded, keepRecoveryWords} from './waits.mjs';
 
-const [site, server, tiloBin, out] = process.argv.slice(2);
-if (!site || !server || !tiloBin || !out) {
-  console.error('usage: node agent-setup.mjs SITE_URL SERVER_ORIGIN TILO_BIN OUT_DIR');
+const [site, server, out] = process.argv.slice(2);
+if (!site || !server || !out) {
+  console.error('usage: node agent-setup.mjs SITE_URL SERVER_ORIGIN OUT_DIR');
   process.exit(2);
 }
 mkdirSync(out, {recursive: true});
@@ -123,7 +123,8 @@ const until = async (tab, expression, what, timeout = stepLimit(3)) => {
 
 // The computer the agent runs on: its own home, and the MCP configuration the
 // agent keeps there.
-const computer = join(out, 'computer');
+const computer = resolve(out, 'computer');
+const tiloBin = hostedTiloPath(computer, HOSTED_CLI_VERSION);
 mkdirSync(join(computer, 'bin'), {recursive: true});
 const agentName = 'Reviewer';
 // The tool the agent runs in, as `tilo login` finds it: its own command adds Tilo's MCP server,
@@ -153,13 +154,6 @@ const env = {
   // The computer's peer logs each window it shows on the person's layout.
   RUST_LOG: 'tilo_runtime::mcp::agent::link=debug,warn',
 };
-// Run one `tilo …` as the agent does: its words, as the agent reads them.
-const tilo = (args, {input} = {}) => new Promise(resolve => {
-  const child = execFile(tiloBin, args, {env, timeout: 180_000, maxBuffer: 1 << 20}, (error, stdout, stderr) =>
-    resolve({code: error ? (error.code ?? 1) : 0, stdout, stderr}));
-  if (input !== undefined) { child.stdin.end(input); }
-});
-
 // One browser per person-visit, its first screen not yet seen, allowed to
 // read back what the page copies.
 const visit = async name => {
@@ -339,12 +333,7 @@ const prompt = await copied(first, 'the setup prompt', beforeSetup);
 if (prompt !== shown) await fail(`the click copied something else than the prompt shown: ${prompt} / ${shown}`);
 report.prompt = prompt;
 mark('the page copied its setup prompt');
-const setup = agentCommand(prompt);
-if (!setup) await fail(`the prompt names no tilo login ticket: ${prompt}`);
-if (!/^Set up Tilo for me: run curl -fsSL \S+ \| sh -s login tilo1[0-9a-f]+, then do what it tells you\.$/.test(prompt)) {
-  await fail(`the prompt is not the one-line setup naming the ticket: ${prompt}`);
-}
-const login = tilo(['login', setup.ticket, '--agent', agentName]);
+const login = runSetupPrompt(prompt, {site: new URL(site).origin, version: HOSTED_CLI_VERSION, env, agent: agentName});
 // The tab's steps are followed while the agent goes: the screen leaves only
 // once the agent has confirmed Tilo's tools in its own configuration.
 const following = followSteps(first, `document.documentElement.dataset.firstScreen === undefined || document.documentElement.dataset.firstScreen === 'connected'`);
@@ -367,8 +356,8 @@ if (!/^mcp add --scope user tilo -- \S*tilo mcp$/m.test(calls)) {
 }
 const kept = readFileSync(claudeConfig, 'utf8');
 report.claudeConfig = kept;
-if (!JSON.parse(kept)?.mcpServers?.tilo?.command?.endsWith('tilo')) {
-  await fail(`the tool's own configuration holds no Tilo server: ${kept}`);
+if (JSON.parse(kept)?.mcpServers?.tilo?.command !== tiloBin) {
+  await fail('the agent did not register the CLI installed by the hosted setup prompt');
 }
 const steps = await following;
 report.steps = steps;
@@ -533,9 +522,7 @@ const again = await copied(second, 'the sign-in prompt', beforeSignIn);
 report.signInPrompt = again;
 const signIn = agentCommand(again);
 if (!signIn) await fail(`the sign-in prompt names no ticket or code: ${again}`);
-const approved = await tilo(signIn.kind === 'device add'
-  ? ['device', 'add', signIn.ticket]
-  : ['login', signIn.code, ...(signIn.site ? ['--site', signIn.site] : [])]);
+const approved = await runSetupPrompt(again, {site: new URL(site).origin, version: HOSTED_CLI_VERSION, env});
 report.approve = approved;
 if (approved.code !== 0) await fail(`tilo login did not approve the tab (${approved.code}): ${approved.stderr}${approved.stdout}`);
 // The person's root stays in the tab that set it up, so the computer that ran `tilo device add`

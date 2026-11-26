@@ -17,7 +17,8 @@
 #   $TILO_RELEASES/latest/SHA256SUMS.sig    DER ECDSA signature of SHA256SUMS
 #   $TILO_RELEASES/latest/tilo-<os>-<arch>.tar.gz   holding `tilo` and, for Linux,
 #       `tilolang-process`, the program `tilo mcp` starts an agent's task programs in
-# $TILO_VERSION picks a release other than latest (`v0.4.0`).
+# $TILO_VERSION picks a release other than latest (`v0.4.0`). A hosted setup
+# requires OpenSSL and uses its own version directory on a fresh agent account.
 #
 # Arguments are a command for the installed `tilo`, run by its full path once
 # it is in place: `curl -fsSL https://tilo.sh | sh -s login K7Q-MX2P` installs
@@ -78,6 +79,54 @@ main() {
   esac
   archive=tilo-$os-$arch.tar.gz
 
+  if [ "${TILO_HOSTED_SETUP:-}" = 1 ]; then
+    need openssl
+    case "$version" in *[!A-Za-z0-9.-]*) fail "invalid hosted CLI prerelease" ;; esac
+    if ! printf '%s\n' "$version" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+-[0-9A-Za-z.]+$'; then
+      fail "hosted setup needs a named CLI prerelease"
+    fi
+    if [ "$dir" != "$HOME/.local/share/tilo/cli/$version" ] || [ -L "$dir" ]; then
+      fail "hosted setup needs its version directory at $HOME/.local/share/tilo/cli/$version"
+    fi
+    # A login and its daemon belong to the account. A version-specific binary
+    # alone cannot upgrade a different daemon, its registration, or its device.
+    other_profile='This account already has a Tilo device or service. Use a fresh agent account or VM for this hosted CLI.'
+    state=${XDG_STATE_HOME:-$HOME/.local/state}
+    data=${XDG_DATA_HOME:-$HOME/.local/share}
+    if [ "$os" = macos ]; then state="$HOME/Library/Application Support"; data=$state; fi
+    keys=${TILO_IDENTITY_ROOT:-$data/tilo}
+    if [ -z "${TILO_IDENTITY_ROOT:-}" ] && [ -d /var/lib/tilo/device ]; then keys=/var/lib/tilo; fi
+    login=$state/tilo/device/login.json
+    holder=$state/tilo/device/holder.lock
+    receipt=$state/tilo/device/hosted-cli
+    # The ticket's successful login writes its person's certificate and login record. Tie
+    # the receipt to both public files, without reading the device's private signing key.
+    hosted_identity() {
+      [ -f "$login" ] || return 1
+      person=$(sed -n 's/^[[:space:]]*"user":[[:space:]]*"\([0-9a-f]*\)".*$/\1/p' "$login")
+      [ "${#person}" -eq 64 ] || return 1
+      cert=$keys/device/certs/$person.bin
+      [ -f "$cert" ] || return 1
+      printf '%s %s %s' "$version" "$(digest "$login")" "$(digest "$cert")"
+    }
+    if [ -f "$receipt" ] && [ ! -L "$receipt" ]; then
+      identity=$(hosted_identity) && [ "$identity" = "$(cat "$receipt")" ] || fail "$other_profile"
+    else
+      if [ -e "$receipt" ] || [ -L "$receipt" ] || [ -e "$login" ] || [ -e "$holder" ] ||
+         [ -d "$keys/device" ] || [ -e "$keys/device-private/keypair.bin" ] ||
+         [ -d "${XDG_CONFIG_HOME:-$HOME/.config}/tilo/identity" ] || [ "${1:-}" = device ]; then
+        fail "$other_profile"
+      fi
+    fi
+    if [ "$os" = linux ]; then
+      service=${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/tilo-peer.service
+    else
+      service=$HOME/Library/LaunchAgents/so.tilo.peer.plist
+      if launchctl print "gui/$(id -u)/so.tilo.runtime" >/dev/null 2>&1; then fail "$other_profile"; fi
+    fi
+    if [ -e "$service" ] && ! grep -Fq "$dir/tilo-runtime" "$service"; then fail "$other_profile"; fi
+  fi
+
   work=$(mktemp -d 2>/dev/null || mktemp -d -t tilo)
   # An install that stops early must not end as a success. macOS's sh (bash 3.2) ends a script
   # that stopped on an unset variable with status 0 once an exit trap is set, so the trap asks
@@ -134,10 +183,39 @@ KEY
       || fail "$archive holds no plain tilo-runtime"
     beside="$beside tilo-runtime"
   fi
+  if [ "${TILO_HOSTED_SETUP:-}" = 1 ]; then
+    [ -f "$work/unpacked/tilo-runtime" ] || fail "the hosted release has no signed tilo-runtime"
+    for name in $beside tilo; do
+      if [ -L "$dir/$name" ] || { [ -e "$dir/$name" ] && ! cmp -s "$work/unpacked/$name" "$dir/$name"; }; then
+        fail "$dir/$name differs from the signed CLI in this version directory"
+      fi
+    done
+    # A daemon can also run on its own, with no user service. Its PID is kept in its
+    # lock file. A free lock can have a stale PID; a live holder must run this binary.
+    if [ -e "$holder" ]; then
+      [ -f "$holder" ] && [ ! -L "$holder" ] || fail "$other_profile"
+      if [ "$os" = linux ]; then
+        need flock
+        if ! flock -sn "$holder" true; then
+          pid=$(cat "$holder")
+          case "$pid" in ''|*[!0-9]*) fail "$other_profile" ;; esac
+          cmp -s "/proc/$pid/exe" "$work/unpacked/tilo-runtime" || fail "$other_profile"
+        fi
+      else
+        need lsof
+        pid=$(lsof -n -t "$holder") || pid=
+        if [ -n "$pid" ]; then
+          case "$pid" in *[!0-9]*) fail "$other_profile" ;; esac
+          lsof -n -a -p "$pid" -d txt -Fn | grep -Fxq "n$dir/tilo-runtime" || fail "$other_profile"
+        fi
+      fi
+    fi
+  fi
   mkdir -p "$dir"
   # Each replaced in one rename, so a tilo running now keeps working; the program beside it
   # first, so a new tilo never starts an old one.
   for name in $beside tilo; do
+    if [ "${TILO_HOSTED_SETUP:-}" = 1 ] && [ -x "$dir/$name" ]; then continue; fi
     cp "$work/unpacked/$name" "$dir/.$name.new"
     chmod 0755 "$dir/.$name.new"
     mv -f "$dir/.$name.new" "$dir/$name"
@@ -157,6 +235,10 @@ KEY
   trap - EXIT INT TERM
   # Its input is the rest of this script's pipe, not the person's.
   "$dir/tilo" "$@" </dev/null
+  if [ "${TILO_HOSTED_SETUP:-}" = 1 ] && [ "$1" = login ]; then
+    identity=$(hosted_identity) || fail "the hosted login did not leave its device certificate"
+    (umask 077; tmp=$(mktemp "$receipt.XXXXXXXX") && printf '%s\n' "$identity" > "$tmp" && mv -f "$tmp" "$receipt")
+  fi
 }
 
 main "$@"

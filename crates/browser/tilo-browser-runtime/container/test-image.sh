@@ -172,6 +172,7 @@ installer=$root/srv/tilo-install/install.sh
 [[ $(get / -A curl/8.9.1 | sha256sum) == "$(sha256sum <"$installer")" ]] || fail "curl at / must get the installer"
 [[ $(get / -A Wget/1.24 | sha256sum) == "$(sha256sum <"$installer")" ]] || fail "Wget at / must get the installer"
 [[ $(get /install.sh | sha256sum) == "$(sha256sum <"$installer")" ]] || fail "/install.sh must be the installer"
+[[ $(get /install/hosted-v1.sh | sha256sum) == "$(sha256sum <"$installer")" ]] || fail "hosted setup must serve the packaged installer"
 # Each answer is read whole before it is searched: under pipefail, `grep -q` leaving at its
 # first match can cut off curl mid-write and fail the check on an answer that was right.
 grep -q '<!doctype html>' <<<"$(get / -A 'Mozilla/5.0')" || fail "a browser at / must get the entry page"
