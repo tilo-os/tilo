@@ -89,6 +89,7 @@ TILO_WORKSPACES_WEB_ENTRY TILO_WORKSPACES_SITE_ORIGINS TILO_WORKSPACES_SERVER_OR
 TILO_WORKSPACES_SERVER_ORIGINS_ALSO
 TILO_WORKSPACES_SERVER_PLAIN TILO_WORKSPACES_LIVE TILO_WORKSPACES_LIVE_ORIGIN TILO_WORKSPACES_WEB
 TILO_WORKSPACES_TLS_CERT TILO_WORKSPACES_TLS_KEY
+TILO_WORKSPACES_APPLE_PUSH_KEY_FILE TILO_WORKSPACES_APPLE_PUSH_KEY_ID TILO_WORKSPACES_APPLE_PUSH_TEAM TILO_WORKSPACES_APPLE_PUSH_TOPICS
 TILO_WORKSPACES_LINK TILO_WORKSPACES_LINK_ORIGIN
 TILO_WORKSPACES_HTTP TILO_WORKSPACES_FETCH_PROXY
 TILO_WORKSPACES_MODERATION_KEY_FILE TILO_WORKSPACES_MODERATION_MODEL
@@ -175,6 +176,26 @@ set -- workspace \
   --http "${TILO_WORKSPACES_HTTP:-0.0.0.0:8790}" \
   --web-entry "$entry" \
   --allowed-origin "$origin"
+
+# The APNs sender reads its signing key from the operator's mounted file.
+apple_key=${TILO_WORKSPACES_APPLE_PUSH_KEY_FILE:-}
+apple_key_id=${TILO_WORKSPACES_APPLE_PUSH_KEY_ID:-}
+apple_team=${TILO_WORKSPACES_APPLE_PUSH_TEAM:-}
+apple_topics=${TILO_WORKSPACES_APPLE_PUSH_TOPICS:-}
+if [ -n "$apple_key$apple_key_id$apple_team$apple_topics" ]; then
+  [ -n "$apple_key" ] && [ -n "$apple_key_id" ] && [ -n "$apple_team" ] && [ -n "$apple_topics" ] \
+    || fail 'set TILO_WORKSPACES_APPLE_PUSH_KEY_FILE, TILO_WORKSPACES_APPLE_PUSH_KEY_ID, TILO_WORKSPACES_APPLE_PUSH_TEAM and TILO_WORKSPACES_APPLE_PUSH_TOPICS together'
+  [ -f "$apple_key" ] && [ -r "$apple_key" ] || fail 'TILO_WORKSPACES_APPLE_PUSH_KEY_FILE must name a readable file'
+  set -- "$@" --apple-push-key "$apple_key" --apple-push-key-id "$apple_key_id" --apple-push-team "$apple_team"
+  while :; do
+    topic=$(printf '%s' "${apple_topics%%,*}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+    case $topic in
+      ''|-*|*[!a-zA-Z0-9.-]*) fail 'TILO_WORKSPACES_APPLE_PUSH_TOPICS takes comma-separated app bundle identifiers' ;;
+    esac
+    set -- "$@" --apple-push-topic "$topic"
+    case $apple_topics in *,*) apple_topics=${apple_topics#*,} ;; *) break ;; esac
+  done
+fi
 
 # The server has its own packet relay, unless TILO_WORKSPACES_LIVE=none: then
 # it is reached through the one at TILO_WORKSPACES_LIVE_ORIGIN, as a server

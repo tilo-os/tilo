@@ -307,3 +307,24 @@ commit as the image that reads it), pushes it, and waits until `https://eu1.tilo
 `https://tilo.sh/version.json` report the release's commit. Each step prints how long it took.
 `--no-push` stops before the commit; `--images LOUNGE WEB API` pins images an earlier run
 published instead of publishing again. Going back is reverting that commit.
+
+
+### Rehearse a release branch
+
+Run the existing image and browser checks on the exact candidate before publishing it.
+
+```sh
+candidate=$(git rev-parse HEAD)
+t test --rev "$candidate" image-lounge image-web-entry image-api test-image-api e2e onboarding tilo-sh-admits-a-page
+```
+
+The release gate checks each published image receipt against the source commit and Git
+reference of the run. To rehearse an existing trusted release run on the build server, use
+a disposable checkout of the infrastructure repository at its current main revision.
+
+```sh
+tools/release/tilo-sh.sh --infra "$infra_checkout" --run "$release_run" --expect-commit "$candidate" --no-push
+```
+
+This checks the three digests together and runs the upgrade against scratch state. The
+resulting manifest edits stay in the disposable checkout for review.

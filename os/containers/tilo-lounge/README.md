@@ -78,6 +78,10 @@ Optional, with these defaults:
 | `TILO_WORKSPACES_LINK_ORIGIN` | the public origin | the `https://host:port` origin pages open WebTransport sessions at; set with `TILO_WORKSPACES_LINK` |
 | `TILO_WORKSPACES_HTTP` | `0.0.0.0:8790` | the listener the routes are served on |
 | `TILO_WORKSPACES_FETCH_PROXY` | on | `0` turns the fetch proxy off |
+| `TILO_WORKSPACES_APPLE_PUSH_KEY_FILE` | none | path to the Apple Push Notification service (APNs) signing key, a mounted `.p8` file readable only by the server user (mode `0400` or `0600`) |
+| `TILO_WORKSPACES_APPLE_PUSH_KEY_ID` | none | the key ID from the Apple Developer account |
+| `TILO_WORKSPACES_APPLE_PUSH_TEAM` | none | the Apple Developer team ID that owns the key and app |
+| `TILO_WORKSPACES_APPLE_PUSH_TOPICS` | none | comma-separated bundle identifiers the server may send to, such as `so.tilo.assistant` |
 | `TILO_WORKSPACES_MODERATION_KEY_FILE` | `/run/secrets/moderation-model-key` | the model key the moderation agent asks with |
 | `TILO_WORKSPACES_MODERATION_MODEL` | the server's | the model it asks |
 | `TILO_WORKSPACES_DISCORD_CLIENT_ID` | none | the Discord application members connect, once sign-in is set up |
@@ -93,6 +97,12 @@ root is kept sealed. The server's session limits
 (`TILO_SERVER_MAX_WEB_SESSIONS`, `TILO_SERVER_MAX_HANDSHAKES`,
 `TILO_SERVER_MAX_WORKSPACE_GRANTS`) are the image's defaults and the deployment's to
 raise.
+
+Set all four Apple push settings to deliver notifications to registered devices while
+the app is closed. Mount the key read-only with ownership that lets the Lounge
+process (UID 10001 in the image) read it. At startup the server logs whether
+it could open its APNs sender. Each device also needs an entitled build and
+the person's notification permission. [Apple app provisioning](../../../dist/apple/README.md)
 
 ## State on the volume
 

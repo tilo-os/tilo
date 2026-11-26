@@ -35,5 +35,14 @@ rehearsed in a browser against the stack with no real mail account. A stack
 on the build server carries it the same way, and its ports are forwarded
 here with the rest.
 
+To enable Apple push on this stack, place the operator's `.p8` key at
+`$TILO_SH_STATE/secrets/apple-push-key.p8` on the machine running the stack,
+readable only by the server user (mode `0400` or `0600`). Beside it place
+three single-line files, `apple-push-key-id`, `apple-push-team`, and
+`apple-push-topics`, holding the Apple key ID, team ID, and comma-separated
+bundle identifiers. Both native and image runs pick up these settings when
+the server starts. Keep the original signing key outside the disposable
+stack state. [Lounge settings](../tilo-lounge/README.md)
+
 When a production manifest changes a service's environment, change the
 matching `*_env` function in `stack.sh` the same way.

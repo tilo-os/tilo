@@ -48,14 +48,9 @@ printf 'TILO_WORKSPACES_STATE=%s\n' "${TILO_WORKSPACES_STATE-}"
 STAND_IN
 chmod +x "$lounge/bin/tilo-server"
 
-# The manifest's variables name the stack's own person, whom only a built
-# tilo command makes: the few the entry point does not start without stand in
-# for them.
-server_env() {
-  printf '%s\n' TILO_WORKSPACES_PERSISTENT=lounge \
-    "TILO_WORKSPACES_ROOT_FILE=$state/secrets/workspace-root-lounge" \
-    "TILO_WORKSPACES_SERVER_ORIGIN=$server_origin" "TILO_WORKSPACES_WEB_ENTRY=$site_origin/"
-}
+# Only a built tilo command can make the stack's person. No VM host is running.
+stack_person() { printf '%064d\n' 1; }
+vm_host_running() { return 1; }
 # The server is started as the stack starts it, with only the environment its
 # file sets, but at once and without the sandbox that hands it the trust
 # bundle; what it prints is kept. Nothing else is started.
@@ -72,6 +67,20 @@ run_native() {
 (start_native_server) || fault "stack.sh did not start the server: $(cat "$work/server.said" 2>/dev/null)"
 grep -Fqx "TILO_WORKSPACES_STATE=$state/server" "$work/server.said" 2>/dev/null \
   || fault "the program the entry point started was not told its state: $(cat "$work/server.said" 2>/dev/null)"
+
+# The native server reads operator files on the host, the image in its read-only secrets mount.
+: > "$state/secrets/apple-push-key.p8"
+printf '%s\n' TESTKEY123 > "$state/secrets/apple-push-key-id"
+printf '%s\n' TESTTEAM12 > "$state/secrets/apple-push-team"
+printf '%s\n' so.tilo.assistant > "$state/secrets/apple-push-topics"
+for run_mode in native images; do
+  view=$state/secrets
+  [[ $run_mode == native ]] || view=/run/secrets
+  (use_mode "$run_mode"; server_env) > "$work/push.env"
+  for setting in "KEY_FILE=$view/apple-push-key.p8" KEY_ID=TESTKEY123 TEAM=TESTTEAM12 TOPICS=so.tilo.assistant; do
+    grep -Fqx "TILO_WORKSPACES_APPLE_PUSH_$setting" "$work/push.env" || fault "missing push setting $setting"
+  done
+done
 
 # -- a variable the image does not set ----------------------------------------
 

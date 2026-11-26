@@ -8037,9 +8037,11 @@ name = "release-tilo-sh"
 # commit, every browser flow passing, a stranger's whole way in (onboarding) and a fresh stack
 # admitting a page. It prints the three digests, which tools/release/tilo-sh.sh pins in the
 # infra repo after starting production's pods on them.
-run = "python3 -I -c 'import json,sys\nfor name,path in [(\"lounge\",\"/target/publish/lounge/release/receipt.json\"),(\"web-entry\",\"/target/publish/web-entry/receipt.json\"),(\"api\",\"/target/publish/api/receipt.json\")]:\n    print(name, json.load(open(path))[\"image\"])'"
+run = "python3 -I tools/release/tilo_sh_receipts.py /target/publish"
 needs = ["publish-lounge", "publish-web-entry", "publish-api", "e2e", "onboarding", "tilo-sh-admits-a-page"]
 requires = ["arch=any"]
+# Compare the receipts with this dispatch's reference and source even when its builds were reused.
+cache = false
 on = ["dispatch"]
 
 [[check]]

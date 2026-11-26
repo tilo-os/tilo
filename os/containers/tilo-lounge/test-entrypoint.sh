@@ -103,6 +103,18 @@ grep -Fqx -- "$work/state/lounge/avatars" "$work/args" || fail "the avatars are 
 grep -Fqx -- --packet-relay-url "$work/args" && fail "a published relay URL was announced without one set"
 grep -Fqx -- --owner "$work/args" && fail "an owner was named without one in the environment"
 grep -Fqx -- --public-origin-also "$work/args" && fail "another origin of the server was named without one set"
+grep -q -- '^--apple-push-' "$work/args" && fail "an unconfigured deployment enabled Apple push"
+
+# A path with a space must still reach the server as a single argument.
+push_key="$work/push key.p8"
+printf 'test fixture, not a signing key\n' > "$push_key"
+chmod 0600 "$push_key"
+push=(
+  "TILO_WORKSPACES_APPLE_PUSH_KEY_FILE=$push_key"
+  TILO_WORKSPACES_APPLE_PUSH_KEY_ID=TESTKEY123
+  TILO_WORKSPACES_APPLE_PUSH_TEAM=TESTTEAM12
+  'TILO_WORKSPACES_APPLE_PUSH_TOPICS=so.tilo.assistant, com.example.assistant'
+)
 
 # Every setting of a populated deployment reaches the host, and replaces the
 # default it shares a flag with.
@@ -126,6 +138,7 @@ lounge \
   TILO_WORKSPACES_HTTP=0.0.0.0:8890 \
   TILO_WORKSPACES_MODERATION_KEY_FILE=/run/secrets/moderation-model-key \
   TILO_WORKSPACES_MODERATION_MODEL=claude-test \
+  "${push[@]}" \
   TILO_WORKSPACES_DISCORD_CLIENT_ID=1559266815148953650 \
   TILO_WORKSPACES_DISCORD_CLIENT_SECRET_FILE=/run/secrets/discord-client-secret \
   TILO_WORKSPACES_DISCORD_API_BASE=http://127.0.0.1:9090 \
@@ -162,6 +175,11 @@ pair --bot '/usr/local/share/tilo/bots/discord-bridge.json guild=152125156382841
 pair --bot '/opt/echo.json a=b' || fail "a bot spec did not reach the host"
 pair --moderation-key-file /run/secrets/moderation-model-key || fail "the moderation key did not reach the host"
 pair --moderation-model claude-test || fail "the moderation model did not reach the host"
+pair --apple-push-key "$push_key" || fail "the Apple push key file did not reach the host"
+pair --apple-push-key-id TESTKEY123 || fail "the Apple push key ID did not reach the host"
+pair --apple-push-team TESTTEAM12 || fail "the Apple developer team did not reach the host"
+pair --apple-push-topic so.tilo.assistant && pair --apple-push-topic com.example.assistant \
+  || fail "the Apple push topics did not reach the host as separate flags"
 pair --discord-client-id 1559266815148953650 || fail "the Discord client id did not reach the host"
 pair --discord-client-secret-file /run/secrets/discord-client-secret || fail "the Discord secret did not reach the host"
 pair --discord-redirect-url https://eu1.tilo.sh/discord/callback || fail "the Discord callback did not reach the host"
@@ -182,6 +200,15 @@ grep -Fqx -- --layout "$work/args" && fail "the entrypoint still passes a layout
 grep -Fqx -- personal "$work/args" && fail "a layout setting reached the host"
 grep -Fqx -- 0.0.0.0:9780 "$work/args" && fail "the plain listener default was not replaced"
 grep -Fqx -- 127.0.0.1:9781 "$work/args" && fail "the HTTPS listener default was not replaced"
+
+for missing in KEY_FILE KEY_ID TEAM TOPICS; do
+  fails_with lounge "${push[@]}" "TILO_WORKSPACES_APPLE_PUSH_$missing="
+  grep -q 'TILO_WORKSPACES_APPLE_PUSH_' "$work/err" || fail "missing push $missing was not explained"
+done
+fails_with lounge "${push[@]}" TILO_WORKSPACES_APPLE_PUSH_KEY_FILE="$work/missing-key"
+grep -q 'readable file' "$work/err" || fail "a missing Apple push key file was not explained"
+fails_with lounge "${push[@]}" 'TILO_WORKSPACES_APPLE_PUSH_TOPICS=, ,'
+grep -q 'TOPICS' "$work/err" || fail "an empty Apple push topic list was not explained"
 
 # Where Discord's API is reaches the host on its own, without a sign-in set
 # up: the bridge's worker is pointed at it too, so one test server serves both.
@@ -293,6 +320,7 @@ if [[ -n $server ]] && "$server" --version >/dev/null 2>&1; then
     TILO_WORKSPACES_LIVE=0.0.0.0:9881 \
     TILO_WORKSPACES_LIVE_ORIGIN=https://live.eu1.tilo.sh/ \
     TILO_WORKSPACES_MODERATION_KEY_FILE=/run/secrets/moderation-model-key \
+    "${push[@]}" \
     TILO_WORKSPACES_DISCORD_CLIENT_ID=1559266815148953650 \
     TILO_WORKSPACES_DISCORD_CLIENT_SECRET_FILE=/run/secrets/discord-client-secret \
     >"$work/real-args" || fail "the deployment did not start against the real server"

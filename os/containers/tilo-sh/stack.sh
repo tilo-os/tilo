@@ -737,6 +737,19 @@ server_env() {
   # addresses: a model provider or another stack named by one is called
   # there.
   env+=(TILO_WORKSPACES_CALL_OWN_NETWORK=1)
+  # The operator provisions these on the machine hosting the stack. Only the
+  # key's path enters the server environment, in that server's filesystem.
+  if [[ -f $state/secrets/apple-push-key.p8 ]]; then
+    env+=("TILO_WORKSPACES_APPLE_PUSH_KEY_FILE=$secrets_path/apple-push-key.p8")
+  fi
+  local field file
+  for field in key-id team topics; do
+    file=$state/secrets/apple-push-$field
+    if [[ -f $file ]]; then
+      local name=${field^^}
+      env+=("TILO_WORKSPACES_APPLE_PUSH_${name//-/_}=$(<"$file")")
+    fi
+  done
   if [[ ${TILO_SH_FAKE_MODELS:-0} == 1 ]]; then
     env+=(
       "TILO_WORKSPACES_OPENAI_SIGN_IN=http://127.0.0.1:$models_port/auth"
