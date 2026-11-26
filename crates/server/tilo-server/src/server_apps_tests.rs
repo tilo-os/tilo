@@ -838,3 +838,34 @@ fn a_server_without_a_runtime_directory_starts_no_app() {
         "two servers keep apart"
     );
 }
+
+/// An app joins its workspace's collaboration as the device it runs on, and the workspace
+/// decides: the certificate its broker is asked about is in force only there.
+#[cfg(feature = "agents")]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_certificate_is_in_force_only_in_a_workspace_that_lists_its_device() {
+    use tilo_workspace_service::apps::certificate_authority::CertificateAuthority as _;
+    let scratch = tempfile::tempdir().unwrap();
+    let (key, host) = crate::workspaces::fixtures::governor();
+    let kept =
+        crate::workspaces::fixtures::test_host(&scratch.path().join("server"), &key, &host).await;
+    let workspaces = kept.workspaces().clone();
+    let team = workspaces.create("Team").await.unwrap();
+    let id = uuid::Uuid::parse_str(&team.workspace_id.to_string()).unwrap();
+    let (_, elsewhere) = crate::workspaces::fixtures::device_cert(
+        &ed25519_dalek::SigningKey::from_bytes(&[1; 32]),
+        "a second device of the same person",
+        tilo_user_identity::DeviceCapabilities::member(),
+    );
+    let certificates = super::brokers::Certificates::over(ServerWorkspaces::new(
+        workspaces,
+        tokio::runtime::Handle::current(),
+    ));
+    certificates
+        .authorize(id, &host)
+        .expect("the workspace lists the device its host keeps it as");
+    let refused = certificates
+        .authorize(id, &elsewhere)
+        .expect_err("a device the workspace does not list joins nothing");
+    assert!(refused.contains("does not admit"), "{refused}");
+}

@@ -84,6 +84,24 @@ impl ServerWorkspaces {
         caller_signer::allowed(&self.workspaces, &self.runtime, workspace, caller)
     }
 
+    /// Whether `workspace`'s list of devices, as this server holds it, admits `device` now.
+    ///
+    /// # Errors
+    /// The server keeps no such workspace, or its list does not admit the device.
+    pub fn admits(&self, workspace: uuid::Uuid, device: [u8; 32]) -> Result<(), String> {
+        let id = WorkspaceId::parse(&workspace.to_string()).ok_or("invalid exact workspace")?;
+        let workspaces = self.workspaces.clone();
+        block_on(&self.runtime, async move {
+            let (_, peer) = workspaces
+                .governed_copy(id)
+                .await
+                .ok_or_else(|| format!("this server keeps no workspace {id}"))?;
+            peer.permissions(device, tilo_clock::wall())
+                .map(drop)
+                .map_err(|_| format!("{id} does not admit this device"))
+        })
+    }
+
     /// The runtime the server keeps its workspaces on.
     #[must_use]
     pub const fn runtime(&self) -> &tokio::runtime::Handle {
@@ -178,6 +196,31 @@ impl WorkspaceAuthority for OneWorkspace {
             .and_then(|id| self.workspaces.workspace(id));
         read(described.as_ref());
         Ok(())
+    }
+}
+
+/// The workspaces' device lists, as their apps' brokers ask whether a device certificate is in
+/// force in one: the list that workspace's members, as this server holds them, keeps.
+pub(super) struct Certificates {
+    workspaces: ServerWorkspaces,
+}
+
+impl Certificates {
+    /// The device lists of `workspaces`, as a broker asks them.
+    pub(super) const fn over(workspaces: ServerWorkspaces) -> Self {
+        Self { workspaces }
+    }
+}
+impl tilo_workspace_service::apps::certificate_authority::CertificateAuthority for Certificates {
+    fn authorize(
+        &self,
+        workspace: uuid::Uuid,
+        certificate: &tilo_user_identity::DeviceCert,
+    ) -> Result<(), String> {
+        tilo_user_identity::verify_device_cert(certificate)
+            .map_err(|error| format!("the certificate is not in force: {error}"))?;
+        self.workspaces
+            .admits(workspace, certificate.device_public_key)
     }
 }
 
@@ -497,6 +540,9 @@ impl ServerApps {
                 ))),
                 journal_root: Some(self.journals.join(workspace.to_string())),
                 launcher: Some(Arc::clone(&launcher) as Arc<dyn LauncherServices>),
+                // A certified join is decided against the workspace's own device list: its apps
+                // join its collaboration as the devices they run on, and no other.
+                native_certificates: Some(Arc::new(Certificates::over(self.workspaces.clone()))),
                 ..ProcessServices::default()
             },
             channels: Arc::clone(&channels),
