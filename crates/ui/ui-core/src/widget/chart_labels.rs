@@ -358,6 +358,58 @@ pub(crate) fn ground_ink(theme: &Theme) -> Color {
     theme.tokens.colors.text_dim
 }
 
+/// The ink a label reads in when it sits on `fill` — a wedge, a tile, a ring segment: the
+/// theme's text colour where it clears the text floor on that fill, otherwise that colour
+/// stepped toward the end of the scale it already sits nearest to, so the label keeps the
+/// side the theme's own ink stands on. Only where that end cannot clear the floor does it
+/// take the theme's inverse ink, the colour it puts on accent fills, and only where neither
+/// theme ink can does it fall to plain black or white, which always clears it.
+pub(crate) fn ink_on_fill(theme: &Theme, fill: Color) -> Color {
+    let colors = &theme.tokens.colors;
+    if let Some(ink) = [colors.text_primary, colors.intent.on_accent]
+        .into_iter()
+        .find_map(|tone| stepped_to_read(tone, fill))
+    {
+        return ink;
+    }
+    // Neither of the theme's inks reaches the floor in either direction: the end of the
+    // scale that reads best does, since black or white clears any fill by 4.58:1 at worst.
+    let black = crate::a11y::contrast_ratio(Color::BLACK, fill);
+    let white = crate::a11y::contrast_ratio(Color::WHITE, fill);
+    if black >= white {
+        Color::BLACK
+    } else {
+        Color::WHITE
+    }
+}
+
+/// `tone` where it clears the text floor on `ground`, otherwise the first step from it toward
+/// the end of the scale it is already nearest to that clears it, and `None` where no step
+/// does.
+fn stepped_to_read(tone: Color, ground: Color) -> Option<Color> {
+    use crate::a11y::{contrast_ratio, relative_luminance};
+    let floor = crate::tokens::colors::ON_FILL_MIN_CONTRAST;
+    if contrast_ratio(tone, ground) >= floor {
+        return Some(tone);
+    }
+    let end = if relative_luminance(tone) <= relative_luminance(ground) {
+        Color::BLACK
+    } else {
+        Color::WHITE
+    };
+    for step in 1..=16_u8 {
+        #[allow(
+            clippy::cast_precision_loss,
+            reason = "step ranges 1..=16, far below where f32 loses integer precision"
+        )]
+        let candidate = crate::tokens::colors::mix8(tone, end, f32::from(step) / 16.0);
+        if contrast_ratio(candidate, ground) >= floor {
+            return Some(candidate);
+        }
+    }
+    None
+}
+
 /// A value shortened for a label: `1.2B`, `3.4M`, `5.6K`, `42`, `0.5`.
 pub(crate) fn format_compact(value: f64) -> String {
     let absolute = value.abs();

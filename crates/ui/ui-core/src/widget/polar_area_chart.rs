@@ -293,8 +293,9 @@ impl PolarAreaMarks {
             .collect();
     }
 
-    /// The ink a label reads in: the sector's own ink where it stands inside the sector, and
-    /// the page's where it stands beside the circle, since that is what it is drawn on.
+    /// The ink a label reads in: the ink that reads on the sector's own fill where the label
+    /// stands inside the sector, and the page's where it stands beside the circle, since that
+    /// is what it is drawn on.
     fn label_ink(&self, index: usize, slot: usize, outside: bool, theme: &Theme) -> Color {
         if outside {
             return theme.tokens.colors.text_primary;
@@ -303,12 +304,7 @@ impl PolarAreaMarks {
             || theme.tokens.colors.text_primary,
             |datum| Self::color(datum, slot, theme),
         );
-        // Dark words on a dark sector would not be read: the ink keeps its contrast.
-        theme.tokens.colors.ink_on(
-            fill,
-            theme.tokens.colors.text_primary,
-            crate::tokens::colors::ON_FILL_MIN_CONTRAST,
-        )
+        crate::widget::chart_labels::ink_on_fill(theme, fill)
     }
 
     fn draw_labels(
@@ -589,4 +585,70 @@ fn sector_holds(rect: Rect, center: Point, sector: &Sector) -> bool {
         let angle = (dy.atan2(dx) - sector.start).rem_euclid(TAU);
         radius >= sector.inner && radius <= sector.outer && angle <= sector.sweep
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ColorCompat as _;
+    use crate::widget::chart_data::ChartItem;
+
+    // A label sitting in a wedge reads against that wedge's own fill, whichever palette colour
+    // the wedge takes: at or above the text floor, and on the side of the fill the theme's own
+    // text colour stands on, never flipped to the inverse by a hair.
+    tilo_test_env::scenario! {
+        fn polar_wedge_labels_keep_their_contrast_on_every_palette_fill;
+
+        phase every_wedge_label_clears_the_text_floor_on_the_themes_side;
+        {
+            use crate::a11y::{contrast_ratio, relative_luminance};
+            use crate::tokens::colors::{ON_FILL_MIN_CONTRAST, PRESENCE_LEN};
+            let chart = PolarAreaChart::new(
+                (0..PRESENCE_LEN)
+                    .map(|slot| ChartItem::new(format!("s{slot}"), format!("S{slot}"), 1.0))
+                    .collect(),
+            );
+            let rgb = |c: Color| format!("rgb({}, {}, {})", c.r(), c.g(), c.b());
+            for theme in [Theme::light(), Theme::dark()] {
+                let text = relative_luminance(theme.tokens.colors.text_primary);
+                for slot in 0..PRESENCE_LEN {
+                    let datum = chart
+                        .marks
+                        .data
+                        .get(slot)
+                        .expect("a datum per palette colour");
+                    let fill = PolarAreaMarks::color(datum, slot, &theme);
+                    let ink = chart.marks.label_ink(slot, slot, false, &theme);
+                    let ratio = contrast_ratio(ink, fill);
+                    assert!(
+                        ratio >= ON_FILL_MIN_CONTRAST,
+                        "{}: a label on wedge {slot} ({}) reads at {ratio:.2}:1 in {}",
+                        theme.name,
+                        rgb(fill),
+                        rgb(ink)
+                    );
+                    // Where the theme's own ink side can clear the floor at all, a label keeps
+                    // that side: flipping to the inverse by a hair's width of luminance is what
+                    // put white words on pale wedges.
+                    let (fill_lum, ink_lum) = (relative_luminance(fill), relative_luminance(ink));
+                    let dark_text = text <= fill_lum;
+                    let end = if dark_text { Color::BLACK } else { Color::WHITE };
+                    if contrast_ratio(end, fill) >= ON_FILL_MIN_CONTRAST {
+                        assert!(
+                            if dark_text {
+                                ink_lum <= fill_lum
+                            } else {
+                                ink_lum >= fill_lum
+                            },
+                            "{}: wedge {slot} ({}) can carry the theme's own ink side, yet its \
+                             label {} is the other side",
+                            theme.name,
+                            rgb(fill),
+                            rgb(ink)
+                        );
+                    }
+                }
+            }
+        }
+    }
 }

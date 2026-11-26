@@ -479,10 +479,7 @@ impl PlotMarks for SunburstMarks {
             let Some(label) = labels.get(index).and_then(Option::as_ref) else {
                 continue;
             };
-            let ink = theme
-                .tokens
-                .colors
-                .ink_on(color, theme.tokens.colors.text_primary, 4.5);
+            let ink = crate::widget::chart_labels::ink_on_fill(theme, color);
             for (line, at) in &label.lines {
                 tr.draw_style(
                     scene,

@@ -247,10 +247,7 @@ impl FunnelMarks {
         });
         let bounds = geometry.bounds;
         let narrow = geometry.narrow_width;
-        let inside_ink = theme
-            .tokens
-            .colors
-            .ink_on(color, theme.tokens.colors.text_primary, 4.5);
+        let inside_ink = crate::widget::chart_labels::ink_on_fill(theme, color);
         let two_lines = vh > 0.0 && nh + vh + pad <= bounds.height();
         let block_h = if two_lines { nh + vh } else { nh };
         let top = bounds.center().y - block_h / 2.0;

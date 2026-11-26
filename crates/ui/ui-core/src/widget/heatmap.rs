@@ -334,10 +334,7 @@ impl PlotMarks for HeatmapMarks {
             if self.style.show_values && rect.width() >= 38.0 && rect.height() >= 22.0 {
                 let value = format!("{:.1}", cell.value);
                 let (width, _) = tr.measure_style(&value, None, &theme.text(TextRole::Caption));
-                let ink = theme
-                    .tokens
-                    .colors
-                    .ink_on(color, theme.tokens.colors.text_primary, 4.5);
+                let ink = crate::widget::chart_labels::ink_on_fill(theme, color);
                 tr.draw_style(
                     scene,
                     &value,

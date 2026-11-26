@@ -819,10 +819,7 @@ impl PlotMarks for CategoryMarks {
                     format_axis_value(bar.display_value, self.style.value_format)
                 };
                 let (width, _) = tr.measure_style(&label, None, &theme.text(TextRole::Caption));
-                let ink = theme
-                    .tokens
-                    .colors
-                    .ink_on(color, theme.tokens.colors.text_primary, 4.5);
+                let ink = crate::widget::chart_labels::ink_on_fill(theme, color);
                 tr.draw_style(
                     scene,
                     &label,

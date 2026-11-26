@@ -395,10 +395,7 @@ impl PlotMarks for TreemapMarks {
                     &shape,
                 );
             }
-            let ink = theme
-                .tokens
-                .colors
-                .ink_on(color, theme.tokens.colors.text_primary, 4.5);
+            let ink = crate::widget::chart_labels::ink_on_fill(theme, color);
             let text = self.tile_text(tr, theme, item, rect);
             if let Some((label, label_rect)) = &text.label {
                 tr.draw_style(
