@@ -790,6 +790,7 @@ mod tests {
     use tilo_server_protocol::workspaces::{JoinReply, Role};
     use tilo_user_identity::{AgentScope, DeviceCapabilities, DeviceCert, sign_device_cert};
 
+    use crate::handshake::Admit;
     use crate::workspaces::fixtures::{hosting_device, signed_pre_admission_as, test_host};
     use crate::workspaces::mode::HostMode;
     use crate::workspaces::{PreAdmitRequest, Workspaces};
@@ -958,9 +959,9 @@ mod tests {
     }
 
     /// The entry itself, asked for a person an invitation-only workspace has
-    /// in it, lets them in as its doc says: with an invitation at the part
-    /// they hold, which a further device of theirs redeems without changing
-    /// it.
+    /// in it, answers a further device of theirs [`Entered::Sign`]: under the
+    /// entry rather than an invitation, the row the device writes itself, which
+    /// lets it in at the part its person holds without changing it.
     #[tokio::test]
     async fn an_invitation_only_entry_lets_a_member_in_at_their_part() {
         let dir = tempfile::tempdir().unwrap();
@@ -1003,10 +1004,15 @@ mod tests {
         let Entered::Sign {
             governance,
             through,
-        } = workspaces.enter_signed((&tab_key, &tab), asked).await
+        } = Admit::enter(workspaces, &tab, asked).await
         else {
             panic!("the entry lets a further device of a member sign its own row");
         };
+        assert_eq!(
+            through,
+            Through::Entry,
+            "a member's further device signs under the entry, not by an invitation"
+        );
         let admission = tilo_peer_state::own_admission::sign_entry(
             &workspace,
             &governance,
@@ -1017,22 +1023,22 @@ mod tests {
         )
         .await
         .unwrap();
-        let reply = workspaces
-            .enter_signed(
-                (&tab_key, &tab),
-                Entry {
-                    entering: Entering {
-                        workspace: workspace.clone(),
-                        name: "Ada".into(),
-                        request_id,
-                        through,
-                        admission,
-                    },
-                    access: None,
-                    proof: [0; 64],
+        let reply = Admit::enter(
+            workspaces,
+            &tab,
+            Entry {
+                entering: Entering {
+                    workspace: workspace.clone(),
+                    name: "Ada".into(),
+                    request_id,
+                    through,
+                    admission,
                 },
-            )
-            .await;
+                access: None,
+                proof: [0; 64],
+            },
+        )
+        .await;
         assert!(
             matches!(
                 reply,
