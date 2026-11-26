@@ -131,6 +131,10 @@ pub fn certified_person_fixture_for_seeds(
     let context = state
         .certified_person_context(&caller, &presentation)
         .unwrap();
+    let host = tilo_identity::identity_store::DeviceIdentity::kept(certificate, device);
+    // The evidence this synthetic host admits is signed as its device, as a host that opened its
+    // workspaces names it.
+    tilo_invocation_journal::serve_as(host.device_cert.clone(), Arc::clone(&host.signer));
     CertifiedPersonFixture {
         broker: crate::collab_broker::AppActionBroker::from_state_for_test(state),
         context,
@@ -140,6 +144,6 @@ pub fn certified_person_fixture_for_seeds(
         _taken_key: taken_key,
         _evidence_env: evidence_env,
         _evidence_home: evidence_home,
-        host: tilo_identity::identity_store::DeviceIdentity::kept(certificate, device),
+        host,
     }
 }

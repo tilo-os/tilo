@@ -10,6 +10,21 @@ use std::sync::Arc;
 use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
 
 fn state(root: &std::path::Path) -> Arc<AppBrokerState> {
+    // A host names the device its admitted calls are signed as; this one is synthetic.
+    let root_key = ed25519_dalek::SigningKey::from_bytes(&[231; 32]);
+    let device = ed25519_dalek::SigningKey::from_bytes(&[232; 32]);
+    let mut certificate = tilo_user_identity::DeviceCert {
+        user_public_key: root_key.verifying_key().to_bytes(),
+        device_public_key: device.verifying_key().to_bytes(),
+        device_label: "A host's device".into(),
+        capabilities: tilo_user_identity::DeviceCapabilities::member(),
+        issued_at_ns: tilo_clock::unix_now_ns(),
+        expires_at_ns: None,
+        signature: [0; 64],
+        issuer: None,
+    };
+    tilo_user_identity::sign_device_cert(&mut certificate, &root_key).unwrap();
+    tilo_invocation_journal::serve_as(certificate, Arc::new(device));
     let (state, _bridge) =
         AppBrokerState::test_state(None, crate::services::ProcessServices::default());
     *state.journal.lock().unwrap() = Ok(Some(

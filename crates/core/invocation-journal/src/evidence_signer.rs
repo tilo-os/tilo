@@ -1,18 +1,16 @@
 //! Host-only signing for semantic admission receipts. Never exposed as a
 //! signing service: callers supply the receipt's domain-separated bytes.
 //!
-//! Keep what signs as the device only for an unchanged, settled trust stamp.
-//! The stamp covers the identity, key, certificate, enrollment and revocation;
-//! certificate time validity is checked separately on every signature.
+//! What signs is the host's own device: the certificate its device was issued and the key it
+//! took. The host names both as it opens the workspaces it serves ([`serve_as`]); nothing here
+//! reads an identity store, so a daemon that runs as one account and serves another person signs
+//! as the device it is, wherever its person's store is kept. A certificate expired at the clock,
+//! one whose root took it back, or one confined to another workspace signs nothing.
 
-use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
 
 use collab_types::signer::DeviceSigner;
-use parking_lot::Mutex;
-use tilo_identity::join_proof::{CurrentDeviceStamp, current_device_stamp};
-use tilo_identity::store::IdentityRegistryStore;
+use parking_lot::{Mutex, RwLock};
 use tilo_user_identity::DeviceCert;
 
 /// One-shot fault injection. Admission signs on a blocking thread, so a test
@@ -20,34 +18,31 @@ use tilo_user_identity::DeviceCert;
 #[cfg(any(test, feature = "test-support"))]
 pub static BEFORE_SIGN: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(None);
 
-static CACHE: LazyLock<Mutex<SignerCache>> = LazyLock::new(Mutex::default);
-const CACHE_LIMIT: usize = 256;
+/// What this process signs as: the certificate its device holds and the key it took, named by the
+/// host that serves the calls.
+static HOST: LazyLock<RwLock<Option<Arc<HostIdentity>>>> = LazyLock::new(RwLock::default);
 
-#[derive(Hash, PartialEq, Eq)]
-struct CacheKey {
-    workspace: String,
-    identity_dir: PathBuf,
-    device_key: PathBuf,
-    device_cert: PathBuf,
-}
-
-struct Entry {
-    stamp: CurrentDeviceStamp,
-    /// What signs as the device: the key this daemon took, or the daemon asked.
-    key: Arc<dyn DeviceSigner>,
+struct HostIdentity {
     certificate: DeviceCert,
+    signer: Arc<dyn DeviceSigner>,
 }
 
-#[derive(Default)]
-struct SignerCache {
-    entries: HashMap<CacheKey, Entry>,
-    #[cfg(any(test, feature = "test-support"))]
-    loads: usize,
+/// Name what this process signs its receipts as: the host's device certificate and the key that
+/// certificate names. A host calls this as it opens the workspaces it serves; the last host to
+/// name one is the one that signs.
+pub fn serve_as(certificate: DeviceCert, signer: Arc<dyn DeviceSigner>) {
+    *HOST.write() = Some(Arc::new(HostIdentity {
+        certificate,
+        signer,
+    }));
 }
 
-/// Sign already domain-separated semantic receipt bytes with this host's
-/// currently trusted device. This never calls a signing RPC or uses a user
-/// root key. The returned certificate identifies the device signing the bytes.
+/// Sign already domain-separated semantic receipt bytes with this host's device. The returned
+/// certificate identifies the device signing the bytes.
+///
+/// # Errors
+/// No host named what signs here, the certificate is invalid at the clock, or its person's
+/// devices record took the device back or confined it to another workspace.
 pub fn sign(workspace: &str, bytes: &[u8]) -> Result<(DeviceCert, [u8; 64]), String> {
     #[cfg(any(test, feature = "test-support"))]
     {
@@ -56,359 +51,106 @@ pub fn sign(workspace: &str, bytes: &[u8]) -> Result<(DeviceCert, [u8; 64]), Str
             hook();
         }
     }
-    let mut cache = CACHE.lock();
     let now = tilo_clock::try_unix_now_ns().ok_or("receipt signing clock is unavailable")?;
-    cache.sign_at(workspace, bytes, now)
-}
-
-impl SignerCache {
-    fn sign_at(
-        &mut self,
-        workspace: &str,
-        bytes: &[u8],
-        now: u64,
-    ) -> Result<(DeviceCert, [u8; 64]), String> {
-        let registry = IdentityRegistryStore::from_env().map_err(|error| error.to_string())?;
-        let paths = tilo_identity::provisioning::collaboration_identity_paths();
-        let cache_key = CacheKey {
-            workspace: workspace.to_owned(),
-            identity_dir: registry.identity_dir().to_path_buf(),
-            device_key: paths.device_privkey,
-            device_cert: paths.device_cert,
-        };
-        let before = current_device_stamp(workspace);
-        let settled = before.filter(CurrentDeviceStamp::settled);
-        if let Some(entry) = self.entries.get(&cache_key)
-            && settled == Some(entry.stamp)
-        {
-            let result = sign_entry(entry.key.as_ref(), &entry.certificate, bytes, now);
-            if result.is_ok() && current_device_stamp(workspace) == before {
-                return result;
-            }
-            // An expired certificate must evict the private key too. Never
-            // serve a result if trust changed while the signature was made.
-            self.entries.remove(&cache_key);
-            return result.and_then(|_| Err("device trust changed while signing receipt".into()));
-        }
-        // Drop stale ownership before attempting a reload, including on error.
-        self.entries.remove(&cache_key);
-        #[cfg(any(test, feature = "test-support"))]
-        {
-            self.loads = self.loads.saturating_add(1);
-        }
-        let certificate = tilo_identity::trusted_device::certificate(workspace)
-            .map_err(|error| error.to_string())?;
-        let key = tilo_identity::trusted_device::device_signer(
-            &tilo_identity::provisioning::collaboration_identity_paths(),
-        )
+    let host = HOST
+        .read()
+        .clone()
+        .ok_or("no host names what signs this process's receipts")?;
+    tilo_user_identity::verify_device_cert_at(&host.certificate, now)
         .map_err(|error| error.to_string())?;
-        if key.device_public_key() != certificate.device_public_key {
-            return Err("the device signing receipts is not the one its certificate names".into());
-        }
-        let signed = sign_entry(key.as_ref(), &certificate, bytes, now)?;
-        let after = current_device_stamp(workspace);
-        if before != after {
-            return Err("device trust changed while signing receipt".into());
-        }
-        // Unobservable/keychain or recently written files are never cached.
-        // Serialize loading and signing under the host cache lock so concurrent
-        // requests share one key load per settled workspace trust epoch.
-        if let Some(stamp) = settled {
-            if self.entries.len() >= CACHE_LIMIT {
-                self.entries.clear();
-            }
-            self.entries.insert(
-                cache_key,
-                Entry {
-                    stamp,
-                    key,
-                    certificate,
-                },
-            );
-        }
-        Ok(signed)
+    if !tilo_identity::certificates::admitted_in(
+        workspace,
+        &host.certificate.user_public_key,
+        &host.certificate,
+    ) {
+        return Err("this device reaches no such workspace as the identity it signs as".into());
     }
-}
-
-fn sign_entry(
-    key: &dyn DeviceSigner,
-    certificate: &DeviceCert,
-    bytes: &[u8],
-    now: u64,
-) -> Result<(DeviceCert, [u8; 64]), String> {
-    tilo_user_identity::verify_device_cert_at(certificate, now)
+    let signature = collab_types::signer::sign_now(host.signer.as_ref(), bytes.to_vec())
         .map_err(|error| error.to_string())?;
-    let signature =
-        collab_types::signer::sign_now(key, bytes.to_vec()).map_err(|error| error.to_string())?;
-    Ok((certificate.clone(), signature))
+    Ok((host.certificate.clone(), signature))
 }
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
-    use std::time::Duration;
-
-    use tilo_device_identity::IdentityPaths;
-    use tilo_identity::provisioning::{self, IdentityStorage};
+    #![allow(clippy::unwrap_used, reason = "tests")]
 
     use super::*;
+    use tilo_user_identity::DeviceCapabilities;
 
+    /// A host's device: its certificate, its key, and the person whose root certified it. Each
+    /// fixture is a person of its own, so one phase's revocation touches no other's.
     struct Fixture {
-        identity_dir: PathBuf,
-        paths: IdentityPaths,
-        profile: tilo_identity::store::IdentityProfile,
-        workspace: String,
-        /// The device's key, taken as its daemon takes it, for as long as this lives.
-        _taken_key: tilo_device_identity::persist::DeviceKeyLock,
-        _env: tilo_test_env::ScopedEnv,
-        _root: tempfile::TempDir,
+        certificate: DeviceCert,
+        signer: Arc<dyn DeviceSigner>,
     }
 
     impl Fixture {
-        fn new() -> Self {
-            let directory = tempfile::tempdir().expect("root");
-            let config = directory.path().join("config");
-            let system = directory.path().join("system");
-            let mut env = tilo_test_env::ScopedEnv::new();
-            env.set("XDG_CONFIG_HOME", &config)
-                .set("TILO_IDENTITY_ROOT", &system)
-                .set(provisioning::FILE_SECRETS_ENV, "1");
-            let identity_dir =
-                tilo_identity::store::account_identity_dir(&config.join("tilo/identity"));
-            let paths = IdentityPaths::under(&system);
+        fn new(seeds: (u8, u8), capabilities: DeviceCapabilities) -> Self {
+            let root = ed25519_dalek::SigningKey::from_bytes(&[seeds.0; 32]);
+            let device = ed25519_dalek::SigningKey::from_bytes(&[seeds.1; 32]);
             tilo_identity::sources::test_trust::install();
-            let taken_key = provisioning::provisioned_as_its_daemon(
-                &identity_dir,
-                &paths,
-                IdentityStorage::Files,
-            )
-            .expect("provision");
-            let workspace = uuid::Uuid::new_v4().to_string();
-            let profile = tilo_identity::store::identity_for_workspace(&workspace)
-                .expect("registry")
-                .expect("selected identity");
-            // The person's devices, as the host that holds their record answers: their root
-            // certified this device as it made them.
-            tilo_identity::sources::test_trust::enrol(
-                profile.user_public_key,
-                tilo_device_identity::persist::read_device_cert(
-                    &paths.device_cert_for_user(&profile.user_public_key),
-                )
-                .expect("this device's certificate")
-                .device_public_key,
-            );
-            let fixture = Self {
-                identity_dir,
-                paths,
-                profile,
-                workspace,
-                _taken_key: taken_key,
-                _env: env,
-                _root: directory,
+            let mut certificate = DeviceCert {
+                user_public_key: root.verifying_key().to_bytes(),
+                device_public_key: device.verifying_key().to_bytes(),
+                device_label: "A host's device".into(),
+                capabilities,
+                issued_at_ns: tilo_clock::unix_now_ns(),
+                expires_at_ns: None,
+                signature: [0; 64],
+                issuer: None,
             };
-            fixture.settle();
-            fixture
-        }
-
-        fn cert_file(&self) -> PathBuf {
-            self.paths
-                .device_cert_for_user(&self.profile.user_public_key)
-        }
-
-        fn settle(&self) {
-            for path in [
-                self.identity_dir.clone(),
-                self.paths.device_privkey.clone(),
-                self.cert_file(),
-            ] {
-                settle_file(&path);
+            tilo_user_identity::sign_device_cert(&mut certificate, &root).unwrap();
+            let signer: Arc<dyn DeviceSigner> = Arc::new(device);
+            serve_as(certificate.clone(), Arc::clone(&signer));
+            Self {
+                certificate,
+                signer,
             }
-            assert!(
-                current_device_stamp(&self.workspace)
-                    .expect("stamp")
-                    .settled()
-            );
         }
-
-        fn now() -> u64 {
-            tilo_clock::unix_now_ns()
-        }
-    }
-
-    fn settle_file(path: &Path) {
-        std::fs::File::open(path)
-            .expect("open")
-            .set_modified(
-                tilo_clock::wall()
-                    .checked_sub(Duration::from_secs(10))
-                    .expect("file timestamp"),
-            )
-            .expect("settle");
     }
 
     tilo_test_env::scenario! {
-        fn the_signer_keeps_a_device_key_only_while_its_trust_stands;
+        fn a_host_signs_with_the_device_it_is;
 
-        phase unchanged_trust_loads_one_key_and_signs_each_payload;
+        phase the_hosts_device_signs_the_bytes_it_is_given;
         {
-            let fixture = Fixture::new();
-            let mut cache = SignerCache::default();
-            // Deterministic overhead budget: a bounded burst performs one private
-            // key load, not one load per invocation. Every payload still gets its
-            // own signature; no wall-clock performance threshold can flake here.
-            for position in 0..128 {
-                let payload = format!("semantic receipt {position}");
-                let (cert, signature) = cache
-                    .sign_at(&fixture.workspace, payload.as_bytes(), Fixture::now())
-                    .expect("sign");
-                ed25519_dalek::VerifyingKey::from_bytes(&cert.device_public_key)
-                    .expect("key")
-                    .verify_strict(
-                        payload.as_bytes(),
-                        &ed25519_dalek::Signature::from_bytes(&signature),
-                    )
-                    .expect("signature binds the actual receipt bytes");
-            }
-            assert_eq!(cache.loads, 1);
-            assert_eq!(cache.entries.len(), 1);
-            assert!(sign(&fixture.workspace, b"host receipt").is_ok());
+            let fixture = Fixture::new((241, 242), DeviceCapabilities::member());
+            let workspace = uuid::Uuid::new_v4().to_string();
+            let bytes = b"semantic receipt";
+            let (cert, signature) = sign(&workspace, bytes).unwrap();
+            assert_eq!(cert, fixture.certificate);
+            ed25519_dalek::VerifyingKey::from_bytes(&cert.device_public_key)
+                .unwrap()
+                .verify_strict(bytes, &ed25519_dalek::Signature::from_bytes(&signature))
+                .expect("the signature binds the actual receipt bytes");
+            let _ = fixture.signer;
         }
 
-        phase revocation_evicts_ownership_and_fails_even_after_files_settle;
+        phase a_device_its_person_took_back_signs_nothing;
         {
-            let fixture = Fixture::new();
-            let mut cache = SignerCache::default();
-            let (cert, _) = cache
-                .sign_at(&fixture.workspace, b"before", Fixture::now())
-                .expect("sign");
+            let fixture = Fixture::new((243, 244), DeviceCapabilities::member());
             tilo_identity::sources::test_trust::revoke(
-                fixture.profile.user_public_key,
-                cert.device_public_key,
+                fixture.certificate.user_public_key,
+                fixture.certificate.device_public_key,
             );
-            assert!(
-                cache
-                    .sign_at(&fixture.workspace, b"after", Fixture::now())
-                    .is_err()
-            );
-            assert!(cache.entries.is_empty());
-            fixture.settle();
-            assert!(
-                cache
-                    .sign_at(&fixture.workspace, b"settled", Fixture::now())
-                    .is_err()
-            );
+            assert!(sign(&uuid::Uuid::new_v4().to_string(), b"after").is_err());
         }
 
-        phase certificate_and_key_rewrites_reload_and_malformed_cert_fails;
+        phase a_device_confined_to_one_workspace_signs_nothing_elsewhere;
         {
-            let fixture = Fixture::new();
-            let mut cache = SignerCache::default();
-            cache
-                .sign_at(&fixture.workspace, b"before", Fixture::now())
-                .expect("sign");
-            for path in [fixture.cert_file(), fixture.paths.device_privkey.clone()] {
-                let bytes = std::fs::read(&path).expect("read");
-                std::fs::write(&path, bytes).expect("rewrite");
-                let loads = cache.loads;
-                cache
-                    .sign_at(&fixture.workspace, b"unsettled", Fixture::now())
-                    .expect("reload");
-                cache
-                    .sign_at(&fixture.workspace, b"still unsettled", Fixture::now())
-                    .expect("reload");
-                assert_eq!(cache.loads, loads + 2, "recent writes are not cached");
-                fixture.settle();
-                cache
-                    .sign_at(&fixture.workspace, b"settled", Fixture::now())
-                    .expect("cache");
-            }
-            std::fs::write(fixture.cert_file(), b"malformed").expect("break certificate");
-            assert!(
-                cache
-                    .sign_at(&fixture.workspace, b"refused", Fixture::now())
-                    .is_err()
+            let own = uuid::Uuid::new_v4();
+            Fixture::new(
+                (245, 246),
+                DeviceCapabilities::workspace_device(*own.as_bytes()),
             );
-            assert!(cache.entries.is_empty());
+            assert!(sign(&own.to_string(), b"its own workspace").is_ok());
+            assert!(sign(&uuid::Uuid::new_v4().to_string(), b"elsewhere").is_err());
         }
 
-        phase removing_the_identity_record_invalidates_cached_key;
+        phase a_process_no_host_named_signs_nothing;
         {
-            let fixture = Fixture::new();
-            let mut cache = SignerCache::default();
-            cache
-                .sign_at(&fixture.workspace, b"before", Fixture::now())
-                .expect("sign");
-            // The record is the identity: removing it removes the person.
-            std::fs::remove_file(&fixture.profile.record_path).expect("remove identity record");
-            assert!(
-                tilo_identity::store::identity_for_workspace(&fixture.workspace)
-                    .expect("a read")
-                    .is_none()
-            );
-            assert!(
-                cache
-                    .sign_at(&fixture.workspace, b"after", Fixture::now())
-                    .is_err()
-            );
-            assert!(cache.entries.is_empty());
-        }
-
-        phase clock_before_issuance_invalidates_cached_key;
-        {
-            let fixture = Fixture::new();
-            let mut cache = SignerCache::default();
-            let (certificate, _) = cache
-                .sign_at(&fixture.workspace, b"valid", Fixture::now())
-                .expect("sign");
-            let before_issuance = certificate
-                .issued_at_ns
-                .checked_sub(1)
-                .expect("issued time");
-            assert!(
-                cache
-                    .sign_at(
-                        &fixture.workspace,
-                        b"clock moved backwards",
-                        before_issuance
-                    )
-                    .is_err()
-            );
-            assert!(cache.entries.is_empty());
-        }
-
-        phase time_expiry_without_file_changes_evicts_the_key;
-        {
-            let fixture = Fixture::new();
-            let (key, mut cert) =
-                tilo_identity::trusted_device::current(&fixture.workspace).expect("device");
-            drop(key);
-            let expiry = cert.issued_at_ns.saturating_add(60_000_000_000);
-            cert.expires_at_ns = Some(expiry);
-            let root = tilo_identity::store::load_from_path(fixture.profile.record_path.clone())
-                .expect("file-backed test identity");
-            cert.signature = root
-                .sign(&tilo_user_identity::device_cert_signing_digest(&cert).expect("digest"))
-                .expect("certify");
-            tilo_device_identity::persist::write_device_cert(&fixture.cert_file(), &cert)
-                .expect("write certificate");
-            fixture.settle();
-            let mut cache = SignerCache::default();
-            cache
-                .sign_at(&fixture.workspace, b"valid", expiry - 1)
-                .expect("before expiry");
-            let stamp = current_device_stamp(&fixture.workspace);
-            assert!(
-                cache
-                    .sign_at(&fixture.workspace, b"expired", expiry)
-                    .is_err()
-            );
-            assert_eq!(current_device_stamp(&fixture.workspace), stamp);
-            assert!(cache.entries.is_empty());
-            assert!(
-                cache
-                    .sign_at(&fixture.workspace, b"still expired", expiry + 1)
-                    .is_err()
-            );
+            *HOST.write() = None;
+            assert!(sign(&uuid::Uuid::new_v4().to_string(), b"nobody").is_err());
         }
     }
 }
