@@ -1009,6 +1009,14 @@ impl TilolangProcess {
             .filter_map(|running| running.window.as_ref().map(OwnedFd::as_fd))
     }
 
+    /// The page connections of the instances running, waited on as a window's is: an ask from a
+    /// page is read, and answered, in the turn it wakes.
+    pub fn pages(&self) -> impl Iterator<Item = std::os::fd::BorrowedFd<'_>> {
+        self.running
+            .iter()
+            .filter_map(|running| running.page.as_ref().map(|page| page.connection()))
+    }
+
     /// The window connections of the instances being opened, to wait on for closing only: what
     /// one sends stays in it until its instance runs, and one closing ends its opening.
     pub fn opening_windows(&self) -> impl Iterator<Item = std::os::fd::BorrowedFd<'_>> {

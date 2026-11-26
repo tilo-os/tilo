@@ -142,6 +142,10 @@ pub fn wait(
     for window in host.windows() {
         fds.push(watch(window, libc::POLLIN));
     }
+    // A page's ask wakes the host in the turn that reads it, as a window's does.
+    for page in host.pages() {
+        fds.push(watch(page, libc::POLLIN));
+    }
     // No events asked: poll reports a hang-up, an error or a closed descriptor regardless.
     for window in host.opening_windows() {
         fds.push(watch(window, 0));
