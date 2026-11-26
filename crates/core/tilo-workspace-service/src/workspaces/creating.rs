@@ -188,7 +188,7 @@ impl super::Workspaces {
         // The registries come first: the default apps are the releases they offer.
         let (registries, defaults) = if seed_defaults {
             let registries = super::default_apps::registries();
-            let defaults = super::default_apps::on_this_device(&registries);
+            let defaults = super::default_apps::on_this_device_awaited(&registries).await;
             (super::default_apps::registry_rows(&registries), defaults)
         } else {
             (Vec::new(), Vec::new())

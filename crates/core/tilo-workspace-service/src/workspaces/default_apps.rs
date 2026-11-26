@@ -50,8 +50,38 @@ pub(super) fn registry_rows(registries: &RegistriesFile) -> Vec<PackageRegistry>
 }
 
 /// The apps a workspace created on this device with `registries` starts with.
-pub(super) fn on_this_device(registries: &RegistriesFile) -> Vec<AppRelease> {
+///
+/// Private: this reads each registry's catalogue with a client that blocks, so it is only ever
+/// reached from [`on_this_device_awaited`]'s thread, never from a task of the app runtime.
+fn on_this_device(registries: &RegistriesFile) -> Vec<AppRelease> {
     resolve(app_fleet::default_apps(), &offered(registries), &cached)
+}
+
+/// [`on_this_device`], with the registries asked on a thread of their own and the answer awaited.
+///
+/// Each catalogue is read with a blocking client, and a workspace is founded from a host
+/// operation that runs on the app runtime's one thread: that thread must not hold a catalogue
+/// read, and a blocking client refuses to be built on any thread of a runtime at all. The
+/// thread here has no runtime, so the read is the request it is and the daemon's tasks go on.
+pub(super) async fn on_this_device_awaited(registries: &RegistriesFile) -> Vec<AppRelease> {
+    let asking = registries.clone();
+    let (answered, heard) = tokio::sync::oneshot::channel();
+    let started = std::thread::Builder::new()
+        .name("tilo-registries".to_owned())
+        .spawn(move || {
+            let _ = answered.send(on_this_device(&asking));
+        });
+    let unasked = || {
+        // No thread to ask on: the workspace starts with the releases this device's cache holds.
+        resolve(app_fleet::default_apps(), &[], &cached)
+    };
+    match started {
+        Ok(_) => heard.await.unwrap_or_else(|_| unasked()),
+        Err(error) => {
+            tracing::warn!(%error, "the registries are asked on no thread of their own");
+            unasked()
+        }
+    }
 }
 
 /// Every entry the `registries`' catalogues carry, in their order: each asked now, or the one it
@@ -309,6 +339,35 @@ mod tests {
             resolve(&["so.tilo.files"], &[newer], &cache)[0].version,
             "2.1.0",
             "a catalogue that answers decides over the cache"
+        );
+    }
+
+    /// A workspace is founded from a host operation that runs on the app runtime's one thread,
+    /// and its default apps are the releases the registries offer now. Each catalogue is read
+    /// with a blocking client, which refuses to be built on a thread of any runtime: asked
+    /// there, the founding ends on tokio's own panic. Asked on a thread of its own, a registry
+    /// that cannot answer leaves the releases the device's cache holds.
+    #[test]
+    fn the_registries_are_asked_off_the_runtime_that_founds_a_workspace() {
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap();
+        let registries = RegistriesFile {
+            registries: vec![app_cli::config::RegistryConfig {
+                name: "unreachable".to_owned(),
+                // A port nothing listens on: the read is answered at once, as no registry.
+                base_url: "http://127.0.0.1:1".to_owned(),
+                owner_pubkey_hex: "d".repeat(64),
+                enabled: true,
+                channel: ReleaseChannel::Stable,
+            }],
+        };
+        let asked = runtime.block_on(on_this_device_awaited(&registries));
+        assert_eq!(
+            asked,
+            resolve(app_fleet::default_apps(), &[], &cached),
+            "with no catalogue answering, a workspace starts with the releases the cache holds"
         );
     }
 }
