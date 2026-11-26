@@ -2901,10 +2901,6 @@ impl Widget for VirtualRows {
 mod a11y;
 
 #[cfg(test)]
-#[path = "virtual_list_tests.rs"]
-mod tests;
-
-#[cfg(test)]
 #[path = "virtual_list_group_tests.rs"]
 mod group_tests;
 
@@ -2922,14 +2918,6 @@ mod arriving_tests;
 #[cfg(test)]
 #[path = "virtual_list_mount_tests.rs"]
 mod mount_tests;
-
-#[cfg(test)]
-#[path = "virtual_list_tree_tests.rs"]
-mod tree_tests;
-
-#[cfg(test)]
-#[path = "virtual_list_open_tests.rs"]
-mod open_tests;
 
 #[path = "virtual_list_choosing.rs"]
 mod choosing;
@@ -2951,3 +2939,896 @@ fn path_safe(key: &str) -> String {
         .replace('/', "%2F")
         .replace('#', "%23")
 }
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    #![allow(
+        dead_code,
+        unused_imports,
+        clippy::arithmetic_side_effects,
+        clippy::disallowed_methods,
+        clippy::expect_used,
+        clippy::float_cmp,
+        clippy::implicit_hasher,
+        clippy::indexing_slicing,
+        clippy::must_use_candidate,
+        clippy::needless_pass_by_value,
+        clippy::panic,
+        clippy::unused_self,
+        clippy::unwrap_used,
+        clippy::wildcard_imports,
+        reason = "test-support helpers are compiled for every test build whether or not a test uses this one"
+    )]
+    use super::*;
+    use std::cell::*;
+    use std::collections::*;
+    use std::path::*;
+    use std::rc::*;
+    use std::sync::atomic::*;
+    use std::sync::*;
+    use std::time::*;
+    use taffy::{AvailableSpace, Size};
+    use tilo_ui::app::driver::Driver;
+    use tilo_ui::kurbo::*;
+    use tilo_ui::testing::Dispatch;
+    use tilo_ui::vello::*;
+    use tilo_ui::widget::*;
+    use tilo_ui::*;
+    use tilo_ui_base::a11y::*;
+    use tilo_ui_base::component::Event;
+    use tilo_ui_base::component::*;
+    use tilo_ui_base::icons::*;
+    use tilo_ui_base::interaction::*;
+    use tilo_ui_base::paint::*;
+    use tilo_ui_base::presence::*;
+    use tilo_ui_base::tokens::*;
+    use tilo_ui_base::widget::*;
+    use tilo_ui_base::*;
+    use winit::event::*;
+    use winit::keyboard::*;
+
+    /// A row that opens in its place, over `inner`: what a tree's row draws for an item.
+    pub fn row_open(
+        inner: tilo_ui_base::widget::Element,
+        tree: bool,
+    ) -> tilo_ui_base::widget::Element {
+        Box::new(super::open::RowOpen::new(inner, tree))
+    }
+    pub fn lay_out<M: ListModel + 'static>(
+        list: &mut VirtualList<M>,
+        width: f32,
+    ) -> (TaffyTree<()>, NodeId) {
+        let doc = AutoCommit::new();
+        list.sync(&doc, &automerge::ROOT);
+        let mut taffy = TaffyTree::new();
+        let mut node_map = HashMap::new();
+        let node = list.build_layout(&mut taffy, &Theme::dark(), &mut node_map);
+        taffy
+            .compute_layout(
+                node,
+                Size {
+                    width: AvailableSpace::Definite(width),
+                    height: AvailableSpace::Definite(px(list.viewport.viewport())),
+                },
+            )
+            .unwrap();
+        list.apply_layout(&taffy, node, Point::ZERO);
+        (taffy, node)
+    }
+    pub fn cursor(y: f64) -> WindowEvent {
+        tilo_ui_base::synthetic_input::cursor_moved(20.0, y)
+    }
+    pub fn left(state: ElementState) -> WindowEvent {
+        tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left)
+    }
+    pub fn dispatch<M: ListModel + 'static>(
+        list: &mut VirtualList<M>,
+        event: &WindowEvent,
+        taffy: &TaffyTree<()>,
+        node: NodeId,
+    ) -> bool {
+        Dispatch::new()
+            .layout(taffy, node)
+            .send(list, event)
+            .handled
+    }
+    pub fn click_row(
+        list: &mut VirtualList<VecListModel<u32, u32>>,
+        key: u32,
+        modifiers: winit::keyboard::ModifiersState,
+    ) {
+        let (taffy, node) = lay_out(list, 300.0);
+        let at = list.row_rect(&key).expect("the row is placed").center();
+        let dispatch = |list: &mut VirtualList<VecListModel<u32, u32>>, event: &WindowEvent| {
+            Dispatch::new()
+                .modifiers(modifiers)
+                .layout(&taffy, node)
+                .send(list, event)
+        };
+        dispatch(
+            list,
+            &WindowEvent::CursorMoved {
+                device_id: winit::event::DeviceId::dummy(),
+                position: (at.x, at.y).into(),
+            },
+        );
+        dispatch(list, &tilo_ui_base::synthetic_input::mouse_press());
+        dispatch(list, &tilo_ui_base::synthetic_input::mouse_release());
+    }
+    pub fn plain_rows(count: u32) -> VirtualList<VecListModel<u32, u32>> {
+        VirtualList::from_items(
+            (0..count).collect(),
+            40.0,
+            |item| *item,
+            |item, _, _| Box::new(crate::widget::Text::new(&format!("row {item}"))) as Element,
+        )
+        .unwrap()
+        .with_viewport_height(200.0)
+    }
+    pub fn right_click_row<M>(list: &mut VirtualList<M>, row: usize)
+    where
+        M: ListModel + 'static,
+    {
+        use winit::event::{ElementState, MouseButton};
+        let (taffy, node) = lay_out(list, 300.0);
+        let at = list.rect.y0
+            + list.viewport.item_view_top(row).unwrap()
+            + list.viewport.item_height(row).unwrap() / 2.0;
+        let press =
+            tilo_ui_base::synthetic_input::mouse_input(ElementState::Pressed, MouseButton::Right);
+        crate::widget::context_menu::note_input(&press);
+        dispatch(list, &cursor(at), &taffy, node);
+        dispatch(list, &press, &taffy, node);
+        dispatch(
+            list,
+            &tilo_ui_base::synthetic_input::mouse_input(ElementState::Released, MouseButton::Right),
+            &taffy,
+            node,
+        );
+    }
+    pub fn exported(
+        nodes: &[(accesskit::NodeId, accesskit::Node)],
+        id: accesskit::NodeId,
+    ) -> accesskit::Node {
+        nodes
+            .iter()
+            .find(|(each, _)| *each == id)
+            .map(|(_, node)| node.clone())
+            .unwrap_or_else(|| panic!("no node {id:?} in the export"))
+    }
+    pub fn inside(
+        nodes: &[(accesskit::NodeId, accesskit::Node)],
+        id: accesskit::NodeId,
+    ) -> Vec<(accesskit::NodeId, accesskit::Node)> {
+        let mut out = Vec::new();
+        let mut frontier = vec![id];
+        while let Some(next) = frontier.pop() {
+            for child in exported(nodes, next).children() {
+                out.push((*child, exported(nodes, *child)));
+                frontier.push(*child);
+            }
+        }
+        out
+    }
+    pub fn named(
+        nodes: &[(accesskit::NodeId, accesskit::Node)],
+        role: accesskit::Role,
+        label: &str,
+    ) -> (accesskit::NodeId, accesskit::Node) {
+        nodes
+            .iter()
+            .find(|(_, node)| node.role() == role && node.label() == Some(label))
+            .cloned()
+            .unwrap_or_else(|| panic!("no {role:?} named {label:?}"))
+    }
+    pub fn within(within: accesskit::Rect, covered: accesskit::Rect) -> bool {
+        covered.x0 >= within.x0
+            && covered.y0 >= within.y0
+            && covered.x1 <= within.x1
+            && covered.y1 <= within.y1
+    }
+    pub struct HugeList {
+        pub count: usize,
+    }
+    impl ListModel for HugeList {
+        type Key = u64;
+
+        fn len(&self) -> usize {
+            self.count
+        }
+
+        fn key_at(&self, index: usize) -> Option<Self::Key> {
+            (index < self.count)
+                .then(|| u64::try_from(index).ok())
+                .flatten()
+        }
+
+        fn index_of(&self, key: &Self::Key) -> Option<usize> {
+            usize::try_from(*key)
+                .ok()
+                .filter(|index| *index < self.count)
+        }
+    }
+    pub struct SharedOrder {
+        pub keys: Rc<RefCell<Vec<u64>>>,
+    }
+    impl ListModel for SharedOrder {
+        type Key = u64;
+
+        fn len(&self) -> usize {
+            self.keys.borrow().len()
+        }
+
+        fn key_at(&self, index: usize) -> Option<Self::Key> {
+            self.keys.borrow().get(index).copied()
+        }
+
+        fn index_of(&self, key: &Self::Key) -> Option<usize> {
+            self.keys
+                .borrow()
+                .iter()
+                .position(|candidate| candidate == key)
+        }
+    }
+    pub struct PagedList {
+        pub count: usize,
+        pub states: Rc<RefCell<HashMap<usize, u8>>>,
+        pub requests: Rc<RefCell<Vec<Range<usize>>>>,
+        pub changed: Rc<Cell<bool>>,
+        pub pending: Rc<Cell<bool>>,
+    }
+    impl ListModel for PagedList {
+        type Key = u64;
+
+        fn len(&self) -> usize {
+            self.count
+        }
+
+        fn key_at(&self, index: usize) -> Option<Self::Key> {
+            (index < self.count)
+                .then(|| u64::try_from(index).ok())
+                .flatten()
+        }
+
+        fn index_of(&self, key: &Self::Key) -> Option<usize> {
+            usize::try_from(*key)
+                .ok()
+                .filter(|index| *index < self.count)
+        }
+
+        fn row_state(&self, index: usize) -> Arrival<(), &str> {
+            match self.states.borrow().get(&index).copied() {
+                Some(1) => Arrival::Ready(()),
+                Some(2) => Arrival::Failed("Fetch failed"),
+                _ => Arrival::local(),
+            }
+        }
+
+        fn request_range(&mut self, range: Range<usize>, _open: Option<&u64>) {
+            self.requests.borrow_mut().push(range);
+        }
+
+        fn poll_changed(&mut self) -> bool {
+            self.changed.replace(false)
+        }
+
+        fn needs_poll(&self) -> bool {
+            self.pending.get()
+        }
+    }
+    pub struct ProbeRow {
+        pub label: String,
+        pub height: f32,
+        pub consumes_press: bool,
+        pub presses: Rc<Cell<usize>>,
+        pub rect: Rect,
+        pub trailing_actions: bool,
+    }
+    impl ProbeRow {
+        pub fn new(
+            label: impl Into<String>,
+            height: f32,
+            consumes_press: bool,
+            presses: Rc<Cell<usize>>,
+        ) -> Self {
+            Self {
+                label: label.into(),
+                height,
+                consumes_press,
+                presses,
+                rect: Rect::ZERO,
+                trailing_actions: false,
+            }
+        }
+    }
+    impl crate::widget::RowActionRects for ProbeRow {
+        fn row_action_rects(&self) -> Vec<Rect> {
+            if !self.trailing_actions {
+                return Vec::new();
+            }
+            let side = self.rect.height().min(20.0) - 4.0;
+            let cy = self.rect.center().y;
+            (0..2_u32)
+                .map(|nth| {
+                    let right = self.rect.x1 - 2.0 - f64::from(1 - nth) * (side + 2.0);
+                    Rect::new(right - side, cy - side / 2.0, right, cy + side / 2.0)
+                })
+                .collect()
+        }
+    }
+    impl Widget for ProbeRow {
+        tilo_ui_base::provides!(dyn crate::widget::RowActionRects);
+
+        fn build_layout(
+            &mut self,
+            taffy: &mut TaffyTree<()>,
+            _theme: &Theme,
+            node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+        ) -> NodeId {
+            let style = Style {
+                size: Size {
+                    width: percent(1.0_f32),
+                    height: Dimension::length(self.height),
+                },
+                ..Default::default()
+            };
+            taffy.widget_leaf(style, node_map, self)
+        }
+
+        tilo_ui_base::rect_geometry!();
+
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+        ) {
+            if self.consumes_press
+                && matches!(
+                    event,
+                    WindowEvent::MouseInput {
+                        state: ElementState::Pressed,
+                        button: MouseButton::Left,
+                        ..
+                    }
+                )
+            {
+                self.presses.set(self.presses.get().saturating_add(1));
+                *ctx.handled = true;
+            }
+        }
+
+        fn name(&self) -> &'static str {
+            "ProbeRow"
+        }
+
+        fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+            Some(
+                tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Button)
+                    .with_name(&self.label),
+            )
+        }
+    }
+    /// A closed row of 20 px that grows to 120 px while it stands open, and reports what it is told.
+    pub fn list(opened: Rc<RefCell<Vec<u64>>>) -> VirtualList<Opens> {
+        VirtualList::with_selection_delegate(
+            Opens {
+                rows: (0..6_u64).collect(),
+            },
+            20.0,
+            move |_, _, key, build| {
+                let height = if build.expanded { 120.0 } else { 20.0 };
+                Box::new(ProbeRow::new(
+                    format!("row {key}"),
+                    height,
+                    false,
+                    Rc::new(Cell::new(0)),
+                )) as Element
+            },
+        )
+        .with_viewport_height(200.0)
+        .on_activate(move |key| opened.borrow_mut().push(key))
+    }
+    pub fn heard_list() -> (VirtualList<Opens>, Rc<RefCell<Vec<u64>>>, Rc<Cell<usize>>) {
+        let opens: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
+        let closes = Rc::new(Cell::new(0));
+        let list = VirtualList::with_selection_delegate(
+            Opens {
+                rows: (0..6_u64).collect(),
+            },
+            20.0,
+            |_, _, key, build| {
+                let height = if build.expanded { 120.0 } else { 20.0 };
+                Box::new(ProbeRow::new(
+                    format!("row {key}"),
+                    height,
+                    false,
+                    Rc::new(Cell::new(0)),
+                )) as Element
+            },
+        )
+        .with_viewport_height(200.0);
+        let (heard, shut) = (Rc::clone(&opens), Rc::clone(&closes));
+        let list = list
+            .on_opened(move |key| heard.borrow_mut().push(key))
+            .on_closed(move || shut.set(shut.get() + 1));
+        (list, opens, closes)
+    }
+    pub fn renamed_list() -> (VirtualList<Renamed>, Rc<RefCell<Vec<u64>>>, Rc<Cell<usize>>) {
+        let rows: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new((0..6_u64).collect()));
+        let closes = Rc::new(Cell::new(0));
+        let shut = Rc::clone(&closes);
+        let list = VirtualList::with_selection_delegate(
+            Renamed {
+                rows: Rc::clone(&rows),
+            },
+            20.0,
+            |_, _, key, build| {
+                let height = if build.expanded { 120.0 } else { 20.0 };
+                Box::new(ProbeRow::new(
+                    format!("row {key}"),
+                    height,
+                    false,
+                    Rc::new(Cell::new(0)),
+                )) as Element
+            },
+        )
+        .with_viewport_height(200.0)
+        .on_closed(move || shut.set(shut.get() + 1));
+        (list, rows, closes)
+    }
+    pub fn opening_list() -> VirtualList<Opens> {
+        VirtualList::with_selection_delegate(
+            Opens {
+                rows: (0..6_u64).collect(),
+            },
+            20.0,
+            |_, _, key, build| {
+                let document: Element = Box::new(ProbeRow::new(
+                    format!("row {key}"),
+                    120.0,
+                    false,
+                    Rc::new(Cell::new(0)),
+                ));
+                if build.expanded {
+                    Box::new(super::open::RowOpen::new(document, false)) as Element
+                } else {
+                    document
+                }
+            },
+        )
+        .with_viewport_height(200.0)
+    }
+    pub fn document(saved: Rc<Cell<usize>>, done: tilo_ui_base::LocalState<bool>) -> Element {
+        use crate::widget::{Button, Checkbox, Column, TextInput};
+        Box::new(
+            Column::new()
+                .push(Box::new(
+                    TextInput::new(Vec::new())
+                        .with_text_role(tilo_ui_base::tokens::TextRole::Title)
+                        .with_id("title")
+                        .with_accessible_name("Title")
+                        .with_initial_value("Ring the plumber"),
+                ))
+                .push(Box::new(
+                    TextInput::new(Vec::new())
+                        .with_id("notes")
+                        .multiline(true)
+                        .with_accessible_name("Notes")
+                        .with_initial_value("The tap drips"),
+                ))
+                .push(Box::new(
+                    Checkbox::from_state(&done).with_accessible_name("Done"),
+                ))
+                .push(Box::new(
+                    Button::new("save", "Save").on_open(move || saved.set(saved.get() + 1)),
+                )),
+        )
+    }
+    pub fn documented_list(
+        saved: Rc<Cell<usize>>,
+        done: tilo_ui_base::LocalState<bool>,
+    ) -> VirtualList<Opens> {
+        VirtualList::with_selection_delegate(
+            Opens {
+                rows: (0..6_u64).collect(),
+            },
+            20.0,
+            move |_, _, key, build| {
+                if build.expanded {
+                    Box::new(super::open::RowOpen::new(
+                        document(Rc::clone(&saved), done.clone()),
+                        false,
+                    )) as Element
+                } else {
+                    Box::new(ProbeRow::new(
+                        format!("row {key}"),
+                        20.0,
+                        false,
+                        Rc::new(Cell::new(0)),
+                    )) as Element
+                }
+            },
+        )
+        .with_viewport_height(400.0)
+    }
+    pub struct Opens {
+        pub rows: Vec<u64>,
+    }
+    impl ListModel for Opens {
+        type Key = u64;
+
+        fn len(&self) -> usize {
+            self.rows.len()
+        }
+
+        fn key_at(&self, index: usize) -> Option<u64> {
+            self.rows.get(index).copied()
+        }
+
+        fn index_of(&self, key: &u64) -> Option<usize> {
+            self.rows.iter().position(|row| row == key)
+        }
+
+        fn opens_in_place(&self, index: usize) -> bool {
+            index.is_multiple_of(2)
+        }
+    }
+    pub struct Renamed {
+        pub rows: Rc<RefCell<Vec<u64>>>,
+    }
+    impl ListModel for Renamed {
+        type Key = u64;
+
+        fn len(&self) -> usize {
+            self.rows.borrow().len()
+        }
+
+        fn key_at(&self, index: usize) -> Option<u64> {
+            self.rows.borrow().get(index).copied()
+        }
+
+        fn index_of(&self, key: &u64) -> Option<usize> {
+            self.rows.borrow().iter().position(|row| row == key)
+        }
+
+        fn opens_in_place(&self, index: usize) -> bool {
+            index.is_multiple_of(2)
+        }
+    }
+    pub fn nested() -> VirtualList<Nested> {
+        let model = Nested {
+            keys: vec![0, 1, 2, 3, 4],
+            parents: HashMap::from([(1, 0), (2, 1), (4, 0)]),
+            groups: HashMap::new(),
+        };
+        VirtualList::new(model, 20.0, |_, _, key| {
+            Box::new(ProbeRow::new(
+                key.to_string(),
+                20.0,
+                false,
+                Rc::new(Cell::new(0)),
+            ))
+        })
+        .with_viewport_height(200.0)
+    }
+    pub fn shape(
+        list: &VirtualList<Nested>,
+        marks: &TreeMarks<u64>,
+    ) -> Vec<(u64, u32, bool, bool)> {
+        (0..list.model.len())
+            .map(|index| {
+                let key = list.model().key_at(index).expect("every row has a key");
+                (
+                    key,
+                    marks.depth(&key),
+                    marks.is_branch(&key),
+                    marks.is_nested(&key),
+                )
+            })
+            .collect()
+    }
+    pub fn press<M: ListModel + 'static>(
+        list: &mut VirtualList<M>,
+        x: f64,
+        y: f64,
+        taffy: &TaffyTree<()>,
+        node: NodeId,
+    ) {
+        let at = tilo_ui_base::synthetic_input::cursor_moved(x, y);
+        let _ = Dispatch::new().layout(taffy, node).send(list, &at);
+        for state in [ElementState::Pressed, ElementState::Released] {
+            let event = tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left);
+            let _ = Dispatch::new().layout(taffy, node).send(list, &event);
+        }
+    }
+    pub fn stands_under(parents: &HashMap<u64, u64>, key: u64, ancestor: u64) -> bool {
+        let mut cursor = key;
+        for _ in 0..64 {
+            let Some(parent) = parents.get(&cursor).copied() else {
+                return false;
+            };
+            if parent == ancestor {
+                return true;
+            }
+            cursor = parent;
+        }
+        false
+    }
+    pub fn land(model: &mut Movable, dropped: ReorderDrop<u64>) -> bool {
+        if dropped.source == dropped.target.key {
+            return false;
+        }
+        let Some(from) = model.index_of(&dropped.source) else {
+            return false;
+        };
+        if model.index_of(&dropped.target.key).is_none() {
+            return false;
+        }
+        let parent = match dropped.target.placement {
+            DropPlacement::Inside => Some(dropped.target.key),
+            DropPlacement::Before | DropPlacement::After => {
+                model.parents.get(&dropped.target.key).copied()
+            }
+        };
+        model.keys.remove(from);
+        let at = model.index_of(&dropped.target.key).unwrap_or_default();
+        let into = match dropped.target.placement {
+            DropPlacement::Before => at,
+            DropPlacement::Inside => {
+                let mut into = at.saturating_add(1);
+                while into < model.keys.len()
+                    && stands_under(&model.parents, model.keys[into], dropped.target.key)
+                {
+                    into = into.saturating_add(1);
+                }
+                into
+            }
+            DropPlacement::After => at.saturating_add(1),
+        };
+        model
+            .keys
+            .insert(into.min(model.keys.len()), dropped.source);
+        match parent {
+            Some(parent) => {
+                model.parents.insert(dropped.source, parent);
+            }
+            None => {
+                model.parents.remove(&dropped.source);
+            }
+        }
+        true
+    }
+    pub fn movable(keys: Vec<u64>, parents: &[(u64, u64)]) -> VirtualList<Movable> {
+        let model = Movable {
+            labels: keys
+                .iter()
+                .map(|key| (*key, format!("row {key}")))
+                .collect(),
+            keys: keys.clone(),
+            parents: parents.iter().copied().collect(),
+            takes_children: keys.into_iter().collect(),
+        };
+        VirtualList::new(model, 20.0, |_, _, key| {
+            Box::new(ProbeRow::new(
+                key.to_string(),
+                20.0,
+                false,
+                Rc::new(Cell::new(0)),
+            ))
+        })
+        .with_viewport_height(200.0)
+    }
+    pub fn send<M: ListModel + 'static>(
+        list: &mut VirtualList<M>,
+        event: &WindowEvent,
+        laid_out: (&TaffyTree<()>, NodeId),
+    ) -> bool {
+        Dispatch::new()
+            .layout(laid_out.0, laid_out.1)
+            .send(list, event)
+            .handled
+    }
+    pub fn send_with<M: ListModel + 'static>(
+        list: &mut VirtualList<M>,
+        event: &WindowEvent,
+        modifiers: winit::keyboard::ModifiersState,
+        laid_out: (&TaffyTree<()>, NodeId),
+    ) -> bool {
+        Dispatch::new()
+            .modifiers(modifiers)
+            .layout(laid_out.0, laid_out.1)
+            .send(list, event)
+            .handled
+    }
+    pub fn composed_at<'a>(
+        node: &'a crate::composition::Composed,
+        widget: &str,
+    ) -> Vec<&'a crate::composition::Composed> {
+        let mut found: Vec<&crate::composition::Composed> = node
+            .children
+            .iter()
+            .flat_map(|child| composed_at(child, widget))
+            .collect();
+        if node.widget == widget {
+            found.insert(0, node);
+        }
+        found
+    }
+    /// The row saying `text`: the list item that owns the words, not an outer row that holds it too.
+    pub fn row_named<'a>(
+        root: &'a crate::composition::Composed,
+        text: &str,
+    ) -> Option<&'a crate::composition::Composed> {
+        composed_at(root, "ListRow").into_iter().find(|row| {
+            row.semantics.as_ref().is_some_and(|access| {
+                access.nodes().into_iter().any(|said| {
+                    said.name.as_deref() == Some(text) || said.value.as_deref() == Some(text)
+                })
+            })
+        })
+    }
+    /// A model whose rows name the row they stand under, as a list of subtasks does: the rows keep
+    /// the model's order, and a parent need not be the row above. `groups` are the headings its rows
+    /// stand under, as a list of tasks grouped by the day each is due is.
+    pub struct Nested {
+        pub keys: Vec<u64>,
+        pub parents: HashMap<u64, u64>,
+        pub groups: HashMap<u64, String>,
+    }
+    impl ListModel for Nested {
+        type Key = u64;
+
+        fn len(&self) -> usize {
+            self.keys.len()
+        }
+
+        fn key_at(&self, index: usize) -> Option<u64> {
+            self.keys.get(index).copied()
+        }
+
+        fn index_of(&self, key: &u64) -> Option<usize> {
+            self.keys.iter().position(|candidate| candidate == key)
+        }
+
+        fn group_at(&self, index: usize) -> Option<RowGroup> {
+            let key = self.key_at(index)?;
+            self.groups
+                .get(&key)
+                .map(|heading| RowGroup::heading(heading.clone()))
+        }
+
+        fn tree_at(&self, index: usize) -> Option<TreeRow<u64>> {
+            let key = self.key_at(index)?;
+            let parent = self
+                .parents
+                .get(&key)
+                .copied()
+                .filter(|parent| self.keys.contains(parent));
+            Some(TreeRow {
+                parent,
+                depth: None,
+                above: None,
+            })
+        }
+    }
+    pub struct Movable {
+        pub keys: Vec<u64>,
+        pub parents: HashMap<u64, u64>,
+        pub labels: HashMap<u64, String>,
+        pub takes_children: HashSet<u64>,
+    }
+    impl ListModel for Movable {
+        type Key = u64;
+
+        fn len(&self) -> usize {
+            self.keys.len()
+        }
+
+        fn key_at(&self, index: usize) -> Option<u64> {
+            self.keys.get(index).copied()
+        }
+
+        fn index_of(&self, key: &u64) -> Option<usize> {
+            self.keys.iter().position(|candidate| candidate == key)
+        }
+
+        fn label(&self, index: usize) -> Option<String> {
+            self.labels.get(&self.key_at(index)?).cloned()
+        }
+
+        fn tree_at(&self, index: usize) -> Option<TreeRow<u64>> {
+            let key = self.key_at(index)?;
+            let parent = self
+                .parents
+                .get(&key)
+                .copied()
+                .filter(|parent| self.keys.contains(parent));
+            Some(TreeRow {
+                parent,
+                depth: None,
+                above: None,
+            })
+        }
+
+        fn accepts_children(&self, index: usize) -> bool {
+            self.key_at(index)
+                .is_some_and(|key| self.takes_children.contains(&key))
+        }
+    }
+    pub struct OpenableTree {
+        pub keys: Vec<u64>,
+        pub parents: HashMap<u64, u64>,
+    }
+    impl ListModel for OpenableTree {
+        type Key = u64;
+
+        fn len(&self) -> usize {
+            self.keys.len()
+        }
+
+        fn key_at(&self, index: usize) -> Option<u64> {
+            self.keys.get(index).copied()
+        }
+
+        fn index_of(&self, key: &u64) -> Option<usize> {
+            self.keys.iter().position(|candidate| candidate == key)
+        }
+
+        fn tree_at(&self, index: usize) -> Option<TreeRow<u64>> {
+            let key = self.key_at(index)?;
+            Some(TreeRow {
+                parent: self.parents.get(&key).copied(),
+                depth: None,
+                above: None,
+            })
+        }
+
+        fn opens_in_place(&self, _index: usize) -> bool {
+            true
+        }
+    }
+    /// [`Nested`] whose first row is still on its way until `ready` says it arrived.
+    pub struct ArrivingNested {
+        pub rows: Nested,
+        pub ready: Rc<Cell<bool>>,
+    }
+    impl ListModel for ArrivingNested {
+        type Key = u64;
+
+        fn len(&self) -> usize {
+            self.rows.len()
+        }
+
+        fn key_at(&self, index: usize) -> Option<u64> {
+            self.rows.key_at(index)
+        }
+
+        fn index_of(&self, key: &u64) -> Option<usize> {
+            self.rows.index_of(key)
+        }
+
+        fn tree_at(&self, index: usize) -> Option<TreeRow<u64>> {
+            self.rows.tree_at(index)
+        }
+
+        fn row_state(&self, index: usize) -> Arrival<(), &str> {
+            if index == 0 && !self.ready.get() {
+                Arrival::Pending {
+                    from: tilo_ui_base::arriving::Source::Remote,
+                }
+            } else {
+                Arrival::Ready(())
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "virtual_list_open_tests.rs"]
+mod open_tests;
+#[cfg(test)]
+#[path = "virtual_list_tests.rs"]
+mod tests;
+#[cfg(test)]
+#[path = "virtual_list_tree_tests.rs"]
+mod tree_tests;

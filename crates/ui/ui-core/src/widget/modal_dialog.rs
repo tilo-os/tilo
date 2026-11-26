@@ -28,8 +28,6 @@
 //! screen reader presses them but they are never published to an agent: that consent stays
 //! with the person.
 
-#[cfg(test)]
-use automerge::AutoCommit;
 use automerge::ObjId;
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -62,7 +60,7 @@ pub const MODAL_MAX_WIDTH: f64 = 520.0;
 pub const MODAL_MIN_WIDTH: f64 = 320.0;
 /// Contrast a modal's own ink must clear against the sheet before it is
 /// used as-is. WCAG 2.1 AA for body text.
-const MODAL_MIN_INK_CONTRAST: f64 = 4.5;
+pub const MODAL_MIN_INK_CONTRAST: f64 = 4.5;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ModalEmphasis {
@@ -822,7 +820,7 @@ impl std::fmt::Debug for DialogAction {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Slot {
+pub enum Slot {
     Secondary,
     Tertiary,
     Primary,
@@ -853,7 +851,7 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     title: String,
     icon: Option<Icon>,
     description: Option<String>,
-    primary_action: Option<DialogAction>,
+    pub primary_action: Option<DialogAction>,
     secondary_action: Option<DialogAction>,
     tertiary_action: Option<DialogAction>,
     tertiary_destructive: bool,
@@ -882,7 +880,7 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     header_size: (f64, f64),
     header_origin: Point,
     header_detached: Option<floating_surface::DetachedContent>,
-    content_size: (f64, f64),
+    pub content_size: (f64, f64),
     content_laid_out_in: f64,
     content_origin: Point,
     scroll: f64,
@@ -894,17 +892,17 @@ pub struct ModalDialog<C: Widget + ?Sized> {
     restore_scroll: Option<f64>,
     trim: f64,
     /// The host must place the content again (scroll, window, trim).
-    stale: bool,
+    pub stale: bool,
     /// The host must measure the content again (width, content change).
-    remeasure: bool,
+    pub remeasure: bool,
     structure_dirty: bool,
     platform: PlatformConventions,
     layout_theme: Theme,
-    appear: tilo_ui_base::motion::Appearance,
+    pub appear: tilo_ui_base::motion::Appearance,
     anchor: Option<Rect>,
     foot: Option<super::BottomSheet>,
     environment: InteractionEnvironment,
-    content: C,
+    pub content: C,
 }
 
 impl<C: Widget + 'static> ModalDialog<C> {
@@ -2701,6 +2699,21 @@ use footer_key::FooterKey;
 pub use geometry::{layout, layout_for, rise_from_foot};
 use geometry::{onto_device_pixels, target};
 
-#[cfg(test)]
-#[path = "modal_dialog_tests.rs"]
-mod tests;
+/// What a sheet's tests read of it from outside the module.
+#[cfg(feature = "test-support")]
+impl<C: Widget + ?Sized> ModalDialog<C> {
+    /// Where the sheet laid itself out at the last solve.
+    #[must_use]
+    pub fn test_layout(&self) -> Option<&ModalLayout> {
+        self.layout.as_ref()
+    }
+
+    /// The footer's actions in the order Tab walks them, and which stands focused.
+    #[must_use]
+    pub fn test_keys(&self) -> Vec<(Slot, bool)> {
+        self.keys
+            .iter()
+            .map(|key| (key.slot, key.focused))
+            .collect()
+    }
+}

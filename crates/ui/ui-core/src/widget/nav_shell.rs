@@ -3879,9 +3879,6 @@ impl tilo_ui_base::widget::controls::ActionControls for NavShell {
     }
 }
 
-#[cfg(test)]
-mod tests;
-
 mod component;
 pub use component::NavShellProps;
 
@@ -4138,3 +4135,6 @@ impl NavShell {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

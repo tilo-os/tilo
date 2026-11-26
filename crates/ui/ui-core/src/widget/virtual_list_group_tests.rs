@@ -74,7 +74,7 @@ fn grouped_finished(groups: Vec<Option<RowGroup>>, finished: &[usize]) -> Virtua
 
 fn listed(model: Grouped) -> VirtualList<Grouped> {
     VirtualList::new(model, ROW, |_, index, _| {
-        Box::new(super::tests::ProbeRow::new(
+        Box::new(super::test_support::ProbeRow::new(
             format!("row {index}"),
             ROW,
             false,
@@ -97,8 +97,8 @@ fn week() -> VirtualList<Grouped> {
 }
 
 fn settle(list: &mut VirtualList<Grouped>) -> (TaffyTree<()>, NodeId) {
-    let _ = super::tests::lay_out(list, 300.0);
-    super::tests::lay_out(list, 300.0)
+    let _ = super::test_support::lay_out(list, 300.0);
+    super::test_support::lay_out(list, 300.0)
 }
 
 fn bands(list: &VirtualList<Grouped>) -> Vec<(String, f64, bool)> {

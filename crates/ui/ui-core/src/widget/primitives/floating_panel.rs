@@ -1076,6 +1076,18 @@ impl Widget for FloatingPanel {
         dirty
     }
 
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
+        // Its own width is a style the next build lays out, not a child's node to remount: a
+        // trailing-edge drag asks for the rebuild that reads the width it was let go at.
+        let width = std::mem::take(&mut self.width_changed);
+        let change = tilo_ui_base::widget::StructureChange::of(self.take_structure_dirty());
+        if width {
+            tilo_ui_base::widget::StructureChange::Rebuild
+        } else {
+            change
+        }
+    }
+
     fn get_rect(&self) -> Rect {
         self.rect
     }

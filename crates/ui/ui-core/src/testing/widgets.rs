@@ -5,6 +5,8 @@
 #![allow(
     dead_code,
     clippy::disallowed_methods,
+    clippy::must_use_candidate,
+    clippy::return_self_not_must_use,
     clippy::unwrap_used,
     clippy::expect_used,
     reason = "a probe emits only the methods it observes, and the test-support build compiles every probe whether or not a test uses it"
@@ -159,7 +161,7 @@ pub(crate) struct TwoWindows {
 #[cfg(all(test, feature = "model"))]
 impl TwoWindows {
     /// Two stub windows labelled `labels`.
-    pub(crate) fn new(labels: [&str; 2]) -> Self {
+    pub fn new(labels: [&str; 2]) -> Self {
         Self {
             tiles: labels.map(|label| {
                 crate::widget::TileHost::new(crate::widget::TileContent::Stub {
@@ -271,22 +273,22 @@ struct SeenLog {
 
 impl Seen {
     /// Every event the leaf was sent.
-    pub(crate) fn events(&self) -> usize {
+    pub fn events(&self) -> usize {
         self.0.borrow().events
     }
 
     /// Pointer moves and button changes the leaf was sent.
-    pub(crate) fn pointer(&self) -> usize {
+    pub fn pointer(&self) -> usize {
         self.0.borrow().pointer
     }
 
     /// Left-button presses the leaf was sent.
-    pub(crate) fn presses(&self) -> usize {
+    pub fn presses(&self) -> usize {
         self.0.borrow().presses
     }
 
     /// Whether the leaf holds keyboard focus.
-    pub(crate) fn focused(&self) -> bool {
+    pub fn focused(&self) -> bool {
         self.0.borrow().focused
     }
 }
@@ -297,11 +299,11 @@ impl Seen {
 /// records what reached it in a [`Seen`] the test keeps. Containers in tests are the real
 /// ones (`Column`, `Row`, `Scrollable`), holding these leaves.
 pub struct TestLeaf {
-    pub(crate) id: &'static str,
-    pub(crate) rect: ::vello::kurbo::Rect,
+    pub id: &'static str,
+    pub rect: ::vello::kurbo::Rect,
     size: LeafSize,
     focusable: bool,
-    pub(crate) consumes: bool,
+    pub consumes: bool,
     seen: Seen,
 }
 
@@ -318,39 +320,39 @@ impl TestLeaf {
     }
 
     /// A leaf that fills the space it is given, answering to `id`.
-    pub(crate) fn fill(id: &'static str) -> Self {
+    pub fn fill(id: &'static str) -> Self {
         Self::with_size(id, LeafSize::Fill)
     }
 
     /// A leaf `width` by `height`.
-    pub(crate) fn sized(width: f32, height: f32) -> Self {
+    pub fn sized(width: f32, height: f32) -> Self {
         Self::with_size("leaf", LeafSize::Fixed(width, height))
     }
 
     /// A leaf with no size of its own.
-    pub(crate) fn auto() -> Self {
+    pub fn auto() -> Self {
         Self::with_size("leaf", LeafSize::Auto)
     }
 
     /// The leaf takes keyboard focus, and a left press focuses it.
-    pub(crate) fn focusable(mut self) -> Self {
+    pub fn focusable(mut self) -> Self {
         self.focusable = true;
         self
     }
 
     /// The leaf marks every event it is sent handled, so nothing behind it sees it.
-    pub(crate) fn consumes(mut self) -> Self {
+    pub fn consumes(mut self) -> Self {
         self.consumes = true;
         self
     }
 
     /// What the leaf will be shown and sent.
-    pub(crate) fn seen(&self) -> Seen {
+    pub fn seen(&self) -> Seen {
         self.seen.clone()
     }
 
     /// The leaf as an element, with what it will be shown and sent.
-    pub(crate) fn boxed(self) -> (tilo_ui_base::widget::Element, Seen) {
+    pub fn boxed(self) -> (tilo_ui_base::widget::Element, Seen) {
         let seen = self.seen();
         (Box::new(self), seen)
     }

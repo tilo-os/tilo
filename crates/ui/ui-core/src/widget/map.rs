@@ -764,13 +764,13 @@ pub struct Map {
     drop: Event,
     /// What a press on the empty canvas does: the map reports the canvas point under it, and the
     /// view stands what belongs there (the shell's canvas opens its caret).
-    press: Event,
+    pub press: Event,
     /// Whether a press on it runs now, and why it cannot when it does not.
     enabled: bool,
     description: Option<String>,
     /// What a drag across the empty canvas does: the map reports the rectangle it covered, in
     /// canvas pixels, and the view lays what it answers into that rectangle.
-    frame: Event,
+    pub frame: Event,
     /// What a right press on the map does: the map reports the pin under it and the canvas point,
     /// and the view opens what the person pointed at.
     context: Event,
@@ -843,7 +843,7 @@ pub struct Map {
     /// Where the person last pointed on the map, in canvas pixels: the point a click reported,
     /// the corner of a dragged rectangle, a right press's point, where a drop landed. What
     /// arrives on the map after it is the answer to that pointing, and grows out of it.
-    asked: Option<Point>,
+    pub asked: Option<Point>,
     /// The place that answers the person's last pointing, by its key: of the places arriving
     /// after it that grow from where it was asked, the one pin_places nearest that point (the turn
     /// at the caret, the thing found at a click). The camera keeps it whole in view as it grows,
@@ -3625,20 +3625,8 @@ use answer::OutlineLook;
 mod motion_tests;
 
 #[cfg(test)]
-#[path = "map_pointing_tests.rs"]
-mod pointing_tests;
-
-#[cfg(test)]
 #[path = "map_marker_tests.rs"]
 mod marker_tests;
-
-#[cfg(test)]
-#[path = "map_canvas_tests.rs"]
-mod canvas_tests;
-
-#[cfg(test)]
-#[path = "map_answer_tests.rs"]
-mod answer_tests;
 
 #[cfg(test)]
 #[path = "map_presence_tests.rs"]
@@ -3746,5 +3734,327 @@ mod mercator_tests {
         let (latitude, longitude) = mercator_unproject(camera.to_canvas(rect.origin(), middle));
         assert!((latitude - 52.52).abs() < 1e-9, "lat {latitude}");
         assert!((longitude - 13.405).abs() < 1e-9, "lon {longitude}");
+    }
+}
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    #![allow(
+        dead_code,
+        unused_imports,
+        clippy::arithmetic_side_effects,
+        clippy::disallowed_methods,
+        clippy::expect_used,
+        clippy::float_cmp,
+        clippy::implicit_hasher,
+        clippy::indexing_slicing,
+        clippy::must_use_candidate,
+        clippy::needless_pass_by_value,
+        clippy::panic,
+        clippy::unused_self,
+        clippy::unwrap_used,
+        clippy::wildcard_imports,
+        reason = "test-support helpers are compiled for every test build whether or not a test uses this one"
+    )]
+    use super::*;
+    use std::cell::*;
+    use std::collections::*;
+    use std::path::*;
+    use std::rc::*;
+    use std::sync::atomic::*;
+    use std::sync::*;
+    use std::time::*;
+    use taffy::{AvailableSpace, Size};
+    use tilo_ui::app::driver::Driver;
+    use tilo_ui::kurbo::*;
+    use tilo_ui::testing::Dispatch;
+    use tilo_ui::vello::*;
+    use tilo_ui::widget::*;
+    use tilo_ui::*;
+    use tilo_ui_base::a11y::*;
+    use tilo_ui_base::component::Event;
+    use tilo_ui_base::component::*;
+    use tilo_ui_base::icons::*;
+    use tilo_ui_base::interaction::*;
+    use tilo_ui_base::paint::*;
+    use tilo_ui_base::presence::*;
+    use tilo_ui_base::tokens::*;
+    use tilo_ui_base::widget::*;
+    use tilo_ui_base::*;
+    use winit::event::*;
+    use winit::keyboard::*;
+    pub fn theme() -> Theme {
+        Theme::dark()
+    }
+    /// A pin at `(x, y)`, `width` wide and at most `height` tall, that hugs what it holds and grows
+    /// from where the person pointed, showing `body`. Its view is bare, so it keeps no place's band.
+    pub fn answer(key: &str, (x, y): (f64, f64), (width, height): (f64, f64), body: &str) -> Map {
+        Map::new().pin(key, grown(x, y, width, height), words(body))
+    }
+    pub fn grown(x: f64, y: f64, width: f64, height: f64) -> PinPlace {
+        PinPlace {
+            x,
+            y,
+            width,
+            height: Some(height),
+            band: 0.0,
+            hug: true,
+            grows: true,
+        }
+    }
+    pub fn words(body: &str) -> Element {
+        Box::new(crate::widget::Text::new(body))
+    }
+    pub fn lay_out(map: &mut Map) {
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+        tilo_ui_base::widget::layout::lay_out_detached(map, VIEWPORT, &theme(), &mut text)
+            .expect("the map lays out");
+    }
+    pub fn draw(map: &mut Map) {
+        let mut scene = Scene::new();
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+        map.draw(&mut tilo_ui_base::draw::DrawCtx::new(
+            &mut scene,
+            Affine::IDENTITY,
+            &mut text,
+            &theme(),
+            tilo_ui_base::presence::PresenceCtx::default().draw_env(),
+        ));
+    }
+    /// An empty canvas the person pointed at `at` on, laid out and drawn: the map the next one is
+    /// built in place of.
+    pub fn pointed(at: (f64, f64)) -> Map {
+        let mut map = Map::new();
+        lay_out(&mut map);
+        draw(&mut map);
+        map.point_at(Point::new(at.0, at.1));
+        map
+    }
+    /// Whether `area` (canvas pixels) stands whole inside what `map`'s camera, where it is going,
+    /// shows.
+    pub fn in_view(map: &Map, area: Rect) -> bool {
+        let seen = map.seen_rect().expect("laid out").inflate(0.5, 0.5);
+        area.x0 >= seen.x0 && area.y0 >= seen.y0 && area.x1 <= seen.x1 && area.y1 <= seen.y1
+    }
+    /// A list of `rows` rows of 40 pixels that fills its parent, as a found inbox or notes list is.
+    pub fn list(rows: u64) -> Element {
+        let model =
+            crate::widget::VecListModel::new((0..rows).collect(), |row| *row).expect("unique rows");
+        Box::new(
+            crate::widget::VirtualList::new(model, 40.0, |_, index, _| {
+                Box::new(
+                    crate::widget::Container::new()
+                        .with_height(40.0)
+                        .with_child(Box::new(crate::widget::Text::new(&format!(
+                            "Conversation {index}"
+                        )))),
+                )
+            })
+            .filling(),
+        )
+    }
+    /// The viewport every test lays its map out in.
+    pub const VIEWPORT: Rect = Rect::new(0.0, 0.0, 800.0, 600.0);
+    /// A pin at `(x, y)`, `width` wide and at most `height` tall.
+    pub fn place(x: f64, y: f64, width: f64, height: f64, hug: bool) -> PinPlace {
+        PinPlace {
+            x,
+            y,
+            width,
+            height: Some(height),
+            band: 0.0,
+            hug,
+            grows: true,
+        }
+    }
+    /// `map` laid out over an 800 by 600 viewport.
+    pub fn laid(map: &mut Map) {
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+        tilo_ui_base::widget::layout::lay_out_detached(
+            map,
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+            &Theme::dark(),
+            &mut text,
+        )
+        .expect("the map lays out");
+    }
+    /// The key the map reports its pointing under.
+    pub const CANVAS: &str = "canvas";
+    /// A map of no places that reports what pointing at it does on `queue`, looking with `camera`.
+    pub fn pointing_map(queue: &tilo_ui_base::Intents<Fired>, camera: MapCamera) -> Map {
+        let mut map = Map::new();
+        map.press = Event::View(Intent::new(queue, CANVAS, "press"));
+        map.frame = Event::View(Intent::new(queue, CANVAS, "frame"));
+        map.context = Event::View(Intent::new(queue, CANVAS, "context"));
+        map.set_camera(camera);
+        map
+    }
+    /// A map laid out over the whole viewport, with its camera as given: the camera is the map's
+    /// own, kept across the layout, as a live frame leaves it.
+    pub fn laid_out(mut map: Map) -> Driver {
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
+        tilo_ui_base::widget::layout::lay_out_detached(
+            &mut map,
+            Rect::new(0.0, 0.0, 800.0, 600.0),
+            &Theme::dark(),
+            &mut text,
+        )
+        .expect("the map lays out");
+        Driver::for_root(crate::State::new(), map, (800, 600), Theme::dark())
+    }
+    /// [`laid_out`] of a map with no places, looking with `camera`.
+    pub fn harness(queue: &tilo_ui_base::Intents<Fired>, camera: MapCamera) -> Driver {
+        laid_out(pointing_map(queue, camera))
+    }
+    /// A camera neither at the origin nor at zoom 1: a pan and a zoom the person might leave the
+    /// canvas looking through, so a point read back at it proves the camera is taken into account.
+    pub fn shifted() -> MapCamera {
+        MapCamera {
+            origin: Point::new(150.0, -60.0),
+            zoom: 1.6,
+        }
+    }
+    /// The canvas point `screen` stands at, under `camera`, on a map whose surface starts at the
+    /// viewport's own corner.
+    pub fn canvas_point(camera: MapCamera, screen: Point) -> (i64, i64) {
+        let at = camera.to_canvas(Point::ORIGIN, screen);
+        (at.x.round() as i64, at.y.round() as i64)
+    }
+    /// The canvas rectangle between two screen points, in canvas pixels: the drag's frame.
+    pub fn canvas_rect(camera: MapCamera, from: Point, to: Point) -> (i64, i64, i64, i64) {
+        let a = camera.to_canvas(Point::ORIGIN, from);
+        let b = camera.to_canvas(Point::ORIGIN, to);
+        let rect = Rect::new(a.x.min(b.x), a.y.min(b.y), a.x.max(b.x), a.y.max(b.y));
+        (
+            rect.x0.round() as i64,
+            rect.y0.round() as i64,
+            rect.width().round() as i64,
+            rect.height().round() as i64,
+        )
+    }
+    /// The pointing the queue reported.
+    pub fn reported(queue: &tilo_ui_base::Intents<Fired>) -> Vec<Fired> {
+        queue.take()
+    }
+    /// Press the map's right button at `at`, with the pointer there.
+    pub fn right_click(host: &mut Driver, at: Point) {
+        let device = winit::event::DeviceId::dummy();
+        host.dispatch_to_root(&WindowEvent::CursorMoved {
+            device_id: device,
+            position: winit::dpi::PhysicalPosition::new(at.x, at.y),
+        });
+        for state in [ElementState::Pressed, ElementState::Released] {
+            host.dispatch_to_root(&WindowEvent::MouseInput {
+                device_id: device,
+                state,
+                button: MouseButton::Right,
+            });
+        }
+    }
+    /// The drawn height `reports` carries, as the one `drawn` report's key and height: the pin's key
+    /// and its height in canvas pixels.
+    pub fn drawn_height(reports: &[Fired]) -> i64 {
+        assert_eq!(reports.len(), 1, "one report: {reports:?}");
+        let Fired {
+            key,
+            event,
+            value: Some(Value::List(parts)),
+            gesture: None,
+        } = &reports[0]
+        else {
+            panic!("the report is a list: {reports:?}");
+        };
+        assert_eq!((key.as_str(), event.as_str()), (CANVAS, "drawn"));
+        assert_eq!(parts[0], Value::Text("turn".into()), "the pin's key");
+        let Some(Value::List(height)) = parts.get(1) else {
+            panic!("the report carries its height: {parts:?}");
+        };
+        let Some(Value::Int(height)) = height.first() else {
+            panic!("a height in canvas pixels: {parts:?}");
+        };
+        *height
+    }
+    /// A map of the world laid out for the person, looking with `camera`, reporting the place a
+    /// click lands on.
+    pub fn world_harness(queue: &tilo_ui_base::Intents<Fired>, camera: MapCamera) -> Driver {
+        let mut map = pointing_map(queue, camera);
+        map.world = true;
+        map.at = Event::View(Intent::new(queue, CANVAS, "at"));
+        laid_out(map)
+    }
+    pub fn map_camera(host: &mut Driver) -> MapCamera {
+        host.root_widget_mut()
+            .as_any_mut()
+            .and_then(|any| any.downcast_mut::<Map>())
+            .expect("the root is the map")
+            .camera()
+    }
+    /// What a place holds that takes right presses itself — a field's copy and paste, a row's own
+    /// menu — stood for by a probe that takes them.
+    pub struct TakesRightPress {
+        pub inner: tilo_ui_base::widget::Spacer,
+        pub took: std::rc::Rc<std::cell::Cell<u32>>,
+    }
+    impl tilo_ui_base::widget::Decorator for TakesRightPress {
+        type Inner = tilo_ui_base::widget::Spacer;
+
+        fn inner(&self) -> &tilo_ui_base::widget::Spacer {
+            &self.inner
+        }
+
+        fn inner_mut(&mut self) -> &mut tilo_ui_base::widget::Spacer {
+            &mut self.inner
+        }
+
+        fn handle_event(
+            &mut self,
+            event: &WindowEvent,
+            ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+        ) {
+            if let WindowEvent::MouseInput {
+                state: ElementState::Pressed,
+                button: MouseButton::Right,
+                ..
+            } = event
+            {
+                self.took.set(self.took.get() + 1);
+                *ctx.handled = true;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+#[path = "map_answer_tests.rs"]
+mod answer_tests;
+#[cfg(test)]
+#[path = "map_canvas_tests.rs"]
+mod canvas_tests;
+#[cfg(test)]
+#[path = "map_pointing_tests.rs"]
+mod pointing_tests;
+
+/// What a map's tests read of it, without widening what a view builds against.
+#[cfg(feature = "test-support")]
+impl Map {
+    /// The pin the map kept as its answer.
+    #[must_use]
+    pub fn test_answer(&self) -> Option<String> {
+        self.answer.clone()
+    }
+
+    /// Where the map laid each pin out last, by key.
+    #[must_use]
+    pub fn test_laid(
+        &self,
+    ) -> std::rc::Rc<std::cell::RefCell<std::collections::HashMap<String, vello::kurbo::Rect>>>
+    {
+        std::rc::Rc::clone(&self.laid)
+    }
+
+    /// The part of the canvas the viewport shows where the camera is going.
+    #[must_use]
+    pub fn test_seen_rect(&self) -> Option<vello::kurbo::Rect> {
+        self.seen_rect()
     }
 }

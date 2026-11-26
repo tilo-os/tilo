@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use automerge::AutoCommit;
 
-use super::tests::{PagedList, ProbeRow, lay_out};
+use super::test_support::{PagedList, ProbeRow, lay_out};
 use super::*;
 use tilo_ui_base::widget::SkeletonShape;
 

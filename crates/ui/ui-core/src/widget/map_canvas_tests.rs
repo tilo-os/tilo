@@ -1,38 +1,10 @@
 //! How the canvas feels to point at (`docs/designs/app-language/canvas.md` §7, "The bar it is
 //! held to"): free space is a text cursor and says once what it is for, an answer hugs its words
 //! up to the room it was asked in, and what arrives grows out of where the person pointed.
+use super::test_support::*;
 
 use super::*;
-use tilo_ui_base::Theme;
 use tilo_ui_base::{component::Fired, component::Intent};
-
-/// The key the map reports its pointing under.
-const CANVAS: &str = "canvas";
-
-/// A pin at `(x, y)`, `width` wide and at most `height` tall.
-fn place(x: f64, y: f64, width: f64, height: f64, hug: bool) -> PinPlace {
-    PinPlace {
-        x,
-        y,
-        width,
-        height: Some(height),
-        band: 0.0,
-        hug,
-        grows: true,
-    }
-}
-
-/// `map` laid out over an 800 by 600 viewport.
-fn laid(map: &mut Map) {
-    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
-    tilo_ui_base::widget::layout::lay_out_detached(
-        map,
-        Rect::new(0.0, 0.0, 800.0, 600.0),
-        &Theme::dark(),
-        &mut text,
-    )
-    .expect("the map lays out");
-}
 
 /// Over the free canvas the pointer is a text cursor, since a click there puts a caret to write
 /// at; over a place, what the place holds says, and outside the map the map says nothing.
@@ -149,40 +121,6 @@ fn an_answer_hugs_its_words_up_to_its_room() {
     assert!(
         (answer.height() - 200.0).abs() < 0.5,
         "an answer longer than its room stands at the room's height: {answer:?}"
-    );
-}
-
-/// Where the person points is what an arriving answer grows out of: the click's canvas point, or
-/// the dragged rectangle's corner.
-#[test]
-fn pointing_marks_where_an_answer_grows_from() {
-    let queue = tilo_ui_base::Intents::<Fired>::default();
-    let mut map = Map::new();
-    map.press = Event::View(Intent::new(&queue, CANVAS, "press"));
-    map.frame = Event::View(Intent::new(&queue, CANVAS, "frame"));
-    map.set_camera(MapCamera {
-        origin: Point::new(100.0, 50.0),
-        zoom: 2.0,
-    });
-    let mut host =
-        crate::app::driver::Driver::for_root(crate::State::new(), map, (800, 600), Theme::dark());
-    host.relayout();
-    host.send(&tilo_ui_base::synthetic_input::cursor_moved(300.0, 200.0));
-    for state in [ElementState::Pressed, ElementState::Released] {
-        host.send(&tilo_ui_base::synthetic_input::mouse_input(
-            state,
-            winit::event::MouseButton::Left,
-        ));
-    }
-    let map = host
-        .root_widget_mut()
-        .as_any_mut()
-        .and_then(|any| any.downcast_mut::<Map>())
-        .expect("the map");
-    let asked = map.asked.expect("the click is where an answer grows from");
-    assert!(
-        (asked.x - 250.0).abs() < 0.5 && (asked.y - 150.0).abs() < 0.5,
-        "the canvas point under the click, through the camera: {asked:?}"
     );
 }
 

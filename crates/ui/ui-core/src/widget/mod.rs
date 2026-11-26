@@ -7,10 +7,10 @@
 )]
 use tilo_ui_base::widget::*;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod test_controls;
-#[cfg(test)]
-pub(crate) use {test_controls::Unattached, test_controls::test_value_action_binding};
+#[cfg(any(test, feature = "test-support"))]
+pub use {test_controls::Unattached, test_controls::test_value_action_binding};
 #[cfg(feature = "model")]
 pub mod action_proposal;
 #[cfg(feature = "model")]
@@ -972,5 +972,68 @@ pub mod internals {
     }
     pub mod scroll_region {
         pub use crate::widget::scroll_region::*;
+    }
+    pub mod canvas_place {
+        pub use crate::widget::canvas_place::*;
+    }
+    pub mod map {
+        pub use crate::widget::map::*;
+    }
+    pub mod modal_dialog {
+        pub use crate::widget::modal_dialog::*;
+    }
+    pub mod nav_list {
+        pub use crate::widget::nav_list::*;
+    }
+    pub mod nav_shell {
+        pub use crate::widget::nav_shell::*;
+    }
+    pub mod page_sidebar {
+        pub use crate::widget::page_sidebar::*;
+    }
+    pub mod page_slide {
+        pub use crate::widget::page_slide::*;
+    }
+    pub mod property_list {
+        pub use crate::widget::property_list::*;
+    }
+    pub mod screenshot_markup {
+        pub use crate::widget::screenshot_markup::*;
+    }
+    pub mod scrollable {
+        pub use crate::widget::scrollable::*;
+    }
+    pub mod section {
+        pub use crate::widget::section::*;
+    }
+    pub mod shortcut_recorder {
+        pub use crate::widget::shortcut_recorder::*;
+    }
+    pub mod slider {
+        pub use crate::widget::slider::*;
+    }
+    pub mod stage {
+        pub use crate::widget::stage::*;
+    }
+    pub mod stat_tile {
+        pub use crate::widget::stat_tile::*;
+    }
+    pub mod text_input {
+        pub use crate::widget::text_input::*;
+    }
+    pub mod timeline {
+        pub use crate::widget::timeline::*;
+    }
+    pub mod toggle {
+        pub use crate::widget::toggle::*;
+    }
+    pub mod toggle_group {
+        pub use crate::widget::toggle_group::*;
+    }
+    pub mod virtual_list {
+        pub use crate::widget::virtual_list::*;
+    }
+    pub mod window_group {
+        pub use crate::widget::window_group::*;
     }
 }

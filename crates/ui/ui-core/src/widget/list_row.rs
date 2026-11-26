@@ -1888,8 +1888,8 @@ impl ListRow {
 
     /// Set by the list the row sits in ([`crate::widget::Section`]): whether a separator
     /// runs under the row and whether the row below is selected, which hides it.
-    #[cfg(test)]
-    pub(crate) fn separator_state(&self) -> (bool, bool) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn separator_state(&self) -> (bool, bool) {
         (self.separator, self.next_selected)
     }
 
@@ -1901,8 +1901,8 @@ impl ListRow {
         }
     }
 
-    #[cfg(test)]
-    pub(crate) fn join(&self) -> RowJoin {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn join(&self) -> RowJoin {
         self.join
     }
 

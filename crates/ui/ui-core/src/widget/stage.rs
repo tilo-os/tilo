@@ -1948,6 +1948,35 @@ fn f32_of(v: f64) -> f32 {
     v as f32
 }
 
-#[cfg(test)]
-#[path = "stage_tests.rs"]
-mod tests;
+/// What a stage's tests read of it from outside the module.
+#[cfg(feature = "test-support")]
+impl Stage {
+    /// The menu it opens on a place.
+    #[must_use]
+    pub fn test_menu(&mut self) -> &mut crate::widget::ContextMenu {
+        &mut self.menu
+    }
+
+    /// Where it laid each place out last.
+    #[must_use]
+    pub fn test_laid(&self) -> std::rc::Rc<std::cell::RefCell<Vec<vello::kurbo::Rect>>> {
+        std::rc::Rc::clone(&self.laid)
+    }
+
+    /// The guides a dragged place snaps to.
+    #[must_use]
+    pub fn test_guides(&self) -> std::cell::Ref<'_, Vec<tilo_ui_base::snap::Guide>> {
+        self.guides.borrow()
+    }
+
+    /// The parts it places its places through.
+    #[must_use]
+    pub fn test_parts(&self) -> &Parts {
+        &self.parts
+    }
+
+    /// The parts it places its places through, to change.
+    pub fn test_parts_mut(&mut self) -> &mut Parts {
+        &mut self.parts
+    }
+}

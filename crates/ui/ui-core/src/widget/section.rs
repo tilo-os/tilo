@@ -6,8 +6,6 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use tilo_ui_base::widget::DrawChild;
 
-#[cfg(test)]
-use automerge::AutoCommit;
 use taffy::style_helpers::{auto, length, percent};
 use taffy::{NodeId, Size, Style, TaffyTree};
 use vello::kurbo::{Affine, Circle, Point, Rect};
@@ -1094,7 +1092,7 @@ impl Widget for HeaderRow {
 }
 
 pub struct Section {
-    parts: Parts,
+    pub parts: Parts,
     has_header: bool,
     /// The header's title and level, kept so a later `collapsible` can
     /// rebuild the header around them.
@@ -1710,7 +1708,7 @@ impl Section {
 
     /// A selected row's lift joins a selected neighbour: rows are one lift and one edge, with
     /// no rule between them.
-    fn sync_row_join(&mut self) {
+    pub fn sync_row_join(&mut self) {
         // Each item's selection when it is a row of the list (a disclosure
         // row is never selected), `None` when it is not a row.
         let selected: Vec<Option<bool>> = self
@@ -2182,12 +2180,23 @@ impl Widget for ObjectHeader {
     }
 }
 
-#[cfg(test)]
-#[path = "section_tests.rs"]
-mod tests;
-
 mod component;
 pub use component::SectionProps;
 
 mod status_component;
 pub use status_component::{ObjectHeaderProps, StatusLineProps};
+
+/// What a section's tests read of it from outside the module.
+#[cfg(feature = "test-support")]
+impl Section {
+    /// The row the section holds.
+    #[must_use]
+    pub fn test_parts(&self) -> &Parts {
+        &self.parts
+    }
+
+    /// The row the section holds, to change.
+    pub fn test_parts_mut(&mut self) -> &mut Parts {
+        &mut self.parts
+    }
+}

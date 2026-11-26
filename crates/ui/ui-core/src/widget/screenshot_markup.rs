@@ -82,7 +82,7 @@ pub struct ScreenshotMarkup {
     toolbar: Rect,
     cursor: Point,
     tool: MarkupTool,
-    tool_picker_open: bool,
+    pub tool_picker_open: bool,
     color_picker_open: bool,
     color: [u8; 4],
     strokes: Vec<MarkupStroke>,
@@ -157,7 +157,7 @@ struct ToolbarLayout {
     color_picker: Option<Rect>,
 }
 
-const SWATCHES: [[u8; 4]; 5] = [
+pub const SWATCHES: [[u8; 4]; 5] = [
     [244, 84, 92, 255],
     [255, 190, 70, 255],
     [82, 160, 255, 255],
@@ -1636,10 +1636,6 @@ fn rectangle_points(start: Point, end: Point) -> [Point; 4] {
 }
 
 #[cfg(test)]
-#[path = "screenshot_markup_a11y_tests.rs"]
-mod a11y_tests;
-
-#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -2016,5 +2012,27 @@ mod tests {
                 );
             }
         }
+    }
+}
+
+/// What the markup editor's tests read of it from outside the module.
+#[cfg(feature = "test-support")]
+impl ScreenshotMarkup {
+    /// The tool the person has in hand.
+    #[must_use]
+    pub fn test_tool(&self) -> MarkupTool {
+        self.tool
+    }
+
+    /// The colour they draw in.
+    #[must_use]
+    pub fn test_color(&self) -> [u8; 4] {
+        self.color
+    }
+
+    /// The box the editor was laid out in.
+    #[must_use]
+    pub fn test_rect(&self) -> vello::kurbo::Rect {
+        self.rect
     }
 }

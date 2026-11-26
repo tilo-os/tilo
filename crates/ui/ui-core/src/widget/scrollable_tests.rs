@@ -1,5 +1,6 @@
 //! The scroll view's own tests: its offsets, its bars, its keys and the
 //! frames it asks for.
+use super::test_support::*;
 
 use super::*;
 use crate::testing::TestLeaf;
@@ -7,29 +8,13 @@ use crate::testing::{Dispatch, dispatch};
 use std::cell::Cell;
 use std::rc::Rc;
 use taffy::{NodeId, Size, Style, TaffyTree};
+use tilo_ui_base::synthetic_input::cursor_moved;
 use tilo_ui_base::theme::Theme;
 use tilo_ui_base::widget::TaffyTreeExt;
 use tilo_ui_base::{widget::Element, widget::Widget};
 use vello::kurbo::{Point, Rect};
-use winit::event::{ElementState, MouseButton, MouseScrollDelta, TouchPhase, WindowEvent};
+use winit::event::{ElementState, MouseScrollDelta, TouchPhase, WindowEvent};
 use winit::keyboard::NamedKey;
-#[allow(
-    clippy::cast_possible_truncation,
-    reason = "the chrome fade is a few hundred milliseconds"
-)]
-fn vertical(content_h: f32) -> Scrollable {
-    let mut s = Scrollable::new_vertical();
-    s.rect = Rect::new(0.0, 0.0, 200.0, 300.0);
-    s.set_viewport_size(200.0, 300.0);
-    s.set_content_size(200.0, content_h);
-    s
-}
-
-use tilo_ui_base::synthetic_input::cursor_moved;
-fn mouse(state: ElementState) -> WindowEvent {
-    tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left)
-}
-
 tilo_test_env::scenario! {
     /// The give past an end of the content.
     /// Each phase was a test of its own and builds its own fixture.
@@ -738,114 +723,6 @@ tilo_test_env::scenario! {
     }
 }
 
-#[test]
-fn field_validation_focus_reveal_fits_context_or_prioritises_protected_input() {
-    use crate::State;
-    use crate::app::driver::Driver;
-    use crate::widget::{Field, TextInput, TextInputKind};
-    use tilo_ui_base::LocalState;
-
-    fn named<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
-        if root.test_id() == Some(id) {
-            return Some(root);
-        }
-        root.children()
-            .into_iter()
-            .find_map(|child| named(child, id))
-    }
-    fn correction<'a>(root: &'a dyn Widget, message: &str) -> Option<&'a dyn Widget> {
-        if root.accessibility().is_some_and(|node| {
-            node.name.as_deref() == Some(message)
-                && node.live == Some(tilo_ui_base::a11y::Politeness::Assertive)
-        }) {
-            return Some(root);
-        }
-        root.children()
-            .into_iter()
-            .find_map(|child| correction(child, message))
-    }
-    for scale in [1.0, 2.0] {
-        for oversized in [false, true] {
-            let message = if oversized {
-                "Use a different password. ".repeat(80)
-            } else {
-                "Use at least 15 characters.".to_string()
-            };
-            let value = LocalState::new("private sample password".to_string());
-            let mut input = TextInput::from_state(&value)
-                .with_id("validation-password")
-                .with_kind(TextInputKind::Password)
-                .with_secret(true);
-            input.set_focus(true);
-            let field = Field::new("Password", input)
-                .with_error_live(&message, tilo_ui_base::a11y::Politeness::Assertive);
-            let mut content = Column::new().with_intrinsic_height();
-            for _ in 0..20 {
-                content = content.push(Box::new(Text::new("Earlier form content")));
-            }
-            content = content.push(Box::new(field));
-            let scroll = Scrollable::new_vertical()
-                .fill_parent_height()
-                .with_focus_reveal()
-                .with_child(Box::new(content));
-            let mut harness = Driver::new_with_theme(
-                State::new(),
-                Box::new(scroll),
-                (400, 300),
-                Theme::dark().with_ui_scale(scale).with_reduce_motion(true),
-            );
-            harness.with_widget_mut::<Scrollable, _>(|scroll| {
-                let viewport = scroll.content_viewport_rect();
-                let input = named(scroll, "validation-password").unwrap();
-                let access = input.accessibility().unwrap();
-                assert!(input.is_focused());
-                assert!(access.state.invalid && access.state.protected);
-                assert!(access.value.is_none(), "focus must not expose the password");
-                let input = input.get_rect();
-                let caption = correction(scroll, &message).unwrap().get_rect();
-                let context_height = caption.y1 - input.y0;
-                assert!(scroll.offset_y() > 0.0, "focus must reveal a field after earlier content");
-                assert!(input.y0 >= viewport.y0 && input.y1 <= viewport.y1,
-                    "actual protected input remains fully visible: {input:?}, {viewport:?}");
-                if oversized {
-                    assert!(context_height > viewport.height(),
-                        "fixture must exercise the too-tall context fallback: {context_height}, {viewport:?}");
-                    assert!(caption.y1 > viewport.y1,
-                        "oversized caption cannot displace the correction input");
-                } else {
-                    assert!(context_height <= viewport.height(),
-                        "fixture must exercise fitting shared Field context");
-                    assert!(caption.y0 >= viewport.y0 && caption.y1 <= viewport.y1,
-                        "entire actual correction caption is revealed with input: {caption:?}, {viewport:?}");
-                }
-                scroll.set_offset_y(0.0);
-            }).unwrap();
-            // The driver ran the production layout after that deliberate
-            // scroll. Unchanged focus must not pull the person back down.
-            harness
-                .with_widget_mut::<Scrollable, _>(|scroll| {
-                    assert_eq!(scroll.offset_y(), 0.0);
-                    let input = named(scroll, "validation-password").unwrap();
-                    assert!(input.is_focused());
-                    assert!(
-                        input.get_rect().y0 > scroll.content_viewport_rect().y1,
-                        "manual scrolling really moved the focused field out of view"
-                    );
-                })
-                .unwrap();
-            harness
-                .with_widget_mut::<Scrollable, _>(|scroll| {
-                    assert_eq!(
-                        scroll.offset_y(),
-                        0.0,
-                        "later layout must continue respecting manual scroll with unchanged focus"
-                    );
-                })
-                .unwrap();
-        }
-    }
-}
-
 tilo_test_env::scenario! {
     /// The bars: thumb geometry and presses, corners, fades and the primary region.
     /// Each phase was a test of its own and builds its own fixture.
@@ -1008,125 +885,7 @@ tilo_test_env::scenario! {
 use crate::widget::{Column, Text};
 use std::collections::HashMap;
 
-/// Solve `root` the way the host does: measure, adjust, repeat.
-fn host_solve(root: &mut dyn Widget, width: f32, height: f32) {
-    use std::collections::HashMap;
-    let theme = Theme::dark();
-    let mut tree = TaffyTree::<()>::new();
-    let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let node = root.build_layout(&mut tree, &theme, &mut nodes);
-    let mut bindings = tilo_ui_base::widget::bound_nodes::BoundNodeMap::new();
-    let mut text = tilo_ui_base::font_catalog::fixture_renderer();
-    // SAFETY: exact live, exclusively owned widget tree and matching maps.
-    unsafe {
-        bindings.rebuild(root, &tree, node, &nodes);
-        tilo_ui_base::widget::compute_widget_layout(
-            &mut tree,
-            node,
-            Size {
-                width: taffy::AvailableSpace::Definite(width),
-                height: taffy::AvailableSpace::Definite(height),
-            },
-            &nodes,
-            &bindings,
-            &mut text,
-        )
-        .unwrap();
-    }
-    root.apply_layout(&tree, node, Point::ZERO);
-}
-
-fn tall_child() -> Element {
-    let mut col = Column::new().with_intrinsic_height();
-    for i in 0..40 {
-        col = col.push(Box::new(Text::new(&format!("row {i}"))));
-    }
-    Box::new(col)
-}
-
-fn both(content_w: f32, content_h: f32) -> Scrollable {
-    let mut s = Scrollable::new(ScrollAxis::Both);
-    s.rect = Rect::new(0.0, 0.0, 300.0, 300.0);
-    s.set_viewport_size(300.0, 300.0);
-    s.set_content_size(content_w, content_h);
-    s
-}
-
 use tilo_ui_base::synthetic_input::named_key;
-
-/// A field that holds the keyboard focus and handles no key: a note's
-/// paragraph has no page of its own to move through.
-struct FocusedField {
-    rect: Rect,
-}
-
-impl Widget for FocusedField {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            size: Size::from_lengths(200.0, 2000.0),
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
-    }
-
-    fn is_focused(&self) -> bool {
-        true
-    }
-
-    fn name(&self) -> &'static str {
-        "FocusedField"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-}
-
-/// A 100 px block that asks a scroll view around it to keep it in view, by `name`.
-struct Kept {
-    rect: Rect,
-    name: &'static str,
-}
-
-impl Widget for Kept {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            size: Size::from_lengths(100.0, 100.0),
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
-    }
-
-    fn name(&self) -> &'static str {
-        "Kept"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-
-    fn kept_in_view(&self) -> Option<&str> {
-        Some(self.name)
-    }
-}
 
 /// A scroll view keeps the descendant that names itself in view when that name changes: the
 /// row of strips shows the front one as the person moves between windows, without waiting to be

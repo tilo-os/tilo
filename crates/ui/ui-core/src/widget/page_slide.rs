@@ -20,7 +20,7 @@ use tilo_ui_base::{widget::Element, widget::Placement, widget::layout_rect};
 /// a window.
 const KEY: &str = "page slide";
 
-const PAGE_PART: &str = "page";
+pub const PAGE_PART: &str = "page";
 
 /// One page of a stack that a view shows in place, the replaced page leaving as it swaps: a
 /// panel opening a deeper page, and Back sliding it away.
@@ -38,10 +38,10 @@ pub struct PageSlideProps {
 }
 
 pub struct PageSlide {
-    kept_as: String,
+    pub kept_as: String,
     page: Element,
     /// How deep the page stands: 0 the first page, 1 the one it opens.
-    level: usize,
+    pub level: usize,
     depth: DrillDepth,
     aimed: Option<usize>,
     /// The page this one replaced, drawn leaving until the motion rests.
@@ -95,8 +95,8 @@ impl PageSlide {
         self.layout_dirty = true;
     }
 
-    #[cfg(test)]
-    pub(crate) fn is_leaving(&self) -> bool {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn is_leaving(&self) -> bool {
         self.leaving.is_some()
     }
 
@@ -363,7 +363,3 @@ impl Drop for PageSlide {
         );
     }
 }
-
-#[cfg(test)]
-#[path = "page_slide_tests.rs"]
-mod tests;

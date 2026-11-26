@@ -1,11 +1,38 @@
 //! The page slide: a page put in place of another arrives on the drill
 //! motion, the page it replaced leaves, and a rebuild at rest moves nothing.
+use std::cell::*;
+use std::collections::*;
+use std::path::*;
+use std::rc::*;
+use std::sync::atomic::*;
+use std::sync::*;
+use std::time::*;
+use tilo_ui::app::driver::Driver;
+use tilo_ui::headless::*;
+use tilo_ui::kurbo::*;
+use tilo_ui::retained_present::*;
+use tilo_ui::testing::*;
+use tilo_ui::vello::*;
+use tilo_ui::widget::internals::page_slide::*;
+use tilo_ui::widget::*;
+use tilo_ui_base::a11y::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::i18n::*;
+use tilo_ui_base::icons::*;
+use tilo_ui_base::interaction::*;
+use tilo_ui_base::paint::*;
+use tilo_ui_base::presence::*;
+use tilo_ui_base::synthetic_input::*;
+use tilo_ui_base::text_selection::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::*;
+use tilo_ui_base::widget::*;
+use winit::event::*;
+use winit::keyboard::*;
 
-use super::*;
-use crate::app::driver::Driver;
-use crate::state::State;
-use crate::time::testing::with_monotonic_time;
-use crate::widget::{Column, Text};
+use tilo_ui::state::State;
+use tilo_ui::time::testing::with_monotonic_time;
+use tilo_ui::widget::{Column, Text};
 use tilo_ui_base::component::Described;
 
 fn rooted(column: Column) -> Driver {
@@ -35,7 +62,7 @@ fn leaving(d: &Driver) -> bool {
 
 #[test]
 fn a_page_put_in_anothers_place_arrives_on_the_motion_and_the_old_one_leaves() {
-    let start = crate::time::now();
+    let start = tilo_ui::time::now();
     let mut d = with_monotonic_time(start, || rooted(Column::new()));
     show(&mut d, 0);
     assert!(
@@ -50,7 +77,7 @@ fn a_page_put_in_anothers_place_arrives_on_the_motion_and_the_old_one_leaves() {
     );
     assert!(leaving(&d), "and the page it replaced is drawn leaving");
     drop(frozen);
-    let later = start + crate::time::Duration::from_secs(2);
+    let later = start + tilo_ui::time::Duration::from_secs(2);
     with_monotonic_time(later, || {
         d.relayout();
         assert!(!d.root_widget().needs_animation_frame(), "it rests");
@@ -60,11 +87,11 @@ fn a_page_put_in_anothers_place_arrives_on_the_motion_and_the_old_one_leaves() {
 
 #[test]
 fn going_back_rests_the_first_page_with_nothing_left_beside_it() {
-    let start = crate::time::now();
+    let start = tilo_ui::time::now();
     let mut d = with_monotonic_time(start, || rooted(Column::new()));
     show(&mut d, 0);
     show(&mut d, 1);
-    let later = start + crate::time::Duration::from_secs(2);
+    let later = start + tilo_ui::time::Duration::from_secs(2);
     with_monotonic_time(later, || {
         d.relayout();
         assert!(!d.root_widget().needs_animation_frame());
@@ -77,7 +104,7 @@ fn going_back_rests_the_first_page_with_nothing_left_beside_it() {
         );
         assert!(leaving(&d), "and the page it left is drawn going out");
     });
-    let rested = later + crate::time::Duration::from_secs(2);
+    let rested = later + tilo_ui::time::Duration::from_secs(2);
     with_monotonic_time(rested, || {
         d.relayout();
         assert!(!d.root_widget().needs_animation_frame());
@@ -87,11 +114,11 @@ fn going_back_rests_the_first_page_with_nothing_left_beside_it() {
 
 #[test]
 fn a_page_rebuilt_where_it_stands_never_draws_a_second_page() {
-    let start = crate::time::now();
+    let start = tilo_ui::time::now();
     let mut d = with_monotonic_time(start, || rooted(Column::new()));
     show(&mut d, 0);
     show(&mut d, 1);
-    let later = start + crate::time::Duration::from_secs(2);
+    let later = start + tilo_ui::time::Duration::from_secs(2);
     with_monotonic_time(later, || {
         d.poll_frame().expect("the frame draws");
         for _ in 0..2 {
@@ -120,7 +147,7 @@ fn show_props(d: &mut Driver, props: PageSlideProps) {
 
 #[test]
 fn a_described_slide_takes_its_page_and_level_and_a_deeper_page_leaves() {
-    let start = crate::time::now();
+    let start = tilo_ui::time::now();
     let mut d = with_monotonic_time(start, || rooted(Column::new()));
     show_props(&mut d, props(0, "First"));
     assert!(

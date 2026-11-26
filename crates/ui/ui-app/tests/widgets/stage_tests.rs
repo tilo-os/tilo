@@ -1,8 +1,35 @@
 //! The page a stage shows zooms and pans: a person works on a slide closer than the window holds
 //! it, and never loses it past its own edges.
+use std::cell::*;
+use std::collections::*;
+use std::path::*;
+use std::rc::*;
+use std::sync::atomic::*;
+use std::sync::*;
+use std::time::*;
+use tilo_ui::app::driver::Driver;
+use tilo_ui::headless::*;
+use tilo_ui::kurbo::*;
+use tilo_ui::retained_present::*;
+use tilo_ui::testing::*;
+use tilo_ui::vello::*;
+use tilo_ui::widget::internals::stage::*;
+use tilo_ui::widget::*;
+use tilo_ui_base::a11y::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::i18n::*;
+use tilo_ui_base::icons::*;
+use tilo_ui_base::interaction::*;
+use tilo_ui_base::paint::*;
+use tilo_ui_base::presence::*;
+use tilo_ui_base::synthetic_input::*;
+use tilo_ui_base::text_selection::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::*;
+use tilo_ui_base::widget::*;
+use winit::event::*;
+use winit::keyboard::*;
 
-use super::*;
-use crate::headless::Driver;
 use tilo_ui_base::synthetic_input;
 use tilo_ui_base::{component::Described, component::Event, component::Intent};
 
@@ -20,7 +47,7 @@ fn stage() -> Stage {
 
 /// The stage in a window of 800 × 600, as the editor shows it.
 fn harness() -> Driver {
-    Driver::new(crate::State::new(), Box::new(stage()), (800, 600))
+    Driver::new(tilo_ui::State::new(), Box::new(stage()), (800, 600))
 }
 
 fn shown(host: &mut Driver) -> &mut Stage {
@@ -146,7 +173,7 @@ fn a_still_stage_takes_no_zoom_or_keys_and_its_places_still_move() {
     let mut props = boxes_props(&queue, 1);
     props.still = true;
     let mut host = Driver::new(
-        crate::State::new(),
+        tilo_ui::State::new(),
         Box::new(Stage::from_props("stage", props)),
         (800, 600),
     );
@@ -169,7 +196,7 @@ fn a_still_stage_takes_no_zoom_or_keys_and_its_places_still_move() {
         "the window zooms what the still stage left it"
     );
     host.app_mut()
-        .zoom_window_content(crate::content_zoom::ZoomStep::Reset);
+        .zoom_window_content(tilo_ui::content_zoom::ZoomStep::Reset);
     host.relayout();
 
     // The first place stands at page (96, 90), 160 by 90: its middle is at (110, 159) on a
@@ -216,7 +243,7 @@ fn a_still_stage_takes_no_zoom_or_keys_and_its_places_still_move() {
 fn tab_walks_the_places_and_the_arrows_nudge_the_chosen_one() {
     let queue = tilo_ui_base::Intents::default();
     let mut host = Driver::new(
-        crate::State::new(),
+        tilo_ui::State::new(),
         Box::new(boxes_stage(&queue, 2)),
         (800, 600),
     );
@@ -293,7 +320,7 @@ fn tab_walks_the_places_and_the_arrows_nudge_the_chosen_one() {
 
 /// A stage whose first place, "box-0", offers two commands, and whose second offers none.
 fn menu_stage(queue: &tilo_ui_base::Intents<tilo_ui_base::component::Fired>) -> Stage {
-    use crate::widget::{MenuItemProps, MenuPart};
+    use tilo_ui::widget::{MenuItemProps, MenuPart};
 
     let command = |label: &str, event: &str, destructive: bool| {
         MenuPart::Item(MenuItemProps {
@@ -349,7 +376,7 @@ fn a_places_menu_opens_where_it_is_pressed_and_runs_its_command() {
     // at window (60, 131), and the place's middle at about (110, 159).
     let queue = tilo_ui_base::Intents::default();
     let mut host = Driver::new(
-        crate::State::new(),
+        tilo_ui::State::new(),
         Box::new(menu_stage(&queue)),
         (800, 600),
     );
@@ -361,11 +388,11 @@ fn a_places_menu_opens_where_it_is_pressed_and_runs_its_command() {
 
     let stage = shown(&mut host);
     assert!(
-        stage.menu.is_open(),
+        stage.test_menu().is_open(),
         "the place's menu opened under the press"
     );
     let labels: Vec<String> = stage
-        .menu
+        .test_menu()
         .items()
         .iter()
         .filter_map(|item| item.label().map(str::to_owned))
@@ -376,7 +403,7 @@ fn a_places_menu_opens_where_it_is_pressed_and_runs_its_command() {
         "the commands the view placed on the place"
     );
     let opened_at = stage
-        .menu
+        .test_menu()
         .anchor_box()
         .expect("the menu stands against the press")
         .origin();
@@ -387,12 +414,12 @@ fn a_places_menu_opens_where_it_is_pressed_and_runs_its_command() {
 
     // Choosing a command runs what the view bound, and the menu is no longer about a place.
     let deleted = stage
-        .menu
+        .test_menu()
         .items()
         .iter()
         .position(|item| item.label() == Some("Delete"))
         .expect("the Delete row");
-    shown(&mut host).menu.click_item(deleted);
+    shown(&mut host).test_menu().click_item(deleted);
     let fired: Vec<(String, String)> = queue
         .take()
         .into_iter()
@@ -403,7 +430,10 @@ fn a_places_menu_opens_where_it_is_pressed_and_runs_its_command() {
         [("box-0".to_owned(), "delete".to_owned())],
         "the command the view bound ran"
     );
-    assert!(!shown(&mut host).menu.is_open(), "and the menu closed");
+    assert!(
+        !shown(&mut host).test_menu().is_open(),
+        "and the menu closed"
+    );
 
     // A place that names no command opens none: the press is the view's own report and nothing
     // more.
@@ -413,12 +443,11 @@ fn a_places_menu_opens_where_it_is_pressed_and_runs_its_command() {
         MouseButton::Right,
     ));
     assert!(
-        !shown(&mut host).menu.is_open(),
+        !shown(&mut host).test_menu().is_open(),
         "a place without commands opens no menu"
     );
-    let selected: Vec<String> = queue.take().into_iter().map(|fired| fired.event).collect();
     assert!(
-        !selected.contains(&"delete".to_owned()),
+        !queue.take().iter().any(|fired| fired.event == "delete"),
         "nothing ran for the press"
     );
 }
@@ -437,7 +466,7 @@ fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it() {
     // carried along. A test of this widget's half dispatches those events by hand.
     let queue = tilo_ui_base::Intents::default();
     let mut host = Driver::new(
-        crate::State::new(),
+        tilo_ui::State::new(),
         Box::new(boxes_stage(&queue, 2)),
         (800, 600),
     );
@@ -508,14 +537,14 @@ fn a_finger_moves_a_box_taps_select_and_a_double_tap_opens_it() {
 fn a_finger_held_on_a_place_opens_its_menu() {
     let queue = tilo_ui_base::Intents::default();
     let mut host = Driver::new(
-        crate::State::new(),
+        tilo_ui::State::new(),
         Box::new(menu_stage(&queue)),
         (800, 600),
     );
     let (x, y) = BOX_0;
     host.touch_hold_at(x, y);
     assert!(
-        shown(&mut host).menu.is_open(),
+        shown(&mut host).test_menu().is_open(),
         "a held finger is the right press that opens the place's menu"
     );
 }
@@ -536,7 +565,7 @@ fn a_box_grows_to_hold_the_words_that_wrap_past_it() {
                 width: Some(200),
                 height: Some(40),
                 moves: true,
-                body: vec![Box::new(crate::widget::Text::new(
+                body: vec![Box::new(tilo_ui::widget::Text::new(
                     "A sentence long enough to wrap onto several lines inside a box two \
                      hundred points wide, which its stored height never made room for.",
                 ))],
@@ -545,8 +574,9 @@ fn a_box_grows_to_hold_the_words_that_wrap_past_it() {
             ..StageProps::default()
         },
     );
-    let mut host = Driver::new(crate::State::new(), Box::new(stage), (800, 600));
-    let laid = shown(&mut host).laid.borrow();
+    let mut host = Driver::new(tilo_ui::State::new(), Box::new(stage), (800, 600));
+    let laid = shown(&mut host).test_laid();
+    let laid = laid.borrow();
     let height = laid.first().expect("the place is laid out").height();
     assert!(
         height > 40.0,
@@ -597,7 +627,7 @@ fn dragged(
 fn a_dragged_place_snaps_to_the_page_and_the_places_beside_it() {
     let queue = tilo_ui_base::Intents::default();
     let mut host = Driver::new(
-        crate::State::new(),
+        tilo_ui::State::new(),
         Box::new(boxes_stage(&queue, 2)),
         (800, 600),
     );
@@ -611,7 +641,7 @@ fn a_dragged_place_snaps_to_the_page_and_the_places_beside_it() {
         (256, 90),
         "the place snaps its edge to the place beside it"
     );
-    let guides = shown(&mut host).guides.borrow().clone();
+    let guides = shown(&mut host).test_guides().clone();
     assert!(
         guides
             .iter()
@@ -627,7 +657,7 @@ fn a_dragged_place_snaps_to_the_page_and_the_places_beside_it() {
         (560, 90),
         "the place's middle snaps to the page's centre"
     );
-    let guides = shown(&mut host).guides.borrow().clone();
+    let guides = shown(&mut host).test_guides().clone();
     assert!(
         guides
             .iter()
@@ -644,7 +674,7 @@ fn a_dragged_place_snaps_to_the_page_and_the_places_beside_it() {
         "a place near nothing keeps the hand's place"
     );
     assert!(
-        shown(&mut host).guides.borrow().is_empty(),
+        shown(&mut host).test_guides().is_empty(),
         "and lines up with nothing"
     );
     host.dispatch_to_root(&synthetic_input::mouse_release());

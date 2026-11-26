@@ -39,7 +39,7 @@ pub struct Timeline {
     pub(crate) anchor: Date,
     pub(crate) days: Vec<Date>,
     pub(crate) today: Date,
-    pub(crate) show_now: bool,
+    pub show_now: bool,
     pub(crate) items: Vec<TimelineItem>,
     pub(crate) item_events: Vec<ItemEvents>,
     pub(crate) slot: i64,
@@ -87,7 +87,7 @@ enum DragKind {
 
 /// What one item's own handlers are: a press, and a drag that moves or resizes it.
 #[derive(Clone, Default)]
-pub(crate) struct ItemEvents {
+pub struct ItemEvents {
     pub press: Event,
     pub moved: Event,
     pub resized: Event,
@@ -121,7 +121,7 @@ enum Effect {
 }
 
 impl Timeline {
-    pub(crate) fn new(mode: TimelineMode, anchor: Date, items: Vec<TimelineItem>) -> Self {
+    pub fn new(mode: TimelineMode, anchor: Date, items: Vec<TimelineItem>) -> Self {
         let today = tilo_ui_base::clock::today();
         let days = period_days(mode, anchor);
         let rows = super::all_day_rows(&items);
@@ -785,8 +785,8 @@ impl Timeline {
         self.last_painted
     }
 
-    #[cfg(test)]
-    pub(crate) fn layout_for(&mut self, area: Rect, theme: &Theme) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn layout_for(&mut self, area: Rect, theme: &Theme) {
         self.theme = Some(theme.clone());
         let tokens = tilo_ui_base::text_render::with_layout_renderer(theme, |text| {
             TimelineTokens::of(theme, text)
@@ -797,8 +797,8 @@ impl Timeline {
         self.layout_scroll();
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_offset_for_test(&mut self, offset: f32) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_offset_for_test(&mut self, offset: f32) {
         self.scroll.set_offset_y(offset);
         self.seeded = true;
     }
@@ -818,8 +818,8 @@ impl Timeline {
         self.update_drag(point);
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_items_for_test(&mut self, items: Vec<TimelineItem>) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_items_for_test(&mut self, items: Vec<TimelineItem>) {
         self.items = items;
         self.item_events = vec![ItemEvents::default(); self.items.len()];
         self.allday_rows = super::all_day_rows(&self.items).max(self.min_rows);
@@ -837,8 +837,8 @@ impl Timeline {
         (self.created, self.open_day, self.zoomed) = events;
     }
 
-    #[cfg(test)]
-    pub(crate) fn set_item_events_for_test(&mut self, events: Vec<ItemEvents>) {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_item_events_for_test(&mut self, events: Vec<ItemEvents>) {
         self.item_events = events;
     }
 }
@@ -1315,5 +1315,15 @@ impl Widget for Timeline {
                     .map(|rect| (item.id.clone(), rect))
             })
             .collect()
+    }
+}
+
+/// What a timeline's tests read of it from outside the module.
+#[cfg(feature = "test-support")]
+impl Timeline {
+    /// The days it shows, leading to trailing.
+    #[must_use]
+    pub fn test_days(&self) -> Vec<jiff::civil::Date> {
+        self.days.clone()
     }
 }

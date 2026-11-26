@@ -20,9 +20,6 @@ mod component;
 mod face;
 mod widget;
 
-#[cfg(test)]
-mod tests;
-
 pub use component::{TimelineItemProps, TimelineProps};
 pub use face::{MonthFace, MonthReport, TimelineFace, TimelineReport};
 pub use widget::Timeline;
@@ -615,3 +612,139 @@ pub fn local_day_minute(at: tilo_ui_base::component::Moment) -> (Date, i64) {
         i64::from(zoned.hour()) * 60 + i64::from(zoned.minute()),
     )
 }
+
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    #![allow(
+        dead_code,
+        unused_imports,
+        clippy::arithmetic_side_effects,
+        clippy::disallowed_methods,
+        clippy::expect_used,
+        clippy::float_cmp,
+        clippy::implicit_hasher,
+        clippy::indexing_slicing,
+        clippy::must_use_candidate,
+        clippy::needless_pass_by_value,
+        clippy::panic,
+        clippy::unused_self,
+        clippy::unwrap_used,
+        clippy::wildcard_imports,
+        reason = "test-support helpers are compiled for every test build whether or not a test uses this one"
+    )]
+    use super::*;
+    use crate::composition::Composed;
+    use crate::widget::timeline::widget::ItemEvents;
+    use std::cell::*;
+    use std::collections::*;
+    use std::path::*;
+    use std::rc::*;
+    use std::sync::atomic::*;
+    use std::sync::*;
+    use std::time::*;
+    use taffy::{AvailableSpace, Size};
+    use tilo_ui::app::driver::Driver;
+    use tilo_ui::kurbo::*;
+    use tilo_ui::testing::Dispatch;
+    use tilo_ui::vello::*;
+    use tilo_ui::widget::*;
+    use tilo_ui::*;
+    use tilo_ui_base::a11y::*;
+    use tilo_ui_base::component::Event;
+    use tilo_ui_base::component::*;
+    use tilo_ui_base::icons::*;
+    use tilo_ui_base::interaction::*;
+    use tilo_ui_base::paint::*;
+    use tilo_ui_base::presence::*;
+    use tilo_ui_base::tokens::*;
+    use tilo_ui_base::widget::*;
+    use tilo_ui_base::*;
+    use winit::event::*;
+    use winit::keyboard::*;
+    pub fn item(index: usize, d: Date, start_min: i64, end_min: i64) -> TimelineItem {
+        TimelineItem {
+            id: format!("item-{index}"),
+            resource: Some(format!("resource-{index}")),
+            title: format!("Event {index}"),
+            location: String::new(),
+            tone: TimelineTone::First,
+            color: vello::peniko::Color::BLACK,
+            stack: 0,
+            day: d,
+            end_day: d,
+            start_min,
+            end_min,
+            clock_end_min: end_min,
+            all_day: false,
+        }
+    }
+    pub fn area() -> Rect {
+        Rect::new(100.0, 40.0, 1300.0, 640.0)
+    }
+    pub fn tokens() -> TimelineTokens {
+        TimelineTokens::default_dark()
+    }
+    pub fn geom() -> TimelineGeom {
+        geometry(area(), &tokens(), 7, 0)
+    }
+    pub fn center_of(column: usize, minute: i64) -> Point {
+        let geom = geom();
+        let width = column_width(area(), 7, geom);
+        Point::new(
+            area().x0 + geom.gutter + width * (column as f64 + 0.5),
+            geom.body_top + minute as f64 / 60.0 * geom.hour_h,
+        )
+    }
+    pub fn grid_events(queue: &tilo_ui_base::Intents<Fired>) -> (Event, Event, Event) {
+        (
+            Event::View(Intent::new(queue, "timeline", "created")),
+            Event::View(Intent::new(queue, "timeline", "open_day")),
+            Event::View(Intent::new(queue, "timeline", "zoomed")),
+        )
+    }
+    pub fn item_events(queue: &tilo_ui_base::Intents<Fired>) -> ItemEvents {
+        ItemEvents {
+            press: Event::View(Intent::new(queue, "item", "pressed")),
+            moved: Event::View(Intent::new(queue, "item", "moved")),
+            resized: Event::View(Intent::new(queue, "item", "resized")),
+        }
+    }
+    pub fn week(anchor: Date) -> Timeline {
+        let mut timeline = Timeline::new(TimelineMode::Week, anchor, Vec::new());
+        timeline.layout_for(area(), &Theme::dark());
+        timeline.set_offset_for_test(0.0);
+        timeline.show_now = false;
+        timeline
+    }
+    /// The composed node of the widget named `widget`, depth first.
+    pub fn by_widget<'a>(node: &'a Composed, widget: &str) -> Option<&'a Composed> {
+        if node.widget == widget {
+            return Some(node);
+        }
+        node.children
+            .iter()
+            .find_map(|child| by_widget(child, widget))
+    }
+    /// A week of fifty events, some of them titled past one column's width.
+    pub fn fifty_items(days: &[Date]) -> Vec<TimelineItem> {
+        (0..50)
+            .map(|index| {
+                let day = days[index % days.len()];
+                let start = 7 * 60 + i64::try_from(index % 12).unwrap_or(0) * 45;
+                let title = if index % 5 == 0 {
+                    format!(
+                        "Event {index}: a title long enough to run past the width of one day's column"
+                    )
+                } else {
+                    format!("Event {index}")
+                };
+                let mut each = item(index, day, start, start + 40);
+                each.title = title;
+                each
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod tests;

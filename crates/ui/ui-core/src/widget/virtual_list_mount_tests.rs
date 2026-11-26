@@ -3,7 +3,7 @@
 use std::cell::Cell;
 use std::rc::Rc;
 
-use super::tests::{HugeList, ProbeRow, lay_out};
+use super::test_support::{HugeList, ProbeRow, lay_out};
 use super::*;
 
 tilo_test_env::scenario! {

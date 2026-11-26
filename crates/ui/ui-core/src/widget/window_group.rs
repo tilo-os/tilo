@@ -3658,10 +3658,6 @@ mod fullscreen_bar;
 mod search;
 
 #[cfg(test)]
-#[path = "window_group_window_bar_tests.rs"]
-mod window_bar_tests;
-
-#[cfg(test)]
 #[path = "window_group_edge_resize_tests.rs"]
 mod edge_resize_tests;
 
@@ -3676,3 +3672,23 @@ mod motion_tests;
 #[cfg(test)]
 #[path = "window_group_arrival_tests.rs"]
 mod arrival_tests;
+
+/// What a window group's tests read of it from outside the module.
+#[cfg(feature = "test-support")]
+impl WindowGroup {
+    /// The bar its windows' tabs and controls stand in.
+    #[must_use]
+    pub fn test_bar(&self) -> &TabBar {
+        &self.bar
+    }
+
+    /// The box the group stands in.
+    #[must_use]
+    pub fn test_rect(&self) -> vello::kurbo::Rect {
+        self.rect
+    }
+}
+
+#[cfg(test)]
+#[path = "window_group_window_bar_tests.rs"]
+mod window_bar_tests;

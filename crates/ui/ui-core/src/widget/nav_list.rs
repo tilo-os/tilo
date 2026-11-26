@@ -2351,9 +2351,6 @@ pub mod nav_row;
 mod row;
 pub use feed::NavFeed;
 
-#[cfg(test)]
-mod tests;
-
 impl tilo_ui_base::widget::controls::ActionControls for NavList {
     fn attach_controls(
         &mut self,
@@ -2497,3 +2494,27 @@ impl tilo_ui_base::widget::controls::ActionControls for NavList {
 
 mod component;
 pub use component::{NavEntry, NavItemProps, NavListProps, NavSectionProps};
+
+/// What a navigation list's tests read of it from outside the module.
+#[cfg(feature = "test-support")]
+impl NavList {
+    /// The rows it builds and keeps.
+    #[must_use]
+    pub fn test_list(&self) -> &VirtualList<NavModel> {
+        &self.list
+    }
+
+    /// Choose the row at `key`, as a person pressing it would.
+    pub fn test_choose(&mut self, key: &str) {
+        self.shared.borrow_mut().choose(key);
+    }
+
+    /// Run the section action at `key`; whether it answered.
+    #[must_use]
+    pub fn test_run_section_action(&mut self, key: &str) -> bool {
+        self.shared.borrow_mut().run_section_action(key)
+    }
+}
+
+#[cfg(test)]
+mod tests;

@@ -1,5 +1,37 @@
-use super::*;
-use crate::app::driver::Driver;
+use std::cell::*;
+use std::collections::*;
+use std::path::*;
+use std::rc::*;
+use std::sync::atomic::*;
+use std::sync::*;
+use std::time::*;
+use tilo_ui::app::driver::Driver;
+use tilo_ui::headless::*;
+use tilo_ui::kurbo::*;
+use tilo_ui::retained_present::*;
+use tilo_ui::testing::*;
+use tilo_ui::vello::*;
+use tilo_ui::widget::ListRow;
+use tilo_ui::widget::internals::property_list::*;
+use tilo_ui::widget::internals::property_list::{Density, ListLayout, ListMetrics, lay_out};
+use tilo_ui::widget::*;
+use tilo_ui_base::a11y::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::i18n::*;
+use tilo_ui_base::icons::*;
+use tilo_ui_base::interaction::*;
+use tilo_ui_base::paint::*;
+use tilo_ui_base::presence::*;
+use tilo_ui_base::synthetic_input::*;
+use tilo_ui_base::text_render::TextKind;
+use tilo_ui_base::text_selection::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::colors::SMALL_TEXT_MIN_CONTRAST;
+use tilo_ui_base::tokens::*;
+use tilo_ui_base::widget::Tone;
+use tilo_ui_base::widget::*;
+use winit::event::*;
+use winit::keyboard::*;
 
 tilo_test_env::scenario! {
     fn property_actions_and_values_are_published_and_read_aloud;
@@ -37,14 +69,14 @@ tilo_test_env::scenario! {
 
     phase published_property_controls_invoke_real_clipboard_and_custom_actions;
     {
-        use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
+        use tilo_ui::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
         let clipboard = std::sync::Arc::new(InProcessClipboard::default());
-        let services = crate::process::ProcessServices::null().with_clipboard(clipboard.clone());
-        crate::process::scoped(&services, || {
+        let services = tilo_ui::process::ProcessServices::null().with_clipboard(clipboard.clone());
+        tilo_ui::process::scoped(&services, || {
             let activated = Rc::new(Cell::new(0));
             let signal = activated.clone();
             let mut driver = Driver::new(
-                crate::State::new(),
+                tilo_ui::State::new(),
                 Box::new(
                     PropertyList::new(vec![
                         Property::new("Commit", "123456789abcdef").copyable(),
@@ -68,7 +100,7 @@ tilo_test_env::scenario! {
                         resource
                             .id
                             .as_str()
-                            .starts_with(crate::headless::CONTROL_RESOURCE_PREFIX)
+                            .starts_with(tilo_ui::headless::CONTROL_RESOURCE_PREFIX)
                             && resource.label == label
                     })
                     .expect("the actual property action is published through the resource api");
@@ -97,7 +129,7 @@ tilo_test_env::scenario! {
             assert_eq!(activated.get(), 1);
 
             let mut value = Driver::new(
-                crate::State::new(),
+                tilo_ui::State::new(),
                 Box::new(
                     PropertyValue::new("acct_123")
                         .with_id("account-value")
@@ -115,7 +147,7 @@ tilo_test_env::scenario! {
                     resource
                         .id
                         .as_str()
-                        .starts_with(crate::headless::CONTROL_RESOURCE_PREFIX)
+                        .starts_with(tilo_ui::headless::CONTROL_RESOURCE_PREFIX)
                         && resource.label == "Copy"
                 })
                 .expect("read-only property's Copy is an ordinary published action");
@@ -331,7 +363,7 @@ fn published_property_action_bounds_follow_the_painted_hit_target() {
         let signal = activated.clone();
         let theme = Theme::dark().with_text_scale(scale);
         let mut harness = Driver::new_with_theme(
-            crate::State::new(),
+            tilo_ui::State::new(),
             Box::new(PropertyList::new(vec![
                 Property::new("Website", "https://example.org").action(
                     Icon::ExternalLink,
@@ -373,8 +405,8 @@ fn a_bound_property_action_runs_the_apps_action_on_every_path() {
     );
     let binding = tilo_actions::ActionBinding::unit_for(&resource, "edit").unwrap();
     let mut harness = Driver::for_root(
-        crate::State::new(),
-        crate::widget::Unattached(
+        tilo_ui::State::new(),
+        tilo_ui::widget::Unattached(
             PropertyList::new(vec![
                 Property::new("Phone", "+31 20 123 4567")
                     .copyable()
@@ -385,7 +417,7 @@ fn a_bound_property_action_runs_the_apps_action_on_every_path() {
         (480, 240),
         Theme::dark(),
     );
-    let mut root = harness.root_mut::<crate::widget::Unattached<PropertyList>>();
+    let mut root = harness.root_mut::<tilo_ui::widget::Unattached<PropertyList>>();
     let list = &mut root.0;
     let bindings = list.control_action_bindings();
     let bound = bindings
@@ -406,7 +438,7 @@ fn a_bound_property_action_runs_the_apps_action_on_every_path() {
     let bounds = action.bounds().expect("bounds");
     let center = Rect::new(bounds.x0, bounds.y0, bounds.x1, bounds.y1).center();
     harness.click_at(center.x, center.y);
-    let mut root = harness.root_mut::<crate::widget::Unattached<PropertyList>>();
+    let mut root = harness.root_mut::<tilo_ui::widget::Unattached<PropertyList>>();
     let list = &mut root.0;
     let invocation = list
         .take_control_invocation()

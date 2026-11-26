@@ -93,7 +93,7 @@ impl ShortcutRecorder {
 
     /// The keycaps start on the control's leading edge, as an
     /// [`InputHint`]'s do in the rows around it.
-    fn chord_rect(&self) -> Rect {
+    pub fn chord_rect(&self) -> Rect {
         let x1 = (self.rect.x0 + self.keys_width).min(self.rect.x1);
         Rect::new(self.rect.x0, self.rect.y0, x1, self.rect.y1)
     }
@@ -596,73 +596,60 @@ impl tilo_ui_base::widget::controls::ActionControls for ShortcutRecorder {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
+#[path = "shortcut_recorder_tests.rs"]
+mod tests;
 
-    fn recorder(value: &str, default: &str) -> ShortcutRecorder {
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    #![allow(
+        dead_code,
+        unused_imports,
+        clippy::arithmetic_side_effects,
+        clippy::disallowed_methods,
+        clippy::expect_used,
+        clippy::float_cmp,
+        clippy::implicit_hasher,
+        clippy::indexing_slicing,
+        clippy::must_use_candidate,
+        clippy::needless_pass_by_value,
+        clippy::panic,
+        clippy::unused_self,
+        clippy::unwrap_used,
+        clippy::wildcard_imports,
+        reason = "test-support helpers are compiled for every test build whether or not a test uses this one"
+    )]
+    use super::*;
+    use std::cell::*;
+    use std::collections::*;
+    use std::path::*;
+    use std::rc::*;
+    use std::sync::atomic::*;
+    use std::sync::*;
+    use std::time::*;
+    use taffy::{AvailableSpace, Size};
+    use tilo_ui::app::driver::Driver;
+    use tilo_ui::kurbo::*;
+    use tilo_ui::testing::Dispatch;
+    use tilo_ui::vello::*;
+    use tilo_ui::widget::*;
+    use tilo_ui::*;
+    use tilo_ui_base::a11y::*;
+    use tilo_ui_base::component::Event;
+    use tilo_ui_base::component::*;
+    use tilo_ui_base::icons::*;
+    use tilo_ui_base::interaction::*;
+    use tilo_ui_base::paint::*;
+    use tilo_ui_base::presence::*;
+    use tilo_ui_base::tokens::*;
+    use tilo_ui_base::widget::*;
+    use tilo_ui_base::*;
+    use winit::event::*;
+    use winit::keyboard::*;
+    pub fn recorder(value: &str, default: &str) -> ShortcutRecorder {
         ShortcutRecorder::new(
             "x",
             &tilo_ui_base::LocalState::new(value.to_owned()),
             default,
         )
-    }
-
-    #[test]
-    fn binding_display_names_keys_and_offers_reset_only_when_changed() {
-        {
-            let unchanged = recorder("Super+Left", "Super+Left");
-            assert!(unchanged.reset_rect().is_none());
-            let changed = recorder("Super+H", "Super+Left");
-            assert!(changed.reset_rect().is_some());
-        }
-
-        {
-            let recorder = recorder("Super+Down", "Super+Left");
-            assert_eq!(
-                recorder.binding().keycap_labels(PlatformConventions::new(
-                    tilo_ui_base::platform::Platform::Linux
-                )),
-                ["Super", "Down"]
-            );
-            assert_eq!(
-                recorder.binding().keycap_labels(PlatformConventions::new(
-                    tilo_ui_base::platform::Platform::MacOs
-                )),
-                ["⌘", "↓"]
-            );
-        }
-    }
-
-    #[test]
-    fn no_shortcut_reads_as_none_rather_than_a_keycap() {
-        let theme = tilo_ui_base::theme::Theme::light();
-        let mut text = TextRenderer::new();
-        let mut empty = recorder("", "Ctrl+K");
-        empty.measure_keys(&mut text, &theme);
-        let none = tilo_ui_base::i18n::widget_format("widget-shortcut-none", &[]);
-        let (width, _) = text.measure_style(&none, None, &theme.text(TextRole::Label));
-        assert_eq!(empty.keys_width, f64::from(width).ceil());
-        assert!(empty.reset_rect().is_some(), "the default is a press away");
-    }
-
-    #[test]
-    fn backspace_on_a_changed_shortcut_puts_back_the_default() {
-        let state = tilo_ui_base::LocalState::new("Ctrl+J".to_owned());
-        let mut host = crate::app::driver::Driver::for_root(
-            crate::State::new(),
-            ShortcutRecorder::new("x", &state, "Ctrl+K"),
-            (400, 200),
-            tilo_ui_base::theme::Theme::light(),
-        );
-        let at = host.root::<ShortcutRecorder>().chord_rect().center();
-        host.click_at(at.x, at.y);
-        host.key("Escape");
-        assert_eq!(
-            state.get(),
-            "Ctrl+J",
-            "Escape leaves the shortcut as it was"
-        );
-        host.key("Backspace");
-        assert_eq!(state.get(), "Ctrl+K");
     }
 }

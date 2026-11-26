@@ -85,7 +85,7 @@ impl<'a> PropertyRow<'a> {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-enum Density {
+pub enum Density {
     /// Rows a pointer target tall.
     #[default]
     Regular,
@@ -95,27 +95,28 @@ enum Density {
 
 /// The resolved geometry of a property list in `theme`.
 #[derive(Clone, Debug)]
-struct ListMetrics {
-    label: TextStyle,
-    stacked_label: TextStyle,
-    value: TextStyle,
-    group: TextStyle,
-    pad_x: f64,
-    pad_y: f64,
-    column_gap: f64,
-    stacked_gap: f64,
-    min_row: f64,
-    max_label_share: f64,
-    action: f64,
-    action_gap: f64,
-    icon: f64,
-    radius: f64,
-    related: f64,
-    sibling: f64,
+pub struct ListMetrics {
+    pub label: TextStyle,
+    pub stacked_label: TextStyle,
+    pub value: TextStyle,
+    pub group: TextStyle,
+    pub pad_x: f64,
+    pub pad_y: f64,
+    pub column_gap: f64,
+    pub stacked_gap: f64,
+    pub min_row: f64,
+    pub max_label_share: f64,
+    pub action: f64,
+    pub action_gap: f64,
+    pub icon: f64,
+    pub radius: f64,
+    pub related: f64,
+    pub sibling: f64,
 }
 
 impl ListMetrics {
-    fn new(theme: &Theme, density: Density) -> Self {
+    #[must_use]
+    pub fn new(theme: &Theme, density: Density) -> Self {
         let spacing = &theme.tokens.spacing;
         let metrics = &theme.tokens.metrics;
         let (pad_y, min_row) = match density {
@@ -142,11 +143,13 @@ impl ListMetrics {
         }
     }
 
-    fn value_style(&self, row: &PropertyRow<'_>) -> TextStyle {
+    #[must_use]
+    pub fn value_style(&self, row: &PropertyRow<'_>) -> TextStyle {
         self.value.clone().with_kind(row.kind)
     }
 
-    fn line(&self, text: &mut TextRenderer) -> f64 {
+    #[must_use]
+    pub fn line(&self, text: &mut TextRenderer) -> f64 {
         f64::from(text.measure_style("Ag", None, &self.value).1)
     }
 }
@@ -220,31 +223,31 @@ fn natural_width(
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct RowLayout {
-    rect: Rect,
-    label: Point,
-    value: Point,
-    value_width: f64,
+pub struct RowLayout {
+    pub rect: Rect,
+    pub label: Point,
+    pub value: Point,
+    pub value_width: f64,
     /// The width the label wraps to, when it is wider than its column
     /// (beside the value) or than the row (stacked over it).
-    label_wrap: Option<f64>,
-    elided: Option<String>,
-    actions: [Option<Rect>; MAX_PROPERTY_ACTIONS],
+    pub label_wrap: Option<f64>,
+    pub elided: Option<String>,
+    pub actions: [Option<Rect>; MAX_PROPERTY_ACTIONS],
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct GroupLayout {
-    title_at: Point,
-    first_row: usize,
+pub struct GroupLayout {
+    pub title_at: Point,
+    pub first_row: usize,
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct ListLayout {
-    stacked: bool,
-    rows: Vec<RowLayout>,
-    groups: Vec<GroupLayout>,
-    label_column: f64,
-    height: f64,
+pub struct ListLayout {
+    pub stacked: bool,
+    pub rows: Vec<RowLayout>,
+    pub groups: Vec<GroupLayout>,
+    pub label_column: f64,
+    pub height: f64,
 }
 
 impl ListLayout {
@@ -262,7 +265,8 @@ impl ListLayout {
 /// Lay out `groups` (each an optional title and its rows) from `origin` at
 /// `width`, the outer width. `label_column` overrides the measured column
 /// (a shared one).
-fn lay_out(
+#[must_use]
+pub fn lay_out(
     text: &mut TextRenderer,
     m: &ListMetrics,
     groups: &[(Option<&str>, &[PropertyRow<'_>])],
@@ -1225,7 +1229,7 @@ impl PropertyList {
         }
     }
 
-    fn run_action(&mut self, row: usize, action: usize) -> bool {
+    pub fn run_action(&mut self, row: usize, action: usize) -> bool {
         let Some(property) = self
             .groups
             .iter_mut()
@@ -1664,10 +1668,6 @@ impl Widget for PropertyValue {
         false
     }
 }
-
-#[cfg(test)]
-#[path = "property_list_tests.rs"]
-mod tests;
 
 mod component;
 pub use component::{PropertyListProps, PropertyProps};

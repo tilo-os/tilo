@@ -1,107 +1,14 @@
 //! How a list's rows stand as a tree, and how folding a row hides what is under it.
+use super::test_support::*;
 
 use super::*;
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::rc::Rc;
 
 use automerge::AutoCommit;
 
-use crate::testing::Dispatch;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget, reorder::ReorderDrop};
-
-/// A model whose rows name the row they stand under, as a list of subtasks does: the rows keep
-/// the model's order, and a parent need not be the row above. `groups` are the headings its rows
-/// stand under, as a list of tasks grouped by the day each is due is.
-struct Nested {
-    keys: Vec<u64>,
-    parents: HashMap<u64, u64>,
-    groups: HashMap<u64, String>,
-}
-
-impl ListModel for Nested {
-    type Key = u64;
-
-    fn len(&self) -> usize {
-        self.keys.len()
-    }
-
-    fn key_at(&self, index: usize) -> Option<u64> {
-        self.keys.get(index).copied()
-    }
-
-    fn index_of(&self, key: &u64) -> Option<usize> {
-        self.keys.iter().position(|candidate| candidate == key)
-    }
-
-    fn group_at(&self, index: usize) -> Option<RowGroup> {
-        let key = self.key_at(index)?;
-        self.groups
-            .get(&key)
-            .map(|heading| RowGroup::heading(heading.clone()))
-    }
-
-    fn tree_at(&self, index: usize) -> Option<TreeRow<u64>> {
-        let key = self.key_at(index)?;
-        let parent = self
-            .parents
-            .get(&key)
-            .copied()
-            .filter(|parent| self.keys.contains(parent));
-        Some(TreeRow {
-            parent,
-            depth: None,
-            above: None,
-        })
-    }
-}
-
-fn nested() -> VirtualList<Nested> {
-    let model = Nested {
-        keys: vec![0, 1, 2, 3, 4],
-        parents: HashMap::from([(1, 0), (2, 1), (4, 0)]),
-        groups: HashMap::new(),
-    };
-    VirtualList::new(model, 20.0, |_, _, key| {
-        Box::new(super::tests::ProbeRow::new(
-            key.to_string(),
-            20.0,
-            false,
-            Rc::new(Cell::new(0)),
-        ))
-    })
-    .with_viewport_height(200.0)
-}
-
-fn shape(list: &VirtualList<Nested>, marks: &TreeMarks<u64>) -> Vec<(u64, u32, bool, bool)> {
-    (0..list.model.len())
-        .map(|index| {
-            let key = list.model().key_at(index).expect("every row has a key");
-            (
-                key,
-                marks.depth(&key),
-                marks.is_branch(&key),
-                marks.is_nested(&key),
-            )
-        })
-        .collect()
-}
-
-fn press<M: ListModel + 'static>(
-    list: &mut VirtualList<M>,
-    x: f64,
-    y: f64,
-    taffy: &TaffyTree<()>,
-    node: NodeId,
-) {
-    let at = tilo_ui_base::synthetic_input::cursor_moved(x, y);
-    let _ = Dispatch::new().layout(taffy, node).send(list, &at);
-    for state in [ElementState::Pressed, ElementState::Released] {
-        let event = tilo_ui_base::synthetic_input::mouse_input(state, MouseButton::Left);
-        let _ = Dispatch::new().layout(taffy, node).send(list, &event);
-    }
-}
+use tilo_ui_base::{reorder::DropPlacement, reorder::DropTarget};
 
 tilo_test_env::scenario! {
     fn a_tree_indents_folds_and_keeps_its_rows;
@@ -110,7 +17,7 @@ tilo_test_env::scenario! {
     {
         let marks = Rc::new(TreeMarks::default());
         let mut list = nested().with_tree(Rc::clone(&marks));
-        let _ = super::tests::lay_out(&mut list, 300.0);
+        let _ = super::test_support::lay_out(&mut list, 300.0);
         assert_eq!(
             shape(&list, &marks),
             vec![
@@ -128,7 +35,7 @@ tilo_test_env::scenario! {
         assert!((list.viewport.content_extent() - 5.0 * row).abs() < 0.5);
 
         assert!(list.fold_row(&0, true), "the row has subtasks to fold");
-        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let (taffy, node) = super::test_support::lay_out(&mut list, 300.0);
         assert!(list.row_folded(&0));
         assert!((list.viewport.content_extent() - 3.0 * row).abs() < 0.5);
         assert_eq!(list.viewport.item_height(1), Some(0.0));
@@ -140,7 +47,7 @@ tilo_test_env::scenario! {
             .expect("the folded row shows its disclosure")
             .center();
         press(&mut list, at.x, at.y, &taffy, node);
-        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let (taffy, node) = super::test_support::lay_out(&mut list, 300.0);
         assert!(!list.row_folded(&0), "the press unfolded it");
         assert!((list.viewport.content_extent() - 5.0 * row).abs() < 0.5);
 
@@ -149,7 +56,7 @@ tilo_test_env::scenario! {
             .expect("the branch one depth in shows its disclosure")
             .center();
         press(&mut list, at.x, at.y, &taffy, node);
-        let _ = super::tests::lay_out(&mut list, 300.0);
+        let _ = super::test_support::lay_out(&mut list, 300.0);
         assert!(
             list.row_folded(&1) && !list.row_folded(&0),
             "the press read the row it stands on"
@@ -166,7 +73,7 @@ tilo_test_env::scenario! {
             parents: HashMap::from([(1, 0), (2, 1)]),
         };
         let mut list = VirtualList::new(list, 20.0, |_, _, key| {
-            Box::new(super::tests::ProbeRow::new(
+            Box::new(super::test_support::ProbeRow::new(
                 key.to_string(),
                 20.0,
                 false,
@@ -175,7 +82,7 @@ tilo_test_env::scenario! {
         })
         .with_viewport_height(400.0)
         .with_tree(Rc::clone(&marks));
-        let _ = super::tests::lay_out(&mut list, 300.0);
+        let _ = super::test_support::lay_out(&mut list, 300.0);
         let row = 20.0;
         assert!(
             (list.viewport.content_extent() - 4.0 * row).abs() < 0.5,
@@ -183,7 +90,7 @@ tilo_test_env::scenario! {
         );
 
         list.set_open(Some(0));
-        let _ = super::tests::lay_out(&mut list, 300.0);
+        let _ = super::test_support::lay_out(&mut list, 300.0);
         assert_eq!(
             list.viewport.item_height(1),
             Some(0.0),
@@ -201,7 +108,7 @@ tilo_test_env::scenario! {
         );
 
         list.set_open(None);
-        let _ = super::tests::lay_out(&mut list, 300.0);
+        let _ = super::test_support::lay_out(&mut list, 300.0);
         assert_eq!(
             list.viewport.item_height(1),
             Some(row),
@@ -223,7 +130,7 @@ tilo_test_env::scenario! {
     // showed before, so a rename that re-reads every row moves none of them sideways for a frame.
     {
         let probe = |_: &OpenableTree, _: usize, key: &u64| -> Element {
-            Box::new(super::tests::ProbeRow::new(
+            Box::new(super::test_support::ProbeRow::new(
                 key.to_string(),
                 20.0,
                 false,
@@ -240,7 +147,7 @@ tilo_test_env::scenario! {
         )
         .with_viewport_height(200.0)
         .with_tree(Rc::new(TreeMarks::default()));
-        let _ = super::tests::lay_out(&mut list, 300.0);
+        let _ = super::test_support::lay_out(&mut list, 300.0);
         let column = list.lead;
         assert!(
             column.abs() < 0.5,
@@ -264,7 +171,7 @@ tilo_test_env::scenario! {
 
         let marks = Rc::new(TreeMarks::default());
         let mut list = nested().with_tree(Rc::clone(&marks));
-        let _ = super::tests::lay_out(&mut list, 300.0);
+        let _ = super::test_support::lay_out(&mut list, 300.0);
         let semantics = list.accessibility().expect("the list has a node");
         assert_eq!(semantics.role, Role::Tree);
         let rows: Vec<_> = semantics.children.iter().collect();
@@ -291,7 +198,7 @@ tilo_test_env::scenario! {
         );
 
         assert!(list.fold_row(&0, true));
-        let _ = super::tests::lay_out(&mut list, 300.0);
+        let _ = super::test_support::lay_out(&mut list, 300.0);
         let semantics = list.accessibility().expect("the list has a node");
         assert_eq!(
             semantics.children.len(),
@@ -307,10 +214,10 @@ tilo_test_env::scenario! {
         let mut list = movable(vec![0, 1, 2], &[(1, 0)])
             .with_tree(Rc::clone(&marks))
             .with_reorder(|_, source, target| source != &target.key, land);
-        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let (taffy, node) = super::test_support::lay_out(&mut list, 300.0);
         let laid_out = (&taffy, node);
         assert!(list.fold_row(&0, true));
-        let _ = super::tests::lay_out(&mut list, 300.0);
+        let _ = super::test_support::lay_out(&mut list, 300.0);
         list.reorder = tilo_ui_base::reorder::ReorderController::new()
             .with_drag_threshold(0.0)
             .with_hover_expand_delay(crate::time::Duration::ZERO);
@@ -346,7 +253,7 @@ tilo_test_env::scenario! {
     {
         let marks = Rc::new(TreeMarks::default());
         let mut list = nested().with_tree(Rc::clone(&marks));
-        let _ = super::tests::lay_out(&mut list, 300.0);
+        let _ = super::test_support::lay_out(&mut list, 300.0);
         let key = |named| Key::Named(named);
         assert!(list.on_key(&key(NamedKey::ArrowDown), false, false));
         assert_eq!(
@@ -384,7 +291,7 @@ tilo_test_env::scenario! {
             .tab_indents(true)
             .with_tree(Rc::clone(&marks))
             .with_reorder(|_, source, target| source != &target.key, land);
-        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let (taffy, node) = super::test_support::lay_out(&mut list, 300.0);
         let laid_out = (&taffy, node);
         list.set_focus(true);
         assert!(list.reveal(&2));
@@ -400,7 +307,7 @@ tilo_test_env::scenario! {
             Some(&1),
             "under the row above"
         );
-        let _ = super::tests::lay_out(&mut list, 300.0);
+        let _ = super::test_support::lay_out(&mut list, 300.0);
         assert_eq!(marks.depth(&2), 1, "one step deeper");
         assert_eq!(
             list.focused_key(),
@@ -420,7 +327,7 @@ tilo_test_env::scenario! {
             vec![0, 1, 2],
             "beside the row it stood under"
         );
-        let _ = super::tests::lay_out(&mut list, 300.0);
+        let _ = super::test_support::lay_out(&mut list, 300.0);
         assert_eq!(marks.depth(&2), 0);
     }
 
@@ -431,7 +338,7 @@ tilo_test_env::scenario! {
             .tab_indents(true)
             .with_tree(Rc::clone(&marks))
             .with_reorder(|_, source, target| source != &target.key, land);
-        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let (taffy, node) = super::test_support::lay_out(&mut list, 300.0);
         list.set_focus(true);
         assert!(list.reveal(&0));
         assert!(
@@ -451,7 +358,7 @@ tilo_test_env::scenario! {
         let mut list = movable(vec![0, 1, 2], &[(1, 0)])
             .with_tree(Rc::clone(&marks))
             .with_reorder(|_, source, target| source != &target.key, land);
-        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let (taffy, node) = super::test_support::lay_out(&mut list, 300.0);
         let laid_out = (&taffy, node);
         list.set_focus(true);
         let alt = winit::keyboard::ModifiersState::ALT;
@@ -496,7 +403,7 @@ tilo_test_env::scenario! {
         let mut list = movable(vec![0, 1, 2], &[])
             .with_tree(Rc::clone(&marks))
             .with_reorder(|_, source, target| source != &target.key, land);
-        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let (taffy, node) = super::test_support::lay_out(&mut list, 300.0);
         let laid_out = (&taffy, node);
 
         send(
@@ -523,7 +430,7 @@ tilo_test_env::scenario! {
         );
 
         assert_eq!(list.model().parents.get(&2), Some(&0), "it landed inside");
-        let _ = super::tests::lay_out(&mut list, 300.0);
+        let _ = super::test_support::lay_out(&mut list, 300.0);
         assert_eq!(marks.depth(&2), 1);
         assert!(marks.is_branch(&0), "the row it landed in holds subtasks");
     }
@@ -534,7 +441,7 @@ tilo_test_env::scenario! {
         let mut list = movable(vec![0, 1, 2], &[(1, 0)])
             .with_tree(Rc::clone(&marks))
             .with_reorder(|_, source, target| source != &target.key, land);
-        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let (taffy, node) = super::test_support::lay_out(&mut list, 300.0);
         let laid_out = (&taffy, node);
 
         send(
@@ -560,156 +467,6 @@ tilo_test_env::scenario! {
     }
 }
 
-struct Movable {
-    keys: Vec<u64>,
-    parents: HashMap<u64, u64>,
-    labels: HashMap<u64, String>,
-    takes_children: HashSet<u64>,
-}
-
-impl ListModel for Movable {
-    type Key = u64;
-
-    fn len(&self) -> usize {
-        self.keys.len()
-    }
-
-    fn key_at(&self, index: usize) -> Option<u64> {
-        self.keys.get(index).copied()
-    }
-
-    fn index_of(&self, key: &u64) -> Option<usize> {
-        self.keys.iter().position(|candidate| candidate == key)
-    }
-
-    fn label(&self, index: usize) -> Option<String> {
-        self.labels.get(&self.key_at(index)?).cloned()
-    }
-
-    fn tree_at(&self, index: usize) -> Option<TreeRow<u64>> {
-        let key = self.key_at(index)?;
-        let parent = self
-            .parents
-            .get(&key)
-            .copied()
-            .filter(|parent| self.keys.contains(parent));
-        Some(TreeRow {
-            parent,
-            depth: None,
-            above: None,
-        })
-    }
-
-    fn accepts_children(&self, index: usize) -> bool {
-        self.key_at(index)
-            .is_some_and(|key| self.takes_children.contains(&key))
-    }
-}
-
-fn stands_under(parents: &HashMap<u64, u64>, key: u64, ancestor: u64) -> bool {
-    let mut cursor = key;
-    for _ in 0..64 {
-        let Some(parent) = parents.get(&cursor).copied() else {
-            return false;
-        };
-        if parent == ancestor {
-            return true;
-        }
-        cursor = parent;
-    }
-    false
-}
-
-fn land(model: &mut Movable, dropped: ReorderDrop<u64>) -> bool {
-    if dropped.source == dropped.target.key {
-        return false;
-    }
-    let Some(from) = model.index_of(&dropped.source) else {
-        return false;
-    };
-    if model.index_of(&dropped.target.key).is_none() {
-        return false;
-    }
-    let parent = match dropped.target.placement {
-        DropPlacement::Inside => Some(dropped.target.key),
-        DropPlacement::Before | DropPlacement::After => {
-            model.parents.get(&dropped.target.key).copied()
-        }
-    };
-    model.keys.remove(from);
-    let at = model.index_of(&dropped.target.key).unwrap_or_default();
-    let into = match dropped.target.placement {
-        DropPlacement::Before => at,
-        DropPlacement::Inside => {
-            let mut into = at.saturating_add(1);
-            while into < model.keys.len()
-                && stands_under(&model.parents, model.keys[into], dropped.target.key)
-            {
-                into = into.saturating_add(1);
-            }
-            into
-        }
-        DropPlacement::After => at.saturating_add(1),
-    };
-    model
-        .keys
-        .insert(into.min(model.keys.len()), dropped.source);
-    match parent {
-        Some(parent) => {
-            model.parents.insert(dropped.source, parent);
-        }
-        None => {
-            model.parents.remove(&dropped.source);
-        }
-    }
-    true
-}
-
-fn movable(keys: Vec<u64>, parents: &[(u64, u64)]) -> VirtualList<Movable> {
-    let model = Movable {
-        labels: keys
-            .iter()
-            .map(|key| (*key, format!("row {key}")))
-            .collect(),
-        keys: keys.clone(),
-        parents: parents.iter().copied().collect(),
-        takes_children: keys.into_iter().collect(),
-    };
-    VirtualList::new(model, 20.0, |_, _, key| {
-        Box::new(super::tests::ProbeRow::new(
-            key.to_string(),
-            20.0,
-            false,
-            Rc::new(Cell::new(0)),
-        ))
-    })
-    .with_viewport_height(200.0)
-}
-
-fn send<M: ListModel + 'static>(
-    list: &mut VirtualList<M>,
-    event: &WindowEvent,
-    laid_out: (&TaffyTree<()>, NodeId),
-) -> bool {
-    Dispatch::new()
-        .layout(laid_out.0, laid_out.1)
-        .send(list, event)
-        .handled
-}
-
-fn send_with<M: ListModel + 'static>(
-    list: &mut VirtualList<M>,
-    event: &WindowEvent,
-    modifiers: winit::keyboard::ModifiersState,
-    laid_out: (&TaffyTree<()>, NodeId),
-) -> bool {
-    Dispatch::new()
-        .modifiers(modifiers)
-        .layout(laid_out.0, laid_out.1)
-        .send(list, event)
-        .handled
-}
-
 tilo_test_env::scenario! {
     fn a_tree_row_is_renamed_and_deleted_through_its_host;
 
@@ -718,7 +475,7 @@ tilo_test_env::scenario! {
         let removed: Rc<RefCell<Vec<u64>>> = Rc::new(RefCell::new(Vec::new()));
         let seen = Rc::clone(&removed);
         let mut list = movable(vec![0, 1], &[]).on_delete(move |key| seen.borrow_mut().push(key));
-        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let (taffy, node) = super::test_support::lay_out(&mut list, 300.0);
         let laid_out = (&taffy, node);
         list.set_focus(true);
         assert!(send(
@@ -746,7 +503,7 @@ tilo_test_env::scenario! {
         let seen = Rc::clone(&renamed);
         let mut list =
             movable(vec![0, 1], &[]).on_rename(move |key, title| seen.borrow_mut().push((key, title)));
-        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let (taffy, node) = super::test_support::lay_out(&mut list, 300.0);
         let laid_out = (&taffy, node);
         list.set_focus(true);
         assert!(send(
@@ -798,7 +555,7 @@ tilo_test_env::scenario! {
         let seen = Rc::clone(&renamed);
         let mut list =
             movable(vec![0, 1], &[]).on_rename(move |key, title| seen.borrow_mut().push((key, title)));
-        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let (taffy, node) = super::test_support::lay_out(&mut list, 300.0);
         let laid_out = (&taffy, node);
         list.set_focus(true);
         assert!(list.begin_rename(&0));
@@ -853,7 +610,7 @@ tilo_test_env::scenario! {
             .on_rename(move |key, title| seen.borrow_mut().push((key, title)))
             .rename_on_double_click()
             .on_activate(move |key| chosen.borrow_mut().push(key));
-        let (taffy, node) = super::tests::lay_out(&mut list, 300.0);
+        let (taffy, node) = super::test_support::lay_out(&mut list, 300.0);
         press(&mut list, 20.0, 10.0, &taffy, node);
         press(&mut list, 20.0, 10.0, &taffy, node);
 
@@ -875,308 +632,6 @@ tilo_test_env::scenario! {
     }
 }
 
-struct OpenableTree {
-    keys: Vec<u64>,
-    parents: HashMap<u64, u64>,
-}
-
-impl ListModel for OpenableTree {
-    type Key = u64;
-
-    fn len(&self) -> usize {
-        self.keys.len()
-    }
-
-    fn key_at(&self, index: usize) -> Option<u64> {
-        self.keys.get(index).copied()
-    }
-
-    fn index_of(&self, key: &u64) -> Option<usize> {
-        self.keys.iter().position(|candidate| candidate == key)
-    }
-
-    fn tree_at(&self, index: usize) -> Option<TreeRow<u64>> {
-        let key = self.key_at(index)?;
-        Some(TreeRow {
-            parent: self.parents.get(&key).copied(),
-            depth: None,
-            above: None,
-        })
-    }
-
-    fn opens_in_place(&self, _index: usize) -> bool {
-        true
-    }
-}
-
-#[test]
-fn a_tree_row_open_in_its_place_hands_a_reader_what_it_holds() {
-    use crate::app::driver::Driver;
-    use crate::widget::{Checkbox, Column, TextInput};
-    use accesskit::Role as AkRole;
-    use tilo_ui_base::a11y::Action;
-
-    let done = tilo_ui_base::LocalState::new(false);
-    let state = done.clone();
-    let model = OpenableTree {
-        keys: vec![0, 1, 2],
-        parents: HashMap::from([(1, 0)]),
-    };
-    let list = VirtualList::with_selection_delegate(model, 20.0, move |_, _, key, build| {
-        if build.expanded {
-            let document: Element = Box::new(
-                Column::new()
-                    .push(Box::new(
-                        TextInput::new(Vec::new())
-                            .with_text_role(tilo_ui_base::tokens::TextRole::Title)
-                            .with_id("title")
-                            .with_accessible_name("Title")
-                            .with_initial_value("Subtasks"),
-                    ))
-                    .push(Box::new(
-                        TextInput::new(Vec::new())
-                            .with_id("notes")
-                            .multiline(true)
-                            .with_accessible_name("Notes"),
-                    ))
-                    .push(Box::new(
-                        Checkbox::from_state(&state).with_accessible_name("Done"),
-                    )),
-            );
-            Box::new(super::open::RowOpen::new(document, true)) as Element
-        } else {
-            Box::new(super::tests::ProbeRow::new(
-                format!("task {key}"),
-                20.0,
-                false,
-                Rc::new(Cell::new(0)),
-            )) as Element
-        }
-    })
-    .with_tree(Rc::new(TreeMarks::default()))
-    .with_viewport_height(300.0);
-    let mut harness = Driver::for_root(crate::State::new(), list, (400, 500), Theme::dark());
-    harness
-        .root_mut::<VirtualList<OpenableTree>>()
-        .set_open(Some(0));
-    harness.relayout();
-
-    let nodes = harness.a11y_nodes();
-    let (row_id, row) = super::tests::named(&nodes, AkRole::TreeItem, "Subtasks");
-    let row_bounds = row.bounds().expect("the row stands where it is drawn");
-    let controls = super::tests::inside(&nodes, row_id);
-    assert!(
-        controls
-            .iter()
-            .all(|(_, node)| !matches!(node.role(), AkRole::ListItem | AkRole::TreeItem)),
-        "the open row is one tree item, not one inside another"
-    );
-    super::tests::named(&controls, AkRole::TextInput, "Title");
-    super::tests::named(&controls, AkRole::MultilineTextInput, "Notes");
-    let (checkbox, _) = super::tests::named(&controls, AkRole::CheckBox, "Done");
-    for (id, _) in &controls {
-        let bounds = super::tests::exported(&nodes, *id)
-            .bounds()
-            .expect("a control stands where it is drawn");
-        assert!(
-            super::tests::within(row_bounds, bounds),
-            "{bounds:?} stands outside its row {row_bounds:?}"
-        );
-    }
-
-    harness
-        .perform_a11y_action(checkbox, &Action::Activate)
-        .expect("the box is operated");
-    assert!(done.with(|checked| *checked), "the tick reaches the box");
-}
-
-fn composed_at<'a>(
-    node: &'a crate::composition::Composed,
-    widget: &str,
-) -> Vec<&'a crate::composition::Composed> {
-    let mut found: Vec<&crate::composition::Composed> = node
-        .children
-        .iter()
-        .flat_map(|child| composed_at(child, widget))
-        .collect();
-    if node.widget == widget {
-        found.insert(0, node);
-    }
-    found
-}
-
-/// The row saying `text`: the list item that owns the words, not an outer row that holds it too.
-fn row_named<'a>(
-    root: &'a crate::composition::Composed,
-    text: &str,
-) -> Option<&'a crate::composition::Composed> {
-    composed_at(root, "ListRow").into_iter().find(|row| {
-        row.semantics.as_ref().is_some_and(|access| {
-            access.nodes().into_iter().any(|said| {
-                said.name.as_deref() == Some(text) || said.value.as_deref() == Some(text)
-            })
-        })
-    })
-}
-
-/// [`Nested`] whose first row is still on its way until `ready` says it arrived.
-struct ArrivingNested {
-    rows: Nested,
-    ready: Rc<Cell<bool>>,
-}
-
-impl ListModel for ArrivingNested {
-    type Key = u64;
-
-    fn len(&self) -> usize {
-        self.rows.len()
-    }
-
-    fn key_at(&self, index: usize) -> Option<u64> {
-        self.rows.key_at(index)
-    }
-
-    fn index_of(&self, key: &u64) -> Option<usize> {
-        self.rows.index_of(key)
-    }
-
-    fn tree_at(&self, index: usize) -> Option<TreeRow<u64>> {
-        self.rows.tree_at(index)
-    }
-
-    fn row_state(&self, index: usize) -> Arrival<(), &str> {
-        if index == 0 && !self.ready.get() {
-            Arrival::Pending {
-                from: tilo_ui_base::arriving::Source::Remote,
-            }
-        } else {
-            Arrival::Ready(())
-        }
-    }
-}
-
-/// A branch row still on its way is its placeholder alone: it offers no disclosure to a page or a
-/// reader and holds none of the rows under it, which stand after it until it arrives; then it
-/// holds them under the disclosure it offers.
-#[test]
-fn a_branch_on_its_way_offers_nothing_to_fold_until_it_arrives() {
-    use crate::app::driver::Driver;
-    use crate::time::testing::with_monotonic_time;
-    use crate::widget::ListRow;
-    use tilo_ui_base::{arriving::GRACE, arriving::MIN_SHOWN};
-
-    let t0 = crate::time::now();
-    let ready = Rc::new(Cell::new(false));
-    let model = ArrivingNested {
-        rows: Nested {
-            keys: vec![0, 1, 2],
-            parents: HashMap::from([(1, 0), (2, 1)]),
-            groups: HashMap::new(),
-        },
-        ready: Rc::clone(&ready),
-    };
-    let list = VirtualList::new(model, 20.0, |_, _, key| {
-        Box::new(ListRow::new(format!("note-{key}"), format!("Note {key}"))) as Element
-    })
-    .with_viewport_height(200.0)
-    .with_tree(Rc::new(TreeMarks::default()))
-    .with_semantic_key(|key| format!("row:{key}"));
-    let mut harness = with_monotonic_time(t0, || {
-        let mut harness = Driver::for_root(crate::State::new(), list, (400, 500), Theme::dark());
-        harness.relayout();
-        harness
-    });
-    let composition = with_monotonic_time(t0 + GRACE, || {
-        harness.relayout();
-        harness.composition()
-    });
-    let list_node = composed_at(&composition.root, "VirtualList")
-        .into_iter()
-        .next()
-        .expect("the list composes");
-    let folds_first = |node: &crate::composition::Composed| {
-        composed_at(node, "ListRow").into_iter().any(|row| {
-            row.semantics.as_ref().is_some_and(|access| {
-                access
-                    .nodes()
-                    .into_iter()
-                    .any(|part| part.action_target.as_deref() == Some("fold:row:0"))
-            })
-        })
-    };
-    assert!(
-        !folds_first(list_node),
-        "a placeholder offers nothing to fold: {list_node:?}"
-    );
-    let placeholder = composed_at(list_node, "RowReserve")
-        .into_iter()
-        .next()
-        .expect("the row on its way holds its place");
-    assert!(
-        placeholder.children.is_empty(),
-        "and holds no notes: {placeholder:?}"
-    );
-    let first = row_named(&composition.root, "Note 1").expect("the row under it is shown");
-    assert!(
-        list_node.children.iter().any(|row| row.path == first.path),
-        "the row under the placeholder stands in the list, after it: {list_node:?}"
-    );
-    let disclosures = |harness: &mut Driver| {
-        let mut found = 0;
-        let list = harness.root_mut::<VirtualList<ArrivingNested>>();
-        let mut nodes = vec![Widget::accessibility(&*list).expect("the list is read")];
-        while let Some(node) = nodes.pop() {
-            if node.action_target.as_deref() == Some("fold:row:0") {
-                found += 1;
-            }
-            nodes.extend(node.children);
-        }
-        found
-    };
-    assert_eq!(disclosures(&mut harness), 0, "nor does a reader hear one");
-
-    ready.set(true);
-    let composition = with_monotonic_time(t0 + GRACE + MIN_SHOWN, || {
-        harness.relayout();
-        harness.composition()
-    });
-    let branch = row_named(&composition.root, "Note 0").expect("the row arrived");
-    assert!(
-        folds_first(branch),
-        "the arrived branch offers its disclosure: {branch:?}"
-    );
-    // The branch holds the rows under it as a tree does: its node stands open at the top of the
-    // tree and theirs a level in, and they stand after it in the list's page.
-    let branch_node = branch
-        .semantics
-        .as_ref()
-        .expect("a reader reads the branch");
-    assert_eq!(branch_node.level, Some(1), "the branch stands at the top");
-    assert_eq!(
-        branch_node.state.expanded,
-        Some(true),
-        "and open on the rows under it"
-    );
-    let under = row_named(&composition.root, "Note 1").expect("the row under it");
-    assert_eq!(
-        under.semantics.as_ref().and_then(|node| node.level),
-        Some(2),
-        "the row under it stands a level in: {under:?}"
-    );
-    let place = |path: &str| {
-        list_node
-            .children
-            .iter()
-            .position(|row| row.path == path)
-            .unwrap_or_else(|| panic!("{path} stands in the list: {list_node:?}"))
-    };
-    assert!(
-        place(&branch.path) < place(&under.path),
-        "and stands after the branch in the list: {list_node:?}"
-    );
-    assert_eq!(disclosures(&mut harness), 1, "and a reader hears it");
-}
-
 tilo_test_env::scenario! {
     fn the_keys_reach_every_row_of_a_tree_with_a_tall_row;
 
@@ -1191,7 +646,7 @@ tilo_test_env::scenario! {
         };
         let mut list = VirtualList::new(model, 20.0, |_, _, key| {
             let height = if *key == 1 { 44.0 } else { 20.0 };
-            Box::new(super::tests::ProbeRow::new(
+            Box::new(super::test_support::ProbeRow::new(
                 key.to_string(),
                 height,
                 false,
@@ -1200,7 +655,7 @@ tilo_test_env::scenario! {
         })
         .with_viewport_height(200.0)
         .with_tree(Rc::clone(&marks));
-        let _ = super::tests::lay_out(&mut list, 300.0);
+        let _ = super::test_support::lay_out(&mut list, 300.0);
         // The taller row keeps its height indented under row 0, and the row below it clears it.
         assert_eq!(marks.depth(&1), 1);
         assert_eq!(list.viewport.item_height(1), Some(f64::from(44.0_f32)));

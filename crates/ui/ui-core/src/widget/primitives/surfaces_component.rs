@@ -520,6 +520,24 @@ impl Widget for DeclaredPanel {
         tilo_ui_base::widget::Widget::for_each_layout_child(&self.panel, visitor)
     }
 
+    /// The panel's own width and the parts in it are the panel's demands: a drag of its
+    /// trailing edge must solve the tree again.
+    fn is_layout_dirty(&self) -> bool {
+        self.panel.is_layout_dirty()
+    }
+
+    fn take_structure_dirty(&mut self) -> bool {
+        self.panel.take_structure_dirty()
+    }
+
+    fn take_structure_change(&mut self) -> tilo_ui_base::widget::StructureChange {
+        self.panel.take_structure_change()
+    }
+
+    fn layout_needs_measure(&self) -> bool {
+        self.panel.layout_needs_measure()
+    }
+
     fn children_mut(&mut self) -> Vec<&mut (dyn Widget + '_)> {
         self.panel.children_mut()
     }

@@ -6198,12 +6198,24 @@ impl TextInput {
 #[path = "text_input_tests.rs"]
 mod tests;
 
-#[cfg(test)]
-#[path = "text_input_touch_tests.rs"]
-mod touch_tests;
-
 mod caret;
 mod component;
 mod events;
 pub use component::TextInputProps;
 mod completion;
+
+/// What a text field's tests read of it from outside the module.
+#[cfg(feature = "test-support")]
+impl TextInput {
+    /// The box the field was laid out in.
+    #[must_use]
+    pub fn test_rect(&self) -> vello::kurbo::Rect {
+        self.rect
+    }
+
+    /// Whether a finger is dragging a selection across it.
+    #[must_use]
+    pub fn test_is_dragging(&self) -> bool {
+        self.is_dragging
+    }
+}

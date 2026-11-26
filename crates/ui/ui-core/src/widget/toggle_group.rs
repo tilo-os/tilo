@@ -960,7 +960,7 @@ impl ToggleGroup {
         separators(self.segments.len(), self.selected, self.style).count()
     }
 
-    fn adopt_theme(&mut self, theme: &Theme) -> bool {
+    pub fn adopt_theme(&mut self, theme: &Theme) -> bool {
         let metrics = StripMetrics::of(self.control_size, theme);
         let caption = if self.caption.is_some() {
             f64::from(theme.text(TextRole::Caption).line_height_px())
@@ -975,7 +975,7 @@ impl ToggleGroup {
         changed
     }
 
-    fn focus_visible(&self) -> bool {
+    pub fn focus_visible(&self) -> bool {
         self.is_focused && !self.pressed_into_focus && tilo_ui_base::focus_visible::shown()
     }
 
@@ -1712,7 +1712,7 @@ impl ToggleGroup {
             .collect()
     }
 
-    fn measure_naturals(&mut self, text: &mut TextRenderer) -> bool {
+    pub fn measure_naturals(&mut self, text: &mut TextRenderer) -> bool {
         let naturals = self.metrics.naturals(&self.segments, self.style, text);
         if naturals == self.naturals {
             return false;
@@ -2638,6 +2638,125 @@ impl ToggleGroup {
     }
 }
 
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    #![allow(
+        dead_code,
+        unused_imports,
+        clippy::arithmetic_side_effects,
+        clippy::disallowed_methods,
+        clippy::expect_used,
+        clippy::float_cmp,
+        clippy::implicit_hasher,
+        clippy::indexing_slicing,
+        clippy::must_use_candidate,
+        clippy::needless_pass_by_value,
+        clippy::panic,
+        clippy::unused_self,
+        clippy::unwrap_used,
+        clippy::wildcard_imports,
+        reason = "test-support helpers are compiled for every test build whether or not a test uses this one"
+    )]
+    use super::*;
+    use std::cell::*;
+    use std::collections::*;
+    use std::path::*;
+    use std::rc::*;
+    use std::sync::atomic::*;
+    use std::sync::*;
+    use std::time::*;
+    use taffy::{AvailableSpace, Size};
+    use tilo_ui::app::driver::Driver;
+    use tilo_ui::kurbo::*;
+    use tilo_ui::testing::Dispatch;
+    use tilo_ui::vello::*;
+    use tilo_ui::widget::*;
+    use tilo_ui::*;
+    use tilo_ui_base::a11y::*;
+    use tilo_ui_base::component::Event;
+    use tilo_ui_base::component::*;
+    use tilo_ui_base::icons::*;
+    use tilo_ui_base::interaction::*;
+    use tilo_ui_base::paint::*;
+    use tilo_ui_base::presence::*;
+    use tilo_ui_base::tokens::*;
+    use tilo_ui_base::widget::*;
+    use tilo_ui_base::*;
+    use winit::event::*;
+    use winit::keyboard::*;
+    /// The appearance setting's choose action, which a strip of its cases runs.
+    pub fn appearance_binding() -> crate::tilo_actions::ActionBinding<usize> {
+        let spec = crate::tilo_actions::ActionSpec::typed_operation(
+            "choose",
+            "Appearance",
+            "Choose the appearance",
+            crate::tilo_actions::OperationKind::Effect,
+            "fixture.appearance",
+            vec![],
+            |_| {
+                crate::tilo_actions::EncodedAction::encode_operation("fixture.appearance", &())
+                    .unwrap()
+            },
+        );
+        let resource = crate::tilo_actions::ResourceSpec::new("fixture", "fixture", "Fixture")
+            .with_action(spec.clone());
+        crate::tilo_actions::ActionBinding::new(&resource, &spec, |_: usize| serde_json::Map::new())
+            .unwrap()
+    }
+    pub fn group_at(segments: Vec<Segment>, selected: usize, rect: Rect) -> ToggleGroup {
+        let mut g = ToggleGroup::new(segments, selected);
+        g.rect = rect;
+        g.outer = rect;
+        let n = g.segments.len();
+        if n > 0 {
+            let w = rect.width() / f64_of_usize(n);
+            let last = n.saturating_sub(1);
+            g.segment_rects = (0..n)
+                .map(|i| {
+                    let x0 = rect.x0 + f64_of_usize(i) * w;
+                    let x1 = if i == last {
+                        rect.x1
+                    } else {
+                        rect.x0 + f64_of_usize(i.saturating_add(1)) * w
+                    };
+                    Rect::new(x0, rect.y0, x1, rect.y1)
+                })
+                .collect();
+        }
+        g
+    }
+    pub fn touch(phase: winit::event::TouchPhase, point: Point) -> WindowEvent {
+        WindowEvent::Touch(winit::event::Touch {
+            device_id: winit::event::DeviceId::dummy(),
+            phase,
+            location: winit::dpi::PhysicalPosition::new(point.x, point.y),
+            force: None,
+            id: 7,
+        })
+    }
+}
+
 #[cfg(test)]
 #[path = "toggle_group_tests.rs"]
 mod tests;
+
+/// What a strip's tests read of it from outside the module.
+#[cfg(feature = "test-support")]
+impl ToggleGroup {
+    /// Where each segment stands on the strip.
+    #[must_use]
+    pub fn test_segment_rects(&self) -> &[vello::kurbo::Rect] {
+        &self.segment_rects
+    }
+
+    /// Stand the segments where a test wants them.
+    pub fn test_set_segment_rects(&mut self, rects: Vec<vello::kurbo::Rect>) {
+        self.segment_rects = rects;
+    }
+
+    /// The thumb that slides between segments.
+    #[must_use]
+    pub fn test_thumb(&self) -> &tilo_ui_base::motion::MotionValue<vello::kurbo::Rect> {
+        &self.thumb
+    }
+}

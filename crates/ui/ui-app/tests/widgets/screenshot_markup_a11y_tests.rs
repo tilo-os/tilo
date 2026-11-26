@@ -2,14 +2,40 @@
 //! keyboard, the way a screen-reader or keyboard-only person meets it: the
 //! editor traps focus, so a toolbar control that is not in the tree, or that
 //! Tab cannot reach, is one they cannot use at all.
+use std::cell::*;
+use std::collections::*;
+use std::path::*;
+use std::rc::*;
+use std::sync::atomic::*;
+use std::sync::*;
+use std::time::*;
+use tilo_ui::app::driver::Driver;
+use tilo_ui::headless::*;
+use tilo_ui::kurbo::*;
+use tilo_ui::retained_present::*;
+use tilo_ui::testing::*;
+use tilo_ui::vello::*;
+use tilo_ui::widget::internals::screenshot_markup::*;
+use tilo_ui::widget::*;
+use tilo_ui_base::a11y::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::i18n::*;
+use tilo_ui_base::icons::*;
+use tilo_ui_base::interaction::*;
+use tilo_ui_base::paint::*;
+use tilo_ui_base::presence::*;
+use tilo_ui_base::synthetic_input::*;
+use tilo_ui_base::text_selection::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::*;
+use tilo_ui_base::widget::*;
+use winit::event::*;
+use winit::keyboard::*;
 
 use std::sync::Arc;
 
-use super::*;
-use crate::app::driver::Driver;
-use crate::state::State;
+use tilo_ui::state::State;
 use tilo_ui_base::a11y::Action;
-use tilo_ui_base::theme::Theme;
 
 fn harness(width: u32) -> Driver {
     let rgba: Arc<[u8]> = Arc::from(vec![20_u8; 64 * 64 * 4]);
@@ -99,7 +125,7 @@ fn every_toolbar_control_is_named_and_operable_through_accessibility() {
     );
     activate(&mut h, "Pen tools");
     activate(&mut h, "Arrow");
-    assert_eq!(h.root::<ScreenshotMarkup>().tool, MarkupTool::Arrow);
+    assert_eq!(h.root::<ScreenshotMarkup>().test_tool(), MarkupTool::Arrow);
     assert!(h.a11y_node_named("Arrow tools").is_some());
     assert!(
         h.a11y_node_named("Arrow").is_none(),
@@ -107,7 +133,7 @@ fn every_toolbar_control_is_named_and_operable_through_accessibility() {
     );
 
     activate(&mut h, "Blue");
-    assert_eq!(h.root::<ScreenshotMarkup>().color, SWATCHES[2]);
+    assert_eq!(h.root::<ScreenshotMarkup>().test_color(), SWATCHES[2]);
     let blue = h.a11y_node_named("Blue").expect("blue swatch");
     let checked = h
         .a11y_nodes()
@@ -133,7 +159,7 @@ fn a_narrow_editor_still_offers_every_colour_through_accessibility() {
     );
     activate(&mut h, "Colours");
     activate(&mut h, "Green");
-    assert_eq!(h.root::<ScreenshotMarkup>().color, SWATCHES[3]);
+    assert_eq!(h.root::<ScreenshotMarkup>().test_color(), SWATCHES[3]);
 }
 
 #[test]
@@ -187,7 +213,7 @@ fn tab_reaches_every_toolbar_control_and_enter_activates_the_one_it_is_on() {
     h.key("Tab");
     assert_eq!(focused_label(&h).as_deref(), Some("Arrow"));
     h.key("Enter");
-    assert_eq!(h.root::<ScreenshotMarkup>().tool, MarkupTool::Arrow);
+    assert_eq!(h.root::<ScreenshotMarkup>().test_tool(), MarkupTool::Arrow);
     assert_eq!(focused_label(&h).as_deref(), Some("Arrow tools"));
 }
 
@@ -199,7 +225,7 @@ fn a_picker_closed_by_a_press_outside_returns_the_keyboard_to_its_button() {
     h.key("Tab");
     assert_eq!(focused_label(&h).as_deref(), Some("Pen"));
 
-    let header = h.root::<ScreenshotMarkup>().rect;
+    let header = h.root::<ScreenshotMarkup>().test_rect();
     h.click_at(header.x0 + 4.0, header.y0 + 4.0);
     assert!(!h.root::<ScreenshotMarkup>().tool_picker_open);
     assert_eq!(

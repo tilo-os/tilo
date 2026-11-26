@@ -56,7 +56,7 @@ pub struct PageSidebarProps {
 }
 
 pub struct DeclaredRail {
-    rail: PageSidebar,
+    pub rail: PageSidebar,
     select: Event,
     reorder: Event,
     duplicate: Event,
@@ -412,52 +412,4 @@ fn paint_page_picture(
     let placement = Affine::translate((dest.x0, dest.y0)) * Affine::scale_non_uniform(scale, scale);
     scene.fill(Fill::NonZero, base, &brush, Some(placement), &dest);
     scene.pop_layer();
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tilo_ui_base::{component::Fired, component::Intent};
-
-    /// A rail a view declares answers the pointer: a page pressed is the page the view is told
-    /// was chosen.
-    #[test]
-    fn a_page_pressed_on_a_declared_rail_is_chosen() {
-        let queue = tilo_ui_base::Intents::<Fired>::default();
-        let rail = DeclaredRail::from_props(
-            "r",
-            PageSidebarProps {
-                aspect: 1.414,
-                count: 3,
-                current: 0,
-                select: Event::View(Intent::new(&queue, "r", "select")),
-                ..PageSidebarProps::default()
-            },
-        );
-        let mut harness = crate::app::driver::Driver::new_with_theme(
-            crate::State::new(),
-            Box::new(rail),
-            (240, 900),
-            tilo_ui_base::theme::Theme::light(),
-        );
-        fn find(widget: &dyn tilo_ui_base::widget::Widget) -> Option<&DeclaredRail> {
-            widget
-                .as_any()
-                .and_then(|any| any.downcast_ref::<DeclaredRail>())
-                .or_else(|| widget.children().into_iter().find_map(find))
-        }
-        let second = find(harness.root_widget())
-            .and_then(|rail| rail.rail.thumb_rects().get(1).map(|(_, at)| *at))
-            .expect("the second page's thumbnail");
-        harness.click_at(second.center().x, second.center().y);
-        let fired: Vec<_> = queue
-            .take()
-            .into_iter()
-            .map(|fired| (fired.event, fired.value))
-            .collect();
-        assert!(
-            fired.contains(&("select".to_owned(), Some(Value::Int(1)))),
-            "the second page is chosen: {fired:?}"
-        );
-    }
 }

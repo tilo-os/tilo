@@ -1,9 +1,13 @@
 //! Test support for action-bound controls: a mount outside host ownership
 //! and a one-parameter test action.
+#![allow(
+    clippy::unwrap_used,
+    reason = "a test-support binding: a failure here is the assertion"
+)]
 
 use tilo_ui_base::{widget::Decorator, widget::Widget, widget::capability, widget::controls};
 
-pub(crate) struct Unattached<W>(pub W);
+pub struct Unattached<W>(pub W);
 
 impl<W: Widget + controls::ActionControls + 'static> Decorator for Unattached<W> {
     type Inner = W;
@@ -50,7 +54,7 @@ impl<W: Widget + controls::ActionControls + 'static> controls::ActionControls fo
     }
 }
 
-pub(crate) fn test_value_action_binding<I: serde::Serialize + 'static>(
+pub fn test_value_action_binding<I: serde::Serialize + 'static>(
     param: tilo_actions::ParamType,
 ) -> tilo_actions::ActionBinding<I> {
     use tilo_actions::{ActionParam, ActionSpec, EncodedAction, OperationKind, ResourceSpec};

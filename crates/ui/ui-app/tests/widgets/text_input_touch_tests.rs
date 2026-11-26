@@ -1,11 +1,38 @@
 //! A finger on a text field inside a form, through the window's touch
 //! emulation: what a tap, a swipe and a drag across the text each do.
-
-use super::*;
+use std::cell::*;
+use std::collections::*;
+use std::path::*;
+use std::rc::*;
+use std::sync::atomic::*;
+use std::sync::*;
+use std::time::*;
+use tilo_ui::app::driver::Driver;
+use tilo_ui::headless::*;
+use tilo_ui::kurbo::*;
+use tilo_ui::retained_present::*;
+use tilo_ui::testing::*;
+use tilo_ui::vello::*;
+use tilo_ui::widget::internals::text_input::*;
+use tilo_ui::widget::*;
+use tilo_ui_base::a11y::*;
+use tilo_ui_base::component::*;
+use tilo_ui_base::i18n::*;
+use tilo_ui_base::icons::*;
+use tilo_ui_base::interaction::*;
+use tilo_ui_base::paint::*;
+use tilo_ui_base::presence::*;
+use tilo_ui_base::synthetic_input::*;
+use tilo_ui_base::text_selection::*;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::*;
+use tilo_ui_base::widget::*;
+use winit::event::*;
+use winit::keyboard::*;
 
 /// A form taller than its window: a field 100 px down, then the rest.
-fn touch_form(field: TextInput) -> crate::app::driver::Driver {
-    use crate::widget::{Column, Container, Scrollable, Text};
+fn touch_form(field: TextInput) -> tilo_ui::app::driver::Driver {
+    use tilo_ui::widget::{Column, Container, Scrollable, Text};
     let form = Scrollable::new_vertical()
         .with_height(300.0)
         .with_child(Box::new(
@@ -24,8 +51,8 @@ fn touch_form(field: TextInput) -> crate::app::driver::Driver {
                         .with_child(Box::new(Text::new("Rest of the form").with_id("rest"))),
                 )),
         ));
-    let mut frame = crate::app::driver::Driver::new_with_theme(
-        crate::State::new(),
+    let mut frame = tilo_ui::app::driver::Driver::new_with_theme(
+        tilo_ui::State::new(),
         Box::new(form),
         (400, 300),
         Theme::dark().with_reduce_motion(true),
@@ -82,10 +109,10 @@ fn a_finger_scrolls_a_form_up_or_down_and_selects_across_a_field() {
 }
 
 /// Where byte `at` of the field's text sits, in the window.
-fn x_of(frame: &mut crate::app::driver::Driver, at: usize) -> f64 {
+fn x_of(frame: &mut tilo_ui::app::driver::Driver, at: usize) -> f64 {
     frame
         .with_widget_mut::<TextInput, _>(|field| {
-            field.rect.x0 + 10.0 + field.char_x_positions()[at]
+            field.test_rect().x0 + 10.0 + field.char_x_positions()[at]
         })
         .expect("the field")
 }
@@ -106,7 +133,7 @@ fn a_finger_selects_what_it_crosses_and_lets_go_where_it_lifts() {
         "the selection runs from where the finger came down to where it lifted"
     );
     assert_eq!(
-        frame.with_widget_mut::<TextInput, _>(|field| field.is_dragging),
+        frame.with_widget_mut::<TextInput, _>(|field| field.test_is_dragging()),
         Some(false),
         "the lift ends the selection gesture"
     );
@@ -122,7 +149,7 @@ fn a_second_finger_ends_a_selection_without_taking_it_over() {
     let (from, to) = (x_of(&mut frame, 1), x_of(&mut frame, 5));
 
     frame.touch(0, TouchPhase::Started, from, y);
-    frame.touch(0, TouchPhase::Moved, (from + to) / 2.0, y);
+    frame.touch(0, TouchPhase::Moved, from.midpoint(to), y);
     frame.touch(0, TouchPhase::Moved, to, y);
     let selected = frame
         .with_widget_mut::<TextInput, _>(|field| field.selection_range_public())
@@ -132,7 +159,7 @@ fn a_second_finger_ends_a_selection_without_taking_it_over() {
     let second = x_of(&mut frame, 9);
     frame.touch(1, TouchPhase::Started, second, y);
     assert_eq!(
-        frame.with_widget_mut::<TextInput, _>(|field| field.is_dragging),
+        frame.with_widget_mut::<TextInput, _>(|field| field.test_is_dragging()),
         Some(false),
         "a second finger ends the selection where the first one is"
     );
