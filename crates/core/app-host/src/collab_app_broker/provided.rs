@@ -951,6 +951,7 @@ pub(crate) mod signed_test_support {
 
     struct NativeOwnerReceipts {
         owner: Arc<tilo_peer_state::owner::DeviceWorkspaces>,
+        workspace: String,
     }
 
     impl tilo_broker_core::workspace_commits::WorkspaceCommits for NativeOwnerReceipts {
@@ -959,9 +960,7 @@ pub(crate) mod signed_test_support {
         }
 
         fn health(&self) -> Result<(), String> {
-            let workspace =
-                tilo_desktop_model::WorkspaceId::parse(tilo_peer_state::owner::testing::WORKSPACE)
-                    .unwrap();
+            let workspace = tilo_desktop_model::WorkspaceId::parse(&self.workspace).unwrap();
             self.owner.with_current(workspace, |_| Ok(()))
         }
 
@@ -1045,6 +1044,15 @@ pub(crate) mod signed_test_support {
         }
 
         pub fn new(services: ProcessServices) -> Self {
+            Self::building(services, false)
+        }
+
+        /// [`Self::new`] in a workspace of its own that no other fixture in the process opened.
+        pub fn in_workspace(services: ProcessServices) -> Self {
+            Self::building(services, true)
+        }
+
+        fn building(services: ProcessServices, fresh: bool) -> Self {
             let directory = tempfile::tempdir().unwrap();
             let mut environment = tilo_test_env::ScopedEnv::new();
             environment
@@ -1060,19 +1068,37 @@ pub(crate) mod signed_test_support {
                 tilo_identity::provisioning::IdentityStorage::Files,
             )
             .expect("provision the production receipt signer");
-            let mut workspace = Workspace::new(
-                tilo_desktop_model::WorkspaceId::parse(tilo_peer_state::owner::testing::WORKSPACE)
-                    .unwrap(),
-                "Host actions",
-            );
-            let workspace_id = workspace.id().to_string();
-            let (key, certificate) = tilo_identity::trusted_device::current(&workspace_id).unwrap();
+            let (key, certificate) =
+                tilo_identity::trusted_device::current(tilo_peer_state::owner::testing::WORKSPACE)
+                    .unwrap();
             let owner = Arc::new(
                 tilo_peer_state::owner::open_file(&directory.path().join("native.json")).unwrap(),
             );
-            tilo_peer_state::owner::testing::add_interactive_device(&owner, &key, &certificate)
-                .unwrap();
-            let publisher = PeerPublisher::with_commits(Arc::new(NativeOwnerReceipts { owner }));
+            // A fixture in a workspace of its own founds one: a workspace no other fixture in
+            // this process opened, which its host therefore signs nothing for.
+            let named = match fresh {
+                false => {
+                    tilo_peer_state::owner::testing::add_interactive_device(
+                        &owner,
+                        &key,
+                        &certificate,
+                    )
+                    .unwrap();
+                    tilo_peer_state::owner::testing::WORKSPACE.to_owned()
+                }
+                true => tilo_peer_state::owner::testing::founded(&owner, &certificate, &key)
+                    .unwrap()
+                    .to_string(),
+            };
+            let mut workspace = Workspace::new(
+                tilo_desktop_model::WorkspaceId::parse(&named).unwrap(),
+                "Host actions",
+            );
+            let workspace_id = workspace.id().to_string();
+            let publisher = PeerPublisher::with_commits(Arc::new(NativeOwnerReceipts {
+                owner,
+                workspace: workspace_id.clone(),
+            }));
             let person = person_id_for_root(certificate.user_public_key);
             workspace.policy.set_owner(person.clone());
             let mut tree = WorkspaceTree::default();
@@ -1884,10 +1910,13 @@ mod identity_admin_tests {
         {
             for revoked in [false, true] {
                 let host = Arc::new(Host::default());
-                let f = super::signed_test_support::Fixture::new(crate::services::ProcessServices {
-                    providers: Some(providers(host.clone())),
-                    ..Default::default()
-                });
+                // A workspace of this fixture's own: no host opened it, so it signs nothing.
+                let f = super::signed_test_support::Fixture::in_workspace(
+                    crate::services::ProcessServices {
+                        providers: Some(providers(host.clone())),
+                        ..Default::default()
+                    },
+                );
                 if revoked {
                     f.authority
                         .revoked

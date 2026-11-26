@@ -578,7 +578,8 @@ mod tests {
         {
             for revoked in [false, true] {
                 let network = Arc::new(Network::default());
-                let f = super::super::super::provided::signed_test_support::Fixture::new(
+                // A workspace of this fixture's own: no host opened it, so it signs nothing.
+                let f = super::super::super::provided::signed_test_support::Fixture::in_workspace(
                     crate::services::ProcessServices {
                         own_device: Some(network.clone()),
                         ..Default::default()
