@@ -20667,6 +20667,7 @@ dependencies = [
  "tilo-delivery-protocol",
  "tilo-desktop-model",
  "tilo-device-identity",
+ "tilo-device-tickets",
  "tilo-endpoint-reachability",
  "tilo-fs",
  "tilo-fs-protocol",

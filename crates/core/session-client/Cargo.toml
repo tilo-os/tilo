@@ -111,6 +111,8 @@ tilo-workspace-records = { path = "../workspace-records" }
 tilo-app-host = { path = "../app-host", features = ["test-support"] }
 # An invitation read as a device that follows its link reads it: the server it names, from it alone.
 tilo-workspace-join = { path = "../workspace-join" }
+# The laptop serving a ticket that the phone's flows, which these tests run too, start.
+tilo-device-tickets = { path = "../device-tickets", features = ["test-support"] }
 # A synced folder's tree written through a session, as a computer's folder writes it.
 tilo-fs = { package = "tilo-fs", path = "../fs" }
 iroh-blobs.workspace = true
