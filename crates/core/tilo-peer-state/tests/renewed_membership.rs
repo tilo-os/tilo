@@ -140,7 +140,7 @@ impl MemoryWorkspaces {
         peer.select_exact_admissions().unwrap();
         tilo_peer_state::fixture::found(
             &mut peer,
-            (&key, &device),
+            (key, device),
             std::slice::from_ref(device),
             Vec::new(),
             now,

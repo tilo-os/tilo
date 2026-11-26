@@ -177,7 +177,7 @@ fn receive(
     message: NeighbourMsg,
     now: SystemTime,
 ) -> ReceiveOutcome {
-    peer.receive_from(crate::fixture::origin(&key), message, now)
+    peer.receive_from(crate::fixture::origin(key), message, now)
         .unwrap()
 }
 

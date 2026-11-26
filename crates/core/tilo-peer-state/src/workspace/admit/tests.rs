@@ -1519,12 +1519,11 @@ fn two_devices_first_durability_receipts_both_survive_a_merge() {
 fn owners_other_device(seed: u8) -> DeviceCert {
     let root = ed25519_dalek::SigningKey::from_bytes(&[0x11; 32]);
     let key = ed25519_dalek::SigningKey::from_bytes(&[seed; 32]);
-    let cert = crate::fixture::cert(
+    crate::fixture::cert(
         &root,
         &key,
         tilo_user_identity::DeviceCapabilities::member(),
-    );
-    cert
+    )
 }
 
 /// The workspace document `founder` seeds, started over from a base `bases` times, as a

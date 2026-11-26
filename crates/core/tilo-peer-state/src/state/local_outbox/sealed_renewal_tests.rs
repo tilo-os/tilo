@@ -59,7 +59,7 @@ fn fixture() -> Fixture {
 }
 
 fn origin(key: &SigningKey) -> TransportOrigin {
-    crate::fixture::origin(&key)
+    crate::fixture::origin(key)
 }
 
 fn metadata(epoch: u64) -> EncryptionMetadata {

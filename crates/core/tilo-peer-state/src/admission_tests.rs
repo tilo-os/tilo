@@ -1060,6 +1060,10 @@ pub(crate) fn seeded() -> (StatePeer, SigningKey, SigningKey, DeviceCert, System
 }
 
 #[test]
+#[expect(
+    clippy::too_many_lines,
+    reason = "one end-to-end scenario: redeeming an invitation, its single use, and the removal that closes access"
+)]
 fn independent_invite_redemption_is_durable_single_use_and_removal_closes_access() {
     use crate::fixture::{device, invitation, redeem, restored};
     use crate::join::Role;
@@ -1939,10 +1943,6 @@ fn learned_revocation_and_device_row_survive_a_stale_restore() {
 }
 
 #[test]
-#[expect(
-    clippy::too_many_lines,
-    reason = "one end-to-end scenario: its setup and assertions stay together"
-)]
 fn deferred_encryption_obligation_is_journaled_on_fresh_and_unchanged_governance() {
     for existing in [false, true] {
         let (mut native, a, b, bc, now) = seeded();

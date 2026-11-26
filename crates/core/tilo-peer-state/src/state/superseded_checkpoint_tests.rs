@@ -246,7 +246,7 @@ tilo_test_env::scenario! {
             app: "test.app".into(),
             record: "tab:1".into(),
         };
-        let origin = |key: &SigningKey| crate::fixture::origin(&key);
+        let origin = |key: &SigningKey| crate::fixture::origin(key);
 
         let mut first = receiver.clone();
         let covered = snapshot(&mut first, &first_key, later, "covered");

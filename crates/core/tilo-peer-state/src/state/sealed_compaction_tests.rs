@@ -187,7 +187,7 @@ fn artifact() -> collab_types::ArtifactId {
 }
 
 pub(super) fn origin(key: &SigningKey) -> TransportOrigin {
-    crate::fixture::origin(&key)
+    crate::fixture::origin(key)
 }
 
 fn route() -> Route {
@@ -1378,10 +1378,7 @@ tilo_test_env::scenario! {
         let mut holder = f.replica.clone();
         let writes: Vec<NeighbourMsg> = ["1", "2", "3"]
             .iter()
-            .map(|value| {
-                let message = put(&mut holder, &f.other, &keys, &author.edit("value", value), now);
-                message
-            })
+            .map(|value| put(&mut holder, &f.other, &keys, &author.edit("value", value), now))
             .collect();
         let all = held(&holder);
         let owner = f.owner.clone();
@@ -2358,7 +2355,7 @@ fn joins_late(f: &Fixture, last: &[NeighbourMsg], whole: &mut AutoCommit) {
     }
     assert_eq!(held(&fresh), held(&f.replica));
     let (mut read, unmerged) = reading(&fresh, &keys);
-    assert!(unmerged.is_empty(), "{:?}", unmerged);
+    assert!(unmerged.is_empty(), "{unmerged:?}");
     assert_eq!(
         read.get_heads(),
         whole.get_heads(),
@@ -2497,7 +2494,7 @@ tilo_test_env::scenario! {
         assert_eq!(text(&read, "early-1").as_deref(), Some("first"));
         assert_eq!(text(&read, "early-2").as_deref(), Some("second"));
         let (_, unmerged) = reading(&f.replica, &keys);
-        assert!(unmerged.is_empty(), "{:?}", unmerged);
+        assert!(unmerged.is_empty(), "{unmerged:?}");
     }
 
     phase a_kept_reader_takes_a_write_it_read_without_in_once_its_base_arrives;
@@ -3283,7 +3280,7 @@ fn a_history_with_a_refused_write_compacts_without_it_and_takes_writes_again() {
         kept_open::reads_without_the_refused(&document);
         assert_eq!(refused, [], "nothing refused is left in the history");
         // The workspace's own reader reads the compacted record alike.
-        let (read, unmerged) = reading(&peer, &keys);
+        let (read, unmerged) = reading(peer, &keys);
         assert_eq!(unmerged, []);
         assert_eq!(text(&read, "editor"), text(&document, "editor"));
     }

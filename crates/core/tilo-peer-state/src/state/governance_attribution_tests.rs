@@ -11,11 +11,7 @@ const MADE_AT: u64 = 1_800_000_000;
 
 fn device(root: &SigningKey, seed: u8) -> (SigningKey, DeviceCert) {
     let key = SigningKey::from_bytes(&[seed; 32]);
-    let cert = crate::fixture::cert(
-        &root,
-        &key,
-        tilo_user_identity::DeviceCapabilities::member(),
-    );
+    let cert = crate::fixture::cert(root, &key, tilo_user_identity::DeviceCapabilities::member());
     (key, cert)
 }
 

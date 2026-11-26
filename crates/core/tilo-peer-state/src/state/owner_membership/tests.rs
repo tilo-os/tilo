@@ -52,12 +52,7 @@ fn proof_through(
 
 /// `key`'s certificate from `root`, a device the person holds themself.
 fn certified(root: &SigningKey, key: &SigningKey, _: &str) -> DeviceCert {
-    let cert = crate::fixture::cert(
-        &root,
-        &key,
-        tilo_user_identity::DeviceCapabilities::member(),
-    );
-    cert
+    crate::fixture::cert(root, key, tilo_user_identity::DeviceCapabilities::member())
 }
 
 /// An editor the owner invited, their first desktop, and a second device of
