@@ -22,9 +22,22 @@ use crate::change_marks::action_id;
 const HOST: &str = "tl:host";
 const LETTERS: &str = "test.letters";
 
-/// `app`'s window in the display-less driver with the scenario `scenario` staged.
+/// `app`'s window in the display-less driver with the scenario `scenario` staged, in Ada's
+/// workspace with Mia, Leo and Ada in it: the people the staged apps' scenarios name (a notebook's
+/// or a week's discussion, and the team Chat's channels stage, whose Ada is a person of the story
+/// rather than the one at the window). A workspace's store takes no member a scenario makes up.
 fn staged(app: &str, scenario: &str) -> Session {
-    let mut session = Session::new(app, "ada");
+    let bus = std::rc::Rc::new(tilolang_process::testing::Bus::default());
+    for (person, name) in [
+        ("ada", "Ada"),
+        ("Mia", "Mia"),
+        ("Leo", "Leo"),
+        ("Ada", "Ada"),
+    ] {
+        bus.member(ui::tilo_actions::MemberId::person(person), name);
+    }
+    let route = super::RouteSpec::app(app, uuid::Uuid::new_v4());
+    let mut session = Session::on_bus(&bus, &route, super::spec_of(&route, "ada"));
     session.stage(scenario);
     session.settle();
     session
