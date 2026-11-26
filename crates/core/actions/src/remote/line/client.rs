@@ -265,6 +265,42 @@ impl LineClient {
         }
     }
 
+    /// `command` (`collab_types::store::wire::Command`, as JSON) to the records of the app this
+    /// connection is, in `workspace`, waited for: the store's `Reply`, as JSON. A record it founds
+    /// is of `kind`. The other end knows the app by the connection; a workspace other than the
+    /// one it acts in is refused.
+    ///
+    /// # Errors
+    /// The store refused the command, or the connection did not answer.
+    pub fn store(
+        &self,
+        workspace: &str,
+        command: serde_json::Value,
+        kind: Option<&str>,
+    ) -> Answered<serde_json::Value> {
+        // Room for the frame around it: a command too large to send is refused here, never sent
+        // as a line the other end reads as no frame.
+        let size = serde_json::to_vec(&command).map_or(usize::MAX, |bytes| bytes.len());
+        if size > MAX_REMOTE_ACTION_FRAME_BYTES.saturating_sub(1024) {
+            return Err(ActionCallError::InvalidRequest {
+                reason: format!("a store command of {size} bytes does not fit the connection"),
+            });
+        }
+        let correlation = self.correlation();
+        match self.asked_in(
+            Key::Correlation(correlation),
+            RemoteActionMessage::StoreRequest {
+                correlation,
+                command,
+                kind: kind.map(str::to_owned),
+            },
+            Some(workspace),
+        )? {
+            RemoteActionMessage::StoreResponse { result, .. } => result,
+            other => Err(unexpected(&other)),
+        }
+    }
+
     fn saw(&self, state: Option<&InvocationState>) {
         if let Some(state) = state {
             self.0
@@ -407,6 +443,7 @@ fn answered(shared: &Shared, message: RemoteActionMessage) {
         | RemoteActionMessage::ResourceReading { correlation, .. }
         | RemoteActionMessage::ContentPutResponse { correlation, .. }
         | RemoteActionMessage::ContentGetResponse { correlation, .. }
+        | RemoteActionMessage::StoreResponse { correlation, .. }
         | RemoteActionMessage::ChangesResponse { correlation, .. }
         | RemoteActionMessage::ChangedResponse { correlation, .. }
         | RemoteActionMessage::Update {

@@ -421,8 +421,9 @@ impl PastChildren {
     }
 }
 
-/// How many bytes of changes one page or run carries: under [`MAX_WIRE_BYTES`] once encoded.
-pub const RECORD_PAGE_BYTES: usize = 2 << 20;
+/// How many bytes of changes one page or run carries: under [`MAX_WIRE_BYTES`] once encoded, and
+/// under the megabyte one frame of an app's connection to its device carries, as base64.
+pub const RECORD_PAGE_BYTES: usize = 512 << 10;
 
 /// Bytes carried in a command or reply, encoded as base64 text rather than a list of numbers.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

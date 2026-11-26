@@ -89,6 +89,7 @@ mod session_state;
 /// the device's dispatch.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod signing_in;
+mod store_commands;
 mod surfaces;
 pub use session_state::{SessionState, SyncState, WorkspaceState};
 mod shared_provider;
@@ -147,6 +148,7 @@ pub use content_put::{
 pub use nodes::{
     NODE_PERMITS_ACTION, NODE_RESOURCE_PREFIX, SHARE_NODE_ACTION, UNSHARE_NODE_ACTION, node_target,
 };
+pub use store_commands::{STORE_COMMANDS_UNAVAILABLE, StoreCommands};
 mod execution_lease;
 #[cfg(not(target_arch = "wasm32"))]
 pub mod handed;
@@ -2139,6 +2141,13 @@ pub trait ActionProvider {
         None
     }
 
+    /// Where the process this provider serves reads and writes its app's records
+    /// ([`StoreCommands`]): an app's own connection to its device. `None` for every other
+    /// provider.
+    fn store_commands(&self) -> Option<std::sync::Arc<dyn StoreCommands>> {
+        None
+    }
+
     /// Where an agent task's changes go to their records' origin ([`ResourceChanges`]).
     fn resource_changes(&self) -> Option<std::sync::Arc<dyn ResourceChanges>> {
         None
@@ -2457,6 +2466,25 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<audio_output::Snapshot, ActionCallError>,
     },
+    /// One command to the records of the app the connection is, in the device's one store
+    /// ([`StoreCommands`]): `collab_types::store::wire::Command` as JSON. What an app's process
+    /// reads and writes its records by. The app is the one the device started the connection's
+    /// process as, never one the frame names, and the workspace is the frame's
+    /// ([`RemoteActionFrame::workspace`]).
+    StoreRequest {
+        correlation: u64,
+        command: serde_json::Value,
+        /// The kind a record the command founds is of, as the app names it; a record of a kind
+        /// its manifest does not declare is not founded.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+    },
+    /// Answer to [`Self::StoreRequest`], same correlation: the store's
+    /// `collab_types::store::wire::Reply` as JSON.
+    StoreResponse {
+        correlation: u64,
+        result: Result<serde_json::Value, ActionCallError>,
+    },
 }
 
 /// One record a reader asks for over the action API: alone, or `joined`
@@ -2562,6 +2590,7 @@ impl RemoteActionMessage {
                 | Self::ChangedRequest { .. }
                 | Self::SurfaceRequest { .. }
                 | Self::AudioOutputRequest { .. }
+                | Self::StoreRequest { .. }
         )
     }
 }
@@ -2584,6 +2613,26 @@ fn not_kept(message: &RemoteActionMessage) -> Option<RemoteActionMessage> {
             reason: reason.into(),
         },
     )
+}
+
+/// `command` to the records of `caller`'s app, answered by `provider`'s store
+/// ([`ActionProvider::store_commands`]) for `correlation`.
+fn store_answered<H: ActionProvider>(
+    provider: &H,
+    caller: &Caller,
+    correlation: u64,
+    (command, kind): (serde_json::Value, Option<String>),
+) -> Pending<RemoteActionMessage> {
+    let result = match provider.store_commands() {
+        Some(store) => store.command(caller, command, kind),
+        None => Pending::ready(Err(ActionCallError::Unavailable {
+            reason: STORE_COMMANDS_UNAVAILABLE.into(),
+        })),
+    };
+    result.map(move |result| RemoteActionMessage::StoreResponse {
+        correlation,
+        result,
+    })
 }
 
 /// The changes to `caller`'s workspace's records after `after`, from
@@ -2865,6 +2914,11 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
                 result: Err(no_audio_output_lane()),
             })
         }
+        RemoteActionMessage::StoreRequest {
+            correlation,
+            command,
+            kind,
+        } => store_answered(provider, caller, correlation, (command, kind)),
         RemoteActionMessage::CatalogueResponse { .. }
         | RemoteActionMessage::Receipt(_)
         | RemoteActionMessage::Update { .. }
@@ -2884,6 +2938,7 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
         | RemoteActionMessage::CallSaid(_)
         | RemoteActionMessage::CallStatus(_)
         | RemoteActionMessage::AudioOutputResponse { .. }
+        | RemoteActionMessage::StoreResponse { .. }
         | RemoteActionMessage::CatalogueChanged { .. } => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
@@ -2987,6 +3042,12 @@ pub fn refuse(
         }
         RemoteActionMessage::SurfaceRequest { correlation, .. } => {
             RemoteActionMessage::SurfaceResponse {
+                correlation: *correlation,
+                result: Err(error),
+            }
+        }
+        RemoteActionMessage::StoreRequest { correlation, .. } => {
+            RemoteActionMessage::StoreResponse {
                 correlation: *correlation,
                 result: Err(error),
             }

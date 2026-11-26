@@ -396,41 +396,6 @@ impl JoinedChannel {
         }
     }
 
-    /// Opens the query `body` in the device's one store, for this route's app in its workspace:
-    /// its pages, as the app may read them.
-    pub(super) fn resources_open(
-        &self,
-        body: &[u8],
-    ) -> Result<crate::services::ResourcePages, BrokerError> {
-        if body.len() > collab_types::store::wire::MAX_WIRE_BYTES {
-            return Err(BrokerError::failed(
-                "a resource query exceeds the wire bound".into(),
-            ));
-        }
-        let query: collab_types::store::Query = serde_json::from_slice(body)
-            .map_err(|error| BrokerError::failed(format!("no resource query: {error}")))?;
-        let route = self.route();
-        let current = self
-            .state
-            .revalidate_admission(&route, &self.verified_identity)?;
-        if route.app_id.is_empty() || route.cluster_id.is_empty() {
-            return Err(BrokerError::failed(
-                "resources are read on a certified app and workspace route".into(),
-            ));
-        }
-        let service = self.state.services.resources.clone().ok_or_else(|| {
-            BrokerError::failed("this device keeps no store for apps' resources".into())
-        })?;
-        let caller = current.certified_caller(&route.cluster_id, false);
-        let context = crate::services::ResourceRequestContext::authenticated(
-            route.app_id,
-            route.cluster_id,
-            caller,
-        )
-        .opened_for(self.opened_for());
-        Ok(service.open(&context, query))
-    }
-
     /// The caller the host opened this connection's view for, when it opened one for a caller
     /// of the device's dispatch ([`native_media::LocalAppConnection::opened_for`]).
     pub(super) fn opened_for(&self) -> Option<tilo_actions::remote::Caller> {

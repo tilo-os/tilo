@@ -1851,36 +1851,6 @@ impl WireConnection {
                             Some(Event::ShownActions(decisions))
                         }))
                     }
-                    Topic::Resources(query) => {
-                        let opening = session.resources_open(&query).map_err(failed)?;
-                        tokio::task::spawn_local(async move {
-                            let reason = match opening.await {
-                                Ok(mut pages) => loop {
-                                    let Some(page) = pages.recv().await else {
-                                        break "the store let go of the query".to_owned();
-                                    };
-                                    let Ok(page) = serde_json::to_vec(&page) else {
-                                        break "the store's page cannot be encoded".to_owned();
-                                    };
-                                    let event = Event::Resources(page);
-                                    if frames
-                                        .send(HostFrame::Event {
-                                            subscription: id,
-                                            event,
-                                        })
-                                        .is_err()
-                                    {
-                                        return;
-                                    }
-                                },
-                                Err(error) => error,
-                            };
-                            let _ = frames.send(HostFrame::Ended {
-                                subscription: id,
-                                reason,
-                            });
-                        })
-                    }
                 };
                 self.subscriptions
                     .borrow_mut()

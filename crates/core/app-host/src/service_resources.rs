@@ -7,7 +7,7 @@
 
 use collab_types::store::wire::Command;
 
-use super::services::{ResourceAnswer, ResourcePages, ResourceRequestContext, ResourceServices};
+use super::services::{ResourceAnswer, ResourceRequestContext, ResourceServices};
 use tilo_workspace_service::workspaces::Workspaces;
 
 /// The store of the workspaces this device's service holds, as apps write and read in it.
@@ -60,15 +60,5 @@ impl ResourceServices for ServiceResources {
         Box::pin(on_the_service(self.runtime.clone(), async move {
             Box::pin(workspaces.resource_command(&context, command)).await
         }))
-    }
-
-    fn open(
-        &self,
-        context: &ResourceRequestContext,
-        query: collab_types::store::Query,
-    ) -> ResourcePages {
-        let context = context.clone();
-        let workspaces = self.workspaces.clone();
-        Box::pin(async move { Box::pin(workspaces.open_resources(&context, query)).await })
     }
 }

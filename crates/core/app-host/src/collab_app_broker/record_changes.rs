@@ -67,12 +67,8 @@ impl JoinedChannel {
     /// Why the route's app may not found its record, where this device hosts the workspace:
     /// a new record is of a kind its installed manifest declares.
     pub(super) fn founding_refusal(&self, route: &CrdtRoute) -> Option<String> {
-        let allows = self.state.services.record_founding.as_ref()?;
-        let app = &route.app_id;
-        let Some(kind) = self.resource_type.as_deref() else {
-            return Some(format!("{app} named no kind for a new record"));
-        };
-        (!allows(app, kind)).then(|| format!("{app} does not declare the resource kind `{kind}`"))
+        self.state
+            .founding_refusal(&route.app_id, self.resource_type.as_deref())
     }
 
     /// The record a record command of `command` addresses (`route`, [`addressed`]): once the
@@ -149,6 +145,16 @@ pub(super) fn telling_record_changed(
 }
 
 impl AppBrokerState {
+    /// Why `app` may not found a record of `kind` in a workspace this device hosts: a new record
+    /// is of a kind its installed manifest declares.
+    pub(crate) fn founding_refusal(&self, app: &str, kind: Option<&str>) -> Option<String> {
+        let allows = self.services.record_founding.as_ref()?;
+        let Some(kind) = kind else {
+            return Some(format!("{app} named no kind for a new record"));
+        };
+        (!allows(app, kind)).then(|| format!("{app} does not declare the resource kind `{kind}`"))
+    }
+
     /// Tell every window open on `route`'s record but `except` that the record changed: each asks
     /// its changes from what it holds. A committed read waiting on the record wakes as well.
     pub(crate) fn record_changed(&self, route: &CrdtRoute, except: u64) {

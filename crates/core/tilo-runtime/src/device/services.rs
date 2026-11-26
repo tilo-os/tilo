@@ -1776,6 +1776,11 @@ impl Daemon {
         Ok((joined, self.app_caller(app, workspace)))
     }
 
+    /// The workspaces' broker, while it serves apps.
+    pub(crate) fn app_broker(&self) -> Option<AppActionBroker> {
+        self.broker.app_action_broker()
+    }
+
     /// The caller an app's own connection is decided as in `workspace`: the app, holding the
     /// grant its signed manifest declares where it declares that it signs in to the workspace's
     /// accounts. The grant names the app for the accounts and nothing of a person's rights.

@@ -122,6 +122,7 @@ pub(crate) mod unclaimed;
 #[cfg(test)]
 mod unclaimed_tests;
 // A vault item released to the app process whose connection asks for it.
+pub(crate) mod store_lane;
 pub(crate) mod vault_release;
 #[cfg(target_os = "linux")]
 pub(crate) mod vm_environment;

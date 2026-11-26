@@ -804,3 +804,13 @@ reason = "the app's answers on the same session-local route as `HandoffRequest`:
 file = "crates/core/runtime-portal/src/workspace_terminal.rs"
 enum = "Reply"
 reason = "one JSON line, by name, on a socket pair the device's daemon hands the shell runtime on the same computer for one terminal; it is never kept, and whether a workspace is hosted now comes in the daemon's action answer instead"
+
+[[break]]
+file = "crates/core/runtime-collab/src/wire.rs"
+enum = "Topic"
+reason = "the query an app held open over its route is gone, so the shown actions move up one place; postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection, and no byte of them is kept"
+
+[[break]]
+file = "crates/core/runtime-collab/src/wire.rs"
+enum = "Event"
+reason = "the pages of the query an app held open over its route are gone, so the shown actions' decisions move up one place; postcard frames on the socket between a runtime and the apps it started, both from one build and live only as long as that connection, and no byte of them is kept"

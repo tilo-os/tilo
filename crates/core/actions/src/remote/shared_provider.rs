@@ -109,6 +109,10 @@ impl<H: ActionProvider + ?Sized> ActionProvider for std::sync::Arc<H> {
         (**self).resource_reads()
     }
 
+    fn store_commands(&self) -> Option<std::sync::Arc<dyn super::StoreCommands>> {
+        (**self).store_commands()
+    }
+
     fn resource_changes(&self) -> Option<std::sync::Arc<dyn ResourceChanges>> {
         (**self).resource_changes()
     }

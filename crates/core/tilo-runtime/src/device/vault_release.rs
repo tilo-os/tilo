@@ -28,6 +28,9 @@ pub(crate) struct OwnProcess {
     pid: u32,
     app: String,
     workspace: String,
+    /// The process's own records ([`super::store_lane`]), kept for the connection's life: a
+    /// change sent in parts is gathered there.
+    store: Arc<super::store_lane::StoreLane>,
 }
 
 impl OwnProcess {
@@ -37,6 +40,7 @@ impl OwnProcess {
             pid,
             app: app.to_owned(),
             workspace: workspace.to_owned(),
+            store: Arc::new(super::store_lane::StoreLane::new(daemon, app, workspace)),
         }
     }
 
@@ -172,15 +176,29 @@ impl ActionProvider for OwnProcess {
     fn cancel(&self, _: &Caller, _: &InvocationId) -> Pending<Result<(), ActionCallError>> {
         Pending::ready(Ok(()))
     }
+
+    /// Only while the connection's process is still the one the daemon started for the app.
+    fn store_commands(&self) -> Option<Arc<dyn tilo_actions::remote::StoreCommands>> {
+        let daemon = self.daemon.upgrade()?;
+        Some(match self.process(&daemon) {
+            Ok(_) => Arc::clone(&self.store) as Arc<dyn tilo_actions::remote::StoreCommands>,
+            Err(gone) => Arc::new(super::store_lane::Refused(gone)),
+        })
+    }
 }
 
 /// Whether `frame` is a release, a find, a web call, a keep or a device key this connection's own
-/// process asks for, the ways an app's held connection reaches its vault items, or one of the page login actions a
-/// window of the app's own asks for its page ([`tilo_actions::remote::person_vault::is_page_login`]).
+/// process asks for, the ways an app's held connection reaches its vault items, one of the page
+/// login actions a window of the app's own asks for its page
+/// ([`tilo_actions::remote::person_vault::is_page_login`]), or a command to its app's records
+/// ([`super::store_lane`]).
 pub(crate) fn is_answered_for_this_process(
     frame: &tilo_actions::remote::RemoteActionFrame,
 ) -> bool {
     matches!(
+        &frame.message,
+        tilo_actions::remote::RemoteActionMessage::StoreRequest { .. }
+    ) || matches!(
         &frame.message,
         tilo_actions::remote::RemoteActionMessage::Invoke(request)
             if tilo_actions::remote::person_vault::is_release(&request.target)

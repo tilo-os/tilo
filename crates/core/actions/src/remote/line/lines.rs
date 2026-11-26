@@ -14,7 +14,8 @@ use crate::outcome::InvocationId;
 use crate::remote::refuse;
 use crate::remote::{
     ActionCallError, ActionProvider, Caller, ContentGetAnswer, HostedContentPuts,
-    MAX_REMOTE_ACTION_FRAME_BYTES, RemoteActionFrame, RemoteActionMessage,
+    MAX_REMOTE_ACTION_FRAME_BYTES, Pending, RemoteActionFrame, RemoteActionMessage,
+    STORE_COMMANDS_UNAVAILABLE,
 };
 
 /// How many requests that wait one connection keeps answering at once; one past them is answered
@@ -373,6 +374,28 @@ fn answer_frame<H: ActionProvider + Clone + Send + Sync + 'static, W: Write + Se
                 result,
             })
         }
+        // Taken here, in the order the connection sent them, so a change sent in parts is taken
+        // whole; answered once the store answers, while the lines after it are answered.
+        RemoteActionMessage::StoreRequest {
+            correlation,
+            command,
+            kind,
+        } => {
+            let answer = match provider.store_commands() {
+                Some(store) => store.command(caller, command, kind),
+                None => Pending::ready(Err(ActionCallError::Unavailable {
+                    reason: STORE_COMMANDS_UNAVAILABLE.into(),
+                })),
+            };
+            connection.waiting.fetch_add(1, Ordering::AcqRel);
+            let connection = Arc::clone(connection);
+            answer.then(move |result| {
+                let result = result.unwrap_or(Err(ActionCallError::Unanswered));
+                write_line(&connection.output, &store_line(correlation, result));
+                connection.waiting.fetch_sub(1, Ordering::AcqRel);
+            });
+            return Answered::Spawned;
+        }
         message
             if message.waits() && connection.waiting.load(Ordering::Relaxed) < WAITING_AT_ONCE =>
         {
@@ -434,6 +457,21 @@ fn answers_the_end(answer: &str) -> bool {
         RemoteActionMessage::Receipt(receipt) => receipt.status.is_terminal(),
         RemoteActionMessage::Update { state, .. } => state.is_none_or(|state| state.is_terminal()),
         _ => true,
+    }
+}
+
+/// The answer to the store command `correlation`: the store's, or why it does not fit a frame,
+/// so an answer too large never reads as the connection's end.
+fn store_line(correlation: u64, result: Result<serde_json::Value, ActionCallError>) -> String {
+    let answer = |result| RemoteActionMessage::StoreResponse {
+        correlation,
+        result,
+    };
+    match RemoteActionFrame::new(answer(result)).encode() {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(error) => frame_line(answer(Err(ActionCallError::Unavailable {
+            reason: format!("the store's answer does not fit the connection: {error}"),
+        }))),
     }
 }
 

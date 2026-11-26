@@ -492,6 +492,33 @@ impl AppActionBroker {
         Arc::new(AppCalls(Arc::clone(&self.state)))
     }
 
+    /// The device's one reader of records, once one serves: what decides whether a caller may
+    /// read or change a record.
+    #[must_use]
+    pub fn record_reads(&self) -> Option<Arc<dyn tilo_actions::remote::ResourceReads>> {
+        self.state.records()
+    }
+
+    /// Why `app` may not found a record of `kind` in a workspace this device hosts: a new record
+    /// is of a kind its installed manifest declares. `None` where it may.
+    #[must_use]
+    pub fn founding_refusal(&self, app: &str, kind: Option<&str>) -> Option<String> {
+        self.state.founding_refusal(app, kind)
+    }
+
+    /// Tell every window open on `app`'s record `record` in `workspace` that it changed, after a
+    /// write that reached the store some other way than the window's own route: each asks for
+    /// the changes it lacks.
+    pub fn record_changed(&self, workspace: &str, app: &str, record: &str) {
+        let route = CrdtRoute {
+            app_id: app.to_owned(),
+            cluster_id: workspace.to_owned(),
+            document_id: record.to_owned(),
+        };
+        // No window wrote it, so none is left out.
+        self.state.record_changed(&route, u64::MAX);
+    }
+
     /// The hosts of the workspaces this device takes part in but does not
     /// host, reached on the sessions the broker sends their actions on: what
     /// asks such a host its own operations for the person.

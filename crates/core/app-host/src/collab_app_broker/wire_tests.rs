@@ -395,14 +395,6 @@ impl crate::services::ResourceServices for KeptRecord {
         drop(record);
         Box::pin(std::future::ready(answer))
     }
-
-    fn open(
-        &self,
-        _: &crate::services::ResourceRequestContext,
-        _: collab_types::store::Query,
-    ) -> crate::services::ResourcePages {
-        Box::pin(std::future::ready(Err("the record holds no query".into())))
-    }
 }
 
 /// The device's one reader as the test serves it: every read and change of a record allowed
@@ -753,11 +745,7 @@ async fn a_record_opens_on_the_first_call_naming_it() {
 
 /// A store that keeps the app and workspace each command came from.
 #[derive(Default)]
-struct CountingStore(
-    Mutex<Vec<(String, String)>>,
-    /// The open queries, held so their apps keep them.
-    Mutex<Vec<tokio::sync::mpsc::UnboundedSender<collab_types::store::Page>>>,
-);
+struct CountingStore(Mutex<Vec<(String, String)>>);
 
 impl crate::services::ResourceServices for CountingStore {
     fn command(
@@ -779,67 +767,6 @@ impl crate::services::ResourceServices for CountingStore {
         drop(asked);
         Box::pin(std::future::ready(answer))
     }
-
-    fn open(
-        &self,
-        _: &crate::services::ResourceRequestContext,
-        query: collab_types::store::Query,
-    ) -> crate::services::ResourcePages {
-        // A first page of none, then whatever the test sends to the query's kind.
-        let (pages, receiver) = tokio::sync::mpsc::unbounded_channel();
-        let _ = pages.send(collab_types::store::Page::default());
-        drop(query);
-        self.1.lock().unwrap().push(pages);
-        Box::pin(std::future::ready(Ok(receiver)))
-    }
-}
-
-/// An app holds a query open over its route: the store's first page and each later one reach
-/// it as events of the subscription.
-#[tokio::test(flavor = "current_thread")]
-async fn an_apps_open_query_sends_its_pages_over_its_route() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let store = Arc::new(CountingStore::default());
-            let served = Arc::clone(&store);
-            let workspace = Workspace::serving(&[9], move |services| ProcessServices {
-                resources: Some(served),
-                ..services
-            });
-            let mut app = workspace.endpoint(9);
-            let channel = app.channel.clone();
-            let query =
-                serde_json::to_vec(&collab_types::store::Query::of("tasks.issue", 10)).unwrap();
-            let subscription = app
-                .send(Operation::Subscribe {
-                    record: channel.clone(),
-                    topic: Topic::Resources(query),
-                })
-                .await;
-            assert_eq!(
-                app.frame().await,
-                HostFrame::Reply {
-                    id: subscription,
-                    result: Ok(Reply::Subscribed),
-                }
-            );
-            for _ in 0..2 {
-                let HostFrame::Event {
-                    subscription: of,
-                    event: Event::Resources(page),
-                } = app.frame().await
-                else {
-                    panic!("a page of the query arrives");
-                };
-                assert_eq!(of, subscription);
-                let page: collab_types::store::Page = serde_json::from_slice(&page).unwrap();
-                assert!(page.resources.is_empty());
-                // The store's next page, as a change would send it.
-                let sent = store.1.lock().unwrap()[0].send(collab_types::store::Page::default());
-                sent.unwrap();
-            }
-        })
-        .await;
 }
 
 #[tokio::test(flavor = "current_thread")]

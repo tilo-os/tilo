@@ -578,22 +578,6 @@ impl RecordHandle {
         Ok(reply)
     }
 
-    /// Hold `query` open in the device's one store (`collab_types::store::Query`, in the store's
-    /// encoding): its first page, then each page a write here or a member's change makes
-    /// different, until the stream is dropped.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] when the device refuses the query or the connection fails.
-    pub async fn open_resources(&self, query: &[u8]) -> Result<ResourcePages, NotAvailable> {
-        if query.len() > MAX_RESOURCE_WIRE_BYTES {
-            return Err(refused("resource query exceeds wire bound"));
-        }
-        Ok(ResourcePages(
-            self.feed(Topic::Resources(query.to_vec())).await?,
-        ))
-    }
-
     /// Hold open what the host says of the `actions` a window shows: all of them now, then all
     /// again whenever grants change one, until the stream is dropped.
     ///
@@ -1147,19 +1131,6 @@ impl InvocationStream {
                 context_json: invocation.context.unwrap_or_default(),
                 typed: invocation.typed,
             }),
-            other => Err(unexpected_event(&other)),
-        }
-    }
-}
-
-/// The pages of a query held open; dropping it lets the query go.
-pub struct ResourcePages(Feed);
-
-impl ResourcePages {
-    /// The next page, in the store's encoding (`collab_types::store::Page`).
-    pub async fn read(&self) -> Result<Vec<u8>, NotAvailable> {
-        match self.0.event().await? {
-            Event::Resources(page) => Ok(page),
             other => Err(unexpected_event(&other)),
         }
     }

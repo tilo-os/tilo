@@ -384,9 +384,6 @@ pub enum Topic {
     /// A workspace control session with `target_device`, open while the
     /// subscription lives; input goes in [`Operation::ControlInput`].
     WorkspaceControl { target_device: [u8; 32] },
-    /// A query of the app's resources held open (`collab_types::store::Query`,
-    /// JSON): its first page, then each page a change makes different.
-    Resources(Vec<u8>),
     /// What the host says of these actions a window shows, as the person at this endpoint would
     /// run them: all of them, then all again whenever one changes.
     ShownActions(Vec<crate::shown_actions::ShownAction>),
@@ -466,9 +463,6 @@ pub enum Event {
         revision: u64,
         reading: Option<Vec<u8>>,
     },
-    /// A page of a query held open ([`Topic::Resources`]), as
-    /// `collab_types::store::Page` JSON.
-    Resources(Vec<u8>),
     /// What the host says of the actions a [`Topic::ShownActions`] names.
     ShownActions(Vec<crate::shown_actions::ActionDecision>),
 }

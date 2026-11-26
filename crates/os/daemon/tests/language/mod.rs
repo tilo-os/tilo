@@ -14,6 +14,7 @@ mod own_agent_tests;
 mod record_roots_tests;
 mod resource_writes_tests;
 mod served_notices_tests;
+mod store_lane_tests;
 mod task_work_tests;
 mod triggers_tests;
 mod wakeups_tests;
