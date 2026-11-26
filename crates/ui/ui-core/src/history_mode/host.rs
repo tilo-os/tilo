@@ -60,10 +60,6 @@ impl PendingControlCallback {
     fn invoke(&self) {
         (self.invoke.borrow_mut())();
     }
-    #[cfg(test)]
-    pub(crate) fn invoke_for_test(&self) {
-        self.invoke();
-    }
 }
 
 /// The children a [`HistoryHost`] layout presents.
@@ -73,13 +69,6 @@ pub(super) struct Composition {
     review: bool,
     timeline: Option<bool>,
     preview: Option<super::PreviewSide>,
-}
-
-#[cfg(test)]
-thread_local! {
-    /// Walks of a History's owned layout subtrees on this thread, so tests can hold a focus-order
-    /// recomputation to one walk, not one per node.
-    pub(crate) static OWNERSHIP_WALKS: Cell<usize> = const { Cell::new(0) };
 }
 
 #[allow(
@@ -1009,24 +998,6 @@ impl HistoryHost {
             .map(|entries| entries.iter().map(|entry| entry.id).collect())
             .unwrap_or_default()
     }
-    #[cfg(test)]
-    pub(crate) fn queue_pending_control_command_for_test(
-        &self,
-        command: super::pending_controls::ContinuationCommand,
-    ) {
-        self.pending_controls
-            .commands()
-            .borrow_mut()
-            .push_back(command);
-        super::note_news();
-    }
-    #[cfg(test)]
-    pub(crate) fn pending_control_callback_for_test(
-        &self,
-        id: &str,
-    ) -> Option<PendingControlCallback> {
-        self.pending_control_callbacks.get(id).cloned()
-    }
     pub(crate) fn has_saved_focus(&self) -> bool {
         self.saved_focus.is_some()
     }
@@ -1206,8 +1177,6 @@ impl HistoryHost {
     /// Every layout node this History owns, collected in one walk: the set [`Self::owns_node`] answers
     /// for one node, for callers that ask it of every node in a composition.
     pub(crate) fn owned_nodes(&self, tree: &TaffyTree<()>) -> HashSet<NodeId> {
-        #[cfg(test)]
-        OWNERSHIP_WALKS.with(|walks| walks.set(walks.get() + 1));
         let mut owned = HashSet::new();
         let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
         while let Some(node) = pending.pop() {
@@ -1218,8 +1187,6 @@ impl HistoryHost {
         owned
     }
     pub(crate) fn owns_node(&self, node: NodeId, tree: &TaffyTree<()>) -> bool {
-        #[cfg(test)]
-        OWNERSHIP_WALKS.with(|walks| walks.set(walks.get() + 1));
         let mut pending: Vec<_> = self.owned_layout_roots().into_iter().flatten().collect();
         while let Some(candidate) = pending.pop() {
             if candidate == node {

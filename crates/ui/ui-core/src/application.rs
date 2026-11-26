@@ -25,8 +25,6 @@ mod runner;
 mod surface;
 pub use open_file::{MAX_OPEN_FILE_BYTES, OpenFile, OpenFileReceipt};
 pub use runner::{ApplicationOwner, NativeProcess, NativeProfile, PERSONAL_WORKSPACE};
-#[cfg(test)]
-pub(crate) use runner::{follow_process_authority, manual_authority_watch};
 pub use surface::prepare_private_surface;
 
 pub use collab_types::history::InstanceId;

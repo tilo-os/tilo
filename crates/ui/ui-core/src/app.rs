@@ -1335,18 +1335,6 @@ impl App {
         *Self::with_parts(Some(scope), state, root, inputs)
     }
 
-    #[cfg(test)]
-    pub(crate) fn from_scoped_parts_with_controlled_ownership(
-        scope: crate::WakeScope,
-        state: State,
-        root: Box<dyn Widget>,
-        domain: crate::ControlDomain,
-    ) -> Self {
-        let mut inputs = AppConstructionInputs::controlled();
-        inputs.control_domain = Some(domain);
-        *Self::with_parts(Some(scope), state, root, inputs)
-    }
-
     /// Transfer an existing owner into a live app.
     ///
     /// The caller must enter this exact scope before constructing all state,
