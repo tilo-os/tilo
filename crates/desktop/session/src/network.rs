@@ -1,23 +1,19 @@
 //! What this session serves the network actor beside its own peer networks.
 //!
-//! The actor is the transport, and what some of its APIs ask is the
-//! session's business: another of the person's devices asking for its
-//! disk-unlock half, a member's device at
-//! another peer protocol version. Each is served here by the part of the session that owns it,
-//! installed once before the actor starts ([`install`]).
+//! The actor is the transport, and what some of its APIs tell is the session's business: a
+//! member's device at another peer protocol version. That is served here by the part of the
+//! session that owns it, installed once before the actor starts ([`install`]).
 
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
-use crate::platform::fabric::DeviceId;
 use crate::platform::fabric::SharedLink;
-use iroh::endpoint::Connection;
-use tilo_network_actor::services::{self, DeviceUnlock, PeerVersion, Services};
-use tilo_service::AskSender;
-
-mod unlock;
-
-pub(crate) use unlock::{KIND as DEVICE_UNLOCK, UnlockQuestion, kept_unlock};
+use tilo_network_actor::services::PeerVersion;
+use tilo_unlock_protocol::published::{
+    DecisionOutcome, MAX_UNLOCK_DECISIONS, UnlockDecisionEntry, UnlockFabricState,
+};
+use tilo_unlock_protocol::{BootId, SlotId};
+use tilo_workspace_service::workspaces::person_workspace::devices::{Device, Devices};
 
 /// A member's device heard at another peer protocol version: one of the two devices must
 /// update before the two work together again.
@@ -39,49 +35,23 @@ impl VersionMismatch {
     }
 }
 
-/// Install the session's services for the actor started from now on: the person's other devices'
-/// disk unlock ([`unlock`]) and the word that a member's device is at another protocol version.
-/// A session that is no certified device of the person's offers no API: it has no key to answer
-/// as.
-pub(crate) fn install(
-    link: Option<&Arc<crate::platform::fabric::SessionFabric>>,
-    record: Option<(crate::PersonResources, tilo_user_identity::DeviceCert)>,
-    questions: Option<AskSender>,
-) -> std::sync::mpsc::Receiver<VersionMismatch> {
+/// Install the session's services for the actor started from now on: the word that a member's
+/// device is at another protocol version.
+pub(crate) fn install() -> std::sync::mpsc::Receiver<VersionMismatch> {
     let (updates, requests) = std::sync::mpsc::channel();
-    let Some(fabric) = link else {
-        return requests;
-    };
-    let link = Arc::clone(fabric) as SharedLink;
-    let Some(local) = link
-        .local_device_fabric_identity()
-        .and_then(|(device, _)| key_of(&device))
-    else {
-        return requests;
-    };
-    let unlocking = Arc::new(unlock::Unlock::new(link, record, local, questions));
-    let installed = services::install(Services {
+    let installed = tilo_network_actor::services::install(tilo_network_actor::services::Services {
         peer_version: peer_versions(updates),
-        device_unlock: device_unlock(unlocking),
     });
     if !installed {
         // The actor keeps the first session's services for the life of this process, so a second
         // session started in it is answered by that one's: this session's peer version notices
-        // and device unlock never reach the transport.
+        // never reach the transport.
         tracing::warn!(
-            "the network actor already serves an earlier session's services: this session's device \
-             unlock and peer version notices are not served"
+            "the network actor already serves an earlier session's services: this session's peer \
+             version notices are not served"
         );
     }
     requests
-}
-
-/// Another of the person's devices asks for its unlock half at early boot.
-fn device_unlock(unlocking: Arc<unlock::Unlock>) -> DeviceUnlock {
-    Arc::new(move |connection: Connection| {
-        let unlocking = Arc::clone(&unlocking);
-        tokio::spawn(unlocking.serve(connection));
-    })
 }
 
 /// Tell the session that a member's device is at another protocol version, once per device
@@ -127,11 +97,63 @@ pub(crate) fn device_at(fabric: Option<&SharedLink>, endpoint: &str) -> Option<S
     (!label.is_empty()).then_some(label)
 }
 
-/// The key `device` names, as the bytes the fleet signs and lists.
-pub(crate) fn key_of(device: &DeviceId) -> Option<[u8; 32]> {
-    let mut key = [0_u8; 32];
-    hex::decode_to_slice(device.as_str(), &mut key).ok()?;
-    Some(key)
+/// What the device `key`, whose entry of the person's devices `kept` is, keeps about disk unlock:
+/// its enrolments and auto-approvals, and the newest answers the person gave on it that the record
+/// keeps. Nothing where that is not true of the device. The fabric lists it beside each device,
+/// though the unlock exchange itself is the device daemon's.
+pub(crate) fn kept_unlock(record: &Devices, kept: &Device, key: &[u8; 32]) -> UnlockFabricState {
+    /// The fact under which a device keeps what it says of disk unlock.
+    const UNLOCK: &str = "unlock";
+    let device = hex::encode(key);
+    let mut state = kept
+        .facts
+        .get(UNLOCK)
+        .and_then(|value| crate::platform::fabric::decoded::<UnlockFabricState>(value))
+        .unwrap_or_default();
+    let mut answers = record
+        .unlocks
+        .values()
+        .filter(|answer| answer.device == device)
+        .filter_map(decision_of)
+        .collect::<Vec<_>>();
+    answers.sort_by_key(|answer| answer.decided_at_ns);
+    let over = answers.len().saturating_sub(MAX_UNLOCK_DECISIONS);
+    answers.drain(..over);
+    state.decisions = answers;
+    if state.validate(key).is_err() {
+        return UnlockFabricState::default();
+    }
+    state
+}
+
+/// The answer the record keeps as `answer`; `None` for one no device of this build wrote.
+fn decision_of(
+    answer: &tilo_workspace_service::workspaces::person_workspace::devices::UnlockAnswer,
+) -> Option<UnlockDecisionEntry> {
+    let (volume, keyslot) = answer.slot.split_once(':')?;
+    Some(UnlockDecisionEntry {
+        boot_cert_digest: bytes(&answer.enrolment)?,
+        boot_id: BootId(bytes(&answer.boot)?),
+        slot: SlotId {
+            volume_uuid: bytes(volume)?,
+            keyslot: keyslot.parse().ok()?,
+        },
+        outcome: if answer.allowed {
+            DecisionOutcome::Approve
+        } else {
+            DecisionOutcome::Deny
+        },
+        decided_by: bytes(&answer.device)?,
+        decided_at_ns: u64::try_from(answer.at_ns).ok()?,
+        valid_until_ns: u64::try_from(answer.until_ns).ok()?,
+    })
+}
+
+/// The `N` bytes `text` holds in hex.
+fn bytes<const N: usize>(text: &str) -> Option<[u8; N]> {
+    let mut out = [0; N];
+    hex::decode_to_slice(text, &mut out).ok()?;
+    Some(out)
 }
 
 #[cfg(test)]

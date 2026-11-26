@@ -487,10 +487,7 @@ agent-ask-answer = Answer
 agent-ask-pick = Pick an answer.
 
 ## The collaboration network's own questions: an agent on a workspace host
-## asks its person to allow one action, and a device asks its sibling for the
-## disk key it boots with.
-network-device-unlock-title = Unlock { $device }?
-network-device-unlock-detail = It is starting up and asks you for the half of its disk key that this device holds for it, for { $slot }. Compare the code above with the one on its boot screen.
+## asks its person to allow one action.
 
 ## What each sheet's resource is called, keyed by its kind with separators
 ## as dashes (`power.session` is `power-session`). The label a sheet declares
@@ -674,4 +671,3 @@ portal-files-title = Choose files for { $app }
 portal-files-writable-folder = { $app } will be able to change what is in the folder you choose.
 portal-usb-writable = { $device } (can be written to)
 bluetooth-prompt-code = Code
-network-device-unlock-code = Code on its screen

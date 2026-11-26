@@ -447,18 +447,7 @@ enum InternalEvent {
 }
 
 /// Early boot of another of the person's devices asking for its sibling
-/// half. The peer is not authenticated by transport: the boot key
-/// certificate and the challenge are what the sibling checks.
-#[derive(Clone, Debug)]
-struct DeviceUnlockProtocol;
-
-impl ProtocolHandler for DeviceUnlockProtocol {
-    async fn accept(&self, connection: iroh::endpoint::Connection) -> Result<(), AcceptError> {
-        services::device_unlock(connection);
-        Ok(())
-    }
-}
-
+/// half is the device daemon's to answer, on its own endpoint.
 #[derive(Clone)]
 struct SurfaceStreamProtocol {
     internal_tx: mpsc::Sender<InternalEvent>,
@@ -1439,7 +1428,6 @@ async fn run(
                 next_connection_incarnation: Arc::clone(&connection_incarnations),
             },
         )
-        .accept(tilo_unlock_protocol::UNLOCK_ALPN, DeviceUnlockProtocol)
         .accept(
             tilo_server_protocol::transport::SIBLING_ALPN,
             device_sessions::SiblingProtocol(internal_tx.clone()),

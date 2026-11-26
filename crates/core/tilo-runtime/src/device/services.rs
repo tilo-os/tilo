@@ -2388,6 +2388,19 @@ impl Daemon {
             )
         };
         stage("serving the device's endpoint");
+        // Another of the person's devices at early boot asks this one for its disk-unlock half:
+        // the exchange is the device's own, answered as this device, and the person's yes is one
+        // of the asked records their devices show.
+        let unlocking = match asked_store(&workspaces) {
+            Ok(store) => Some(super::unlock::serving(&workspaces, store)),
+            Err(error) => {
+                tracing::warn!(
+                    %error,
+                    "early-boot unlock is not served: this device keeps no asked calls"
+                );
+                None
+            }
+        };
         let endpoint_router = serve_device_endpoint(EndpointServing {
             workspaces: &workspaces,
             take_work,
@@ -2395,6 +2408,7 @@ impl Daemon {
             host: (founded.is_some() || kept.is_some()).then(|| workspaces.service().as_ref()),
             kept: kept_protocols,
             terminals: terminals.into_iter().chain(live.protocols()).collect(),
+            unlock: unlocking,
         });
         // A founding call that asked for the person's first tickets is answered them from here
         // on: the tickets, the endpoint they name and what serves it are up, and nothing the
@@ -7116,6 +7130,9 @@ struct EndpointServing<'a> {
     /// The terminal streams of the shells this device runs, which the devices it hands them to
     /// dial.
     terminals: TerminalProtocols,
+    /// Another of the person's devices at early boot asking for its disk-unlock half, when this
+    /// device keeps their root and the store the calls that wait for them are kept in.
+    unlock: Option<Arc<super::unlock::Unlock>>,
 }
 
 /// Serve what this runtime answers on the endpoint its workspaces run, from one router: the
@@ -7129,6 +7146,7 @@ fn serve_device_endpoint(serving: EndpointServing<'_>) -> iroh::protocol::Router
         host,
         kept,
         terminals,
+        unlock,
     } = serving;
     let runtime = tilo_rt::app().handle();
     let _entered = runtime.enter();
@@ -7152,6 +7170,12 @@ fn serve_device_endpoint(serving: EndpointServing<'_>) -> iroh::protocol::Router
     }
     for (alpn, handler) in terminals {
         router = router.accept(alpn, handler);
+    }
+    if let Some(unlock) = unlock {
+        router = router.accept(
+            tilo_unlock_protocol::UNLOCK_ALPN,
+            super::unlock::Protocol::new(unlock),
+        );
     }
     router = router.accept(tilo_peer_state::actions::ACTIONS_ALPN, actions);
     router.spawn()

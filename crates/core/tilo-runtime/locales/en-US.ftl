@@ -104,4 +104,13 @@ boot-unlock-computer = Computer
 boot-unlock-key = Boot key
 boot-unlock-declined = You said no on your other device, so this computer won’t unlock its disk with your devices. It still opens with its passphrase or recovery key.
 boot-unlock-unanswered = Nobody answered on your other device in time, so this computer won’t unlock its disk with your devices. Try again when you’re at that device.
+
+# An early-boot device of the person's asks another of their devices for the half of its disk key
+# it cannot read alone. $device names the device that asks, by the name the person gave it; $slot
+# is its disk's volume and key slot. The code on its boot screen is a fact beside these words.
+unlock-asked = Unlock { $device }?
+unlock-detail = It is starting up and asks you for the half of its disk key that this device holds for it, for { $slot }. Compare the code with the one on its boot screen.
+unlock-code = Code on its screen
+unlock-gone = The device that asked stopped waiting
+unlock-unanswered = Nobody answered in time, so the device was not unlocked
 boot-unlock-no-root-device = None of your devices that keep your identity can be reached right now. Turn one on, connect it to the internet and sign in, then try again.

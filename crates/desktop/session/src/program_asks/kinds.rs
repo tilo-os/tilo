@@ -359,7 +359,6 @@ pub(crate) fn put(question: &Question, retry: Option<Retry>) -> Option<Put> {
         CANNOT_JOIN_KIND => cannot_join(details)?,
         tilo_bluetooth_agent::KIND => pairing(details)?,
         crate::mcp_server::KIND => admitted(&who, details)?,
-        crate::network::DEVICE_UNLOCK => device_unlock(details)?,
         crate::network_reach::KIND => reach(&who, details)?,
         #[cfg(target_os = "linux")]
         tilo_app_host::nearby_send::VERIFY_QUESTION => receiver(details)?,
@@ -597,33 +596,6 @@ fn wrapped(value: &str) -> String {
 
 /// How wide a line of a security question's text stands, in characters.
 const REVIEW_WIDTH: usize = 32;
-
-/// Another of the person's devices asks for its disk-unlock half: the code on its boot screen is
-/// shown beside the one the person answers with.
-fn device_unlock(details: Value) -> Kind {
-    let asked: crate::network::UnlockQuestion = serde_json::from_value(details).ok()?;
-    let mut facts = asking(
-        words("network-device-unlock-title", &[("device", &asked.device)]),
-        Some(words(
-            "network-device-unlock-detail",
-            &[("slot", &asked.slot)],
-        )),
-    );
-    facts.facts.push(fact(
-        word("network-device-unlock-code"),
-        asked.approval_code,
-    ));
-    facts.by = device(&asked.device);
-    Some((facts, Reply::Confirm))
-}
-
-/// Another of the person's devices, by the name it goes by.
-fn device(name: &str) -> AskedBy {
-    AskedBy::Device(tilo_actions::remote::asked::Named {
-        id: name.to_owned(),
-        name: name.to_owned(),
-    })
-}
 
 fn account(who: &str, details: Value) -> Kind {
     let asked: AccountQuestion = serde_json::from_value(details).ok()?;

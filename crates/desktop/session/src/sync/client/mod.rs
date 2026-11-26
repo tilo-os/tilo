@@ -1129,7 +1129,7 @@ impl Client {
     #[cfg(target_os = "linux")]
     pub fn start(
         entry: Entry,
-        questions: Option<tilo_service::AskSender>,
+        _questions: Option<tilo_service::AskSender>,
         beside: tilo_network_actor::own_service::Protocols,
     ) -> std::io::Result<Self> {
         let (identity, wake) = (entry.identity, entry.wake);
@@ -1151,16 +1151,13 @@ impl Client {
         let person = crate::PersonResources::default();
         let fabric = fabric_of(
             identity.as_ref(),
-            person.clone(),
+            person,
             host_outbox,
             entry.continuity,
             lan.clone(),
         );
         // What the actor serves is installed before it starts: every actor built after answers it.
-        let record = identity
-            .as_ref()
-            .map(|identity| (person.clone(), identity.device_cert.clone()));
-        let versions = crate::network::install(fabric.as_ref(), record, questions);
+        let versions = crate::network::install();
         let endpoint_handle = Arc::new(std::sync::OnceLock::new());
         let binding = network::Bound::new(Arc::clone(&endpoint_handle), entry.relays, lan);
         // The workspaces' live sessions are the session's, run through this device's daemon: the

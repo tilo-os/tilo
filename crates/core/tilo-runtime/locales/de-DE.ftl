@@ -102,4 +102,14 @@ boot-unlock-computer = Computer
 boot-unlock-key = Startschlüssel
 boot-unlock-declined = Du hast auf deinem anderen Gerät abgelehnt, daher entsperrt dieser Computer seine Festplatte nicht mit deinen Geräten. Er öffnet sich weiterhin mit seinem Passwort oder Wiederherstellungsschlüssel.
 boot-unlock-unanswered = Auf deinem anderen Gerät hat niemand rechtzeitig geantwortet, daher entsperrt dieser Computer seine Festplatte nicht mit deinen Geräten. Versuche es noch einmal, wenn du an diesem Gerät bist.
+
+# Ein Gerät von dir fragt beim frühen Start ein anderes deiner Geräte nach der Hälfte seines
+# Datenträgerschlüssels, die es allein nicht lesen kann. $device ist das fragende Gerät, wie du es
+# genannt hast; $slot sind Datenträger und Schlüsselslot. Der Code auf seinem Startbildschirm
+# steht als Angabe daneben.
+unlock-asked = { $device } entsperren?
+unlock-detail = Es startet gerade und bittet dich um die Hälfte seines Datenträgerschlüssels, die dieses Gerät für es hält, für { $slot }. Vergleiche den Code mit dem auf seinem Startbildschirm.
+unlock-code = Code auf seinem Bildschirm
+unlock-gone = Das fragende Gerät wartet nicht mehr
+unlock-unanswered = Niemand hat rechtzeitig geantwortet, daher wurde das Gerät nicht entsperrt
 boot-unlock-no-root-device = Keines deiner Geräte, die deine Identität bewahren, ist gerade erreichbar. Schalte eines ein, verbinde es mit dem Internet und melde dich an, dann versuche es noch einmal.

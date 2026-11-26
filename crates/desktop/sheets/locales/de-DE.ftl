@@ -489,8 +489,6 @@ agent-ask-pick = Wähle eine Antwort.
 ## Die Fragen des Zusammenarbeitsnetzes: ein Agent auf dem Rechner eines
 ## Arbeitsbereichs fragt seine Person um Erlaubnis für eine Aktion, und ein
 ## Gerät bittet sein Geschwistergerät um den Schlüssel, mit dem es startet.
-network-device-unlock-title = { $device } entsperren?
-network-device-unlock-detail = Es startet gerade und bittet dich um die Hälfte seines Datenträgerschlüssels, die dieses Gerät für es hält, für { $slot }. Vergleiche den Code oben mit dem auf seinem Startbildschirm.
 
 ## Wie die Ressource jeder Karte heißt, nach ihrer Art benannt, mit
 ## Bindestrichen statt Punkten (`power.session` ist `power-session`). Der
@@ -674,4 +672,3 @@ portal-files-title = Dateien für { $app } wählen
 portal-files-writable-folder = { $app } kann den Inhalt des gewählten Ordners ändern.
 portal-usb-writable = { $device } (beschreibbar)
 bluetooth-prompt-code = Code
-network-device-unlock-code = Code auf seinem Bildschirm

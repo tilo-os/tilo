@@ -121,6 +121,8 @@ mod ticket_tests;
 pub(crate) mod unclaimed;
 #[cfg(test)]
 mod unclaimed_tests;
+/// Another of the person's devices at early boot asking for its disk-unlock half.
+pub(crate) mod unlock;
 // A vault item released to the app process whose connection asks for it.
 pub(crate) mod store_lane;
 pub(crate) mod vault_release;

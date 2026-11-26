@@ -2,29 +2,22 @@
 //!
 //! The actor is the transport: it keeps the endpoint, the workspace links, the
 //! sessions with the person's devices and the person's private connection. Some of what arrives
-//! on them is the session's business, not the transport's: an early-boot device asking for its
-//! unlock half, a host at another peer protocol version. The session installs those once when it
-//! starts ([`install`]); every actor started afterwards uses them. An actor
-//! started without them (this crate's tests) refuses that work: the
-//! connections are closed.
+//! on them is the session's business, not the transport's: a host at another peer protocol
+//! version. The session installs those once when it starts ([`install`]); every actor started
+//! afterwards uses them. An actor started without them (this crate's tests) tells nobody: the
+//! notices are the session's alone.
 
 use std::sync::{Arc, OnceLock};
-
-use iroh::endpoint::Connection;
 
 /// A peer or host reached at `endpoint` speaks peer protocol version
 /// `theirs`: the transport knows no more of who they are, and the session
 /// names them from its own fabric.
 pub type PeerVersion = Arc<dyn Fn(String, u32) + Send + Sync>;
 
-/// Another of the person's devices asks for its unlock half at early boot.
-pub type DeviceUnlock = Arc<dyn Fn(Connection) + Send + Sync>;
-
 /// The session's side of the actor's work, installed once ([`install`]).
 #[derive(Clone)]
 pub struct Services {
     pub peer_version: PeerVersion,
-    pub device_unlock: DeviceUnlock,
 }
 
 static SERVICES: OnceLock<Services> = OnceLock::new();
@@ -42,12 +35,5 @@ pub fn install(services: Services) -> bool {
 pub fn peer_version(endpoint: String, theirs: u32) {
     if let Some(services) = SERVICES.get() {
         (services.peer_version)(endpoint, theirs);
-    }
-}
-
-pub fn device_unlock(connection: Connection) {
-    match SERVICES.get() {
-        Some(services) => (services.device_unlock)(connection),
-        None => connection.close(0u32.into(), b"not served"),
     }
 }
