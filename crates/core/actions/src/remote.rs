@@ -663,6 +663,18 @@ pub fn declared_effects(target: &RemoteActionTarget) -> Vec<crate::ActionEffect>
             }
         }
     }
+    // An app's own history takes back what it wrote: `undo` on the app's own resource
+    // (`tl:<app>#undo`) undoes that app's records, whichever kinds the invocation wrote where.
+    if address.action == crate::ActionEffect::UNDO
+        && let Some(app) = address.resource.strip_prefix("tl:")
+        && !app.is_empty()
+        && !app.contains(':')
+    {
+        let undo = crate::ActionEffect::undo(app);
+        if !effects.contains(&undo) {
+            effects.push(undo);
+        }
+    }
     effects
 }
 

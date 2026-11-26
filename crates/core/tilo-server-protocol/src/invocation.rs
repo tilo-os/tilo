@@ -1545,6 +1545,25 @@ mod tests {
                 tilo_actions::remote::declared_effects(&moderating.target),
                 vec![tilo_actions::ActionEffect::undo(MODERATED_APP)]
             );
+            // An app's own undo takes back that app's records, wherever the invocation wrote.
+            let mut taking_back = request();
+            taking_back.target = RemoteActionTarget {
+                provider: "2".into(),
+                address: ActionAddress::new("tl:so.tilo.chat", "undo"),
+            };
+            assert_eq!(
+                tilo_actions::remote::declared_effects(&taking_back.target),
+                vec![tilo_actions::ActionEffect::undo("so.tilo.chat")]
+            );
+            let mut another = request();
+            another.target = RemoteActionTarget {
+                provider: "2".into(),
+                address: ActionAddress::new("so.tilo.chat", "send"),
+            };
+            assert!(
+                tilo_actions::remote::declared_effects(&another.target).is_empty(),
+                "a call that declares no undo admits none"
+            );
             let undo = |asked: &InvokeRequest| tilo_actions::ActionContext {
                 source_invocation: Some(asked.invocation),
                 signed: tilo_actions::remote::SignedCall::of(asked).map(Box::new),
