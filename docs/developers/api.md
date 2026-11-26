@@ -146,7 +146,7 @@ with its arguments as the body (`{}` for none). Headers: `Idempotency-Key`, `Til
 `Tilo-Surface: <app>@<digest>` from generated types (see [Types](#types-and-versions)).
 
 - **`200`** it ran:
-  `{"status": "ok", "invocation": "…", "path": "notes/Todo#append-paragraph", "result": {...},
+  `{"status": "ok", "invocation": "…", "path": "notes/Todo#add_text",
   "resources": [...], "link": "…", "edited_by_person": {...}}`
 - **`202`** it has not finished, or it waits for the person:
   `{"status": "pending", "invocation": "…", "ask": {...}}` with

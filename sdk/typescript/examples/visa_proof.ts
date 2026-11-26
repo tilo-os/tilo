@@ -313,9 +313,9 @@ async function main(): Promise<number> {
 
     await agentWorkspace.do("word-processor#open");
     for (const paragraph of LETTER) {
-      await agentWorkspace.do("word-processor#append-paragraph", { text: paragraph });
+      await agentWorkspace.do("word-processor#append_paragraph", { text: paragraph });
     }
-    const exported = await agentWorkspace.do("word-processor#export-content", { format: "docx" });
+    const exported = await agentWorkspace.do("word-processor#export_document", { format: "docx" });
     check(
       typeof exported === "string" && exported.startsWith("tilo.content:"),
       `Writer exports the letter as content (${String(exported)})`,
@@ -328,7 +328,7 @@ async function main(): Promise<number> {
   say("   links", group.links.join(", "));
   check(group.links.includes(formLink), `the invocation hands over the link to the form it filled (${formLink})`);
 
-  const exportRef = (await agentWorkspace.do("word-processor#export-content", { format: "docx" })) as string;
+  const exportRef = (await agentWorkspace.do("word-processor#export_document", { format: "docx" })) as string;
   const letter = await workspace.files.download(exportRef);
   check(letter[0] === 0x50 && letter[1] === 0x4b, `the backend downloads a Word file (${letter.length} bytes)`);
   const body = new TextDecoder("latin1").decode(letter);

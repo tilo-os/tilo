@@ -91,5 +91,5 @@ window offers the wait as two actions bound to it, `send-held-request` and `keep
 
 Not every form is a web page. When a form is a PDF, the agent fills it in PDF Viewer instead:
 `pdf-viewer#import-pdf-content`, `read-form-fields`, a field edit per answer, and
-`word-processor#export-content` for any accompanying document. A person reviews both in the same
-workspace, with the same history and undo.
+`word-processor#export_document` with `format: docx` for any accompanying document. A person
+reviews both in the same workspace, with the same history and undo.

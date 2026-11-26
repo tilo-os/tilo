@@ -37,7 +37,7 @@ what the action can reach:
 
 | Kind | What it does | Undo |
 | :--- | :--- | :--- |
-| **Read** | shows or reads: `read-form-fields`, Writer's `export-content` | nothing to undo |
+| **Read** | shows or reads: `read-form-fields`, Writer's `export_document` | nothing to undo |
 | **Undoable** | changes the workspace's own records, nothing outside | by construction |
 | **Outside** | reaches outside the records: sends a mail, submits a page, runs a command | asks the person first where it must |
 

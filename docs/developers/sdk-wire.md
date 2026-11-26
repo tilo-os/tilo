@@ -44,7 +44,7 @@ Every answer whose call failed carries the same failure shape:
 ```json
 {"status": "failed",
  "error": {"code": "invalid_arguments", "message": "…",
-           "next_steps": ["tilo_ls notes/Todo#append-paragraph lists its parameters"]}}
+           "next_steps": ["tilo_ls notes/Todo#add_text lists its parameters"]}}
 ```
 
 - `code` is the app's own code (`invalid_arguments`, `action_confirmation_required`,
@@ -133,8 +133,7 @@ One action:
 ```json
 {"status": "ok",
  "invocation_id": "3f0c…",
- "path": "notes/Todo#append-paragraph",
- "result": {"appended": "c01e"},
+ "path": "notes/Todo#add_text",
  "resources": ["notes/Todo"],
  "link": "https://tilo.sh/app/#/@eu1.tilo.sh/w/6f1c…/so.tilo.notes/uuid:3fa2…",
  "edited_by_person": {"text": "Buy milk, buttermilk"}}
@@ -153,8 +152,7 @@ Several actions (`calls`) answer one step each, in order:
 
 ```json
 {"status": "failed", "stopped_at": 1,
- "steps": [{"path": "notes/Todo#append-paragraph", "status": "ok", "invocation_id": "…",
-            "result": {"appended": "c01e"}},
+ "steps": [{"path": "notes/Todo#add_text", "status": "ok", "invocation_id": "…"},
            {"path": "notes/Todo#pin", "status": "failed", "invocation_id": "…",
             "error": {"code": "unknown_action", "message": "…", "next_steps": ["…"]}}]}
 ```
@@ -229,9 +227,9 @@ to one resource and what is under it.
    "sentence": "added \"Buy milk\"", "by": "Jane", "title": "Fill Jane's application",
    "group": "mcp:…", "time_ms": 1730000000000, "undone": false},
   {"kind": "invocation", "phase": "started", "invocation_id": "3f0c…",
-   "path": "notes/Todo#append-paragraph", "title": "Fill Jane's application",
+   "path": "notes/Todo#add_text", "title": "Fill Jane's application",
    "group": "mcp:…", "time_ms": 1730000000000},
-  {"kind": "invocation", "phase": "succeeded", "invocation_id": "3f0c…", "path": "notes/Todo#append-paragraph",
+  {"kind": "invocation", "phase": "succeeded", "invocation_id": "3f0c…", "path": "notes/Todo#add_text",
    "title": "Fill Jane's application", "group": "mcp:…", "time_ms": 1730000000001},
   {"kind": "presence", "here": [{"who": "…", "name": "Jane", "kind": "person"},
                                 {"who": "agent:…", "name": "Claude Code", "kind": "agent"}]}

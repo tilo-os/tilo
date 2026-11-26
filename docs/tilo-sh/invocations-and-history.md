@@ -51,8 +51,8 @@ workspace = tilo.workspace(tilo.workspaces.create("Invocations and history").id)
 
 # One invocation: every call inside it is one step of this app's history.
 with workspace.invocation("Write the cover letter") as invocation:
-    workspace.do("word-processor#append-paragraph", text="Dear Visa Officer,")
-    workspace.do("word-processor#append-paragraph", text="Yours faithfully, Jane Doe")
+    workspace.do("word-processor#append_paragraph", text="Dear Visa Officer,")
+    workspace.do("word-processor#append_paragraph", text="Yours faithfully, Jane Doe")
 
 history = workspace.do("word-processor#history", last=10)
 print("one invocation:", invocation.title)
@@ -75,8 +75,8 @@ type History = { versions: Record<string, unknown>[] };
 
 // One invocation: every call inside it is one step of this app's history.
 const invocation = await workspace.invocation("Write the cover letter", async (group) => {
-  await workspace.do("word-processor#append-paragraph", { text: "Dear Visa Officer," });
-  await workspace.do("word-processor#append-paragraph", { text: "Yours faithfully, Jane Doe" });
+  await workspace.do("word-processor#append_paragraph", { text: "Dear Visa Officer," });
+  await workspace.do("word-processor#append_paragraph", { text: "Yours faithfully, Jane Doe" });
   return group;
 });
 
@@ -104,7 +104,7 @@ word=$api/workspaces/$workspace/resources/word-processor/actions
 # One invocation: every call naming it in Tilo-Invocation is one step of this app's history.
 group=(-H "Tilo-Invocation: cover-letter" -H "Tilo-Invocation-Title: Write the cover letter")
 for text in "Dear Visa Officer," "Yours faithfully, Jane Doe"; do
-  invocation=$(curl -sS --fail-with-body "$word/append-paragraph" -H "$auth" -H "$json" "${group[@]}" \
+  invocation=$(curl -sS --fail-with-body "$word/append_paragraph" -H "$auth" -H "$json" "${group[@]}" \
     -d "{\"text\": \"$text\"}" | jq -r .invocation)
 done
 
@@ -171,7 +171,7 @@ tilo = Tilo()
 workspace = tilo.workspace(tilo.workspaces.create("Every invocation").id)
 
 with workspace.invocation("Write the cover letter"):
-    workspace.do("word-processor#append-paragraph", text="Dear Visa Officer,")
+    workspace.do("word-processor#append_paragraph", text="Dear Visa Officer,")
 
 listed = workspace.invocations()
 print(listed.total, "invocations, newest first;", listed.waiting, "waiting for you")
@@ -200,7 +200,7 @@ const tilo = new Tilo();
 const workspace = tilo.workspace((await tilo.workspaces.create("Every invocation")).id);
 
 await workspace.invocation("Write the cover letter", async () => {
-  await workspace.do("word-processor#append-paragraph", { text: "Dear Visa Officer," });
+  await workspace.do("word-processor#append_paragraph", { text: "Dear Visa Officer," });
 });
 
 const listed = await workspace.invocations();
@@ -232,7 +232,7 @@ auth="Authorization: Bearer $TILO_API_KEY"
 json="Content-Type: application/json"
 workspace=$(curl -sS --fail-with-body "$api/resources/account/workspaces/actions/create" -H "$auth" -H "$json" \
   -d '{"name": "Every invocation"}' | jq -r .result.workspace.id)
-curl -sS --fail-with-body "$api/workspaces/$workspace/resources/word-processor/actions/append-paragraph" \
+curl -sS --fail-with-body "$api/workspaces/$workspace/resources/word-processor/actions/append_paragraph" \
   -H "$auth" -H "$json" -H "Tilo-Invocation: cover-letter" -H "Tilo-Invocation-Title: Write the cover letter" \
   -d '{"text": "Dear Visa Officer,"}' > /dev/null
 

@@ -664,7 +664,7 @@ const CONTENT_PREFIX = "tilo.content:";
 
 /**
  * What an action answered: its value, or, when it gave none and made a file
- * instead (Writer's `export-content`), that file's `tilo.content:` reference,
+ * instead (Writer's `export_document`), that file's `tilo.content:` reference,
  * which `ws.files.download` fetches. Several files answer a list.
  */
 export function resultOf(answer: ActionAnswer): unknown {

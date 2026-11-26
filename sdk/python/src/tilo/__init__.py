@@ -7,7 +7,7 @@ async with AsyncTilo() as tilo:                  # this computer's daemon
     workspace = tilo.workspace()
     page = await workspace.read("notes/Todo")
     print(page.title)
-    await workspace.do("notes/Todo#append-paragraph", text="Buy milk")
+    await workspace.do("notes/Todo#add_text", text="Buy milk")
 ```
 
 Every call is one tool call of Tilo's agent surface (`tilo_ls`, `tilo_read`,

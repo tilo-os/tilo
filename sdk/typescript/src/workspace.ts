@@ -45,7 +45,7 @@ export type FileBytes = Uint8Array | ArrayBuffer | Blob;
  * File bytes in and out of the workspace, named `tilo.content:<hash>`.
  *
  * Upload first, then an action takes the reference; an action that makes a
- * file (Writer's `export-content`) answers one to download.
+ * file (Writer's `export_document`) answers one to download.
  */
 export class Files {
   readonly workspace: Workspace;

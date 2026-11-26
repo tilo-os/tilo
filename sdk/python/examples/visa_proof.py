@@ -314,8 +314,8 @@ async def main() -> int:
 
         await aws.do("word-processor#open")
         for paragraph in LETTER:
-            await aws.do("word-processor#append-paragraph", text=paragraph)
-        exported = await aws.do("word-processor#export-content", format="docx")
+            await aws.do("word-processor#append_paragraph", text=paragraph)
+        exported = await aws.do("word-processor#export_document", format="docx")
         letter_ref = content_in(exported)
         check(letter_ref, f"Writer exports the letter as content ({letter_ref})")
     check(group.invocations, f"the group gathered the agent's {len(group.invocations)} calls")

@@ -77,7 +77,7 @@ tilo sdk gen --lang python --check        # says whether the checked-in types ar
 
 A surface publishes every action of its app that a caller of another language reads: its
 resource's verbs, and its read effects and conversions (`read-form-fields`, Writer's
-`export-content`) as actions of the resource too, each with its parameters and the value it
+`export_document`) as actions of the resource too, each with its parameters and the value it
 answers with. A read action's return type is part of the surface, so `read_form_fields`
 types the form a script reads its fields from; an action that answers nothing or a job has
 no return type. What a window shows and does to itself (its zoom, the caret) is no action

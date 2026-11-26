@@ -76,12 +76,12 @@ the reference:
 | Put a file in the workspace's folder | `files#open` with `content`, `name`, and `dir` for a folder |
 | Put a folder of files in it, in one change | `files#open` with `files`: a list of `content`, `name` and `dir` (or a `tilo.content:` reference to one), up to 10 000 |
 | Open a PDF in PDF Viewer | `pdf-viewer#import-pdf-content` with `content` and `name` |
-| Read a document in Writer | `word-processor#read-content` with `content` and `name` |
-| Put a picture in a note | Notes' `keep-image`, or `place-image` with a page |
+| Open a document in Writer | `word-processor#open_document` with `file`: `content` (a `tilo.content:` reference) and `name` |
+| Put a picture in a note | Notes' `keep_image`, or `place_image` with a page |
 
-And an action that makes a file answers its reference instead of a value: Writer's `export-content`
-(`format`: `docx`, `pdf`, `odt`, `md`, `html`, `rtf` and `txt`; PDF is export only), Notes'
-`export-markdown-content`, a Browser page's `capture-page`.
+And an action that makes a file answers its reference instead of a value: Writer's `export_document`
+(`format`: `docx`, `odt`, `rtf`, `epub` or `pdf`), its `export_content` for Markdown, `export_text` for
+plain text and `export_html` for a page; Notes' `export_note`.
 
 ## Folders, moves and the trash
 
@@ -144,8 +144,8 @@ reference = workspace.files.upload(b"passport scan, in bytes")
 print("uploaded:", reference)
 
 # An action that makes a file answers a reference to it.
-workspace.do("word-processor#append-paragraph", text="Dear Visa Officer,")
-letter = workspace.do("word-processor#export-content", format="docx")
+workspace.do("word-processor#append_paragraph", text="Dear Visa Officer,")
+letter = workspace.do("word-processor#export_document", format="docx")
 
 # And the bytes come back out.
 data = workspace.files.download(letter)
@@ -165,8 +165,8 @@ const reference = await workspace.files.upload(
 console.log("uploaded:", reference);
 
 // An action that makes a file answers a reference to it.
-await workspace.do("word-processor#append-paragraph", { text: "Dear Visa Officer," });
-const letter = await workspace.do("word-processor#export-content", { format: "docx" });
+await workspace.do("word-processor#append_paragraph", { text: "Dear Visa Officer," });
+const letter = await workspace.do("word-processor#export_document", { format: "docx" });
 
 // And the bytes come back out.
 const bytes = await workspace.files.download(String(letter));
@@ -185,7 +185,7 @@ tilo files put ./contracts -w jane-doe                           # a folder goes
 tilo files put config.json -w jane-doe --store                   # the bytes only: prints tilo.content:…
 tilo -w jane-doe do pdf-viewer#import-pdf-content \
   content=tilo.content:… name=application.pdf                    # an app that takes a reference, by hand
-tilo -w jane-doe do word-processor#export-content format=docx    # answers a reference
+tilo -w jane-doe do word-processor#export_document format=docx   # answers a reference
 tilo files get tilo.content:… -w jane-doe -o cover-letter.docx   # or straight to standard output
 ```
 

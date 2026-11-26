@@ -73,7 +73,7 @@ refuses it (`SurfaceChanged`) rather than running it into the wrong shape.
 
 ## What else the client does
 
-- **Actions are invocations.** `await ws.do("notes/Todo#append-paragraph",
+- **Actions are invocations.** `await ws.do("notes/Todo#add_text",
   { text: "Buy milk" })` answers the result, or an `Invocation` if the host
   has not finished: `await invocation.result()`, `invocation.output()`,
   `await invocation.cancel()`, `await invocation.undo()`.

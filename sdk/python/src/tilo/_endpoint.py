@@ -38,7 +38,7 @@ ENDED = frozenset({"succeeded", "failed", "cancelled", "refused"})
 
 def result_of(answer: Mapping[str, Any]) -> Any:
     """What an action answered: its value, or, when it gave none and made a
-    file instead (Writer's `export-content`), that file's `tilo.content:`
+    file instead (Writer's `export_document`), that file's `tilo.content:`
     reference, which `ws.files.download` fetches. Several files answer a
     list of references."""
     result = answer.get("result")

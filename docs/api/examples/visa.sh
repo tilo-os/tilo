@@ -85,8 +85,8 @@ act pdf-viewer/application.pdf field-edit \
 filled=$(act pdf-viewer/application.pdf read-form-fields '{}')
 check '[[ $(jq -r ".result.fields[] | select(.name == \"surname\") | .value.value" <<<"$filled") == Doe ]]' "the surname holds what the agent set"
 act word-processor open '{}' > /dev/null
-act word-processor append-paragraph '{"text": "Dear Visa Officer, I apply for a short-stay business visa."}' > /dev/null
-exported=$(act word-processor export-content '{"format": "docx"}')
+act word-processor append_paragraph '{"text": "Dear Visa Officer, I apply for a short-stay business visa."}' > /dev/null
+exported=$(act word-processor export_document '{"format": "docx"}')
 letter=$(jq -r '[.. | strings | select(startswith("tilo.content:"))][0]' <<<"$exported")
 check '[[ $letter == tilo.content:* ]]' "Writer exports the letter as content ($letter)"
 curl -sS -H "authorization: Bearer $key" -o "$work/letter.docx" "$api$base/content/$letter"

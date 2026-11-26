@@ -53,9 +53,9 @@ jane_key = agents["Jane Doe"]
 agent = Tilo(key=jane_key.token)
 jane = agent.workspace(jane_key.workspace)
 with jane.invocation("Write the cover letter"):
-    jane.do("word-processor#append-paragraph", text="Dear Visa Officer,")
-    jane.do("word-processor#append-paragraph", text="My passport and application form are enclosed.")
-    letter = jane.do("word-processor#export-content", format="docx")
+    jane.do("word-processor#append_paragraph", text="Dear Visa Officer,")
+    jane.do("word-processor#append_paragraph", text="My passport and application form are enclosed.")
+    letter = jane.do("word-processor#export_document", format="docx")
 
 # The same key cannot reach anyone else, or make a workspace of its own.
 try:
@@ -93,11 +93,11 @@ const janeKey = agents["Jane Doe"]!;
 const agent = new Tilo({ key: janeKey.token });
 const jane = agent.workspace(janeKey.workspace);
 const letter = await jane.invocation("Write the cover letter", async () => {
-  await jane.do("word-processor#append-paragraph", { text: "Dear Visa Officer," });
-  await jane.do("word-processor#append-paragraph", {
+  await jane.do("word-processor#append_paragraph", { text: "Dear Visa Officer," });
+  await jane.do("word-processor#append_paragraph", {
     text: "My passport and application form are enclosed.",
   });
-  return jane.do("word-processor#export-content", { format: "docx" });
+  return jane.do("word-processor#export_document", { format: "docx" });
 });
 
 // The same key cannot reach anyone else, or make a workspace of its own.
@@ -295,8 +295,8 @@ configuration:
 
 The agent sees that one workspace's apps through the same tools a person's agent gets: `tilo_ls`,
 `tilo_read`, `tilo_do`, `tilo_find`, `tilo_link`, `tilo_status` and `tilo`. It fills the PDF's form fields
-(`pdf-viewer/application.pdf#field-edit`) and writes a cover letter in Writer (`word-processor#append-paragraph`,
-then `#export-content` as docx). It cannot list, read or act in any other workspace: another workspace's
+(`pdf-viewer/application.pdf#field-edit`) and writes a cover letter in Writer (`word-processor#append_paragraph`,
+then `#export_document` as docx). It cannot list, read or act in any other workspace: another workspace's
 MCP URL answers its token `403`, every `/v1/workspaces/<other>/...` route answers `403 beyond_scope`, a
 tool call naming another workspace reaches nothing, and the account's paths (`account/...` apart from the
 keys its workspace admitted and its list of workspaces: usage, making, deleting, minting) are refused.
@@ -360,7 +360,7 @@ tilo do account/workspaces#branch workspace="Onboarding template" name="Applican
 tilo files put passport.png -w "Applicant: Jane Doe"
 tilo -w "Applicant: Jane Doe" do pdf-viewer#import-pdf-content content=tilo.content:… name=application.pdf
 tilo -w "Applicant: Jane Doe" do pdf-viewer/application.pdf#read-form-fields
-tilo -w "Applicant: Jane Doe" do word-processor#export-content format=docx
+tilo -w "Applicant: Jane Doe" do word-processor#export_document format=docx
 tilo files get tilo.content:… -w "Applicant: Jane Doe" -o cover-letter.docx
 tilo do account/keys#mint workspace="Applicant: Jane Doe" name="Jane Doe's agent"
 tilo do workspace/invitations#invite role=editor invitee_name=ops@example.com -w "Applicant: Jane Doe"
