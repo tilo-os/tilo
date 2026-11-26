@@ -28,6 +28,14 @@ type Run {
 
 root Board
 
+default view board for Board
+
+view board(b: Board) {
+    for r in b.runs {
+        text("It printed {r.output.len()} bytes")
+    }
+}
+
 action add(b: Board) -> Run {
     b.runs.insert(Run())
 }
@@ -106,9 +114,25 @@ fn output_field(package: &tilolang_tilo::host::Package) -> String {
         .clone()
 }
 
+/// The id of the `Board` type, as the app declares it: made by its id, since a name more than
+/// one loaded package may declare is ambiguous.
+fn board_type(package: &tilolang_tilo::host::Package) -> String {
+    package
+        .meta
+        .types
+        .iter()
+        .find(|ty| ty.name == "Board")
+        .expect("the Board type")
+        .id
+        .clone()
+}
+
 /// A run the app made, of the board it made.
 fn made(host: &Host, package: &tilolang_tilo::host::Package) -> ResourceRef {
-    let board = host.runtime().create_root("Board").expect("the app's root");
+    let board = host
+        .runtime()
+        .create_root(&board_type(package))
+        .expect("the app's root");
     match host
         .runtime()
         .invoke_action(

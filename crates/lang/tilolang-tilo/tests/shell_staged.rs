@@ -126,11 +126,7 @@ impl tilolang_tilo::instance::Platform for Shell {
 impl StagedWindow {
     /// The shell staged as its scenario `scenario`, its desktop in a window of `viewport` in
     /// `theme`.
-    pub(crate) fn staged(
-        scenario: &str,
-        viewport: (u32, u32),
-        theme: ui::Theme,
-    ) -> Self {
+    pub(crate) fn staged(scenario: &str, viewport: (u32, u32), theme: ui::Theme) -> Self {
         use tilolang_tilo::host::RootView;
         use tilolang_tilo::instance::{Config, Instance, Mode};
         use tilolang_tilo::names::Installed;

@@ -14,7 +14,7 @@ tilo_test_env::scenario! {
             "type Run {\n\
              output: Bytes\n\
              }\n\
-             action set(r: Run, data: Bytes) { r.output = data }\n",
+             action keep(r: Run, data: Bytes) { r.output = data }\n",
         );
         let run = compiled
             .meta

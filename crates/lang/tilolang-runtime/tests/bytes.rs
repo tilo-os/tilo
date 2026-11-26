@@ -31,7 +31,7 @@ action clear(r: Run) {
     r.output = Bytes.from_base64("")
 }
 
-view show(r: Run) {
+view printed(r: Run) {
     text("It printed {r.output.len()} bytes")
 }
 "#;
@@ -65,12 +65,19 @@ view show(r: Run) {
         }
     }
 
-    /// A runtime over `store`, the app loaded, and the same content store as every other.
-    fn runtime(store: &AmStore, blobs: &MemoryBlobs) -> (Runtime, App) {
+    /// A runtime over `store` with `app` loaded, and the same content store as every other.
+    fn runtime_with(store: &AmStore, blobs: &MemoryBlobs, app: &App) -> Runtime {
         let rt = Runtime::new(store.clone(), SimpleAuthority::new()).unwrap();
-        let app = App::compile(SOURCE, &[]);
         app.load(&rt);
         rt.set_blobs(blobs.clone());
+        rt
+    }
+
+    /// A runtime over `store`, the app compiled and loaded, and the same content store as every
+    /// other.
+    fn runtime(store: &AmStore, blobs: &MemoryBlobs) -> (Runtime, App) {
+        let app = App::compile(SOURCE, &[]);
+        let rt = runtime_with(store, blobs, &app);
         (rt, app)
     }
 
@@ -103,6 +110,18 @@ view show(r: Run) {
         }
     }
 
+    /// The id of the `Run` type, as the app declares it: created by its id, since a name more
+    /// than one loaded package may declare is ambiguous.
+    fn run_type(app: &App) -> String {
+        app.meta()
+            .types
+            .iter()
+            .find(|ty| ty.name == "Run")
+            .expect("the Run type")
+            .id
+            .clone()
+    }
+
     /// The host engine writes `output` into `run`, as the engine that runs a command appends what
     /// it printed.
     fn engine_writes(rt: &Runtime, run: &ResourceRef, output: Vec<u8>) {
@@ -124,7 +143,7 @@ view show(r: Run) {
             let blobs = MemoryBlobs::default();
             let store = AmStore::new();
             let (rt, app) = runtime(&store, &blobs);
-            let run = rt.create("Run").unwrap();
+            let run = rt.create(&run_type(&app)).unwrap();
 
             let printed = b"primes below 20: 2 3 5 7 11 13 17 19\n".to_vec();
             engine_writes(&rt, &run, printed.clone());
@@ -145,7 +164,7 @@ view show(r: Run) {
             let blobs = MemoryBlobs::default();
             let store = AmStore::new();
             let (rt, app) = runtime(&store, &blobs);
-            let run = rt.create("Run").unwrap();
+            let run = rt.create(&run_type(&app)).unwrap();
 
             let printed: Vec<u8> = (0..5000u32).map(|i| u8::try_from(i % 251).unwrap()).collect();
             engine_writes(&rt, &run, printed.clone());
@@ -171,22 +190,24 @@ view show(r: Run) {
         {
             let blobs = MemoryBlobs::default();
             let (mut a, mut b) = (AmStore::new(), AmStore::new());
-            let (ra, app) = runtime(&a, &blobs);
-            let (rb, _) = runtime(&b, &blobs);
-            let run = ra.create("Run").unwrap();
+            let app = App::compile(SOURCE, &[]);
+            let ra = runtime_with(&a, &blobs, &app);
+            let rb = runtime_with(&b, &blobs, &app);
+            let run = ra.create(&run_type(&app)).unwrap();
             a.sync_with(&mut b).unwrap();
 
             let printed: Vec<u8> = (0..4096u32).map(|i| u8::try_from(i % 253).unwrap()).collect();
             engine_writes(&ra, &run, printed.clone());
-            assert!(
-                rb.read(&run, "output").is_err(),
-                "the record has not reached the other device yet"
+            assert_eq!(
+                rb.read(&run, "output").unwrap(),
+                Value::Bytes(Rc::new(Vec::new())),
+                "the other device holds the record but not what was written after it synced"
             );
 
             a.sync_with(&mut b).unwrap();
             assert_eq!(
                 rb.read(&run, "output").unwrap(),
-                Value::Bytes(Rc::new(printed.clone())),
+                Value::Bytes(Rc::new(printed)),
                 "the other device reads the bytes the reference names, from its content store"
             );
             // The document carries the address; the bytes reach the other device through the
@@ -199,7 +220,7 @@ view show(r: Run) {
             let blobs = MemoryBlobs::default();
             let store = AmStore::new();
             let (rt, app) = runtime(&store, &blobs);
-            let run = rt.create("Run").unwrap();
+            let run = rt.create(&run_type(&app)).unwrap();
 
             // `hello`, as the base64 text an action reads it from.
             let out = rt
@@ -214,13 +235,13 @@ view show(r: Run) {
                 Value::Bytes(Rc::new(b"hello".to_vec()))
             );
 
-            let mut view = rt
-                .open_view(&me(), &app.view("show"), vec![Value::resource(&run)])
+            let view = rt
+                .open_view(&me(), &app.view("printed"), vec![Value::resource(&run)])
                 .expect("the view opens");
+            let drawn = format!("{:?}", view.tree());
             assert!(
-                view.tree().find("txt").is_some(),
-                "the view reads the bytes' length: {:?}",
-                view.tree()
+                drawn.contains("It printed 5 bytes"),
+                "the view reads the bytes' length: {drawn}"
             );
 
             rt.invoke_action(&me(), (app.action("clear").as_str(), vec![Value::resource(&run)]))

@@ -84,11 +84,7 @@ fn a_press_that_needs_a_yes_in_both_themes() {
 fn a_question_nothing_here_started_in_both_themes() {
     let mut dark = ui::Theme::dark();
     dark.reduce_motion = true;
-    let mut shell = StagedWindow::staged(
-        "a call that writes another record",
-        (1280, 800),
-        dark,
-    );
+    let mut shell = StagedWindow::staged("a call that writes another record", (1280, 800), dark);
     assert_eq!(
         shell.holds_keyboard().as_deref(),
         Some("Don't allow"),
