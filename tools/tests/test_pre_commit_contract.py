@@ -48,6 +48,7 @@ class PreCommitMergeContentTests(unittest.TestCase):
         path = self.root / ".githooks/pre-commit"
         path.parent.mkdir()
         shutil.copy2(HOOK, path)
+        shutil.copy2(HOOK.parent / "python.sh", path.parent / "python.sh")
 
         # The old branch predates the exceptions policy and still has an asset
         # that main removed. Filtering inherited changes resurrects that asset

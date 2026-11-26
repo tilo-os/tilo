@@ -23,10 +23,7 @@
 set -euo pipefail
 # The lint reads Cargo metadata through the repository's own tools, which need
 # Python 3.11 or newer (tomllib); the same requirement as the pre-commit hook.
-if ! python3 -I -c 'import tomllib' 2>/dev/null; then
-  echo "git hook: the pre-push lint needs Python 3.11 or newer as python3; install it and put it first on PATH" >&2
-  exit 1
-fi
+. "$(dirname -- "${BASH_SOURCE[0]}")/python.sh"
 root="$(git rev-parse --show-toplevel)"
 # Git passes the remote's name and URL as arguments and writes the refs it is
 # updating on stdin, which the lint reads unchanged.

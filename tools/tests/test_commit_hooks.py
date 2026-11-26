@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 import unittest
 from hang import HANG_BOUND
@@ -19,7 +20,7 @@ class CommitHookTests(unittest.TestCase):
         self.git("init", "-q", "-b", "main")
         for key, value in (("user.name", "Test"), ("user.email", "test@example.org"), ("commit.gpgsign", "false")):
             self.git("config", key, value)
-        paths = ["tools/policy/check_source_content.py", "tools/policy/check_public_references.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/policy/check_wire_enums.py", "tools/policy/check_format_migrations.py", "tools/policy/check_socket_paths.py", "tools/policy/check_catalogue_coverage.py", "tools/policy/check_copy_language.py", "tools/policy/judged.py", "tools/policy/added_line_policy.py", "tools/policy/rust_source.py", "tools/ci/comparison_range.py", "tools/dev/install-git-hooks.py", ".githooks/pre-merge-commit", ".githooks/commit-msg", ".githooks/merge-generated"]
+        paths = ["tools/policy/check_source_content.py", "tools/policy/check_public_references.py", "tools/policy/check_commit_message.py", "tools/policy/check_commit_policy.py", "tools/policy/check_wire_enums.py", "tools/policy/check_format_migrations.py", "tools/policy/check_socket_paths.py", "tools/policy/check_catalogue_coverage.py", "tools/policy/check_copy_language.py", "tools/policy/judged.py", "tools/policy/added_line_policy.py", "tools/policy/rust_source.py", "tools/ci/comparison_range.py", "tools/dev/install-git-hooks.py", ".githooks/pre-merge-commit", ".githooks/commit-msg", ".githooks/python.sh", ".githooks/merge-generated"]
         for name in paths:
             dest = self.root / name
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -424,6 +425,45 @@ class CommitHookTests(unittest.TestCase):
         self.assertEqual(self.git("config", "--local", "--get", "core.hooksPath").stdout.strip(), str(self.root / ".githooks"))
         configured = subprocess.check_output(["git", "-C", str(linked), "config", "--get", "core.hooksPath"], text=True).strip()
         self.assertEqual(configured, ".githooks")
+
+
+@unittest.skipIf(
+    any(Path(p).exists() for p in ("/opt/homebrew/bin/python3", "/usr/local/bin/python3")),
+    "the hook looks at these by absolute path, so this machine always has a python3 for it",
+)
+class HookPythonTests(unittest.TestCase):
+    """The hooks' Python is found without setup on a machine with no python3 at all."""
+
+    def run_hook_python(self, with_uv):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        bin_dir = Path(temporary.name) / "bin"
+        bin_dir.mkdir()
+        # Only what sourcing needs, and no python3: the machine's own directories may hold one.
+        for tool in ("dirname",):
+            (bin_dir / tool).symlink_to(shutil.which(tool))
+        python_dir = Path(sys.executable).resolve().parent
+        if with_uv:
+            uv = bin_dir / "uv"
+            uv.write_text(f'#!/bin/sh\n[ "$1 $2" = "python find" ] && echo {python_dir / "python3"} && exit 0\nexit 2\n')
+            uv.chmod(0o755)
+        script = '. "$1"; command -v python3; python3 -I -c "import tomllib"'
+        return subprocess.run(
+            [shutil.which("bash"), "-euc", script, "hook", str(ROOT / ".githooks/python.sh")],
+            env={"PATH": str(bin_dir), "HOME": temporary.name},
+            capture_output=True,
+            text=True,
+        )
+
+    def test_uvs_python_is_used_where_no_python3_is_on_path(self):
+        result = self.run_hook_python(with_uv=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), str(Path(sys.executable).resolve().parent / "python3"))
+
+    def test_no_python_and_no_uv_stops_the_hook_saying_what_to_install(self):
+        result = self.run_hook_python(with_uv=False)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("install uv", result.stderr)
 
 
 if __name__ == "__main__":
