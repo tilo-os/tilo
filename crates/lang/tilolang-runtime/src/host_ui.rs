@@ -92,7 +92,7 @@ pub const CALL_INPUT_ACTION: &str = "$call-input";
 pub const CALL_VOLUME_ACTION: &str = "$call-volume";
 
 /// The loudest a member is played in a call, in percent of as they arrive: the call service's
-/// own bound (`runtime_collab::native_media::MAX_VOLUME_PERCENT`), which a step beyond is
+/// own bound (`tilo_actions::remote::native_media::MAX_VOLUME_PERCENT`), which a step beyond is
 /// refused by.
 pub const CALL_MAX_VOLUME: u16 = 200;
 

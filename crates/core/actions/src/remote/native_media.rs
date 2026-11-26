@@ -1,4 +1,12 @@
-//! Closed local call controls. Identity and capture authority never come from this wire.
+//! An app's own place in a workspace's call: joining it, muting, the camera and screen it sends,
+//! and the pictures its view draws.
+//!
+//! A sandboxed app takes part in a call through its device: the device's call service holds the
+//! microphone, camera and screen, asks the person for each the first time, and plays and shows
+//! the call through the workspace's live session it holds. The app says what its person did and
+//! reads the status of the call and the pictures it draws. What a command is for is the
+//! connection's app, its workspace and its grants, decided by the device from the line the
+//! launcher handed the app, never from this wire.
 use serde::{Deserialize, Serialize};
 
 /// One message's bound. A call has no member limit; a status names
@@ -263,6 +271,17 @@ mod base64_bytes {
 
 /// The longest a [`Command::Watch`] is held before it is answered unchanged.
 pub const WATCH_HOLD: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// How long an app waits for one command's answer: past the hold the device may keep it for,
+/// by the transport's slack ([`REPLY_LOST`], [`WATCH_LOST`], [`PICTURES_LOST`]).
+#[must_use]
+pub fn lost(request: &Request) -> std::time::Duration {
+    match request.command {
+        Command::Watch { .. } => WATCH_LOST,
+        Command::Pictures { .. } => PICTURES_LOST,
+        _ => REPLY_LOST,
+    }
+}
 
 /// The longest a command may take to be answered. A page's shell carries the
 /// command on to its host over the relay, so its answer is a network round

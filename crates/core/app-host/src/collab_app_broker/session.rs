@@ -68,7 +68,7 @@ impl ConnectionIdentity {
 }
 
 pub(super) struct ConnectionLease {
-    pub(super) local_media: Option<Arc<native_media::LocalAppConnection>>,
+    pub(super) local_media: Option<Arc<app_process::LocalAppConnection>>,
     pub(super) state: Arc<AppBrokerState>,
     pub(super) directories: Rc<LocalActionDirectoryRegistry>,
     pub(super) peer_id: u64,
@@ -397,7 +397,7 @@ impl JoinedChannel {
     }
 
     /// The caller the host opened this connection's view for, when it opened one for a caller
-    /// of the device's dispatch ([`native_media::LocalAppConnection::opened_for`]).
+    /// of the device's dispatch ([`app_process::LocalAppConnection::opened_for`]).
     pub(super) fn opened_for(&self) -> Option<tilo_actions::remote::Caller> {
         self.lease
             .as_ref()
@@ -984,7 +984,7 @@ pub(super) async fn drive_connection(
     } else {
         None
     };
-    let _media_monitor = native_media::ProcessMonitor::start(local_media.clone(), &state, peer_id);
+    let _media_monitor = app_process::ProcessMonitor::start(local_media.clone(), &state, peer_id);
     let (handed_descriptors, app_worker, identity) =
         connection_parts(&state, worker.as_ref(), local_media.as_deref());
     let (connection, outgoing) = wire::WireConnection::new(Some(Rc::new(AppConnection {
@@ -1023,7 +1023,7 @@ pub(super) async fn drive_connection(
 fn connection_parts(
     state: &Arc<AppBrokerState>,
     worker: Option<&WorkerBinding>,
-    local_media: Option<&native_media::LocalAppConnection>,
+    local_media: Option<&app_process::LocalAppConnection>,
 ) -> (
     Option<runtime_portal::descriptors::ReceivedDescriptors>,
     Option<(uuid::Uuid, String)>,

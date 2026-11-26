@@ -38,7 +38,7 @@ impl JoinedChannel {
         command: &Command,
     ) -> Result<FileClipboardContext, String> {
         let local = self
-            .native_media_context(false)
+            .media_request_context(false)
             .map_err(|error| error.to_string())?;
         if local.app_id() != "so.tilo.file-explorer" {
             return Err("local file offers belong only to admitted Files windows".into());

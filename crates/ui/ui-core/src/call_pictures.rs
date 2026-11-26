@@ -5,7 +5,7 @@
 use std::collections::{BTreeSet, HashMap};
 use std::sync::{Arc, Mutex, TryLockError};
 
-use runtime_collab::native_media::{Picture, PictureSource};
+use tilo_actions::remote::native_media::{Picture, PictureSource};
 use tilo_lock::MutexRecover as _;
 use vello::peniko::ImageData;
 
@@ -187,7 +187,7 @@ impl CallPictures {
         (width, height): (u16, u16),
         variant: u8,
     ) -> bool {
-        use runtime_collab::native_media::{PictureCodec, PictureLayer, PictureUnit};
+        use tilo_actions::remote::native_media::{PictureCodec, PictureLayer, PictureUnit};
         const FRAMES: u8 = 8;
         let mut config = media::EncoderConfig::new(
             media::StreamCodec::H264,
@@ -316,7 +316,7 @@ fn decode_one(picture: &Picture, decoders: &mut Decoders) -> Option<ImageData> {
         by_person: decoders,
         refused,
     } = decoders;
-    use runtime_collab::native_media::PictureCodec;
+    use tilo_actions::remote::native_media::PictureCodec;
     let unit = picture.unit()?;
     let codec = match unit.codec {
         PictureCodec::H264 => media::StreamCodec::H264,
@@ -441,7 +441,7 @@ mod tests {
 
         phase a_dropped_picture_holds_its_stream_back_until_a_keyframe;
         {
-            use runtime_collab::native_media::{PictureCodec, PictureLayer, PictureUnit};
+            use tilo_actions::remote::native_media::{PictureCodec, PictureLayer, PictureUnit};
             let object = |keyframe| {
                 PictureUnit {
                     keyframe,

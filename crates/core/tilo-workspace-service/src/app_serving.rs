@@ -263,7 +263,7 @@ pub trait AppPages: Send + Sync {
         &self,
         workspace_id: WorkspaceId,
         page: u64,
-    ) -> Vec<(u64, runtime_collab::native_media::Request)> {
+    ) -> Vec<(u64, tilo_actions::remote::native_media::Request)> {
         let _ = (workspace_id, page);
         Vec::new()
     }

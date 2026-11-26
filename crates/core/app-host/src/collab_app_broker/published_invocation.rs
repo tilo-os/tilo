@@ -399,7 +399,7 @@ impl OriginalInvocationData {
 enum TargetOwnership {
     Registered(Box<PrivateWorkerRegistration>),
     Native {
-        connection: Arc<super::native_media::LocalAppConnection>,
+        connection: Arc<super::app_process::LocalAppConnection>,
         admitted: Box<AdmittedJoinIdentity>,
     },
 }

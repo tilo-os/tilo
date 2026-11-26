@@ -67,7 +67,7 @@ impl AppBrokerState {
     pub(super) fn note_windowless(
         &self,
         peer_id: u64,
-        local: Option<&super::native_media::LocalAppConnection>,
+        local: Option<&super::app_process::LocalAppConnection>,
     ) {
         if local.is_some_and(|local| local.windowless)
             && let Ok(mut windowless) = self.publishers.windowless.lock()

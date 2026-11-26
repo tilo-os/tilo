@@ -248,7 +248,7 @@ pub struct PageNotice {
 pub struct PageCall {
     /// The number the browser answers this step by: the view's own request id.
     pub request_id: u64,
-    pub command: runtime_collab::native_media::Request,
+    pub command: tilo_actions::remote::native_media::Request,
 }
 
 /// What the browser's call service answered to a [`PageCall`].
@@ -256,7 +256,7 @@ pub struct PageCall {
 #[serde(rename_all = "snake_case")]
 pub enum CallAnswer {
     /// The call as it stands after the step, in the vocabulary the view's call service reads.
-    Answered(Box<runtime_collab::native_media::Snapshot>),
+    Answered(Box<tilo_actions::remote::native_media::Snapshot>),
     /// Why the step could not be taken, in the browser's own words.
     Refused(String),
 }

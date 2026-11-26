@@ -761,7 +761,7 @@ impl JoinedChannel {
 /// every app of the workspace opens ([`collab_types::workspace_document`]), or
 /// one it joined `read_only` as its surface declares — and `None` otherwise.
 fn launch_holds(
-    local: &super::native_media::LocalAppConnection,
+    local: &super::app_process::LocalAppConnection,
     route: &CrdtRoute,
     read_only: bool,
 ) -> Option<bool> {

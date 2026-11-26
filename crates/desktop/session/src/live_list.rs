@@ -1110,7 +1110,7 @@ mod tests {
         use std::sync::Arc;
         use std::time::{Duration, Instant};
 
-        use runtime_collab::native_media::{Command, Input, Issue, Request, Snapshot, State};
+        use tilo_actions::remote::native_media::{Command, Input, Issue, Request, Snapshot, State};
         use tilo_native_media::{
             CallTarget, Caller, MediaFactory, MediaSession, NativeMediaService, Prepare,
         };

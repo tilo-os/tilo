@@ -198,7 +198,7 @@ mod tests {
     use tilo_actions::remote::audio_output::MAX_SAMPLES;
     use tilo_actions::remote::{Caller, HostedContentPuts, LineClient, serve_lines_with};
     use tilo_app_host::collab_app_broker::{
-        AudioOutputFuture, AudioOutputServices, NativeMediaRequestContext,
+        AudioOutputFuture, AudioOutputServices, MediaRequestContext,
     };
 
     use super::*;
@@ -314,7 +314,7 @@ mod tests {
     impl AudioOutputServices for Fake {
         fn output(
             &self,
-            context: NativeMediaRequestContext,
+            context: MediaRequestContext,
             request: Request,
             samples: Vec<i16>,
         ) -> AudioOutputFuture {
@@ -384,7 +384,7 @@ mod tests {
         });
         let live = Arc::new(AtomicBool::new(true));
         let checked = Arc::clone(&live);
-        let context = NativeMediaRequestContext::daemon_line(
+        let context = MediaRequestContext::daemon_line(
             7,
             "test.app".to_owned(),
             "workspace".to_owned(),

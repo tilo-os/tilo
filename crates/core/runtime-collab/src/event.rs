@@ -134,10 +134,6 @@ pub enum CollabEvent<C: EndpointOwnership = NoOwner> {
         session_id: u64,
         event: crate::WorkspaceControlEvent,
     },
-    NativeMediaCommandResult {
-        request_id: u64,
-        result: Result<crate::native_media::Snapshot, String>,
-    },
     /// Content the record on `route` references arrived: an answer to
     /// the toolkit's `CollabRequest::WantContent`, or content another app on the record
     /// offered. The bytes are verified against `hash` before use.

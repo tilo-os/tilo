@@ -11,7 +11,7 @@ name = "tilo_native_media"
 
 [dependencies]
 # The closed local call controls: requests an app sends, the status it reads.
-runtime-collab = { package = "tilo-runtime-collab", path = "../../core/runtime-collab" }
+tilo-actions = { path = "../../core/actions" }
 tilo-app-host = { path = "../../core/app-host" }
 tilo-lock = { path = "../../platform/tilo-lock" }
 serde_json.workspace = true

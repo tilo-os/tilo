@@ -2,7 +2,7 @@
 //! This inert owner diagnostic never creates an invocation or document grant.
 use super::{
     ActionDirectoryRoot, AdmittedJoinIdentity, AppBrokerState, Arc, CrdtRoute, JoinedChannel,
-    native_media::LocalAppConnection,
+    app_process::LocalAppConnection,
 };
 
 #[derive(Clone)]

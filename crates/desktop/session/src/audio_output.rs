@@ -15,7 +15,7 @@ use media::audio_output::{CHANNELS, MAX_SAMPLES, RATE};
 use media::pw_stream::{AudioStreams, PlaybackConfig, PlaybackSource, PlaybackStream};
 use media::sync_playout::ChannelRole;
 use tilo_actions::remote::audio_output::{Request, Snapshot};
-use tilo_app_host::services::{AudioOutputFuture, AudioOutputServices, NativeMediaRequestContext};
+use tilo_app_host::services::{AudioOutputFuture, AudioOutputServices, MediaRequestContext};
 
 /// How many apps may sound at once on one desktop.
 const MAX_OUTPUTS: usize = 8;
@@ -33,8 +33,8 @@ struct Key {
     record: String,
 }
 
-impl From<&NativeMediaRequestContext> for Key {
-    fn from(context: &NativeMediaRequestContext) -> Self {
+impl From<&MediaRequestContext> for Key {
+    fn from(context: &MediaRequestContext) -> Self {
         Self {
             peer: context.peer_id(),
             app: context.app_id().into(),
@@ -457,7 +457,7 @@ impl AppAudioOutput {
 impl AudioOutputServices for AppAudioOutput {
     fn output(
         &self,
-        context: NativeMediaRequestContext,
+        context: MediaRequestContext,
         request: Request,
         samples: Vec<i16>,
     ) -> AudioOutputFuture {

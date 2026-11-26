@@ -824,10 +824,7 @@ impl App {
     }
 
     fn collab_event_updates_app_presentation(event: &CollabEvent) -> bool {
-        !matches!(
-            event,
-            CollabEvent::NativeMediaCommandResult { .. } | CollabEvent::WorkspaceControl { .. }
-        )
+        !matches!(event, CollabEvent::WorkspaceControl { .. })
     }
     fn apply_collab_presence_event(&mut self, event: CollabEvent) {
         let _background = crate::local_document_action::suspend();
@@ -912,9 +909,7 @@ impl App {
             // The generic client responses are consumed by widgets such as
             // Agent through their collaboration event hook; an ordinary
             // application has no local state to apply.
-            CollabEvent::NativeMediaCommandResult { .. }
-            | CollabEvent::WorkspaceControl { .. }
-            | CollabEvent::ActionVerdicts { .. } => {}
+            CollabEvent::WorkspaceControl { .. } | CollabEvent::ActionVerdicts { .. } => {}
             // A window that holds the workspace's documents applies each as it arrives from
             // the broker; only a window that reads the store, as a tilolang app's window does,
             // re-reads the records named. The members' resource is one of them: it is not a

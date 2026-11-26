@@ -19,7 +19,7 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
 };
-use tilo_app_host::collab_app_broker::{AudioOutputServices, NativeMediaServices};
+use tilo_app_host::collab_app_broker::{AudioOutputServices, CallMediaServices};
 use tilo_app_host::seat::{self, MediaContext, SeatReading, SeatView, calls};
 use tilo_app_host::services::{
     BrowserServiceSessionServices, DisplayControlContext, DisplayControlServices,
@@ -35,7 +35,7 @@ pub(crate) struct SeatParts {
     /// The device's output, which apps' sound plays on.
     pub audio_output: Option<Arc<dyn AudioOutputServices>>,
     /// The calls this session's apps join.
-    pub native_media: Option<Arc<dyn NativeMediaServices>>,
+    pub call_media: Option<Arc<dyn CallMediaServices>>,
     /// What each window shows, as its app reports it.
     pub continuations: Arc<dyn tilo_broker_core::steps::ContinuationServices>,
     /// What notes the workspaces' records changing, for the roles that follow them.
@@ -298,7 +298,7 @@ impl SeatProvider {
                 Box::pin(std::future::ready(Ok(Value::Null)))
             }
             (calls::NATIVE_MEDIA, calls::COMMAND) => {
-                let Some(media) = parts.native_media.clone() else {
+                let Some(media) = parts.call_media.clone() else {
                     return unserved("calls");
                 };
                 match (
@@ -314,7 +314,7 @@ impl SeatProvider {
             }
             (calls::NATIVE_MEDIA, calls::DISCONNECT) => {
                 if let (Some(media), Ok(peer)) =
-                    (&parts.native_media, field::<u64>(&arguments, "peer"))
+                    (&parts.call_media, field::<u64>(&arguments, "peer"))
                 {
                     media.disconnect(peer);
                 }
@@ -793,7 +793,7 @@ mod tests {
     fn serving_nothing() -> SeatParts {
         SeatParts {
             audio_output: None,
-            native_media: None,
+            call_media: None,
             continuations: crate::launches::Launches::default().notes(),
             records: None,
             published: crate::app_wire::Link::new(tilo_service::LoopWake::default().handle()),

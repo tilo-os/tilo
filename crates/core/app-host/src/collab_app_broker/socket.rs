@@ -373,7 +373,7 @@ pub(super) struct LaunchRefusal {
 #[derive(Default)]
 pub(super) struct AuthenticatedHandoff {
     /// The exact process, where the kernel pins it.
-    pub(super) local_media: Option<Arc<native_media::LocalAppConnection>>,
+    pub(super) local_media: Option<Arc<app_process::LocalAppConnection>>,
     /// The launch that started it, where its host keeps a ticket for it.
     pub(super) launch: Option<workspace_open::ConnectedLaunch>,
 }
@@ -461,7 +461,7 @@ pub(super) async fn authenticate_launcher_handoff(
                 workspace: handoff.workspace_id.clone(),
             });
         return Ok(AuthenticatedHandoff {
-            local_media: native_media::LocalAppConnection::from_launch(
+            local_media: app_process::LocalAppConnection::from_launch(
                 handoff,
                 media_process,
                 launch,

@@ -120,10 +120,10 @@ fn app_in(
     let directories = Rc::new(LocalActionDirectoryRegistry::new(bridge_rx));
     let peer_id = state.next_peer_id();
     let (host, endpoint) = tokio::net::UnixStream::pair().unwrap();
-    let local = native_media::LocalAppConnection::attested(
+    let local = app_process::LocalAppConnection::attested(
         id.into(),
         workspace_id.into(),
-        native_media::PeerProcess::from_socket(&host).unwrap(),
+        app_process::PeerProcess::from_socket(&host).unwrap(),
         crate::services::AuthenticatedApplicationLaunch {
             continuation_instance: None,
             launch_ticket: None,

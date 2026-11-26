@@ -1,5 +1,5 @@
 //! Bind descriptor ownership to the actual app without changing launch authority.
-use super::{CollabLaunchHandoff, ProcessServices, native_media::PeerProcess};
+use super::{CollabLaunchHandoff, ProcessServices, app_process::PeerProcess};
 use crate::BrokerError;
 use crate::services::ExecutingBindingPhase as Phase;
 use tokio::io::AsyncWriteExt as _;

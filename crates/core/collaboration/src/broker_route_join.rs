@@ -4,8 +4,8 @@
 
 use super::{
     BridgeState, DocumentRoute, InboundBridge, KeySignal, RouteSpec, SdkCommand, SdkJoinContext,
-    SdkRoute, committed_document, follow_channel_keys, native_media, record_sync,
-    spawn_content_stream, spawn_context_stream, take_invocations_once_current, tokio_mpsc,
+    SdkRoute, committed_document, follow_channel_keys, record_sync, spawn_content_stream,
+    spawn_context_stream, take_invocations_once_current, tokio_mpsc,
 };
 use crate::time::Duration;
 use tilo_lock::MutexRecover as _;
@@ -27,7 +27,6 @@ pub(super) struct JoinInputs {
     pub(super) client: runtime_collab::CollabClient,
     pub(super) member_kind: &'static str,
     pub(super) inbound_tx: InboundBridge,
-    pub(super) media_routes: native_media::Routes,
 }
 
 /// A route's join that ended: the route, or why it did not join.
@@ -50,7 +49,6 @@ pub(super) fn start_route_join(
             client: &inputs.client,
             member_kind: inputs.member_kind,
             inbound_tx: &inputs.inbound_tx,
-            media_routes: &inputs.media_routes,
         };
         let result = match tokio::time::timeout(
             ROUTE_JOIN_WAIT,
@@ -119,7 +117,6 @@ pub(super) async fn join_route(
         client,
         member_kind,
         inbound_tx,
-        media_routes,
     } = *context;
     let channel_id = spec.channel_id();
     inbound_tx
@@ -277,7 +274,6 @@ pub(super) async fn join_route(
                 error
             })
             .ok();
-    media_routes.insert(channel_id.clone(), channel.clone());
     Ok(SdkRoute {
         _moderation: moderation,
         document: DocumentRoute {

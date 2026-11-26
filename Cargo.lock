@@ -14793,6 +14793,7 @@ dependencies = [
 name = "tilo-actions"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "blake3",
  "hex",
  "jiff",
@@ -18426,9 +18427,9 @@ name = "tilo-native-media"
 version = "0.1.0"
 dependencies = [
  "serde_json",
+ "tilo-actions",
  "tilo-app-host",
  "tilo-lock",
- "tilo-runtime-collab",
  "tokio",
  "tracing",
  "workspace-hack",

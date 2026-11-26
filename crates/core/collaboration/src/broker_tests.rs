@@ -193,13 +193,6 @@ pub struct Captures {
     pub workspace_status:
         Option<tokio::sync::watch::Receiver<Result<runtime_collab::WorkspaceStatus, String>>>,
     pub committed_reads: Vec<runtime_collab::committed_document::Request>,
-    pub media_commands: Vec<runtime_collab::native_media::Request>,
-    pub media_active_fixture: bool,
-    pub media_capture_active: bool,
-    pub media_pending_consent: bool,
-    pub media_joined: bool,
-    pub media_stops: usize,
-    pub media_holds: std::collections::VecDeque<tokio::sync::oneshot::Receiver<()>>,
     /// Lose the connection on the next record write: the store may or
     /// may not have kept the change, an unknown outcome.
     pub fail_document: bool,
@@ -861,7 +854,6 @@ impl FakeHost {
                 ..
             } => self.on(record, move |host, channel| match service {
                 Service::CommittedDocument => host.committed_document(channel, &body),
-                Service::NativeMedia => host.native_media(&body),
                 Service::RemoteAction => answered(host.remote_action(&body)),
                 Service::BrowserServiceSession => answered(host.browser_service_session(&body)),
                 Service::Resources => host.resource_command(channel, &body),
@@ -1260,49 +1252,6 @@ impl FakeHost {
             .map_err(|error| error.to_string())
     }
 
-    fn native_media(&self, body: &[u8]) -> FakeAnswer {
-        let request = match runtime_collab::native_media::Request::decode(body) {
-            Ok(request) => request,
-            Err(error) => return answered(Err(error.to_string())),
-        };
-        assert!(request.dispatch_valid());
-        let hold = {
-            let mut captures = self.captures();
-            if captures.media_active_fixture {
-                use runtime_collab::native_media::Command;
-                match &request.command {
-                    Command::SetMuted { muted: true } | Command::Leave => {
-                        captures.media_capture_active = false;
-                        captures.media_pending_consent = false;
-                        captures.media_stops += 1;
-                        if matches!(request.command, Command::Leave) {
-                            captures.media_joined = false;
-                        }
-                    }
-                    Command::SetMuted { muted: false }
-                        if !captures.media_capture_active && captures.media_joined =>
-                    {
-                        captures.media_pending_consent = true;
-                    }
-                    _ => {}
-                }
-            }
-            captures.media_commands.push(request);
-            captures.media_holds.pop_front()
-        };
-        Box::pin(async move {
-            if let Some(hold) = hold {
-                hold.await
-                    .map_err(|_| "native media hold dropped".to_owned())?;
-            }
-            Ok(Reply::Answer(
-                runtime_collab::native_media::Snapshot::unavailable()
-                    .encode()
-                    .unwrap(),
-            ))
-        })
-    }
-
     fn committed_document(&self, channel: &FakeChannel, body: &[u8]) -> FakeAnswer {
         use runtime_collab::committed_document::Request as Ask;
         let decoded = Ask::decode(body).map_err(|error| error.to_string());
@@ -1382,16 +1331,6 @@ fn store_answer(reply: &collab_types::store::wire::Reply) -> Result<Reply, Strin
     serde_json::to_vec(reply)
         .map(Reply::Answer)
         .map_err(|error| error.to_string())
-}
-
-/// A client connected to a fake host serving `broker` on this
-/// `LocalSet`, and its captures.
-pub(super) fn fake_client(broker: FakeBroker) -> (runtime_collab::CollabClient, SharedCaptures) {
-    let captures = broker.captures.clone();
-    let (client, host) = tokio::io::duplex(64 * 1024);
-    tokio::task::spawn_local(serve_fake_broker(host, broker));
-    let (client, _end) = runtime_collab::CollabClient::connected_local(client);
-    (client, captures)
 }
 
 #[test]
@@ -1900,7 +1839,6 @@ fn parking_transport(capacity: usize) -> (BrokerTransport, tokio_mpsc::Receiver<
     let (action_directory_tx, action_directory_rx) = mpsc::sync_channel(1);
     let transport = BrokerTransport {
         outbound_tx,
-        media: None,
         inbound_rx,
         document_turns: Vec::new(),
         invocation_owners: std::collections::BTreeMap::new(),
@@ -2776,7 +2714,6 @@ tilo_test_env::scenario! {
         let state = BridgeState::new();
         manager.backend = Backend::Transport(Box::new(BrokerTransport {
             outbound_tx,
-            media: None,
             inbound_rx,
             document_turns: Vec::new(),
             invocation_owners: std::collections::BTreeMap::new(),
@@ -3073,8 +3010,6 @@ fn document_publication_superseded_receipt_does_not_stop_worker() {
 }
 
 #[cfg(test)]
-include!("native_media_tests.rs");
-
 /// A captured local edit reported as `invocation`.
 fn report_capture(invocation: u128) -> crate::local_document_action::CapturedAction {
     crate::local_document_action::CapturedAction {

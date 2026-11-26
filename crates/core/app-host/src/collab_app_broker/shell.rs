@@ -181,7 +181,7 @@ pub(super) async fn processes(
 /// process it pinned: served as that app, as a launch the daemon attested itself would be.
 pub(super) struct Handed {
     pub(super) vouch: runtime_collab::wire::shell::VouchedApp,
-    pub(super) process: super::native_media::PeerProcess,
+    pub(super) process: super::app_process::PeerProcess,
 }
 
 impl Handed {
@@ -202,7 +202,7 @@ impl Handed {
                 app_id: vouch.app.clone(),
                 workspace: vouch.workspace.clone(),
             });
-        let local_media = super::native_media::LocalAppConnection::attested_keeping(
+        let local_media = super::app_process::LocalAppConnection::attested_keeping(
             (vouch.app, vouch.workspace, vouch.member),
             process,
             launch,
@@ -289,7 +289,7 @@ fn vouch_for(
                 .launcher
                 .map(|number| taken(number, "launcher process"))
                 .transpose()?;
-            let process = super::native_media::PeerProcess::handed(task, launcher)
+            let process = super::app_process::PeerProcess::handed(task, launcher)
                 .ok_or("the app the shell vouched for has ended")?;
             Some(Handed { vouch, process })
         }

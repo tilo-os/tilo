@@ -296,12 +296,10 @@ pub enum Changes {
 }
 
 /// A host service a [`Operation::Command`] addresses. Their commands are
-/// internally tagged JSON (`native_media::Request`, ...) or their own postcard,
-/// which the wire carries as they are.
+/// internally tagged JSON or their own postcard, which the wire carries as
+/// they are.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Service {
-    /// `native_media::Request` -> `native_media::Snapshot`, JSON.
-    NativeMedia,
     /// `BrowserServiceSessionCommand` -> `BrowserServiceSessionReply`; the
     /// Browser's only.
     BrowserServiceSession,

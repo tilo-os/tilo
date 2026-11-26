@@ -34,10 +34,10 @@ mod workspace_document_ownership {
         route: &CrdtRoute,
         socket: &tokio::net::UnixStream,
     ) -> JoinedChannel {
-        let local = native_media::LocalAppConnection::attested(
+        let local = app_process::LocalAppConnection::attested(
             app.into(),
             workspace.route.cluster_id.clone(),
-            native_media::PeerProcess::from_socket(socket).unwrap(),
+            app_process::PeerProcess::from_socket(socket).unwrap(),
             crate::services::AuthenticatedApplicationLaunch {
                 continuation_instance: Some(91),
                 launch_ticket: None,

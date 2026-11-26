@@ -249,14 +249,6 @@ impl ChannelSession {
         let channel = Rc::clone(&self.channel);
         let failed = Refusal::refusal;
         let answer = match service {
-            Service::NativeMedia => {
-                channel
-                    .native_media_dispatch(body)
-                    .map_err(failed)
-                    .map(|snapshot| -> Answering {
-                        Box::pin(async move { snapshot.await?.encode().map_err(Into::into) })
-                    })
-            }
             // The secret answer moves onto the wire without a copy left
             // behind. An item's use is waited for here, by the answer, and
             // never by the dispatch that started it.

@@ -5,7 +5,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[tokio::test]
-async fn native_media_kernel_peer_death_fences_even_while_descendant_retains_socket() {
+async fn kernel_peer_death_fences_even_while_descendant_retains_socket() {
     let directory = tempfile::tempdir().unwrap();
     let socket = directory.path().join("peer.sock");
     let listener = tokio::net::UnixListener::bind(&socket).unwrap();
@@ -38,7 +38,9 @@ os._exit(0)
     let mut byte = [0u8; 1];
     stream.read_exact(&mut byte).await.unwrap();
     assert_eq!(byte, *b"R");
-    let process = PeerProcess::from_socket(&stream).expect("native media qualification requires actual Linux SO_PEERPIDFD support; no numeric PID fallback");
+    let process = PeerProcess::from_socket(&stream).expect(
+        "the qualification requires actual Linux SO_PEERPIDFD support; no numeric PID fallback",
+    );
     assert!(process.alive());
     let stopped = Arc::new(AtomicUsize::new(0));
     let observed = stopped.clone();
@@ -63,7 +65,7 @@ os._exit(0)
 }
 
 #[tokio::test]
-async fn native_media_executing_peer_death_fences_while_original_launcher_lives() {
+async fn executing_peer_death_fences_while_original_launcher_lives() {
     let directory = tempfile::tempdir().expect("private socket directory");
     let socket = directory.path().join("executing.sock");
     let listener = tokio::net::UnixListener::bind(&socket).expect("service listener");

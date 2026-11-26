@@ -737,8 +737,11 @@ mod tests {
                 SunburstNode::new("reviews", "Code review", 14.0),
                 SunburstNode::new("design", "Design review", 6.0),
             ]),
-            SunburstNode::new("docs", "Docs", 0.0)
-                .with_children(vec![SunburstNode::new("notes", "Release notes", 9.0)]),
+            SunburstNode::new("docs", "Docs", 0.0).with_children(vec![SunburstNode::new(
+                "notes",
+                "Release notes",
+                9.0,
+            )]),
         ])
     }
 
@@ -746,7 +749,11 @@ mod tests {
     fn long_names_root() -> SunburstNode {
         SunburstNode::new("root", "Where the long names went", 0.0).with_children(vec![
             SunburstNode::new("platform", "Platform work that ran long", 0.0).with_children(vec![
-                SunburstNode::new("integration", "Integration tests for the desktop clients", 22.0),
+                SunburstNode::new(
+                    "integration",
+                    "Integration tests for the desktop clients",
+                    22.0,
+                ),
                 SunburstNode::new("migration", "Migration of the old calendar records", 14.0),
             ]),
             SunburstNode::new("people", "Talking to people about the release", 0.0).with_children(
@@ -801,7 +808,13 @@ mod tests {
         let mut tr = TextRenderer::new();
         let air = f64::from(theme.tokens.spacing.s1);
         // Half a ring at a time: the top, each side, the bottom.
-        for start in [-PI, -PI / 2.0 - FRAC_PI_4, -FRAC_PI_4, 0.0, PI / 2.0 - FRAC_PI_4] {
+        for start in [
+            -PI,
+            -PI / 2.0 - FRAC_PI_4,
+            -FRAC_PI_4,
+            0.0,
+            PI / 2.0 - FRAC_PI_4,
+        ] {
             let ring = Ring {
                 center: Point::new(0.0, 0.0),
                 inner: 200.0,

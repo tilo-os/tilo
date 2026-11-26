@@ -6,7 +6,7 @@ async fn checkout_channel(
     attested: bool,
 ) -> (
     runtime_collab::RecordHandle,
-    Option<Arc<native_media::LocalAppConnection>>,
+    Option<Arc<app_process::LocalAppConnection>>,
     signed_worker::Connection,
 ) {
     let (worker, _) = workspace.join_worker(peer).await;
@@ -22,10 +22,10 @@ async fn checkout_channel(
     // is retained below independently from this launcher-admitted test channel.
     let (socket, _peer_socket) = tokio::net::UnixStream::pair().unwrap();
     let local = attested.then(|| {
-        native_media::LocalAppConnection::attested(
+        app_process::LocalAppConnection::attested(
             workspace.route.app_id.clone(),
             workspace.route.cluster_id.clone(),
-            native_media::PeerProcess::from_socket(&socket).unwrap(),
+            app_process::PeerProcess::from_socket(&socket).unwrap(),
             crate::services::AuthenticatedApplicationLaunch {
                 continuation_instance: Some(73),
                 launch_ticket: None,
@@ -258,10 +258,10 @@ async fn a_channel_held_to_read_another_apps_record_refuses_every_change() {
             // A launch of another app, which declares no read of the route's app: it changes
             // nothing on the route.
             let (socket, _peer_socket) = tokio::net::UnixStream::pair().unwrap();
-            let reader = native_media::LocalAppConnection::attested(
+            let reader = app_process::LocalAppConnection::attested(
                 "test.checkout-reader".into(),
                 workspace.route.cluster_id.clone(),
-                native_media::PeerProcess::from_socket(&socket).unwrap(),
+                app_process::PeerProcess::from_socket(&socket).unwrap(),
                 crate::services::AuthenticatedApplicationLaunch {
                     continuation_instance: Some(74),
                     launch_ticket: None,

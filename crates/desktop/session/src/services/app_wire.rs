@@ -333,9 +333,9 @@ fn seat_parts(inputs: SeatInputs<'_>) -> crate::seat_services::SeatParts {
         )),
         #[cfg(not(target_os = "linux"))]
         audio_output: None,
-        native_media: calls_service.map(|media| {
+        call_media: calls_service.map(|media| {
             std::sync::Arc::new(media.clone())
-                as std::sync::Arc<dyn tilo_app_host::services::NativeMediaServices>
+                as std::sync::Arc<dyn tilo_app_host::services::CallMediaServices>
         }),
         continuations: options.launches.notes(),
         records,

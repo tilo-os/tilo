@@ -30,8 +30,7 @@ use tilo_lock::MutexRecover as _;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::collab_app_broker::{
-    AudioOutputFuture, AudioOutputServices, NativeMediaFuture, NativeMediaRequestContext,
-    NativeMediaServices,
+    AudioOutputFuture, AudioOutputServices, CallMediaFuture, CallMediaServices, MediaRequestContext,
 };
 use crate::services::{
     BrowserServiceSessionRequestContext, BrowserServiceSessionServices, Caller, ClipboardAnswering,
@@ -247,8 +246,8 @@ pub struct MediaContext {
     pub document_id: String,
 }
 
-impl From<&NativeMediaRequestContext> for MediaContext {
-    fn from(context: &NativeMediaRequestContext) -> Self {
+impl From<&MediaRequestContext> for MediaContext {
+    fn from(context: &MediaRequestContext) -> Self {
         Self {
             peer_id: context.peer_id(),
             app_id: context.app_id().to_owned(),
@@ -262,8 +261,8 @@ impl MediaContext {
     /// The broker's context of the connection these facts are of, as the seat answers it: the
     /// broker checked the connection before it forwarded the call, and checks it again for each.
     #[must_use]
-    pub fn context(self) -> NativeMediaRequestContext {
-        NativeMediaRequestContext::seat_forwarded(
+    pub fn context(self) -> MediaRequestContext {
+        MediaRequestContext::seat_forwarded(
             self.peer_id,
             self.app_id,
             self.workspace_id,
@@ -278,7 +277,7 @@ pub struct SeatAudioOutput(pub Seat);
 impl AudioOutputServices for SeatAudioOutput {
     fn output(
         &self,
-        context: NativeMediaRequestContext,
+        context: MediaRequestContext,
         request: tilo_actions::remote::audio_output::Request,
         samples: Vec<i16>,
     ) -> AudioOutputFuture {
@@ -303,14 +302,14 @@ impl AudioOutputServices for SeatAudioOutput {
 }
 
 /// The seat's calls: the microphone, camera and screen an app's call captures.
-pub struct SeatNativeMedia(pub Seat);
+pub struct SeatCallMedia(pub Seat);
 
-impl NativeMediaServices for SeatNativeMedia {
+impl CallMediaServices for SeatCallMedia {
     fn command(
         &self,
-        context: NativeMediaRequestContext,
-        request: runtime_collab::native_media::Request,
-    ) -> NativeMediaFuture {
+        context: MediaRequestContext,
+        request: tilo_actions::remote::native_media::Request,
+    ) -> CallMediaFuture {
         let asked = self.0.call(
             calls::NATIVE_MEDIA,
             calls::COMMAND,
@@ -1624,7 +1623,7 @@ impl tilo_broker_core::services::AgentSessions for SeatAgents {
 /// The seat's services, each a forwarder to it, for a broker's [`crate::services::ProcessServices`].
 pub struct Forwarders {
     pub audio_output: Arc<dyn AudioOutputServices>,
-    pub native_media: Arc<dyn NativeMediaServices>,
+    pub call_media: Arc<dyn CallMediaServices>,
     pub continuations: Arc<dyn tilo_broker_core::steps::ContinuationServices>,
     pub workspace_nodes: Arc<dyn tilo_broker_core::services::WorkspaceNodeActions>,
     pub keyboard_shortcuts: Arc<dyn tilo_broker_core::services::KeyboardShortcutServices>,
@@ -1640,7 +1639,7 @@ impl Seat {
     pub fn forwarders(&self) -> Forwarders {
         Forwarders {
             audio_output: Arc::new(SeatAudioOutput(self.clone())),
-            native_media: Arc::new(SeatNativeMedia(self.clone())),
+            call_media: Arc::new(SeatCallMedia(self.clone())),
             continuations: Arc::new(SeatContinuations(self.clone())),
             workspace_nodes: Arc::new(SeatWorkspaceNodes(self.clone())),
             keyboard_shortcuts: Arc::new(SeatKeyboardShortcuts::follow(self.clone())),

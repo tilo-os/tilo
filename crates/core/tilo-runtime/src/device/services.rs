@@ -3494,13 +3494,13 @@ fn seat_services(
 ) {
     services.audio_output = Some(forwarded.audio_output);
     // A page's view's call is the browser's that shows it; the seat carries every other.
-    services.native_media = Some(match parts.key_sessions {
+    services.call_media = Some(match parts.key_sessions {
         Some(sessions) => Arc::new(super::page_media::PageMedia {
             pages: sessions.pages_served().clone(),
-            seat: forwarded.native_media,
+            seat: forwarded.call_media,
         })
-            as Arc<dyn tilo_app_host::collab_app_broker::NativeMediaServices>,
-        None => forwarded.native_media,
+            as Arc<dyn tilo_app_host::collab_app_broker::CallMediaServices>,
+        None => forwarded.call_media,
     });
     services.continuations = Some(forwarded.continuations);
     services.workspace_nodes = Some(forwarded.workspace_nodes);

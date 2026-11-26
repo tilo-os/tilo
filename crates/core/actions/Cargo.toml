@@ -50,6 +50,7 @@ tilo-selector = { version = "0.1.0", path = "../tilo-selector" }
 # What a type's noun is called in a sentence, shared with the compiler that writes an app's
 # catalogue.
 tilo-words = { version = "0.1.0", path = "../tilo-words" }
+base64.workspace = true
 hex.workspace = true
 automerge.workspace = true
 # The document reader a record's bytes are read as JSON through (feature `document-read`).

@@ -20,7 +20,7 @@ use collab_types::Ed25519PublicKey;
 use collab_types::presence::{Availability, Payload, Presence};
 use iroh::EndpointId;
 use key_group::{KeyGroup, MemberKey, VaultKey};
-use runtime_collab::native_media::{Command, Issue, Request, State};
+use tilo_actions::remote::native_media::{Command, Issue, Request, State};
 use tilo_broker_core::collab_core::BrokerChannels;
 use tilo_compositor::OutputConfig;
 use tilo_desktop_model::{Layout, Workspace, WorkspaceId};

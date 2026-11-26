@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use runtime_portal::process_link::Descriptor;
 use serde_json::{Map, Value};
+use tilo_actions::remote::native_media::{Request as CallMediaRequest, Snapshot as CallSnapshot};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider as _, Caller, InvokeRequest, LineClient, ReceiptStatus,
     RemoteActionTarget,
@@ -110,4 +111,28 @@ pub fn device_key(purpose: &str) -> Result<[u8; 32], String> {
         *byte = u8::from_str_radix(text, 16).map_err(|_| NO_KEY.to_owned())?;
     }
     Ok(bytes)
+}
+
+/// Ask one command of the call this app's views take part in, without waiting for its answer.
+/// The correlation it answers is what [`call_media_answers`] hands the answer back by, so a held
+/// watch or picture collection never stops the frames this process runs.
+///
+/// # Errors
+/// The process has no line, or it closed.
+pub fn call_media_ask(request: CallMediaRequest) -> Result<u64, String> {
+    line()
+        .get()
+        .ok_or_else(|| NO_LINE.to_owned())?
+        .call_media_ask(request)
+        .map_err(|error| error.own_words())
+}
+
+/// The answers to the call commands this process sent since the last time, each by the
+/// correlation [`call_media_ask`] answered.
+#[must_use]
+pub fn call_media_answers() -> Vec<(u64, Result<CallSnapshot, ActionCallError>)> {
+    line()
+        .get()
+        .map(LineClient::call_media_answers)
+        .unwrap_or_default()
 }

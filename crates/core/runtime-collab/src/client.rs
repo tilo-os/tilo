@@ -18,7 +18,7 @@ use crate::wire::{
 use crate::{ChannelContext, Invocation};
 use crate::{
     ExportedAction, SurfaceDelta, WorkspaceControlEvent, WorkspaceControlInput, committed_document,
-    file_clipboard, native_media,
+    file_clipboard,
 };
 
 /// Where a connection's calls hand the host descriptors, if it can.
@@ -538,22 +538,6 @@ impl RecordHandle {
         let bytes = command.encode().map_err(refused)?;
         let reply = self.command(Service::CommittedDocument, bytes, &[]).await?;
         committed_document::Reply::decode(&reply).map_err(refused)
-    }
-
-    /// Control this launched application's local call. The host
-    /// derives the exact caller and record from the authenticated connection.
-    ///
-    /// # Errors
-    ///
-    /// Returns [`NotAvailable`] if the connection fails or the host answers
-    /// with an invalid status.
-    pub async fn native_media_command(
-        &self,
-        command: &native_media::Request,
-    ) -> Result<native_media::Snapshot, NotAvailable> {
-        let bytes = command.encode().map_err(refused)?;
-        let reply = self.command(Service::NativeMedia, bytes, &[]).await?;
-        native_media::Snapshot::decode(&reply).map_err(refused)
     }
 
     /// Ask the device's one store `command` for this app's resources, a write or a read as the

@@ -17,7 +17,7 @@ use std::time::{Duration, Instant};
 use collab_types::caps::DeviceCap;
 use media::realtime::InputFormat;
 use media::realtime::capture::{CaptureConfig, VideoCapture};
-use runtime_collab::native_media::{
+use tilo_actions::remote::native_media::{
     BridgedPerson, Input, Issue, Picture, PictureLayer, PictureSource, Roster, Shown, State,
 };
 use tilo_desktop_model::WorkspaceId;
@@ -1211,7 +1211,7 @@ impl Shared {
     /// what the person set for them here, never what anyone else's call changes.
     pub(crate) fn set_volume(&self, member: &str, percent: u16) {
         let mut volumes = self.volumes.lock_recover();
-        if percent == runtime_collab::native_media::MAX_VOLUME_PERCENT / 2 {
+        if percent == tilo_actions::remote::native_media::MAX_VOLUME_PERCENT / 2 {
             volumes.remove(member);
         } else {
             volumes.insert(member.to_owned(), percent);

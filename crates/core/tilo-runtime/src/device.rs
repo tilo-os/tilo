@@ -35,6 +35,7 @@ pub(crate) mod audio_output;
 mod boot_unlock;
 #[cfg(test)]
 mod boot_unlock_tests;
+mod call_media;
 mod carry;
 // What the daemon's program mounts beside the core: services, and the machine's own hooks.
 pub mod capabilities;

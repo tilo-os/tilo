@@ -55,6 +55,8 @@ pub mod environment_device;
 pub mod environment_window;
 pub mod linux_apps;
 pub mod mcp_server;
+/// An app's own place in a workspace's call, on the connection its launcher handed it.
+pub mod native_media;
 pub use caller::{Caller, Invited, KeptCaller, KeyCall, PlacedCaller, device_agent_id};
 pub mod signed_invocation;
 pub use signed_invocation::{CallAllowed, SignedCall, SignedInvocation};
@@ -2570,6 +2572,18 @@ pub enum RemoteActionMessage {
         correlation: u64,
         result: Result<serde_json::Value, ActionCallError>,
     },
+    /// One command of the call the app takes part in itself, on the line its launcher handed it
+    /// ([`native_media::Request`]): joining a workspace's call, muting, the camera and screen it
+    /// sends, which pictures its view draws, and the status it shows.
+    CallMediaRequest {
+        correlation: u64,
+        request: native_media::Request,
+    },
+    /// Answer to [`Self::CallMediaRequest`], same correlation.
+    CallMediaResult {
+        correlation: u64,
+        result: Result<native_media::Snapshot, ActionCallError>,
+    },
 }
 
 /// One record a reader asks for over the action API: alone, or `joined`
@@ -2676,6 +2690,7 @@ impl RemoteActionMessage {
                 | Self::SurfaceRequest { .. }
                 | Self::AudioOutputRequest { .. }
                 | Self::StoreRequest { .. }
+                | Self::CallMediaRequest { .. }
         )
     }
 }
@@ -2883,6 +2898,13 @@ fn read_answered<H: ActionProvider>(
     resource_read::unanswered(correlation)
 }
 
+/// A call media lane is its own host's, never a provider's: one asked here says it carries none.
+fn no_call_media_lane() -> ActionCallError {
+    ActionCallError::Unavailable {
+        reason: "this connection carries no call media lane".into(),
+    }
+}
+
 /// A sound output lane is its own host's, never a provider's: one asked here says it carries none.
 fn no_audio_output_lane() -> ActionCallError {
     ActionCallError::Unavailable {
@@ -3004,6 +3026,14 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
             command,
             kind,
         } => store_answered(provider, caller, correlation, (command, kind)),
+        // A call media lane is its own host's, never a provider's: one asked here says it
+        // carries none.
+        RemoteActionMessage::CallMediaRequest { correlation, .. } => {
+            Pending::ready(RemoteActionMessage::CallMediaResult {
+                correlation,
+                result: Err(no_call_media_lane()),
+            })
+        }
         // An answer is never a request: `refuse` classified every message before this match and
         // answered `None` for an answer, so none reaches here.
         _ => return None,

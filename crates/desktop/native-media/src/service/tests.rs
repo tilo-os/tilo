@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use runtime_collab::native_media::{
+use tilo_actions::remote::native_media::{
     Command, Input, Issue, Picture, PictureLayer, PictureSource, Request, Shown, Snapshot, State,
     Volume,
 };

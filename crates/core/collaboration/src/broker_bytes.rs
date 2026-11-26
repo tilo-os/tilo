@@ -128,7 +128,6 @@ fn request_bytes(request: &CollabRequest) -> Option<usize> {
         CollabRequest::PublishSearchIndex { delta_json } => {
             meter.bytes(delta_json);
         }
-        CollabRequest::NativeMediaCommand { command, .. } => serialized_bytes(command, &mut meter),
         CollabRequest::ResourceCommand { command, .. } => meter.bytes(command),
         CollabRequest::DecideShownActions { actions } => serialized_bytes(actions, &mut meter),
         CollabRequest::ReportHandoff { message } => {
@@ -364,12 +363,7 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
             "CommittedDocument"
         }
         CollabEvent::Context { permissions, apps } => {
-            context_event_bytes(
-                permissions,
-                permissions.capacity(),
-                apps,
-                &mut meter,
-            );
+            context_event_bytes(permissions, permissions.capacity(), apps, &mut meter);
             "Context"
         }
         CollabEvent::FollowChanged { peer_id } => {
@@ -479,13 +473,6 @@ pub(super) fn event_diagnostics(event: &CollabEvent) -> (&'static str, Option<us
         CollabEvent::WorkspaceControl { event, .. } => {
             workspace_control_event_bytes(event, &mut meter);
             "WorkspaceControl"
-        }
-        CollabEvent::NativeMediaCommandResult { result, .. } => {
-            match result {
-                Ok(reply) => serialized_bytes(reply, &mut meter),
-                Err(error) => meter.string_capacity(error),
-            }
-            "NativeMediaCommandResult"
         }
         CollabEvent::DocumentContent { route, hash, bytes } => {
             meter.string_capacity(&route.app_id);

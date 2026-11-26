@@ -468,10 +468,7 @@ impl AppBrokerState {
             // A trigger fires with nobody at a screen, on whichever device of the workspace
             // takes it: unless the saver is this device's own person, the run's proof is the
             // approval they signed when they saved the shortcut.
-            let fired = matches!(
-                start.trigger,
-                tilo_automation::InvocationTrigger::Fired(_)
-            );
+            let fired = matches!(start.trigger, tilo_automation::InvocationTrigger::Fired(_));
             if fired && !matches!(native, Ok(Some(_))) {
                 origin = Some(self.shortcut_approval(caller, workspace, shortcut)?);
                 return self.admit_shortcut_run(

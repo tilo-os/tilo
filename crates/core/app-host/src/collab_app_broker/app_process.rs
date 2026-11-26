@@ -1,152 +1,16 @@
-//! Local media authority originates at the real launcher handoff, never wire JSON.
+//! The app process a connection was admitted for, pinned by the kernel, and the media context
+//! that process reaches its device's services through.
+//!
+//! A launcher hands an app's connection over with the pidfds that pin it, so the daemon knows
+//! the exact process behind the socket and fences its services when it dies, without trusting a
+//! namespace-local pid. The media context re-checks that the same process is still the app's
+//! before every command it forwards.
+
 #[cfg(target_os = "linux")]
 use super::AsRawFd;
-use super::{AppBrokerState, Arc, AtomicBool, JoinedChannel, Ordering, Rc};
+use super::media::MediaRequestContext;
+use super::{AppBrokerState, Arc, AtomicBool, JoinedChannel, Ordering};
 use crate::BrokerError;
-use runtime_collab::native_media::{Request, Snapshot};
-
-/// Immutable route plus a live connection/process/admission check. There is no
-/// public constructor: only this broker's admitted channel can produce one.
-#[derive(Clone)]
-pub struct NativeMediaRequestContext {
-    peer_id: u64,
-    app_id: String,
-    workspace_id: String,
-    document_id: String,
-    /// The caller the device opened this view for, when it opened one for a caller: a page's
-    /// view is opened for its person, and the browser that shows the page carries its call.
-    opened_for: Option<tilo_actions::remote::Caller>,
-    revalidate: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
-}
-
-impl NativeMediaRequestContext {
-    /// The context of a connection this device's broker admitted, as the seat answers a call the
-    /// broker forwarded to it (`crate::seat`): only the broker reaches the seat, and it
-    /// checks the connection again before every call it forwards.
-    #[must_use]
-    pub fn seat_forwarded(
-        peer_id: u64,
-        app_id: String,
-        workspace_id: String,
-        document_id: String,
-    ) -> Self {
-        Self {
-            peer_id,
-            app_id,
-            workspace_id,
-            document_id,
-            opened_for: None,
-            revalidate: Arc::new(|| Ok(())),
-        }
-    }
-
-    /// The context of an app's own connection to this device's daemon: the launcher placed it
-    /// for process `peer_id` running `app_id` in `workspace_id`, and `current` says whether it is
-    /// still that process. Only the daemon builds one, for a connection it serves as an app
-    /// ([`crate::collab_app_broker::AudioOutputConnection`]); it checks the process again
-    /// before every command it forwards.
-    #[must_use]
-    pub fn daemon_line(
-        peer_id: u64,
-        app_id: String,
-        workspace_id: String,
-        current: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
-    ) -> Self {
-        Self {
-            peer_id,
-            app_id,
-            workspace_id,
-            document_id: String::new(),
-            opened_for: None,
-            revalidate: current,
-        }
-    }
-
-    pub fn peer_id(&self) -> u64 {
-        self.peer_id
-    }
-    pub fn app_id(&self) -> &str {
-        &self.app_id
-    }
-    pub fn workspace_id(&self) -> &str {
-        &self.workspace_id
-    }
-    pub fn document_id(&self) -> &str {
-        &self.document_id
-    }
-    /// The caller the device opened this view for, when it opened one for a caller.
-    pub const fn opened_for(&self) -> Option<&tilo_actions::remote::Caller> {
-        self.opened_for.as_ref()
-    }
-    /// Re-checks that the admitted connection, process and route are still live.
-    pub fn revalidate(&self) -> Result<(), String> {
-        (self.revalidate)()
-    }
-}
-
-pub type NativeMediaFuture =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<Snapshot, String>> + Send>>;
-pub type AudioOutputFuture = std::pin::Pin<
-    Box<
-        dyn std::future::Future<
-                Output = Result<tilo_actions::remote::audio_output::Snapshot, String>,
-            > + Send,
-    >,
->;
-
-pub trait AudioOutputServices: Send + Sync {
-    fn output(
-        &self,
-        context: NativeMediaRequestContext,
-        request: tilo_actions::remote::audio_output::Request,
-        samples: Vec<i16>,
-    ) -> AudioOutputFuture;
-    /// Fence output belonging to this exact connected process.
-    fn disconnect(&self, peer_id: u64);
-}
-
-/// An app's sound output as its own connection to the device's daemon reaches it: the service
-/// that plays it, and the context of the app process the launcher placed that connection for,
-/// which is checked again before every command.
-pub struct AudioOutputConnection {
-    service: Arc<dyn AudioOutputServices>,
-    context: NativeMediaRequestContext,
-}
-
-impl AudioOutputConnection {
-    #[must_use]
-    pub fn new(service: Arc<dyn AudioOutputServices>, context: NativeMediaRequestContext) -> Self {
-        Self { service, context }
-    }
-
-    /// Play one command of the app's output, as the connection it was opened for is still the
-    /// app's.
-    #[must_use]
-    pub fn output(
-        &self,
-        request: tilo_actions::remote::audio_output::Request,
-        samples: Vec<i16>,
-    ) -> AudioOutputFuture {
-        self.service.output(self.context.clone(), request, samples)
-    }
-
-    /// The app's process ended: nothing it opened sounds any more.
-    pub fn disconnect(&self) {
-        self.service.disconnect(self.context.peer_id());
-    }
-
-    /// The process the connection was placed for, as this output's owner.
-    #[must_use]
-    pub fn peer_id(&self) -> u64 {
-        self.context.peer_id()
-    }
-}
-
-pub trait NativeMediaServices: Send + Sync {
-    fn command(&self, context: NativeMediaRequestContext, request: Request) -> NativeMediaFuture;
-    /// Must fence pending work and stop local capture before returning.
-    fn disconnect(&self, peer_id: u64);
-}
 
 /// Exact connected peer, retained independently from the launch ticket's TTL.
 pub(super) struct LocalAppConnection {
@@ -482,7 +346,7 @@ impl ProcessMonitor {
                 // it now rather than on a clock.
                 tilo_identity::policy_change::announce();
                 if let Some(state) = state.upgrade() {
-                    if let Some(service) = state.services.native_media.as_ref() {
+                    if let Some(service) = state.services.call_media.as_ref() {
                         service.disconnect(peer);
                     }
                     if let Some(service) = state.services.file_clipboard.as_ref() {
@@ -554,10 +418,10 @@ impl JoinedChannel {
         clippy::suspicious_operation_groupings,
         reason = "a route's cluster is the connection's workspace; the names differ by layer"
     )]
-    pub(super) fn native_media_context(
+    pub(super) fn media_request_context(
         &self,
         stopping: bool,
-    ) -> Result<NativeMediaRequestContext, BrokerError> {
+    ) -> Result<MediaRequestContext, BrokerError> {
         let local = self
             .lease
             .as_ref()
@@ -594,7 +458,7 @@ impl JoinedChannel {
                 .map(|_| ())
                 .map_err(|_| "local media admission ended".into())
         });
-        Ok(NativeMediaRequestContext {
+        Ok(MediaRequestContext {
             peer_id: self.connection_id,
             app_id: route.app_id,
             workspace_id: route.cluster_id,
@@ -612,7 +476,7 @@ impl JoinedChannel {
         &self,
     ) -> Result<crate::services::SelectedDescriptorSource, String> {
         let context = self
-            .native_media_context(false)
+            .media_request_context(false)
             .map_err(|error| error.to_string())?;
         if context.app_id() != FILES {
             return Err("selected descriptors belong only to Files".into());
@@ -639,32 +503,6 @@ impl JoinedChannel {
             .as_ref()
             .and_then(|lease| lease.local_media.as_ref())
             .and_then(|local| local.descriptors.clone())
-    }
-
-    pub(super) fn native_media_dispatch(
-        self: Rc<Self>,
-        bytes: &[u8],
-    ) -> Result<NativeMediaFuture, BrokerError> {
-        let request = Request::decode(bytes).map_err(|e| BrokerError::failed(e.into()))?;
-        if !request.dispatch_valid() {
-            return Err(BrokerError::failed("invalid native media intent".into()));
-        }
-        let stopping = matches!(
-            request.command,
-            runtime_collab::native_media::Command::Leave
-                | runtime_collab::native_media::Command::SetMuted { muted: true }
-                | runtime_collab::native_media::Command::SetDeafened { deafened: true }
-        );
-        let context = self.native_media_context(stopping).inspect_err(|error| {
-            tracing::warn!(%error, "native media broker refused local context");
-        })?;
-        let service = self
-            .state
-            .services
-            .native_media
-            .as_ref()
-            .ok_or_else(|| BrokerError::failed("native media unavailable".into()))?;
-        Ok(service.command(context, request))
     }
 }
 

@@ -51,6 +51,9 @@ pub(crate) struct Frames {
     /// The sound output lane an app's connection carries: the device's output as that app
     /// process plays it.
     audio: Option<Arc<super::audio_output::AudioLane>>,
+    /// The call lane an app's connection carries: the device's call service as that app process
+    /// takes part in its workspace's calls.
+    media: Option<tilo_app_host::collab_app_broker::CallMediaConnection>,
     /// Whether a connection may be carried to another of the person's devices
     /// ([`super::carry`]): the person's own alone.
     carrying: super::carry::Carrying,
@@ -67,6 +70,7 @@ impl Frames {
             own_process: None,
             lane: None,
             audio: None,
+            media: None,
             carrying: super::carry::Carrying::Refused(super::carry::NOT_THE_PERSON),
         }
     }
@@ -136,6 +140,7 @@ impl Frames {
         let caller = daemon.app_caller(&at.app, &at.workspace);
         let lane = daemon.app_call_setup(at);
         let audio = super::audio_output::lane_for(daemon, at).map(Arc::new);
+        let media = super::call_media::connection_for(daemon, at);
         let (daemon, app, workspace) =
             (Arc::downgrade(daemon), at.app.clone(), at.workspace.clone());
         let mut frames = Self::new(move |named| {
@@ -152,6 +157,7 @@ impl Frames {
         frames.own_process = Some((Arc::new(own) as Tree, caller));
         frames.lane = Some(lane);
         frames.audio = audio;
+        frames.media = media;
         frames
     }
 
@@ -261,7 +267,7 @@ impl Frames {
         };
         // An app's connection carries the call lane of the workspace's live session; any other
         // connection carries none.
-        let out = self.lane.is_some().then(|| {
+        let out = (self.lane.is_some() || self.media.is_some()).then(|| {
             stream.try_clone().ok().map(|writer| {
                 let writer = Arc::new(std::sync::Mutex::new(writer));
                 Arc::new(move |line: String| {
@@ -271,16 +277,25 @@ impl Frames {
                 }) as tilo_live::app_call::Out
             })
         });
+        let call_media = match (&self.media, &out) {
+            (Some(media), Some(Some(out))) => Some(super::call_media::CallMediaLane::new(
+                media.clone(),
+                Arc::clone(out),
+            )),
+            _ => None,
+        };
         let call = match (&self.lane, out) {
             (Some(granted), Some(Some(out))) => {
                 Some(tilo_live::app_call::AppLane::new(granted.clone(), out))
             }
             _ => None,
         };
-        let lanes = (call.is_some() || self.audio.is_some()).then(|| Lanes {
-            call,
-            audio: self.audio.as_deref(),
-        });
+        let lanes =
+            (call.is_some() || self.audio.is_some() || call_media.is_some()).then(|| Lanes {
+                call,
+                audio: self.audio.as_deref(),
+                media: call_media.as_ref(),
+            });
         remote::serve_lines_handing(
             in_workspace,
             &self.uploads,
@@ -297,15 +312,22 @@ impl Frames {
     }
 }
 
-/// The lanes an app's connection owns beside the action wire: its outside calls, and its sound
-/// output.
+/// The lanes an app's connection owns beside the action wire: its outside calls, its sound
+/// output, and the call its views take part in.
 struct Lanes<'a> {
     call: Option<Arc<tilo_live::app_call::AppLane>>,
     audio: Option<&'a super::audio_output::AudioLane>,
+    media: Option<&'a super::call_media::CallMediaLane>,
 }
 
 impl remote::CallLanes for Lanes<'_> {
     fn take(&self, message: &RemoteActionMessage) -> remote::Take {
+        if let Some(media) = self.media {
+            match remote::CallLanes::take(media, message) {
+                remote::Take::NotCall => {}
+                taken => return taken,
+            }
+        }
         if let Some(audio) = self.audio {
             match remote::CallLanes::take(audio, message) {
                 remote::Take::NotCall => {}
@@ -334,6 +356,10 @@ impl Drop for Frames {
         if let Some(audio) = &self.audio {
             // The app's process ended, or its connection did: nothing it opened sounds any more.
             audio.disconnect();
+        }
+        if let Some(media) = &self.media {
+            // Nor is the device still in a call it joined, or capturing for it.
+            media.disconnect();
         }
     }
 }

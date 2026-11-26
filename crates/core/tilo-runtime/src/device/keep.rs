@@ -175,7 +175,11 @@ impl Keeping {
         let web_entry = self.cfg.web_entry.clone()?;
         Some((
             web_entry,
-            self.cfg.kept.iter().map(|kept| kept.id.trim().to_owned()).collect(),
+            self.cfg
+                .kept
+                .iter()
+                .map(|kept| kept.id.trim().to_owned())
+                .collect(),
         ))
     }
 

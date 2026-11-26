@@ -17,11 +17,11 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
-use runtime_collab::native_media::{
+use tilo_actions::remote::native_media::{
     Command, Issue, PICTURES_HOLD, PictureSource, Request, Roster, Shown, Snapshot, State,
     WATCH_HOLD,
 };
-use tilo_app_host::services::{NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices};
+use tilo_app_host::services::{CallMediaFuture, CallMediaServices, MediaRequestContext};
 use tilo_lock::MutexRecover as _;
 
 use crate::media::{CallTarget, MediaFactory, MediaSession, Prepare};
@@ -71,8 +71,8 @@ impl Caller {
     }
 }
 
-impl From<NativeMediaRequestContext> for Caller {
-    fn from(value: NativeMediaRequestContext) -> Self {
+impl From<MediaRequestContext> for Caller {
+    fn from(value: MediaRequestContext) -> Self {
         Self {
             peer: value.peer_id(),
             app: value.app_id().into(),
@@ -685,12 +685,7 @@ impl NativeMediaService {
     /// Answer once the caller's status differs from the one at `seen`, or
     /// after [`WATCH_HOLD`]: who joins and leaves reaches the app the moment
     /// it happens, with one question outstanding instead of a poll.
-    fn watch(
-        &self,
-        caller: Caller,
-        seen: u64,
-        route: (String, String, String),
-    ) -> NativeMediaFuture {
+    fn watch(&self, caller: Caller, seen: u64, route: (String, String, String)) -> CallMediaFuture {
         let service = self.clone();
         let rosters_changed = self
             .0
@@ -743,7 +738,7 @@ impl NativeMediaService {
     /// there are any or after [`PICTURES_HOLD`]: an app that asks again as
     /// each answer lands draws every picture of the call, one after another,
     /// without polling for them.
-    fn pictures(&self, caller: Caller, after: u64) -> NativeMediaFuture {
+    fn pictures(&self, caller: Caller, after: u64) -> CallMediaFuture {
         let service = self.clone();
         Box::pin(async move {
             let key = caller.key();
@@ -839,8 +834,8 @@ impl NativeMediaService {
     }
 }
 
-impl NativeMediaServices for NativeMediaService {
-    fn command(&self, context: NativeMediaRequestContext, request: Request) -> NativeMediaFuture {
+impl CallMediaServices for NativeMediaService {
+    fn command(&self, context: MediaRequestContext, request: Request) -> CallMediaFuture {
         // Device stop and generation invalidation happen in this synchronous
         // dispatch, before the returned RPC future is polled.
         let route = (
@@ -945,10 +940,12 @@ impl Shared {
                 snapshot.volumes = backend
                     .volumes()
                     .into_iter()
-                    .map(|(member, percent)| runtime_collab::native_media::Volume {
-                        member,
-                        percent,
-                    })
+                    .map(
+                        |(member, percent)| tilo_actions::remote::native_media::Volume {
+                            member,
+                            percent,
+                        },
+                    )
                     .collect();
                 backend.inventory()
             };

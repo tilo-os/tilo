@@ -165,9 +165,9 @@ pub mod clock;
 #[cfg(feature = "model")]
 pub mod collaboration;
 #[cfg(feature = "model")]
-pub use runtime_collab::native_media;
-#[cfg(feature = "model")]
 pub use runtime_collab::shown_actions;
+#[cfg(feature = "model")]
+pub use tilo_actions::remote::native_media;
 pub mod collection_transition;
 pub use tilo_ui_paint::{color, color_compat};
 pub mod carry_out;

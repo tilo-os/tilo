@@ -482,12 +482,6 @@ pub enum CollabRequest {
     PublishSearchIndex {
         delta_json: Vec<u8>,
     },
-    /// One generic active-session continuity transition. The shell binds the
-    /// command to this connection's certified app/workspace route.
-    NativeMediaCommand {
-        request_id: u64,
-        command: runtime_collab::native_media::Request,
-    },
     OpenWorkspaceControl {
         session_id: u64,
         target_device: [u8; 32],
@@ -1128,29 +1122,6 @@ impl CollaborationManager {
             // yet; owners republish once the manager is ready.
             return Err(CollabSendError::Unavailable);
         }
-        if let CollabRequest::NativeMediaCommand {
-            request_id,
-            command,
-        } = req
-        {
-            // Native media rides the transport's side channel on the
-            // acknowledged primary route, never the durable command queue.
-            let healthy = self.is_connected();
-            let Some(channel) = self
-                .primary_route
-                .current(healthy)
-                .map(|primary| primary.route.channel_id())
-            else {
-                return Err(CollabSendError::Unavailable);
-            };
-            let Backend::Transport(transport) = &mut self.backend else {
-                return Err(CollabSendError::Unavailable);
-            };
-            return transport
-                .send_native_media(channel, request_id, command)
-                .then_some(())
-                .ok_or(CollabSendError::Unavailable);
-        }
         let primary_channel = self
             .primary_route
             .accepted
@@ -1482,19 +1453,6 @@ impl CollaborationManager {
                 "document route handoff refused"
             );
             return Err(CollabSendError::Unavailable);
-        }
-        if let CollabRequest::NativeMediaCommand {
-            request_id,
-            command,
-        } = req
-        {
-            let Backend::Transport(transport) = &mut self.backend else {
-                return Err(CollabSendError::Unavailable);
-            };
-            return transport
-                .send_native_media(route.channel_id(), request_id, command)
-                .then_some(())
-                .ok_or(CollabSendError::Unavailable);
         }
         let unpublishable = matches!(req, CollabRequest::Document { .. })
             && match &self.backend {

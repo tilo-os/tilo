@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
-use runtime_collab::native_media::{Request, Snapshot};
+use tilo_actions::remote::native_media::{Request, Snapshot};
 use tilo_actions::remote::{
     APPLICATION_OPEN_ACTION, APPLICATION_RESOURCE_PREFIX, Caller, CatalogueQuery, FOUND_FILE,
     InvocationReceipt, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget,
@@ -468,7 +468,7 @@ impl Inner {
         // follows closely while they settle, so a camera that comes on shows at once.
         let tiles = matches!(
             request.command,
-            runtime_collab::native_media::Command::Show { .. }
+            tilo_actions::remote::native_media::Command::Show { .. }
         );
         if let Some(route) = calls.routes.get_mut(&page) {
             if tiles {

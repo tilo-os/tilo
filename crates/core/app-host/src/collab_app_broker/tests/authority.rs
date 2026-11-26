@@ -40,31 +40,6 @@ fn a_join_names_a_valid_record_kind_or_none() {
 
 #[cfg(test)]
 #[tokio::test(flavor = "current_thread")]
-async fn native_media_raw_admitted_channel_has_no_local_process_authority() {
-    tokio::task::LocalSet::new()
-        .run_until(async {
-            let fixture = local_directory_fixture();
-            let channel = fixture.invocation_channel();
-            for command in [
-                runtime_collab::native_media::Command::Join {
-                    channel_id: "voice".into(),
-                },
-                runtime_collab::native_media::Command::SetMuted { muted: false },
-            ] {
-                let mut request = runtime_collab::native_media::Request::new(command);
-                request.intent = 1;
-                let error = channel
-                    .native_media_command(&request)
-                    .await
-                    .expect_err("ordinary admitted channel cannot mint local process ownership");
-                assert!(error.to_string().contains("launcher-attested"), "{error}");
-            }
-        })
-        .await;
-}
-
-#[cfg(test)]
-#[tokio::test(flavor = "current_thread")]
 async fn file_clipboard_raw_admitted_channel_cannot_mint_local_ownership() {
     tokio::task::LocalSet::new()
         .run_until(async {

@@ -15,6 +15,7 @@ use super::frame_line_in;
 use crate::outcome::InvocationId;
 use crate::remote::audio_output::{self, Request as AudioOutputRequest, Snapshot as AudioSnapshot};
 use crate::remote::call::{BridgedCall, CallAudio, CallReport, CallStatus};
+use crate::remote::native_media::{self, Request as CallMediaRequest, Snapshot as CallSnapshot};
 use crate::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, ChangeFeed, ChangePage,
     Completer, ContentGetAnswer, ContentGets, ContentPiece, ContentPut, ContentPutAnswer,
@@ -75,11 +76,18 @@ struct Waiting {
     said: VecDeque<CallAudio>,
     /// The device's latest word on the outside call, until the app takes it.
     asked: Option<CallStatus>,
+    /// Answers to the app's own call commands, by correlation, until it takes them: what an app
+    /// that sends its commands from its frame loop reads instead of waiting for each.
+    media: VecDeque<(u64, Result<CallSnapshot, ActionCallError>)>,
 }
 
 /// How many of the workspace's frames wait for an app that has not taken them: a second of a
 /// call's voice. Older ones are dropped, never played late.
 const MAX_SAID: usize = 50;
+
+/// How many answers to an app's own call commands wait for it to take them. An app holds one
+/// watch and one picture collection outstanding, so older answers are a bug of its own.
+const MAX_MEDIA_ANSWERS: usize = 32;
 
 /// What a request's answer is found by.
 #[derive(Clone, Copy)]
@@ -435,6 +443,20 @@ fn answered(shared: &Shared, message: RemoteActionMessage) {
         RemoteActionMessage::CallStatus(status) => {
             waiting.asked = Some(status.clone());
             None
+        }
+        RemoteActionMessage::CallMediaResult {
+            correlation,
+            result,
+        } => {
+            if let Some(asked) = waiting.by_correlation.remove(correlation) {
+                Some(asked)
+            } else {
+                if waiting.media.len() >= MAX_MEDIA_ANSWERS {
+                    waiting.media.pop_front();
+                }
+                waiting.media.push_back((*correlation, result.clone()));
+                None
+            }
         }
         RemoteActionMessage::CatalogueResponse { correlation, .. }
         | RemoteActionMessage::CallCarryResponse { correlation, .. }
@@ -890,6 +912,69 @@ impl LineClient {
             other => Err(unexpected(&other)),
         }
         .and_then(valid_output)
+    }
+}
+
+/// The call an app takes part in itself ([`crate::remote::native_media`]): joining one of its
+/// workspace's calls, muting, the camera and screen it sends, the pictures its view draws, and
+/// the status it shows. The device's call service binds every command to the connection's app,
+/// its workspace and its grants; a connection that carries no call lane, or one whose app the
+/// workspace grants no call, is refused with the reason.
+impl LineClient {
+    /// One command of the app's own call, waited for as long as the device may hold it.
+    ///
+    /// # Errors
+    /// The device refused it, the connection ended, or the answer did not come in time.
+    pub fn call_media(&self, request: CallMediaRequest) -> Answered<CallSnapshot> {
+        let correlation = self.correlation();
+        let held = native_media::lost(&request);
+        match self
+            .ask(
+                Key::Correlation(correlation),
+                RemoteActionMessage::CallMediaRequest {
+                    correlation,
+                    request,
+                },
+            )
+            .wait_timeout(held)
+            .ok()
+            .flatten()
+            .unwrap_or(Err(ActionCallError::Unanswered))?
+        {
+            RemoteActionMessage::CallMediaResult { result, .. } => result,
+            other => Err(unexpected(&other)),
+        }
+    }
+
+    /// Send one command of the app's own call without waiting for its answer: the correlation
+    /// this answers is what [`Self::call_media_answers`] hands its answer back by.
+    ///
+    /// # Errors
+    /// The connection ended.
+    pub fn call_media_ask(&self, request: CallMediaRequest) -> Answered<u64> {
+        let correlation = self.correlation();
+        let line = frame_line_in(
+            RemoteActionMessage::CallMediaRequest {
+                correlation,
+                request,
+            },
+            None,
+        );
+        let sent = {
+            let mut writer = self.0.writer.lock_recover();
+            writeln!(writer, "{line}").and_then(|()| writer.flush())
+        };
+        sent.map_err(|error| ActionCallError::Unavailable {
+            reason: format!("the connection closed: {error}"),
+        })?;
+        Ok(correlation)
+    }
+
+    /// The answers to the commands sent with [`Self::call_media_ask`] that came since the last
+    /// time, oldest first.
+    #[must_use]
+    pub fn call_media_answers(&self) -> Vec<(u64, Answered<CallSnapshot>)> {
+        self.0.waiting.lock_recover().media.drain(..).collect()
     }
 }
 

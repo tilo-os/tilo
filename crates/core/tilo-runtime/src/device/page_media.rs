@@ -9,18 +9,16 @@
 
 use std::sync::Arc;
 
-use runtime_collab::native_media::{REPLY_TIMEOUT, Request, Snapshot};
+use tilo_actions::remote::native_media::{REPLY_TIMEOUT, Request, Snapshot};
 use tilo_actions::remote::{Caller, Pending};
-use tilo_app_host::collab_app_broker::{
-    NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
-};
+use tilo_app_host::collab_app_broker::{CallMediaFuture, CallMediaServices, MediaRequestContext};
 
 use crate::key_sessions::Pages;
 
 /// This device's apps' calls: a page's view's to the browser that shows it, the rest to `seat`.
 pub(crate) struct PageMedia {
     pub(crate) pages: Pages,
-    pub(crate) seat: Arc<dyn NativeMediaServices>,
+    pub(crate) seat: Arc<dyn CallMediaServices>,
 }
 
 impl PageMedia {
@@ -28,7 +26,7 @@ impl PageMedia {
     /// shows that view: the same app, workspace and person the page was opened for.
     fn carried_by_page(
         &self,
-        context: &NativeMediaRequestContext,
+        context: &MediaRequestContext,
         request: &Request,
     ) -> Option<Pending<Result<Snapshot, String>>> {
         let person = person_of(context.opened_for()?);
@@ -41,8 +39,8 @@ impl PageMedia {
     }
 }
 
-impl NativeMediaServices for PageMedia {
-    fn command(&self, context: NativeMediaRequestContext, request: Request) -> NativeMediaFuture {
+impl CallMediaServices for PageMedia {
+    fn command(&self, context: MediaRequestContext, request: Request) -> CallMediaFuture {
         if let Some(answered) = self.carried_by_page(&context, &request) {
             return Box::pin(async move {
                 match tokio::time::timeout(REPLY_TIMEOUT, answered).await {

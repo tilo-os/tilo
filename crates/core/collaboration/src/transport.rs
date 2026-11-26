@@ -334,18 +334,6 @@ pub trait CollabTransport: Send {
         false
     }
 
-    /// Hand one native media command for `channel` to the transport's media
-    /// side channel. Returns whether it was admitted.
-    fn send_native_media(
-        &mut self,
-        channel: String,
-        request_id: u64,
-        command: runtime_collab::native_media::Request,
-    ) -> bool {
-        let _ = (channel, request_id, command);
-        false
-    }
-
     /// Whether the transport latched a terminal document publication failure.
     fn document_publication_failed(&self) -> bool {
         false

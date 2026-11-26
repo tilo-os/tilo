@@ -881,7 +881,9 @@ fn apply(inner: &mut Inner, answer: RemoteActionMessage) -> Option<RemoteActionM
         | RemoteActionMessage::AudioOutputRequest { .. }
         | RemoteActionMessage::AudioOutputResponse { .. }
         | RemoteActionMessage::StoreRequest { .. }
-        | RemoteActionMessage::StoreResponse { .. } => None,
+        | RemoteActionMessage::StoreResponse { .. }
+        | RemoteActionMessage::CallMediaRequest { .. }
+        | RemoteActionMessage::CallMediaResult { .. } => None,
     }
 }
 

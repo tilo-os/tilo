@@ -6,8 +6,8 @@
 //! nothing else. A page whose tiles stand in its own HTML decodes the same stream where they
 //! stand (`pictures_local`): nothing of it is collected here.
 //!
-//! The service is the shell's own voice service (`CollabRequest::NativeMediaCommand`): it
-//! binds every command to the connection's own app, workspace and record, asks for the
+//! The service is the device's own call service, reached on the line the daemon handed this
+//! process: it binds every command to this app's connection, workspace and grants, asks for the
 //! microphone, camera and screen through the system's prompts, and holds the call on the
 //! workspace's live session. Nothing of a call is stored in the app's record. One watch is
 //! outstanding while the instance runs, so the people of every call of the record show the moment
@@ -15,7 +15,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use collaboration::{CollabEvent, CollabRequest};
+use tilo_actions::remote::ActionCallError;
 use tilo_render_protocol::patch::{CallPicture, CallPictureSource, CallShown, ToUi};
 use tilolang_tilo::instance::Instance;
 use tilolang_tilo::runtime::platform::call_place;
@@ -46,8 +46,11 @@ pub struct Calls {
     snapshot: Option<Snapshot>,
     /// The call's place this device joined, while it is in one.
     joined: Option<String>,
-    /// What waits to be sent.
-    queued: Vec<CollabRequest>,
+    /// What waits to be sent, each with the id this instance asked it under.
+    queued: Vec<(u64, Request)>,
+    /// The correlation the line gave each request it took, by the id this instance asked it
+    /// under: what an answer off the line is matched back to.
+    sent: BTreeMap<u64, u64>,
     /// Why the service refused the last step, to say once.
     refused: Option<String>,
     /// Whether the instance is to be told who is where again.
@@ -83,6 +86,7 @@ impl Calls {
             snapshot: None,
             joined: None,
             queued: Vec::new(),
+            sent: BTreeMap::new(),
             refused: None,
             changed: false,
             shown: Vec::new(),
@@ -134,10 +138,10 @@ impl Calls {
                 self.changed = true;
                 let request_id = self.request_id();
                 self.pending.insert(request_id, ui_core::time::now());
-                self.queued.push(CollabRequest::NativeMediaCommand {
+                self.queued.push((
                     request_id,
-                    command: Request::new(Command::SetVolume { member, percent }),
-                });
+                    Request::new(Command::SetVolume { member, percent }),
+                ));
                 return;
             }
             CallStep::Mute(_)
@@ -152,14 +156,14 @@ impl Calls {
         self.intent = self.intent.saturating_add(1);
         let request_id = self.request_id();
         self.pending.insert(request_id, ui_core::time::now());
-        self.queued.push(CollabRequest::NativeMediaCommand {
+        self.queued.push((
             request_id,
-            command: Request {
+            Request {
                 version: 1,
                 intent: self.intent,
                 command,
             },
-        });
+        ));
         self.changed = true;
     }
 
@@ -167,6 +171,12 @@ impl Calls {
     #[must_use]
     pub const fn joined(&self) -> bool {
         self.joined.is_some()
+    }
+
+    /// Whether a command's answer is still to come off the line.
+    #[must_use]
+    pub fn awaiting(&self) -> bool {
+        !self.sent.is_empty()
     }
 
     /// Whether this device is in the call held on `place`.
@@ -180,12 +190,27 @@ impl Calls {
         id
     }
 
-    /// Take `event` when it is the service's answer to one of this instance's requests. Whether it
-    /// was.
-    pub fn take(&mut self, event: &CollabEvent) -> bool {
-        let CollabEvent::NativeMediaCommandResult { request_id, result } = event else {
+    /// Take the answers the line handed back since the last frame, each by the correlation the
+    /// service answered under. Whether any was this instance's.
+    pub fn answers(
+        &mut self,
+        answers: impl IntoIterator<Item = (u64, Result<Snapshot, ActionCallError>)>,
+    ) -> bool {
+        let mut took = false;
+        for (correlation, result) in answers {
+            let result = result.map_err(|error| error.to_string());
+            took |= self.answer(correlation, result);
+        }
+        took
+    }
+
+    /// Take the service's answer `result` to the request the line answered under `correlation`.
+    /// Whether it was one of this instance's.
+    fn answer(&mut self, correlation: u64, result: Result<Snapshot, String>) -> bool {
+        let Some(request_id) = self.sent.remove(&correlation) else {
             return false;
         };
+        let request_id = &request_id;
         if self.pictures.is_some_and(|(id, _)| id == *request_id) {
             self.pictures = None;
             if let Ok(snapshot) = result {
@@ -220,7 +245,7 @@ impl Calls {
                     // The call this device was in is over: its controls show it so.
                     self.joined = None;
                 }
-                self.snapshot = Some(snapshot.clone());
+                self.snapshot = Some(snapshot);
             }
             Err(why) => {
                 tracing::debug!(%why, "the call service refused a request");
@@ -239,11 +264,18 @@ impl Calls {
         true
     }
 
-    /// When the host is to wake for the calls with nothing arriving: the outstanding watch or a
-    /// step given up on, or the refused watch asked again.
+    /// When the host is to wake for the calls with nothing arriving: an answer still to come
+    /// off the line, the outstanding watch or a step given up on, or the refused watch asked
+    /// again.
     #[must_use]
     pub fn wakes_in(&self) -> Option<std::time::Duration> {
         let now = ui_core::time::now();
+        // The line's answers arrive on its own reader, not this connection's events: while one
+        // is coming, the host looks again soon enough for the view to show it.
+        let answering = self
+            .awaiting()
+            .then(|| now.checked_add(Duration::from_millis(100)))
+            .flatten();
         let lost = self
             .pictures
             .and_then(|(_, sent)| sent.checked_add(PICTURES_LOST))
@@ -258,18 +290,26 @@ impl Calls {
                     .filter_map(|sent| sent.checked_add(REPLY_LOST)),
             )
             .chain(self.watch_after)
+            .chain(answering)
             .min()?;
         Some(lost.saturating_duration_since(now))
     }
 
-    /// Send what waits through `send`, and keep a watch outstanding: who is in each call of the
-    /// record shows as it moves.
-    pub fn say(&mut self, mut send: impl FnMut(CollabRequest) -> bool) {
+    /// Send what waits through `ask`, which answers the correlation the line took the command
+    /// under, and keep a watch outstanding: who is in each call of the record shows as it moves.
+    pub fn say(&mut self, mut ask: impl FnMut(Request) -> Option<u64>) {
         let now = ui_core::time::now();
-        // A step whose answer never came is given up on, so the controls show what is.
+        // A step whose answer never came is given up on, so the controls show what is. What it
+        // was asked under is no longer waited for: an answer that still comes is nobody's.
+        let mut lost = Vec::new();
         let before = self.pending.len();
-        self.pending
-            .retain(|_, sent| now.saturating_duration_since(*sent) < REPLY_LOST);
+        self.pending.retain(|request_id, sent| {
+            let kept = now.saturating_duration_since(*sent) < REPLY_LOST;
+            if !kept {
+                lost.push(*request_id);
+            }
+            kept
+        });
         if self.pending.len() != before {
             self.changed = true;
         }
@@ -277,7 +317,7 @@ impl Calls {
             .watch
             .is_some_and(|(_, sent)| now.saturating_duration_since(sent) >= WATCH_LOST)
         {
-            self.watch = None;
+            lost.extend(self.watch.take().map(|(request_id, _)| request_id));
         }
         // A collection that never came back is given up on, and asked again: pictures are
         // drawn from what already arrived, never waited for.
@@ -285,28 +325,43 @@ impl Calls {
             .pictures
             .is_some_and(|(_, sent)| now.saturating_duration_since(sent) >= PICTURES_LOST)
         {
-            self.pictures = None;
+            lost.extend(self.pictures.take().map(|(request_id, _)| request_id));
+        }
+        for request_id in lost {
+            self.sent.remove(&request_id);
         }
         self.follow_pictures(now);
         if self.watch.is_none() && self.watch_after.is_none_or(|after| now >= after) {
             self.watch_after = None;
             let request_id = self.request_id();
             let revision = self.snapshot.as_ref().map_or(0, |s| s.revision);
-            self.queued.push(CollabRequest::NativeMediaCommand {
-                request_id,
-                command: Request::new(Command::Watch { revision }),
-            });
+            self.queued
+                .push((request_id, Request::new(Command::Watch { revision })));
             self.watch = Some((request_id, now));
         }
-        for request in self.queued.drain(..) {
-            let watch = matches!(
-                &request,
-                CollabRequest::NativeMediaCommand { request_id, .. }
-                    if self.watch.is_some_and(|(id, _)| id == *request_id)
-            );
-            if !send(request) && watch {
-                // Asked again on the next frame.
-                self.watch = None;
+        for (request_id, request) in self.queued.drain(..) {
+            let watch = self.watch.is_some_and(|(id, _)| id == request_id);
+            let pictures = self.pictures.is_some_and(|(id, _)| id == request_id);
+            match ask(request) {
+                Some(correlation) => {
+                    self.sent.insert(request_id, correlation);
+                }
+                None => {
+                    if watch {
+                        // Asked again on the next frame.
+                        self.watch = None;
+                    } else {
+                        self.pending.remove(&request_id);
+                        if pictures {
+                            self.pictures = None;
+                        }
+                        if self.pending.is_empty() {
+                            self.joined = None;
+                        }
+                        self.refused =
+                            Some("Calls aren't available on this device right now.".to_owned());
+                    }
+                }
             }
         }
     }
@@ -385,12 +440,12 @@ impl Calls {
         if wanted != self.shown {
             self.shown = wanted;
             let request_id = self.request_id();
-            self.queued.push(CollabRequest::NativeMediaCommand {
+            self.queued.push((
                 request_id,
-                command: Request::new(Command::Show {
+                Request::new(Command::Show {
                     pictures: self.shown.clone(),
                 }),
-            });
+            ));
             if self.shown.is_empty() {
                 // Nothing is drawn: what was still on its way is nobody's.
                 self.pictures = None;
@@ -402,10 +457,10 @@ impl Calls {
             .is_some_and(|snapshot| snapshot.pictures_local);
         if !local && !self.shown.is_empty() && self.pictures.is_none() {
             let request_id = self.request_id();
-            self.queued.push(CollabRequest::NativeMediaCommand {
+            self.queued.push((
                 request_id,
-                command: Request::new(Command::Pictures { after: self.cursor }),
-            });
+                Request::new(Command::Pictures { after: self.cursor }),
+            ));
             self.pictures = Some((request_id, now));
         }
     }
@@ -652,29 +707,63 @@ mod tests {
         }
     }
 
-    fn joined(calls: &mut Calls) -> u64 {
+    /// The line as this test's device takes it: each command the instance sends goes out under
+    /// a correlation of its own, and what the device answers comes back by that correlation, as
+    /// the real line carries both.
+    #[derive(Default)]
+    struct Line {
+        next: u64,
+        asked: Vec<(u64, Request)>,
+    }
+
+    impl Line {
+        /// Send what `calls` holds, and answer the requests it sent.
+        fn say(&mut self, calls: &mut Calls) -> Vec<Request> {
+            let mut sent = Vec::new();
+            let asked = &mut self.asked;
+            let next = &mut self.next;
+            calls.say(|request| {
+                *next = next.saturating_add(1);
+                let correlation = *next;
+                sent.push(request.clone());
+                asked.push((correlation, request));
+                Some(correlation)
+            });
+            sent
+        }
+
+        fn answer(&self, calls: &mut Calls, correlation: u64, result: Result<Snapshot, String>) {
+            calls.answers([(
+                correlation,
+                result.map_err(|why| ActionCallError::Unavailable { reason: why }),
+            )]);
+        }
+
+        /// The correlation of the last request that answers `wanted`.
+        fn correlation_of(&self, wanted: impl Fn(&Request) -> bool) -> u64 {
+            self.asked
+                .iter()
+                .rev()
+                .find(|(_, request)| wanted(request))
+                .map(|(correlation, _)| *correlation)
+                .expect("the instance asked it")
+        }
+    }
+
+    fn joined(calls: &mut Calls, line: &mut Line) -> u64 {
         let target = ResourceRef::root("voice:standup", "call");
         calls.step(&target, CallStep::Join);
-        // The join's own request id is the first this instance asked.
-        1
+        line.say(calls);
+        // The join is the first command this instance asked.
+        line.correlation_of(|request| matches!(request.command, Command::Join { .. }))
     }
 
-    fn sent(calls: &mut Calls) -> Vec<Request> {
-        let mut requests = Vec::new();
-        calls.say(|request| {
-            if let CollabRequest::NativeMediaCommand { command, .. } = request {
-                requests.push(command);
-            }
-            true
-        });
-        requests
+    fn sent(calls: &mut Calls, line: &mut Line) -> Vec<Request> {
+        line.say(calls)
     }
 
-    fn answer(calls: &mut Calls, request_id: u64, snapshot: Snapshot) {
-        calls.take(&CollabEvent::NativeMediaCommandResult {
-            request_id,
-            result: Ok(snapshot),
-        });
+    fn answer(calls: &mut Calls, line: &Line, correlation: u64, snapshot: Snapshot) {
+        line.answer(calls, correlation, Ok(snapshot));
     }
 
     fn picture(person: &str, source: PictureSource, byte: u8) -> Picture {
@@ -701,9 +790,10 @@ mod tests {
         phase a_view_in_a_live_call_shows_what_the_call_says_is_shown;
         {
             let mut calls = Calls::new(ME);
-            let id = joined(&mut calls);
-            answer(&mut calls, id, snapshot(State::Live, channel_call(true, false)));
-            let requests = sent(&mut calls);
+            let mut line = Line::default();
+            let id = joined(&mut calls, &mut line);
+            answer(&mut calls, &line, id, snapshot(State::Live, channel_call(true, false)));
+            let requests = sent(&mut calls, &mut line);
             assert!(
                 requests.iter().any(|request| matches!(
                     &request.command,
@@ -736,11 +826,12 @@ mod tests {
         phase a_service_that_draws_the_pictures_itself_is_told_the_tiles_and_collects_nothing;
         {
             let mut calls = Calls::new(ME);
-            let id = joined(&mut calls);
+            let mut line = Line::default();
+            let id = joined(&mut calls, &mut line);
             let mut local = snapshot(State::Live, channel_call(true, false));
             local.pictures_local = true;
-            answer(&mut calls, id, local);
-            let requests = sent(&mut calls);
+            answer(&mut calls, &line, id, local);
+            let requests = sent(&mut calls, &mut line);
             assert!(
                 requests.iter().any(|request| matches!(
                     &request.command,
@@ -765,20 +856,24 @@ mod tests {
         phase a_picture_the_call_delivered_reaches_the_window_and_is_collected_again;
         {
             let mut calls = Calls::new(ME);
-            let id = joined(&mut calls);
-            answer(&mut calls, id, snapshot(State::Live, channel_call(true, true)));
-            let requests = sent(&mut calls);
+            let mut line = Line::default();
+            let id = joined(&mut calls, &mut line);
+            answer(&mut calls, &line, id, snapshot(State::Live, channel_call(true, true)));
+            let requests = sent(&mut calls, &mut line);
             let collect = requests
                 .iter()
                 .find(|request| matches!(&request.command, Command::Pictures { .. }))
                 .expect("a collection is outstanding");
-            let (request_id, _) = calls.pictures.expect("the collection is held");
+            let _held = calls.pictures.expect("the collection is held");
+            let request_id = line.correlation_of(|request| {
+                matches!(&request.command, Command::Pictures { .. })
+            });
             assert_eq!(collect.command, Command::Pictures { after: 0 });
 
             let mut with_pictures = snapshot(State::Live, channel_call(true, true));
             with_pictures.pictures = vec![picture(ADA, PictureSource::Camera, 7)];
             with_pictures.pictures_cursor = 1;
-            answer(&mut calls, request_id, with_pictures);
+            answer(&mut calls, &line, request_id, with_pictures);
 
             let window = calls.take_window_message().expect("the picture reaches the window");
             let ToUi::CallPictures { pictures, .. } = window else {
@@ -789,7 +884,7 @@ mod tests {
             assert_eq!(pictures[0].source, CallPictureSource::Camera);
 
             // The next collection starts past what was taken.
-            let requests = sent(&mut calls);
+            let requests = sent(&mut calls, &mut line);
             assert!(
                 requests
                     .iter()
@@ -801,7 +896,8 @@ mod tests {
         phase the_microphone_and_a_member_volume_are_steps_of_their_own;
         {
             let mut calls = Calls::new(ME);
-            let id = joined(&mut calls);
+            let mut line = Line::default();
+            let id = joined(&mut calls, &mut line);
             let mut live = snapshot(State::Live, channel_call(false, false));
             live.inputs = vec![
                 ui_core::native_media::Input {
@@ -825,12 +921,12 @@ mod tests {
                 },
             ];
             live.camera_id = Some("video0".to_owned());
-            answer(&mut calls, id, live);
-            sent(&mut calls);
+            answer(&mut calls, &line, id, live);
+            sent(&mut calls, &mut line);
 
             let target = ResourceRef::root("voice:standup", "call");
             calls.step(&target, CallStep::SelectInput("mic-a".to_owned()));
-            let requests = sent(&mut calls);
+            let requests = sent(&mut calls, &mut line);
             let chosen = requests
                 .iter()
                 .find(|request| {
@@ -844,7 +940,7 @@ mod tests {
 
             // A camera is chosen the same way, and the call hears it as the camera's.
             calls.step(&target, CallStep::SelectInput("video2".to_owned()));
-            let requests = sent(&mut calls);
+            let requests = sent(&mut calls, &mut line);
             assert!(
                 requests.iter().any(|request| matches!(
                     &request.command,
@@ -860,7 +956,7 @@ mod tests {
                     percent: 40,
                 },
             );
-            let requests = sent(&mut calls);
+            let requests = sent(&mut calls, &mut line);
             let volume = requests
                 .iter()
                 .find(|request| matches!(&request.command, Command::SetVolume { .. }))
@@ -875,12 +971,43 @@ mod tests {
             );
         }
 
+        phase a_refused_command_leaves_the_call_and_says_so;
+        {
+            let mut calls = Calls::new(ME);
+            let mut line = Line::default();
+            let id = joined(&mut calls, &mut line);
+            line.answer(
+                &mut calls,
+                id,
+                Err("this app may not join this workspace's calls".to_owned()),
+            );
+            assert!(!calls.joined(), "a refused join leaves no call");
+            assert_eq!(
+                calls.refused.as_deref(),
+                Some("The call could not do that just now.")
+            );
+        }
+
+        phase a_process_handed_no_line_says_calls_are_unavailable;
+        {
+            let mut calls = Calls::new(ME);
+            let target = ResourceRef::root("voice:standup", "call");
+            calls.step(&target, CallStep::Join);
+            calls.say(|_| None);
+            assert!(!calls.joined(), "a join with no line to ask on joins nothing");
+            assert_eq!(
+                calls.refused.as_deref(),
+                Some("Calls aren't available on this device right now.")
+            );
+        }
+
         phase leaving_the_call_stops_showing_and_collecting;
         {
             let mut calls = Calls::new(ME);
-            let id = joined(&mut calls);
-            answer(&mut calls, id, snapshot(State::Live, channel_call(true, false)));
-            sent(&mut calls);
+            let mut line = Line::default();
+            let id = joined(&mut calls, &mut line);
+            answer(&mut calls, &line, id, snapshot(State::Live, channel_call(true, false)));
+            sent(&mut calls, &mut line);
             let showing = calls.take_window_message().expect("the window shows the tile");
             let ToUi::CallPictures { shown, .. } = showing else {
                 panic!("the window takes the call's pictures");
@@ -888,7 +1015,7 @@ mod tests {
             assert_eq!(shown.len(), 1);
             let target = ResourceRef::root("voice:standup", "call");
             calls.step(&target, CallStep::Leave);
-            let requests = sent(&mut calls);
+            let requests = sent(&mut calls, &mut line);
             assert!(
                 requests.iter().any(|request| matches!(
                     &request.command,

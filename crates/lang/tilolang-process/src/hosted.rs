@@ -2370,8 +2370,9 @@ impl Hosted {
         for (target, step) in self.instance.take_call_steps() {
             self.calls.step(&target, step);
         }
-        if self.instance.reads_calls() || self.calls.joined() {
-            self.calls.say(|request| connection.manager().send(request));
+        if self.instance.reads_calls() || self.calls.joined() || self.calls.awaiting() {
+            self.calls
+                .say(|request| crate::daemon_line::call_media_ask(request).ok());
         }
         // What the window's page waits on the person's yes for, raised as the app's calls of its
         // own page actions on the page the window shows, or withdrawn.
@@ -2441,11 +2442,12 @@ impl Hosted {
         let before = events.len();
         events.retain(|event| {
             !self.presence.take(event)
-                && !self.calls.take(event)
                 && !self.invocations.take(event)
                 && !self.shell.as_mut().is_some_and(|shell| shell.take(event))
         });
-        let took = events.len() != before;
+        let mut took = events.len() != before;
+        // The call service answers on the line's own lane, not this connection's events.
+        took |= self.calls.answers(crate::daemon_line::call_media_answers());
         self.presence.show(&mut self.instance);
         self.calls.show(&mut self.instance);
         self.invocations.show(&mut self.instance);

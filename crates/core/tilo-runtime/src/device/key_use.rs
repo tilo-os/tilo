@@ -25,8 +25,8 @@ use ed25519_dalek::SigningKey;
 use serde_json::{Value, json};
 use tilo_actions::{ActionParam, ParamType};
 use tilo_device_identity::login::{
-    CHECK_CALLER_PROOF, ENDORSE_IMAGE, SET_UP_UNLOCK, MALFORMED_ASK, OPEN_VAULT, SEAL_VAULT,
-    RENEW_CERTIFICATES, SEALED_BY_ANOTHER_KEY, SIGN,
+    CHECK_CALLER_PROOF, ENDORSE_IMAGE, MALFORMED_ASK, OPEN_VAULT, RENEW_CERTIFICATES, SEAL_VAULT,
+    SEALED_BY_ANOTHER_KEY, SET_UP_UNLOCK, SIGN,
 };
 use tilo_user_identity::ImageEndorsement;
 use tilo_user_identity::canonical::{canonical_bytes, from_canonical_bytes};
@@ -249,11 +249,7 @@ pub(crate) fn descriptors() -> Vec<tilo_actions::ActionDescriptor> {
                     ParamType::Text,
                     "The enrolment request, postcard in hex.",
                 ),
-                ActionParam::required(
-                    "half",
-                    ParamType::Secret,
-                    "The sibling half, in hex.",
-                ),
+                ActionParam::required("half", ParamType::Secret, "The sibling half, in hex."),
             ],
         ),
     ]

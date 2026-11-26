@@ -89,11 +89,12 @@ mod item_use;
 mod kept_document;
 mod launcher_handoff;
 use launcher_handoff::{LauncherHandoff, credentialed_peer, read_launcher_handoff};
+mod app_process;
+mod media;
 mod native_checkout;
 #[cfg(test)]
 #[path = "collab_app_broker/native_effect_recovery_tests.rs"]
 mod native_effect_recovery_tests;
-mod native_media;
 #[cfg(test)]
 mod policy_turn_tests;
 #[cfg(target_os = "linux")]
@@ -128,9 +129,9 @@ pub(crate) use tilo_invocation_journal::{DurableInvocation, admission_request_di
 use tilo_invocation_journal::{InvocationJournal, InvocationKey, InvocationOwner};
 
 pub use action_provider::delivering::LaunchOrigin;
-pub use native_media::{
-    AudioOutputConnection, AudioOutputFuture, AudioOutputServices, NativeMediaFuture,
-    NativeMediaRequestContext, NativeMediaServices,
+pub use media::{
+    AudioOutputConnection, AudioOutputFuture, AudioOutputServices, CallMediaConnection,
+    CallMediaFuture, CallMediaServices, MediaRequestContext,
 };
 #[cfg(test)]
 pub(crate) use published_invocation::OriginalLookup;
@@ -627,13 +628,35 @@ impl AppBrokerState {
         current: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
     ) -> Option<AudioOutputConnection> {
         let service = self.services.audio_output.clone()?;
-        let context = NativeMediaRequestContext::daemon_line(
+        let context = MediaRequestContext::daemon_line(
             peer_id,
             app.to_owned(),
             workspace.to_owned(),
             current,
         );
         Some(AudioOutputConnection::new(service, context))
+    }
+
+    /// The device's call service as an app's own connection to the daemon reaches it: the
+    /// service that holds the microphone, camera and screen, and the context of the app process
+    /// the launcher placed the connection for, which `current` checks again before every
+    /// command. `None` when this device serves no calls.
+    #[must_use]
+    pub fn call_media(
+        &self,
+        peer_id: u64,
+        app: &str,
+        workspace: &str,
+        current: Arc<dyn Fn() -> Result<(), String> + Send + Sync>,
+    ) -> Option<CallMediaConnection> {
+        let service = self.services.call_media.clone()?;
+        let context = MediaRequestContext::daemon_line(
+            peer_id,
+            app.to_owned(),
+            workspace.to_owned(),
+            current,
+        );
+        Some(CallMediaConnection::new(service, context))
     }
 
     /// Drop the journal now: its writer finishes what it was handed and the

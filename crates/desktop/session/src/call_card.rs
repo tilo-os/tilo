@@ -9,8 +9,8 @@
 //! so the app's own next step is taken as it would have been; the app reads the change from its
 //! watch of the call.
 
-use runtime_collab::native_media::{Command, State};
 use serde_json::Value;
+use tilo_actions::remote::native_media::{Command, State};
 use tilo_native_media::{NativeMediaService, OwnCall};
 use ui::live_activity::{Control, ControlKind, Kind, Published, Summary};
 

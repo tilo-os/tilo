@@ -885,7 +885,7 @@ impl AppBrokerState {
             .unwrap_or(false)
     }
     pub(super) fn disconnect_device_media(&self, peer_id: u64) {
-        if let Some(media) = self.services.native_media.as_ref() {
+        if let Some(media) = self.services.call_media.as_ref() {
             media.disconnect(peer_id);
         }
         if let Some(output) = self.services.audio_output.as_ref() {

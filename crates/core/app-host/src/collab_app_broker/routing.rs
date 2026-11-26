@@ -166,7 +166,6 @@ impl AppBrokerState {
             | CollabEvent::InvocationCancellation { .. }
             | CollabEvent::LocalDocumentActionReported { .. }
             | CollabEvent::WorkspaceControl { .. }
-            | CollabEvent::NativeMediaCommandResult { .. }
             | CollabEvent::ResourceCommandResult { .. }
             | CollabEvent::ActionVerdicts { .. }
             | CollabEvent::DocumentContent { .. }
@@ -623,9 +622,8 @@ impl AppBrokerState {
         admitted: &AdmittedJoinIdentity,
     ) -> Result<bool, String> {
         let apps = self.installed_apps();
-        let members_moved = ContextUpdate::RecordsMoved(vec![
-            tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned(),
-        ]);
+        let members_moved =
+            ContextUpdate::RecordsMoved(vec![tilo_resource_store::WORKSPACE_MEMBERS_ID.to_owned()]);
         let mut channels = self
             .channels
             .lock()

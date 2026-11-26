@@ -57,11 +57,9 @@ pub mod native_initial;
 #[cfg(feature = "native")]
 #[path = "broker_native_join.rs"]
 mod native_join;
+pub use committed_document::CommittedDocument;
 #[cfg(feature = "native")]
 pub use native_join::NativeJoin;
-#[path = "native_media.rs"]
-mod native_media;
-pub use committed_document::CommittedDocument;
 
 use crate::time::Duration;
 use runtime_portal::RawFd;
@@ -346,9 +344,6 @@ pub(super) fn flush_live_activity() {
 /// only so the `JoinHandle` isn't detached.
 pub(super) struct BrokerTransport {
     outbound_tx: tokio_mpsc::Sender<QueuedSdkCommand>,
-    /// Native media rides its own bounded queue so a wedged document RPC can
-    /// never delay a stop obligation.
-    media: Option<native_media::Sender>,
     inbound_rx: tokio_mpsc::Receiver<QueuedCollabEvent>,
     // Native read turns remain held through the owner's event batch.
     document_turns: Vec<tokio::sync::OwnedSemaphorePermit>,
@@ -845,19 +840,6 @@ impl CollabTransport for BrokerTransport {
             self.state.directory_rpc_successes.load(Ordering::Acquire),
             self.state.directory_rpc_failures.load(Ordering::Acquire),
         ))
-    }
-
-    fn send_native_media(
-        &mut self,
-        channel: String,
-        request_id: u64,
-        command: runtime_collab::native_media::Request,
-    ) -> bool {
-        self.state.is_healthy()
-            && self
-                .media
-                .as_ref()
-                .is_some_and(|media| media.send(channel, request_id, command))
     }
 
     fn document_publication_failed(&self) -> bool {
@@ -2685,7 +2667,6 @@ impl CollaborationManager {
         let (inbound_tx, inbound_rx) = tokio_mpsc::channel::<QueuedCollabEvent>(SDK_EVENT_QUEUE);
         let state = BridgeState::new();
         let inbound = InboundBridge::new(inbound_tx, state.clone());
-        let (media_tx, media_rx) = native_media::channel(inbound.clone());
         let (action_directory_tx, action_directory_rx) =
             mpsc::sync_channel::<ActionDirectoryRequest>(ACTION_DIRECTORY_REQUEST_QUEUE);
         let (init_tx, init_rx) = mpsc::sync_channel::<InitStatus>(1);
@@ -2694,7 +2675,7 @@ impl CollaborationManager {
         // NotAvailable rather than panicking; an app must open even without collab.
         let handle = match thread::Builder::new()
             .name("ui-collab-shovel".into())
-            .spawn(move || run_shovel(source, identity, outbound_rx, media_rx, inbound, init_tx))
+            .spawn(move || run_shovel(source, identity, outbound_rx, inbound, init_tx))
         {
             Ok(handle) => handle,
             Err(e) => return Err(runtime_portal::NotAvailable::ConnectionFailed(e)),
@@ -2702,7 +2683,6 @@ impl CollaborationManager {
 
         let transport = BrokerTransport {
             outbound_tx,
-            media: Some(media_tx),
             inbound_rx,
             document_turns: Vec::new(),
             invocation_owners: std::collections::BTreeMap::new(),
@@ -2919,7 +2899,6 @@ fn run_shovel(
     source: SdkConnectSource,
     identity: SdkIdentitySource,
     outbound_rx: tokio_mpsc::Receiver<QueuedSdkCommand>,
-    media_rx: native_media::Receiver,
     inbound_tx: InboundBridge,
     init_tx: mpsc::SyncSender<InitStatus>,
 ) {
@@ -2986,7 +2965,6 @@ fn run_shovel(
             connection_end,
             identity,
             outbound_rx,
-            media_rx,
             inbound_tx,
         ))
         .await;
@@ -3068,7 +3046,6 @@ async fn drive_shovel(
     mut connection_end: runtime_collab::ConnectionEnd,
     identity: LocalSdkJoinIdentity,
     mut outbound_rx: tokio_mpsc::Receiver<QueuedSdkCommand>,
-    media_rx: native_media::Receiver,
     inbound_tx: InboundBridge,
 ) {
     struct PrivatePersonSnapshotLifetime;
@@ -3080,8 +3057,6 @@ async fn drive_shovel(
         member_kind,
         signer,
     } = identity;
-    let media_routes = native_media::Routes::default();
-    let _media_worker = native_media::start(media_rx, media_routes.clone());
     // Every route of a certified endpoint is an encrypted channel whose keys
     // come from the identity service: the record's content is sealed under
     // them. A harness with no such service and no channel keys of its own
@@ -3146,7 +3121,6 @@ async fn drive_shovel(
                 client: client.clone(),
                 member_kind,
                 inbound_tx: inbound_tx.clone(),
-                media_routes: media_routes.clone(),
             }
         };
     }
@@ -3161,7 +3135,6 @@ async fn drive_shovel(
                 client: &client,
                 member_kind,
                 inbound_tx: &inbound_tx,
-                media_routes: &media_routes,
             }
         };
     }
@@ -3808,7 +3781,6 @@ struct SdkJoinContext<'a> {
     client: &'a runtime_collab::CollabClient,
     member_kind: &'a str,
     inbound_tx: &'a InboundBridge,
-    media_routes: &'a native_media::Routes,
 }
 
 struct SdkRoute {
@@ -5214,12 +5186,6 @@ async fn dispatch_sdk_request(
             if let Err(error) = route.channel.publish_search_index(&delta_json).await {
                 tracing::warn!(%error, "collab: publishing search index entries failed");
             }
-        }
-        CollabRequest::NativeMediaCommand { request_id, .. } => {
-            let _ = inbound_tx.send_reply(CollabEvent::NativeMediaCommandResult {
-                request_id,
-                result: Err("native media requires the bounded control queue".into()),
-            });
         }
         CollabRequest::ResourceCommand {
             request_id,

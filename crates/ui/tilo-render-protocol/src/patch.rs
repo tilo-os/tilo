@@ -730,11 +730,11 @@ pub struct CallPicture {
 }
 
 /// The most pictures one [`ToUi::CallPictures`] carries, and the most a tile set shows: what a
-/// call view draws at once (`runtime_collab::native_media::MAX_SHOWN`).
+/// call view draws at once (`tilo_actions::remote::native_media::MAX_SHOWN`).
 pub const MAX_CALL_PICTURES: usize = 64;
 
 /// The largest a [`CallPicture`]'s object is: one coded picture of a call
-/// (`runtime_collab::native_media::MAX_PICTURE_BYTES`).
+/// (`tilo_actions::remote::native_media::MAX_PICTURE_BYTES`).
 pub const MAX_CALL_PICTURE_BYTES: usize = 512 * 1024;
 
 /// The modifier keys held while the person pressed: what a tilolang press reads as

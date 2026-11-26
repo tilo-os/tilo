@@ -9,10 +9,9 @@ pub use published::{Caller, PublishedResources, Reading, ResourceWatch};
 use std::sync::Arc;
 
 pub use crate::collab_app_broker::{
-    AudioOutputFuture, AudioOutputServices, AwaitingDocument, CertifiedPersonContext,
-    ChainHeadAnswer, DocumentBytes, HeldRevision, NativeDocumentRead, NativeDocumentReadContext,
-    NativeDocumentReads, NativeMediaFuture, NativeMediaRequestContext, NativeMediaServices,
-    ResourceRead,
+    AudioOutputFuture, AudioOutputServices, AwaitingDocument, CallMediaFuture, CallMediaServices,
+    CertifiedPersonContext, ChainHeadAnswer, DocumentBytes, HeldRevision, MediaRequestContext,
+    NativeDocumentRead, NativeDocumentReadContext, NativeDocumentReads, ResourceRead,
 };
 
 /// One checked change to a workspace's saved shortcuts. The broker mints
@@ -512,7 +511,7 @@ impl FilesTreePuts for tilo_workspace_service::files::OpenedFiles {
 pub struct ProcessServices {
     /// Read-only existing-resource discovery, absent unless the host can carry it.
     pub committed_documents: Option<Arc<dyn NativeDocumentReads>>,
-    pub native_media: Option<Arc<dyn NativeMediaServices>>,
+    pub call_media: Option<Arc<dyn CallMediaServices>>,
     pub audio_output: Option<Arc<dyn AudioOutputServices>>,
     pub workspace_memberships: Option<Arc<dyn WorkspaceMemberships>>,
     /// The workspaces' agents, as their records name them; without it no agent joins.
@@ -603,7 +602,7 @@ impl ProcessServices {
     /// above belongs here too, and a host's own test compares its decisions to this list.
     pub const NAMES: &[&str] = &[
         "committed_documents",
-        "native_media",
+        "call_media",
         "audio_output",
         "workspace_memberships",
         "agents",

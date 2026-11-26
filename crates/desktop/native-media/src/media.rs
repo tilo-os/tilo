@@ -10,7 +10,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use runtime_collab::native_media::{Input, Inventory, Issue, Picture, Roster, Shown, State};
+use tilo_actions::remote::native_media::{Input, Inventory, Issue, Picture, Roster, Shown, State};
 
 /// How long apart the session hands a shared screen its next picture: the
 /// call encodes at most this many a second.
