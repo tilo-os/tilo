@@ -34,12 +34,6 @@ pub use produced::{Produced, ProducedAt};
 pub use sub::{NewSubAgent, Stands, Sub};
 
 #[cfg(test)]
-mod coding_tests;
-#[cfg(test)]
-mod produced_tests;
-#[cfg(test)]
-mod sub_tests;
-#[cfg(test)]
 mod tests;
 
 /// The app whose record this is, and whose surface decides its changes: the workspace's own

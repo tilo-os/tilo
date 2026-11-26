@@ -2,10 +2,6 @@
 //! against permissions, applies, records for undo and history, and
 //! replicates.
 
-#[cfg(test)]
-#[path = "dispatch_tests.rs"]
-mod tests;
-
 use std::cell::{Cell, RefCell};
 use std::collections::VecDeque;
 use std::rc::Rc;

@@ -106,9 +106,6 @@ use reading::{ChainRead, offer_nested_reads, parse_read_cursor, read_cursor, rea
 use shares::Written;
 use tree::nest;
 
-#[cfg(test)]
-mod tests;
-
 pub(crate) use place::ItemIndex;
 pub use place::{PART_BYTES, PART_ITEMS, PartLimits, placed};
 

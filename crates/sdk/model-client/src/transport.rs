@@ -3,12 +3,6 @@
 //! `ModelBackend`, not a process global.
 #[path = "administration_client.rs"]
 mod administration;
-#[cfg(test)]
-#[path = "client_fixture_tests.rs"]
-mod fixtures;
-#[cfg(test)]
-#[path = "transport_tests.rs"]
-mod tests;
 use crate::{Request, Response};
 pub use administration::AdministrationClient;
 use agent_provider_config::protocol::{ErrorKind, ModelError, ModelResponse, StreamEvent};

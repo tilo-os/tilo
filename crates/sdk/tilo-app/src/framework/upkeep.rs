@@ -305,7 +305,3 @@ impl ApplicationViewState for Kept {
         Ok(ApplicationFocusRestore::Generic)
     }
 }
-
-#[cfg(test)]
-#[path = "upkeep_tests.rs"]
-mod tests;

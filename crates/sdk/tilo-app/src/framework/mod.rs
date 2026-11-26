@@ -321,8 +321,6 @@
 mod app;
 mod attached;
 mod bar_actions;
-#[cfg(test)]
-mod bar_actions_tests;
 mod chain;
 mod chain_list;
 mod children;

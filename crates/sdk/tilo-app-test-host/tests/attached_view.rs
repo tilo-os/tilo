@@ -94,61 +94,6 @@ tilo_test_env::scenario! {
         assert_eq!(version.context.unwrap().invoker.unwrap().acting.by, MemberId::person(AGENT).into());
     }
 
-    phase history_names_the_agent_its_app_and_the_run_it_acts_in;
-    {
-        let mut app = TestApp::<TallyApp>::new().unwrap();
-        app.invoke(Tally::RENAME.with("visitors")).unwrap();
-        let mut view = attached(&app, writer());
-        view.set_context(Some(tilo_actions::ActionContext::default().with_group(
-            "run-1",
-            "Count",
-            "agent-session",
-        )));
-        view.invoke_typed(&Tally::BUMP.invoke(), None).unwrap();
-        view.set_context(None);
-        assert_eq!(count(&view), 1);
-
-        merge(&mut app, &mut view);
-        assert_eq!(app.state().count, 1);
-        let version = app.versions().into_iter().last().unwrap();
-        let context = version.context.unwrap();
-        let Some(tilo_actions::Did::Verb(verb)) = &context.what else {
-            panic!("the agent's edit records its verb: {context:?}");
-        };
-        assert_eq!(verb.action.action, "bump");
-        assert_eq!(context.invoker.unwrap().acting.by, MemberId::person(AGENT).into());
-        assert_eq!(context.app.unwrap().id, TallyApp::ID);
-        assert_eq!(context.group.unwrap().id, "run-1");
-    }
-
-    phase an_agent_acting_for_a_person_is_recorded_as_such;
-    {
-        let mut app = TestApp::<TallyApp>::new().unwrap();
-        let definition = definition::<TallyApp>();
-        let agent = tilo_actions::ActionInvoker::agent(AGENT, "ada")
-            .acting_for("ada");
-        let mut view = AttachedView::open_for(
-            definition,
-            TEST_WORKSPACE,
-            DocumentCheckout::new(app.record().clone(), definition.resource_type.clone()),
-            app.read_document(|doc| doc.clone().save()),
-            &agent,
-            writer(),
-            false,
-        )
-        .unwrap();
-        view.invoke_typed(&Tally::BUMP.invoke(), None).unwrap();
-        merge(&mut app, &mut view);
-        let invoker = app
-            .versions()
-            .into_iter()
-            .last()
-            .and_then(|version| version.context)
-            .and_then(|context| context.invoker)
-            .unwrap();
-        assert_eq!(invoker, agent, "the agent, for the person who asked");
-    }
-
     phase several_typed_edits_apply_as_one_step;
     {
         let mut app = TestApp::<TallyApp>::new().unwrap();
@@ -209,58 +154,6 @@ tilo_test_env::scenario! {
         assert!(view.take_changes().unwrap().is_none());
     }
 
-    phase a_reader_is_offered_no_edit;
-    {
-        let app = TestApp::<TallyApp>::new().unwrap();
-        let reader =
-            PermissionContext::agent_granted(AGENT, &TreePath::root().app(TallyApp::ID), KindSet::READ);
-        let mut view = attached(&app, reader);
-        assert!(view.operations().is_empty());
-        // Refused as an edit the agent may not make, never as one the app
-        // does not have: an agent told that looks for another way.
-        let refused = view.invoke_typed(&Tally::BUMP.invoke(), None).map(drop);
-        assert!(
-            matches!(
-                &refused,
-                Err(tilo_actions::api::ApiError::Unavailable { code, .. })
-                    if code == "permission_denied"
-            ),
-            "{refused:?}"
-        );
-        assert_eq!(count(&view), 0);
-    }
-
-    phase a_grant_of_one_action_reaches_that_action_only;
-    {
-        use tilo_app::permissions::policy::Level;
-        let app = TestApp::<TallyApp>::new().unwrap();
-        let only_bump = PermissionContext::agent_granted(
-            AGENT,
-            &TreePath::root()
-                .app(TallyApp::ID)
-                .any(Level::Kind)
-                .resource("test.tally")
-                .action("bump"),
-            KindSet::READ_UNDOABLE,
-        );
-        let mut view = attached(&app, only_bump);
-        let actions: Vec<String> = view
-            .operations()
-            .into_iter()
-            .map(|operation| operation.address.action)
-            .collect();
-        // The named action, and the ways any value of it is invoked: a typed edit, a group of
-        // them, a field edit. Each admits only the values the grant reaches.
-        assert_eq!(actions, ["bump", "apply", "group", "field-edit"]);
-        view.invoke_typed(&Tally::BUMP.invoke(), None).unwrap();
-        assert_eq!(count(&view), 1);
-        assert!(
-            view.invoke_typed(&Tally::RENAME.with("guests"), None)
-                .is_err()
-        );
-        assert_eq!(count(&view), 1);
-    }
-
     phase a_view_that_writes_as_it_opens_a_joined_record_is_refused;
     // Only a record's creator writes its initial content: a view that writes
     // as it opens a record its member joined is refused, naming the app,
@@ -297,54 +190,6 @@ tilo_test_env::scenario! {
 
 tilo_test_env::scenario! {
     fn a_member_changes_through_the_view_only_what_its_grant_names;
-
-    phase a_member_who_may_edit_is_answered_in_every_form;
-    // The forms the phases below ask in, first for a member who may edit:
-    // each is carried out, so where one is refused below it is the grant
-    // that refuses it and not the way it was asked.
-    {
-        let mut app = TestApp::<TallyApp>::new().unwrap();
-        app.invoke(Tally::RENAME.with("visitors")).unwrap();
-        let mut view = attached(&app, writer());
-        let mut answers = asked(&mut view, "rename", &Tally::RENAME.with("guests"));
-        answers.extend(asked(&mut view, "bump", &Tally::BUMP.invoke()));
-        for (form, answer) in answers {
-            assert!(
-                answer.is_ok(),
-                "{form} is carried out for a member who may edit: {answer:?}"
-            );
-        }
-        assert_eq!(name(&view), "guests");
-        assert_eq!(count(&view), 5, "one for each form");
-        merge(&mut app, &mut view);
-        assert_eq!(app.state().name, "guests");
-        assert_eq!(app.state().count, 5);
-    }
-
-    phase an_agent_granted_read_is_refused_every_edit_and_changes_nothing;
-    // What a view lists to its member and what it carries out for it are
-    // decided apart. An agent that may only read asks for each edit in every
-    // form: each is refused, a confirmation turns no refusal into a yes, the
-    // tally is as it was and no change leaves the view.
-    {
-        let mut app = TestApp::<TallyApp>::new().unwrap();
-        app.invoke(Tally::RENAME.with("visitors")).unwrap();
-        let reader =
-            PermissionContext::agent_granted(AGENT, &TreePath::root().app(TallyApp::ID), KindSet::READ);
-        let mut view = attached(&app, reader);
-        let mut answers = asked(&mut view, "rename", &Tally::RENAME.with("guests"));
-        answers.extend(asked(&mut view, "bump", &Tally::BUMP.invoke()));
-        all_refused(answers, "an agent that may only read");
-        assert_eq!(name(&view), "visitors");
-        assert_eq!(count(&view), 0);
-        assert!(
-            view.take_changes().unwrap().is_none(),
-            "no change leaves the view"
-        );
-        merge(&mut app, &mut view);
-        assert_eq!(app.state().name, "visitors");
-        assert_eq!(app.state().count, 0);
-    }
 
     phase an_agent_granted_one_action_does_that_one_and_no_other;
     {

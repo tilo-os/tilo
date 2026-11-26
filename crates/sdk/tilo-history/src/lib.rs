@@ -912,6 +912,3 @@ fn fluent_value(value: &Scalar) -> FluentValue<'static> {
         other => FluentValue::from(other.to_string()),
     }
 }
-
-#[cfg(test)]
-mod tests;

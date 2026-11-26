@@ -124,12 +124,6 @@ impl IndexedEntries {
             })
             .collect()
     }
-
-    /// How many entries were indexed to bring this index where it is.
-    #[cfg(test)]
-    pub(crate) fn indexed_count(&self) -> usize {
-        self.content().indexings
-    }
 }
 
 /// What a build changes of the one before it: the keys of the entries it no

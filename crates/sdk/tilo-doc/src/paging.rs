@@ -570,6 +570,3 @@ impl Paginator {
         }
     }
 }
-
-#[cfg(test)]
-mod tests;

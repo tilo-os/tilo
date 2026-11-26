@@ -61,24 +61,6 @@ impl ResourceRoot {
         (head.epoch.is_some() && head.epoch == current).then_some(head)
     }
 
-    /// What bound controls look up ([`super::controls::Actions`]), as one
-    /// resource: the published resource's identity and actions over `head`,
-    /// exactly as [`Self::publication`] publishes them, without building or
-    /// decorating its children.
-    #[cfg(test)]
-    pub(super) fn binding_publication(&self, head: &BindingHead) -> ResourceSpec {
-        let base = self.binding_base(head);
-        let overlay = self.binding_overlay(&base);
-        let mut resource = (*base.resource).clone();
-        for spec in overlay.iter() {
-            match resource.actions.iter_mut().find(|own| own.id == spec.id) {
-                Some(own) => *own = spec.clone(),
-                None => resource.actions.push(spec.clone()),
-            }
-        }
-        resource
-    }
-
     /// The part of what bound controls look up that only `head` and the
     /// framework decide: the head with the presentation's, the framework's
     /// and History's actions, as [`Self::decorate_publication`] adds them.

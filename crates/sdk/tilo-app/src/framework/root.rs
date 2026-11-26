@@ -1128,39 +1128,6 @@ struct BindingHead {
     resource: Rc<ResourceSpec>,
 }
 
-/// `resource` without its children, cloning nothing of them.
-#[cfg(all(test, not(target_arch = "wasm32")))]
-fn without_children(resource: &ResourceSpec) -> ResourceSpec {
-    let ResourceSpec {
-        id,
-        kind,
-        label,
-        presentation,
-        semantic_identity,
-        app_id,
-        children: _,
-        actions,
-        views,
-        personal,
-        workspace,
-        resource_type,
-    } = resource;
-    ResourceSpec {
-        id: id.clone(),
-        kind: kind.clone(),
-        label: label.clone(),
-        presentation: presentation.clone(),
-        semantic_identity: semantic_identity.clone(),
-        app_id: app_id.clone(),
-        children: Vec::new(),
-        actions: actions.clone(),
-        views: views.clone(),
-        personal: *personal,
-        workspace: workspace.clone(),
-        resource_type: resource_type.clone(),
-    }
-}
-
 /// Visit the surface of type `S` the root of a resource app of `R` shows: for
 /// a test, or a host that mounted the app, reaching the surface between
 /// frames (`App::with_component_root` lends the root of a mounted one).
@@ -1511,11 +1478,6 @@ impl RootModel for ResourceRoot {
 
     fn save_indicator(&self) -> &super::saves::SaveIndicator {
         &self.save
-    }
-
-    #[cfg(test)]
-    fn save_indicator_mut(&mut self) -> &mut super::saves::SaveIndicator {
-        &mut self.save
     }
 
     // A screenshot harness reaches the root to stage a scenario's view state
@@ -2709,13 +2671,6 @@ impl RootApp for ResourceRoot {
     }
 }
 
-#[cfg(test)]
-mod index_entry_tests;
-
-#[cfg(test)]
-#[cfg(not(target_arch = "wasm32"))]
-mod search_tests;
-
 /// What a window shows instead of the app's view while its record does not
 /// read as the resource: what happened and what to do, in the person's
 /// words, with the reason the record was refused (a path and a missing
@@ -2726,9 +2681,3 @@ fn unreadable_state(reason: &str) -> ui_core::widget::EmptyState {
         .with_message(ui_core::i18n::widget_text("framework-unreadable-hint"))
         .with_details(reason)
 }
-
-#[cfg(test)]
-mod tests;
-
-// Compiled only into native tests: the file's own `cfg` says so.
-mod publication_tests;

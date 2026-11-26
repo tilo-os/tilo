@@ -110,18 +110,6 @@ impl SaveNotices {
         }
         asked
     }
-
-    /// Use `notifier` instead of the host's.
-    #[cfg(test)]
-    pub(crate) fn set_notifier(&mut self, notifier: Arc<dyn ui_core::notify::Notifier>) {
-        self.notifier = Some(notifier);
-    }
-
-    /// Click this window's notification, as the platform reports it.
-    #[cfg(test)]
-    pub(crate) fn click(&self) {
-        activated(&format!("{RETRY}{}", self.id));
-    }
 }
 
 impl Drop for SaveNotices {

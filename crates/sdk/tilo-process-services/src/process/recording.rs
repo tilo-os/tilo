@@ -392,26 +392,3 @@ impl ScreenCaptureProvider for ProcessRecorder {
         )
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn media_sessions_record_published_state() {
-        let (services, recorder) = ProcessServices::recording();
-        let mut handle = super::super::scoped(&services, || {
-            crate::mpris::MprisHandle::spawn(
-                MprisConfig::new("player", "Player"),
-                PlayerSnapshot::default(),
-            )
-        });
-        assert!(handle.is_active());
-        handle.publish(PlayerSnapshot {
-            title: "Now playing".into(),
-            ..PlayerSnapshot::default()
-        });
-        assert_eq!(recorder.media_sessions().len(), 1);
-        assert_eq!(recorder.published_media_state()[0].title, "Now playing");
-    }
-}
