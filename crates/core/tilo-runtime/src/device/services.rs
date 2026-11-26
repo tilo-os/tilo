@@ -1912,9 +1912,9 @@ impl Daemon {
         // The apps of the workspace: what the agent's task programs compile against, run in this
         // daemon's processes.
         let tasks = self.task_hosts(host.clone(), caller.clone(), &self.actor);
-        let run = hex::encode(rand::random::<[u8; 8]>());
+        let session = agent_session_id(&caller)?;
         tilo_mcp::McpServer::admitted(host, caller)
-            .map(|server| server.with_agent_session(run).with_task_hosts(tasks))
+            .map(|server| server.with_agent_session(session).with_task_hosts(tasks))
     }
 
     /// The device's directory.
@@ -5738,7 +5738,7 @@ impl RuntimeActionProvider {
                 })?;
             // A descriptor an answer of this run carries goes with it on the connection it serves.
             session_host.handed = crate::seats::connection_hand();
-            let run = tilo_mcp::agent_id(&caller);
+            let session = agent_session_id(&caller)?;
             // The connection is here from the moment it opens, before it asks anything, and
             // says what it is when its client does. The device its admission certified is what
             // the person's MCP server lists the run under.
@@ -5751,7 +5751,7 @@ impl RuntimeActionProvider {
                     &Arc::new(tokio::sync::Notify::new()),
                 );
             }
-            Ok(tilo_mcp::McpServer::admitted(session_host, caller)?.with_agent_session(run))
+            Ok(tilo_mcp::McpServer::admitted(session_host, caller)?.with_agent_session(session))
         })
     }
 
@@ -7883,6 +7883,22 @@ impl tilo_identity::broker::PersonResourceTypes for AttachedSurfaces {
             tilo_app_host::register_package_surface(app_id, surface);
         }
     }
+}
+
+/// The id of the agent session `caller` works in, as its admission minted it: the one id its
+/// invocations, its presence and its watch all name it by. An agent's own session where it names
+/// one, else its execution's, as [`Caller::agent_session`] names it (a key's run included).
+fn agent_session_id(caller: &Caller) -> io::Result<String> {
+    if let Some(group) = caller.agent_session() {
+        return Ok(group.id);
+    }
+    let execution = caller
+        .execution_id()
+        .ok_or_else(|| io::Error::other("this run was admitted with no execution of its own"))?;
+    Ok(format!(
+        "{}:{execution}",
+        tilo_actions::context::AGENT_SESSION_GROUP
+    ))
 }
 
 #[cfg(test)]

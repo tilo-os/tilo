@@ -4,7 +4,7 @@
 
 use serde_json::json;
 
-use crate::language::agent_fixture::{act, events, ls, mcp_agent, said, watch};
+use crate::language::agent_fixture::{act, cursor, events, ls, mcp_agent, said, watch};
 use crate::language::host;
 
 /// Two agent runs of the person's logged-in computer each list the workspace and run what they
@@ -125,8 +125,9 @@ fn a_computers_agent_is_listed_once_where_it_acts() {
     });
 }
 
-/// The agent's client names its session in `initialize` ("Release prep"): every call it makes
-/// goes by that name, and the watch it follows its runs with names it so.
+/// The agent's client names its session in `initialize` ("Release prep"), as `tilo mcp` writes
+/// its harness's name there and a turn of the daemon's own agent is asked: every call it makes is
+/// that one session's and goes by that name, and the watch it follows its runs with names it so.
 #[test]
 fn a_logged_in_agents_session_name_reaches_its_server() {
     host::run(|host| async move {
@@ -142,20 +143,24 @@ fn a_logged_in_agents_session_name_reaches_its_server() {
             )
             .await;
         assert!(opened.get("result").is_some(), "initialize: {opened}");
+        let (since, failed) = watch(&agent, json!({"wait_ms": 0})).await;
+        assert!(!failed, "the session starts watching: {since}");
         let (made, failed) = act(&agent, "device#info", json!({})).await;
         assert!(!failed, "the named session acts: {made}");
-        let (watched, failed) = watch(&agent, json!({"wait_ms": 1_000})).await;
+        let (watched, failed) =
+            watch(&agent, json!({"cursor": cursor(&since), "wait_ms": 1_000})).await;
         assert!(!failed, "the session watches its own runs: {watched}");
         let runs: Vec<_> = events(&watched)
             .into_iter()
             .filter(|event| event["kind"] == "invocation")
             .collect();
+        assert!(!runs.is_empty(), "the session made no run: {watched}");
         assert!(
-            runs.iter().any(|run| run["title"] == "Release prep"
+            runs.iter().all(|run| run["title"] == "Release prep"
                 && run["group"]
                     .as_str()
                     .is_some_and(|group| group.starts_with("agent-session:"))),
-            "the agent's invocation goes by its session's name: {watched}"
+            "every run of the session is its one session's, by its name: {watched}"
         );
     });
 }

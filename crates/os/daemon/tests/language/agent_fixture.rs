@@ -44,6 +44,12 @@ pub async fn watch(agent: &host::Agent, arguments: Value) -> (String, bool) {
     said(&agent.tool("tilo_watch", &arguments).await)
 }
 
+/// The cursor a `tilo_watch` answer gives, to watch on from what it told.
+pub fn cursor(answered: &str) -> String {
+    let parsed: Value = serde_json::from_str(answered).unwrap_or(Value::Null);
+    parsed["cursor"].as_str().unwrap_or_default().to_owned()
+}
+
 /// The kinds of the events a `tilo_watch` answer carries.
 pub fn events(answered: &str) -> Vec<Value> {
     let parsed: Value = serde_json::from_str(answered).unwrap_or(Value::Null);

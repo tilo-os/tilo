@@ -31,7 +31,6 @@ mod agent_on_device;
 mod agent_presence;
 mod agent_scheduling;
 mod agent_terminal;
-mod agent_turns;
 mod agent_windows;
 mod api_admin;
 mod api_beside_import;

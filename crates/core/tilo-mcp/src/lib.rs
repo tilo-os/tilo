@@ -515,21 +515,6 @@ impl Drop for Running<'_> {
     }
 }
 
-/// The agent an MCP connection is: one per connection, named after its run.
-///
-/// The name is part of a durable invocation owner and of the delegation the
-/// broker re-verifies, so it carries the whole run id rather than a prefix of
-/// it: two runs must never share an agent.
-#[must_use]
-pub fn agent_id(caller: &Caller) -> String {
-    let run = caller
-        .execution_id()
-        .unwrap_or_else(uuid::Uuid::new_v4)
-        .simple()
-        .to_string();
-    format!("mcp-{run}")
-}
-
 impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// A session of agent `agent_id` for `person` in `workspace`, as a host that admits it by its
     /// own means takes it: the agent is the actor, for the person ([`Self::for_delegated`]).

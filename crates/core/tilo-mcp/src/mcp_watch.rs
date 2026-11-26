@@ -124,7 +124,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             let mut events = Vec::new();
             self.watch_unfollowed(&mut events);
             self.watch_states(&mut cursor, &mut events);
-            self.watch_invocations(&mut cursor, &mut events).await;
+            self.watch_invocations(&mut cursor, &mut events).await?;
             self.watch_here(&mut cursor, &mut events);
             self.watch_changes(path, &mut cursor, &mut events).await?;
             if !events.is_empty() || std::time::Instant::now() >= deadline {
@@ -289,13 +289,13 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// first read of a watch says who is here now, so a page that opens on a
     /// workspace draws its people and agents at once.
     async fn watch_now(&self, path: Option<&str>) -> Result<Cursor, String> {
-        let (invocation, going) = match self.own_invocations().await {
-            Ok(own) => (
-                own.iter().map(moment).max(),
-                own.iter().filter(|item| going(item)).filter_map(|item| item.id.clone()).collect(),
-            ),
-            Err(_) => (None, Vec::new()),
-        };
+        let own = self.own_invocations().await?;
+        let invocation = own.iter().map(moment).max();
+        let going = own
+            .iter()
+            .filter(|item| going(item))
+            .filter_map(|item| item.id.clone())
+            .collect();
         let feed = match path_named(path) {
             Some(_) => None,
             None => self.feed_page(None).await?.map(|page| page.cursor),
@@ -318,10 +318,12 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// The caller's invocations that started or ended since the cursor, as the workspace's
     /// invocations record tells them: the one list of calls, which every projection reads. A
     /// call that ended well and changed nothing (a read, the watch's own among them) is no news.
-    async fn watch_invocations(&self, cursor: &mut Cursor, events: &mut Vec<Value>) {
-        let Ok(own) = self.own_invocations().await else {
-            return;
-        };
+    async fn watch_invocations(
+        &self,
+        cursor: &mut Cursor,
+        events: &mut Vec<Value>,
+    ) -> Result<(), String> {
+        let own = self.own_invocations().await?;
         let told = cursor.invocation;
         cursor.going = own
             .iter()
@@ -352,6 +354,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
                 "time_ms": item.started_ms,
             }));
         }
+        Ok(())
     }
 
     /// The invocations the caller made, newest first, as the workspace's invocations record
@@ -361,12 +364,20 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
         &self,
     ) -> Result<Vec<tilo_actions::remote::workspace_invocations::Invocation>, String> {
         use tilo_actions::remote::workspace_invocations::{InvocationsQuery, PAGE};
-        let acting = self.caller.acting();
-        let by = acting
-            .agent_id()
-            .or_else(|| acting.member_id().map(collab_types::MemberId::id))
-            .map(str::to_owned);
+        // A session's calls are the ones its group names; with none, the caller's are the ones
+        // the record names by the member it gives the caller (a key's call is the key's).
         let session = self.session_id();
+        let acting = self.caller.acting();
+        let by = match &session {
+            Some(_) => None,
+            None => self
+                .caller
+                .key()
+                .map(|key| key.id())
+                .or_else(|| acting.agent_id())
+                .or_else(|| acting.member_id().map(collab_types::MemberId::id))
+                .map(str::to_owned),
+        };
         Ok(self
             .listed_invocations(&InvocationsQuery {
                 limit: PAGE,
@@ -377,8 +388,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             .items
             .into_iter()
             .filter(|item| {
-                session.is_none()
-                    || item.group.as_ref().map(|group| &group.id) == session.as_ref()
+                session.is_none() || item.group.as_ref().map(|group| &group.id) == session.as_ref()
             })
             .collect())
     }
@@ -722,20 +732,26 @@ fn last_change(page: Option<&[Value]>) -> Option<String> {
         .map(str::to_owned)
 }
 
-
 /// The latest moment `item` started or ended at, in ms since the epoch.
 fn moment(item: &tilo_actions::remote::workspace_invocations::Invocation) -> i64 {
-    item.ended_ms.unwrap_or(item.started_ms).max(item.started_ms)
+    item.ended_ms
+        .unwrap_or(item.started_ms)
+        .max(item.started_ms)
 }
 
 /// Whether `item` has not ended yet: it runs, or waits for its person.
 const fn going(item: &tilo_actions::remote::workspace_invocations::Invocation) -> bool {
     use tilo_actions::remote::workspace_invocations::InvocationStatus;
-    matches!(item.status, InvocationStatus::Running | InvocationStatus::Waiting)
+    matches!(
+        item.status,
+        InvocationStatus::Running | InvocationStatus::Waiting
+    )
 }
 
 /// The phase a watch names `status` by.
-pub(super) const fn phase(status: tilo_actions::remote::workspace_invocations::InvocationStatus) -> &'static str {
+pub(super) const fn phase(
+    status: tilo_actions::remote::workspace_invocations::InvocationStatus,
+) -> &'static str {
     use tilo_actions::remote::workspace_invocations::InvocationStatus;
     match status {
         InvocationStatus::Waiting => "held_for_person",
