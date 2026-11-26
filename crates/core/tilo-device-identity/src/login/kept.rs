@@ -13,6 +13,9 @@ use crate::persist::{read_device_cert, taken_device_key, write_device_cert};
 pub const LOGIN_DAMAGED: &str = "This computer's Tilo certificate is damaged: log in again with a \
      ticket `tilo device add` prints on one of your devices.";
 
+/// Where a login is kept below a state directory.
+pub(crate) const KEPT_IN: &str = "tilo/device";
+
 /// Where this account keeps its login and what the login keeps on this computer (its folders,
 /// its background process's state): `$XDG_STATE_HOME/tilo/device`. The device key and its certificates are
 /// this computer's, kept where its session keeps them.
@@ -36,7 +39,7 @@ impl Place {
     pub fn here(keys: IdentityPaths) -> Result<Self> {
         let dir = tilo_paths::state_dir()
             .context("this account has no state directory (no HOME)")?
-            .join("tilo/device");
+            .join(KEPT_IN);
         let mut making = std::fs::DirBuilder::new();
         making.recursive(true);
         #[cfg(unix)]

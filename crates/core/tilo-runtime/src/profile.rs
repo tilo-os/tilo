@@ -42,7 +42,10 @@ fn environment(profile: &Path) -> [(&'static str, PathBuf); 4] {
         ("XDG_CONFIG_HOME", profile.join("config")),
         ("XDG_DATA_HOME", profile.join("data")),
         ("XDG_CACHE_HOME", profile.join("cache")),
-        ("XDG_STATE_HOME", profile.join("state")),
+        (
+            "XDG_STATE_HOME",
+            profile.join(tilo_device_identity::login::daemon::PROFILE_STATE),
+        ),
     ]
 }
 

@@ -48,6 +48,9 @@ fn host(profile: &Path) -> Command {
         // display a launch is handed (a file: nothing draws).
         .env("TILO_APPS_DATA_DIR", profile.join("apps"))
         .env("WAYLAND_DISPLAY", profile.join("wayland-0"))
+        // The person's shell the daemon starts when a desktop asks it to: a plain shell, which
+        // runs what the test asks of it, as no session is built beside the daemon here.
+        .env(tilo_runtime::daemon::TEST_SHELL_ENV, "/bin/sh")
         .env_remove("TILO_SVC_COLLAB_FD")
         .env_remove("TILO_SVC_IDENTITY_FD");
     command
@@ -605,6 +608,64 @@ fn public_profile_and_symlinked_device_lock_are_refused() -> Result<()> {
     ensure!(
         std::fs::read_to_string(target)? == "untouched",
         "the rejected daemon wrote through the symlinked lock"
+    );
+    Ok(())
+}
+
+/// A desktop started beside the daemon of a profile named apart, in state directories of its own
+/// (a development device's session, as the server plan cycle's owner device starts one), finds
+/// that daemon running and asks it to start the person's shell. The daemon starts the shell with
+/// a one-use secret, which the shell redeems for its link to the person's workspaces. A desktop
+/// that found no daemon there would run as no shell of the daemon's and reach no workspace.
+#[test]
+fn a_desktop_beside_a_profiles_daemon_is_started_by_it_and_reaches_its_workspaces() -> Result<()> {
+    let profile = DaemonProfile::new()?;
+    // Where the desktop finds the daemon: from the profile it names alone, since none of the
+    // desktop's own directories is the profile's.
+    let place = tilo_api::daemon::serving_profile(profile.path()).map_err(anyhow::Error::msg)?;
+    ensure!(
+        !place.system() && place.alive(),
+        "the desktop finds no daemon running by its lock at {}\n{}",
+        place.lock().display(),
+        profile.log()
+    );
+    let handed = profile.path().join("handed-secret");
+    let started = ask_native(
+        &place.native(),
+        &json!({
+            "native": "shells#start",
+            "args": ["-c", "printf %s \"$TILO_SHELL_TOKEN\" > \"$TILO_TEST_HANDED\""],
+            "env": {"TILO_TEST_HANDED": handed},
+        }),
+    )?;
+    ensure!(
+        started.get("pid").and_then(Value::as_u64).is_some(),
+        "the daemon started no shell: {started}\n{}",
+        profile.log()
+    );
+    let token = tilo_test_env::wait_for(
+        ItsLog {
+            log: profile.path().join("daemon.log"),
+            what: "the shell the daemon started to read the secret it was handed",
+        },
+        || {
+            std::fs::read_to_string(&handed)
+                .ok()
+                .filter(|token| token.len() == 64)
+        },
+    );
+    let link = UnixStream::connect(place.native())?;
+    link.set_read_timeout(Some(tilo_test_env::hang_bound()))?;
+    writeln!(
+        &link,
+        "{}",
+        json!({"native": "shells#link", "token": token})
+    )?;
+    let (answer, links) = runtime_portal::fd_transport::recv_with_fds(&link)?;
+    let answer: Value = serde_json::from_slice(&answer)?;
+    ensure!(
+        answer.get("error").is_none() && links.len() == 1,
+        "the shell's secret was redeemed for no link to the person's workspaces: {answer}"
     );
     Ok(())
 }

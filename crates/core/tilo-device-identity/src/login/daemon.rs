@@ -112,6 +112,19 @@ pub fn named_profile() -> Option<PathBuf> {
         })
 }
 
+/// The state directory inside a profile named apart: the daemon serving that profile keeps its
+/// state there (its `XDG_STATE_HOME`), whatever state directory each program that names the
+/// profile has of its own.
+pub const PROFILE_STATE: &str = "state";
+
+/// The device directory of the daemon serving `profile`, named apart: its login's, in the
+/// profile's own state directory, which keeps the lock a live daemon takes. Every client of the
+/// profile finds it there, a desktop started in a session's own directories among them.
+#[must_use]
+pub fn profile_device_dir(profile: &Path) -> PathBuf {
+    profile.join(PROFILE_STATE).join(super::kept::KEPT_IN)
+}
+
 /// Where a daemon's sockets go, before any directory is made.
 #[derive(Debug, PartialEq, Eq)]
 enum Placed<'a> {

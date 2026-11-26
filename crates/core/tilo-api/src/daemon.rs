@@ -42,21 +42,43 @@ pub use tilo_machine::system_daemon;
 /// service keeps them in `$XDG_RUNTIME_DIR/tilo` on Linux and in the account's temporary
 /// directory (`/var/folders/…/T/tilo`) on macOS. A daemon serving a profile named apart keeps
 /// them in a directory of its own beside those ([`profile_sockets`]). Its lock is in the login's
-/// directory, as the device's state is.
+/// directory, as the device's state is: the profile's own, for a profile named apart
+/// ([`serving_profile`]).
 ///
 /// # Errors
 /// The login's directory or the sockets' directory cannot be made, the sockets' directory is not
 /// this account's own, or a socket's path in it is too long for a socket's address.
 pub fn this_computer() -> Result<DaemonPlace, String> {
+    if let Some(profile) = tilo_device_identity::login::daemon::named_profile() {
+        return serving_profile(&profile);
+    }
     let login = login_here()?;
     let (sockets, system) = tilo_device_identity::login::daemon::sockets(login.dir())?;
     Ok(DaemonPlace {
         system,
-        // A profile named apart is started by the host that named it (a VM host's start, a
-        // stack's, a test's), never by this account's service manager, which runs this
-        // computer's own daemon over no profile.
-        starts: tilo_device_identity::login::daemon::named_profile().is_none(),
         ..DaemonPlace::at(&sockets, login.dir())
+    })
+}
+
+/// The daemon serving a `profile` named apart (a VM host's, a stack's, a test's), as every client
+/// that names the profile finds it: its sockets beside this account's own, and its lock in the
+/// profile's own state directory, where the daemon keeps it whatever state directory the client
+/// has. It is started by the host that named the profile, never by this account's service
+/// manager, which runs this computer's own daemon over no profile.
+///
+/// # Errors
+/// The sockets' directory cannot be made or is not this account's own private directory, or a
+/// socket's path in it is too long for a socket's address.
+pub fn serving_profile(profile: &Path) -> Result<DaemonPlace, String> {
+    let sockets = profile_sockets(profile)?;
+    let place = DaemonPlace::at(
+        &sockets,
+        &tilo_device_identity::login::daemon::profile_device_dir(profile),
+    );
+    socket_fits(&place.native)?;
+    Ok(DaemonPlace {
+        starts: false,
+        ..place
     })
 }
 
