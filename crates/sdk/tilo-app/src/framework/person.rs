@@ -17,6 +17,7 @@ use std::rc::Rc;
 
 use tilo_actions::remote::{InvokeArgument, ReadAnswer, ResourceReadRequest};
 use tilo_actions::{ActionError, ActionInvoker, InvocationUpdate};
+use tilo_automerge::ApplyIncoming;
 
 use super::live::Live;
 use super::resources::{Held, ResourceApi};
@@ -73,7 +74,7 @@ struct Remote {
     app: &'static str,
     /// Its id there.
     id: ui_core::resource::DocumentId,
-    remote: RemoteActions,
+    actions: RemoteActions,
     /// The record, followed: answered again after every write to it.
     followed: FollowedRead,
     /// The record as read so far, from its genesis: each reading is merged in, so it only grows,
@@ -114,7 +115,7 @@ impl Remote {
             action,
         );
         let call = self
-            .remote
+            .actions
             .invoke(target, InvokeArgument::Json(arguments), None);
         self.sent.borrow_mut().push((action.to_owned(), call));
     }
@@ -160,7 +161,7 @@ impl Remote {
             Ok(mut read) => {
                 let mut doc = self.doc.borrow_mut();
                 let before = doc.get_heads();
-                if let Err(error) = doc.merge(&mut read) {
+                if let Err(error) = doc.merge_incoming(&mut read) {
                     unreadable_person_resource(kind, &error);
                     return false;
                 }
@@ -263,16 +264,12 @@ fn reading_of(readings: &serde_json::Value, record: &str) -> (String, Option<Vec
 /// The bytes `text` writes in hexadecimal, as a reading carries a document.
 fn unhex(text: &str) -> Option<Vec<u8>> {
     let digits = text.as_bytes();
-    if digits.len() % 2 != 0 {
+    if !digits.len().is_multiple_of(2) {
         return None;
     }
     digits
         .chunks_exact(2)
-        .map(|pair| {
-            let high = char::from(pair[0]).to_digit(16)?;
-            let low = char::from(pair[1]).to_digit(16)?;
-            u8::try_from(high * 16 + low).ok()
-        })
+        .map(|pair| u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok())
         .collect()
 }
 
@@ -902,7 +899,7 @@ impl PersonState {
                     &of,
                     "this window keeps none of your records",
                 );
-                return None;
+                None
             }
             Some(PersonRecords::Unsigned) => {
                 let reason = format!(
@@ -910,157 +907,180 @@ impl PersonState {
                     P::LABEL.to_lowercase()
                 );
                 let _ = self.note_unavailable(self.app_id, &of, &reason);
+                None
+            }
+            Some(PersonRecords::Here(records)) => self.open_here::<P>(records, key, &id, &of),
+            Some(PersonRecords::There(workspace)) => self.open_there::<P>(workspace, key, &id, &of),
+        }
+    }
+
+
+    /// The record `P` in the person's own workspace, which this window is in: the app's record
+    /// there, published with each invoker's undo and redo of it.
+    fn open_here<P: Resource>(
+        &self,
+        records: &WorkspaceResources,
+        key: OpenKey,
+        id: &str,
+        of: &PersonResourceType<'_>,
+    ) -> Option<PersonResource<P>> {
+        let kind = P::KIND;
+        let resource = match WorkspaceResource::try_open_at(
+            records,
+            self.app_id,
+            id,
+            (self.app_id, self.app_title),
+            None,
+            self.wake.clone(),
+        ) {
+            Ok(resource) => Rc::new(resource),
+            Err(why) => {
+                let reason = match why {
+                    Unopened::Arriving => "it has not reached this device yet".to_owned(),
+                    Unopened::InUse => "it cannot be read right now".to_owned(),
+                    Unopened::Failed => {
+                        format!("it does not read as {}", P::LABEL.to_lowercase())
+                    }
+                };
+                let _ = self.note_unavailable(self.app_id, of, &reason);
                 return None;
             }
-            Some(PersonRecords::Here(records)) => {
-                let resource = match WorkspaceResource::try_open_at(
-                    records,
-                    self.app_id,
-                    &id,
-                    (self.app_id, self.app_title),
-                    None,
-                    self.wake.clone(),
-                ) {
-                    Ok(resource) => Rc::new(resource),
-                    Err(why) => {
-                        let reason = match why {
-                            Unopened::Arriving => "it has not reached this device yet".to_owned(),
-                            Unopened::InUse => "it cannot be read right now".to_owned(),
-                            Unopened::Failed => {
-                                format!("it does not read as {}", P::LABEL.to_lowercase())
-                            }
-                        };
-                        let _ = self.note_unavailable(self.app_id, &of, &reason);
-                        return None;
-                    }
-                };
-                let held = held(&resource);
-                let me = self.me.clone();
-                let stepping = Rc::downgrade(&resource);
-                let following = Rc::downgrade(&resource);
-                self.owners
-                    .borrow_mut()
-                    .push(resource.record().history_owner());
-                self.refreshers.borrow_mut().push(Box::new(move || {
-                    following
-                        .upgrade()
-                        .is_some_and(|resource| resource.refresh())
-                }));
-                let opened = PersonResource {
-                    held: Rc::clone(&held),
-                    me: self.me.clone(),
-                    backing: Backing::Own(resource),
-                };
-                self.publish(
-                    key,
-                    Rc::new(opened.clone()) as Rc<dyn Any>,
-                    Published {
-                        id: resource_id(kind),
-                        label: P::LABEL.to_owned(),
-                        run_by: None,
-                        api: Rc::clone(&held) as Rc<dyn ResourceApi>,
-                        step: Box::new(move |undo, by| {
-                            stepping.upgrade().is_some_and(|resource| {
-                                let stepped =
-                                    step_as(resource.record(), by.member_id().unwrap_or(&me), undo);
-                                resource.refresh();
-                                stepped
-                            })
-                        }),
-                    },
-                );
-                Some(opened)
+        };
+        let held = held(&resource);
+        let me = self.me.clone();
+        let stepping = Rc::downgrade(&resource);
+        let following = Rc::downgrade(&resource);
+        self.owners
+            .borrow_mut()
+            .push(resource.record().history_owner());
+        self.refreshers.borrow_mut().push(Box::new(move || {
+            following
+                .upgrade()
+                .is_some_and(|resource| resource.refresh())
+        }));
+        let opened = PersonResource {
+            held: Rc::clone(&held),
+            me: self.me.clone(),
+            backing: Backing::Own(resource),
+        };
+        self.publish(
+            key,
+            Rc::new(opened.clone()) as Rc<dyn Any>,
+            Published {
+                id: resource_id(kind),
+                label: P::LABEL.to_owned(),
+                run_by: None,
+                api: Rc::clone(&held) as Rc<dyn ResourceApi>,
+                step: Box::new(move |undo, by| {
+                    stepping.upgrade().is_some_and(|resource| {
+                        let stepped =
+                            step_as(resource.record(), by.member_id().unwrap_or(&me), undo);
+                        resource.refresh();
+                        stepped
+                    })
+                }),
+            },
+        );
+        Some(opened)
+    }
+
+    /// The record `P` in the person's own `workspace`, seen from a window in another one:
+    /// followed there and changed by its actions at the app that keeps it.
+    fn open_there<P: Resource>(
+        &self,
+        workspace: &str,
+        key: OpenKey,
+        id: &str,
+        of: &PersonResourceType<'_>,
+    ) -> Option<PersonResource<P>> {
+        let kind = P::KIND;
+        let Some(remote_actions) = self.remote.clone() else {
+            let _ =
+                self.note_unavailable(self.app_id, of, "this window reaches no workspace");
+            return None;
+        };
+        // The record is the keeper's: this window reads a replica of it, and writes no
+        // genesis of its own, which would meet the keeper's as a second document.
+        let doc = ui_core::automerge::AutoCommit::new();
+        let live = match tilo_resource::Reader::<P>::read(&doc) {
+            Ok(reader) => Live::new(reader),
+            Err(error) => {
+                let reason = format!("it does not read: {error}");
+                let _ = self.note_unavailable(self.app_id, of, &reason);
+                return None;
             }
-            Some(PersonRecords::There(workspace)) => {
-                let Some(remote_actions) = self.remote.clone() else {
-                    let _ =
-                        self.note_unavailable(self.app_id, &of, "this window reaches no workspace");
-                    return None;
-                };
-                // The record is the keeper's: this window reads a replica of it, and writes no
-                // genesis of its own, which would meet the keeper's as a second document.
-                let doc = ui_core::automerge::AutoCommit::new();
-                let live = match tilo_resource::Reader::<P>::read(&doc) {
-                    Ok(reader) => Live::new(reader),
-                    Err(error) => {
-                        let reason = format!("it does not read: {error}");
-                        let _ = self.note_unavailable(self.app_id, &of, &reason);
-                        return None;
-                    }
-                };
-                let followed = remote_actions.follow_resource(
-                    None,
-                    ResourceReadRequest {
-                        workspace: workspace.clone(),
-                        app: self.app_id.to_owned(),
-                        record: id.clone(),
-                        joined: false,
-                        after: None,
-                        wait_ms: None,
-                        answer: ReadAnswer::Document,
-                    },
-                );
-                let Some(document) = ui_core::resource::DocumentId::parse(&id) else {
-                    let reason = format!("{kind} names no record");
-                    let _ = self.note_unavailable(self.app_id, &of, &reason);
-                    return None;
-                };
-                let there = Rc::new(There {
-                    remote: Remote {
-                        workspace: workspace.clone(),
-                        app: self.app_id,
-                        id: document,
-                        remote: remote_actions,
-                        followed,
-                        doc: RefCell::new(doc),
-                        revision: RefCell::default(),
-                        sent: RefCell::default(),
-                    },
-                    state: LocalState::new(live.get()),
-                    live,
-                    wake: self.wake.clone(),
-                });
-                let provider = there.remote.provider();
-                let held = held_there(&there, &self.me);
-                let stepping = Rc::downgrade(&there);
-                let following = Rc::downgrade(&there);
-                let mine = self.me.clone();
-                self.refreshers.borrow_mut().push(Box::new(move || {
-                    following.upgrade().is_some_and(|there| there.refresh())
-                }));
-                let opened = PersonResource {
-                    held: Rc::clone(&held),
-                    me: self.me.clone(),
-                    backing: Backing::There(there),
-                };
-                self.publish(
-                    key,
-                    Rc::new(opened.clone()) as Rc<dyn Any>,
-                    Published {
-                        id: resource_id(kind),
-                        label: P::LABEL.to_owned(),
-                        run_by: Some(provider),
-                        api: Rc::clone(&held) as Rc<dyn ResourceApi>,
-                        step: Box::new(move |undo, by| {
-                            stepping.upgrade().is_some_and(|there| {
-                                let held = step_held(&there, by.member_id().unwrap_or(&mine), undo);
-                                if held {
-                                    there.remote.invoke(
-                                        &resource_id(P::KIND),
-                                        if undo { "undo" } else { "redo" },
-                                        serde_json::Map::new(),
-                                    );
-                                    there.wake();
-                                    there.refresh();
-                                }
-                                held
-                            })
-                        }),
-                    },
-                );
-                Some(opened)
-            }
-        }
+        };
+        let followed = remote_actions.follow_resource(
+            None,
+            ResourceReadRequest {
+                workspace: workspace.to_owned(),
+                app: self.app_id.to_owned(),
+                record: id.to_owned(),
+                joined: false,
+                after: None,
+                wait_ms: None,
+                answer: ReadAnswer::Document,
+            },
+        );
+        let Some(document) = ui_core::resource::DocumentId::parse(id) else {
+            let reason = format!("{kind} names no record");
+            let _ = self.note_unavailable(self.app_id, of, &reason);
+            return None;
+        };
+        let there = Rc::new(There {
+            remote: Remote {
+                workspace: workspace.to_owned(),
+                app: self.app_id,
+                id: document,
+                actions: remote_actions,
+                followed,
+                doc: RefCell::new(doc),
+                revision: RefCell::default(),
+                sent: RefCell::default(),
+            },
+            state: LocalState::new(live.get()),
+            live,
+            wake: self.wake.clone(),
+        });
+        let provider = there.remote.provider();
+        let held = held_there(&there, &self.me);
+        let stepping = Rc::downgrade(&there);
+        let following = Rc::downgrade(&there);
+        let mine = self.me.clone();
+        self.refreshers.borrow_mut().push(Box::new(move || {
+            following.upgrade().is_some_and(|there| there.refresh())
+        }));
+        let opened = PersonResource {
+            held: Rc::clone(&held),
+            me: self.me.clone(),
+            backing: Backing::There(there),
+        };
+        self.publish(
+            key,
+            Rc::new(opened.clone()) as Rc<dyn Any>,
+            Published {
+                id: resource_id(kind),
+                label: P::LABEL.to_owned(),
+                run_by: Some(provider),
+                api: Rc::clone(&held) as Rc<dyn ResourceApi>,
+                step: Box::new(move |undo, by| {
+                    stepping.upgrade().is_some_and(|there| {
+                        let held = step_held(&there, by.member_id().unwrap_or(&mine), undo);
+                        if held {
+                            there.remote.invoke(
+                                &resource_id(P::KIND),
+                                if undo { "undo" } else { "redo" },
+                                serde_json::Map::new(),
+                            );
+                            there.wake();
+                            there.refresh();
+                        }
+                        held
+                    })
+                }),
+            },
+        );
+        Some(opened)
     }
 
     /// The settings section `kind` held as a record, opened on first use and

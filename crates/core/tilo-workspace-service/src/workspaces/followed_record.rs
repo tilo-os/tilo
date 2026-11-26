@@ -160,7 +160,7 @@ mod tests {
                     ),
                     address: keep.address(),
                 },
-                argument: tilo_actions::remote::InvokeArgument::Json(keep.arguments.clone()),
+                argument: tilo_actions::remote::InvokeArgument::Json(keep.arguments),
                 context: None,
                 confirmation: None,
                 revision: None,
@@ -230,8 +230,8 @@ mod tests {
                     other => panic!("the action taken up was not made: {other:?}"),
                 }
                 match records.next_change(&person, &invocation) {
-                    Some(changed) => {
-                        changed.await;
+                    Some(moved) => {
+                        moved.await;
                     }
                     None => panic!("the action taken up says when it moves"),
                 }
@@ -252,8 +252,8 @@ mod tests {
                     other => panic!("the action taken up was refused: {other:?}"),
                 }
                 match records.next_change(&person, &refused) {
-                    Some(changed) => {
-                        changed.await;
+                    Some(moved) => {
+                        moved.await;
                     }
                     None => panic!("the refused action says when it moves"),
                 }

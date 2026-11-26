@@ -171,7 +171,7 @@ tilo_test_env::scenario! {
         let kept = app
             .in_persons_own_workspace(|own| {
                 let kept = own.profile_resource::<Watched>().unwrap();
-                (videos(&kept), kept.record().map(|record| record.heads()))
+                (videos(&kept), kept.record().map(tilo_app::resource::StoredResource::heads))
             })
             .expect("the app runs in the person's own workspace");
         assert_eq!(kept.0, ["saved-in-their-own"], "the edit is made where the record is kept");

@@ -2218,7 +2218,7 @@ mod tests {
             );
             assert_eq!(
                 *asked.lock().expect("asked"),
-                [(APP.to_owned(), workspace.clone())],
+                [(APP.to_owned(), workspace)],
                 "the app was started in the workspace"
             );
             assert!(

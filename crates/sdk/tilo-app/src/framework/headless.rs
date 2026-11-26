@@ -5,6 +5,7 @@
 //! surface it publishes, `--bench` captures its fixtures, and `--data-dir`
 //! and `--shots` open it on a profile of their own.
 
+use std::fmt::Write as _;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::rc::Rc;
@@ -519,7 +520,7 @@ fn serve_persons_own<A: ResourceApp>(
         None,
         |_| {},
     )?));
-    let invoked = Rc::clone(&provider);
+    let served = Rc::clone(&provider);
     driver.serve_provider(
         tilo_actions::remote::application_provider_token(&own, A::ID),
         Box::new(move |invocation| {
@@ -547,7 +548,7 @@ fn serve_persons_own<A: ResourceApp>(
                     ));
                 }
             };
-            invoked.borrow_mut().call_by(
+            served.borrow_mut().call_by(
                 invoker,
                 &invocation.address.resource,
                 &invocation.address.action,
@@ -577,7 +578,10 @@ fn serve_persons_own<A: ResourceApp>(
                     "revision": revision,
                     "records": [{
                         "record": request.record,
-                        "document": document.iter().map(|byte| format!("{byte:02x}")).collect::<String>(),
+                        "document": document.iter().fold(String::new(), |mut text, byte| {
+                            let _ = write!(text, "{byte:02x}");
+                            text
+                        }),
                     }],
                 }),
                 None => serde_json::json!({
@@ -1237,7 +1241,7 @@ impl<A: ResourceApp, H: Host> HeadlessApp<A, H> {
     /// on the device since it last ran.
     pub fn relaunch_as(mut self, author: &str) -> Result<Self, LaunchError> {
         self.close()?;
-        self.author = author.to_owned();
+        author.clone_into(&mut self.author);
         self.launch_again(&[])
     }
 

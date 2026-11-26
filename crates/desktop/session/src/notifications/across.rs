@@ -357,7 +357,7 @@ impl Across {
             .find(|(_, (shown, _))| *shown == log_id)
             .map(|(id, _)| id.clone());
         if let Some(id) = id {
-            self.answer(id, String::new());
+            self.answer(&id, "");
         }
     }
 
@@ -365,17 +365,14 @@ impl Across {
     /// the one they chose, `None` when they only opened it. What the shell still shows of it goes
     /// once the record no longer shows it.
     pub(crate) fn answer_route(&self, route: &RemoteNotificationRoute, action: Option<&str>) {
-        self.answer(
-            hex_of(route.notification_id),
-            action.unwrap_or_default().to_owned(),
-        );
+        self.answer(&hex_of(route.notification_id), action.unwrap_or_default());
     }
 
-    fn answer(&self, id: String, chosen: String) {
+    fn answer(&self, id: &str, chosen: &str) {
         let Some(record) = self.record() else {
             return;
         };
-        record.change(&Devices::answering_notice(&id, &record.local, &chosen));
+        record.change(&Devices::answering_notice(id, &record.local, chosen));
     }
 }
 

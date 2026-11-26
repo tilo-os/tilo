@@ -427,7 +427,7 @@ impl<P: Resource> FollowedResource<P> {
         invoker: Option<tilo_actions::ActionInvoker>,
     ) -> Result<(), String> {
         let core = &self.shared.core;
-        let request = core.request::<P>(address, arguments, invoker);
+        let request = core.request(address, arguments, invoker);
         went_by(
             core.daemon
                 .invoke_receipt_blocking(Some(&core.workspace), request),
@@ -518,7 +518,7 @@ impl Core {
                 Some(refusal) => Err(refusal.to_owned()),
                 None => Ok((
                     invoke.id,
-                    self.request::<P>(invoke.address(), invoke.arguments.clone(), None),
+                    self.request(invoke.address(), invoke.arguments.clone(), None),
                 )),
             })
             .collect();
@@ -574,7 +574,7 @@ impl Core {
 
     /// The request that runs `address` with `arguments` on this resource, as `invoker` where one
     /// acts for the person.
-    fn request<P: Resource>(
+    fn request(
         &self,
         address: tilo_actions::ActionAddress,
         arguments: serde_json::Map<String, serde_json::Value>,
@@ -641,6 +641,9 @@ impl Core {
     }
 }
 
+/// A state as of the reading it was made from, by that reading's number.
+type SharedState<S> = Arc<Mutex<Option<(u64, Arc<S>)>>>;
+
 /// A [`FollowedResource`]'s follow as a part of the session that runs off the session's thread
 /// holds it: the network actor answering another device's boot, the link onto the person's other
 /// devices, the watcher of who drives whose keyboard. It reads the one reading the session reads,
@@ -650,7 +653,7 @@ impl Core {
 pub struct SharedFollow<P: Resource> {
     core: Arc<Core>,
     /// Its state as of the reading it was made from.
-    state: Arc<Mutex<Option<(u64, Arc<P::State>)>>>,
+    state: SharedState<P::State>,
     kind: std::marker::PhantomData<fn() -> P>,
 }
 
