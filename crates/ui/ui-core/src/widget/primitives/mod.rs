@@ -13,7 +13,6 @@ mod floating_panel;
 mod floating_panel_resize_tests;
 mod key_hint;
 mod notification_list;
-mod quick_tile;
 mod status_cluster;
 mod surface;
 #[path = "surfaces_component.rs"]
@@ -37,7 +36,6 @@ pub use surfaces_component::{
 
 pub use floating_panel::{FloatingPanel, FloatingPanelFace, FloatingPanelLayout};
 pub use key_hint::{KeyHint, KeyHintProps, KeyHints, KeyHintsFace, KeyHintsProps};
-pub use quick_tile::{QuickTileFace, paint_level_gauge};
 pub use status_cluster::{
     LinkKind, LinkStatus, StatusCluster, StatusClusterFace, StatusClusterLayout, StatusPart,
     badge_label, badge_size, paint_unread_badge,

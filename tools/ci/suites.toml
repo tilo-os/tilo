@@ -946,7 +946,6 @@ readers = [
   "crates/lang/tilolang-tilo/tests/containers.rs",
   "crates/lang/tilolang-tilo/tests/db_client_search.rs",
   "crates/lang/tilolang-tilo/tests/discord.rs",
-  "crates/lang/tilolang-tilo/tests/discord_migration.rs",
   "crates/lang/tilolang-tilo/tests/disks.rs",
   "crates/lang/tilolang-tilo/tests/document_search.rs",
   "crates/lang/tilolang-tilo/tests/files.rs",
@@ -961,9 +960,6 @@ readers = [
   "crates/lang/tilolang-tilo/tests/mail_recipients.rs",
   "crates/lang/tilolang-tilo/tests/monitor.rs",
   "crates/lang/tilolang-tilo/tests/naming.rs",
-  "crates/lang/tilolang-tilo/tests/native_chat.rs",
-  "crates/lang/tilolang-tilo/tests/native_notes.rs",
-  "crates/lang/tilolang-tilo/tests/native_tube.rs",
   "crates/lang/tilolang-tilo/tests/note_import.rs",
   "crates/lang/tilolang-tilo/tests/settings_about.rs",
   "crates/lang/tilolang-tilo/tests/settings_billing.rs",
@@ -994,7 +990,6 @@ readers = [
   "crates/lang/tilolang-tilo/tests/words.rs",
   "crates/lang/tilolang-tilo/tests/written_views.rs",
   "crates/lang/tilolang-tilo/tests/contacts.rs",
-  "crates/lang/tilolang-tilo/tests/native_chat_skills.rs",
   "crates/lang/tilolang-tilo/tests/asking_effects.rs",
   "crates/lang/tilolang-tilo/tests/chat_export.rs",
   "crates/lang/tilolang-tilo/tests/shell_staged.rs",
@@ -1046,7 +1041,6 @@ package = "tilolang-youtube"
 # sources and ids locks.
 inputs = ["apps/tl/tube/", "apps/tl/playback/"]
 readers = [
-  "crates/integrations/tilolang-youtube/tests/native_tube.rs",
   "crates/integrations/tilolang-youtube/tests/origin.rs",
   "crates/integrations/tilolang-youtube/tests/recorded_answer.rs",
 ]
@@ -1055,15 +1049,14 @@ readers = [
 package = "tilolang-process"
 # The host compiles built-in packages and embeds the app window's catalogues and the toolkit's (the
 # words its dates and clocks are written in), and its task's tests hold native apps' packages from
-# their surfaces, as a session hands them, and the notebooks the native Notes app kept. The window
-# tests compile the built-in packages (source and ids lock).
+# their surfaces, as a session hands them. The window tests compile the built-in packages (source
+# and ids lock).
 inputs = [
   "apps/tl/",
   "apps/tl/gallery/",
   "crates/lang/tilolang-tilo/tests/native-chat/",
   "crates/lang/tilolang-tilo/tests/native-tasks/surface.json",
   "crates/sdk/tilo-app-window/locales/",
-  "crates/lang/tilolang-tilo/tests/legacy/rust_notes.hex",
   "crates/ui/ui-core/locales/",
 ]
 readers = [
@@ -1071,7 +1064,6 @@ readers = [
   "crates/lang/tilolang-process/src/task.rs",
   "crates/lang/tilolang-process/src/phrases.rs",
   "crates/lang/tilolang-process/tests/process.rs",
-  "crates/lang/tilolang-process/tests/process/native_notes.rs",
   "crates/lang/tilolang-process/tests/workspace_mail.rs",
   "crates/lang/tilolang-process/tests/window/hosted/tasks_board.rs",
   "crates/lang/tilolang-process/tests/window/support.rs",
@@ -1383,9 +1375,7 @@ inputs = [
   "crates/sdk/tilo-view/",
   "crates/sdk/tilo-workspace-agent/",
   "crates/core/tilo-workspace-emoji/",
-  "crates/sdk/zone-globe/",
   "crates/platform/search/",
-  "crates/engines/tilo-page-raster/",
   "crates/engines/tilo-recurrence/",
   "crates/engines/tilo-webview/",
   "crates/lang/tilo-app-module/",
@@ -1402,7 +1392,6 @@ inputs = [
   "crates/os/imager-backend/",
   "crates/integrations/mail-engine/",
   "crates/integrations/mail-session/",
-  "crates/integrations/tilo-cloud-files/",
   "crates/core/tilo-contact-directory/",
   "crates/integrations/tilo-host-search/",
   "crates/integrations/tilo-innertube/",
@@ -1586,12 +1575,6 @@ readers = [
   "crates/core/app-host/src/collab_app_broker/web_search_tests.rs",
   "crates/core/app-host/src/nearby_send/airdrop.rs",
 ]
-
-[[cargo]]
-package = "discord"
-# The fixture writes the legacy record the migration test reads back.
-inputs = ["crates/lang/tilolang-tilo/tests/legacy/rust_discord.hex"]
-readers = ["apps/discord/tests/native_discord_fixture.rs"]
 
 [[cargo]]
 package = "tilolang-workspace"

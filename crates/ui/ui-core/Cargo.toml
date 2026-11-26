@@ -408,6 +408,8 @@ windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Secur
 tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
 
 [dev-dependencies]
+# Its own tests drive a page without Chromium.
+tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview", features = ["test-support"] }
 # The menus and materials a document editor opens, drawn as the toolkit draws them.
 tilo-rich-edit = { path = "../tilo-rich-edit", features = ["test-support"] }
 tilo-component-scan = { version = "0.1.0", path = "../tilo-component-scan" }
@@ -568,13 +570,3 @@ uuid = { workspace = true, features = ["js"] }
 # compile-time `Send` checks. The browser host must still render on the page's
 # thread instead of spawning `ui-render`.
 wgpu = { workspace = true, features = ["fragile-send-sync-non-atomic-wasm"] }
-
-[[example]]
-name = "native-displays"
-path = "examples/native-displays.rs"
-required-features = ["native"]
-
-[[example]]
-name = "display-drag-frames"
-path = "examples/display-drag-frames.rs"
-required-features = ["native"]

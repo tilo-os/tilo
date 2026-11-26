@@ -10,6 +10,11 @@ homepage.workspace = true
 description = "The embedded web engine client: the Chromium helper transport, the page protocol, and the commands and events a viewer exchanges with a web engine. It links no toolkit."
 
 [features]
+# The engine a test drives in place of Chromium (`test_engine`), for crates whose tests
+# show a viewer or a page session without the helper process. Only dev-dependencies turn
+# it on, so a shipped build leaves it out.
+test-support = []
+
 # The only feature an app turns on for it: compiling filter lists for the WebView's
 # built-in ad blocking (`adblock`). Off by default: only the browser app (and any
 # other app embedding a WebView with built-in blocking) pays for the

@@ -1906,7 +1906,6 @@ version = "0.1.0"
 dependencies = [
  "smithay-client-toolkit",
  "wayland-client",
- "wayland-protocols",
  "workspace-hack",
 ]
 
@@ -5664,14 +5663,6 @@ dependencies = [
  "windows-sys 0.61.2",
  "workspace-hack",
  "xattr",
-]
-
-[[package]]
-name = "host-info"
-version = "0.1.0"
-dependencies = [
- "libc",
- "workspace-hack",
 ]
 
 [[package]]
@@ -15931,15 +15922,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-browser-sessions"
-version = "0.1.0"
-dependencies = [
- "account-credentials",
- "browser-continuity",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-callstream"
 version = "0.1.0"
 dependencies = [
@@ -16192,15 +16174,6 @@ dependencies = [
  "tilo-test-env",
  "wasm-bindgen",
  "web-time",
-]
-
-[[package]]
-name = "tilo-cloud-files"
-version = "0.1.0"
-dependencies = [
- "serde",
- "tilo-fs-client",
- "workspace-hack",
 ]
 
 [[package]]
@@ -18639,18 +18612,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tilo-net-p2p"
-version = "0.1.0"
-dependencies = [
- "iroh",
- "serde_json",
- "tilo-net",
- "tilo-wire-frame",
- "tokio",
- "workspace-hack",
-]
-
-[[package]]
 name = "tilo-network-actor"
 version = "0.1.0"
 dependencies = [
@@ -19032,17 +18993,6 @@ dependencies = [
  "serde_json",
  "tilo-engine-loader",
  "tilo-webview",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-page-raster"
-version = "0.1.0"
-dependencies = [
- "tilo-clock",
- "tilo-lock",
- "tilo-rt",
- "tilo-vello",
  "workspace-hack",
 ]
 
@@ -20393,7 +20343,6 @@ dependencies = [
  "base64 0.22.1",
  "blake3",
  "block-devices",
- "browser-continuity",
  "code-engine",
  "compat-catalogue",
  "compat-service",
@@ -21024,18 +20973,6 @@ dependencies = [
  "serde_json",
  "tilo-canonical-json",
  "toml 1.0.6+spec-1.1.0",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-system-info"
-version = "0.1.0"
-dependencies = [
- "rustix 1.1.6",
- "sysinfo",
- "tilo-paths",
- "tilo-system-stats",
- "tracing",
  "workspace-hack",
 ]
 
@@ -22268,18 +22205,6 @@ dependencies = [
  "runtime-dylib",
  "tilo-engine-loader",
  "tilolang-youtube",
- "workspace-hack",
-]
-
-[[package]]
-name = "tilo-zone-globe"
-version = "0.1.0"
-dependencies = [
- "tilo-actions",
- "tilo-app",
- "tilo-taffy",
- "tilo-vello",
- "tilo-winit",
  "workspace-hack",
 ]
 
@@ -26440,7 +26365,6 @@ dependencies = [
  "syn 2.0.117",
  "syn 3.0.9",
  "syntect",
- "sysinfo",
  "tantivy",
  "thiserror 2.0.21",
  "tilo-vello-encoding",
@@ -26952,7 +26876,6 @@ dependencies = [
  "hmac 0.13.0",
  "home",
  "host-fs",
- "host-info",
  "hpke-rs",
  "hpke-rs-crypto",
  "hpke-rs-rust-crypto",
@@ -27660,7 +27583,6 @@ dependencies = [
  "tilo-broker-core",
  "tilo-browser-continuity-core",
  "tilo-browser-runtime",
- "tilo-browser-sessions",
  "tilo-callstream",
  "tilo-canonical-json",
  "tilo-canvas-engine",
@@ -27672,7 +27594,6 @@ dependencies = [
  "tilo-cli-kit",
  "tilo-clipboard",
  "tilo-clock",
- "tilo-cloud-files",
  "tilo-cloud-source",
  "tilo-cloud-source-dav",
  "tilo-cloud-source-dropbox",
@@ -27788,7 +27709,6 @@ dependencies = [
  "tilo-neighbour-wire",
  "tilo-net",
  "tilo-net-answers",
- "tilo-net-p2p",
  "tilo-network-actor",
  "tilo-network-client",
  "tilo-network-secret-agent",
@@ -27806,7 +27726,6 @@ dependencies = [
  "tilo-os-search",
  "tilo-package-store",
  "tilo-page-engine",
- "tilo-page-raster",
  "tilo-paint-stream",
  "tilo-paint-strokes",
  "tilo-paths",
@@ -27880,7 +27799,6 @@ dependencies = [
  "tilo-store-engine",
  "tilo-subject",
  "tilo-surface-compile",
- "tilo-system-info",
  "tilo-system-resources",
  "tilo-system-service",
  "tilo-system-stats",
@@ -27936,7 +27854,6 @@ dependencies = [
  "tilo-workspace-search",
  "tilo-workspace-service",
  "tilo-x11-transfer",
- "tilo-zone-globe",
  "tilolang",
  "tilolang-calendar",
  "tilolang-cli",

@@ -4,16 +4,7 @@ version = "0.1.0"
 edition = "2024"
 publish.workspace = true
 license.workspace = true
-description = "Minimal Wayland clients for the desktop's tests and measurements: pointer and key events, frames under load, and one frame per typed key"
-
-# Its own package, not a binary of the session's: a binary target links its
-# package's library, so every session edit rebuilt and relinked these clients
-# although they use none of it.
-[[bin]]
-name = "click_test_client"
-path = "src/main.rs"
-test = false
-bench = false
+description = "The Wayland client the frame and typing measurements draw with: frames under load, and one frame per typed key"
 
 # The client the frame and typing measurements draw with: frames under load,
 # or exactly one frame per key the compositor delivers.
@@ -26,7 +17,6 @@ bench = false
 [target.'cfg(target_os = "linux")'.dependencies]
 smithay-client-toolkit = "0.20.0"
 wayland-client.workspace = true
-wayland-protocols = { version = "0.32.12", features = ["client", "unstable"] }
 [dependencies]
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

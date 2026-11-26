@@ -285,8 +285,6 @@ tilo-contact-directory = { path = "../../core/tilo-contact-directory" }
 # The sign-ins and calendar look-ups adding an account makes, made here for Settings, whose
 # sandbox has no network (services::accounts).
 tilo-account-probe = { path = "../../integrations/account-probe" }
-# The website session a selected ownership entry holds, and what it opens.
-browser-continuity = { path = "../../import/browser-continuity" }
 # The machine's readings, served to the apps the launcher connects at the
 # socket they dial.
 tilo-system-stats = { path = "../../os/system-stats" }
@@ -516,7 +514,7 @@ tilo-runtime = { path = "../../core/tilo-runtime", features = ["test-support"] }
 # host, its windows and the tree they send, which are the launch's half of the process.
 tilolang-process = { path = "../../lang/tilolang-process", features = ["app-launch"] }
 # The page track and window-share tests drive a synchronous web engine.
-tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview" }
+tilo-webview = { version = "0.1.0", path = "../../engines/tilo-webview", features = ["test-support"] }
 # A check that answers a sheet as the person does asks the questions service the
 # sheets show, and reads its answer back.
 tilo-service = { path = "../service" }

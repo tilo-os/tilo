@@ -28,7 +28,7 @@ applications; `core/fs/` owns the collaborative filesystem service, and
 
 - `../tools/nested-session-bus`: the build environment's dbus-daemon in a cargo-built executable, the
   private session bus of a nested session on hosts without one.
-- `../tools/click-test-client`: the minimal Wayland client the shell's sandbox and desktop tests drive.
+- `../tools/click-test-client`: `tilo-loadclient`, the Wayland client the frame and typing measurements draw with.
 - `../tools/collab-probe`: sandboxed collaboration test app, driven by
   `scripts/headless-examples/tilolang-e2e.py`.
 - `../tools/tilo-app-template-smoke`: compiles generated app code to validate the SDK templates.

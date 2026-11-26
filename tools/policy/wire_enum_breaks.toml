@@ -621,11 +621,6 @@ enum = "FileReply"
 reason = "a mounted account's answer to one file request, relayed as JSON lines inside the same build's service and mount processes; nothing is kept"
 
 [[break]]
-file = "crates/integrations/tilo-cloud-files/src/cloud.rs"
-enum = "FileReply"
-reason = "the browser build's copy of the same one-request answer; it mirrors the native type and carries nothing stored"
-
-[[break]]
 file = "crates/core/fs/src/cloud/credential.rs"
 enum = "ToMount"
 reason = "one line on the pipe from the service to a mount process it started from the same build; no message outlives the process pair"

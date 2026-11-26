@@ -101,6 +101,7 @@ pub use page::{
     ScrollTarget, StruckTexts,
 };
 pub mod profile;
+#[cfg(any(test, feature = "test-support"))]
 pub mod test_engine;
 
 /// The Browser's app id: the app the shell opens a web address in when nothing else is

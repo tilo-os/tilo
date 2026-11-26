@@ -427,7 +427,7 @@ nothing. Ordinary owner-authorized navigation needs no extra confirmation;
 explicit workspace approval rules still apply.
 
 An irreversible action that names what it destroys asks for that name in a
-labelled field in the sheet's body (`PromptBody::confirm_phrase`). Its button
+labelled field in the sheet's body. Its button
 is the action's verb, destructive, and stays disabled until the name is exact;
 Enter in the field never goes ahead, even once the name matches. An action Undo
 takes back asks nothing: it runs at once and offers Undo.
@@ -529,8 +529,8 @@ completeness does not exempt a screen from these requirements.
   never a rest or a click on the app's own top row, and never a pointer
   merely passing through. Shown, it stays while the pointer settles on it or
   heads for one of its controls (menu aim) and hides at once otherwise; the
-  keyboard and a touch swipe down from the edge reach it too
-  (`widget::top_edge_reveal`). A Tilo app's header row takes the bar in as
+  keyboard and a touch swipe down from the edge reach it too. A Tilo app's
+  header row takes the bar in as
   **one bar**: the window's controls stand at the row's trailing end in area
   the row keeps for them (`WindowHeader::set_window_bar`), never stacked
   above or painted over the app's controls. The row stands at rest too:

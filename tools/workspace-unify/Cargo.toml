@@ -415,7 +415,6 @@ doc = false
 "hmac-0_13_0" = { package = "hmac", version = "^0.13.0", default-features = false, features = [] }
 "home-0_5_12" = { package = "home", version = "^0.5.12", default-features = false, features = [] }
 "host-fs" = { path = "../../crates/core/host-fs", default-features = false, features = [] }
-"host-info" = { path = "../../crates/core/host-info", default-features = false, features = [] }
 "hpke-rs-0_7_0" = { package = "hpke-rs", version = "^0.7.0", default-features = false, features = ["experimental", "hazmat", "rustcrypto", "serde", "serialization", "std", "tls_codec"] }
 "hpke-rs-crypto-0_7_0" = { package = "hpke-rs-crypto", version = "^0.7.0", default-features = false, features = ["std"] }
 "hpke-rs-rust-crypto-0_7_0" = { package = "hpke-rs-rust-crypto", version = "^0.7.0", default-features = false, features = ["experimental", "std"] }
@@ -1059,7 +1058,6 @@ doc = false
 "tilo-broker-core" = { path = "../../crates/core/broker-core", default-features = false, features = [] }
 "tilo-browser-continuity-core" = { path = "../../crates/core/browser-continuity-core", default-features = false, features = [] }
 "tilo-browser-runtime" = { path = "../../crates/core/tilo-browser-runtime", default-features = false, features = ["default"] }
-"tilo-browser-sessions" = { path = "../../crates/import/tilo-browser-sessions", default-features = false, features = [] }
 "tilo-callstream" = { path = "../../crates/engines/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }
 "tilo-canonical-json" = { path = "../../crates/platform/tilo-canonical-json", default-features = false, features = [] }
 "tilo-canvas-engine" = { path = "../../crates/engines/canvas-engine", default-features = false, features = [] }
@@ -1071,7 +1069,6 @@ doc = false
 "tilo-cli-kit" = { path = "../../crates/sdk/cli", default-features = false, features = [] }
 "tilo-clipboard" = { path = "../../crates/platform/tilo-clipboard", default-features = false, features = ["os"] }
 "tilo-clock" = { path = "../../crates/platform/tilo-clock", default-features = false, features = ["local", "test-support"] }
-"tilo-cloud-files" = { path = "../../crates/integrations/tilo-cloud-files", default-features = false, features = [] }
 "tilo-cloud-source" = { path = "../../crates/integrations/cloud-source", default-features = false, features = ["client", "conformance"] }
 "tilo-cloud-source-dav" = { path = "../../crates/integrations/cloud-source-dav", default-features = false, features = ["fake-server"] }
 "tilo-cloud-source-dropbox" = { path = "../../crates/integrations/cloud-source-dropbox", default-features = false, features = ["fake-server"] }
@@ -1187,7 +1184,6 @@ doc = false
 "tilo-neighbour-wire" = { path = "../../crates/core/neighbour-wire", default-features = false, features = [] }
 "tilo-net" = { path = "../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http", "json", "proxy-dev-server", "proxy-host", "sockets", "system-status", "webtransport", "ws"] }
 "tilo-net-answers" = { path = "../../crates/integrations/net-answers", default-features = false, features = ["default", "fetch"] }
-"tilo-net-p2p" = { path = "../../crates/platform/tilo-net-p2p", default-features = false, features = [] }
 "tilo-network-actor" = { path = "../../crates/desktop/network-actor", default-features = false, features = ["test-support"] }
 "tilo-network-client" = { path = "../../crates/platform/tilo-network-client", default-features = false, features = [] }
 "tilo-network-secret-agent" = { path = "../../crates/os/network-secret-agent", default-features = false, features = [] }
@@ -1205,7 +1201,6 @@ doc = false
 "tilo-os-search" = { path = "../../crates/integrations/os-search", default-features = false, features = [] }
 "tilo-package-store" = { path = "../../crates/core/package-store", default-features = false, features = ["default", "lease", "store"] }
 "tilo-page-engine" = { path = "../../crates/engines/page-engine", default-features = false, features = [] }
-"tilo-page-raster" = { path = "../../crates/engines/tilo-page-raster", default-features = false, features = [] }
 "tilo-paint-stream" = { path = "../../crates/engines/paint-stream", default-features = false, features = ["svg"] }
 "tilo-paint-strokes" = { path = "../../crates/engines/paint-strokes", default-features = false, features = [] }
 "tilo-paths" = { path = "../../crates/platform/tilo-paths", default-features = false, features = [] }
@@ -1278,7 +1273,6 @@ doc = false
 "tilo-store-engine" = { path = "../../crates/engines/store-engine", default-features = false, features = [] }
 "tilo-subject" = { path = "../../crates/engines/tilo-subject", default-features = false, features = [] }
 "tilo-surface-compile" = { path = "../../crates/core/tilo-surface-compile", default-features = false, features = [] }
-"tilo-system-info" = { path = "../../crates/platform/tilo-system-info", default-features = false, features = [] }
 "tilo-system-resources" = { path = "../../crates/desktop/tilo-system-resources", default-features = false, features = [] }
 "tilo-system-service" = { path = "../../crates/os/system-service", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../crates/os/system-stats", default-features = false, features = [] }
@@ -1332,7 +1326,6 @@ doc = false
 "tilo-workspace-search" = { path = "../../crates/core/workspace-search", default-features = false, features = ["test-support"] }
 "tilo-workspace-service" = { path = "../../crates/core/tilo-workspace-service", default-features = false, features = ["agents", "apps", "content", "device-keys", "files", "session-pages", "test-support"] }
 "tilo-x11-transfer" = { path = "../../crates/desktop/x11-transfer", default-features = false, features = [] }
-"tilo-zone-globe" = { path = "../../crates/sdk/zone-globe", default-features = false, features = [] }
 "tilolang" = { path = "../../crates/lang/tilolang", default-features = false, features = [] }
 "tilolang-calendar" = { path = "../../crates/integrations/tilolang-calendar", default-features = false, features = ["default", "engine", "test-support"] }
 "tilolang-cli" = { path = "../../crates/lang/tilolang-cli", default-features = false, features = [] }
@@ -2907,7 +2900,6 @@ doc = false
 "hmac-0_13_0" = { package = "hmac", version = "^0.13.0", default-features = false, features = [] }
 "home-0_5_12" = { package = "home", version = "^0.5.12", default-features = false, features = [] }
 "host-fs" = { path = "../../crates/core/host-fs", default-features = false, features = [] }
-"host-info" = { path = "../../crates/core/host-info", default-features = false, features = [] }
 "hpke-rs-0_7_0" = { package = "hpke-rs", version = "^0.7.0", default-features = false, features = ["experimental", "hazmat", "rustcrypto", "serde", "serialization", "std", "tls_codec"] }
 "hpke-rs-crypto-0_7_0" = { package = "hpke-rs-crypto", version = "^0.7.0", default-features = false, features = ["std"] }
 "hpke-rs-rust-crypto-0_7_0" = { package = "hpke-rs-rust-crypto", version = "^0.7.0", default-features = false, features = ["experimental", "std"] }
@@ -3538,7 +3530,6 @@ doc = false
 "tilo-broker-core" = { path = "../../crates/core/broker-core", default-features = false, features = [] }
 "tilo-browser-continuity-core" = { path = "../../crates/core/browser-continuity-core", default-features = false, features = [] }
 "tilo-browser-runtime" = { path = "../../crates/core/tilo-browser-runtime", default-features = false, features = ["default"] }
-"tilo-browser-sessions" = { path = "../../crates/import/tilo-browser-sessions", default-features = false, features = [] }
 "tilo-callstream" = { path = "../../crates/engines/tilo-callstream", default-features = false, features = ["recording", "surface-decoder", "unit-chain"] }
 "tilo-canonical-json" = { path = "../../crates/platform/tilo-canonical-json", default-features = false, features = [] }
 "tilo-caps" = { path = "../../crates/sdk/tilo-caps", default-features = false, features = [] }
@@ -3548,7 +3539,6 @@ doc = false
 "tilo-cli-kit" = { path = "../../crates/sdk/cli", default-features = false, features = [] }
 "tilo-clipboard" = { path = "../../crates/platform/tilo-clipboard", default-features = false, features = [] }
 "tilo-clock" = { path = "../../crates/platform/tilo-clock", default-features = false, features = ["local", "test-support"] }
-"tilo-cloud-files" = { path = "../../crates/integrations/tilo-cloud-files", default-features = false, features = [] }
 "tilo-cloud-source" = { path = "../../crates/integrations/cloud-source", default-features = false, features = ["client", "conformance"] }
 "tilo-cloud-source-dav" = { path = "../../crates/integrations/cloud-source-dav", default-features = false, features = ["fake-server"] }
 "tilo-cloud-source-dropbox" = { path = "../../crates/integrations/cloud-source-dropbox", default-features = false, features = ["fake-server"] }
@@ -3653,7 +3643,6 @@ doc = false
 "tilo-neighbour-wire" = { path = "../../crates/core/neighbour-wire", default-features = false, features = [] }
 "tilo-net" = { path = "../../crates/platform/tilo-net", default-features = false, features = ["blocking", "default", "http", "json", "proxy-dev-server", "proxy-host", "sockets", "webtransport", "ws"] }
 "tilo-net-answers" = { path = "../../crates/integrations/net-answers", default-features = false, features = ["default", "fetch"] }
-"tilo-net-p2p" = { path = "../../crates/platform/tilo-net-p2p", default-features = false, features = [] }
 "tilo-network-actor" = { path = "../../crates/desktop/network-actor", default-features = false, features = ["test-support"] }
 "tilo-network-secret-agent" = { path = "../../crates/os/network-secret-agent", default-features = false, features = [] }
 "tilo-nm" = { path = "../../crates/os/tilo-nm", default-features = false, features = [] }
@@ -3669,7 +3658,6 @@ doc = false
 "tilo-onboarding-session" = { path = "../../crates/desktop/onboarding-session", default-features = false, features = ["test-support"] }
 "tilo-os-search" = { path = "../../crates/integrations/os-search", default-features = false, features = [] }
 "tilo-package-store" = { path = "../../crates/core/package-store", default-features = false, features = ["default", "lease", "store"] }
-"tilo-page-raster" = { path = "../../crates/engines/tilo-page-raster", default-features = false, features = [] }
 "tilo-paint-stream" = { path = "../../crates/engines/paint-stream", default-features = false, features = ["svg"] }
 "tilo-paths" = { path = "../../crates/platform/tilo-paths", default-features = false, features = [] }
 "tilo-pc-keyboard-geometry" = { path = "../../crates/desktop/pc-keyboard-geometry", default-features = false, features = [] }
@@ -3733,7 +3721,6 @@ doc = false
 "tilo-startup-metrics" = { path = "../../crates/core/tilo-startup-metrics", default-features = false, features = [] }
 "tilo-storage-scan" = { path = "../../crates/os/storage-scan", default-features = false, features = [] }
 "tilo-subject" = { path = "../../crates/engines/tilo-subject", default-features = false, features = [] }
-"tilo-system-info" = { path = "../../crates/platform/tilo-system-info", default-features = false, features = [] }
 "tilo-system-resources" = { path = "../../crates/desktop/tilo-system-resources", default-features = false, features = [] }
 "tilo-system-service" = { path = "../../crates/os/system-service", default-features = false, features = [] }
 "tilo-system-stats" = { path = "../../crates/os/system-stats", default-features = false, features = [] }
@@ -3781,7 +3768,6 @@ doc = false
 "tilo-workspace-keys" = { path = "../../crates/core/workspace-keys", default-features = false, features = ["test-support"] }
 "tilo-workspace-service" = { path = "../../crates/core/tilo-workspace-service", default-features = false, features = ["agents", "apps", "content", "device-keys", "files", "session-pages", "test-support"] }
 "tilo-x11-transfer" = { path = "../../crates/desktop/x11-transfer", default-features = false, features = [] }
-"tilo-zone-globe" = { path = "../../crates/sdk/zone-globe", default-features = false, features = [] }
 "tilolang" = { path = "../../crates/lang/tilolang", default-features = false, features = [] }
 "tilolang-cli" = { path = "../../crates/lang/tilolang-cli", default-features = false, features = [] }
 "tilolang-lex" = { path = "../../crates/lang/tilolang-lex", default-features = false, features = [] }
@@ -4801,7 +4787,7 @@ doc = false
 "tilo-content" = { path = "../../crates/core/content", default-features = false, features = ["default", "dir"] }
 "tilo-content-types" = { path = "../../crates/core/content-types", default-features = false, features = [] }
 "tilo-control" = { path = "../../crates/desktop/control-cli", default-features = false, features = [] }
-"tilo-crypto" = { path = "../../crates/core/tilo-crypto", default-features = false, features = ["srp", "srp-test-server"] }
+"tilo-crypto" = { path = "../../crates/core/tilo-crypto", default-features = false, features = ["srp", "srp-test-server", "tls-fixture"] }
 "tilo-dav" = { path = "../../crates/integrations/tilo-dav", default-features = false, features = ["client", "default", "net", "oauth", "test-support"] }
 "tilo-default-apps" = { path = "../../crates/desktop/default-apps", default-features = false, features = ["default", "host-storage"] }
 "tilo-delivery-protocol" = { path = "../../crates/core/tilo-delivery-protocol", default-features = false, features = [] }

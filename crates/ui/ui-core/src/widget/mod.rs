@@ -1721,8 +1721,6 @@ pub mod aim;
 pub use aim::Trajectory;
 mod hover_intent;
 pub use hover_intent::EdgeAim;
-pub mod top_edge_reveal;
-pub use top_edge_reveal::{EdgeGeometry, TopEdgeReveal};
 pub mod tabs;
 pub use tabs::{
     PresenceFaceProps, TabBar, TabDescriptor, TabFaceSpec, TabHolder, TabItemProps, TabMark,
@@ -1730,11 +1728,6 @@ pub use tabs::{
 };
 pub mod scrollbar;
 pub use scrollbar::{PressOutcome, Scrollbar, TrackMark};
-pub mod date_indexed_scrollbar;
-pub use date_indexed_scrollbar::{
-    DateIndexIntent, DateIndexMarker, DateIndexMarkerKind, DateIndexPreview, DateIndexedScrollbar,
-    ProjectedDateMarker,
-};
 pub mod board;
 pub use board::{Board, BoardCardProps, BoardDrop, BoardListProps, BoardProps};
 pub use drag_bus::{InFlight, Landed};
@@ -1873,10 +1866,6 @@ pub mod page_preview;
 pub use page_preview::{PagePreview, PagePreviewProps};
 pub mod spinner;
 pub use spinner::{Spinner, SpinnerProps};
-#[cfg(feature = "model")]
-pub mod program_step;
-#[cfg(feature = "model")]
-pub use program_step::{ProgramStepView, StepAnswer};
 pub mod date_field;
 pub mod date_picker;
 pub mod enum_field;
@@ -1940,8 +1929,6 @@ pub use native_view::{
     NativeView, NativeViewAccessibility, NativeViewBackend, NativeViewGeometry, NativeViewHost,
     NativeViewInput,
 };
-pub mod modal_prompt;
-pub use modal_prompt::PromptBody;
 pub mod secret_prompt;
 pub use secret_prompt::{
     FieldRole, FieldSpec, NoticeTone, Presentation, PromptOutcome, SecretAnswer, SecretKind,
@@ -2054,8 +2041,8 @@ pub use gauge::{
 };
 pub mod function_plane;
 pub use function_plane::FunctionPlane;
-pub mod resizable_split;
-pub use resizable_split::{ResizableSplit, SplitHandle, SplitOrientation, SplitRatio};
+pub mod split_handle;
+pub use split_handle::{SplitHandle, SplitOrientation, SplitRatio};
 pub mod video_player;
 pub use video_player::{DeclaredVideo, PLAYBACK_RATES, VideoPlayer, VideoPlayerProps};
 pub mod terminal;
@@ -2186,8 +2173,6 @@ pub use toggle_group::{
 };
 pub mod view_tabs;
 pub use view_tabs::ViewTabs;
-pub mod quick_tile;
-pub use quick_tile::{QuickTile, QuickTileOutcome, QuickTilePart};
 
 pub mod chrome_body;
 pub use chrome_body::{ChromeBody, ChromeEdge, ChromeProps, ChromeShape};
@@ -2316,7 +2301,6 @@ mod refused_press_tests;
 pub mod keyboard_map;
 pub use keyboard_map::{KeyboardMap, KeyboardMapInput, KeyboardMapKey, KeyboardMapSelection};
 /// Logical screen topology canvas shared by local and native peer displays.
-pub mod display_placement;
 mod graph_canvas;
 pub use graph_canvas::{
     Connection, GraphCanvas, GraphCanvasConnection, GraphCanvasNode, GraphCanvasProps,

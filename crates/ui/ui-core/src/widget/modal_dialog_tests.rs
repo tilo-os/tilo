@@ -1151,12 +1151,42 @@ tilo_test_env::scenario! {
             Some("Erase 2 partitions")
         );
 
-        let mut guarded = ModalDialog::new("Erase disk", crate::widget::PromptBody::new("Name", "sdb"))
-            .primary_action("Erase", || {})
-            .primary_enabled_if(|body| body.value() == "sdb")
-            .open(true);
+        struct ValueContent {
+            value: String,
+            rect: Rect,
+        }
+
+        impl Widget for ValueContent {
+            fn build_layout(
+                &mut self,
+                taffy: &mut TaffyTree<()>,
+                _theme: &Theme,
+                node_map: &mut HashMap<NodeId, *mut dyn Widget>,
+            ) -> NodeId {
+                let style = Style {
+                    size: Size::from_lengths(200.0, 40.0),
+                    ..Default::default()
+                };
+                taffy.widget_leaf(style, node_map, self)
+            }
+            crate::rect_geometry!();
+            fn name(&self) -> &'static str {
+                "ValueContent"
+            }
+        }
+
+        let mut guarded = ModalDialog::new(
+            "Erase disk",
+            ValueContent {
+                value: "Name".into(),
+                rect: Rect::ZERO,
+            },
+        )
+        .primary_action("Erase", || {})
+        .primary_enabled_if(|body| body.value == "sdb")
+        .open(true);
         assert!(!guarded.primary_enabled());
-        guarded.content_mut().set_value("sdb");
+        guarded.content_mut().value = "sdb".into();
         assert!(guarded.primary_enabled());
     }
 

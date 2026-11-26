@@ -13,7 +13,6 @@ platform = [
     "tilo-locale -> tilo-settings-model",
     "tilo-process -> tilo-runtime-portal",
     "tilo-secrets -> tilo-seal",
-    "tilo-system-info -> tilo-system-stats",
 ]
 
 core = [

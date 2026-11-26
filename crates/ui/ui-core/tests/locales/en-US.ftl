@@ -3,6 +3,3 @@
 ## crates/ui/ui-core/src/app/semantic_tree_app_tests.rs
 test-counter-copy-local-folder = Copy the folder to this computer's clipboard
 test-counter-count = Count the copies
-
-## crates/ui/ui-core/src/widget/display_placement.rs
-test-display-move-display = Move display
