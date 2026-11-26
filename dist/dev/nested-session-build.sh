@@ -52,11 +52,31 @@ if [[ -n ${TILO_ENV_RUNTIME_TREES:-} ]]; then
     env_runtime_trees=$(realpath -m "$TILO_ENV_RUNTIME_TREES")
     [[ -f $env_runtime_trees/env-runtime-tree-$arch.tar && -f $env_runtime_trees/env-runtime-rpms-$arch.txt ]] \
         || { echo "no env-runtime tree for $arch in $env_runtime_trees" >&2; exit 1; }
-else
-    echo 'the env-runtime tree comes from the image-env-runtime-dev-tree check; run through `t test nested-session` or `t exec --needs nested-session`' >&2
-    exit 1
 fi
 target=$(realpath -m "${CARGO_TARGET_DIR:-target}")
+if [[ -z $env_runtime_trees ]]; then
+    # A person's checkout takes the tree that check published for this commit, through t,
+    # which builds it first if no run has: one command, `cargo headless`, works from a
+    # checkout. A t job never fetches: its needs hand it the tree, and nothing it reaches
+    # may be unpinned.
+    if [[ -n ${T_RUN_ID:-}${T_COMMIT:-} ]] || ! command -v t >/dev/null; then
+        echo 'the env-runtime tree comes from the image-env-runtime-dev-tree check; run through `t test nested-session` or `t exec --needs nested-session`' >&2
+        exit 1
+    fi
+    fetched=$target/env-runtime-dev-trees/$arch
+    if [[ ! -f $fetched/.complete ]]; then
+        echo "==> fetching the env-runtime tree for $arch from t (image-env-runtime-dev-tree-$arch)" >&2
+        rm -rf "$fetched"
+        mkdir -p "$fetched"
+        t outputs "image-env-runtime-dev-tree-$arch" --to "$fetched" >&2 \
+            || { echo "t gave no env-runtime tree; see t log image-env-runtime-dev-tree-$arch" >&2; exit 1; }
+        touch "$fetched/.complete"
+    fi
+    tree=$(find "$fetched" -name "env-runtime-tree-$arch.tar" -print -quit)
+    [[ -n $tree && -f $(dirname "$tree")/env-runtime-rpms-$arch.txt ]] \
+        || { echo "no env-runtime tree for $arch in what t gave ($fetched)" >&2; exit 1; }
+    env_runtime_trees=$(dirname "$tree")
+fi
 out=${out:-$target/nested-session}
 # Build scripts fetch their test assets into the build directory; on t the
 # sources are read-only.

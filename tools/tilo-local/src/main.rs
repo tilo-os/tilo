@@ -39,7 +39,7 @@ A single app in its own window needs none of this: cargo run --locked -p calcula
 ";
 
 fn main() -> ExitCode {
-    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args = undoubled(std::env::args().skip(1).collect());
     if args.is_empty() {
         print!("{HELP}");
         return ExitCode::SUCCESS;
@@ -63,6 +63,36 @@ fn main() -> ExitCode {
         eprintln!("tilo-local: {error}");
         ExitCode::FAILURE
     })
+}
+
+/// What `cargo run` hands this launcher through its aliases (`.cargo/config.toml`), once. Cargo
+/// joins the arrays of every config file above the working directory, so in a worktree inside
+/// another checkout an alias arrives twice over: `cargo headless --check` runs this with
+/// `headless run --locked --quiet --package tilo-local -- headless --check`. The repeat is dropped.
+fn undoubled(mut args: Vec<String>) -> Vec<String> {
+    const ALIAS: [&str; 6] = [
+        "run",
+        "--locked",
+        "--quiet",
+        "--package",
+        "tilo-local",
+        "--",
+    ];
+    let leads = |args: &[String]| args.iter().take(ALIAS.len()).eq(ALIAS.iter());
+    // `cargo local`'s own alias names no command: the repeat is the whole alias.
+    while leads(&args) {
+        args.drain(..ALIAS.len());
+    }
+    // A command's alias ends in the command, so the repeat is the alias and the command again.
+    if args.is_empty() {
+        return args;
+    }
+    let command = args.remove(0);
+    while leads(&args) && args.get(ALIAS.len()) == Some(&command) {
+        args.drain(..=ALIAS.len());
+    }
+    args.insert(0, command);
+    args
 }
 
 /// The checkout this runs in: the nearest directory above the working directory holding the
@@ -105,4 +135,37 @@ fn state_home(name: &str) -> PathBuf {
 /// "12.3s".
 fn seconds(elapsed: std::time::Duration) -> String {
     format!("{:.1}s", elapsed.as_secs_f64())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::undoubled;
+
+    fn words(line: &str) -> Vec<String> {
+        line.split_whitespace().map(str::to_owned).collect()
+    }
+
+    #[test]
+    fn an_alias_joined_twice_reaches_the_command_once() {
+        assert_eq!(
+            undoubled(words(
+                "headless run --locked --quiet --package tilo-local -- headless --check"
+            )),
+            words("headless --check")
+        );
+        assert_eq!(
+            undoubled(words(
+                "run --locked --quiet --package tilo-local -- desktop --fresh"
+            )),
+            words("desktop --fresh")
+        );
+        assert_eq!(undoubled(words("daemon --stop")), words("daemon --stop"));
+        // A command's own arguments that look like the alias are left alone.
+        assert_eq!(
+            undoubled(words(
+                "headless -- run --locked --quiet --package tilo-local --"
+            )),
+            words("headless -- run --locked --quiet --package tilo-local --")
+        );
+    }
 }
