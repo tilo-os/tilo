@@ -2053,9 +2053,9 @@ impl WasmPeer {
     /// # Errors
     ///
     /// Rejects with an `Error` named `DeviceRefusal` whose `code` says how the host refused
-    /// ([`DeviceRefusal`]: `unknown_action` for a host that keeps no workspaces of people's own) and
-    /// whose `refusal` is the server's typed refusal where it gave one; a text that is no UUID is
-    /// refused before the server is asked.
+    /// ([`DeviceRefusal`]: `hosts_none_for_people` for a host that keeps no workspaces of
+    /// people's own) and whose `refusal` is the server's typed refusal where it gave one; a text
+    /// that is no UUID is refused before the server is asked.
     #[wasm_bindgen(js_name = enterOwnWorkspace)]
     pub async fn enter_own_workspace(
         &self,

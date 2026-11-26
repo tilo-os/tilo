@@ -1300,6 +1300,9 @@ impl DeviceRefusal {
     /// The server does not know the person yet: its operator declares them an owner, or an
     /// invitation brings them in.
     pub const NOT_ON_THIS_SERVER: &'static str = tilo_actions::remote::NOT_ON_THIS_SERVER;
+    /// The host keeps no workspaces of people's own: making, deleting or branching one is for a
+    /// host that does.
+    pub const HOSTS_NONE_FOR_PEOPLE: &'static str = tilo_actions::remote::HOSTS_NONE_FOR_PEOPLE;
 
     /// The host's refusal `error`, its typed refusal read off it where it carries one.
     #[must_use]
@@ -1312,13 +1315,16 @@ impl DeviceRefusal {
             {
                 Self::awaiting_approval()
             }
+            // A refusal the host names in a code of its own: the code, and what it said.
             ActionCallError::Refused { reason } => {
-                match reason
-                    .strip_prefix(tilo_actions::remote::NOT_ON_THIS_SERVER)
-                    .and_then(|said| said.strip_prefix(": "))
-                {
-                    Some(said) => Self {
-                        code: Self::NOT_ON_THIS_SERVER.to_owned(),
+                match [Self::NOT_ON_THIS_SERVER, Self::HOSTS_NONE_FOR_PEOPLE]
+                    .into_iter()
+                    .find_map(|code| {
+                        let said = reason.strip_prefix(code)?.strip_prefix(": ")?;
+                        Some((code, said))
+                    }) {
+                    Some((code, said)) => Self {
+                        code: code.to_owned(),
                         message: said.to_owned(),
                         refusal: None,
                         retry_after_ms: None,

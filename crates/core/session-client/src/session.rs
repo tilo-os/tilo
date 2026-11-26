@@ -575,6 +575,9 @@ struct Latched {
     fetch_grant: bool,
     /// Whether an app surface arrived since the session last asked for what waited for one.
     surface_arrived: bool,
+    /// The entry's refusal, when the host's entry turned this session's device away: asking
+    /// again changes nothing, so the session stops with it until the page asks again.
+    entry_refused: Option<(&'static str, String)>,
 }
 
 struct Task {
@@ -854,6 +857,11 @@ impl Task {
             };
             match connected {
                 Ok(()) => {
+                    match self.stopped_at_entry(&mut commands).await {
+                        Some(false) => return self.closed().await,
+                        Some(true) => continue,
+                        None => {}
+                    }
                     reached_again(lost_at.take(), attempt);
                     attempt = 0;
                     self.admission_since = Some(tilo_clock::unix_now_ms());
@@ -934,7 +942,9 @@ impl Task {
         // The entry first, on the actions link: a device the host has not admitted yet reaches no
         // workspace's link until the entry lets it in.
         self.dial_actions().await;
-        self.enter_if_entering().await;
+        if self.enter_if_entering().await {
+            return Ok(());
+        }
         // A workspace this session was asked to join before its host placed it is asked for
         // again on every new connection ([`Cmd::JoinPlaced`]).
         for workspace_id in self.placing.keys().copied() {
@@ -1025,12 +1035,25 @@ impl Task {
         Ok(link)
     }
 
+    /// Whether the session stopped because the host's entry turned its device away
+    /// ([`Latched::entry_refused`]): `None` when it did not, else whether the page asked for a
+    /// connection again (`true`) or closed it (`false`). Asking again by itself changes nothing.
+    async fn stopped_at_entry(
+        &mut self,
+        commands: &mut mpsc::UnboundedReceiver<Command>,
+    ) -> Option<bool> {
+        let (code, message) = self.latched.entry_refused.take()?;
+        Some(self.stop_until_asked(code, message, commands).await)
+    }
+
     /// Ask the host's entry for the workspace this session was told to enter
     /// ([`PeerConfig::entering`]), on the actions link, and report what it answered: the host
     /// admits the device before it is a member, and the session then joins the workspace's link.
-    async fn enter_if_entering(&self) {
+    /// `true` when the entry refused the device: the session reports it failed in the same breath
+    /// as the refusal, and stops with it ([`Latched::entry_refused`]).
+    async fn enter_if_entering(&mut self) -> bool {
         let Some(entering) = self.config.entering.clone() else {
-            return;
+            return false;
         };
         let answer = ask_entry(
             (self.actions.as_ref(), self.own_store()),
@@ -1043,7 +1066,19 @@ impl Task {
         match answer {
             Ok(entered) => {
                 let state = entry_state(&entered);
-                self.reports.change(|status| status.entry = Some(state));
+                let refused = match &state {
+                    crate::Entry::Refused { code, message, .. } => Some((*code, message.clone())),
+                    crate::Entry::Admitted { .. } => None,
+                };
+                let stops = refused.is_some();
+                self.reports.change(|status| {
+                    status.entry = Some(state);
+                    if stops {
+                        status.phase = TransportPhase::Failed;
+                    }
+                });
+                self.latched.entry_refused = refused;
+                stops
             }
             Err(failure) => {
                 self.reports.change(|status| {
@@ -1054,6 +1089,7 @@ impl Task {
                         entry: None,
                     });
                 });
+                false
             }
         }
     }

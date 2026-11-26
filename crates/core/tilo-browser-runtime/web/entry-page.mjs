@@ -1329,7 +1329,7 @@ function joinOnFirstGesture(status) {
  */
 function askOwnWorkspace(peer) {
   ownWorkspaceAsked ??= ensureOwnWorkspace(peer).catch(error => {
-    if (error?.code === 'unknown_action') {
+    if (error?.code === 'hosts_none_for_people') {
       console.info('first screen: this host keeps no workspaces of people\'s own;', error?.message);
       setUpIn = peer.workspace;
     } else {

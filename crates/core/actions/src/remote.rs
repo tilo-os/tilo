@@ -1017,6 +1017,11 @@ pub const AWAITING_APPROVAL: &str = "awaiting_approval";
 /// them an owner, and no invitation of a workspace there brought them in.
 pub const NOT_ON_THIS_SERVER: &str = "not_on_this_server";
 
+/// The code a host that keeps no workspaces of people's own refuses making, deleting or
+/// branching one with: the operations are the same on every host, and this one says why it does
+/// not carry them out, in a code a page reads.
+pub const HOSTS_NONE_FOR_PEOPLE: &str = "hosts_none_for_people";
+
 /// The code a workspace refuses a key its person revoked with: nothing it asks is answered
 /// until they approve another.
 pub const KEY_REVOKED: &str = "key_revoked";

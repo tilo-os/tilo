@@ -237,9 +237,10 @@ impl Workspaces {
                 _ => false,
             } && device.user_public_key != host;
             if anyones && self.own().is_none() {
-                return Err(CollaborationError::new(
-                    "this host keeps no workspaces of people's own",
-                ));
+                return Err(CollaborationError::new(format!(
+                    "{}: this host keeps no workspaces of people's own",
+                    tilo_actions::remote::HOSTS_NONE_FOR_PEOPLE
+                )));
             }
             return if operation.permits(&host, device) {
                 Ok(hex::encode(host))
