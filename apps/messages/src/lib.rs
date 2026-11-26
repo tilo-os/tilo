@@ -16,9 +16,9 @@ mod view;
 mod window_bar;
 
 use ui::framework::{Fixture, ResourceApp, ViewCx};
-use tilo_ui_base::i18n::EmbeddedCatalog;
+use ui::i18n::EmbeddedCatalog;
 use ui::prelude::*;
-use tilo_ui_base::widget::Element;
+use ui::widget::Element;
 
 /// The resource holds only conversations put into it on purpose (delivered or queued, see
 /// [`conversations`]); private external histories remain the broker's account-owned data,
@@ -237,7 +237,7 @@ impl std::fmt::Debug for MessagesEffect {
     }
 }
 
-tilo_ui_base::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
+ui::embedded_catalog!(pub(crate) static CATALOG, ["de-DE", "en-US"]);
 
 pub(crate) const OPEN_CONTACTS: &str = "open-contacts";
 

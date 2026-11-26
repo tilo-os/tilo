@@ -14,8 +14,7 @@ use std::rc::Rc;
 use ui::advanced::WindowEvent;
 use ui::framework::{Actions, Dispatcher, Effected, ResourceApp, ViewCx};
 use ui::prelude::*;
-use ui::{widget::Column, widget::ModalDialog, widget::Segment, widget::ViewTabs};
-use tilo_ui_base::{widget::Element, widget::Widget};
+use ui::widget::{Column, Element, ModalDialog, Segment, ViewTabs, Widget};
 
 use crate::presentation::{Presentation, presented};
 
@@ -515,7 +514,7 @@ impl ResourceApp for WorkspaceSettingsApp {
     // Nothing is kept: the workspace keeps its own history.
     const DOCUMENT_HISTORY: bool = false;
 
-    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::CATALOG)
     }
 
@@ -613,8 +612,8 @@ impl ResourceApp for WorkspaceSettingsApp {
                 draft: permissions::Draft {
                     expiry: Some("until".to_owned()),
                     until: (
-                        tilo_ui_base::clock::today().tomorrow().ok(),
-                        tilo_ui_base::format::Time::new(17, 30, 0, 0).ok(),
+                        ui::clock::today().tomorrow().ok(),
+                        ui::format::Time::new(17, 30, 0, 0).ok(),
                     ),
                     ..permissions::Draft::default()
                 },
@@ -801,8 +800,8 @@ impl Parts {
     fn choice(&self, label: String, effect: &WorkspaceSettingsEffect) -> ui::widget::MenuItem {
         let binding = self.actions.effect(effect);
         let bound = binding.is_some();
-        let press = tilo_ui_base::widget::Press::of(
-            binding.map_or(tilo_ui_base::component::Event::None, tilo_ui_base::component::Event::Action),
+        let press = ui::widget::Press::of(
+            binding.map_or(ui::component::Event::None, ui::component::Event::Action),
         );
         ui::widget::MenuItem::bound(label, press).with_enabled(bound)
     }
@@ -943,7 +942,7 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
     let mut body = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_gap(tilo_ui_base::tokens::Spacing::BASE.s4);
+        .with_gap(ui::tokens::Spacing::BASE.s4);
     if let Some(notice) = &settings.notice {
         let dismiss = parts.clone();
         let mut banner = ui::widget::Banner::error(notice.title.clone())
@@ -962,7 +961,7 @@ fn sheet(settings: &Settings, parts: &Parts) -> Element {
         presentation,
         ModalDialog::new(settings.name.clone(), body)
             .with_test_id("ws-settings")
-            .with_icon(tilo_ui_base::icons::Icon::LayoutGrid)
+            .with_icon(ui::icons::Icon::LayoutGrid)
             .with_description(settings.role.clone())
             .with_max_width(WIDTH)
             // The tabs stay in view: the body scrolls under them.
@@ -1051,7 +1050,7 @@ struct Keys {
     parts: Parts,
 }
 
-impl tilo_ui_base::widget::Decorator for Keys {
+impl ui::widget::Decorator for Keys {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -1062,7 +1061,7 @@ impl tilo_ui_base::widget::Decorator for Keys {
         self.content.as_mut()
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         use ui::winit::keyboard::{Key, NamedKey};
         let escape = matches!(
             event,

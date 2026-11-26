@@ -275,7 +275,7 @@ fn run_takes_one_command_line_for_a_running_session() {
 fn a_terminal_joining_a_session_run_elsewhere_claims_nothing_and_runs_reach_its_process() {
     use std::cell::RefCell;
     use std::rc::Rc;
-    use tilo_ui_base::widget::Widget as _;
+    use ui::widget::Widget as _;
 
     let (mut app, _print, lines) = marked_session("");
     settle_until(&mut app, |state| !state.pane_id().is_empty());
@@ -432,7 +432,7 @@ fn tab_reaches_the_session_while_the_grid_has_the_keyboard() {
     while typed.try_recv().is_ok() {}
     let focused = app
         .with_surface(|terminal: &mut crate::TerminalView| {
-            tilo_ui_base::widget::Widget::is_focused(terminal.terminal())
+            ui::widget::Widget::is_focused(terminal.terminal())
         })
         .unwrap();
     assert!(focused, "a click on the grid gives it the keyboard");

@@ -74,7 +74,7 @@ impl Presentation {
 
     pub(crate) fn start_operation(
         &mut self,
-        op: &ui_core::host_operation::ResourceOperation<'_>,
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
         doc: &AutoCommit,
         content: &mut dyn tilo_ui_base::widget::Widget,
     ) -> Result<Option<tilo_actions::ActionOutput>, String> {

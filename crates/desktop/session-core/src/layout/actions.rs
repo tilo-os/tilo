@@ -17,8 +17,8 @@ use tilo_resource::Effect as _;
 /// The answer a layout action that asks the record gives: complete, with nothing for the
 /// caller to read back. A place that stands on a later pass is complete when it is asked, never
 /// left pending (`Accepted` would be, and nothing completes it).
-fn completed() -> ui::host_operation::ResourceOperationStart {
-    ui::host_operation::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
+fn completed() -> tilo_ui_base::host_operation::ResourceOperationStart {
+    tilo_ui_base::host_operation::ResourceOperationStart::Completed(tilo_actions::ActionOutput::default())
 }
 
 /// The layout's published side: the one action API the palette, a script, an agent and the host's
@@ -74,7 +74,7 @@ impl LayoutActions {
         &self,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         self.invoke_by(None, address, arguments)
     }
 
@@ -85,7 +85,7 @@ impl LayoutActions {
         actor: Option<&Actor>,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         // The layout publishes its record's undo and redo beside its layout actions: both
         // step the record, never decode as a layout action.
         if address.resource == HISTORY_RESOURCE
@@ -164,7 +164,7 @@ impl LayoutActions {
     /// thing"), so whoever asked says what it showed by that name (an agent's step line). Any
     /// other action, or one whose place does not stand yet (it waits for the person's gesture),
     /// answers nothing.
-    fn shown(&self, action: &LayoutAction) -> ui::host_operation::ResourceOperationStart {
+    fn shown(&self, action: &LayoutAction) -> tilo_ui_base::host_operation::ResourceOperationStart {
         let (own, resource) = match action {
             LayoutAction::Place {
                 place, resource, ..
@@ -194,7 +194,7 @@ impl LayoutActions {
         let Some(title) = title else {
             return completed();
         };
-        ui::host_operation::ResourceOperationStart::Completed(tilo_actions::ActionOutput {
+        tilo_ui_base::host_operation::ResourceOperationStart::Completed(tilo_actions::ActionOutput {
             value: Some(serde_json::json!({ "title": title })),
             resources: Vec::new(),
         })
@@ -252,7 +252,7 @@ impl LayoutActions {
         action: &LayoutAction,
         asked: &Actor,
         busy: Busy,
-    ) -> Option<Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError>> {
+    ) -> Option<Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>> {
         let LayoutAction::PlaceFound {
             text,
             view,
@@ -292,7 +292,7 @@ impl LayoutActions {
         &self,
         action: &LayoutAction,
         asked: &Actor,
-    ) -> Option<Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError>> {
+    ) -> Option<Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>> {
         let LayoutAction::Open {
             resource,
             view,
@@ -323,7 +323,7 @@ impl LayoutActions {
         action: &LayoutAction,
         asked: &Actor,
         busy: Busy,
-    ) -> Option<Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError>> {
+    ) -> Option<Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>> {
         let LayoutAction::RetryQuery { place } = action else {
             return None;
         };
@@ -351,7 +351,7 @@ impl LayoutActions {
         actor: &Actor,
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         self.invoke_by(Some(actor), address, arguments)
     }
 
@@ -436,7 +436,7 @@ impl LayoutActions {
     fn step(
         &self,
         address: &tilo_actions::ActionAddress,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         let person = self.person();
         let stepped = match address.action.as_str() {
             "undo" => self.layout.borrow_mut().undo(&person),
@@ -472,7 +472,7 @@ impl crate::surfaces::Published for LayoutActions {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
         _look: &mut crate::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         Self::invoke(self, address, arguments)
     }
 
@@ -482,7 +482,7 @@ impl crate::surfaces::Published for LayoutActions {
         address: &tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, Json>,
         _look: &mut crate::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         Self::invoke_as(self, actor, address, arguments)
     }
 

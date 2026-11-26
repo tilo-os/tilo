@@ -17,10 +17,10 @@ use tilo_rich_text::RichTextFieldViews;
 use ui::automerge::transaction::Transactable;
 use ui::automerge::{ObjId, ObjType, ROOT, ReadDoc, Value};
 use ui::framework::{ResourceApp, ViewCx};
-use tilo_ui_base::permissions::Role;
+use ui::permissions::Role;
 use ui::tilo_actions::{Action, ActionError, Doc};
 use ui::tilo_resource::{Invoke, ModelError, Resource, child_resource_id};
-use tilo_ui_base::widget::Element;
+use ui::widget::Element;
 
 const ACTION_TYPE: &str = "test.message";
 
@@ -96,7 +96,7 @@ fn text(app: &TestApp<Mail>) -> Vec<String> {
 }
 
 fn open(role: Role) -> TestApp<Mail> {
-    tilo_ui_base::i18n::I18nManager::init("en-US");
+    ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<Mail>::with_role(role).unwrap();
     let rect = app
         .harness()

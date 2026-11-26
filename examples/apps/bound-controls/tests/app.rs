@@ -1,5 +1,5 @@
 use example_bound_controls::{App, Preferences};
-use tilo_ui_base::{a11y::Action, a11y::Role};
+use ui::a11y::{Action, Role};
 use ui::headless::SemanticExpectation;
 use ui::prelude::{Atom, Edit, HeadlessApp, Invoke, Replica};
 
@@ -84,7 +84,7 @@ fn controls_follow_edits_from_elsewhere() {
 /// A viewer's controls are disabled and its edits are refused.
 #[test]
 fn a_viewer_cannot_change_preferences() {
-    let mut app = HeadlessApp::<App>::with_role(tilo_ui_base::Role::Viewer).expect("the app opens");
+    let mut app = HeadlessApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
     app.harness()
         .expect(&SemanticExpectation::named("name-input").enabled(false))
         .expect("the input disables itself");

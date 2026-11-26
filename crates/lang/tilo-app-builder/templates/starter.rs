@@ -37,7 +37,7 @@ impl ResourceApp for App {
     const ID: &'static str = crate::APP_ID;
     const TITLE: &'static str = crate::APP_TITLE;
 
-    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
     }
 

@@ -641,7 +641,7 @@ impl tilo_session_core::surfaces::Published for WidgetSurface {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         _look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
         let started = self
             .host
             .invoke_published(&address.resource, &address.action, arguments);

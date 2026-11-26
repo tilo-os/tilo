@@ -136,7 +136,7 @@ tilo_test_env::scenario! {
     phase history_reads_a_requested_run_from_the_stored_resource;
     {
         use ui::tilo_resource::Settled;
-        let mut session = Replica::<Terminal>::new().in_app("so.tilo.model", "Model").as_member(tilo_ui_base::permissions::MemberId::agent("claude-code", "ada"));
+        let mut session = Replica::<Terminal>::new().in_app("so.tilo.model", "Model").as_member(ui::permissions::MemberId::agent("claude-code", "ada"));
         session
             .apply(Terminal::CLAIM_PANE.with((uuid::Uuid::new_v4().to_string(), None::<String>)))
             .unwrap();

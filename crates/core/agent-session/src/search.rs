@@ -742,7 +742,7 @@ mod tests {
             "tl:so.tilo.lang.board:plans/tasks:t1",
         )
         .mark_value();
-        let ada = ui::tilo_reference::Embed::Member(tilo_ui_base::MemberId::person("u-ada")).mark_value();
+        let ada = ui::tilo_reference::Embed::Member(ui::MemberId::person("u-ada")).mark_value();
         for (start, end, value) in [(0, 4, ada), (22, 38, task)] {
             doc.mark(
                 &body,

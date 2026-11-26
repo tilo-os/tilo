@@ -534,14 +534,14 @@ impl DispatchCore {
         &self,
         invocation: tilo_actions::InvocationId,
         action: &str,
-        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
+        result: &Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
     ) {
         let landed = match result {
-            Ok(ui_core::host_operation::ResourceOperationStart::Completed(output)) => {
+            Ok(tilo_ui_base::host_operation::ResourceOperationStart::Completed(output)) => {
                 Ok(Landed::of(action, output))
             }
             // Handed on to the broker: it applies there, answering nothing here.
-            Ok(ui_core::host_operation::ResourceOperationStart::Accepted) => Ok(Landed {
+            Ok(tilo_ui_base::host_operation::ResourceOperationStart::Accepted) => Ok(Landed {
                 action: action.to_owned(),
                 answer: None,
                 created: Vec::new(),

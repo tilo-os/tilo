@@ -1,5 +1,5 @@
 use example_qr_code::{App, Code};
-use tilo_ui_base::{a11y::Action, a11y::Role};
+use ui::a11y::{Action, Role};
 use ui::headless::SemanticExpectation;
 use ui::prelude::HeadlessApp;
 

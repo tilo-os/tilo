@@ -81,7 +81,7 @@ fn sheets() -> [Sheet; 9] {
 
 #[test]
 fn a_sheet_names_its_resource_in_the_persons_language() {
-    tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
+    ui::i18n::I18nManager::set_locale("de-DE");
     for (kind, declared, english, german) in sheets() {
         assert_eq!(
             label::localized(kind, declared, SHEETS),
@@ -91,7 +91,7 @@ fn a_sheet_names_its_resource_in_the_persons_language() {
         assert_ne!(label::localized(kind, declared, SHEETS), english, "{kind}");
     }
 
-    tilo_ui_base::i18n::I18nManager::set_locale("en-US");
+    ui::i18n::I18nManager::set_locale("en-US");
     for (kind, declared, english, _) in sheets() {
         assert_eq!(
             label::localized(kind, declared, SHEETS),
@@ -103,7 +103,7 @@ fn a_sheet_names_its_resource_in_the_persons_language() {
 
 #[test]
 fn a_resource_a_sheet_names_itself_keeps_that_name() {
-    tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
+    ui::i18n::I18nManager::set_locale("de-DE");
     // A publisher that names the resource itself (the app a question is
     // about, say) is not read through the kind's entry.
     assert_eq!(

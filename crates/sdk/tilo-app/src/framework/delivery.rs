@@ -5,7 +5,7 @@
 //! them, the way the host does once it admitted an invocation.
 
 use ui_core::automerge::{AutoCommit, ObjId};
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart};
 use tilo_ui_base::widget::Widget;
 
 use super::Effected;
@@ -56,7 +56,7 @@ impl<W: Widget + ?Sized> HostDelivery for W {
         doc: &mut AutoCommit,
         path: &ObjId,
     ) -> Result<Option<Effected>, String> {
-        let started = ui_core::host_operation::start_operation(
+        let started = tilo_ui_base::host_operation::start_operation(
             self,
             &ResourceOperation::local(tilo_actions::InvocationId::new(), kind, type_id, payload),
             &mut tilo_ui_base::widget::Edits::lend(doc),

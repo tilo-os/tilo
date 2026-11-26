@@ -16,12 +16,12 @@ use std::collections::HashMap;
 
 use osk::OskWidget;
 use taffy::{AvailableSpace, NodeId, Size, Style, TaffyTree};
-use tilo_ui_base::offscreen::OffscreenRenderer;
-use tilo_ui_base::presence::PresenceCtx;
-use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::widget::DrawChild;
-use tilo_ui_base::widget::Widget;
+use ui::offscreen::OffscreenRenderer;
+use ui::presence::PresenceCtx;
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::DrawChild;
+use ui::widget::Widget;
 use vello::Scene;
 use vello::kurbo::{Affine, Point};
 use vello::peniko::Color;

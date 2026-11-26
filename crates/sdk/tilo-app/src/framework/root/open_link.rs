@@ -68,8 +68,8 @@ impl ResourceRoot {
     /// Run the framework's `open-link`, when `op` is it: the app shows what the link names.
     pub(super) fn start_open_link(
         &self,
-        op: &ui_core::host_operation::ResourceOperation<'_>,
-    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         let request = op.request();
         let Some(open) = &self.open_link else {
             return Ok(None);
@@ -85,7 +85,7 @@ impl ResourceRoot {
             .ok_or_else(|| "open-link needs the link to open".to_owned())?;
         open(link)?;
         Ok(Some(
-            ui_core::host_operation::ResourceOperationStart::Completed(
+            tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ),
         ))

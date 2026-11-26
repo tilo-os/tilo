@@ -7,9 +7,9 @@ use std::sync::mpsc::Receiver;
 use tilo_app_test_host::TestApp;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::lock::{Battery, LockApp, LockEffect, LockState, Media, Shown, Status};
-use tilo_ui_base::a11y::Action as A11yAction;
+use ui::a11y::Action as A11yAction;
 use ui::passcode_keyboard::{PasscodeKey, PasscodeKeyboard};
-use tilo_ui_base::tokens::Spacing;
+use ui::tokens::Spacing;
 use ui::vello::kurbo::{Point, Rect};
 
 const VIEWPORT: (u32, u32) = (1280, 800);
@@ -21,7 +21,7 @@ const VIEWPORT: (u32, u32) = (1280, 800);
 /// growing and fading from nothing, so a frame taken while it comes up says
 /// how it moves, not what it says.
 fn locked(shown: Shown) -> (TestApp<LockApp>, LockState, Receiver<LockEffect>) {
-    let _settled = tilo_ui_base::motion::testing::settled();
+    let _settled = ui::motion::testing::settled();
     let state = LockState::default();
     // What the screen asks goes to the session through the connection its
     // app opens; the test stands in for it here.
@@ -238,11 +238,11 @@ fn place(app: &mut TestApp<LockApp>, label: &str) -> Rect {
 
 /// The clock's type, as the sheet asks for it: its size, its weight, lining
 /// figures of one width, and no leading above the line.
-fn clock_style() -> tilo_ui_base::text_render::TextStyle {
-    use tilo_ui_base::{text_render::NumericStyle, text_render::OpenTypeTag, text_render::TextScaling};
+fn clock_style() -> ui::text_render::TextStyle {
+    use ui::text_render::{NumericStyle, OpenTypeTag, TextScaling};
 
-    let theme = tilo_ui_base::theme::Theme::dark();
-    let mut style = theme.tokens.typography.style(tilo_ui_base::tokens::TextRole::Body);
+    let theme = ui::theme::Theme::dark();
+    let mut style = theme.tokens.typography.style(ui::tokens::TextRole::Body);
     style.size = tilo_sheets::lock::CLOCK_SIZE;
     style.scaling = TextScaling::Content;
     style
@@ -281,8 +281,8 @@ fn the_clock_sets_each_character_one_figure_advance_from_the_last() {
         reason = "a display scale is small and exact enough in f32"
     )]
     let text_scale = scale as f32;
-    let theme = tilo_ui_base::Theme::light().with_text_scale(text_scale);
-    let figure = f64::from(tilo_ui_base::text_render::with_layout_renderer(&theme, |text| {
+    let theme = ui::Theme::light().with_text_scale(text_scale);
+    let figure = f64::from(ui::text_render::with_layout_renderer(&theme, |text| {
         text.measure_style("0", None, &clock_style()).0
     }));
     for pair in xs.windows(2) {
@@ -519,7 +519,7 @@ tilo_test_env::scenario! {
 /// bottom edge, no wider than a wide sheet, so its keys stay a thumb's reach
 /// apart. A test duplicates the placement so that a tap lands where a person
 /// sees a key — if the screen moved its keyboard, the taps stop typing.
-fn keyboard_rect(theme: &tilo_ui_base::theme::Theme, keyboard: PasscodeKeyboard) -> Rect {
+fn keyboard_rect(theme: &ui::theme::Theme, keyboard: PasscodeKeyboard) -> Rect {
     let key_height = f64::from(theme.tokens.metrics.panel_row_height);
     let gap = f64::from(theme.tokens.spacing.s2);
     let height = keyboard.height(key_height, gap);

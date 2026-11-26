@@ -425,7 +425,7 @@ impl ui::framework::ResourceApp for AccountOwnerFixture {
     type Resource = tilo_messaging::AccountList;
     const ID: &'static str = "so.tilo.settings";
     const TITLE: &'static str = "Account metadata owner fixture";
-    fn view(_cx: &mut ui::framework::ViewCx<Self::Resource>) -> tilo_ui_base::widget::Element {
+    fn view(_cx: &mut ui::framework::ViewCx<Self::Resource>) -> ui::widget::Element {
         Box::new(ui::widget::Column::new())
     }
 }

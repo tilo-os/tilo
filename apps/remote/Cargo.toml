@@ -27,7 +27,6 @@ thin = ["dep:runtime-dylib"]
 [dependencies]
 tilo-paths = { path = "../../crates/platform/tilo-paths" }
 runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
-tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 settings-model = { package = "tilo-settings-model", path = "../../crates/sdk/settings-model" }
 # The resource the app draws: the saved connections, their checks and their verbs.
@@ -67,7 +66,6 @@ workspace-hack = { version = "0.1" }
 # collection build, and the app then links the whole runtime statically.
 remote-samples = { package = "remote", path = ".", features = ["samples"] }
 tempfile.workspace = true
-tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # The headless test host the tests open the app in, as a person's device hosts it.
 tilo-app-test-host = { path = "../../crates/sdk/tilo-app-test-host" }

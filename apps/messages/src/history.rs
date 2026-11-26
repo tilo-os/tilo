@@ -4,12 +4,14 @@ use std::rc::Rc;
 
 use tilo_contact_directory::routing;
 use tilo_messaging::{Delivery, Direction, HistoryClient, HistoryCursor, HistoryPage};
-use tilo_ui_base::LocalState;
+use ui::LocalState;
 use ui::framework::{ActionControl, Actions, EffectAnswer, EffectCx, EffectStatus, Effected};
-use tilo_ui_base::i18n::ArgValue;
+use ui::i18n::ArgValue;
 use ui::tilo_resource::{MemberId, PersonId};
-use ui::{widget::Button, widget::Column, widget::ConversationLine, widget::ConversationList, widget::DeliveryState, widget::DeliveryStep, widget::ModelView, widget::Text};
-use tilo_ui_base::widget::Element;
+use ui::widget::{
+    Button, Column, ConversationLine, ConversationList, DeliveryState, DeliveryStep, Element,
+    ModelView, Text,
+};
 
 use crate::view::{Choice, Selection, Sources, choices};
 use crate::{CATALOG, Messages, MessagesEffect};

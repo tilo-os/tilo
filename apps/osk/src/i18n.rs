@@ -1,7 +1,7 @@
 //! The keyboard's Fluent catalogue, embedded so a `--shots` render, a unit
 //! test and a live session resolve the same strings.
 
-tilo_ui_base::embedded_catalog!(pub fn, ["de-DE", "en-US"]);
+ui::embedded_catalog!(pub fn, ["de-DE", "en-US"]);
 
 /// German is one of the languages the app ships, and it reads in German: the
 /// copy comes from `locales/de-DE.ftl`, never from the English source

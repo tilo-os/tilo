@@ -3,8 +3,8 @@
 //! linked their account — their own with the way to link or unlink it — and
 //! everything else is the bridge bot's.
 
-use tilo_ui_base::{i18n::ArgValue, i18n::EmbeddedCatalog};
-use tilo_ui_base::icons::Icon;
+use ui::i18n::{ArgValue, EmbeddedCatalog};
+use ui::icons::Icon;
 use ui::prelude::*;
 use ui::widget::primitives::{Fact, Facts};
 use ui::widget::{ListRow, Section};
@@ -367,7 +367,7 @@ fn page(parts: Vec<Element>) -> Element {
     let mut column = Column::new()
         .with_no_padding()
         .with_intrinsic_height()
-        .with_rhythm(tilo_ui_base::tokens::Rhythm::Group);
+        .with_rhythm(ui::tokens::Rhythm::Group);
     for part in parts {
         column = column.push(part);
     }
@@ -378,7 +378,7 @@ fn page(parts: Vec<Element>) -> Element {
                 Container::new()
                     .readable()
                     .centered()
-                    .with_inset(tilo_ui_base::tokens::Rhythm::Group)
+                    .with_inset(ui::tokens::Rhythm::Group)
                     .with_child(Box::new(column)),
             )),
     )

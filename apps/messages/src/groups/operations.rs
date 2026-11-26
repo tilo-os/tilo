@@ -253,8 +253,8 @@ fn members(
             let label = CATALOG.t_args(
                 "messages-group-add-choice",
                 &[
-                    ("person", tilo_ui_base::i18n::ArgValue::Text(contact.label.clone())),
-                    ("route", tilo_ui_base::i18n::ArgValue::Text(choice.label(sources))),
+                    ("person", ui::i18n::ArgValue::Text(contact.label.clone())),
+                    ("route", ui::i18n::ArgValue::Text(choice.label(sources))),
                 ],
             );
             body = body.push(bind(
@@ -279,7 +279,7 @@ fn members(
     for member in &p.members {
         let label = CATALOG.t_args(
             "messages-group-remove-choice",
-            &[("member", tilo_ui_base::i18n::ArgValue::Text(member.address.clone()))],
+            &[("member", ui::i18n::ArgValue::Text(member.address.clone()))],
         );
         body = body.push(bind(
             actions,

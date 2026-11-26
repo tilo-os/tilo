@@ -16,24 +16,29 @@ use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use tilo_ui_base::LocalStateWriter;
+use ui::LocalStateWriter;
 use ui::advanced::WindowEvent;
-use tilo_ui_base::caps_lock::CapsLockEstimate;
+use ui::caps_lock::CapsLockEstimate;
 use ui::framework::{Dispatcher, Effected, ResourceApp, ViewCx};
-use tilo_ui_base::icons::Icon;
-use tilo_ui_base::{motion::Appear, motion::Attention, motion::CrossFade, motion::Direction, motion::MotionSpec, motion::MotionValue, motion::Pace, motion::Presence, motion::Reduced, motion::Shortcut, motion::frame_now, motion::want_frames_until};
+use ui::icons::Icon;
+use ui::motion::{
+    Appear, Attention, CrossFade, Direction, MotionSpec, MotionValue, Pace, Presence, Reduced,
+    Shortcut, frame_now, want_frames_until,
+};
 use ui::passcode_keyboard::{PasscodeInput, PasscodeKey, PasscodeKeyboard};
 use ui::prelude::*;
-use tilo_ui_base::{text_render::NumericStyle, text_render::OpenTypeTag, text_render::TextWeight};
-use tilo_ui_base::{tokens::EffectiveMotion, tokens::MotionSource, tokens::Rhythm, tokens::Spacing};
-use ui::{widget::AccessoryAction, widget::Avatar, widget::ControlSize, widget::IconSize, widget::IconWidget, widget::Image, widget::ImageFit, widget::PictureSource, widget::Spinner, widget::TransportControl};
-use tilo_ui_base::{widget::AvatarSize, widget::Manual, widget::MeasureConstraint, widget::Tone};
+use ui::text_render::{NumericStyle, OpenTypeTag, TextWeight};
+use ui::tokens::{EffectiveMotion, MotionSource, Rhythm, Spacing};
+use ui::widget::{
+    AccessoryAction, Avatar, AvatarSize, ControlSize, IconSize, IconWidget, Image, ImageFit,
+    Manual, MeasureConstraint, PictureSource, Spinner, Tone, TransportControl,
+};
 use zeroize::{Zeroize, Zeroizing};
 
 use crate::SheetState as _;
 use crate::presentation::Presentation;
 use crate::t;
-use tilo_ui_base::widget::DrawChild;
+use ui::widget::DrawChild;
 
 /// The app the session mounts the lock screen as.
 pub const APP_ID: &str = "so.tilo.lock";
@@ -222,7 +227,7 @@ pub struct Shown {
     /// Whose session this is: the name they go by.
     pub person: String,
     /// The colour their face wears, as their own avatar on the bar wears it.
-    pub hue: Option<tilo_ui_base::tokens::PresenceHue>,
+    pub hue: Option<ui::tokens::PresenceHue>,
     /// Why the last password did not unlock.
     pub error: Option<String>,
     /// The password is being checked.
@@ -278,7 +283,7 @@ impl Shown {
                     "lock-battery-critical",
                     &[(
                         "percent",
-                        tilo_ui_base::i18n::ArgValue::Text(tilo_ui_base::format::percent(f64::from(percent) / 100.0)),
+                        ui::i18n::ArgValue::Text(ui::format::percent(f64::from(percent) / 100.0)),
                     )],
                 ),
                 Tone::Danger,
@@ -540,7 +545,7 @@ impl ResourceApp for LockApp {
     // outlives the lock.
     const ATTACHES_RUNTIME: bool = false;
 
-    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::CATALOG)
     }
 
@@ -640,7 +645,7 @@ impl ResourceApp for LockApp {
 fn staged_shown(name: &str) -> Shown {
     let scene = Shown {
         clock: "10:42".to_owned(),
-        date: tilo_ui_base::format::day_heading(tilo_ui_base::clock::today(), false),
+        date: ui::format::day_heading(ui::clock::today(), false),
         person: "Ada Lovelace".to_owned(),
         hue: None,
         error: None,
@@ -773,7 +778,7 @@ fn screen(
                 .copied()
                 .unwrap_or_default();
             let edge = Spacing::BASE.s6;
-            let widest = (tilo_ui_base::num::f32_of_f64(area.width()) - edge * 2.0).max(edge);
+            let widest = (ui::num::f32_of_f64(area.width()) - edge * 2.0).max(edge);
             // What the device says first: the block is kept clear of it.
             let footer = layout.measure(
                 1,
@@ -925,7 +930,7 @@ fn person(shown: &Shown) -> Option<Element> {
     }
     let mut avatar = Avatar::person(name.to_owned(), name.to_owned()).size(AvatarSize::Hero);
     if let Some(hue) = shown.hue {
-        let (red, green, blue) = tilo_ui_base::presence::identity_rgb(hue);
+        let (red, green, blue) = ui::presence::identity_rgb(hue);
         avatar = avatar.with_presence(ui::peniko::Color::from_rgb8(red, green, blue));
     }
     let heading = Text::new(name)
@@ -1004,7 +1009,7 @@ fn notice(shown: &Shown, alpha: &Rc<Cell<f32>>) -> Element {
             .with_id("lock-notice")
             .with_role(TextRole::Caption)
             .tone(tone)
-            .with_live(tilo_ui_base::a11y::Politeness::Polite),
+            .with_live(ui::a11y::Politeness::Polite),
     ));
     Box::new(Faded {
         inner: Box::new(row),
@@ -1021,7 +1026,7 @@ struct Shaken {
     offset: Rc<Cell<f64>>,
 }
 
-impl tilo_ui_base::widget::Decorator for Shaken {
+impl ui::widget::Decorator for Shaken {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -1032,7 +1037,7 @@ impl tilo_ui_base::widget::Decorator for Shaken {
         self.inner.as_mut()
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1058,7 +1063,7 @@ struct Faded {
     alpha: Rc<Cell<f32>>,
 }
 
-impl tilo_ui_base::widget::Decorator for Faded {
+impl ui::widget::Decorator for Faded {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -1069,7 +1074,7 @@ impl tilo_ui_base::widget::Decorator for Faded {
         self.inner.as_mut()
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1108,7 +1113,7 @@ fn status_row(cx: &ViewCx<LockScreen>, shown: &Shown) -> Element {
         let count = f64::from(u32::try_from(shown.status.notifications).unwrap_or(u32::MAX));
         let label = crate::t_args(
             "lock-notifications",
-            &[("count", tilo_ui_base::i18n::ArgValue::Number(count))],
+            &[("count", ui::i18n::ArgValue::Number(count))],
         );
         row = row.push(status_item(Icon::Bell, Some(&label)));
     }
@@ -1123,7 +1128,7 @@ fn status_row(cx: &ViewCx<LockScreen>, shown: &Shown) -> Element {
         };
         let label = battery.percent.map_or_else(
             || t("lock-battery"),
-            |percent| tilo_ui_base::format::percent(f64::from(percent) / 100.0),
+            |percent| ui::format::percent(f64::from(percent) / 100.0),
         );
         row = row.push(status_item(glyph, Some(&label)));
     }
@@ -1133,7 +1138,7 @@ fn status_row(cx: &ViewCx<LockScreen>, shown: &Shown) -> Element {
             let switch = shown.status.next_layout.as_ref().map(|next| {
                 crate::t_args(
                     "lock-switch-layout",
-                    &[("layout", tilo_ui_base::i18n::ArgValue::Text(next.clone()))],
+                    &[("layout", ui::i18n::ArgValue::Text(next.clone()))],
                 )
             });
             let mut button = Button::new("lock-layout", &layout)
@@ -1317,7 +1322,7 @@ impl Stage {
                 .set(to, NOTICE.timing(direction, motion, WATCHED), now);
             self.ask_until();
         }
-        self.notice.set(tilo_ui_base::num::f32_of_f64(
+        self.notice.set(ui::num::f32_of_f64(
             self.notice_alpha.get(now).clamp(0.0, 1.0),
         ));
         if self.idle == Idle::Waking {
@@ -1428,7 +1433,7 @@ impl Stage {
 
 /// How tall a key of the screen's keyboard is and how far apart they stand,
 /// as the sheet's other keys do.
-fn key_metrics(theme: &tilo_ui_base::theme::Theme) -> (f64, f64) {
+fn key_metrics(theme: &ui::theme::Theme) -> (f64, f64) {
     (
         f64::from(theme.tokens.metrics.panel_row_height),
         f64::from(theme.tokens.spacing.s2),
@@ -1437,7 +1442,7 @@ fn key_metrics(theme: &tilo_ui_base::theme::Theme) -> (f64, f64) {
 
 /// Where the keyboard stands on a screen of `bounds`: along the bottom edge,
 /// no wider than a wide sheet so its keys stay a thumb's reach apart.
-fn keyboard_rect(theme: &tilo_ui_base::theme::Theme, keyboard: PasscodeKeyboard, bounds: Rect) -> Rect {
+fn keyboard_rect(theme: &ui::theme::Theme, keyboard: PasscodeKeyboard, bounds: Rect) -> Rect {
     let (key_height, gap) = key_metrics(theme);
     let height = keyboard.height(key_height, gap);
     let margin = f64::from(Spacing::BASE.s4);
@@ -1461,7 +1466,7 @@ fn find_field(widget: &mut dyn Widget) -> Option<&mut ui::widget::TextInput> {
     widget.children_mut().into_iter().find_map(find_field)
 }
 
-impl tilo_ui_base::widget::Decorator for Stage {
+impl ui::widget::Decorator for Stage {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -1472,7 +1477,7 @@ impl tilo_ui_base::widget::Decorator for Stage {
         self.content.as_mut()
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         use ui::winit::event::ElementState;
         use ui::winit::keyboard::{Key, NamedKey};
 
@@ -1590,7 +1595,7 @@ impl tilo_ui_base::widget::Decorator for Stage {
         true
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1623,7 +1628,7 @@ impl tilo_ui_base::widget::Decorator for Stage {
             self.field_centre(),
             motion,
         )
-        .fade(tilo_ui_base::num::f32_of_f64(1.0 - quiet));
+        .fade(ui::num::f32_of_f64(1.0 - quiet));
         let placement = transform;
         // The screen's own keyboard goes up with the screen it belongs to:
         // same arrival, same shake, same fade when it leaves.
@@ -1675,8 +1680,8 @@ impl tilo_ui_base::widget::Decorator for Stage {
     /// widgets of their own, so they are exported beneath it; the keyboard
     /// drawn on top never is — a screen reader types into the field and
     /// presses the same controls a finger does, without seeing the screen.
-    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
-        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
         Some(
             AccessNode::new(Role::Dialog)
                 .with_name(t("lock-title"))

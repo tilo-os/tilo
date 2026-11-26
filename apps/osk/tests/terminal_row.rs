@@ -25,7 +25,7 @@ impl Terminal {
         let widget = OskWidget::new()
             .with_purpose(InputPurpose::Terminal)
             .on_output(move |output| sink.borrow_mut().push(output));
-        let driver = Driver::for_root(State::new(), widget, (390, 320), tilo_ui_base::Theme::dark());
+        let driver = Driver::for_root(State::new(), widget, (390, 320), ui::Theme::dark());
         Self {
             driver,
             sent,

@@ -7,16 +7,27 @@ use std::sync::{Arc, Mutex};
 use taffy::{NodeId, TaffyTree};
 use tilo_content::ContentStore;
 use ui::ColorCompat;
-use tilo_ui_base::collaboration::PresencePayload;
-use tilo_ui_base::icons::Icon;
-use tilo_ui_base::permissions::AppKind as PermAppKind;
-use tilo_ui_base::{presence::PresenceCtx, presence::PresenceKey};
-use tilo_ui_base::widget::TaffyTreeExt;
+use ui::collaboration::PresencePayload;
+use ui::icons::Icon;
+use ui::permissions::AppKind as PermAppKind;
+use ui::presence::{PresenceCtx, PresenceKey};
+use ui::widget::TaffyTreeExt;
 use ui::widget::context_menu::{ContextMenu, MenuItem};
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
-use tilo_ui_base::{DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste, clipboard_paste_primary, extend_span_drag, line_boundaries, word_boundaries};
-use ui::{widget::Banner, widget::BannerContent, widget::BannerKind, widget::EmptyState, widget::EmptyStateContent, widget::FindOptions, widget::Findable, widget::OverlayScrollbar, widget::PressOutcome, widget::paint_find_match};
-use tilo_ui_base::{Theme, paint::PaintCtx, text_render::TextRenderer, text_render::TextStyle, text_render::TextWeight, tokens::TextRole, widget::ScrollMetrics, widget::Widget};
+use ui::widget::{AppModel, ModelPath};
+use ui::{
+    DragSelect, Granularity, clipboard_copy, clipboard_copy_primary, clipboard_paste,
+    clipboard_paste_primary, extend_span_drag, line_boundaries, word_boundaries,
+};
+use ui::{
+    Theme,
+    paint::PaintCtx,
+    text_render::{TextRenderer, TextStyle, TextWeight},
+    tokens::TextRole,
+    widget::{
+        Banner, BannerContent, BannerKind, EmptyState, EmptyStateContent, FindOptions, Findable,
+        OverlayScrollbar, PressOutcome, ScrollMetrics, Widget, paint_find_match,
+    },
+};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use vello::Scene;
@@ -162,7 +173,7 @@ pub(crate) fn open_url(url: &str) {
     if !is_public_web_link(url) {
         return;
     }
-    tilo_ui_base::platform::os_open(url);
+    ui::platform::os_open(url);
 }
 
 /// An OSC 8 target safe to publish as a resource: a small URL subset, because a redaction mistake
@@ -277,7 +288,7 @@ pub struct TerminalWidget {
     /// The theme's `Code` style, cached on every layout and draw: `measure` runs first and sees no theme.
     cell_style: Option<TextStyle>,
     /// The theme's terminal palette, its default background set to the window's background.
-    palette: tilo_ui_base::tokens::TerminalPalette,
+    palette: ui::tokens::TerminalPalette,
 
     /// The process's output and the screen it shows: live, never in the session resource.
     emulator: crate::emulator::Emulator,
@@ -302,7 +313,7 @@ pub struct TerminalWidget {
     view: ScrollbackView,
     scrollbar: OverlayScrollbar,
 
-    conventions: tilo_ui_base::PlatformConventions,
+    conventions: ui::PlatformConventions,
     /// Find matches painted over their cells, never in the record: a find term and its output can be
     /// sensitive.
     find_matches: Vec<FindMatch>,
@@ -375,7 +386,7 @@ pub struct TerminalWidget {
     environments_panel: EnvironmentsPanel,
     commands: CommandState,
     /// The last copy of terminal output, whose outcome can arrive later.
-    copy: tilo_ui_base::CopyWatch,
+    copy: ui::CopyWatch,
 
     dirty: bool,
     run_action: Option<ui::tilo_actions::ActionAddress>,
@@ -491,7 +502,7 @@ impl TerminalWidget {
             char_h: 18.0,
             forced_cell: false,
             cell_style: None,
-            palette: tilo_ui_base::tokens::TerminalPalette::dark(),
+            palette: ui::tokens::TerminalPalette::dark(),
             emulator: crate::emulator::Emulator::with_history(width, height, history_bound()),
             mirrored: Vec::new(),
             emulating: false,
@@ -507,7 +518,7 @@ impl TerminalWidget {
             wheel_remainder_px: 0.0,
             view: ScrollbackView::default(),
             scrollbar: OverlayScrollbar::vertical(),
-            conventions: tilo_ui_base::PlatformConventions::default(),
+            conventions: ui::PlatformConventions::default(),
             find_matches: Vec::new(),
             find_current: 0,
             find_request: false,
@@ -552,7 +563,7 @@ impl TerminalWidget {
             target_menu_rows: None,
             environments_panel: EnvironmentsPanel::default(),
             commands: CommandState::default(),
-            copy: tilo_ui_base::CopyWatch::default(),
+            copy: ui::CopyWatch::default(),
             run_action: None,
         }
     }
@@ -910,8 +921,8 @@ impl TerminalWidget {
         })
     }
 
-    fn visible_link_accessibility(&self) -> Vec<tilo_ui_base::a11y::AccessNode> {
-        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+    fn visible_link_accessibility(&self) -> Vec<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
 
         self.visible_link_ids()
             .into_iter()
@@ -928,8 +939,8 @@ impl TerminalWidget {
             .collect()
     }
 
-    fn target_picker_accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
-        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+    fn target_picker_accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
         if self.bar_shows_target() {
             return None;
         }
@@ -947,8 +958,8 @@ impl TerminalWidget {
         )
     }
 
-    fn context_menu_accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
-        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+    fn context_menu_accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
 
         self.context_menu.is_open().then(|| {
             let action_count = self
@@ -1101,7 +1112,7 @@ impl TerminalWidget {
 
     #[cfg(test)]
     pub(crate) fn bell_flash_for_test(&self) -> f32 {
-        self.bell_flash(tilo_ui_base::theme::Theme::default().motion())
+        self.bell_flash(ui::theme::Theme::default().motion())
     }
 
     #[cfg(test)]
@@ -1110,15 +1121,15 @@ impl TerminalWidget {
     }
 
     /// How much of the bell's flash is left, `0.0..=1.0`.
-    fn bell_flash(&self, motion: tilo_ui_base::tokens::EffectiveMotion) -> f32 {
+    fn bell_flash(&self, motion: ui::tokens::EffectiveMotion) -> f32 {
         // A quarter second: long enough to catch the eye from another window,
         // short enough not to sit on the text.
         const FLASH: std::time::Duration = std::time::Duration::from_millis(260);
         let Some(at) = self.bell_at else {
             return 0.0;
         };
-        tilo_ui_base::motion::Transient::opacity(
-            tilo_ui_base::motion::Transient::CONFIRMATION,
+        ui::motion::Transient::opacity(
+            ui::motion::Transient::CONFIRMATION,
             (at, at + FLASH),
             ui::time::now(),
             motion,
@@ -1138,7 +1149,7 @@ impl TerminalWidget {
         std::mem::take(&mut self.find_request)
     }
 
-    pub(crate) fn conventions(&self) -> tilo_ui_base::PlatformConventions {
+    pub(crate) fn conventions(&self) -> ui::PlatformConventions {
         self.conventions
     }
 
@@ -1840,7 +1851,7 @@ impl TerminalWidget {
                 if text.len() > MAX_RESOURCE_SEND_BYTES {
                     return Err(format!(
                         "text to send exceeds the {} reviewed-command limit",
-                        tilo_ui_base::format::memory(MAX_RESOURCE_SEND_BYTES as u64)
+                        ui::format::memory(MAX_RESOURCE_SEND_BYTES as u64)
                     ));
                 }
                 if !is_reviewable_terminal_text(&text) {
@@ -1868,7 +1879,7 @@ impl TerminalWidget {
                     .selected_text()
                     .filter(|text| !text.is_empty())
                     .ok_or("there is no selected terminal output to copy")?;
-                let copy = tilo_ui_base::text_selection::try_clipboard_copy(&text);
+                let copy = ui::text_selection::try_clipboard_copy(&text);
                 if !self.copy.watch(copy) {
                     return Err(
                         "the system clipboard did not accept selected terminal output".into(),
@@ -1881,7 +1892,7 @@ impl TerminalWidget {
                 if visible.trim().is_empty() {
                     return Err("there is no visible terminal output to copy".to_string());
                 }
-                let copy = tilo_ui_base::text_selection::try_clipboard_copy(&visible);
+                let copy = ui::text_selection::try_clipboard_copy(&visible);
                 if !self.copy.watch(copy) {
                     return Err("the system clipboard did not accept terminal output".into());
                 }
@@ -2249,7 +2260,7 @@ impl TerminalWidget {
     fn record_commands(
         &mut self,
         dispatch: &ui::framework::Dispatcher<crate::resource::Terminal>,
-        edits: &mut tilo_ui_base::widget::Edits<'_>,
+        edits: &mut ui::widget::Edits<'_>,
     ) {
         for (run, asked) in std::mem::take(&mut self.commands.ended) {
             // Runs name their output by the content store's reference: a resource's content travels sealed.
@@ -2365,7 +2376,7 @@ impl TerminalWidget {
                 if !path.is_file() {
                     return Err(format!("{} is not a file on this device", path.display()));
                 }
-                tilo_ui_base::platform::os_open(&format!("file://{}", path.display()));
+                ui::platform::os_open(&format!("file://{}", path.display()));
             }
         }
         Ok(())
@@ -2403,7 +2414,7 @@ impl TerminalWidget {
         self.close_if_exited();
     }
 
-    fn record(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>) {
+    fn record(&mut self, edits: &mut ui::widget::Edits<'_>) {
         let Some(dispatch) = self.dispatch.clone() else {
             self.pending_actions.clear();
             self.commands.ended.clear();
@@ -2559,12 +2570,12 @@ impl Findable for TerminalWidget {
 }
 
 impl Widget for TerminalWidget {
-    tilo_ui_base::provides!(
+    ui::provides!(
         dyn Findable,
         dyn ui::AppWidget,
-        dyn tilo_ui_base::presence::capability::PublishesPresence,
+        dyn ui::presence::capability::PublishesPresence,
         dyn ui::undo::LocalUndo,
-        dyn tilo_ui_base::widget::controls::ActionControls
+        dyn ui::widget::controls::ActionControls
     );
 
     fn test_id(&self) -> Option<&str> {
@@ -2604,7 +2615,7 @@ impl Widget for TerminalWidget {
         self.pump()
     }
 
-    fn settle(&mut self, edits: &mut tilo_ui_base::widget::Edits<'_>, _root: &automerge::ObjId) {
+    fn settle(&mut self, edits: &mut ui::widget::Edits<'_>, _root: &automerge::ObjId) {
         self.record(edits);
     }
 
@@ -2629,12 +2640,12 @@ impl Widget for TerminalWidget {
         self.deferred_output.set(pending);
         // A glide, or the give past an end springing back.
         let gliding = self.view.glide.is_active()
-            || self.view.glide.give_needs_frame(tilo_ui_base::motion::frame_now());
+            || self.view.glide.give_needs_frame(ui::motion::frame_now());
         queued
             || gliding
             || self.scrollbar.needs_animation_frame()
             || self.folder_picker_pending()
-            || self.bell_flash(tilo_ui_base::theme::Theme::default().motion()) > 0.0
+            || self.bell_flash(ui::theme::Theme::default().motion()) > 0.0
     }
 
     /// The rows that changed, came into view or went, and a moved scroll as a copy of its rows.
@@ -2669,11 +2680,11 @@ impl Widget for TerminalWidget {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree, node: NodeId, origin: Point) {
-        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
+        let rect = ui::widget::layout_rect(taffy, node, origin);
         self.set_geometry(rect);
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2752,13 +2763,13 @@ impl Widget for TerminalWidget {
         }
         self.draw_top_bands(&mut outside, transform, text_renderer, theme);
         self.draw_grid(
-            &mut tilo_ui_base::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+            &mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
             outside,
         );
         self.draw_bell_flash(scene, transform, theme);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -2769,10 +2780,10 @@ impl Widget for TerminalWidget {
         if self.context_menu.is_open() {
             Widget::draw_overlay(
                 &mut self.context_menu,
-                &mut tilo_ui_base::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
+                &mut ui::DrawCtx::new(scene, transform, text_renderer, theme, env.clone()),
             );
         }
-        self.draw_environments_panel(&mut tilo_ui_base::DrawCtx::new(
+        self.draw_environments_panel(&mut ui::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -2782,7 +2793,7 @@ impl Widget for TerminalWidget {
         self.view.overlay_drawn = scene.encoding().draw_tags.len() != before;
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         self.dirty = true;
         // Every event goes to the menu while it is open; keys do not fall through to the PTY.
         if self.context_menu.is_open() {
@@ -2790,7 +2801,7 @@ impl Widget for TerminalWidget {
             Widget::handle_event(
                 &mut self.context_menu,
                 event,
-                &mut tilo_ui_base::widget::EventCtx {
+                &mut ui::widget::EventCtx {
                     handled: &mut menu_handled,
                     ..ctx.reborrow(ctx.path, ctx.node_id)
                 },
@@ -2889,7 +2900,7 @@ impl Widget for TerminalWidget {
     }
 
     fn needs_redraw(&self) -> bool {
-        tilo_ui_base::widget::redraw_or_children(self.dirty, self)
+        ui::widget::redraw_or_children(self.dirty, self)
     }
 
     fn name(&self) -> &'static str {
@@ -2908,7 +2919,7 @@ impl Widget for TerminalWidget {
         true
     }
 
-    fn set_platform_conventions(&mut self, conventions: tilo_ui_base::PlatformConventions) {
+    fn set_platform_conventions(&mut self, conventions: ui::PlatformConventions) {
         self.conventions = conventions;
         self.context_menu.set_platform_conventions(conventions);
     }
@@ -2938,9 +2949,9 @@ impl Widget for TerminalWidget {
         self.focused.then(|| self.prompt_rect())
     }
 
-    fn ime_content(&self) -> Option<tilo_ui_base::ime::InputContent> {
+    fn ime_content(&self) -> Option<ui::ime::InputContent> {
         (self.focused && !self.context_menu.is_open() && self.input_unavailable().is_none())
-            .then_some(tilo_ui_base::ime::InputContent::TERMINAL)
+            .then_some(ui::ime::InputContent::TERMINAL)
     }
 
     /// A native editor prompt offers acknowledged edits, which lets dictation write to a terminal; a bare
@@ -2994,7 +3005,7 @@ impl Widget for TerminalWidget {
             .and_then(crate::native_editor::Client::snapshot)
         {
             let lease = snapshot.lease;
-            return Some(tilo_ui_base::ime::edit_fingerprint(
+            return Some(ui::ime::edit_fingerprint(
                 &format!(
                     "{:?}:{}:{}",
                     lease.incarnation, lease.generation, lease.revision
@@ -3010,7 +3021,7 @@ impl Widget for TerminalWidget {
         if self.input_epoch.get() == u64::MAX {
             return None;
         }
-        Some(tilo_ui_base::ime::edit_fingerprint(
+        Some(ui::ime::edit_fingerprint(
             &format!("{}:{}", self.alt_active, self.input_epoch.get()),
             self.cursor_x,
             self.cursor_y,
@@ -3018,8 +3029,8 @@ impl Widget for TerminalWidget {
         ))
     }
 
-    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
-        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Politeness, a11y::Role};
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Politeness, Role};
         let value = self.current_visible_text();
         let graphics = self
             .image_placements
@@ -3102,21 +3113,21 @@ impl Widget for TerminalWidget {
 
     fn perform_action(
         &mut self,
-        action: &tilo_ui_base::a11y::Action,
+        action: &ui::a11y::Action,
         _key_path: &[u64],
-        _state: &mut tilo_ui_base::widget::Edits<'_>,
+        _state: &mut ui::widget::Edits<'_>,
         _path: &ModelPath,
     ) -> bool {
         match action {
-            tilo_ui_base::a11y::Action::ShowContextMenu => {
+            ui::a11y::Action::ShowContextMenu => {
                 self.open_context_menu_at(self.rect.center());
                 true
             }
-            tilo_ui_base::a11y::Action::Focus | tilo_ui_base::a11y::Action::Activate => {
+            ui::a11y::Action::Focus | ui::a11y::Action::Activate => {
                 self.focused = true;
                 true
             }
-            tilo_ui_base::a11y::Action::SetSelection { anchor, focus } => {
+            ui::a11y::Action::SetSelection { anchor, focus } => {
                 self.set_visible_grapheme_selection(*anchor, *focus)
             }
             _ => false,
@@ -3126,8 +3137,8 @@ impl Widget for TerminalWidget {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &tilo_ui_base::a11y::Action,
-        state: &mut tilo_ui_base::widget::Edits<'_>,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if target == self.terminal_transcript_target() {
@@ -3136,14 +3147,14 @@ impl Widget for TerminalWidget {
         if target == format!("terminal.target:{}", self.pane_id)
             && matches!(
                 action,
-                tilo_ui_base::a11y::Action::Activate | tilo_ui_base::a11y::Action::Expand
+                ui::a11y::Action::Activate | ui::a11y::Action::Expand
             )
         {
             self.open_target_menu();
             return true;
         }
 
-        if !matches!(action, tilo_ui_base::a11y::Action::Activate) {
+        if !matches!(action, ui::a11y::Action::Activate) {
             return false;
         }
         if target == format!("terminal.retry:{}", self.pane_id) {
@@ -3187,14 +3198,14 @@ impl Widget for TerminalWidget {
     }
 }
 
-impl tilo_ui_base::widget::controls::ActionControls for TerminalWidget {
-    fn control_action_bindings(&self) -> Vec<tilo_ui_base::widget::ControlBindingMetadata> {
+impl ui::widget::controls::ActionControls for TerminalWidget {
+    fn control_action_bindings(&self) -> Vec<ui::widget::ControlBindingMetadata> {
         let Some(run) = &self.run_action else {
             return Vec::new();
         };
-        vec![tilo_ui_base::widget::ControlBindingMetadata {
+        vec![ui::widget::ControlBindingMetadata {
             control_id: self.terminal_prompt_target(),
-            kind: tilo_ui_base::widget::ControlBindingKind::Action(run.clone()),
+            kind: ui::widget::ControlBindingKind::Action(run.clone()),
         }]
     }
 }
@@ -3296,7 +3307,7 @@ impl ui::undo::LocalUndo for TerminalWidget {
     }
 }
 
-impl tilo_ui_base::presence::capability::PublishesPresence for TerminalWidget {
+impl ui::presence::capability::PublishesPresence for TerminalWidget {
     /// Scope this terminal's presence to a shared pane id, so both peers file their caret under the
     /// same key.
     fn presence_key(&self) -> Option<PresenceKey> {
@@ -3335,7 +3346,7 @@ impl TerminalWidget {
         theme: &Theme,
         presence: &PresenceCtx,
     ) {
-        let Some(key) = tilo_ui_base::presence::capability::presence_key(self) else {
+        let Some(key) = ui::presence::capability::presence_key(self) else {
             return;
         };
         if let Some(list) = presence.selections.get(&key) {
@@ -3585,7 +3596,7 @@ impl TerminalWidget {
         let mods = modifiers.state();
         // Ctrl+Plus/Minus/0 zoom the window, never bytes for the shell.
         if ui::content_zoom::ZoomStep::from_key(
-            tilo_ui_base::platform::PlatformConventions::default(),
+            ui::platform::PlatformConventions::default(),
             mods,
             logical_key,
         )
@@ -3598,7 +3609,7 @@ impl TerminalWidget {
         if matches!(
             ui::shell_tabs::chord_request(
                 logical_key,
-                tilo_ui_base::platform::PlatformConventions::default().command_modifier_down(mods),
+                ui::platform::PlatformConventions::default().command_modifier_down(mods),
                 mods.shift_key(),
                 mods.alt_key() || (mods.control_key() && mods.super_key()),
             ),
@@ -3756,7 +3767,7 @@ impl TerminalWidget {
     }
 
     /// A press on the held run's prompt; says whether the event was taken.
-    fn route_held(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) -> bool {
+    fn route_held(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) -> bool {
         let Some(held) = self.commands.held.clone() else {
             return false;
         };
@@ -3773,7 +3784,7 @@ impl TerminalWidget {
         };
         if self.life.held_action.get().contains(at) {
             if let Some(url) = held.add_card_url() {
-                tilo_ui_base::platform::os_open(url);
+                ui::platform::os_open(url);
             }
         } else if self.life.held_secondary.get().contains(at) {
             self.dismiss_held(&held);
@@ -3827,7 +3838,7 @@ impl TerminalWidget {
         }
     }
 
-    pub(crate) fn grid_palette(theme: &Theme) -> tilo_ui_base::tokens::TerminalPalette {
+    pub(crate) fn grid_palette(theme: &Theme) -> ui::tokens::TerminalPalette {
         theme.tokens.terminal_palette.clone()
     }
 
@@ -4755,7 +4766,7 @@ pub(crate) fn cell_char_at(line: &str, col: usize) -> Option<char> {
     None
 }
 
-pub(crate) fn map_ansi_256(code: u8, palette: &tilo_ui_base::tokens::TerminalPalette) -> Color {
+pub(crate) fn map_ansi_256(code: u8, palette: &ui::tokens::TerminalPalette) -> Color {
     if code < 16 {
         palette
             .ansi
@@ -4781,7 +4792,7 @@ pub(crate) fn map_ansi_256(code: u8, palette: &tilo_ui_base::tokens::TerminalPal
 /// A `CellColor` as a concrete `Color`; bold brightens the low 8 ANSI slots (xterm behaviour).
 pub(crate) fn resolve_color(
     c: CellColor,
-    palette: &tilo_ui_base::tokens::TerminalPalette,
+    palette: &ui::tokens::TerminalPalette,
     is_fg: bool,
     bold: bool,
 ) -> Color {
@@ -4806,7 +4817,7 @@ pub(crate) fn resolve_color(
 /// A cell's colours with reverse video applied. A `None` background leaves the default showing.
 pub(crate) fn resolve_pair(
     attr: Attr,
-    palette: &tilo_ui_base::tokens::TerminalPalette,
+    palette: &ui::tokens::TerminalPalette,
 ) -> (Color, Option<Color>) {
     let fg = resolve_color(attr.fg, palette, true, attr.bold);
     let bg = match attr.bg {
@@ -4821,7 +4832,7 @@ pub(crate) fn resolve_pair(
     }
 }
 
-pub(crate) fn cursor_from_palette(palette: &tilo_ui_base::tokens::TerminalPalette) -> Color {
+pub(crate) fn cursor_from_palette(palette: &ui::tokens::TerminalPalette) -> Color {
     // An opaque inverted cell: the block is the theme's default foreground and
     // the glyph beneath it is re-drawn in the background colour. Taking the hue
     // from the palette keeps the cursor tracking theme swaps.

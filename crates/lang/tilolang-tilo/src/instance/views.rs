@@ -220,7 +220,7 @@ impl Instance {
     /// window: what `open(r, with: v)` asks for, for a view the system shows on a surface of
     /// its own (a row view as a search result, a proposal view in its card), which
     /// `tilo-layout-check` lays out as it lays out a window.
-    pub fn open_with(&mut self, resource: &tilo_ui_base::ResourceRef, view: &str) {
+    pub fn open_with(&mut self, resource: &ui::ResourceRef, view: &str) {
         if let Some(target) = wire::runtime_resource(resource) {
             // A page comes to the front of a narrow window as `open(r, view: v)` does, without
             // the keyboard a person's press takes.
@@ -1091,7 +1091,7 @@ fn in_place_of(node: &crate::runtime::UiNode) -> Option<ResourceRef> {
     let Some(Value::Ref(chosen)) = chosen else {
         return None;
     };
-    let resource = tilo_ui_base::ResourceRef {
+    let resource = ui::ResourceRef {
         id: chosen.target.id_string(),
         ty: chosen.target.ty.clone(),
     };

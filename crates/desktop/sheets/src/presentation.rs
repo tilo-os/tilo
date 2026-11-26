@@ -5,11 +5,10 @@
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use tilo_ui_base::motion::Appearance;
-use tilo_ui_base::tokens::MotionSource;
+use ui::motion::Appearance;
+use ui::tokens::MotionSource;
 use ui::vello::kurbo::Rect;
-use ui::widget::ModalDialog;
-use tilo_ui_base::widget::Widget;
+use ui::widget::{ModalDialog, Widget};
 
 /// Where a sheet is in its life.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -76,12 +75,12 @@ struct Inner {
     /// The motion the card moves on: the person's setting, which the shell
     /// says when it mounts the sheet. No draw of the card has happened yet
     /// when it first arrives, so nothing else could.
-    motion: Cell<tilo_ui_base::tokens::EffectiveMotion>,
+    motion: Cell<ui::tokens::EffectiveMotion>,
     /// The card's arrival and leaving, kept here rather than in the app's
     /// tree: the app builds a new tree whenever its state changes, and a
     /// card that took its motion with the tree would replay its arrival on
     /// every rebuild, and drop out of sight on the rebuild that closed it.
-    appear: Rc<Cell<tilo_ui_base::motion::Appearing>>,
+    appear: Rc<Cell<ui::motion::Appearing>>,
     /// How far the card's body is scrolled, kept here for the same reason: a choice made far
     /// down a long sheet builds a new tree, which would otherwise start at the top again.
     scroll: Rc<Cell<f64>>,
@@ -97,8 +96,8 @@ impl Default for Inner {
             place: Cell::default(),
             every_display: Cell::default(),
             wake: RefCell::default(),
-            motion: Cell::new(tilo_ui_base::tokens::EffectiveMotion::default()),
-            appear: Rc::new(Cell::new(tilo_ui_base::motion::Appearing::closed())),
+            motion: Cell::new(ui::tokens::EffectiveMotion::default()),
+            appear: Rc::new(Cell::new(ui::motion::Appearing::closed())),
             scroll: Rc::new(Cell::new(0.0)),
         }
     }
@@ -134,7 +133,7 @@ impl Presentation {
 
     /// Move the card on `motion`: what the shell says when it mounts the
     /// sheet, before the card has ever been drawn to read it from its theme.
-    pub fn set_motion(&self, motion: tilo_ui_base::tokens::EffectiveMotion) {
+    pub fn set_motion(&self, motion: ui::tokens::EffectiveMotion) {
         self.0.motion.set(motion);
     }
 
@@ -305,7 +304,7 @@ mod tests {
     #[test]
     fn the_card_moves_on_the_motion_the_shell_says() {
         let presentation = Presentation::default();
-        presentation.set_motion(tilo_ui_base::Theme::dark().with_reduce_motion(true).motion());
+        presentation.set_motion(ui::Theme::dark().with_reduce_motion(true).motion());
         presentation.open(false);
         let appearance = presentation.appearance();
         assert!(appearance.is_moving(), "it arrives");

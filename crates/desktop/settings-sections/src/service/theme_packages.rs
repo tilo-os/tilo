@@ -48,11 +48,11 @@ impl ThemePackages {
             .filter(|installed| {
                 installed
                     .payload_root
-                    .join(tilo_ui_base::theme_bundle::DOCUMENT)
+                    .join(ui::theme_bundle::DOCUMENT)
                     .is_file()
             })
             .map(|installed| ThemePackage {
-                name: tilo_ui_base::theme_bundle::document(&installed.payload_root)
+                name: ui::theme_bundle::document(&installed.payload_root)
                     .map_or_else(|_| fallback_name(&installed.id), |document| document.name),
                 key: installed.id,
             })

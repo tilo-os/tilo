@@ -19,7 +19,7 @@ use tilo_session_core::surface::{Scroll, ShellSurface, SurfaceLayer};
 use tilo_onboarding_session::view::OnboardingView;
 use tilo_session_core::surfaces::{Published, through_api};
 use ui::device_local_api::SharedApi;
-use ui::host_operation::ResourceOperationStart;
+use tilo_ui_base::host_operation::ResourceOperationStart;
 
 use crate::clock_wait::{ClockWait, ClockWaitStep};
 use crate::controls::SessionCommand;

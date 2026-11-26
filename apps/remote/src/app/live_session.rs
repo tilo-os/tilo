@@ -6,7 +6,7 @@ use std::rc::Rc;
 
 use iroh_base::EndpointId;
 
-use tilo_ui_base::TextRole;
+use ui::TextRole;
 use ui::widget::{Column, ModalDialog, Text};
 
 use crate::model::{AuthMethod, Connection, ConnectionId, ConnectionKind, Presence, Screen};
@@ -73,7 +73,7 @@ impl Store {
         let named = |key: &str| {
             crate::resource::CATALOG.t_args(
                 key,
-                &[("connection", tilo_ui_base::i18n::ArgValue::Text(name.clone()))],
+                &[("connection", ui::i18n::ArgValue::Text(name.clone()))],
             )
         };
         let (title, detail, primary, destructive) = match &pending {
@@ -113,7 +113,7 @@ impl Store {
             body = body.push(Box::new(
                 Text::new(&key)
                     .with_role(TextRole::Code)
-                    .with_kind(tilo_ui_base::TextKind::Secret),
+                    .with_kind(ui::TextKind::Secret),
             ));
         }
         let confirm = Rc::clone(&self.requests);
@@ -264,7 +264,7 @@ impl Store {
                 let session_id = tilo.id;
                 session
                     .collab_outbox
-                    .push(tilo_ui_base::collaboration::CollabRequest::CloseWorkspaceControl { session_id });
+                    .push(ui::collaboration::CollabRequest::CloseWorkspaceControl { session_id });
             }
             session.live = None;
             session.fb_image = None;
@@ -338,7 +338,7 @@ impl Store {
                 let id = self.next_tilo_session_id;
                 self.next_tilo_session_id = self.next_tilo_session_id.saturating_add(1);
                 self.session.borrow_mut().collab_outbox.push(
-                    tilo_ui_base::collaboration::CollabRequest::OpenWorkspaceControl {
+                    ui::collaboration::CollabRequest::OpenWorkspaceControl {
                         session_id: id,
                         target_device: target,
                     },

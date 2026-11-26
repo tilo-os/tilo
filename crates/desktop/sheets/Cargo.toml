@@ -19,7 +19,6 @@ serde = { workspace = true }
 serde_json = { workspace = true }
 settings-store = { package = "tilo-settings-store", path = "../../desktop/settings" }
 tilo-actions = { version = "0.1.0", path = "../../core/actions" }
-tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 zeroize = { workspace = true }
 # The directory sheet's store: the sites it reads and the joins it asks for, on one app task.
@@ -39,7 +38,6 @@ hex.workspace = true
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["rt", "time"] }
 tilo-test-env = { path = "../../../tools/test-env" }
-tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app", features = ["test-support"] }
 # The headless test host the tests open the app in, as a person's device hosts it.
 tilo-app-test-host = { path = "../../sdk/tilo-app-test-host" }

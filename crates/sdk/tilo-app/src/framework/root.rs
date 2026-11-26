@@ -15,7 +15,7 @@ use ui_core::application_view::{
     ApplicationFocusRestore, ApplicationLocalView, ApplicationViewState,
 };
 use ui_core::automerge::AutoCommit;
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart};
 use tilo_ui_base::{permissions::LivePermissions, permissions::PermissionScope};
 use tilo_ui_base::presence::PresenceKey;
 use ui_core::resource::ResourceSaveStatus;
@@ -1177,9 +1177,9 @@ pub fn with_surface<R: Resource, S: tilo_ui_base::widget::Widget + 'static, T>(
 impl tilo_ui_base::widget::document_effects::DocumentEffects for ResourceRoot {
     fn start_document_effects(
         &mut self,
-        operation: &ui_core::host_operation::ResourceOperation<'_>,
+        operation: &tilo_ui_base::host_operation::ResourceOperation<'_>,
         applied: &tilo_ui_base::widget::document_effects::AppliedDocument<'_>,
-    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         self.typed.start_document_effects(operation, applied)
     }
 }
@@ -1538,7 +1538,7 @@ impl RootModel for ResourceRoot {
     /// operation types must be in the retained handler table or publication
     /// withdraws the whole component surface.
     fn resource_operation_handlers(&self) -> HashSet<String> {
-        let mut handlers = ui_core::host_operation::resource_operation_handlers(self.view());
+        let mut handlers = tilo_ui_base::host_operation::resource_operation_handlers(self.view());
         handlers.extend(
             crate::runner::operation_types()
                 .iter()
@@ -1608,7 +1608,7 @@ impl RootModel for ResourceRoot {
             )
             .or_else(|| {
                 with_app_view_mut(&mut self.content, |view| {
-                    ui_core::host_operation::poll_resource_operation(
+                    tilo_ui_base::host_operation::poll_resource_operation(
                         view,
                         invocation,
                         cancellation_requested,
@@ -1621,10 +1621,10 @@ impl RootModel for ResourceRoot {
 
     fn start_operation(
         &mut self,
-        op: &ui_core::host_operation::ResourceOperation<'_>,
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
         doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
-    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         self.start_operation_refused(op, doc, path)
             .map_err(tilo_resource::Refusal::into_reason)
     }
@@ -1687,7 +1687,7 @@ impl RootModel for ResourceRoot {
             return Ok(Some(started));
         }
         if let Some(started) =
-            ui_core::host_operation::start_operation(self.view_mut(), op, doc, path)
+            tilo_ui_base::host_operation::start_operation(self.view_mut(), op, doc, path)
                 .map_err(tilo_resource::Refusal::new)?
         {
             return Ok(Some(started));
@@ -1728,9 +1728,9 @@ impl ResourceRoot {
             // the view out first does so and starts the read again, which
             // then reads the item laid out; one that cannot gets the sync the
             // next frame would run.
-            if ui_core::host_operation::host_lays_out_first() {
+            if tilo_ui_base::host_operation::host_lays_out_first() {
                 self.shown_first = Some(anchor);
-                return Err(ui_core::host_operation::lay_out_first());
+                return Err(tilo_ui_base::host_operation::lay_out_first());
             }
             self.content.sync(doc.doc(), path);
         }
@@ -1811,7 +1811,7 @@ impl ResourceRoot {
     /// record kept beside its own.
     fn start_resource_operation(
         &self,
-        op: &ui_core::host_operation::ResourceOperation<'_>,
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
         doc: &mut tilo_ui_base::widget::Edits<'_>,
     ) -> Result<Option<tilo_actions::ActionOutput>, tilo_resource::Refusal> {
         let request = op.request();
@@ -1945,8 +1945,8 @@ impl ResourceRoot {
 impl ResourceRoot {
     fn start_catalogue_view(
         &self,
-        op: &ui_core::host_operation::ResourceOperation<'_>,
-    ) -> Option<ui_core::host_operation::ResourceOperationStart> {
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
+    ) -> Option<tilo_ui_base::host_operation::ResourceOperationStart> {
         // View openers from the resource/presentation catalogue and from its
         // nested resources (e.g. a rich-text body's `tilo.rich-text.view`
         // editor/compact) are already mounted; accept them so agents and
@@ -1961,7 +1961,7 @@ impl ResourceRoot {
             .any(|spec| spec.operation_type.as_deref() == Some(request.type_id))
             || self.nested_views().contains(request.type_id);
         known.then(|| {
-            ui_core::host_operation::ResourceOperationStart::Completed(
+            tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )
         })
@@ -1972,7 +1972,7 @@ impl ResourceRoot {
         &mut self,
         invocation: tilo_actions::InvocationId,
         payload: &[u8],
-    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         let record = self
             .run
             .launched
@@ -1994,9 +1994,9 @@ impl ResourceRoot {
                     self.dispatch
                         .note_landed(tilo_resource::share::SHARE_LINK, &minted.output);
                 }
-                ui_core::host_operation::ResourceOperationStart::Completed(minted.output)
+                tilo_ui_base::host_operation::ResourceOperationStart::Completed(minted.output)
             }
-            None => ui_core::host_operation::ResourceOperationStart::Accepted,
+            None => tilo_ui_base::host_operation::ResourceOperationStart::Accepted,
         }))
     }
 }

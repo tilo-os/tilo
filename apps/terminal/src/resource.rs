@@ -7,13 +7,13 @@ use ui::framework::{
     EffectAnswer, EffectCx, EffectStatus, Effected, LiveRow, ResourceSurface, SurfaceCx,
 };
 use ui::framework::{ResourceApp, ViewCx};
-use tilo_ui_base::i18n::EmbeddedCatalog;
+use ui::i18n::EmbeddedCatalog;
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::{
     self, AbsolutePath, ActionCx, Atom, Bytes, Collection, Doc, Effect, Fields, Id, JsonSchema,
     Model, ModelError, Outbox, Refusal, Resource, resource,
 };
-use tilo_ui_base::widget::Element;
+use ui::widget::Element;
 
 #[cfg(feature = "desktop")]
 use crate::TerminalWidget;
@@ -21,7 +21,7 @@ use crate::TerminalWidget;
 use crate::screen::Screen;
 use crate::target::SessionTarget;
 
-tilo_ui_base::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
+ui::embedded_catalog!(static CATALOG, ["en-US", "de-DE"]);
 
 /// A terminal session, as its resource holds it. Only the terminal running the session keeps these:
 /// facts about the world outside the document that no undo takes back.

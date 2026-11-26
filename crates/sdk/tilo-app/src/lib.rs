@@ -24,14 +24,21 @@
 //! Shell and framework internals may depend on the lower `tilo-ui` package directly;
 //! ordinary applications should use this facade.
 
+pub use tilo_ui_base::*;
 pub use ui_core::*;
+
+/// The widgets: the contract, layout and identity every widget shares, and the controls built on them.
+pub mod widget {
+    pub use tilo_ui_base::widget::*;
+    pub use ui_core::widget::*;
+}
 
 /// The document editor and the rich text widgets it is made of: a block editor, a rich text
 /// line, a rich input, the slash menu and tables.
 pub use tilo_rich_edit as rich_edit;
 
 /// The host's raw operation protocol stays the toolkit's: this empty module
-/// takes the place of `ui_core::host_operation` in the glob above, so an app
+/// takes the place of `tilo_ui_base::host_operation` in the glob above, so an app
 /// cannot name the protocol through the facade. Tests deliver operations with
 /// [`framework::HostDelivery`]; the framework reaches `ui_core` directly.
 #[doc(hidden)]

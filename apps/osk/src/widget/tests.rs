@@ -3,8 +3,8 @@ use crate::presentation::MAX_KEYBOARD_CONTENT_WIDTH;
 use automerge::AutoCommit;
 use std::cell::RefCell;
 use std::rc::Rc;
-use tilo_ui_base::presence::PresenceCtx;
-use tilo_ui_base::widget::DrawChild;
+use ui::presence::PresenceCtx;
+use ui::widget::DrawChild;
 
 tilo_test_env::scenario! {
     fn purposes_pick_the_layout_the_tools_and_the_names_spoken;
@@ -39,7 +39,7 @@ tilo_test_env::scenario! {
             osk.perform_semantic_action(
                 target,
                 &AccessibilityAction::Activate,
-                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
+                &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             )
         };
@@ -684,20 +684,20 @@ fn accessibility_operates_each_painted_key_and_announces_disabled_suggestions() 
         assert!(q.bounds.is_some());
         let target = q.action_target.as_deref().expect("stable action target");
         assert!(
-            tilo_ui_base::widget::controls::control_action_bindings(&osk)
+            ui::widget::controls::control_action_bindings(&osk)
                 .iter()
                 .any(|binding| {
                     binding.control_id == target
                         && matches!(
                             binding.kind,
-                            tilo_ui_base::widget::ControlBindingKind::SemanticAction(_)
+                            ui::widget::ControlBindingKind::SemanticAction(_)
                         )
                 })
         );
         assert!(osk.perform_semantic_action(
             target,
             &AccessibilityAction::Activate,
-            &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
+            &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
             &automerge::ROOT,
         ));
         assert_eq!(osk.pending_text(), "q");
@@ -968,7 +968,7 @@ fn offscreen_render_and_geometry_follow_layout_and_suggestions() {
     {
         // A non-letter layout must lay out and draw without panicking even
         // though it has no Shift / symbols affordances.
-        use tilo_ui_base::offscreen::OffscreenRenderer;
+        use ui::offscreen::OffscreenRenderer;
         use vello::peniko::Color;
 
         let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()))
@@ -1000,7 +1000,7 @@ fn offscreen_render_and_geometry_follow_layout_and_suggestions() {
     {
         // A full offscreen frame with a populated suggestion bar must produce
         // non-empty pixels (the bar + chips draw).
-        use tilo_ui_base::offscreen::OffscreenRenderer;
+        use ui::offscreen::OffscreenRenderer;
         use vello::peniko::Color;
 
         let mut osk = OskWidget::new_with_swipe_model(Box::new(GeometricSwipeModel::english()));
@@ -1614,7 +1614,7 @@ fn semantic(osk: &mut OskWidget, target: &str, action: &AccessibilityAction) -> 
     osk.perform_semantic_action(
         target,
         action,
-        &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
+        &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
         &automerge::ROOT,
     )
 }
@@ -1942,7 +1942,7 @@ fn secret_touch_typing_never_adapts_the_touch_model() {
 fn semantic_toolbar_edits_the_focused_field_and_hides_without_stale_contacts() {
     let (services, _) = ui::process::ProcessServices::recording();
     let _host = ui::process::enter(&services);
-    tilo_ui_base::clipboard_copy("literal clipboard");
+    ui::clipboard_copy("literal clipboard");
     let mut osk = OskWidget::new();
     lay_out(&mut osk, 720.0, 360.0);
     osk.activate_label("q");

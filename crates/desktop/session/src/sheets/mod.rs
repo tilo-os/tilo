@@ -23,7 +23,7 @@ use tilo_sheets::shortcut_guide::GuideState;
 use tilo_sheets::uninstall::UninstallState;
 use tilo_sheets::workspace_settings::WorkspaceSettingsState;
 use ui::application::{ApplicationDefinition, ComponentRunnerInputs, prepare_private_surface};
-use ui::host_operation::ResourceOperationStart;
+use tilo_ui_base::host_operation::ResourceOperationStart;
 use ui::vello::kurbo::Rect;
 
 use crate::Session;

@@ -23,7 +23,7 @@ impl ResourceApp for App {
     const TITLE: &'static str = crate::APP_TITLE;
     const TITLE_KEY: &'static str = "poker-app-title";
 
-    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::locales::CATALOG)
     }
 

@@ -17,7 +17,7 @@ use tilo_sheets::display_confirm::DisplayConfirmApp;
 use tilo_sheets::displays::DisplaysApp;
 use tilo_sheets::shortcut_guide::ShortcutGuideApp;
 use ui::framework::ResourceApp;
-use tilo_ui_base::offscreen::OffscreenRenderer;
+use ui::offscreen::OffscreenRenderer;
 use ui::vello::peniko::Color;
 
 const VIEWPORT: (u32, u32) = (1280, 800);

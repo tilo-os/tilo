@@ -597,7 +597,7 @@ pub(crate) fn parse_date(text: &str) -> Option<i64> {
         || !(1..=9999).contains(&year)
         || !(1..=12).contains(&month)
         || day == 0
-        || day > tilo_ui_base::date::days_in_month(year, month)
+        || day > ui::date::days_in_month(year, month)
     {
         return None;
     }
@@ -607,7 +607,7 @@ pub(crate) fn parse_date(text: &str) -> Option<i64> {
     } else {
         clock_of(clock)?
     };
-    let days = tilo_ui_base::date::days_from_civil(year, month, day);
+    let days = ui::date::days_from_civil(year, month, day);
     days.checked_mul(86_400)?
         .checked_add(seconds_of_day)?
         .checked_sub(offset_minutes.checked_mul(60)?)?
@@ -666,9 +666,9 @@ fn split_zone(time: &str) -> Option<(&str, i64)> {
 /// `at_ms` as RFC 3339 in UTC, to the second.
 pub(crate) fn format_date(at_ms: i64) -> String {
     let seconds = at_ms.div_euclid(1000);
-    let (year, month, day) = tilo_ui_base::date::civil_from_days(seconds.div_euclid(86_400));
+    let (year, month, day) = ui::date::civil_from_days(seconds.div_euclid(86_400));
     let of_day = seconds.rem_euclid(86_400);
-    tilo_ui_base::format::machine!(
+    ui::format::machine!(
         "RFC 3339 in UTC, as stored and exchanged, never shown",
         format!(
             "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",

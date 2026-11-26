@@ -9,7 +9,7 @@ use tilo_sheets::SheetState as _;
 use tilo_sheets::uninstall::{
     App, Going, REMOVE_DATA_SWITCH, Removal, UninstallApp, UninstallEffect, UninstallState,
 };
-use tilo_ui_base::a11y::Action as A11yAction;
+use ui::a11y::Action as A11yAction;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 

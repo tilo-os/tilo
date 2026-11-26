@@ -26,7 +26,7 @@ use tilo_session_core::desktop::osd::OsdKind;
 use tilo_session_core::desktop::overlays::{Overlay, Overlays};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::surfaces::Surfaces;
-use ui::host_operation::ResourceOperationStart;
+use tilo_ui_base::host_operation::ResourceOperationStart;
 
 use crate::assembly::{Session, Shared};
 

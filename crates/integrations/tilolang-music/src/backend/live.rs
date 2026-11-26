@@ -247,7 +247,7 @@ fn album_home_item(a: AlbumItem) -> HomeItem {
 
 fn artist_home_item(a: ArtistItem) -> HomeItem {
     let subtitle = match a.subscriber_count {
-        Some(n) => format!("{} subscribers", tilo_ui_base::format::compact_count(n)),
+        Some(n) => format!("{} subscribers", ui::format::compact_count(n)),
         None => "Artist".to_string(),
     };
     HomeItem {

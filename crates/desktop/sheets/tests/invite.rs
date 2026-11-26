@@ -6,7 +6,7 @@
 use tilo_app_test_host::TestApp;
 use tilo_sheets::SheetState as _;
 use tilo_sheets::invite::{Invite, InviteApp, InviteEffect, InviteState, sample};
-use tilo_ui_base::a11y::Action as A11yAction;
+use ui::a11y::Action as A11yAction;
 
 const VIEWPORT: (u32, u32) = (1280, 900);
 /// The link a made invitation hands over: the site's short link, which the

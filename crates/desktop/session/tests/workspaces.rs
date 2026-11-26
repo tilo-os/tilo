@@ -193,7 +193,7 @@ fn a_branch_of_a_workspace_holds_what_it_held_and_the_person_goes_there() {
             ]),
         )
         .expect("the session branches the person's workspace");
-    let ui::host_operation::ResourceOperationStart::Completed(output) = started else {
+    let tilo_ui_base::host_operation::ResourceOperationStart::Completed(output) = started else {
         panic!("the branch answers at once: {started:?}");
     };
     let branch = output

@@ -11,7 +11,6 @@ name = "test_document_app"
 path = "src/lib.rs"
 
 [dependencies]
-tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-rich-text = { path = "../../crates/sdk/tilo-rich-text" }
 # The content store a lent document is read from.

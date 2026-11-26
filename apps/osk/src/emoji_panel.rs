@@ -21,21 +21,20 @@
 //! renderer; [`crate::widget::OskWidget`] routes events to it and draws it.
 
 use emoji::{Catalogue, Recents, SkinTone};
-use tilo_ui_base::TextRole;
-use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
-use tilo_ui_base::paint::PaintCtx;
+use ui::TextRole;
+use ui::a11y::{AccessNode, AccessState, Role};
+use ui::paint::PaintCtx;
 
-use tilo_ui_base::{text_render::TextRenderer, text_render::TextStyle};
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{tokens::Metrics, tokens::Spacing};
-use ui::{widget::SearchField, widget::SegmentedFace, widget::SegmentedStyle, widget::ToggleGroup};
-use tilo_ui_base::widget::Widget;
+use ui::text_render::{TextRenderer, TextStyle};
+use ui::theme::Theme;
+use ui::tokens::{Metrics, Spacing};
+use ui::widget::{SearchField, SegmentedFace, SegmentedStyle, ToggleGroup, Widget};
 use vello::Scene;
 use vello::kurbo::{Affine, Point, Rect};
 use vello::peniko::{BlendMode, Fill};
 
 use crate::i18n;
-use tilo_ui_base::widget::DrawChild;
+use ui::widget::DrawChild;
 
 pub const EMOJI_SUGGESTIONS: usize = 2;
 const SEARCH_RESULTS: usize = 64;
@@ -534,7 +533,7 @@ impl EmojiPanel {
         clippy::too_many_lines,
         reason = "one paint pass keeps the panel's layer order visible: field, tabs, grid, bottom row, tone row"
     )]
-    pub fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
+    pub fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -589,7 +588,7 @@ impl EmojiPanel {
                 crate::presentation::draw_cell(
                     &mut ctx,
                     self.delete_rect,
-                    crate::presentation::CellFace::Icon(tilo_ui_base::icons::Icon::Delete),
+                    crate::presentation::CellFace::Icon(ui::icons::Icon::Delete),
                     crate::presentation::CellState {
                         pressed: self.pressed == Some(PanelHit::Delete),
                         tone: crate::presentation::CellTone::Modifier,
@@ -604,7 +603,7 @@ impl EmojiPanel {
                 crate::presentation::draw_cell(
                     &mut ctx,
                     self.end_search_rect,
-                    crate::presentation::CellFace::Icon(tilo_ui_base::icons::Icon::ArrowLeft),
+                    crate::presentation::CellFace::Icon(ui::icons::Icon::ArrowLeft),
                     crate::presentation::CellState {
                         pressed: self.pressed == Some(PanelHit::EndSearch),
                         tone: crate::presentation::CellTone::Flat,
@@ -630,14 +629,14 @@ impl EmojiPanel {
         }
         if !self.tone_cells.is_empty() {
             let radius = f64::from(theme.tokens.radii.panel);
-            tilo_ui_base::surface::shadow(
+            ui::surface::shadow(
                 scene,
                 transform,
                 self.tone_rect,
                 radius,
                 &theme.tokens.elevation.floating,
             );
-            tilo_ui_base::surface::panel(scene, transform, self.tone_rect, radius, theme);
+            ui::surface::panel(scene, transform, self.tone_rect, radius, theme);
             for (text, rect) in &self.tone_cells {
                 let pressed = self.pressed.as_ref() == Some(&PanelHit::Tone(text.clone()));
                 draw_emoji(scene, transform, text_renderer, theme, *rect, text, pressed);

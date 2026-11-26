@@ -2,8 +2,14 @@
 use crate::{CATALOG, Messages, MessagesEffect, view::Sources};
 use std::sync::Arc;
 use tilo_messaging::{AccountState, MessagingClient, Pairing, ServiceAccount, SetupClient};
-use ui::{framework::Actions, framework::EffectAnswer, framework::EffectCx, framework::Effected, widget::Button, widget::ButtonRole, widget::Column, widget::Container, widget::ListRow, widget::QrWidget, widget::Scrollable, widget::Section, widget::Text};
-use tilo_ui_base::{LocalState, widget::Element};
+use ui::{
+    LocalState,
+    framework::{Actions, EffectAnswer, EffectCx, Effected},
+    widget::{
+        Button, ButtonRole, Column, Container, Element, ListRow, QrWidget, Scrollable, Section,
+        Text,
+    },
+};
 #[derive(Clone, Default)]
 struct Projection {
     visible: bool,

@@ -7,11 +7,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use tilo_ui_base::LocalState;
+use ui::LocalState;
 use ui::framework::{BarActions, Dispatcher};
 use ui::prelude::Id;
-use ui::{widget::NavShell, widget::WindowBarLink};
-use tilo_ui_base::{widget::Element, widget::Widget};
+use ui::widget::{Element, NavShell, Widget, WindowBarLink};
 use ui::window_toolbar::{
     LocationChoice, ToolbarAction, ToolbarEvent, ToolbarLocation, WindowToolbar,
 };
@@ -117,7 +116,7 @@ impl Bar {
                     "messages-route-current",
                     &[(
                         "route",
-                        tilo_ui_base::i18n::ArgValue::Text(choice.label(&self.sources)),
+                        ui::i18n::ArgValue::Text(choice.label(&self.sources)),
                     )],
                 )
             },
@@ -175,7 +174,7 @@ pub(crate) struct MessagesWindow {
     pub(crate) bar: Bar,
 }
 
-impl tilo_ui_base::widget::Decorator for MessagesWindow {
+impl ui::widget::Decorator for MessagesWindow {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -186,13 +185,13 @@ impl tilo_ui_base::widget::Decorator for MessagesWindow {
         self.content.as_mut()
     }
 
-    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
+    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
         self.bar.take_events();
         ui::window_toolbar::declare(Some(self.bar.window_toolbar()));
         self.content.sync(state, path);
     }
 
-    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
         let asked = self.bar.take_events();
         ui::window_toolbar::declare(Some(self.bar.window_toolbar()));
         self.content.update(state, path) || asked

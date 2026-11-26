@@ -4,7 +4,7 @@
 use ui::tilo_resource::AppNamed;
 
 use super::AppearancePrefs;
-use tilo_ui_base::{theme::Preset, theme::PresetDesign as _, theme::ThemeDocument, theme::ThemeRecord};
+use ui::theme::{Preset, PresetDesign as _, ThemeDocument, ThemeRecord};
 use ui::tilo_resource::{Edit, Id, Invoke, Replica};
 
 fn appearance_with(base: &str) -> (Replica<AppearancePrefs, AppNamed>, Id) {
@@ -43,7 +43,7 @@ fn a_theme_round_trips_its_document_role_by_role() {
 #[test]
 fn editing_a_finished_theme_keeps_its_look() {
     let document: ThemeDocument = serde_json::from_str(include_str!(
-        "../../../ui/ui-base/tests/fixtures/finishes/liquid-glass.json"
+        "../../../ui/ui-core/tests/fixtures/finishes/liquid-glass.json"
     ))
     .unwrap();
     let mut theme = ThemeRecord::from_document(&document);
@@ -144,7 +144,7 @@ fn a_theme_is_shown_switched_and_deleted_through_its_actions() {
         .unwrap();
     assert_eq!(appearance.state().unwrap().dark_theme, "custom:mine");
     let settings = appearance.state().unwrap().settings_value();
-    let shown = tilo_ui_base::theme::user_document(&settings, tilo_ui_base::theme::local_moment()).expect("a theme");
+    let shown = ui::theme::user_document(&settings, ui::theme::local_moment()).expect("a theme");
     assert_eq!(shown.id, "mine");
     assert_eq!(shown.name, "Tilo dark copy");
 
@@ -254,7 +254,7 @@ fn an_imported_theme_is_written_only_when_it_is_admitted_and_legible() {
 fn refraction_bends_every_glass_role_in_proportion() {
     for (json, painter) in [
         (
-            include_str!("../../../ui/ui-base/tests/fixtures/finishes/liquid-glass.json"),
+            include_str!("../../../ui/ui-core/tests/fixtures/finishes/liquid-glass.json"),
             "liquid",
         ),
         (

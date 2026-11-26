@@ -634,9 +634,9 @@ mod tests {
             .build_json(json!({"session":"GNOME"}).as_object().unwrap())
             .unwrap();
             let mut doc = AutoCommit::new();
-            let started = ui::host_operation::start_operation(
+            let started = tilo_ui_base::host_operation::start_operation(
                 &mut app,
-                &ui::host_operation::ResourceOperation::local(
+                &tilo_ui_base::host_operation::ResourceOperation::local(
                     ui::tilo_actions::InvocationId::new(),
                     OperationKind::Effect,
                     &encoded.type_id,
@@ -1258,9 +1258,9 @@ mod authentication_tests {
             .unwrap()
             .build_json(&args)
             .unwrap();
-            let started = ui::host_operation::start_operation(
+            let started = tilo_ui_base::host_operation::start_operation(
                 &mut app,
-                &ui::host_operation::ResourceOperation::local(
+                &tilo_ui_base::host_operation::ResourceOperation::local(
                     ui::tilo_actions::InvocationId::new(),
                     OperationKind::Effect,
                     &encoded.type_id,
@@ -1270,7 +1270,7 @@ mod authentication_tests {
                 &automerge::ROOT,
             )
             .unwrap()
-            .and_then(ui::host_operation::ResourceOperationStart::completed)
+            .and_then(tilo_ui_base::host_operation::ResourceOperationStart::completed)
             .unwrap();
             started.value.unwrap().to_string()
         } else {

@@ -41,7 +41,7 @@ use tilo_actions::{
 };
 use tilo_resource::{Effect, Id, Outbox, Path, Resource, Settled};
 use ui_core::WakeHandle;
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart};
 
 use super::dispatch::Dispatcher;
 use super::live::Live;
@@ -486,7 +486,7 @@ struct Answering {
     /// ([`EffectCx::call`]). `None` for the person at this device acting
     /// here, and for a view's own job.
     delivered: Option<InvocationId>,
-    target: Option<ui_core::host_operation::OperationTarget>,
+    target: Option<tilo_ui_base::host_operation::OperationTarget>,
     /// Where the invoker asked the effect to act (`#[param(place)]`).
     place: Option<tilo_resource::Place>,
     /// The caller's cancellation signal, which a job this effect leaves to

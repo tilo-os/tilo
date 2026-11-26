@@ -1415,7 +1415,7 @@ impl ShellChrome {
         &self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, tilo_actions::ApiError> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, tilo_actions::ApiError> {
         if address.resource != tilo_session_core::desktop::verbs::CHROME_RESOURCE {
             return Ok(None);
         }
@@ -1423,7 +1423,7 @@ impl ShellChrome {
         // strip chosen closes it, so nothing of the chrome's strip switcher draws.
         if address.action == "show-strips" {
             self.surfaces.toggle(crate::device_lists::Surfaces::STRIPS);
-            return Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
+            return Ok(Some(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )));
         }
@@ -1525,7 +1525,7 @@ impl ShellChrome {
             _ => false,
         };
         Ok(
-            started.then_some(ui::host_operation::ResourceOperationStart::Completed(
+            started.then_some(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             )),
         )
@@ -1539,7 +1539,7 @@ impl ShellChrome {
         &self,
         address: &ActionAddress,
         arguments: &Map<String, Value>,
-    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, tilo_actions::ApiError> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, tilo_actions::ApiError> {
         use tilo_session_core::desktop::navigation::{ChromeEffect, Verb};
         use tilo_session_core::desktop::state::chrome_verbs::Carried;
         if address.resource != tilo_session_core::desktop::verbs::CHROME_RESOURCE {
@@ -1573,7 +1573,7 @@ impl ShellChrome {
             }
             Carried::Shell => return Ok(None),
         };
-        Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
+        Ok(Some(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput {
                 value,
                 ..tilo_actions::ActionOutput::default()
@@ -1655,7 +1655,7 @@ impl tilo_session_core::surfaces::Published for ShellChrome {
         address: &ActionAddress,
         arguments: &Map<String, Value>,
         _look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         if let Some(started) = self.show_surface(address, arguments)? {
             return Ok(started);
         }
@@ -1686,7 +1686,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
         address: &ActionAddress,
         arguments: &Map<String, Value>,
         look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         if address.resource == tilo_session_core::desktop::verbs::SHELL_RESOURCE
             && address.action == "search"
         {
@@ -1707,7 +1707,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
             }
             self.surfaces
                 .toggle(tilo_session_core::desktop::overlays::Overlay::Launcher.name());
-            return Ok(ui::host_operation::ResourceOperationStart::Completed(
+            return Ok(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ));
         }
@@ -1733,7 +1733,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
                         look,
                     )?
                 }
-                None => ui::host_operation::ResourceOperationStart::Completed(
+                None => tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                     tilo_actions::ActionOutput::default(),
                 ),
             };
@@ -1754,7 +1754,7 @@ impl tilo_session_core::surfaces::Published for ShellLists {
         address: &ActionAddress,
         arguments: &Map<String, Value>,
         look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         if ui::widget::search_request::is_search_address(address)
             || (address.resource == tilo_session_core::desktop::verbs::SHELL_RESOURCE
                 && address.action == "search")

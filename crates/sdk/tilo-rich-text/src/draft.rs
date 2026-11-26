@@ -131,7 +131,7 @@ impl RichTextSource for Draft {
 
     fn apply(
         &mut self,
-        _edits: &mut tilo_ui_base::widget::Edits<'_>,
+        _edits: &mut ui::widget::Edits<'_>,
         edit: &RichTextAction,
     ) -> Result<(), ActionError> {
         edit.apply(&mut self.doc)?;
@@ -147,8 +147,7 @@ mod tests {
     use ui::kurbo::Rect;
     use ui::rich_edit::BlockKind;
     use ui::widget::marks::{Mark, MarkSpan};
-    use ui::widget::Embedded;
-    use tilo_ui_base::widget::Widget;
+    use ui::widget::{Embedded, Widget};
     use ui::winit::event::{DeviceId, ElementState, KeyEvent, Modifiers, RawKeyEvent, WindowEvent};
     use ui::winit::keyboard::{
         Key, KeyLocation, ModifiersState, NamedKey, NativeKeyCode, PhysicalKey,
@@ -183,10 +182,10 @@ mod tests {
             let mut host = Embedded::new(RichTextSurface::over(Draft::new()).with_submit(key));
             let doc = AutoCommit::new();
             host.sync(&doc, &ROOT);
-            let mut text = tilo_ui_base::TextRenderer::new();
+            let mut text = ui::TextRenderer::new();
             host.layout(
                 Rect::new(0.0, 0.0, 400.0, 40.0),
-                &tilo_ui_base::Theme::dark(),
+                &ui::Theme::dark(),
                 &mut text,
             );
             host.widget_mut().set_focus(true);
@@ -202,7 +201,7 @@ mod tests {
                 event,
                 1.0,
                 &Modifiers::from(held),
-                &mut tilo_ui_base::widget::Edits::lend(&mut self.doc),
+                &mut ui::widget::Edits::lend(&mut self.doc),
                 &ROOT,
                 &mut handled,
             );
@@ -231,10 +230,10 @@ mod tests {
         surface
             .editor_mut()
             .focus_block(0, ui::rich_edit::CursorPlacement::End);
-        let mut text = tilo_ui_base::TextRenderer::new();
+        let mut text = ui::TextRenderer::new();
         field.host.layout(
             Rect::new(0.0, 0.0, 400.0, 40.0),
-            &tilo_ui_base::Theme::dark(),
+            &ui::Theme::dark(),
             &mut text,
         );
         let mut carets = Vec::new();
@@ -255,16 +254,16 @@ mod tests {
         field.type_text("old");
         let surface = field.host.widget_mut();
         assert!(surface.perform_action(
-            &tilo_ui_base::a11y::Action::SetValue("first\nsecond".into()),
+            &ui::a11y::Action::SetValue("first\nsecond".into()),
             &[],
-            &mut tilo_ui_base::widget::Edits::lend(&mut field.doc),
+            &mut ui::widget::Edits::lend(&mut field.doc),
             &ROOT,
         ));
         assert_eq!(field.host.widget().source().plain_text(), "first\nsecond");
         assert!(field.host.widget_mut().perform_action(
-            &tilo_ui_base::a11y::Action::SetValue("one".into()),
+            &ui::a11y::Action::SetValue("one".into()),
             &[],
-            &mut tilo_ui_base::widget::Edits::lend(&mut field.doc),
+            &mut ui::widget::Edits::lend(&mut field.doc),
             &ROOT,
         ));
         assert_eq!(field.host.widget().source().plain_text(), "one");
@@ -275,14 +274,14 @@ mod tests {
         let mut field = Field::new(SubmitKey::Enter);
         field.type_text("hi ");
         field.host.widget_mut().insert_mention(
-            &mut tilo_ui_base::widget::Edits::lend(&mut field.doc),
-            &tilo_ui_base::MemberId::person("u-ada"),
+            &mut ui::widget::Edits::lend(&mut field.doc),
+            &ui::MemberId::person("u-ada"),
             "@Ada",
         );
         field
             .host
             .widget_mut()
-            .insert_text(&mut tilo_ui_base::widget::Edits::lend(&mut field.doc), "🎉");
+            .insert_text(&mut ui::widget::Edits::lend(&mut field.doc), "🎉");
         let draft = field.host.widget().source();
         assert_eq!(draft.plain_text(), "hi @Ada 🎉");
         let blocks = draft.blocks();
@@ -290,7 +289,7 @@ mod tests {
             blocks[0].marks,
             [MarkSpan::new(
                 3..7,
-                Mark::Mention(tilo_ui_base::MemberId::person("u-ada"))
+                Mark::Mention(ui::MemberId::person("u-ada"))
             )]
         );
         let clip = &draft.clip_blocks()[0];

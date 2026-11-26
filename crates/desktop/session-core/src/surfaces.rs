@@ -12,7 +12,7 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use ui::device_local_api::SharedApi;
-use ui::host_operation::ResourceOperationStart;
+use tilo_ui_base::host_operation::ResourceOperationStart;
 use ui::tilo_actions::{ActionAddress, Actor, ApiError, ResourceSpec};
 
 /// A picture of a window, as a surface answers with one: the address it is

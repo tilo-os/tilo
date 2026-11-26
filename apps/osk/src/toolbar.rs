@@ -8,7 +8,7 @@
 //! and hit-tests it with the same [`toolbar_rects`] geometry style as the
 //! keys.
 
-use tilo_ui_base::icons::Icon;
+use ui::icons::Icon;
 use vello::kurbo::Rect;
 
 use crate::inject::{Modifiers, Symbol};

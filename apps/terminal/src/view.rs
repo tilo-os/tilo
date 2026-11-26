@@ -3,7 +3,7 @@
 
 use std::ops::{Deref, DerefMut};
 
-use tilo_ui_base::{widget::AppModel, widget::EventCtx, widget::ModelPath, widget::Widget};
+use ui::widget::{AppModel, EventCtx, ModelPath, Widget};
 use ui::window_toolbar::SearchOpening;
 use ui::{AppKind, AppWidget, IconDescriptor};
 use winit::event::WindowEvent;
@@ -101,7 +101,7 @@ impl DerefMut for TerminalView {
     }
 }
 
-impl tilo_ui_base::widget::Decorator for TerminalView {
+impl ui::widget::Decorator for TerminalView {
     type Inner = TerminalWidget;
 
     fn inner(&self) -> &TerminalWidget {
@@ -125,8 +125,8 @@ impl tilo_ui_base::widget::Decorator for TerminalView {
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &tilo_ui_base::a11y::Action,
-        state: &mut tilo_ui_base::widget::Edits<'_>,
+        action: &ui::a11y::Action,
+        state: &mut ui::widget::Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         let handled = self
@@ -144,7 +144,7 @@ impl tilo_ui_base::widget::Decorator for TerminalView {
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        theme: &tilo_ui_base::Theme,
+        theme: &ui::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         self.serve_find_request();

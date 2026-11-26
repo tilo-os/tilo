@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use example_virtual_list::{App, Feed, ITEM_COUNT};
-use tilo_ui_base::{a11y::AccessNode, a11y::Action, a11y::Role};
+use ui::a11y::{AccessNode, Action, Role};
 use ui::headless::{InspectionNode, SemanticExpectation};
 use ui::prelude::{HeadlessApp, Replica};
 

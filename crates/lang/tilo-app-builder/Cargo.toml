@@ -69,7 +69,6 @@ tempfile.workspace = true
 tilo-test-env = { path = "../../../tools/test-env" }
 # A framework app's surface, reported in process as its binary's `--surface`.
 messages = { path = "../../../apps/messages" }
-tilo-ui-base = { version = "0.1.0", path = "../../ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../../sdk/tilo-app" }
 tokio = { workspace = true, features = ["rt"] }
 

@@ -7,7 +7,7 @@ use tilo_app_test_host::TestApp;
 use tilo_sheets::dictation::{
     Answer, Dictation, DictationApp, DictationState, Failure, Prompt, RecoveryReason, Stage,
 };
-use tilo_ui_base::a11y::Action as A11yAction;
+use ui::a11y::Action as A11yAction;
 use ui::prelude::Resource as _;
 use ui::prelude::tilo_actions::{OperationKind, ResourceSpec};
 use ui::vello::kurbo::Rect;

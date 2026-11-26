@@ -11,7 +11,7 @@ mod tests {
     use std::sync::mpsc::Receiver;
     use winit::event::WindowEvent;
 
-    use tilo_ui_base::widget::Widget;
+    use ui::widget::Widget;
 
     use crate::TerminalWidget;
     use crate::resource::TerminalEffect;
@@ -76,7 +76,7 @@ mod tests {
         out
     }
 
-    use tilo_ui_base::synthetic_input::char_key;
+    use ui::synthetic_input::char_key;
 
     fn send(widget: &mut TerminalWidget, doc: &mut AutoCommit, ev: &WindowEvent) {
         ui::testing::Dispatch::new().doc(doc).send(widget, ev);

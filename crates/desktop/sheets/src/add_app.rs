@@ -22,10 +22,9 @@ use std::path::PathBuf;
 use std::rc::Rc;
 
 use ui::framework::{Dispatcher, Effected, ResourceApp, ViewCx};
-use tilo_ui_base::icons::Icon;
+use ui::icons::Icon;
 use ui::prelude::*;
-use ui::{widget::Column, widget::ListRow, widget::MediaSource, widget::ModalDialog, widget::Toggle};
-use tilo_ui_base::{widget::Element, widget::MediaAspect};
+use ui::widget::{Column, Element, ListRow, MediaAspect, MediaSource, ModalDialog, Toggle};
 
 use crate::presentation::{Presentation, SheetState, presented};
 use crate::t;
@@ -192,7 +191,7 @@ impl ResourceApp for AddApp {
     // Nothing is kept: there is no past to look back on.
     const DOCUMENT_HISTORY: bool = false;
 
-    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::CATALOG)
     }
 
@@ -252,7 +251,7 @@ fn card(
 ) -> Element {
     let title = crate::t_args(
         "add-app-title",
-        &[("name", tilo_ui_base::i18n::ArgValue::Text(offer.name.clone()))],
+        &[("name", ui::i18n::ArgValue::Text(offer.name.clone()))],
     );
     let app = ListRow::new(APP, offer.name.clone()).secondary(offer.file_name());
     let app = match &offer.artwork {
@@ -288,7 +287,7 @@ fn card(
         presentation,
         ModalDialog::new(title, body)
             .with_test_id(SHEET)
-            .with_max_width(f64::from(tilo_ui_base::tokens::Metrics::BASE.panel_width_sheet))
+            .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
             .primary_action(t("add-app-add"), move || {
                 adding.effect(&AddAppEffect::Add {
                     move_to_applications: toggled.get().then_some(true),
@@ -304,14 +303,14 @@ fn card(
 /// The pictures the rows lead with: the artwork each program brings, read
 /// and decoded off the UI thread the first time it is painted. Made once per
 /// thread, like any image store.
-fn artwork_store() -> tilo_ui_base::ImageStore {
+fn artwork_store() -> ui::ImageStore {
     thread_local! {
-        static STORE: std::cell::OnceCell<tilo_ui_base::ImageStore> = const { std::cell::OnceCell::new() };
+        static STORE: std::cell::OnceCell<ui::ImageStore> = const { std::cell::OnceCell::new() };
     }
     STORE.with(|store| {
         store
             .get_or_init(|| {
-                let fetch: tilo_ui_base::Fetcher = std::sync::Arc::new(|path: &str| {
+                let fetch: ui::Fetcher = std::sync::Arc::new(|path: &str| {
                     // Artwork, not a document: a file too large to be one is
                     // read as none rather than into memory.
                     let size = std::fs::metadata(path).ok()?.len();
@@ -320,7 +319,7 @@ fn artwork_store() -> tilo_ui_base::ImageStore {
                     }
                     std::fs::read(path).ok()
                 });
-                tilo_ui_base::ImageStore::new(&fetch)
+                ui::ImageStore::new(&fetch)
             })
             .clone()
     })

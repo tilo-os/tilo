@@ -1062,9 +1062,9 @@ impl Published for Player {
         address: &tilo_actions::ActionAddress,
         _: &serde_json::Map<String, serde_json::Value>,
         _look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         self.asked.borrow_mut().push(address.action.clone());
-        Ok(ui::host_operation::ResourceOperationStart::Completed(
+        Ok(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         ))
     }

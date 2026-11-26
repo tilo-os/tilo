@@ -393,7 +393,7 @@ impl SshSession {
         if message.bytes.len() > MAX_SSH_INPUT_BYTES {
             return Err(format!(
                 "SSH input exceeds the {} per-operation limit",
-                tilo_ui_base::format::memory(MAX_SSH_INPUT_BYTES as u64)
+                ui::format::memory(MAX_SSH_INPUT_BYTES as u64)
             ));
         }
         self.input_tx
@@ -620,7 +620,7 @@ async fn run_transfer(session: std::sync::Arc<client::Handle<Handler>>, command:
         Ok(bytes) => job.done(format!(
             "Transferred {}: {}",
             transfer_name(&direction),
-            tilo_ui_base::format::memory(*bytes)
+            ui::format::memory(*bytes)
         )),
         Err(reason) if job.is_stopped() => job.stopped(),
         Err(reason) => job.failed(reason.clone()),

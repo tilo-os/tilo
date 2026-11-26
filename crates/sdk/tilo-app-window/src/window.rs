@@ -3844,8 +3844,8 @@ impl tilo_ui_base::widget::Decorator for AppWindow {
             request.provide::<dyn tilo_ui_base::widget::resources::PublishesResources>(self);
             return;
         }
-        if request.wants::<dyn ui::host_operation::ResourceOperations>() {
-            request.provide::<dyn ui::host_operation::ResourceOperations>(self);
+        if request.wants::<dyn tilo_ui_base::host_operation::ResourceOperations>() {
+            request.provide::<dyn tilo_ui_base::host_operation::ResourceOperations>(self);
             return;
         }
         if request.wants::<dyn ui::widget::AwaitsContent>() {
@@ -3884,8 +3884,8 @@ impl tilo_ui_base::widget::Decorator for AppWindow {
             request.provide::<dyn tilo_ui_base::widget::resources::PublishesResources>(self);
             return;
         }
-        if request.wants::<dyn ui::host_operation::ResourceOperations>() {
-            request.provide::<dyn ui::host_operation::ResourceOperations>(self);
+        if request.wants::<dyn tilo_ui_base::host_operation::ResourceOperations>() {
+            request.provide::<dyn tilo_ui_base::host_operation::ResourceOperations>(self);
             return;
         }
         if request.wants::<dyn ui::widget::WindowHistory>() && self.shape == Shape::Window {

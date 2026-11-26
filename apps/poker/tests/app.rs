@@ -363,7 +363,7 @@ fn opening_the_table_seats_nobody_until_they_take_a_seat() {
 #[test]
 fn taking_a_seat_waits_for_the_table_to_arrive() {
     let told = |state| {
-        Some(tilo_ui_base::workspace_sync::WorkspaceSync {
+        Some(ui::workspace_sync::WorkspaceSync {
             state,
             workspace: "Lounge".into(),
             writable: None,
@@ -371,7 +371,7 @@ fn taking_a_seat_waits_for_the_table_to_arrive() {
             cannot_keep_writes: false,
         })
     };
-    tilo_ui_base::workspace_sync::set(told(tilo_ui_base::workspace_sync::WorkspaceSyncState::Connecting));
+    ui::workspace_sync::set(told(ui::workspace_sync::WorkspaceSyncState::Connecting));
     let mut app = TestApp::<App>::for_person("ada").expect("the app opens");
     let harness = app.harness();
     assert!(
@@ -384,7 +384,7 @@ fn taking_a_seat_waits_for_the_table_to_arrive() {
     );
 
     assert!(
-        tilo_ui_base::workspace_sync::set(told(tilo_ui_base::workspace_sync::WorkspaceSyncState::Synced)),
+        ui::workspace_sync::set(told(ui::workspace_sync::WorkspaceSyncState::Synced)),
         "the first sync changes what the window shows"
     );
     assert!(
@@ -398,7 +398,7 @@ fn taking_a_seat_waits_for_the_table_to_arrive() {
     assert!(take_a_seat_enabled(&mut app), "the table has arrived");
     take_a_seat(&mut app);
     assert_eq!(app.state().seat_of("ada"), Some(0));
-    tilo_ui_base::workspace_sync::set(None);
+    ui::workspace_sync::set(None);
 }
 
 fn take_a_seat_enabled(app: &mut TestApp<App>) -> bool {
@@ -420,7 +420,7 @@ fn take_a_seat(app: &mut TestApp<App>) {
         .a11y_node_named("Take a seat")
         .expect("someone watching is offered a seat");
     harness
-        .perform_a11y_action(button, &tilo_ui_base::a11y::Action::Activate)
+        .perform_a11y_action(button, &ui::a11y::Action::Activate)
         .expect("the button takes the seat");
     let _ = harness.poll_frame();
 }
@@ -428,7 +428,7 @@ fn take_a_seat(app: &mut TestApp<App>) {
 /// Permissions apply to every action: a viewer cannot take a seat.
 #[test]
 fn a_viewer_cannot_sit_down() {
-    let mut app = TestApp::<App>::with_role(tilo_ui_base::Role::Viewer).expect("the app opens");
+    let mut app = TestApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
     assert!(app.invoke(Table::SIT.with(1)).is_err());
     assert!(app.state().players.is_empty());
 }
@@ -443,7 +443,7 @@ fn initial_native_app_contract_is_certified() {
 }
 
 /// How many of `nodes` and the nodes below them are named `name`.
-fn named(nodes: &[tilo_ui_base::a11y::AccessNode], name: &str) -> usize {
+fn named(nodes: &[ui::a11y::AccessNode], name: &str) -> usize {
     nodes
         .iter()
         .map(|node| usize::from(node.name.as_deref() == Some(name)) + named(&node.children, name))
@@ -600,7 +600,7 @@ fn folding_for_a_slow_player_counts_down_and_opens() {
     let id = id.expect("the fold is offered");
     into_turn(since, start, Duration::from_secs(31), || {
         app.harness()
-            .perform_a11y_action(id, &tilo_ui_base::a11y::Action::Activate)
+            .perform_a11y_action(id, &ui::a11y::Action::Activate)
             .expect("the fold acts");
         let _ = app.harness().poll_frame();
     });

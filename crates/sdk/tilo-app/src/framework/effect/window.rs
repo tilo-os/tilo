@@ -2,7 +2,7 @@
 
 use tilo_actions::{InvocationId, InvocationUpdate};
 use tilo_resource::{Effect, Resource};
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart};
 use tilo_ui_base::widget::Widget;
 
 use std::rc::Weak;

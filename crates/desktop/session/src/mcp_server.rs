@@ -1684,7 +1684,7 @@ impl SessionServices {
                                 &with_turn_beside(&address, &arguments, &beside),
                                 look,
                             )
-                            .map(ui::host_operation::ResourceOperationStart::completed)
+                            .map(tilo_ui_base::host_operation::ResourceOperationStart::completed)
                             .map_err(|error| ActionCallError::from_api(&error)),
                     ),
                     Err(why) => done.complete(Err(why)),

@@ -1,5 +1,5 @@
 use example_graph_screens::{App, Projects, components, screens};
-use tilo_ui_base::{a11y::Action, a11y::Role};
+use ui::a11y::{Action, Role};
 use ui::headless::SemanticExpectation;
 use ui::prelude::{HeadlessApp, Invoke, Replica};
 use ui::{UiGraphHandle, UiNode};
@@ -91,7 +91,7 @@ fn screens_mount_rust_components_and_all_build() {
     assert_eq!(screens::NAMES, ["about", "main"]);
     for name in screens::NAMES {
         let router =
-            screens::router_with(name, &tilo_ui_base::Theme::default(), components::ui_graph_context());
+            screens::router_with(name, &ui::Theme::default(), components::ui_graph_context());
         assert!(router.is_ok(), "{name}: {:?}", router.err());
     }
 }

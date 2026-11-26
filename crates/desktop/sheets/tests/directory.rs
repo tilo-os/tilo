@@ -9,7 +9,7 @@ use tilo_sheets::SheetState as _;
 use tilo_sheets::directory::{
     self, Directory, DirectoryApp, DirectoryEffect, DirectoryState, Listing, ListingAction, Status,
 };
-use tilo_ui_base::a11y::Action as A11yAction;
+use ui::a11y::Action as A11yAction;
 use ui::headless::Driver;
 
 const VIEWPORT: (u32, u32) = (1280, 800);
@@ -75,7 +75,7 @@ fn mounted(directory: Directory) -> (TestApp<DirectoryApp>, DirectoryState) {
 /// Whether the sheet alone, built from `listings` and nothing else, says `text`.
 fn sheet_says(listings: Vec<Listing>, text: &str) -> bool {
     let ask: directory::Ask = Rc::new(|_: DirectoryEffect| {});
-    let query = tilo_ui_base::LocalState::new(String::new());
+    let query = ui::LocalState::new(String::new());
     let inputs = ui::headless::fixture_runner_inputs();
     let directory = Directory {
         status: Status::Listed,
@@ -88,7 +88,7 @@ fn sheet_says(listings: Vec<Listing>, text: &str) -> bool {
         VIEWPORT,
         inputs.theme,
         inputs.text_renderer,
-        tilo_ui_base::collaboration::local_user_id(),
+        ui::collaboration::local_user_id(),
     );
     frame.relayout();
     frame_says(&frame, text)
@@ -265,7 +265,7 @@ tilo_test_env::scenario! {
             let asked = Rc::clone(&asked);
             Rc::new(move |effect| asked.borrow_mut().push(effect))
         };
-        let query = tilo_ui_base::LocalState::new(String::new());
+        let query = ui::LocalState::new(String::new());
         let inputs = ui::headless::fixture_runner_inputs();
         let mut frame = Driver::new_with_controlled_inputs(
             ui::state::State::new(),
@@ -273,7 +273,7 @@ tilo_test_env::scenario! {
             VIEWPORT,
             inputs.theme,
             inputs.text_renderer,
-            tilo_ui_base::collaboration::local_user_id(),
+            ui::collaboration::local_user_id(),
         );
         frame.relayout();
         assert!(

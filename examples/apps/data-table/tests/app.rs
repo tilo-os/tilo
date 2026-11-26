@@ -1,7 +1,7 @@
 use std::time::Duration;
 
 use example_data_table::{App, ROW_COUNT, Review};
-use tilo_ui_base::{a11y::AccessNode, a11y::Action, a11y::Role};
+use ui::a11y::{AccessNode, Action, Role};
 use ui::headless::{InspectionNode, SemanticExpectation};
 use ui::prelude::{HeadlessApp, Replica};
 
@@ -92,7 +92,7 @@ fn rows_select_through_direct_touch() {
     harness
         .wait_for_named("open-3", Duration::from_secs(1))
         .expect("the first background page becomes ready");
-    harness.set_interaction_environment(tilo_ui_base::InteractionEnvironment::TOUCH);
+    harness.set_interaction_environment(ui::InteractionEnvironment::TOUCH);
     let semantics =
         semantics_of(&harness.inspection().root, "rows-table").expect("table semantics");
     let bounds = semantics

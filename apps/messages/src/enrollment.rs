@@ -4,8 +4,12 @@ use std::sync::Arc;
 use tilo_messaging::{
     EnrollmentClient, EnrollmentPhase, EnrollmentReview, Pairing, ServiceAccount,
 };
-use ui::{framework::Actions, framework::EffectAnswer, framework::EffectCx, framework::Effected, widget::Button, widget::Column, widget::ListRow, widget::QrWidget, widget::Section, widget::Text};
-use tilo_ui_base::{LocalState, icons::Icon, widget::Element};
+use ui::{
+    LocalState,
+    framework::{Actions, EffectAnswer, EffectCx, Effected},
+    icons::Icon,
+    widget::{Button, Column, Element, ListRow, QrWidget, Section, Text},
+};
 #[derive(Clone, Default)]
 struct Projection {
     pairing: Option<Arc<Pairing>>,
@@ -429,7 +433,7 @@ impl EnrollmentView {
                 "messages-first-self-review",
                 &[(
                     "identity",
-                    tilo_ui_base::i18n::ArgValue::Text(
+                    ui::i18n::ArgValue::Text(
                         review
                             .number
                             .clone()
@@ -533,7 +537,7 @@ impl EnrollmentView {
             for choice in choices {
                 let label = CATALOG.t_args(
                     "messages-select-sim-name",
-                    &[("sim", tilo_ui_base::i18n::ArgValue::Text(choice.label.clone()))],
+                    &[("sim", ui::i18n::ArgValue::Text(choice.label.clone()))],
                 );
                 content = content.push(Box::new(
                     actions.bind_effect_invocation(

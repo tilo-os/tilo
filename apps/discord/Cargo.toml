@@ -28,7 +28,6 @@ runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 discord-wire = { path = "../../crates/engines/discord-wire", features = ["resource"] }
 # What a Discord event or a workspace change means for both sides.
 discord-bridge = { path = "../../crates/engines/discord-bridge" }
-tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 # Finding the servers a bot is in, for bridging one from the app.
 tilo-net = { path = "../../crates/platform/tilo-net", features = ["http"] }
@@ -42,7 +41,6 @@ rand.workspace = true
 # a dependency named `discord` claims `--features discord/thin` in the
 # collection build, and the app then links the whole runtime statically.
 discord-samples = { package = "discord", path = ".", features = ["samples"] }
-tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # The headless test host the tests open the app in, as a person's device hosts it.
 tilo-app-test-host = { path = "../../crates/sdk/tilo-app-test-host" }

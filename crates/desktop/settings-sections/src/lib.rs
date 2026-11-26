@@ -45,7 +45,7 @@ pub fn address(kind: &str) -> Option<String> {
 
 /// What stands for the device's key in a device section's address in [`surface`]: a reader
 /// puts the key of the device whose settings it reads there.
-pub use tilo_ui_base::settings_device::DEVICE_PLACEHOLDER as DEVICE;
+pub use ui::settings_device::DEVICE_PLACEHOLDER as DEVICE;
 
 /// What the settings provider publishes, as a view of another language reads it: one resource
 /// per place the settings keep a section, each with its fields and the verbs it declares, its

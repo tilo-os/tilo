@@ -16,13 +16,15 @@ use vello::peniko::{Blob, ImageData as PenikoImage};
 use winit::event::{ElementState, KeyEvent, MouseScrollDelta, WindowEvent};
 use winit::keyboard::{Key, ModifiersState, NamedKey, PhysicalKey};
 
-use tilo_ui_base::LocalState;
+use ui::LocalState;
 use ui::framework::{EffectStatus, Live, Publishes, ViewCx};
-use tilo_ui_base::icons::Icon;
-use tilo_ui_base::theme::Theme;
+use ui::icons::Icon;
+use ui::theme::Theme;
 use ui::tilo_resource::Invoke;
-use ui::{widget::Column, widget::ModalDialog, widget::NavMode, widget::NavShell};
-use tilo_ui_base::{widget::AppModel, widget::Collaborative, widget::Element, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
+use ui::widget::{
+    AppModel, Collaborative, Column, Element, ModalDialog, ModelPath, NavMode, NavShell,
+    TaffyTreeExt, Widget,
+};
 
 use crate::model::{
     AuthMethod, Connection, ConnectionDraft, ConnectionId, ConnectionKind, DraftProblem, Remote,
@@ -37,7 +39,7 @@ use crate::view::{
 };
 use crate::vnc::{VncInput, VncSession};
 use ui::lock::MutexRecover as _;
-use tilo_ui_base::widget::DrawChild;
+use ui::widget::DrawChild;
 
 /// A live transport backing an open session. SSH is a `russh` PTY channel
 enum LiveSession {
@@ -352,7 +354,7 @@ struct SessionCore {
     /// Last pointer position over the pane.
     pointer: Point,
     /// Requests for the shell's collaboration broker: opening and closing
-    collab_outbox: Vec<tilo_ui_base::collaboration::CollabRequest>,
+    collab_outbox: Vec<ui::collaboration::CollabRequest>,
     /// The surface changed since it was last painted.
     changed: bool,
 }
@@ -537,7 +539,7 @@ impl SessionCore {
         }
         let session_id = session.id;
         self.collab_outbox
-            .push(tilo_ui_base::collaboration::CollabRequest::WorkspaceControlInput { session_id, event });
+            .push(ui::collaboration::CollabRequest::WorkspaceControlInput { session_id, event });
         true
     }
 }
@@ -682,7 +684,7 @@ impl RemoteApp {
             presented: None,
             dialog: None,
             shell: NavShell::new()
-                .content_kind(tilo_ui_base::widget::ContentKind::Document)
+                .content_kind(ui::widget::ContentKind::Document)
                 .with_id("remote.shell")
                 .with_window_toolbar()
                 .mode(NavMode::Docked),
@@ -1388,7 +1390,7 @@ impl Store {
                             || "Never connected".to_owned(),
                             |at_ms| {
                                 let secs_ago = now_ms.saturating_sub(at_ms).max(0) / 1000;
-                                tilo_ui_base::format::capitalize_first(&tilo_ui_base::format::relative(secs_ago))
+                                ui::format::capitalize_first(&ui::format::relative(secs_ago))
                             },
                         )
                     }
@@ -1660,11 +1662,11 @@ fn child_node(taffy: &TaffyTree<()>, node: NodeId) -> Option<NodeId> {
 }
 
 impl Collaborative for RemoteApp {
-    fn take_collab_requests(&mut self) -> Vec<tilo_ui_base::collaboration::CollabRequest> {
+    fn take_collab_requests(&mut self) -> Vec<ui::collaboration::CollabRequest> {
         std::mem::take(&mut self.session.borrow_mut().collab_outbox)
     }
 
-    fn handle_collab_event(&mut self, event: &tilo_ui_base::collaboration::CollabEvent) {
+    fn handle_collab_event(&mut self, event: &ui::collaboration::CollabEvent) {
         if self.state().workspace_control(event) {
             self.check_views();
         }
@@ -1673,8 +1675,8 @@ impl Collaborative for RemoteApp {
 
 impl Store {
     /// Follow what the collaboration broker says of the Tilo session's
-    fn workspace_control(&mut self, event: &tilo_ui_base::collaboration::CollabEvent) -> bool {
-        let tilo_ui_base::collaboration::CollabEvent::WorkspaceControl { session_id, event } = event else {
+    fn workspace_control(&mut self, event: &ui::collaboration::CollabEvent) -> bool {
+        let ui::collaboration::CollabEvent::WorkspaceControl { session_id, event } = event else {
             return false;
         };
         let mut core = self.session.borrow_mut();
@@ -1728,7 +1730,7 @@ impl Store {
 }
 
 impl Widget for RemoteApp {
-    tilo_ui_base::provides!(dyn tilo_ui_base::widget::Collaborative);
+    ui::provides!(dyn ui::widget::Collaborative);
 
     fn as_any(&self) -> Option<&dyn std::any::Any> {
         Some(self)
@@ -1778,14 +1780,14 @@ impl Widget for RemoteApp {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         let origin = Point::new(self.rect.x0, self.rect.y0);
         if let Some(child) = child_node(taffy, node) {
             self.body_mut().apply_layout(taffy, child, origin);
         }
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -1798,14 +1800,14 @@ impl Widget for RemoteApp {
             .draw_child(scene, transform, text_renderer, theme, &env);
     }
 
-    fn draw_overlay(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
+    fn draw_overlay(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
             reason = "a draw binds only the parts it uses"
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
-        self.body_mut().draw_overlay(&mut tilo_ui_base::DrawCtx::new(
+        self.body_mut().draw_overlay(&mut ui::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -1813,7 +1815,7 @@ impl Widget for RemoteApp {
             env.clone(),
         ));
         if let Some(dialog) = self.dialog.as_mut() {
-            dialog.draw_overlay(&mut tilo_ui_base::DrawCtx::new(
+            dialog.draw_overlay(&mut ui::DrawCtx::new(
                 scene,
                 transform,
                 text_renderer,
@@ -1830,20 +1832,20 @@ impl Widget for RemoteApp {
             .min()
     }
 
-    fn observe_physical_input(&mut self, input: tilo_ui_base::widget::PhysicalInput) {
+    fn observe_physical_input(&mut self, input: ui::widget::PhysicalInput) {
         match input {
-            tilo_ui_base::widget::PhysicalInput::Key {
+            ui::widget::PhysicalInput::Key {
                 key,
                 state: ElementState::Released,
             } => self.session.borrow_mut().release_key(key),
-            tilo_ui_base::widget::PhysicalInput::Focused(false) => {
+            ui::widget::PhysicalInput::Focused(false) => {
                 self.session.borrow_mut().release_held_keys();
             }
             _ => {}
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         if let Some(dialog) = self.dialog.as_mut() {
             dialog.handle_detached(
                 event,
@@ -1951,7 +1953,7 @@ impl Widget for RemoteApp {
     fn needs_redraw(&self) -> bool {
         self.store.borrow().dirty
             || self.body().needs_redraw()
-            || tilo_ui_base::widget::Widget::needs_animation_frame(self)
+            || ui::widget::Widget::needs_animation_frame(self)
     }
 
     fn mark_drawn(&mut self) {

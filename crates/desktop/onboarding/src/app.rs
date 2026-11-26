@@ -3,7 +3,7 @@
 
 use ui::framework::{Effected, ResourceApp, ViewCx};
 use ui::prelude::*;
-use tilo_ui_base::widget::Element;
+use ui::widget::Element;
 use zeroize::Zeroizing;
 
 use crate::ceremony::Ceremony;
@@ -70,7 +70,7 @@ impl ResourceApp for OnboardingApp {
     // Nothing is kept: setup's record is the shell's journal.
     const DOCUMENT_HISTORY: bool = false;
 
-    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::CATALOG)
     }
 

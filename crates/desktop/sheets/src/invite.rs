@@ -12,11 +12,13 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ui::framework::{Effected, ResourceApp, ViewCx};
-use tilo_ui_base::icons::Icon;
+use ui::icons::Icon;
 use ui::prelude::*;
-use tilo_ui_base::tokens::Rhythm;
-use ui::{widget::Banner, widget::Button, widget::ButtonRole, widget::Column, widget::ControlSize, widget::ListRow, widget::ModalDialog, widget::Row, widget::Section, widget::Segment, widget::TextInput, widget::ToggleGroup};
-use tilo_ui_base::widget::Element;
+use ui::tokens::Rhythm;
+use ui::widget::{
+    Banner, Button, ButtonRole, Column, ControlSize, Element, ListRow, ModalDialog, Row, Section,
+    Segment, TextInput, ToggleGroup,
+};
 
 use crate::presentation::{Presentation, SheetState, presented};
 use crate::{caption, code, word, words};
@@ -296,7 +298,7 @@ pub fn lasting(expires_at_ns: u64) -> String {
         clippy::cast_precision_loss,
         reason = "a count of minutes or hours is far inside an f64's integers"
     )]
-    let count = tilo_ui_base::i18n::ArgValue::Number(count as f64);
+    let count = ui::i18n::ArgValue::Number(count as f64);
     crate::t_args(key, &[(name, count)])
 }
 
@@ -460,7 +462,7 @@ impl Choosing {
         let named: Vec<&str> = new
             .iter()
             .map(|person| person.name.as_str())
-            .filter(|name| !tilo_ui_base::presence::is_unnamed_person(name))
+            .filter(|name| !ui::presence::is_unnamed_person(name))
             .collect();
         Some(if named.is_empty() {
             word("invite-joined-someone")
@@ -635,7 +637,7 @@ pub fn sheet(
             .with_test_id("invite")
             .with_icon(Icon::UserPlus)
             .with_description(invite.description.clone())
-            .with_max_width(f64::from(tilo_ui_base::tokens::Metrics::BASE.panel_width_sheet))
+            .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
             .secondary_action(invite.close.clone(), move || dismissed(InviteEffect::Done))
             .on_dismiss(move || escaped(InviteEffect::Done)),
     ))
@@ -870,7 +872,7 @@ impl ResourceApp for InviteApp {
     // Nothing is kept: there is no past to look back on.
     const DOCUMENT_HISTORY: bool = false;
 
-    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::CATALOG)
     }
 
@@ -1131,13 +1133,13 @@ mod tests {
         assert_eq!(lasting(at(59 * 60 - 5)), "Works for the next 59 minutes.");
         assert_eq!(lasting(at(30)), "Works for the next minute.");
         assert_eq!(lasting(at(3 * 3600 - 5)), "Works for the next 3 hours.");
-        tilo_ui_base::i18n::I18nManager::set_locale("de-DE");
+        ui::i18n::I18nManager::set_locale("de-DE");
         assert_eq!(lasting(at(60 * 60 - 5)), "Gilt für die nächste Stunde.");
         assert_eq!(
             lasting(at(12 * 60 - 5)),
             "Gilt für die nächsten 12 Minuten."
         );
-        tilo_ui_base::i18n::I18nManager::set_locale("en-US");
+        ui::i18n::I18nManager::set_locale("en-US");
     }
     tilo_test_env::scenario! {
         /// Someone joining while the sheet is open: said in words, and the sheet keeps its rows.
@@ -1160,7 +1162,7 @@ mod tests {
             };
             assert!(!opened.asks_whose(&invite), "the link stays where it was");
             assert_eq!(opened.joined(&invite), Some(words("invite-joined", &[("names", "Grace")])));
-            invite.people = vec![person("ab", &tilo_ui_base::presence::unnamed_person_label())];
+            invite.people = vec![person("ab", &ui::presence::unnamed_person_label())];
             assert_eq!(
                 opened.joined(&invite),
                 Some(word("invite-joined-someone")),

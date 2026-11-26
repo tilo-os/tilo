@@ -2520,7 +2520,7 @@ impl Instance {
 
     /// Where an edit the window made in the control `key` of the view of `level` showing
     /// `target` applies.
-    fn edited(&self, level: Level, target: &tilo_ui_base::ResourceRef, key: &str) -> Result<Place, Words> {
+    fn edited(&self, level: Level, target: &ui::ResourceRef, key: &str) -> Result<Place, Words> {
         if let Some(shown) = self.level(level) {
             // The level's own view, showing the item the edit was made in, or drawing the
             // control itself: a row of its list open into its item where it stands holds the
@@ -2557,7 +2557,7 @@ impl Instance {
     fn splice(
         &mut self,
         level: Level,
-        target: &tilo_ui_base::ResourceRef,
+        target: &ui::ResourceRef,
         key: &str,
         seq: u64,
         (at, delete): (u32, u32),
@@ -2582,7 +2582,7 @@ impl Instance {
     fn edit(
         &mut self,
         level: Level,
-        target: &tilo_ui_base::ResourceRef,
+        target: &ui::ResourceRef,
         key: &str,
         value: Value,
         gesture: Option<&str>,
@@ -2597,7 +2597,7 @@ impl Instance {
     fn edit_at(
         &mut self,
         level: Level,
-        target: &tilo_ui_base::ResourceRef,
+        target: &ui::ResourceRef,
         place: Place,
         key: &str,
         value: Value,

@@ -7,8 +7,8 @@ use tilo_sheets::SheetState as _;
 use tilo_sheets::shortcut_guide::{
     Guide, GuideEffect, GuideState, Modality, Pair, Shortcut, ShortcutGuideApp,
 };
-use tilo_ui_base::a11y::Action as A11yAction;
-use tilo_ui_base::{input::KeyLegend, input::KeyboardBinding, input::KeyboardModifier};
+use ui::a11y::Action as A11yAction;
+use ui::input::{KeyLegend, KeyboardBinding, KeyboardModifier};
 
 const VIEWPORT: (u32, u32) = (1280, 800);
 

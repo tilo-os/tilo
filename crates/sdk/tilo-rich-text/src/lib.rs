@@ -43,7 +43,7 @@ mod view;
 use ui::automerge::ObjId;
 use ui::framework::ViewCx;
 use ui::tilo_resource::{Doc, Resource};
-use tilo_ui_base::widget::Element;
+use ui::widget::Element;
 
 pub use blocks::{
     blocks_under, fill_clips_under, fill_under, plain_blocks, plain_clips, put_rich_text,

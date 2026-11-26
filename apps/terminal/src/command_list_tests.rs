@@ -10,7 +10,7 @@ use ui::tilo_actions::remote::{
     TestProvider,
 };
 use ui::tilo_resource::{Bytes, Id};
-use tilo_ui_base::widget::Element;
+use ui::widget::Element;
 
 use super::plain;
 use crate::resource::{FinishedCommand, Terminal};
@@ -116,7 +116,7 @@ fn a_typed_command_is_asked_of_whoever_keeps_the_session() {
             },
         }))
     }));
-    let _served = tilo_ui_base::RemoteActions::enter(provider.clone(), Caller::local_person("ada"));
+    let _served = ui::RemoteActions::enter(provider.clone(), Caller::local_person("ada"));
     let mut app = TestApp::<Page>::for_person("ada").unwrap();
     app.harness().click_named("terminal-command").unwrap();
     app.harness().type_text("echo hi");

@@ -384,7 +384,7 @@ fn repeated_person_and_route_selection_preserves_private_drafts_and_history() {
         app.harness()
             .perform_named(
                 "messages.composer",
-                &tilo_ui_base::a11y::Action::SetValue(DRAFT.into()),
+                &ui::a11y::Action::SetValue(DRAFT.into()),
             )
             .expect("shared accessible composer");
         let repeated = if reopen_person {
@@ -438,7 +438,7 @@ fn forgotten_recipient_discards_draft_and_requires_explicit_route_selection() {
     app.harness()
         .perform_named(
             "messages.composer",
-            &tilo_ui_base::a11y::Action::SetValue(DRAFT.into()),
+            &ui::a11y::Action::SetValue(DRAFT.into()),
         )
         .expect("private accessible draft");
     let directory = app
@@ -506,7 +506,7 @@ fn confirmed_account_change_clears_old_draft_and_invalidates_pending_send() {
     app.harness()
         .perform_named(
             "messages.composer",
-            &tilo_ui_base::a11y::Action::SetValue(DRAFT.into()),
+            &ui::a11y::Action::SetValue(DRAFT.into()),
         )
         .expect("original service draft");
     let invocation = app
@@ -559,10 +559,10 @@ fn confirmed_account_change_clears_old_draft_and_invalidates_pending_send() {
 #[test]
 fn capture_only_history_is_readable_in_narrow_wide_and_os_themes() {
     for (width, theme) in [
-        (420, tilo_ui_base::theme::Theme::dark()),
-        (1180, tilo_ui_base::theme::Theme::dark()),
-        (420, tilo_ui_base::theme::Theme::light()),
-        (1180, tilo_ui_base::theme::Theme::high_contrast()),
+        (420, ui::theme::Theme::dark()),
+        (1180, ui::theme::Theme::dark()),
+        (420, ui::theme::Theme::light()),
+        (1180, ui::theme::Theme::high_contrast()),
     ] {
         let mut app = TestApp::<MessagesShell>::capture_at(Some("history"), (width, 820))
             .expect("capture history");

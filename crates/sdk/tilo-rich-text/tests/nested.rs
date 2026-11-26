@@ -66,7 +66,7 @@ impl ResourceApp for LettersApp {
 }
 
 fn open() -> TestApp<LettersApp> {
-    tilo_ui_base::i18n::I18nManager::init("en-US");
+    ui::i18n::I18nManager::init("en-US");
     let mut app = TestApp::<LettersApp>::new().unwrap();
     app.call("write", json!({ "subject": "Hello" })).unwrap();
     app.call("write", json!({ "subject": "Other" })).unwrap();

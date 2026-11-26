@@ -244,7 +244,7 @@ impl Published for AppProcess {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         _look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
         // Through the app's own API, as every caller on this device.
         let api = self.api.clone();
         self.revision = self.revision.wrapping_add(1);
@@ -262,7 +262,7 @@ impl Published for AppProcess {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         _look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
         let api = self.api.clone();
         self.revision = self.revision.wrapping_add(1);
         through_api_as(&api, Some(actor), address, arguments, || {

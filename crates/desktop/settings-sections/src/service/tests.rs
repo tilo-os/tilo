@@ -833,7 +833,7 @@ fn every_declared_verb_of_a_section_is_published_where_the_section_stands() {
 /// whose apex is `dx` from the centre, so a changed module draws a visibly other frame. It is the
 /// module the bundle's document names, compiled by the daemon into the device's store at install.
 fn triangle_module(dx: f64) -> Vec<u8> {
-    use tilo_ui_base::{part_paint::Brush, part_paint::PaintedPart, part_paint::ParamSpec, part_paint::PartScene};
+    use ui::part_paint::{Brush, PaintedPart, ParamSpec, PartScene};
 
     let mut part = PartScene::new();
     let mut triangle = ui::kurbo::BezPath::new();
@@ -884,7 +884,7 @@ fn theme_bundle(dir: &std::path::Path) -> Vec<u8> {
     const SET: &str = "test.theme-triangle";
     std::fs::create_dir_all(dir).expect("the payload tree");
     let document = DOCUMENT.replace("\"bauhaus\"", &format!("{SET:?}"));
-    std::fs::write(dir.join(tilo_ui_base::theme_bundle::DOCUMENT), document).expect("the document");
+    std::fs::write(dir.join(ui::theme_bundle::DOCUMENT), document).expect("the document");
     let bytes = triangle_module(0.0);
     std::fs::write(dir.join(format!("{SET}.wasm")), &bytes).expect("the set's module");
     bytes
@@ -981,9 +981,9 @@ fn a_theme_package_is_applied_by_its_action_and_undo_returns_the_previous_theme(
         serde_json::from_value(services.read(APPEARANCE).expect("published")).expect("the section");
     let applied = prefs.user_document().expect("the applied theme");
     assert_ne!(applied.id, before.id, "the applied theme is another one");
-    let theme = tilo_ui_base::Theme::from_document(&applied).expect("the bundle's theme draws");
+    let theme = ui::Theme::from_document(&applied).expect("the bundle's theme draws");
     assert_eq!(
-        theme.finish(tilo_ui_base::tokens::SurfaceRole::Control).painter(),
+        theme.finish(ui::tokens::SurfaceRole::Control).painter(),
         "test.theme-triangle",
         "the set the bundle names is the one that draws the parts"
     );

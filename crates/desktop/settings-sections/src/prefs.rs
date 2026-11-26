@@ -1583,8 +1583,8 @@ impl Default for UpdatePrefs {
 }
 
 /// Look-and-feel preferences the OS theming layer resolves into the
-/// concrete [`tilo_ui_base::Theme`] every app draws against. `dark_theme` and `light_theme`
-/// name the two sides of a look ([`tilo_ui_base::theme::Look`]); `high_contrast` overrides the palette
+/// concrete [`ui::Theme`] every app draws against. `dark_theme` and `light_theme`
+/// name the two sides of a look ([`ui::theme::Look`]); `high_contrast` overrides the palette
 /// with the WCAG-AAA high-contrast track; `reduce_motion` and `text_scale`
 /// fold in the accessibility comforts. The compositor reads this section the
 /// same way it reads the display/input comfort sections.
@@ -1623,9 +1623,9 @@ pub struct AppearancePrefs {
         skip_serializing_if = "ui::tilo_resource::Collection::is_empty",
         with = "model_json"
     )]
-    pub themes: ui::tilo_resource::Collection<tilo_ui_base::theme::ThemeRecord>,
+    pub themes: ui::tilo_resource::Collection<ui::theme::ThemeRecord>,
     /// Spacing density over whichever theme is shown: one of
-    /// [`tilo_ui_base::theme::ThemeDensity`]'s `COMPACT`, `REGULAR` and `LARGE`.
+    /// [`ui::theme::ThemeDensity`]'s `COMPACT`, `REGULAR` and `LARGE`.
     #[serde(default = "default_density")]
     #[model(range = 0.5..=2.0)]
     pub density: f64,
@@ -1645,7 +1645,7 @@ pub struct AppearancePrefs {
     pub text_scale: f64,
     /// How large everything is drawn, `1.0` as the theme sets it: the "make
     /// everything bigger" knob. Scales the *whole* design system (spacing, radii, and the
-    /// type scale) together via [`tilo_ui_base::Theme::with_ui_scale`]. Composes on top of
+    /// type scale) together via [`ui::Theme::with_ui_scale`]. Composes on top of
     /// the per-output fractional device scale the compositor reports, and text
     /// additionally picks up `text_scale`.
     #[serde(default = "default_ui_scale")]
@@ -1722,22 +1722,22 @@ pub struct AppearancePrefs {
 
 /// What the desktop shows while the person has chosen nothing: the built-in
 /// dark theme, which every host resolves an appearance section without a
-/// mode to (`tilo_ui_base::theme::resolve_theme_layers`). Settings showing another
+/// mode to (`ui::theme::resolve_theme_layers`). Settings showing another
 /// default would show a choice nobody made, and paint its own window in it.
 fn default_mode() -> String {
     "dark".to_string()
 }
 
 fn default_dark_theme() -> String {
-    tilo_ui_base::theme::Preset::Dark.id().to_string()
+    ui::theme::Preset::Dark.id().to_string()
 }
 
 fn default_light_theme() -> String {
-    tilo_ui_base::theme::Preset::Light.id().to_string()
+    ui::theme::Preset::Light.id().to_string()
 }
 
 fn default_density() -> f64 {
-    f64::from(tilo_ui_base::theme::ThemeDensity::REGULAR)
+    f64::from(ui::theme::ThemeDensity::REGULAR)
 }
 
 fn default_schedule() -> String {
@@ -1803,16 +1803,16 @@ impl Default for AppearancePrefs {
 }
 
 /// The theme the installed package `id` draws on this device: its bundle loaded through
-/// [`tilo_ui_base::theme_bundle::load_from`], which registers each painter set it names on the machine code
+/// [`ui::theme_bundle::load_from`], which registers each painter set it names on the machine code
 /// the device's daemon compiled when the package arrived, and its document. `None` when the
 /// package is not installed here, or its bundle is refused: the device then shows the theme the
 /// appearance's mode names, and Settings says the package is missing.
 #[must_use]
-pub fn applied_theme(id: &str) -> Option<tilo_ui_base::theme::ThemeDocument> {
+pub fn applied_theme(id: &str) -> Option<ui::theme::ThemeDocument> {
     let installed = package_store::find_installed(id).ok().flatten()?;
     let compiled = runtime_portal::process_link::compiled_modules();
-    tilo_ui_base::theme_bundle::load_from(&installed.payload_root, compiled.as_deref()).ok()?;
-    tilo_ui_base::theme_bundle::document(&installed.payload_root).ok()
+    ui::theme_bundle::load_from(&installed.payload_root, compiled.as_deref()).ok()?;
+    ui::theme_bundle::document(&installed.payload_root).ok()
 }
 
 /// The directory the applied theme's bundle was staged in for this device's app processes, as their
@@ -1828,7 +1828,7 @@ pub fn applied_theme_bundle(id: &str) -> Option<String> {
     }
     let installed = package_store::find_installed(id).ok().flatten()?;
     let directory = runtime_portal::process_link::theme_bundles_dir()?.join(id);
-    tilo_ui_base::theme_bundle::stage(&installed.payload_root, &directory).ok()?;
+    ui::theme_bundle::stage(&installed.payload_root, &directory).ok()?;
     Some(format!(
         "{}/{id}",
         runtime_portal::process_link::THEME_BUNDLES_MOUNT
@@ -1869,58 +1869,58 @@ impl AppearancePrefs {
 
     /// The theme document every app draws: the applied package's on a device that has it, else
     /// the theme the current mode shows, with the density over it.
-    pub fn user_document(&self) -> Option<tilo_ui_base::theme::ThemeDocument> {
+    pub fn user_document(&self) -> Option<ui::theme::ThemeDocument> {
         self.theme_package
             .as_deref()
             .and_then(applied_theme)
-            .or_else(|| tilo_ui_base::theme::user_document(&self.settings_value(), tilo_ui_base::theme::local_moment()))
+            .or_else(|| ui::theme::user_document(&self.settings_value(), ui::theme::local_moment()))
     }
 
     fn layers(
         &self,
         device: &AppearanceDevicePrefs,
-        accessibility: tilo_ui_base::theme::AccessibilityLayer,
-    ) -> tilo_ui_base::theme::ThemeLayerStack {
-        tilo_ui_base::theme::ThemeLayerStack {
+        accessibility: ui::theme::AccessibilityLayer,
+    ) -> ui::theme::ThemeLayerStack {
+        ui::theme::ThemeLayerStack {
             distribution_defaults: device.distribution_defaults.clone(),
             user_theme: self.user_document(),
             finish: self.finish(),
-            window: tilo_ui_base::WindowAppearance::default(),
+            window: ui::WindowAppearance::default(),
             accessibility,
         }
     }
 
     /// The person's own face, accent and share of the theme's translucency.
-    fn finish(&self) -> tilo_ui_base::theme::FinishLayer {
+    fn finish(&self) -> ui::theme::FinishLayer {
         #[allow(
             clippy::cast_possible_truncation,
             reason = "a translucency is a factor in 0..=1; f32 holds it exactly enough"
         )]
         let translucency = self.translucency.map(|value| value as f32);
-        tilo_ui_base::theme::FinishLayer {
+        ui::theme::FinishLayer {
             ui_face: self.ui_face.clone(),
             accent: self
                 .accent
                 .as_deref()
-                .and_then(tilo_ui_base::tokens::PresenceHue::from_id),
+                .and_then(ui::tokens::PresenceHue::from_id),
             translucency,
         }
     }
 
-    /// Resolve these preferences into the concrete [`tilo_ui_base::Theme`] the OS would
+    /// Resolve these preferences into the concrete [`ui::Theme`] the OS would
     /// apply on a device with `device`'s defaults: the theme the mode shows,
     /// with the accessibility comforts folded in. This is the real "apply" contract — a consumer that wants
-    /// the user's look calls this rather than hard-coding [`tilo_ui_base::Theme::dark`].
+    /// the user's look calls this rather than hard-coding [`ui::Theme::dark`].
     #[allow(
         clippy::cast_possible_truncation,
         reason = "scales are small factors well inside f32's range"
     )]
-    pub fn resolve_theme(&self, device: &AppearanceDevicePrefs) -> tilo_ui_base::Theme {
+    pub fn resolve_theme(&self, device: &AppearanceDevicePrefs) -> ui::Theme {
         // The same function the compositor uses. UI scale grows the whole
         // system first; text scale then layers extra type growth on top.
-        tilo_ui_base::theme::resolve_theme_layers(&self.layers(
+        ui::theme::resolve_theme_layers(&self.layers(
             device,
-            tilo_ui_base::theme::AccessibilityLayer {
+            ui::theme::AccessibilityLayer {
                 high_contrast: self.high_contrast,
                 forced_colors: self.forced_colors,
                 text_scale: self.text_scale as f32,
@@ -1928,16 +1928,16 @@ impl AppearancePrefs {
                 reduce_motion: self.reduce_motion,
                 reduce_transparency: self.reduce_transparency,
                 distinct_letters: self.distinct_letters,
-                ..tilo_ui_base::theme::AccessibilityLayer::default()
+                ..ui::theme::AccessibilityLayer::default()
             },
         ))
     }
 
     /// The chosen theme before the accessibility comforts, on a device with
     /// `device`'s defaults.
-    pub fn base_theme(&self, device: &AppearanceDevicePrefs) -> tilo_ui_base::Theme {
-        tilo_ui_base::theme::resolve_theme_layers(
-            &self.layers(device, tilo_ui_base::theme::AccessibilityLayer::default()),
+    pub fn base_theme(&self, device: &AppearanceDevicePrefs) -> ui::Theme {
+        ui::theme::resolve_theme_layers(
+            &self.layers(device, ui::theme::AccessibilityLayer::default()),
         )
     }
 }
@@ -1950,7 +1950,7 @@ pub struct AppearanceDevicePrefs {
     /// Palette and pins shipped with the OS image.
     #[serde(skip_serializing_if = "Option::is_none")]
     #[model(readonly)]
-    pub distribution_defaults: Option<tilo_ui_base::theme::DistributionDefaults>,
+    pub distribution_defaults: Option<ui::theme::DistributionDefaults>,
 }
 
 impl settings_model::SettingsSchema for AppearanceDevicePrefs {
@@ -1991,7 +1991,7 @@ impl AppearancePrefs {
         &mut self,
         #[param("The look: Tilo, Paper, Moss, Dusk or Mono")] theme: String,
     ) -> Result<(), ui::tilo_resource::Refusal> {
-        let look = tilo_ui_base::theme::Look::find(&theme).ok_or_else(|| {
+        let look = ui::theme::Look::find(&theme).ok_or_else(|| {
             ui::tilo_resource::Refusal::new(format!(
                 "`{theme}` is not a look: Tilo, Paper, Moss, Dusk or Mono"
             ))
@@ -2024,7 +2024,7 @@ impl AppearancePrefs {
             )));
         };
         let compiled = runtime_portal::process_link::compiled_modules();
-        tilo_ui_base::theme_bundle::load_from(&installed.payload_root, compiled.as_deref()).map_err(
+        ui::theme_bundle::load_from(&installed.payload_root, compiled.as_deref()).map_err(
             |error| {
                 ui::tilo_resource::Refusal::new(format!("`{id}` does not draw a theme: {error}"))
             },
@@ -2056,8 +2056,8 @@ impl AppearancePrefs {
             self.language = None;
             return Ok(());
         };
-        let named = tilo_ui_base::i18n::language_of(tag);
-        if !tilo_ui_base::i18n::spoken_languages()
+        let named = ui::i18n::language_of(tag);
+        if !ui::i18n::spoken_languages()
             .iter()
             .any(|(spoken, _)| *spoken == named)
         {
@@ -2077,10 +2077,10 @@ impl AppearancePrefs {
         #[param("A preset id or the id of one of your themes", example = "paper-dark")]
         theme: String,
     ) -> Result<(), ui::tilo_resource::Refusal> {
-        let (reference, dark) = if let Some(preset) = tilo_ui_base::theme::Preset::find(&theme) {
+        let (reference, dark) = if let Some(preset) = ui::theme::Preset::find(&theme) {
             (
                 preset.id().to_owned(),
-                tilo_ui_base::theme::PresetDesign::document(preset).is_dark(),
+                ui::theme::PresetDesign::document(preset).is_dark(),
             )
         } else {
             let own = self.theme(&theme)?;
@@ -2103,11 +2103,11 @@ impl AppearancePrefs {
         #[param("The preset or theme to start from", example = "paper-dark")] base: String,
     ) -> Result<(), ui::tilo_resource::Refusal> {
         let id = self.free_id(&id)?;
-        let base = match tilo_ui_base::theme::ThemeRecord::preset(&base) {
+        let base = match ui::theme::ThemeRecord::preset(&base) {
             Some(document) => document,
             None => self.theme(&base)?.document(&base),
         };
-        self.themes.push(id, tilo_ui_base::theme::ThemeRecord::draft(&base));
+        self.themes.push(id, ui::theme::ThemeRecord::draft(&base));
         Ok(())
     }
 
@@ -2119,7 +2119,7 @@ impl AppearancePrefs {
         #[param("Id for the imported theme; empty keeps the document's")] id: String,
         #[param("The theme document, as JSON")] document: String,
     ) -> Result<(), ui::tilo_resource::Refusal> {
-        let mut document = tilo_ui_base::theme::admit_document(&document)?;
+        let mut document = ui::theme::admit_document(&document)?;
         let id = if id.trim().is_empty() {
             document.id.clone()
         } else {
@@ -2129,7 +2129,7 @@ impl AppearancePrefs {
         document.id.clear();
         document.id.push_str(id.as_str());
         self.themes
-            .push(id, tilo_ui_base::theme::ThemeRecord::from_document(&document));
+            .push(id, ui::theme::ThemeRecord::from_document(&document));
         Ok(())
     }
 
@@ -2138,7 +2138,7 @@ impl AppearancePrefs {
     #[action(id = "reset-theme")]
     pub fn reset_theme(&mut self, theme: String) -> Result<(), ui::tilo_resource::Refusal> {
         let current = self.theme_mut(&theme)?;
-        let origin: tilo_ui_base::theme::ThemeDocument = current
+        let origin: ui::theme::ThemeDocument = current
             .origin
             .as_deref()
             .and_then(|origin| serde_json::from_str(origin).ok())
@@ -2146,9 +2146,9 @@ impl AppearancePrefs {
                 ui::tilo_resource::Refusal::new("the theme keeps nothing to go back to")
             })?;
         let name = current.name.clone();
-        *current = tilo_ui_base::theme::ThemeRecord {
+        *current = ui::theme::ThemeRecord {
             name,
-            ..tilo_ui_base::theme::ThemeRecord::from_document(&origin)
+            ..ui::theme::ThemeRecord::from_document(&origin)
         };
         Ok(())
     }
@@ -2221,7 +2221,7 @@ impl AppearancePrefs {
     ///
     /// # Errors
     /// There is none by that id.
-    pub fn theme(&self, id: &str) -> Result<&tilo_ui_base::theme::ThemeRecord, ui::tilo_resource::Refusal> {
+    pub fn theme(&self, id: &str) -> Result<&ui::theme::ThemeRecord, ui::tilo_resource::Refusal> {
         self.themes
             .get(&ui::tilo_resource::Id::from_raw(id))
             .ok_or_else(|| {
@@ -2232,7 +2232,7 @@ impl AppearancePrefs {
     fn theme_mut(
         &mut self,
         id: &str,
-    ) -> Result<&mut tilo_ui_base::theme::ThemeRecord, ui::tilo_resource::Refusal> {
+    ) -> Result<&mut ui::theme::ThemeRecord, ui::tilo_resource::Refusal> {
         self.themes
             .get_mut(&ui::tilo_resource::Id::from_raw(id))
             .ok_or_else(|| ui::tilo_resource::Refusal::new("there is no such theme"))
@@ -2245,7 +2245,7 @@ impl AppearancePrefs {
             return Err(ui::tilo_resource::Refusal::new("a theme needs an id"));
         }
         let id = ui::tilo_resource::Id::from_raw(id);
-        if tilo_ui_base::theme::Preset::find(id.as_str()).is_some() || self.themes.contains(&id) {
+        if ui::theme::Preset::find(id.as_str()).is_some() || self.themes.contains(&id) {
             return Err(ui::tilo_resource::Refusal::new(
                 "a theme with that id already exists",
             ));
@@ -2283,7 +2283,7 @@ impl AppearancePrefs {
     ];
 
     /// Wear `look` in both modes.
-    pub fn choose_look(&mut self, look: tilo_ui_base::theme::Look) {
+    pub fn choose_look(&mut self, look: ui::theme::Look) {
         self.dark_theme = look.preset(true).id().into();
         self.light_theme = look.preset(false).id().into();
     }
@@ -2299,8 +2299,8 @@ impl AppearancePrefs {
     }
 
     /// The look the person wears, or `None` for a theme of their own.
-    pub fn look(&self) -> Option<tilo_ui_base::theme::Look> {
-        tilo_ui_base::theme::Preset::find(self.shown_theme()).and_then(tilo_ui_base::theme::Preset::look)
+    pub fn look(&self) -> Option<ui::theme::Look> {
+        ui::theme::Preset::find(self.shown_theme()).and_then(ui::theme::Preset::look)
     }
 
     /// What the look picker shows chosen: a look's id, or a theme of the
@@ -2737,7 +2737,7 @@ impl AppearancePrefs {
     fn valid(&self) -> Result<(), ui::tilo_resource::Refusal> {
         time_of_day(&self.sunrise, "the start of day")?;
         time_of_day(&self.sunset, "the start of night")?;
-        tilo_ui_base::theme::FinishLayer {
+        ui::theme::FinishLayer {
             ui_face: self.ui_face.clone(),
             accent: None,
             translucency: None,
@@ -2745,14 +2745,14 @@ impl AppearancePrefs {
         .validate()
         .map_err(|error| ui::tilo_resource::Refusal::new(format!("the interface face: {error}")))?;
         if let Some(accent) = &self.accent
-            && tilo_ui_base::tokens::PresenceHue::from_id(accent).is_none()
+            && ui::tokens::PresenceHue::from_id(accent).is_none()
         {
             return Err(ui::tilo_resource::Refusal::new(format!(
                 "`{accent}` is not an accent colour"
             )));
         }
         for id in self.themes.ids() {
-            if id.as_str().trim().is_empty() || tilo_ui_base::theme::Preset::find(id.as_str()).is_some() {
+            if id.as_str().trim().is_empty() || ui::theme::Preset::find(id.as_str()).is_some() {
                 return Err(ui::tilo_resource::Refusal::new(format!(
                     "`{}` cannot name a theme of your own",
                     id.as_str()
@@ -2903,7 +2903,7 @@ mod theme_tests {
     /// refused.
     #[test]
     fn every_shipped_look_can_be_chosen() {
-        for look in tilo_ui_base::theme::Look::ALL {
+        for look in ui::theme::Look::ALL {
             let mut prefs = AppearancePrefs {
                 mode: "light".into(),
                 ..AppearancePrefs::default()

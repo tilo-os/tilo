@@ -13,7 +13,7 @@ use tilo_resource::{Effect, NoEffect, Resource, SearchEntry};
 use tilo_ui_base::PresencePayload;
 use ui_core::automerge::transaction::Transactable as _;
 use ui_core::automerge::{AutoCommit, ObjId};
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use tilo_ui_base::presence::PresenceKey;
 use tilo_ui_base::{widget::Decorator, widget::Widget};
 
@@ -937,12 +937,12 @@ impl Decorator for HostedSurface {
 impl ResourceOperations for HostedSurface {
     fn resource_operation_handlers(&self) -> std::collections::HashSet<String> {
         let surface = self.driver.surface();
-        let mut handlers = ui_core::host_operation::resource_operation_handlers(surface);
+        let mut handlers = tilo_ui_base::host_operation::resource_operation_handlers(surface);
         // A decorated container lists its own; the surface's children it
         // shows over it (a dialog) answer theirs too.
         if decorates_routing(surface) {
             surface.for_each_child(&mut |child| {
-                handlers.extend(ui_core::host_operation::resource_operation_handlers(child));
+                handlers.extend(tilo_ui_base::host_operation::resource_operation_handlers(child));
             });
         }
         handlers
@@ -968,12 +968,12 @@ impl ResourceOperations for HostedSurface {
         let before = doc.pending_ops();
         let surface = self.driver.surface_mut();
         let started = if decorates_routing(surface) {
-            match ui_core::host_operation::start_operation(surface, op, doc, path) {
-                Ok(None) => ui_core::host_operation::start_in_children(surface, op, doc, path),
+            match tilo_ui_base::host_operation::start_operation(surface, op, doc, path) {
+                Ok(None) => tilo_ui_base::host_operation::start_in_children(surface, op, doc, path),
                 answered => answered,
             }
         } else {
-            ui_core::host_operation::start_in_children(surface, op, doc, path)
+            tilo_ui_base::host_operation::start_in_children(surface, op, doc, path)
         };
         refuse_raw_writes(doc, before, "start_operation");
         started
@@ -991,7 +991,7 @@ impl ResourceOperations for HostedSurface {
         }
         let surface = self.driver.surface_mut();
         if decorates_routing(surface)
-            && let Some(update) = ui_core::host_operation::poll_resource_operation(
+            && let Some(update) = tilo_ui_base::host_operation::poll_resource_operation(
                 surface,
                 invocation,
                 cancellation_requested,
@@ -1002,7 +1002,7 @@ impl ResourceOperations for HostedSurface {
             return Some(update);
         }
         surface.children_mut().into_iter().find_map(|child| {
-            ui_core::host_operation::poll_resource_operation(
+            tilo_ui_base::host_operation::poll_resource_operation(
                 child,
                 invocation,
                 cancellation_requested,

@@ -18,7 +18,7 @@ use std::rc::Rc;
 
 use tilo_actions::{ActionInvoker, InvocationId, InvocationUpdate, ResourceSpec};
 use ui_core::automerge::{AutoCommit, ObjId};
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use ui_core::taffy::{NodeId, Style, TaffyTree};
 use tilo_ui_base::theme::Theme;
 use ui_core::vello::kurbo::{Point, Rect};

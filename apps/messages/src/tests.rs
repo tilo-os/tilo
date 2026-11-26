@@ -309,10 +309,10 @@ fn account_or_recipient_cannot_be_substituted_into_a_dropdown_selection() {
 #[test]
 fn narrow_and_wide_surfaces_publish_accessible_routes_and_shared_navigation() {
     for (width, theme) in [
-        (420, tilo_ui_base::theme::Theme::dark()),
-        (1180, tilo_ui_base::theme::Theme::dark()),
-        (420, tilo_ui_base::theme::Theme::light()),
-        (1180, tilo_ui_base::theme::Theme::high_contrast()),
+        (420, ui::theme::Theme::dark()),
+        (1180, ui::theme::Theme::dark()),
+        (420, ui::theme::Theme::light()),
+        (1180, ui::theme::Theme::high_contrast()),
     ] {
         let mut app =
             TestApp::<MessagesShell>::for_person("messages-fixture-owner").expect("headless app");
@@ -486,7 +486,7 @@ impl ui::framework::ResourceApp for AccountOwnerFixture {
     type Resource = crate::Messages;
     const ID: &'static str = "so.tilo.settings";
     const TITLE: &'static str = "Metadata owner fixture";
-    fn view(_cx: &mut ui::framework::ViewCx<Self::Resource>) -> tilo_ui_base::widget::Element {
+    fn view(_cx: &mut ui::framework::ViewCx<Self::Resource>) -> ui::widget::Element {
         Box::new(ui::widget::Column::new())
     }
 }
@@ -775,7 +775,7 @@ fn with_nobody_yet_the_window_says_how_to_start() {
 
     let session = std::sync::Arc::new(ui::tilo_actions::remote::TestProvider::new());
     harness.set_session_api(
-        tilo_ui_base::RemoteActions::with_provider(
+        ui::RemoteActions::with_provider(
             session.clone(),
             ui::tilo_actions::remote::Caller::local_app("so.tilo.messages")
                 .in_workspace(ui::framework::testing::TEST_WORKSPACE),

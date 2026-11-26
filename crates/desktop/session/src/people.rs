@@ -19,7 +19,7 @@ use tilo_session_core::desktop::navigation::LayoutEffect;
 use tilo_session_core::desktop::people::{RosterRow, roster_rows};
 use tilo_session_core::desktop::state::DesktopHandle;
 use tilo_session_core::surfaces::{Look, Published};
-use ui::host_operation::ResourceOperationStart;
+use tilo_ui_base::host_operation::ResourceOperationStart;
 use ui::kurbo::{Point, Rect, Size, Vec2};
 use tilo_ui_base::{motion::Appear, motion::Direction, motion::MotionValue, motion::Presence, motion::Snap};
 use ui::peniko::{BlendMode, Fill};

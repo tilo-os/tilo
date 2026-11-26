@@ -69,7 +69,7 @@ mod tests {
     use std::io::{BufRead, Read, Write};
     use std::os::unix::net::UnixStream;
     use tilo_test_env::hang_bound;
-    use tilo_ui_base::widget::Widget;
+    use ui::widget::Widget;
 
     /// The persistent-control handshake that precedes every open: read the
     /// client's hello and answer ready. Returns the reader holding any bytes

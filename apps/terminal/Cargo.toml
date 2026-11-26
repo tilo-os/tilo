@@ -48,7 +48,6 @@ test-support = []
 web-features = []
 
 [dependencies]
-tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
 # OSC 8 links open through `ui::portal::open_uri` (the OpenURI portal on Linux).
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 settings-model = { package = "tilo-settings-model", path = "../../crates/sdk/settings-model" }
@@ -108,7 +107,6 @@ tilo-test-env = { path = "../../tools/test-env" }
 # (selecting text sets the primary selection, which a middle-click paste test
 # then reads — they must not interleave).
 serial_test.workspace = true
-tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # The headless test host the tests open the app in, as a person's device hosts it.
 tilo-app-test-host = { path = "../../crates/sdk/tilo-app-test-host" }

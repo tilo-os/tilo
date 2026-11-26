@@ -6,7 +6,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use automerge::{AutoCommit, ROOT};
-use tilo_ui_base::widget::Widget;
+use ui::widget::Widget;
 
 use crate::sessions::{OpenState, Sessions};
 use crate::target::{EnvironmentSummary, RecentTarget, SessionTarget};
@@ -756,18 +756,18 @@ fn native_widget_exposes_the_permission_request_and_retries_after_the_answer() {
             .iter()
             .find(|node| node.name.as_deref() == Some("Default environment"))
             .expect("the current target must be an accessible picker");
-        assert_eq!(picker.role, tilo_ui_base::a11y::Role::Button);
+        assert_eq!(picker.role, ui::a11y::Role::Button);
         assert!(widget.perform_semantic_action(
             picker.action_target.as_deref().unwrap(),
-            &tilo_ui_base::a11y::Action::Activate,
-            &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
             &ROOT,
         ));
         let tree = widget.accessibility().unwrap();
         let menu = tree
             .children
             .iter()
-            .find(|node| node.role == tilo_ui_base::a11y::Role::Menu)
+            .find(|node| node.role == ui::a11y::Role::Menu)
             .unwrap();
         let host = menu
             .children
@@ -776,8 +776,8 @@ fn native_widget_exposes_the_permission_request_and_retries_after_the_answer() {
             .unwrap();
         assert!(widget.perform_semantic_action(
             host.action_target.as_deref().unwrap(),
-            &tilo_ui_base::a11y::Action::Activate,
-            &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
             &ROOT,
         ));
     });
@@ -1251,7 +1251,7 @@ fn the_target_picker_is_in_the_window_bar_and_the_content_has_no_chrome() {
             !tree
                 .children
                 .iter()
-                .any(|node| node.role == tilo_ui_base::a11y::Role::Button
+                .any(|node| node.role == ui::a11y::Role::Button
                     && node.name.as_deref() == Some(location.label.as_str())),
             "the content draws no target picker of its own"
         );
@@ -1307,7 +1307,7 @@ fn a_shell_that_could_not_start_says_so_in_the_window_with_a_retry() {
         let retry = failure
             .children
             .iter()
-            .find(|node| node.role == tilo_ui_base::a11y::Role::Button)
+            .find(|node| node.role == ui::a11y::Role::Button)
             .expect("with a retry");
         assert_eq!(
             retry.name.as_deref(),
@@ -1317,8 +1317,8 @@ fn a_shell_that_could_not_start_says_so_in_the_window_with_a_retry() {
     });
     assert!(on_tab(&mut app, |widget| widget.perform_semantic_action(
         &retry,
-        &tilo_ui_base::a11y::Action::Activate,
-        &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
+        &ui::a11y::Action::Activate,
+        &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
         &ROOT,
     )));
     assert_eq!(
@@ -1421,8 +1421,8 @@ fn a_lost_connection_to_a_remote_shell_reconnects_and_only_its_exit_closes_the_w
     let activate = |app: &mut App, target: &str| {
         assert!(on_tab(app, |tab| tab.perform_semantic_action(
             target,
-            &tilo_ui_base::a11y::Action::Activate,
-            &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
+            &ui::a11y::Action::Activate,
+            &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
             &ROOT,
         )));
     };

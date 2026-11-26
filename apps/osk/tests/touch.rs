@@ -7,9 +7,8 @@ use std::rc::Rc;
 use osk::widget::{key_row_height, keyboard_gutter, suggestion_row_height, toolbar_row_height};
 use osk::{GeometricSwipeModel, KeyAction, KeyboardLayout, OskWidget, ShiftState, TextMirror};
 use ui::headless::Driver;
-use tilo_ui_base::{tokens::Metrics, tokens::Spacing};
-use ui::State;
-use tilo_ui_base::Widget;
+use ui::tokens::{Metrics, Spacing};
+use ui::{State, Widget};
 use vello::kurbo::{Point, Rect};
 use winit::event::TouchPhase;
 
@@ -41,7 +40,7 @@ impl Keyboard {
         let typed = Rc::new(RefCell::new(TextMirror::new(4096)));
         let sink = typed.clone();
         let widget = widget.on_output(move |output| sink.borrow_mut().apply(&output));
-        let driver = Driver::for_root(State::new(), widget, viewport, tilo_ui_base::Theme::dark());
+        let driver = Driver::for_root(State::new(), widget, viewport, ui::Theme::dark());
         Self { driver, typed }
     }
 

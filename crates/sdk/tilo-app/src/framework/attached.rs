@@ -1178,7 +1178,7 @@ impl AttachedView {
     ) -> Result<
         (
             tilo_actions::InvocationId,
-            ui_core::host_operation::ResourceOperationStart,
+            tilo_ui_base::host_operation::ResourceOperationStart,
         ),
         ApiError,
     > {

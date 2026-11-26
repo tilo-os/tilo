@@ -42,7 +42,7 @@ pub fn installed(data: &Path) -> Result<BTreeMap<String, Arc<Bundle>>, String> {
     let _ = std::fs::remove_dir_all(&staging);
     let index_path = staging.join(INDEX);
     let asset = |name: &str| format!("tilo/apps/{name}");
-    tilo_ui_base::platform::android::copy_asset(&asset(INDEX), &index_path)
+    ui::platform::android::copy_asset(&asset(INDEX), &index_path)
         .map_err(|e| format!("{}: {e}", asset(INDEX)))?;
     let index = std::fs::read_to_string(&index_path).map_err(|e| e.to_string())?;
     let mut lines = index.lines();
@@ -53,7 +53,7 @@ pub fn installed(data: &Path) -> Result<BTreeMap<String, Arc<Bundle>>, String> {
     let root = versions.join(version);
     if !root.join(INDEX).is_file() {
         for file in lines.filter(|line| !line.is_empty()) {
-            tilo_ui_base::platform::android::copy_asset(&asset(file), &staging.join(file))
+            ui::platform::android::copy_asset(&asset(file), &staging.join(file))
                 .map_err(|e| format!("{}: {e}", asset(file)))?;
         }
         // Earlier builds' copies go: only this build's apps run here.

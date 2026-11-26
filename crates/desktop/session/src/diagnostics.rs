@@ -15,7 +15,7 @@
 use serde_json::{Map, Value, json};
 use tilo_actions::{ActionAddress, ActionOutput, ApiError, ResourceSpec};
 use tilo_session_core::surfaces::Published;
-use ui::host_operation::ResourceOperationStart;
+use tilo_ui_base::host_operation::ResourceOperationStart;
 
 /// The resource the session's diagnostics are published under.
 pub const RESOURCE: &str = "session-diagnostics";

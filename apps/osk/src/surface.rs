@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use ui::framework::{EffectAnswer, Effected, PersonResource, Publishes, Setting, ViewCx};
-use tilo_ui_base::{widget::AppModel, widget::Decorator, widget::Element, widget::ModelPath, widget::Widget};
+use ui::widget::{AppModel, Decorator, Element, ModelPath, Widget};
 
 use crate::actions::{OskEffect, SetPreference};
 use crate::learned::{Learned, learned};
@@ -47,7 +47,7 @@ pub struct OskSurface {
     keyboard: OskWidget,
     preferences: Option<(Setting<OskPreferences>, Option<OskPreferences>)>,
     learned: Option<(PersonResource<Learned>, u64)>,
-    vocabulary: Option<tilo_ui_base::personal_dictionary::Snapshot>,
+    vocabulary: Option<ui::personal_dictionary::Snapshot>,
     vocabulary_identity: (Option<[u8; 32]>, u64),
     focus: Option<service::FocusChanges>,
     /// What the session says the keyboard does, while it runs as an app of
@@ -284,15 +284,15 @@ impl Decorator for OskSurface {
         self.present_preferences();
         self.present_learned();
         let identity = (
-            tilo_ui_base::local_identity::load().map(|identity| identity.group_public_key),
-            tilo_ui_base::local_identity::generation(),
+            ui::local_identity::load().map(|identity| identity.group_public_key),
+            ui::local_identity::generation(),
         );
         if identity != self.vocabulary_identity {
             self.vocabulary_identity = identity;
             self.keyboard
-                .set_personal_vocabulary(Some(tilo_ui_base::personal_dictionary::reader()));
+                .set_personal_vocabulary(Some(ui::personal_dictionary::reader()));
         }
-        let vocabulary = tilo_ui_base::personal_dictionary::snapshot().ok();
+        let vocabulary = ui::personal_dictionary::snapshot().ok();
         if vocabulary != self.vocabulary {
             self.vocabulary = vocabulary;
             self.keyboard.refresh_personal_vocabulary();
@@ -319,7 +319,7 @@ impl OskSurface {
     fn attach(&mut self, cx: &ViewCx<Osk>) {
         if cx.mode().is_live() {
             self.keyboard
-                .set_personal_vocabulary(Some(tilo_ui_base::personal_dictionary::reader()));
+                .set_personal_vocabulary(Some(ui::personal_dictionary::reader()));
         }
         if let Some(purpose) = cx.launch_option(PURPOSE_OPTION).and_then(purpose_from_str) {
             self.keyboard.set_purpose(purpose);

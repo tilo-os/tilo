@@ -1,6 +1,6 @@
 use example_localized::{App, Shelf};
 use ui::headless::{InspectionNode, SemanticExpectation};
-use tilo_ui_base::{i18n::I18nManager, i18n::PseudoLocale};
+use ui::i18n::{I18nManager, PseudoLocale};
 use ui::prelude::{HeadlessApp, Invoke};
 
 /// The app in a known language, whatever the machine running the test uses.

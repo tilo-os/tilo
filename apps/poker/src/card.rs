@@ -7,8 +7,7 @@ use ui::advanced::{Affine, NodeId, Scene, TaffyTree};
 use ui::prelude::*;
 use ui::vello::kurbo::{BezPath, Circle, RoundedRect, Shape};
 use ui::vello::peniko::{Color, Fill};
-use ui::{widget::SurfaceLevel, widget::paint_surface};
-use tilo_ui_base::widget::TaffyTreeExt as _;
+use ui::widget::{SurfaceLevel, TaffyTreeExt as _, paint_surface};
 
 use crate::cards;
 
@@ -245,9 +244,9 @@ impl Widget for CardView {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    tilo_ui_base::rect_geometry!();
+    ui::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -269,8 +268,8 @@ impl Widget for CardView {
         Some(&self.id)
     }
 
-    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
-        use tilo_ui_base::{a11y::AccessNode, a11y::Role};
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        use ui::a11y::{AccessNode, Role};
         Some(AccessNode::new(Role::Image).with_name(self.name.clone()))
     }
 }

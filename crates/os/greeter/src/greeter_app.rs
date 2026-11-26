@@ -2249,7 +2249,7 @@ impl Widget for GreeterApp {
     tilo_ui_base::provides!(
         dyn tilo_ui_base::widget::FullscreenProvider,
         dyn tilo_ui_base::widget::resources::PublishesResources,
-        dyn ui::host_operation::ResourceOperations
+        dyn tilo_ui_base::host_operation::ResourceOperations
     );
 
     /// Take what the controls reported since the last pass. The document is
@@ -2705,7 +2705,7 @@ impl Widget for GreeterApp {
     }
 }
 
-impl ui::host_operation::ResourceOperations for GreeterApp {
+impl tilo_ui_base::host_operation::ResourceOperations for GreeterApp {
     /// The greeter answers its own published operations; without this the
     /// host refuses to publish any of them.
     fn local_resource_operation_handlers(&self) -> &'static [&'static str] {
@@ -2717,13 +2717,13 @@ impl ui::host_operation::ResourceOperations for GreeterApp {
     /// what the console runs.
     fn start_operation(
         &mut self,
-        op: &ui::host_operation::ResourceOperation<'_>,
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
         doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &automerge::ObjId,
-    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         let request = op.request();
         if request.type_id != console::OPERATION {
-            return ui::host_operation::start_in_children(self, op, doc, path);
+            return tilo_ui_base::host_operation::start_in_children(self, op, doc, path);
         }
         let mut encoded = ui::tilo_actions::EncodedAction {
             type_id: request.type_id.to_owned(),
@@ -2733,7 +2733,7 @@ impl ui::host_operation::ResourceOperations for GreeterApp {
         encoded.payload.zeroize();
         applied
             .map(|value| {
-                Some(ui::host_operation::ResourceOperationStart::Completed(
+                Some(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                     ui::tilo_actions::ActionOutput {
                         value: Some(value),
                         resources: Vec::new(),

@@ -38,7 +38,7 @@ use tilo_compositor::Compositor;
 use tilo_session_core::surfaces::{Look, Published};
 use tilo_ui_base::collaboration::ExportedAction;
 use ui::floating_surface::{FloatingSurfaceClientMessage, FloatingSurfaceHostMessage};
-use ui::host_operation::ResourceOperationStart;
+use tilo_ui_base::host_operation::ResourceOperationStart;
 use ui::surface_peer::FRAMING;
 use tilo_ui_base::{surface_services::ACTIONS_FD_ENV, surface_services::APP_ID_ENV, surface_services::SOCKET_ENV, surface_services::WORKSPACE_ENV};
 use ui::window_targets::{TargetAction, WindowControl, WindowTarget};

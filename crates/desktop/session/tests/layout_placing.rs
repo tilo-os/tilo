@@ -87,9 +87,9 @@ impl Published for Mailbox {
         address: &ActionAddress,
         _: &serde_json::Map<String, serde_json::Value>,
         _look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
         self.asked.borrow_mut().push(address.action.clone());
-        Ok(ui::host_operation::ResourceOperationStart::Completed(
+        Ok(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
             tilo_actions::ActionOutput::default(),
         ))
     }
@@ -753,8 +753,8 @@ fn places_opened_beside_one_place_stand_clear_of_it_and_each_other() {
             _: &ActionAddress,
             _: &serde_json::Map<String, serde_json::Value>,
             _: &mut tilo_session_core::surfaces::Look<'_>,
-        ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
-            Ok(ui::host_operation::ResourceOperationStart::Completed(
+        ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+            Ok(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ))
         }
@@ -889,8 +889,8 @@ fn the_open_brings_a_place_of_the_same_root_forward_rather_than_opening_a_second
             _: &ActionAddress,
             _: &serde_json::Map<String, serde_json::Value>,
             _: &mut tilo_session_core::surfaces::Look<'_>,
-        ) -> Result<ui::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
-            Ok(ui::host_operation::ResourceOperationStart::Completed(
+        ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError> {
+            Ok(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                 tilo_actions::ActionOutput::default(),
             ))
         }

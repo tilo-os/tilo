@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use ui_core::application_view::{ApplicationFocusRestore, ApplicationLocalView};
 use ui_core::automerge::AutoCommit;
 use ui_core::bound_dispatch::BoundWidget;
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use ui_core::resource::ResourceSaveStatus;
 use ui_core::search::capability::SearchSource;
 use ui_core::view::ThawError;
@@ -64,10 +64,10 @@ pub(crate) trait RootModel:
     ) -> Option<tilo_actions::InvocationUpdate>;
     fn start_operation(
         &mut self,
-        op: &ui_core::host_operation::ResourceOperation<'_>,
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
         doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
-    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String>;
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String>;
 
     /// [`Self::start_operation`], keeping the refusal the app gave: an
     /// action's answer that names a code (a message the mailbox holds
@@ -202,7 +202,7 @@ pub(crate) trait RootControls {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
+        result: &Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
     );
     fn has_pending_control_invocation(&self) -> bool;
 }
@@ -439,10 +439,10 @@ impl ResourceOperations for RootWidget {
 
     fn start_operation(
         &mut self,
-        op: &ui_core::host_operation::ResourceOperation<'_>,
+        op: &tilo_ui_base::host_operation::ResourceOperation<'_>,
         doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ui_core::automerge::ObjId,
-    ) -> Result<Option<ui_core::host_operation::ResourceOperationStart>, String> {
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, String> {
         self.0.start_operation(op, doc, path)
     }
 
@@ -669,7 +669,7 @@ impl ActionControls for RootWidget {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
+        result: &Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
     ) {
         self.0.on_control_invocation_result(address, result);
     }

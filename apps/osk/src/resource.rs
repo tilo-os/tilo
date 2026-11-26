@@ -13,9 +13,9 @@
 use serde::{Deserialize, Serialize};
 use ui::application::{ComponentBehaviour, WindowRole};
 use ui::framework::{ResourceApp, ViewCx};
-use tilo_ui_base::i18n::EmbeddedCatalog;
+use ui::i18n::EmbeddedCatalog;
 use ui::tilo_resource::{self, Model, resource};
-use tilo_ui_base::widget::Element;
+use ui::widget::Element;
 
 use crate::actions::LETTER_LAYOUTS;
 
@@ -194,18 +194,18 @@ mod tests {
             .a11y_node_named(name)
             .unwrap_or_else(|| panic!("no key named {name:?}"));
         harness
-            .perform_a11y_action(node, &tilo_ui_base::a11y::Action::Activate)
+            .perform_a11y_action(node, &ui::a11y::Action::Activate)
             .unwrap();
         harness.relayout();
     }
 
     #[test]
     fn service_keyboard_uses_the_assigned_surface_in_both_orientations() {
-        use tilo_ui_base::widget::Widget;
+        use ui::widget::Widget;
         for theme in [
-            tilo_ui_base::Theme::light(),
-            tilo_ui_base::Theme::dark(),
-            tilo_ui_base::Theme::high_contrast(),
+            ui::Theme::light(),
+            ui::Theme::dark(),
+            ui::Theme::high_contrast(),
         ] {
             let mut app = keyboard();
             app.harness().set_theme(theme);
@@ -380,7 +380,7 @@ mod tests {
             .perform_semantic_named(
                 "on_screen_keyboard",
                 Some(&format!("osk:emoji:{first}")),
-                &tilo_ui_base::a11y::Action::Activate,
+                &ui::a11y::Action::Activate,
             )
             .unwrap();
         app.settle();

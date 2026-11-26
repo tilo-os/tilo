@@ -12,7 +12,7 @@ use tilo_session_core::desktop::osd::{Device, DeviceGlyph, Hint, Level, Osd, Osd
 use tilo_session_core::desktop::verbs::CHROME_RESOURCE;
 use tilo_session_core::super_tap::Ask;
 use tilo_session_core::surface::{KeyClaim, ShellSurface, SurfaceKey, SurfaceLayer};
-use ui::host_operation::ResourceOperationStart;
+use tilo_ui_base::host_operation::ResourceOperationStart;
 use ui::shortcut_table::ShortcutAction;
 use ui::winit::keyboard::{Key, NamedKey};
 use xkeysym::key as keysyms;

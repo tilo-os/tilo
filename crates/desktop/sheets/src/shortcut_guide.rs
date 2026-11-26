@@ -15,10 +15,14 @@ use std::rc::Rc;
 use settings_store::hardware::{KeyChord, ShortcutAction, ShortcutConfig, ShortcutConfigError};
 use settings_store::keyboard_shortcuts::{ShortcutEntry, catalogue};
 use ui::framework::{Effected, ResourceApp, ViewCx};
-use tilo_ui_base::{input::ControllerBinding, input::ControllerButton, input::InputBinding, input::KeyLegend, input::KeyboardBinding, input::KeyboardModifier, input::TouchGesture};
+use ui::input::{
+    ControllerBinding, ControllerButton, InputBinding, KeyLegend, KeyboardBinding,
+    KeyboardModifier, TouchGesture,
+};
 use ui::prelude::*;
-use ui::{widget::Column, widget::Container, widget::InputHint, widget::KeyHint, widget::ModalDialog, widget::Row, widget::Scrollable, widget::Text};
-use tilo_ui_base::widget::Element;
+use ui::widget::{
+    Column, Container, Element, InputHint, KeyHint, ModalDialog, Row, Scrollable, Text,
+};
 
 use crate::keyboard_shortcuts::chord_text;
 use crate::presentation::{Presentation, SheetState, presented};
@@ -120,7 +124,7 @@ pub struct Guide {
     pub modality: Modality,
     /// The controller in the person's hands, when it is known, and its
     /// face buttons.
-    pub controller: Option<tilo_ui_base::ControllerFamily>,
+    pub controller: Option<ui::ControllerFamily>,
     pub faces: Faces,
     /// The navigation pairs, which can be changed.
     pub pairs: Vec<Pair>,
@@ -205,7 +209,7 @@ pub trait AppShortcuts {
 pub struct State {
     table: Rc<RefCell<ShortcutConfig>>,
     apps: Option<Rc<dyn AppShortcuts>>,
-    controller: Rc<Cell<Option<tilo_ui_base::ControllerFamily>>>,
+    controller: Rc<Cell<Option<ui::ControllerFamily>>>,
     up: Cell<bool>,
     listening: RefCell<Option<String>>,
     caught: RefCell<Vec<Caught>>,
@@ -243,7 +247,7 @@ type GuideKey = (
     ShortcutConfig,
     Option<String>,
     Option<String>,
-    Option<tilo_ui_base::ControllerFamily>,
+    Option<ui::ControllerFamily>,
     KeysPressed,
 );
 
@@ -255,7 +259,7 @@ impl State {
     pub fn new(
         table: Rc<RefCell<ShortcutConfig>>,
         apps: Option<Rc<dyn AppShortcuts>>,
-        controller: Rc<Cell<Option<tilo_ui_base::ControllerFamily>>>,
+        controller: Rc<Cell<Option<ui::ControllerFamily>>>,
     ) -> Self {
         Self {
             table,
@@ -489,7 +493,7 @@ impl State {
 
 /// Which face button carries each role on `family`, as the guide draws them.
 #[must_use]
-pub fn faces(family: tilo_ui_base::ControllerFamily) -> Faces {
+pub fn faces(family: ui::ControllerFamily) -> Faces {
     let [confirm, cancel, third, fourth] = family.faces();
     Faces {
         confirm,
@@ -533,7 +537,7 @@ impl ResourceApp for ShortcutGuideApp {
     // Nothing is kept: there is no past to look back on.
     const DOCUMENT_HISTORY: bool = false;
 
-    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::CATALOG)
     }
 
@@ -662,7 +666,7 @@ fn hint(binding: InputBinding) -> Element {
 }
 
 fn body(guide: &Guide, ask: &Ask) -> Element {
-    let gap = tilo_ui_base::tokens::Spacing::BASE.s3;
+    let gap = ui::tokens::Spacing::BASE.s3;
     let mut column = Column::new()
         .with_gap(gap)
         .push(caption(&t("guide-reopen-hint")));
@@ -680,7 +684,7 @@ fn body(guide: &Guide, ask: &Ask) -> Element {
                 let text = message.clone().unwrap_or_else(|| {
                     crate::t_args(
                         "guide-press-new-shortcut",
-                        &[("action", tilo_ui_base::i18n::ArgValue::Text(label))],
+                        &[("action", ui::i18n::ArgValue::Text(label))],
                     )
                 });
                 Some((text, true))
@@ -696,11 +700,11 @@ fn body(guide: &Guide, ask: &Ask) -> Element {
             column = column.push(if cancellable {
                 Box::new(
                     Row::new()
-                        .with_gap(tilo_ui_base::tokens::Spacing::BASE.s4)
+                        .with_gap(ui::tokens::Spacing::BASE.s4)
                         .push(line)
                         .push(Box::new(
                             Row::new()
-                                .with_gap(tilo_ui_base::tokens::Spacing::BASE.s2)
+                                .with_gap(ui::tokens::Spacing::BASE.s2)
                                 .push(hint(InputBinding::Keyboard(KeyboardBinding {
                                     modifiers: Vec::new(),
                                     key: KeyLegend::Escape,
@@ -717,7 +721,7 @@ fn body(guide: &Guide, ask: &Ask) -> Element {
         Modality::Keys => keys(column, guide, ask),
         Modality::Controller => controller(
             column,
-            guide.controller.unwrap_or(tilo_ui_base::ControllerFamily::Generic),
+            guide.controller.unwrap_or(ui::ControllerFamily::Generic),
             guide.faces,
         ),
         Modality::Touch => touch(column),
@@ -728,7 +732,7 @@ fn body(guide: &Guide, ask: &Ask) -> Element {
 /// The keyboard's navigation pairs, which can be changed, its essentials
 /// and its notes.
 fn keys(mut column: Column, guide: &Guide, ask: &Ask) -> Column {
-    let gap = tilo_ui_base::tokens::Spacing::BASE.s2;
+    let gap = ui::tokens::Spacing::BASE.s2;
     column = column.push(heading(&t("guide-navigation-heading")));
     for pair in &guide.pairs {
         let key = |shortcut: &Shortcut| -> Element {
@@ -778,7 +782,7 @@ fn keys(mut column: Column, guide: &Guide, ask: &Ask) -> Column {
         "guide-group-capture",
         "guide-published-heading",
     ];
-    let mut groups = Row::new().with_gap(tilo_ui_base::tokens::Spacing::BASE.s6);
+    let mut groups = Row::new().with_gap(ui::tokens::Spacing::BASE.s6);
     for (index, rows) in guide.essentials.iter().enumerate() {
         let mut group = Column::new().with_gap(gap);
         if let Some(title) = titles.get(index) {
@@ -810,11 +814,11 @@ fn keys(mut column: Column, guide: &Guide, ask: &Ask) -> Column {
 
 /// The controller's buttons: the guide follows whichever controller is in
 /// the person's hands, through the bindings' own legends.
-fn controller(column: Column, family: tilo_ui_base::ControllerFamily, faces: Faces) -> Column {
+fn controller(column: Column, family: ui::ControllerFamily, faces: Faces) -> Column {
     use ControllerButton as B;
     /// One row's buttons, and the second binding when it is a pair.
     type Legends = (Vec<B>, Option<Vec<B>>);
-    let gap = tilo_ui_base::tokens::Spacing::BASE.s2;
+    let gap = ui::tokens::Spacing::BASE.s2;
     let one = |button: B| (vec![button], None);
     let both = |first: B, second: B| (vec![first], Some(vec![second]));
     let chord = |first: B, second: B| (vec![B::Guide, first], Some(vec![B::Guide, second]));
@@ -843,7 +847,7 @@ fn controller(column: Column, family: tilo_ui_base::ControllerFamily, faces: Fac
         "guide-controller-intro",
         &[(
             "guide",
-            tilo_ui_base::i18n::ArgValue::Text(B::Guide.label(family).to_owned()),
+            ui::i18n::ArgValue::Text(B::Guide.label(family).to_owned()),
         )],
     )));
     for (label, (first, second)) in rows {
@@ -869,7 +873,7 @@ fn controller(column: Column, family: tilo_ui_base::ControllerFamily, faces: Fac
 
 /// The touchscreen's gestures.
 fn touch(column: Column) -> Column {
-    let gap = tilo_ui_base::tokens::Spacing::BASE.s2;
+    let gap = ui::tokens::Spacing::BASE.s2;
     let gestures = [
         (
             "guide-touch-focus-next-window",
@@ -1143,7 +1147,7 @@ fn unassigned() -> KeyboardBinding {
 /// presses for it.
 fn keycaps(chord: &KeyChord) -> KeyboardBinding {
     let (modifiers, key) =
-        tilo_ui_base::keycaps::as_typed(chord.modifiers.iter().map(String::as_str), &chord.key);
+        ui::keycaps::as_typed(chord.modifiers.iter().map(String::as_str), &chord.key);
     KeyboardBinding::from_keys(modifiers.iter().map(String::as_str).chain([key.as_str()]))
 }
 
@@ -1442,7 +1446,7 @@ pub fn peek(table: &ShortcutConfig, shell: PeekShell) -> Vec<(String, Vec<KeyHin
 /// layout types them; `None` when Super is no part of it.
 fn after_super(chord: &KeyChord) -> Option<(Vec<String>, String)> {
     chord.modifiers.contains("Super").then(|| {
-        tilo_ui_base::keycaps::as_typed(
+        ui::keycaps::as_typed(
             chord
                 .modifiers
                 .iter()
@@ -1633,7 +1637,7 @@ mod tests {
             let mut table = ShortcutConfig::default();
             assert_eq!(
                 peek_row(&peek(&table, SHELL), &search).map(|hint| hint.keys),
-                Some(vec![tilo_ui_base::keycaps::active().key("space")]),
+                Some(vec![ui::keycaps::active().key("space")]),
                 "Super is held already: the row names only the key after it"
             );
             table

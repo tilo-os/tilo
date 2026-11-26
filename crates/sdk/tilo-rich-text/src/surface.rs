@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::rc::Rc;
-use tilo_ui_base::{widget::AppModel, widget::ModelPath};
+use ui::widget::{AppModel, ModelPath};
 
 use tilo_doc::snapshot::BlockView;
 use tilo_document::{ChangeCursor, RichText, RichTextAction, RichTextState};
@@ -13,8 +13,8 @@ use ui::rich_edit::block_editor::{FindReplace, FindReplaceBatch, FindReplaceTarg
 use ui::rich_edit::{Block, BlockContent, BlockEditor, EditScope};
 use ui::tilo_actions::ActionError;
 use ui::tilo_resource::Doc;
-use tilo_ui_base::widget::Edits;
-use tilo_ui_base::{widget::Decorator, widget::EventCtx, widget::Widget};
+use ui::widget::Edits;
+use ui::widget::{Decorator, EventCtx, Widget};
 use ui::winit::event::WindowEvent;
 
 use crate::convert::content_of;
@@ -43,8 +43,8 @@ pub enum FieldOutcome {
 /// the app declined for one they can act on, else that the edit was not kept at all.
 fn not_kept(error: &ActionError) -> String {
     match error {
-        ActionError::Declined(reason) => tilo_ui_base::i18n::declined_text(*reason),
-        _ => tilo_ui_base::i18n::widget_text("rich-text-edit-not-kept"),
+        ActionError::Declined(reason) => ui::i18n::declined_text(*reason),
+        _ => ui::i18n::widget_text("rich-text-edit-not-kept"),
     }
 }
 
@@ -211,7 +211,7 @@ impl<S: RichTextSource + 'static> RichTextSurface<S> {
     /// The text menu the editor has open on its words, as assistive
     /// technology reads it, where it is drawn: a host that publishes nodes of
     /// its own adds this beside the field's node, as it adds its own menus.
-    pub fn text_menu_accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+    pub fn text_menu_accessibility(&self) -> Option<ui::a11y::AccessNode> {
         self.editor.text_menu_access_node()
     }
 
@@ -240,7 +240,7 @@ impl<S: RichTextSource + 'static> RichTextSurface<S> {
     /// Put a mention of the member `id`, shown as `label`, at the caret
     /// (replacing a selection, such as the typed query the person picked it
     /// from), through the source's edits.
-    pub fn insert_mention(&mut self, edits: &mut Edits<'_>, id: &tilo_ui_base::MemberId, label: &str) {
+    pub fn insert_mention(&mut self, edits: &mut Edits<'_>, id: &ui::MemberId, label: &str) {
         self.erased().insert_mention_dyn(edits, id, label);
     }
 
@@ -293,7 +293,7 @@ impl RichTextSurface<dyn ErasedSource> {
     }
 
     /// [`RichTextSurface::insert_mention`], compiled once.
-    fn insert_mention_dyn(&mut self, edits: &mut Edits<'_>, id: &tilo_ui_base::MemberId, label: &str) {
+    fn insert_mention_dyn(&mut self, edits: &mut Edits<'_>, id: &ui::MemberId, label: &str) {
         if self.editor.insert_mention(id, label) {
             self.commit(edits);
         }
@@ -877,7 +877,7 @@ impl RichTextSurface<dyn ErasedSource> {
     }
 
     fn sync_dyn(&mut self, state: &AppModel, path: &ModelPath) {
-        let (state, path) = tilo_ui_base::doc::document_ref(state, path);
+        let (state, path) = ui::doc::document_ref(state, path);
         self.source.sync(state);
         if !self.source.can_read() || self.source.revision() != self.revision {
             self.present_state(None);
@@ -914,10 +914,10 @@ impl RichTextSurface<dyn ErasedSource> {
 
     /// The editor's tree, each block's row with its Duplicate button, which
     /// the editor keeps with the row while the button is the same.
-    fn accessibility_shared_dyn(&self) -> Option<tilo_ui_base::a11y::SharedAccessNode> {
-        use tilo_ui_base::{a11y::AccessNode, a11y::AccessState, a11y::Role};
+    fn accessibility_shared_dyn(&self) -> Option<ui::a11y::SharedAccessNode> {
+        use ui::a11y::{AccessNode, AccessState, Role};
         let disabled = self.source.read_only() || self.is_composing();
-        let duplicate_label = tilo_ui_base::i18n::widget_text("widget-block-duplicate");
+        let duplicate_label = ui::i18n::widget_text("widget-block-duplicate");
         let duplicate = |id: &str, bounds: ui::vello::kurbo::Rect| {
             AccessNode::new(Role::Button)
                 .with_name(duplicate_label.clone())
@@ -933,7 +933,7 @@ impl RichTextSurface<dyn ErasedSource> {
         ))?;
         let selection_disabled = disabled || self.editor.selected_block_range().is_none();
         let mut duplicate = AccessNode::new(Role::Button)
-            .with_name(tilo_ui_base::i18n::widget_text("widget-block-duplicate-selection"))
+            .with_name(ui::i18n::widget_text("widget-block-duplicate-selection"))
             .with_action_target("notes.editor:duplicate")
             .with_state(
                 AccessState::new()
@@ -946,9 +946,9 @@ impl RichTextSurface<dyn ErasedSource> {
             let disabled = disabled || self.editor.selected_block_move(up).is_none();
             let mut movement = AccessNode::new(Role::Button)
                 .with_name(if up {
-                    tilo_ui_base::i18n::widget_text("widget-block-move-selection-up")
+                    ui::i18n::widget_text("widget-block-move-selection-up")
                 } else {
-                    tilo_ui_base::i18n::widget_text("widget-block-move-selection-down")
+                    ui::i18n::widget_text("widget-block-move-selection-down")
                 })
                 .with_action_target(if up {
                     "notes.editor:move-up"
@@ -965,29 +965,29 @@ impl RichTextSurface<dyn ErasedSource> {
     fn perform_semantic_action_dyn(
         &mut self,
         target: &str,
-        action: &tilo_ui_base::a11y::Action,
+        action: &ui::a11y::Action,
         state: &mut Edits<'_>,
         path: &ModelPath,
     ) -> bool {
         if matches!(target, "notes.editor:move-up" | "notes.editor:move-down") {
-            if !matches!(action, tilo_ui_base::a11y::Action::Activate) {
+            if !matches!(action, ui::a11y::Action::Activate) {
                 return false;
             }
-            let (state, _) = tilo_ui_base::doc::document(state, path);
+            let (state, _) = ui::doc::document(state, path);
             return self.move_selected_blocks(state, target.ends_with(":move-up"));
         }
         if target == "notes.editor:duplicate" {
-            if !matches!(action, tilo_ui_base::a11y::Action::Activate) {
+            if !matches!(action, ui::a11y::Action::Activate) {
                 return false;
             }
-            let (state, _) = tilo_ui_base::doc::document(state, path);
+            let (state, _) = ui::doc::document(state, path);
             return self.duplicate_blocks(state, None);
         }
         if let Some(id) = target.strip_prefix("notes.block-duplicate:") {
-            if !matches!(action, tilo_ui_base::a11y::Action::Activate) {
+            if !matches!(action, ui::a11y::Action::Activate) {
                 return false;
             }
-            let (state, _) = tilo_ui_base::doc::document(state, path);
+            let (state, _) = ui::doc::document(state, path);
             return self.duplicate_blocks(state, Some(id));
         }
         // What the action edited is written by the settle pass that follows.
@@ -1000,18 +1000,18 @@ impl RichTextSurface<dyn ErasedSource> {
     /// edits, a paragraph per line.
     fn perform_action_dyn(
         &mut self,
-        action: &tilo_ui_base::a11y::Action,
+        action: &ui::a11y::Action,
         _key_path: &[u64],
         state: &mut Edits<'_>,
         path: &ModelPath,
     ) -> bool {
-        let (state, _) = tilo_ui_base::doc::document(state, path);
+        let (state, _) = ui::doc::document(state, path);
         match action {
-            tilo_ui_base::a11y::Action::Focus => {
+            ui::a11y::Action::Focus => {
                 Widget::set_focus(&mut self.editor, true);
                 true
             }
-            tilo_ui_base::a11y::Action::SetValue(text) => {
+            ui::a11y::Action::SetValue(text) => {
                 if self.source.read_only() || self.source.revision().is_none() {
                     return false;
                 }
@@ -1132,7 +1132,7 @@ impl RichTextSurface {
 }
 
 impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
-    tilo_ui_base::provides!(dyn ui::undo::CommittedActions; inner = editor);
+    ui::provides!(dyn ui::undo::CommittedActions; inner = editor);
 
     type Inner = BlockEditor;
 
@@ -1147,12 +1147,12 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     fn build_layout(
         &mut self,
         taffy: &mut ui::taffy::TaffyTree<()>,
-        theme: &tilo_ui_base::theme::Theme,
+        theme: &ui::theme::Theme,
         nodes: &mut HashMap<ui::taffy::NodeId, *mut dyn Widget>,
     ) -> ui::taffy::NodeId {
         let node = self.editor.build_layout(taffy, theme, nodes);
         // Synthetic block actions belong to this canonical document surface.
-        tilo_ui_base::widget::register_node(nodes, node, self);
+        ui::widget::register_node(nodes, node, self);
         node
     }
 
@@ -1170,25 +1170,25 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
         self.erased().handle_event_dyn(event, ctx);
     }
 
-    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
-        Decorator::accessibility_shared(self).map(tilo_ui_base::a11y::SharedAccessNode::into_owned)
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+        Decorator::accessibility_shared(self).map(ui::a11y::SharedAccessNode::into_owned)
     }
 
     /// The editor's tree, each block's row with its Duplicate button, which
     /// the editor keeps with the row while the button is the same.
-    fn accessibility_shared(&self) -> Option<tilo_ui_base::a11y::SharedAccessNode> {
+    fn accessibility_shared(&self) -> Option<ui::a11y::SharedAccessNode> {
         self.erased_ref().accessibility_shared_dyn()
     }
 
     /// Only adds children to the editor's node, so its root is the editor's.
-    fn accessibility_root(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+    fn accessibility_root(&self) -> Option<ui::a11y::AccessNode> {
         self.editor.accessibility_root()
     }
 
     fn perform_semantic_action(
         &mut self,
         target: &str,
-        action: &tilo_ui_base::a11y::Action,
+        action: &ui::a11y::Action,
         state: &mut Edits<'_>,
         path: &ModelPath,
     ) -> bool {
@@ -1204,7 +1204,7 @@ impl<S: RichTextSource + 'static> Decorator for RichTextSurface<S> {
     /// edits, a paragraph per line.
     fn perform_action(
         &mut self,
-        action: &tilo_ui_base::a11y::Action,
+        action: &ui::a11y::Action,
         key_path: &[u64],
         state: &mut Edits<'_>,
         path: &ModelPath,
@@ -1239,7 +1239,7 @@ mod tests {
         const ID: &'static str = "so.tilo.rich-text-field-work";
         const TITLE: &'static str = "Field";
 
-        fn view(cx: &mut ViewCx<RichText>) -> tilo_ui_base::widget::Element {
+        fn view(cx: &mut ViewCx<RichText>) -> ui::widget::Element {
             let body = cx.child::<RichText>("tilo.rich-text/body", |edit| edit);
             Box::new(RichTextSurface::field(RichTextField::new(body, |_| {
                 Some(ROOT)
@@ -1252,7 +1252,7 @@ mod tests {
     /// editor between keystrokes (a scroll, a request it takes) does so
     /// through [`RichTextSurface::editor_mut`], as Notes does every frame.
     fn typing_work(paragraphs: usize, typed: &str, host_reaches_in: bool) -> (usize, usize) {
-        tilo_ui_base::i18n::I18nManager::init("en-US");
+        ui::i18n::I18nManager::init("en-US");
         let mut app = TestApp::<FieldApp>::new().unwrap();
         let mut markdown = String::new();
         for index in 0..paragraphs {

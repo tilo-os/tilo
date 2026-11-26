@@ -23,7 +23,7 @@ pub mod workspace_settings;
 
 pub use presentation::{Phase, Presentation, SheetState};
 
-tilo_ui_base::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
+ui::embedded_catalog!(pub(crate) fn, ["en-US", "de-DE"]);
 
 /// The sheet's word for `key`, in the person's language: for what the
 /// session composes into a sheet it shows here.
@@ -46,28 +46,28 @@ pub(crate) fn code(link: &str, id: &str, alt: &str) -> ui::widget::QrWidget {
 }
 
 /// `code` centred across its sheet.
-pub(crate) fn centred(code: ui::widget::QrWidget) -> tilo_ui_base::widget::Element {
+pub(crate) fn centred(code: ui::widget::QrWidget) -> ui::widget::Element {
     let row = ui::widget::Row::new().with_justify(ui::taffy::JustifyContent::Center);
     Box::new(row.push(Box::new(code)))
 }
 
 /// `text` as small print: what a sheet says under a part of it.
-pub(crate) fn caption(text: &str) -> tilo_ui_base::widget::Element {
+pub(crate) fn caption(text: &str) -> ui::widget::Element {
     Box::new(ui::widget::Text::new(text).with_role(ui::prelude::TextRole::Caption))
 }
 
 /// The same, with `args` filled in.
 #[must_use]
 pub fn words(key: &str, args: &[(&str, &str)]) -> String {
-    let args: Vec<(&str, tilo_ui_base::i18n::ArgValue)> = args
+    let args: Vec<(&str, ui::i18n::ArgValue)> = args
         .iter()
-        .map(|(name, value)| (*name, tilo_ui_base::i18n::ArgValue::from(*value)))
+        .map(|(name, value)| (*name, ui::i18n::ArgValue::from(*value)))
         .collect();
     words_with(key, &args)
 }
 
 /// The same, with `args` filled in, one of them a number the reader's grammar counts.
 #[must_use]
-pub fn words_with(key: &str, args: &[(&str, tilo_ui_base::i18n::ArgValue)]) -> String {
+pub fn words_with(key: &str, args: &[(&str, ui::i18n::ArgValue)]) -> String {
     t_args(key, args)
 }

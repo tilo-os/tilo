@@ -4,7 +4,7 @@
 
 use tilo_app_test_host::TestApp;
 use tilo_sheets::display_confirm::{ConfirmEffect, ConfirmState, DisplayConfirmApp, Question};
-use tilo_ui_base::a11y::Action as A11yAction;
+use ui::a11y::Action as A11yAction;
 use ui::vello::kurbo::Rect;
 
 const VIEWPORT: (u32, u32) = (1280, 800);

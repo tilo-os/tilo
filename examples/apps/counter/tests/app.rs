@@ -88,7 +88,7 @@ fn reset_runs_at_once_and_undo_brings_the_count_back() {
 /// Permissions are enforced on every action: a viewer can read but not edit.
 #[test]
 fn a_viewer_cannot_count() {
-    let mut app = HeadlessApp::<App>::with_role(tilo_ui_base::Role::Viewer).expect("the app opens");
+    let mut app = HeadlessApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
     assert!(app.invoke(Counter::ADD.with(1)).is_err());
     assert_eq!(app.state().count, 0);
 }

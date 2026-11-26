@@ -9,7 +9,7 @@
 
 use ui::framework::{ResourceApp, ViewCx};
 use ui::tilo_resource::{self, Effect, Model, resource};
-use tilo_ui_base::widget::Element;
+use ui::widget::Element;
 
 use crate::link::Studio;
 use crate::surface::StudioSurface;

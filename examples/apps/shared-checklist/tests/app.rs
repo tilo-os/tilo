@@ -2,7 +2,7 @@
 //! two members' machines would be.
 
 use example_shared_checklist::{App, Checklist};
-use tilo_ui_base::a11y::Action;
+use ui::a11y::Action;
 use ui::headless::SemanticExpectation;
 use ui::prelude::{Edit, HeadlessApp, Id, Invoke, Replica};
 use ui::tilo_resource::AppNamed;
@@ -192,7 +192,7 @@ fn clearing_checked_items_is_one_undo_step() {
 
 #[test]
 fn a_viewer_follows_but_cannot_edit() {
-    let mut app = HeadlessApp::<App>::with_role(tilo_ui_base::Role::Viewer).expect("the app opens");
+    let mut app = HeadlessApp::<App>::with_role(ui::Role::Viewer).expect("the app opens");
     assert!(
         app.invoke(edit(&Checklist::paths().name.replace("Mine")))
             .is_err()

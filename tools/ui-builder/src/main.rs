@@ -6,10 +6,8 @@ use std::path::{Path, PathBuf};
 
 use ui::framework::{ResourceApp, ViewCx};
 use ui::tilo_resource::{Doc, ModelError, NoAction, Resource};
-use ui::widget::Text;
-use tilo_ui_base::widget::Element;
-use ui::{UiGraphEditor, UiGraphHandle};
-use tilo_ui_base::Theme;
+use ui::widget::{Element, Text};
+use ui::{Theme, UiGraphEditor, UiGraphHandle};
 
 /// The editor's resource, where its window is published. The graph it
 /// edits is the file the launch names.

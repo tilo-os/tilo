@@ -64,7 +64,7 @@ mod native_editing_tests {
                 !widget.ime_requires_deferred_ack(),
                 "typing revoked the editor's offer"
             );
-            assert_eq!(widget.ime_content(), Some(tilo_ui_base::ime::InputContent::TERMINAL));
+            assert_eq!(widget.ime_content(), Some(ui::ime::InputContent::TERMINAL));
             let mut packet = [0; editor::FRAME_BYTES];
             let size = producer.receive(&mut packet).unwrap();
             assert_eq!(size, editor::HEADER_BYTES);
@@ -76,7 +76,7 @@ mod native_editing_tests {
             let (widget, _producer) = fixture().expect("qualified native editor fixture");
             assert_eq!(
                 widget.ime_content(),
-                Some(tilo_ui_base::ime::InputContent::TERMINAL),
+                Some(ui::ime::InputContent::TERMINAL),
                 "the prompt is still terminal input"
             );
             assert!(
@@ -87,7 +87,7 @@ mod native_editing_tests {
                 !widget.ime_refuses_ordinary_commits(),
                 "the on-screen keyboard's commits reach the prompt"
             );
-            assert!(tilo_ui_base::ime::ImeWindowState::from_widget(&widget).is_some());
+            assert!(ui::ime::ImeWindowState::from_widget(&widget).is_some());
         }
 
         phase the_terminal_keys_reach_a_native_editor_prompt_as_keys;
@@ -120,7 +120,7 @@ mod native_editing_tests {
                     bytes,
                     "{key:?} ctrl={ctrl} alt={alt}"
                 );
-                assert_eq!(widget.ime_content(), Some(tilo_ui_base::ime::InputContent::TERMINAL));
+                assert_eq!(widget.ime_content(), Some(ui::ime::InputContent::TERMINAL));
             }
         }
 

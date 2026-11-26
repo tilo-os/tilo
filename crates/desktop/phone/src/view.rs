@@ -21,7 +21,7 @@ use tilolang_tilo::runtime::ResourceRef;
 use tilolang_tilo::runtime::delegate::{Invocation, Invoked, Invoker};
 use tilolang_tilo::runtime::value::Value;
 use tilolang_window::Packages;
-use tilo_ui_base::{widget::AppModel, widget::DrawChild as _, widget::ModelPath, widget::Widget};
+use ui::widget::{AppModel, DrawChild as _, ModelPath, Widget};
 
 use crate::worker::{Ask, Seen, Worker};
 
@@ -185,7 +185,7 @@ impl PhoneView {
     }
 }
 
-impl tilo_ui_base::widget::Decorator for PhoneView {
+impl ui::widget::Decorator for PhoneView {
     type Inner = dyn Widget;
 
     fn inner(&self) -> &(dyn Widget + 'static) {
@@ -221,7 +221,7 @@ impl tilo_ui_base::widget::Decorator for PhoneView {
     fn handle_event(
         &mut self,
         event: &ui::winit::event::WindowEvent,
-        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
+        ctx: &mut ui::widget::EventCtx<'_>,
     ) {
         // Android's Back closes the app shown over the shell.
         if let ui::winit::event::WindowEvent::KeyboardInput { event: key, .. } = event
@@ -238,7 +238,7 @@ impl tilo_ui_base::widget::Decorator for PhoneView {
         }
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         let (scene, transform, text, theme, env) = ctx.parts();
         self.inner_mut()
             .draw_child(scene, transform, text, theme, &env);

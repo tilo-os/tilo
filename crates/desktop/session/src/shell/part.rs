@@ -1524,7 +1524,7 @@ impl tilo_session_core::surfaces::Published for ShellPart {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
         self.input = true;
         tilo_session_core::surfaces::Published::invoke(&mut self.widgets, address, arguments, look)
     }

@@ -38,7 +38,7 @@ impl RootControls for ResourceRoot {
     fn on_control_invocation_result(
         &mut self,
         address: &tilo_actions::ActionAddress,
-        result: &Result<ui_core::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
+        result: &Result<tilo_ui_base::host_operation::ResourceOperationStart, tilo_actions::ApiError>,
     ) {
         // The host delivers feedback to the exact emitting document owner;
         // forwarding stops at nested owner boundaries. Its children may have
@@ -56,7 +56,7 @@ impl RootControls for ResourceRoot {
                 }
                 self.typed.represent();
             }
-            Ok(ui_core::host_operation::ResourceOperationStart::Completed(output)) => {
+            Ok(tilo_ui_base::host_operation::ResourceOperationStart::Completed(output)) => {
                 self.dispatch.note_landed(&address.action, output);
             }
             Ok(_) => {}

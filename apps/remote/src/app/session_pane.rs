@@ -11,11 +11,11 @@ use vello::peniko::{Fill, ImageBrush};
 use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{ModifiersState, PhysicalKey};
 
-use tilo_ui_base::TextRole;
+use ui::TextRole;
 
-use tilo_ui_base::text_render::TextRenderer;
-use tilo_ui_base::theme::Theme;
-use tilo_ui_base::{widget::TaffyTreeExt, widget::Widget};
+use ui::text_render::TextRenderer;
+use ui::theme::Theme;
+use ui::widget::{TaffyTreeExt, Widget};
 
 use crate::session::SessionStatus;
 use crate::vnc::VncInput;
@@ -40,7 +40,7 @@ impl SessionPane {
             session,
             rect: Rect::ZERO,
             focused: true,
-            wheel_line: f64::from(tilo_ui_base::tokens::metrics::Metrics::BASE.wheel_line),
+            wheel_line: f64::from(ui::tokens::metrics::Metrics::BASE.wheel_line),
         }
     }
 
@@ -263,7 +263,7 @@ impl SessionPane {
         let pressed = event.state == ElementState::Pressed;
         if tilo_connected {
             if let PhysicalKey::Code(code) = event.physical_key
-                && let Some(keycode) = tilo_ui_base::evdev::from_key_code(code)
+                && let Some(keycode) = ui::evdev::from_key_code(code)
             {
                 // A release goes only for a key still held there: one the
                 // window took on its way here was released already.
@@ -331,9 +331,9 @@ impl Widget for SessionPane {
         taffy.widget_leaf(style, node_map, self)
     }
 
-    tilo_ui_base::rect_geometry!();
+    ui::rect_geometry!();
 
-    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -348,7 +348,7 @@ impl Widget for SessionPane {
         }
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let handled = match event {
             WindowEvent::CursorMoved { .. }
             | WindowEvent::MouseInput { .. }
@@ -402,7 +402,7 @@ impl Widget for SessionPane {
         true
     }
 
-    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
         let core = self.session.borrow();
         let name = if Self::terminal_grid(&core).is_some() {
             crate::resource::CATALOG.t("remote-a11y-terminal")
@@ -410,11 +410,11 @@ impl Widget for SessionPane {
             crate::resource::CATALOG.t("remote-a11y-desktop")
         };
         Some(
-            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Group)
+            ui::a11y::AccessNode::new(ui::a11y::Role::Group)
                 .with_name(name)
                 .with_bounds(self.rect)
                 .with_state(
-                    tilo_ui_base::a11y::AccessState::new()
+                    ui::a11y::AccessState::new()
                         .focusable(true)
                         .focused(self.focused),
                 ),

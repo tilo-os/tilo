@@ -12,7 +12,7 @@ use std::collections::HashMap;
 
 use tilo_actions::ActionOutput;
 use tilo_resource::Effect;
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use ui_core::taffy::{NodeId, Style, TaffyTree};
 use tilo_ui_base::theme::Theme;
 use ui_core::vello::kurbo::{Point, Rect};

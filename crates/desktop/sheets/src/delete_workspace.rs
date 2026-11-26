@@ -15,8 +15,7 @@ use std::rc::Rc;
 
 use ui::framework::{Effected, ResourceApp, ViewCx};
 use ui::prelude::*;
-use ui::{widget::Column, widget::ModalDialog, widget::Text};
-use tilo_ui_base::widget::Element;
+use ui::widget::{Column, Element, ModalDialog, Text};
 
 use crate::presentation::Presentation;
 use crate::t;
@@ -128,7 +127,7 @@ impl ResourceApp for DeleteWorkspaceApp {
     // Nothing is kept: there is no past to look back on.
     const DOCUMENT_HISTORY: bool = false;
 
-    fn catalog() -> Option<&'static tilo_ui_base::i18n::EmbeddedCatalog> {
+    fn catalog() -> Option<&'static ui::i18n::EmbeddedCatalog> {
         Some(&crate::CATALOG)
     }
 
@@ -168,7 +167,7 @@ impl ResourceApp for DeleteWorkspaceApp {
 /// The question about the workspace called `asked.name`: what goes with it,
 /// and the two answers.
 fn card(asked: &Asked, dispatch: &Dispatcher<DeleteWorkspace>) -> Element {
-    let name = [("name", tilo_ui_base::i18n::ArgValue::Text(asked.name.clone()))];
+    let name = [("name", ui::i18n::ArgValue::Text(asked.name.clone()))];
     let body = Column::new()
         .with_intrinsic_height()
         .with_no_padding()
@@ -182,8 +181,8 @@ fn card(asked: &Asked, dispatch: &Dispatcher<DeleteWorkspace>) -> Element {
     Box::new(
         ModalDialog::new(crate::t_args("workspace-delete-title", &name), body)
             .with_test_id("workspace-delete")
-            .with_icon(tilo_ui_base::icons::Icon::Trash2)
-            .with_max_width(f64::from(tilo_ui_base::tokens::Metrics::BASE.panel_width_sheet))
+            .with_icon(ui::icons::Icon::Trash2)
+            .with_max_width(f64::from(ui::tokens::Metrics::BASE.panel_width_sheet))
             .open(true)
             .with_destructive(true)
             .primary_action(t("workspace-delete-confirm"), move || {

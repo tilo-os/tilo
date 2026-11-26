@@ -8,7 +8,7 @@ use tilo_actions::{ActionAddress, ApiError, ResourceSpec};
 use tilo_compositor::Error;
 use tilo_service::Started;
 use tilo_session_core::surfaces::{Published, Surfaces};
-use ui::host_operation::ResourceOperationStart;
+use tilo_ui_base::host_operation::ResourceOperationStart;
 
 use tilo_app_host::collab_broker::FanoutState;
 

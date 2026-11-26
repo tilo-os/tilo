@@ -16,7 +16,7 @@ use std::rc::Rc;
 use tilo_resource::items::{ChildrenParts, ItemAction, ItemChildVisitor, ItemCollection};
 use tilo_resource::{ActionDecl, ModelError, Resource, ScopeDecl, SearchEntry};
 use ui_core::automerge::AutoCommit;
-use ui_core::host_operation::{ResourceOperation, ResourceOperationStart};
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart};
 
 use super::super::dispatch::Dispatcher;
 use super::super::effect::Effects;

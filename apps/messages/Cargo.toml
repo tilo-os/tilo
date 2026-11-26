@@ -17,7 +17,6 @@ thin = ["dep:runtime-dylib"]
 runtime-engine = ["thin", "tilo-contact-directory-engine/thin"]
 
 [dependencies]
-tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app" }
 tilo-contact-directory = { path = "../../crates/core/tilo-contact-directory" }
 # The person's accounts, in the messaging service the launcher connects
@@ -30,7 +29,6 @@ runtime-dylib = { path = "../../crates/sdk/runtime-dylib", optional = true }
 tilo-contact-directory-engine = { path = "../../crates/engines/loadable/contact-directory", optional = true }
 
 [dev-dependencies]
-tilo-ui-base = { version = "0.1.0", path = "../../crates/ui/ui-base", default-features = false }
 ui = { package = "tilo-app", path = "../../crates/sdk/tilo-app", features = ["test-support"] }
 # The headless test host the tests open the app in, as a person's device hosts it.
 tilo-app-test-host = { path = "../../crates/sdk/tilo-app-test-host" }

@@ -11,15 +11,14 @@
 use std::collections::HashMap;
 
 use ui::ColorCompat as _;
-use tilo_ui_base::LocalState;
+use ui::LocalState;
 use ui::framework::Dispatcher;
 use ui::taffy::{self, NodeId, TaffyTree};
-use tilo_ui_base::theme::Theme;
+use ui::theme::Theme;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Circle, Point, Rect};
 use ui::vello::peniko::{BlendMode, Fill};
-use ui::{widget::Button, widget::Checkbox};
-use tilo_ui_base::{widget::AppModel, widget::DrawChild as _, widget::ModelPath, widget::TaffyTreeExt, widget::Widget};
+use ui::widget::{AppModel, Button, Checkbox, DrawChild as _, ModelPath, TaffyTreeExt, Widget};
 use ui::winit::event::{ElementState, WindowEvent};
 use ui::winit::keyboard::{Key, NamedKey};
 
@@ -83,11 +82,11 @@ pub(crate) struct Ceremony {
     composed: Option<Box<dyn Widget>>,
     rect: Rect,
     /// A step arriving: forward from the trailing side, back from the
-    /// leading side (`tilo_ui_base::motion::Drill`).
-    transition: tilo_ui_base::motion::Presence,
+    /// leading side (`ui::motion::Drill`).
+    transition: ui::motion::Presence,
     transition_direction: f64,
     reduce_motion: bool,
-    motion: tilo_ui_base::tokens::EffectiveMotion,
+    motion: ui::tokens::EffectiveMotion,
     structure_dirty: bool,
     focus_reset: bool,
 }
@@ -116,10 +115,10 @@ impl Ceremony {
             dispatch,
             composed: None,
             rect: Rect::ZERO,
-            transition: tilo_ui_base::motion::Presence::opened(),
+            transition: ui::motion::Presence::opened(),
             transition_direction: 1.0,
             reduce_motion: false,
-            motion: tilo_ui_base::tokens::EffectiveMotion::default(),
+            motion: ui::tokens::EffectiveMotion::default(),
             structure_dirty: true,
             focus_reset: false,
         }
@@ -132,7 +131,7 @@ impl Ceremony {
         };
         if state.revision() == self.seen {
             if state.take_settle() {
-                self.transition = tilo_ui_base::motion::Presence::opened();
+                self.transition = ui::motion::Presence::opened();
             }
             return;
         }
@@ -158,7 +157,7 @@ impl Ceremony {
             // Under reduced motion a step is simply there: no drill, no fade, and no motion
             // asked for.
             self.transition = if self.reduce_motion {
-                tilo_ui_base::motion::Presence::opened()
+                ui::motion::Presence::opened()
             } else {
                 step_arriving(self.motion)
             };
@@ -176,7 +175,7 @@ impl Ceremony {
             self.skip_acknowledged.set(page.backup_skip_acknowledged);
         }
         if state.take_settle() {
-            self.transition = tilo_ui_base::motion::Presence::opened();
+            self.transition = ui::motion::Presence::opened();
         }
         self.page = page;
         self.structure_dirty = true;
@@ -195,7 +194,7 @@ impl Ceremony {
                 &t("onboarding-back"),
                 OnboardingEffect::Back,
             )
-            .with_icon(tilo_ui_base::icons::Icon::ArrowLeft),
+            .with_icon(ui::icons::Icon::ArrowLeft),
         )
     }
 
@@ -278,22 +277,22 @@ impl Ceremony {
     }
 
     /// The arriving step's pose: it comes in from the side it lives on.
-    fn transition_pose(&mut self, theme: &Theme) -> tilo_ui_base::motion::Pose {
+    fn transition_pose(&mut self, theme: &Theme) -> ui::motion::Pose {
         self.reduce_motion = theme.reduce_motion;
         // Under reduced motion a step is simply there: no drill, no fade.
         let arrived = if self.reduce_motion {
             1.0
         } else {
-            self.transition.progress(tilo_ui_base::motion::frame_now())
+            self.transition.progress(ui::motion::frame_now())
         };
-        tilo_ui_base::motion::Drill::pose(
+        ui::motion::Drill::pose(
             self.transition_direction * (1.0 - arrived),
             self.rect.width(),
             theme.motion(),
         )
     }
 
-    fn draw_composed(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
+    fn draw_composed(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -308,12 +307,12 @@ impl Ceremony {
             return;
         };
         let panel = composed.get_rect();
-        let on_panel = tilo_ui_base::chrome::shell::on_panel(theme);
+        let on_panel = ui::chrome::shell::on_panel(theme);
         if panel.area() > 0.0 {
             // The card floats over the backdrop and casts the Panel shadow
             // every other Panel casts; on the high-contrast palette its edge
             // does the separating.
-            let _ = tilo_ui_base::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
+            let _ = ui::chrome::shell::paint_panel(scene, transform, panel, theme, 1.0);
         }
         let mut local = Scene::new();
         composed.draw_child(&mut local, Affine::IDENTITY, text_renderer, &on_panel, &env);
@@ -461,19 +460,19 @@ impl Widget for Ceremony {
     }
 
     fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
+        self.rect = ui::widget::layout_rect(taffy, node, origin);
         if let Some(composed) = &mut self.composed
             && let Ok(children) = taffy.children(node)
             && let Some(&child) = children.first()
         {
             composed.apply_layout(taffy, child, Point::new(self.rect.x0, self.rect.y0));
             if composed.needs_animation_frame() {
-                tilo_ui_base::widget::note_layout_moved();
+                ui::widget::note_layout_moved();
             }
         }
     }
 
-    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
         #[allow(
             unused_variables,
             unused_mut,
@@ -481,7 +480,7 @@ impl Widget for Ceremony {
         )]
         let (scene, transform, text_renderer, theme, mut env) = ctx.parts();
         self.draw_backdrop(scene, transform, theme);
-        self.draw_composed(&mut tilo_ui_base::DrawCtx::new(
+        self.draw_composed(&mut ui::DrawCtx::new(
             scene,
             transform,
             text_renderer,
@@ -490,7 +489,7 @@ impl Widget for Ceremony {
         ));
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
         let escape = matches!(
             event,
             WindowEvent::KeyboardInput { event, .. }
@@ -552,7 +551,7 @@ impl Widget for Ceremony {
     }
 
     fn needs_animation_frame(&self) -> bool {
-        (!self.reduce_motion && self.transition.is_moving(tilo_ui_base::motion::frame_now()))
+        (!self.reduce_motion && self.transition.is_moving(ui::motion::frame_now()))
             || self
                 .composed
                 .as_ref()
@@ -580,13 +579,13 @@ fn view_order(screen: Screen, tour: Option<TourPage>) -> u8 {
 }
 
 /// A step arriving now, on the drill.
-fn step_arriving(motion: tilo_ui_base::tokens::EffectiveMotion) -> tilo_ui_base::motion::Presence {
-    let mut arriving = tilo_ui_base::motion::Presence::closed();
+fn step_arriving(motion: ui::tokens::EffectiveMotion) -> ui::motion::Presence {
+    let mut arriving = ui::motion::Presence::closed();
     arriving.show(
         true,
-        tilo_ui_base::motion::Drill::SPEC,
+        ui::motion::Drill::SPEC,
         motion,
-        tilo_ui_base::tokens::MotionSource::Pointer,
+        ui::tokens::MotionSource::Pointer,
         ui::time::now(),
     );
     arriving

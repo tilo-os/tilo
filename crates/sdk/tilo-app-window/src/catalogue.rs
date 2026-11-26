@@ -15,7 +15,7 @@ use tilo_actions::{
 };
 use ui::automerge::AutoCommit;
 use tilo_ui_base::{collaboration::SurfaceDelta, collaboration::SurfacePublication, collaboration::SurfaceTable};
-use ui::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
+use tilo_ui_base::host_operation::{ResourceOperation, ResourceOperationStart, ResourceOperations};
 use tilo_ui_base::widget::resources::PublishesResources;
 
 use crate::window::AppWindow;
@@ -295,7 +295,7 @@ impl ResourceOperations for AppWindow {
         doc: &mut tilo_ui_base::widget::Edits<'_>,
         path: &ui::automerge::ObjId,
     ) -> Result<Option<ResourceOperationStart>, String> {
-        if let Some(started) = ui::host_operation::start_in_children(self, op, doc, path)? {
+        if let Some(started) = tilo_ui_base::host_operation::start_in_children(self, op, doc, path)? {
             return Ok(Some(started));
         }
         let request = op.request();

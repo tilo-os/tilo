@@ -383,7 +383,7 @@ mod tests {
                     end: 7,
                     name: "mention".into(),
                     value: tilo_doc::document::MarkValue::Str(
-                        ui::tilo_reference::Embed::Member(tilo_ui_base::MemberId::person("u-ada"))
+                        ui::tilo_reference::Embed::Member(ui::MemberId::person("u-ada"))
                             .mark_value(),
                     ),
                 }],
@@ -410,7 +410,7 @@ mod tests {
             shown[0].marks,
             [MarkSpan::new(
                 3..7,
-                Mark::Mention(tilo_ui_base::MemberId::person("u-ada"))
+                Mark::Mention(ui::MemberId::person("u-ada"))
             )]
         );
         assert_eq!(

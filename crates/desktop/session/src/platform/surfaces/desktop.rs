@@ -243,7 +243,7 @@ impl ShellDesktop {
         &self,
         address: &ui::tilo_actions::ActionAddress,
         look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, ui::tilo_actions::ApiError>
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, ui::tilo_actions::ApiError>
     {
         use tilo_session_core::desktop::window;
         let reads = address.action == "look" || address.action == "read";
@@ -274,7 +274,7 @@ impl ShellDesktop {
                     code: "no_picture".into(),
                     reason,
                 })?;
-            return Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
+            return Ok(Some(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
                 ui::tilo_actions::ActionOutput {
                     value: Some(serde_json::json!({
                         "title": shown.title,
@@ -287,7 +287,7 @@ impl ShellDesktop {
                 },
             )));
         }
-        Ok(Some(ui::host_operation::ResourceOperationStart::Completed(
+        Ok(Some(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
             ui::tilo_actions::ActionOutput {
                 value: Some(serde_json::json!({
                     "title": shown.title,
@@ -303,7 +303,7 @@ impl ShellDesktop {
         &self,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Result<Option<ui::host_operation::ResourceOperationStart>, ui::tilo_actions::ApiError>
+    ) -> Result<Option<tilo_ui_base::host_operation::ResourceOperationStart>, ui::tilo_actions::ApiError>
     {
         let desktop = self.desktop.borrow();
         let Some(verbs) = desktop.verbs.as_ref() else {
@@ -311,7 +311,7 @@ impl ShellDesktop {
         };
         Ok(verbs
             .invoke(address, arguments)?
-            .map(ui::host_operation::ResourceOperationStart::Completed))
+            .map(tilo_ui_base::host_operation::ResourceOperationStart::Completed))
     }
 
     /// Answer the platform search API's `open` with the desktop's own search: a window's search
@@ -325,14 +325,14 @@ impl ShellDesktop {
         &self,
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
-    ) -> Option<ui::host_operation::ResourceOperationStart> {
+    ) -> Option<tilo_ui_base::host_operation::ResourceOperationStart> {
         if !ui::widget::search_request::is_search_address(address) {
             return None;
         }
         let request = ui::widget::search_request::SearchRequest::from_arguments(arguments);
         let handle = self.desktop.borrow().policy.handle().clone();
         handle.open_search(ui::search::Scope::Workspace, request.query);
-        Some(ui::host_operation::ResourceOperationStart::Completed(
+        Some(tilo_ui_base::host_operation::ResourceOperationStart::Completed(
             ui::tilo_actions::ActionOutput::default(),
         ))
     }
@@ -457,7 +457,7 @@ impl tilo_session_core::surfaces::Published for ShellDesktop {
         address: &ui::tilo_actions::ActionAddress,
         arguments: &serde_json::Map<String, serde_json::Value>,
         look: &mut tilo_session_core::surfaces::Look<'_>,
-    ) -> Result<ui::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
+    ) -> Result<tilo_ui_base::host_operation::ResourceOperationStart, ui::tilo_actions::ApiError> {
         // What it publishes may move with any action run on it.
         {
             let mut desktop = self.desktop.borrow_mut();

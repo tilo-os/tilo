@@ -61,8 +61,8 @@ fn hosted_sample() -> TestApp<RemoteShell> {
 }
 
 /// The semantic node the window publishes for `target`, if any.
-fn find_node(app: &mut TestApp<RemoteShell>, target: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
-    fn find<'a>(node: &'a tilo_ui_base::a11y::AccessNode, target: &str) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
+fn find_node(app: &mut TestApp<RemoteShell>, target: &str) -> Option<ui::a11y::AccessNode> {
+    fn find<'a>(node: &'a ui::a11y::AccessNode, target: &str) -> Option<&'a ui::a11y::AccessNode> {
         if node.action_target.as_deref() == Some(target)
             || node.semantic_key.as_deref() == Some(target)
         {
@@ -70,7 +70,7 @@ fn find_node(app: &mut TestApp<RemoteShell>, target: &str) -> Option<tilo_ui_bas
         }
         node.children.iter().find_map(|child| find(child, target))
     }
-    fn walk(node: &ui::headless::InspectionNode, target: &str) -> Option<tilo_ui_base::a11y::AccessNode> {
+    fn walk(node: &ui::headless::InspectionNode, target: &str) -> Option<ui::a11y::AccessNode> {
         node.semantics
             .as_ref()
             .and_then(|semantics| find(semantics, target).cloned())
@@ -711,7 +711,7 @@ fn tilo_sessions_use_the_authenticated_broker_and_consent() {
     };
     assert!(matches!(
         app.take_collab_requests().as_slice(),
-        [tilo_ui_base::collaboration::CollabRequest::OpenWorkspaceControl { target_device, .. }]
+        [ui::collaboration::CollabRequest::OpenWorkspaceControl { target_device, .. }]
             if target_device == target.as_bytes()
     ));
     let motion = runtime_collab::WorkspaceControlInput::PointerMotion { x: 1.0, y: 2.0 };
@@ -719,7 +719,7 @@ fn tilo_sessions_use_the_authenticated_broker_and_consent() {
         !app.session.borrow_mut().queue_tilo_input(motion.clone()),
         "no input before the target consents"
     );
-    app.handle_collab_event(&tilo_ui_base::collaboration::CollabEvent::WorkspaceControl {
+    app.handle_collab_event(&ui::collaboration::CollabEvent::WorkspaceControl {
         session_id,
         event: runtime_collab::WorkspaceControlEvent::StreamStarted {
             surface: 4,
@@ -728,7 +728,7 @@ fn tilo_sessions_use_the_authenticated_broker_and_consent() {
         },
     });
     assert!(app.session.borrow_mut().queue_tilo_input(motion.clone()));
-    app.handle_collab_event(&tilo_ui_base::collaboration::CollabEvent::WorkspaceControl {
+    app.handle_collab_event(&ui::collaboration::CollabEvent::WorkspaceControl {
         session_id,
         event: runtime_collab::WorkspaceControlEvent::Closed(
             runtime_collab::WorkspaceControlCloseReason::Revoked,
@@ -740,7 +740,7 @@ fn tilo_sessions_use_the_authenticated_broker_and_consent() {
     app.apply(Action::ConfirmPending);
     assert!(matches!(
         app.take_collab_requests().as_slice(),
-        [tilo_ui_base::collaboration::CollabRequest::CloseWorkspaceControl { .. }]
+        [ui::collaboration::CollabRequest::CloseWorkspaceControl { .. }]
     ));
 }
 
@@ -760,7 +760,7 @@ fn a_tilo_stream_gap_asks_the_target_for_a_keyframe() {
         Some(LiveSession::Tilo(session)) => session.id,
         _ => panic!("Tilo session"),
     };
-    app.handle_collab_event(&tilo_ui_base::collaboration::CollabEvent::WorkspaceControl {
+    app.handle_collab_event(&ui::collaboration::CollabEvent::WorkspaceControl {
         session_id,
         event: runtime_collab::WorkspaceControlEvent::StreamStarted {
             surface: 4,
@@ -770,7 +770,7 @@ fn a_tilo_stream_gap_asks_the_target_for_a_keyframe() {
     });
     let _ = app.take_collab_requests();
     let frame = |app: &mut RemoteApp, seq: u64, unit: &[u8]| {
-        app.handle_collab_event(&tilo_ui_base::collaboration::CollabEvent::WorkspaceControl {
+        app.handle_collab_event(&ui::collaboration::CollabEvent::WorkspaceControl {
             session_id,
             event: runtime_collab::WorkspaceControlEvent::Frame {
                 surface: 4,
@@ -782,7 +782,7 @@ fn a_tilo_stream_gap_asks_the_target_for_a_keyframe() {
         app.take_collab_requests()
             .into_iter()
             .filter_map(|request| match request {
-                tilo_ui_base::collaboration::CollabRequest::WorkspaceControlInput {
+                ui::collaboration::CollabRequest::WorkspaceControlInput {
                     event: runtime_collab::WorkspaceControlInput::RequestKeyframe { seq },
                     ..
                 } => Some(seq),
@@ -821,7 +821,7 @@ fn connected_tilo_session() -> RemoteApp {
         Some(LiveSession::Tilo(session)) => session.id,
         _ => panic!("Tilo session"),
     };
-    app.handle_collab_event(&tilo_ui_base::collaboration::CollabEvent::WorkspaceControl {
+    app.handle_collab_event(&ui::collaboration::CollabEvent::WorkspaceControl {
         session_id,
         event: runtime_collab::WorkspaceControlEvent::StreamStarted {
             surface: 4,
@@ -838,7 +838,7 @@ fn sent_keys(app: &mut RemoteApp) -> Vec<(u32, bool)> {
     app.take_collab_requests()
         .into_iter()
         .filter_map(|request| match request {
-            tilo_ui_base::collaboration::CollabRequest::WorkspaceControlInput {
+            ui::collaboration::CollabRequest::WorkspaceControlInput {
                 event:
                     runtime_collab::WorkspaceControlInput::Key {
                         keycode, pressed, ..
@@ -852,7 +852,7 @@ fn sent_keys(app: &mut RemoteApp) -> Vec<(u32, bool)> {
 
 /// A key event for the physical key `code`.
 fn key_at(code: winit::keyboard::KeyCode, state: ElementState) -> KeyEvent {
-    let mut event = tilo_ui_base::synthetic_input::key_event(Key::Named(NamedKey::Control), None, state);
+    let mut event = ui::synthetic_input::key_event(Key::Named(NamedKey::Control), None, state);
     event.physical_key = PhysicalKey::Code(code);
     event
 }
@@ -897,7 +897,7 @@ fn a_key_whose_release_the_window_takes_is_still_released_on_the_remote_machine(
     use winit::keyboard::KeyCode;
     let mut app = connected_tilo_session();
     let pane = SessionPane::new(Rc::clone(&app.session));
-    let released = |code| tilo_ui_base::widget::PhysicalInput::Key {
+    let released = |code| ui::widget::PhysicalInput::Key {
         key: PhysicalKey::Code(code),
         state: ElementState::Released,
     };
@@ -932,7 +932,7 @@ fn a_key_whose_release_the_window_takes_is_still_released_on_the_remote_machine(
         ModifiersState::empty()
     ));
     assert_eq!(sent_keys(&mut app), [(42, true)]);
-    Widget::observe_physical_input(&mut app, tilo_ui_base::widget::PhysicalInput::Focused(false));
+    Widget::observe_physical_input(&mut app, ui::widget::PhysicalInput::Focused(false));
     assert_eq!(sent_keys(&mut app), [(42, false)]);
 }
 
@@ -1052,7 +1052,7 @@ fn keys_map_to_the_remote_machine() {
         "past Latin-1 a character is its Unicode keysym"
     );
     assert_eq!(
-        tilo_ui_base::evdev::from_key_code(winit::keyboard::KeyCode::KeyA),
+        ui::evdev::from_key_code(winit::keyboard::KeyCode::KeyA),
         Some(30)
     );
 }
@@ -1065,7 +1065,7 @@ fn the_wheel_scrolls_a_vnc_desktop() {
     let mut pending = (0.0, 0.0);
     let line = |x, y| MouseScrollDelta::LineDelta(x, y);
     let pixels = |x, y| MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(x, y));
-    let notch = f64::from(tilo_ui_base::tokens::metrics::Metrics::BASE.wheel_line);
+    let notch = f64::from(ui::tokens::metrics::Metrics::BASE.wheel_line);
     let mut clicks =
         |delta: &MouseScrollDelta, scale: f64| vnc_wheel_clicks(&mut pending, delta, scale, notch);
     assert_eq!(clicks(&line(0.0, 1.0), 1.0), [0x08]);
