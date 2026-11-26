@@ -1524,9 +1524,7 @@ impl Devices {
         let mut seen = std::collections::BTreeSet::new();
         for endpoint in &endpoints {
             if !speaker::valid_selector(&endpoint.selector)
-                || endpoint.label.is_empty()
-                || endpoint.label.len() > speaker::MAX_LABEL_BYTES
-                || endpoint.label.chars().any(char::is_control)
+                || !speaker::valid_label(&endpoint.label)
                 || !seen.insert(endpoint.selector.clone())
             {
                 return Err(Refusal::new(

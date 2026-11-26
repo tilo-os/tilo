@@ -35,7 +35,7 @@ use tilo_network_actor::fabric::clock::{ClockSyncFailure, ClockSyncState};
 use tilo_network_actor::fabric::speaker_group::{
     AudioEndpoint, AudioEndpointKind, EndpointSelector, SpeakerGroup, SpeakerGroupId,
     SpeakerGroupMember, SpeakerListener, SpeakerMemberStatus, SpeakerMembership, SpeakerRole,
-    SpeakerTrim,
+    SpeakerTrim, describe_role,
 };
 
 use crate::devices::Listing;
@@ -255,7 +255,7 @@ impl SpeakerState {
                             Some(SpeakerGroupMember {
                                 device: DeviceId::new(&member.device).ok()?,
                                 output: EndpointSelector::from_hex(&member.output)?,
-                                role: role_from_record(&member.role)?,
+                                role: SpeakerRole::from_record(&member.role)?,
                                 trim: trim_from_record(member),
                             })
                         })
@@ -329,8 +329,8 @@ impl SpeakerState {
             .sort_by(|left, right| left.name.cmp(&right.name).then(left.id.cmp(&right.id)));
         for (key, playback) in record.speaker_playbacks.iter() {
             let (Some(route), Some(session), Some(group)) = (
-                selector_bytes(key.as_str()),
-                selector_bytes(playback.session.as_str()),
+                record::selector_bytes(key.as_str()),
+                record::selector_bytes(playback.session.as_str()),
                 SpeakerGroupId::from_hex(&playback.group),
             ) else {
                 continue;
@@ -440,7 +440,7 @@ impl SpeakerState {
                     && SpeakerGroupId::from_hex(&consent.group) == Some(group.id)
                     && DeviceId::new(&consent.leader).ok().as_ref() == Some(&group.leader)
                     && EndpointSelector::from_hex(&consent.output) == Some(member.output)
-                    && role_from_record(&consent.role) == Some(member.role)
+                    && SpeakerRole::from_record(&consent.role) == Some(member.role)
             })
         })
     }
@@ -510,80 +510,16 @@ impl SpeakerState {
     }
 }
 
-fn role_from_record(value: &str) -> Option<SpeakerRole> {
-    use tilo_network_actor::fabric::speaker_group::{RoomPoint, StereoSide, SurroundChannel};
-    Some(match value {
-        "left" => SpeakerRole::Stereo(StereoSide::Left),
-        "right" => SpeakerRole::Stereo(StereoSide::Right),
-        "center" => SpeakerRole::Surround(SurroundChannel::Center),
-        "lfe" => SpeakerRole::Surround(SurroundChannel::Lfe),
-        "surround-left" => SpeakerRole::Surround(SurroundChannel::SurroundLeft),
-        "surround-right" => SpeakerRole::Surround(SurroundChannel::SurroundRight),
-        point => {
-            let (x_mm, y_mm, z_mm) = {
-                let mut parts = point.strip_prefix("room:")?.split(':');
-                let x = parts.next()?.parse().ok()?;
-                let y = parts.next()?.parse().ok()?;
-                let z = parts.next()?.parse().ok()?;
-                (x, y, z)
-            };
-            SpeakerRole::RoomPoint(RoomPoint { x_mm, y_mm, z_mm })
-        }
-    })
-}
-
-fn role_to_record(role: SpeakerRole) -> String {
-    use tilo_network_actor::fabric::speaker_group::{StereoSide, SurroundChannel};
-    match role {
-        SpeakerRole::Stereo(StereoSide::Left) => "left".to_owned(),
-        SpeakerRole::Stereo(StereoSide::Right) => "right".to_owned(),
-        SpeakerRole::Surround(SurroundChannel::Center) => "center".to_owned(),
-        SpeakerRole::Surround(SurroundChannel::Lfe) => "lfe".to_owned(),
-        SpeakerRole::Surround(SurroundChannel::SurroundLeft) => "surround-left".to_owned(),
-        SpeakerRole::Surround(SurroundChannel::SurroundRight) => "surround-right".to_owned(),
-        SpeakerRole::RoomPoint(point) => {
-            format!("room:{}:{}:{}", point.x_mm, point.y_mm, point.z_mm)
-        }
-    }
-}
-
 fn trim_from_record(member: &record::SpeakerLedMember) -> SpeakerTrim {
     SpeakerTrim {
         delay_ns: member.delay_ns,
         gain_mb: member.gain_mb,
-        eq: member
-            .eq
-            .iter()
-            .map(
-                |band| tilo_network_actor::fabric::speaker_group::SpeakerEqBand {
-                    center_hz: band.center_hz,
-                    gain_mb: band.gain_mb,
-                    q_milli: band.q_milli,
-                },
-            )
-            .collect(),
+        eq: member.eq.clone(),
     }
 }
 
 fn trim_to_record(trim: &SpeakerTrim) -> (u64, i32, Vec<record::SpeakerEqBand>) {
-    (
-        trim.delay_ns,
-        trim.gain_mb,
-        trim.eq
-            .iter()
-            .map(|band| record::SpeakerEqBand {
-                center_hz: band.center_hz,
-                gain_mb: band.gain_mb,
-                q_milli: band.q_milli,
-            })
-            .collect(),
-    )
-}
-
-fn selector_bytes(value: &str) -> Option<[u8; 16]> {
-    let mut bytes = [0; 16];
-    (hex::decode_to_slice(value, &mut bytes).is_ok() && hex::encode(bytes) == value)
-        .then_some(bytes)
+    (trim.delay_ns, trim.gain_mb, trim.eq.clone())
 }
 
 fn play_membership(
@@ -595,7 +531,7 @@ fn play_membership(
         group,
         leader: leader.clone(),
         output: EndpointSelector::from_hex(&consent.output)?,
-        role: role_from_record(&consent.role)?,
+        role: SpeakerRole::from_record(&consent.role)?,
         stamp: FabricStamp {
             counter: u64::try_from(consent.at_ms).unwrap_or(0),
             device: leader,
@@ -1732,7 +1668,7 @@ impl SpeakerConsentView {
             ("leader", self.leader_label.as_str().into()),
         ];
         if let SpeakerConsentScope::Play(role) = self.scope {
-            args.push(("role", role.describe().into()));
+            args.push(("role", describe_role(role).into()));
         }
         args
     }
@@ -1848,7 +1784,7 @@ impl SpeakerMembershipView {
             ("leader", self.leader_label.as_str().into()),
         ];
         if let SpeakerConsentScope::Play(role) = self.scope {
-            args.push(("role", sentence(&role.describe()).into()));
+            args.push(("role", sentence(&describe_role(role)).into()));
         }
         args
     }
@@ -2196,7 +2132,7 @@ fn lead_action(device: &DeviceId, group: SpeakerGroup) -> Option<Invoke<Devices>
             record::SpeakerLedMember {
                 device: member.device.as_str().to_owned(),
                 output: member.output.to_hex(),
-                role: role_to_record(member.role),
+                role: SpeakerRole::to_record(member.role),
                 delay_ns,
                 gain_mb,
                 eq,
@@ -2227,7 +2163,7 @@ fn consent_action(device: &DeviceId, consent: &ConsentWrite, approved: bool) -> 
             leader.as_str().to_owned(),
             true,
             output.to_hex(),
-            role_to_record(*role),
+            SpeakerRole::to_record(*role),
             String::new(),
         ),
         ConsentWrite::Listen {

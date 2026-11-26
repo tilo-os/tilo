@@ -30,29 +30,20 @@ use crate::fabric::DeviceId;
 use crate::fabric::FabricError;
 use crate::fabric::FabricStamp;
 pub use runtime_collab::SpeakerMemberStatus;
-
-pub const MAX_SPEAKER_GROUPS: usize = 16;
-pub const MAX_SPEAKER_GROUP_MEMBERS: usize = 8;
-pub const MAX_SPEAKER_MEMBERSHIPS: usize = 16;
-pub const MAX_SPEAKER_LISTENERS: usize = 16;
-pub const MAX_AUDIO_ENDPOINTS: usize = 32;
-pub const MAX_SPEAKER_GROUP_NAME_CHARS: usize = 64;
-pub const MAX_AUDIO_ENDPOINT_LABEL_BYTES: usize = 128;
-/// Longest alignment delay a calibration may assign: sound travels about
-/// 170 m in this time, far beyond any room.
-pub const MAX_SPEAKER_DELAY_NS: u64 = 500_000_000;
-/// Deepest level trim, in millibels (hundredths of a dB).
-pub const MIN_SPEAKER_GAIN_MB: i32 = -4_000;
-/// Calibration only cuts; a small manual lift stays representable.
-pub const MAX_SPEAKER_GAIN_MB: i32 = 600;
-pub const MAX_SPEAKER_EQ_BANDS: usize = 8;
-/// Room points are millimetres from the listening position; ±50 m bounds
-/// every real room.
-pub const MAX_ROOM_COORDINATE_MM: i32 = 50_000;
-/// A room point further than this to one side of the listener plays that
-/// side of a stereo source, provided some other member covers the opposite
-/// side.
-pub const ROOM_SIDE_THRESHOLD_MM: i32 = 250;
+// The rules a group, its members and their trims keep are the stored record's: the person's
+// records write them as strings and integers, and both sides read the one copy in the
+// workspace service.
+use tilo_workspace_service::workspaces::person_workspace::speaker as speaker_record;
+pub use tilo_workspace_service::workspaces::person_workspace::speaker::{
+    MAX_CONSENTS as MAX_SPEAKER_MEMBERSHIPS, MAX_CONSENTS as MAX_SPEAKER_LISTENERS,
+    MAX_DELAY_NS as MAX_SPEAKER_DELAY_NS, MAX_ENDPOINTS as MAX_AUDIO_ENDPOINTS,
+    MAX_EQ_BANDS as MAX_SPEAKER_EQ_BANDS, MAX_GAIN_MB as MAX_SPEAKER_GAIN_MB,
+    MAX_GROUPS as MAX_SPEAKER_GROUPS, MAX_LABEL_BYTES as MAX_AUDIO_ENDPOINT_LABEL_BYTES,
+    MAX_MEMBERS as MAX_SPEAKER_GROUP_MEMBERS, MAX_NAME_CHARS as MAX_SPEAKER_GROUP_NAME_CHARS,
+    MAX_ROOM_MM as MAX_ROOM_COORDINATE_MM, MIN_GAIN_MB as MIN_SPEAKER_GAIN_MB,
+    ROOM_SIDE_MM as ROOM_SIDE_THRESHOLD_MM, RoomPoint, SpeakerEqBand, SpeakerRole, StereoSide,
+    SurroundChannel, valid_name as valid_group_name,
+};
 
 const SELECTOR_DOMAIN: &str = "so.tilo.speaker-group.endpoint-selector.v1";
 
@@ -74,9 +65,7 @@ impl SpeakerGroupId {
 
     #[must_use]
     pub fn from_hex(value: &str) -> Option<Self> {
-        let mut bytes = [0; 16];
-        hex::decode_to_slice(value, &mut bytes).ok()?;
-        let id = Self(bytes);
+        let id = Self(speaker_record::selector_bytes(value)?);
         id.valid().then_some(id)
     }
 }
@@ -124,9 +113,7 @@ impl EndpointSelector {
 
     #[must_use]
     pub fn from_hex(value: &str) -> Option<Self> {
-        let mut bytes = [0; 16];
-        hex::decode_to_slice(value, &mut bytes).ok()?;
-        let selector = Self(bytes);
+        let selector = Self(speaker_record::selector_bytes(value)?);
         selector.valid().then_some(selector)
     }
 }
@@ -150,102 +137,17 @@ pub struct AudioEndpoint {
 
 impl AudioEndpoint {
     fn validate(&self) -> Result<(), FabricError> {
-        if !self.selector.valid() || !valid_label(&self.label, MAX_AUDIO_ENDPOINT_LABEL_BYTES) {
+        if !self.selector.valid() || !speaker_record::valid_label(&self.label) {
             return Err(FabricError::InvalidSpeakerGroup);
         }
         Ok(())
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum StereoSide {
-    Left,
-    Right,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SurroundChannel {
-    Center,
-    Lfe,
-    SurroundLeft,
-    SurroundRight,
-}
-
-/// A position relative to the listening position, in millimetres: `x` to
-/// the listener's right, `y` straight ahead, `z` up.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct RoomPoint {
-    pub x_mm: i32,
-    pub y_mm: i32,
-    pub z_mm: i32,
-}
-
-impl RoomPoint {
-    fn valid(self) -> bool {
-        [self.x_mm, self.y_mm, self.z_mm]
-            .into_iter()
-            .all(|value| value.unsigned_abs() <= MAX_ROOM_COORDINATE_MM.unsigned_abs())
-    }
-}
-
-/// What one member contributes to the group.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum SpeakerRole {
-    Stereo(StereoSide),
-    Surround(SurroundChannel),
-    RoomPoint(RoomPoint),
-}
-
-impl SpeakerRole {
-    /// The catalogue key of the role's short noun phrase ("right speaker"),
-    /// written to stand alone after "as" or at the start of a status row.
-    #[must_use]
-    pub const fn describe_key(self) -> &'static str {
-        match self {
-            Self::Stereo(StereoSide::Left) => "speaker-role-left",
-            Self::Stereo(StereoSide::Right) => "speaker-role-right",
-            Self::Surround(SurroundChannel::Center) => "speaker-role-centre",
-            Self::Surround(SurroundChannel::Lfe) => "speaker-role-subwoofer",
-            Self::Surround(SurroundChannel::SurroundLeft) => "speaker-role-surround-left",
-            Self::Surround(SurroundChannel::SurroundRight) => "speaker-role-surround-right",
-            Self::RoomPoint(_) => "speaker-role-room",
-        }
-    }
-
-    /// Short human description, used in consent prompts and status rows.
-    #[must_use]
-    pub fn describe(self) -> String {
-        crate::i18n::t(self.describe_key())
-    }
-
-    #[must_use]
-    pub fn valid(self) -> bool {
-        match self {
-            Self::RoomPoint(point) => point.valid(),
-            Self::Stereo(_) | Self::Surround(_) => true,
-        }
-    }
-}
-
-/// One peaking filter, in integer units so records compare exactly.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-pub struct SpeakerEqBand {
-    pub center_hz: u32,
-    /// Millibels; calibration only ever cuts.
-    pub gain_mb: i32,
-    /// Quality factor × 1000.
-    pub q_milli: u32,
-}
-
-impl SpeakerEqBand {
-    fn valid(self) -> bool {
-        (10..=24_000).contains(&self.center_hz)
-            && (-2_400..=MAX_SPEAKER_GAIN_MB).contains(&self.gain_mb)
-            && (100..=30_000).contains(&self.q_milli)
-    }
+/// Short human description of `role`, used in consent prompts and status rows.
+#[must_use]
+pub fn describe_role(role: SpeakerRole) -> String {
+    crate::i18n::t(role.describe_key())
 }
 
 /// Per-member corrections a calibration produces.
@@ -306,10 +208,7 @@ impl SpeakerTrim {
     }
 
     fn valid(&self) -> bool {
-        self.delay_ns <= MAX_SPEAKER_DELAY_NS
-            && (MIN_SPEAKER_GAIN_MB..=MAX_SPEAKER_GAIN_MB).contains(&self.gain_mb)
-            && self.eq.len() <= MAX_SPEAKER_EQ_BANDS
-            && self.eq.iter().all(|band| band.valid())
+        speaker_record::trim_holds(self.delay_ns, self.gain_mb, &self.eq)
     }
 }
 
@@ -382,28 +281,14 @@ pub fn validate_members(members: &[SpeakerGroupMember]) -> Result<(), FabricErro
         return invalid;
     }
     let mut outputs = BTreeSet::new();
-    let mut roles = BTreeSet::new();
-    for member in members {
-        if !outputs.insert((&member.device, member.output)) || !roles.insert(member.role) {
-            return invalid;
-        }
-    }
-    let room = members
+    if !members
         .iter()
-        .filter(|member| matches!(member.role, SpeakerRole::RoomPoint(_)))
-        .count();
-    if room != 0 && room != members.len() {
+        .all(|member| outputs.insert((&member.device, member.output)))
+    {
         return invalid;
     }
-    let has = |role| roles.contains(&role);
-    let left = has(SpeakerRole::Stereo(StereoSide::Left));
-    let right = has(SpeakerRole::Stereo(StereoSide::Right));
-    let surround_left = has(SpeakerRole::Surround(SurroundChannel::SurroundLeft));
-    let surround_right = has(SpeakerRole::Surround(SurroundChannel::SurroundRight));
-    let any_surround = roles
-        .iter()
-        .any(|role| matches!(role, SpeakerRole::Surround(_)));
-    if left != right || surround_left != surround_right || (any_surround && !(left && right)) {
+    let roles = members.iter().map(|member| member.role).collect::<Vec<_>>();
+    if !speaker_record::roles_hold(&roles) {
         return invalid;
     }
     Ok(())
@@ -614,20 +499,6 @@ impl SpeakerFabricState {
         let first = microphones.clone().next();
         microphones.find(|endpoint| endpoint.is_default).or(first)
     }
-}
-
-/// Whether `value` is a usable group name: trimmed, bounded, printable.
-#[must_use]
-pub fn valid_group_name(value: &str) -> bool {
-    let trimmed = value.trim();
-    !trimmed.is_empty()
-        && trimmed.len() == value.len()
-        && value.chars().count() <= MAX_SPEAKER_GROUP_NAME_CHARS
-        && !value.chars().any(char::is_control)
-}
-
-fn valid_label(value: &str, max_bytes: usize) -> bool {
-    !value.is_empty() && value.len() <= max_bytes && !value.chars().any(char::is_control)
 }
 
 #[expect(

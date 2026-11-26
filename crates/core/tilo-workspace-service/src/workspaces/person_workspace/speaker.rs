@@ -9,6 +9,13 @@
 //!
 //! Every device of the person reads all of it from this one record, and every change is a typed
 //! action of the person's own workspace. What stays live between the devices is the audio itself.
+//!
+//! The record keeps a member's role, trim and band as strings and integers, so the stored form
+//! survives changes to the types. The types below and their rules are what those values mean:
+//! every device validates the record by parsing it into them ([`SpeakerRole::from_record`]) and
+//! asking the same rules, so a limit is written once here and nowhere else.
+
+use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 use tilo_resource::Model;
@@ -42,6 +49,119 @@ pub const MAX_ROOM_MM: i32 = 50_000;
 /// A room point further than this to one side of the listener plays that side of a stereo source.
 pub const ROOM_SIDE_MM: i32 = 250;
 
+/// Which side of a stereo pair a member plays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StereoSide {
+    Left,
+    Right,
+}
+
+/// A channel of a surround set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SurroundChannel {
+    Center,
+    Lfe,
+    SurroundLeft,
+    SurroundRight,
+}
+
+/// A position relative to the listening position, in millimetres: `x` to the listener's right,
+/// `y` straight ahead, `z` up.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+pub struct RoomPoint {
+    pub x_mm: i32,
+    pub y_mm: i32,
+    pub z_mm: i32,
+}
+
+impl RoomPoint {
+    /// Whether the point lies inside [`MAX_ROOM_MM`] of the listener on every axis.
+    #[must_use]
+    pub fn valid(self) -> bool {
+        [self.x_mm, self.y_mm, self.z_mm]
+            .into_iter()
+            .all(|value| value.unsigned_abs() <= MAX_ROOM_MM.unsigned_abs())
+    }
+}
+
+/// What one member contributes to a group.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SpeakerRole {
+    Stereo(StereoSide),
+    Surround(SurroundChannel),
+    RoomPoint(RoomPoint),
+}
+
+impl SpeakerRole {
+    /// The catalogue key of the role's short noun phrase ("right speaker"), written to stand alone
+    /// after "as" or at the start of a status row.
+    #[must_use]
+    pub const fn describe_key(self) -> &'static str {
+        match self {
+            Self::Stereo(StereoSide::Left) => "speaker-role-left",
+            Self::Stereo(StereoSide::Right) => "speaker-role-right",
+            Self::Surround(SurroundChannel::Center) => "speaker-role-centre",
+            Self::Surround(SurroundChannel::Lfe) => "speaker-role-subwoofer",
+            Self::Surround(SurroundChannel::SurroundLeft) => "speaker-role-surround-left",
+            Self::Surround(SurroundChannel::SurroundRight) => "speaker-role-surround-right",
+            Self::RoomPoint(_) => "speaker-role-room",
+        }
+    }
+
+    /// The role `value` names in a record, such as `"surround-left"` or `"room:0:2000:0"`, or
+    /// `None` for a name no role has and a room point that does not hold exactly three
+    /// coordinates.
+    #[must_use]
+    pub fn from_record(value: &str) -> Option<Self> {
+        Some(match value {
+            "left" => Self::Stereo(StereoSide::Left),
+            "right" => Self::Stereo(StereoSide::Right),
+            "center" => Self::Surround(SurroundChannel::Center),
+            "lfe" => Self::Surround(SurroundChannel::Lfe),
+            "surround-left" => Self::Surround(SurroundChannel::SurroundLeft),
+            "surround-right" => Self::Surround(SurroundChannel::SurroundRight),
+            _ => {
+                let mut parts = value.strip_prefix("room:")?.split(':');
+                let x_mm = parts.next()?.parse().ok()?;
+                let y_mm = parts.next()?.parse().ok()?;
+                let z_mm = parts.next()?.parse().ok()?;
+                if parts.next().is_some() {
+                    return None;
+                }
+                Self::RoomPoint(RoomPoint { x_mm, y_mm, z_mm })
+            }
+        })
+    }
+
+    /// The role as a record writes it.
+    #[must_use]
+    pub fn to_record(self) -> String {
+        match self {
+            Self::Stereo(StereoSide::Left) => "left".to_owned(),
+            Self::Stereo(StereoSide::Right) => "right".to_owned(),
+            Self::Surround(SurroundChannel::Center) => "center".to_owned(),
+            Self::Surround(SurroundChannel::Lfe) => "lfe".to_owned(),
+            Self::Surround(SurroundChannel::SurroundLeft) => "surround-left".to_owned(),
+            Self::Surround(SurroundChannel::SurroundRight) => "surround-right".to_owned(),
+            Self::RoomPoint(point) => {
+                format!("room:{}:{}:{}", point.x_mm, point.y_mm, point.z_mm)
+            }
+        }
+    }
+
+    /// Whether the role names a place a member may play.
+    #[must_use]
+    pub fn valid(self) -> bool {
+        match self {
+            Self::RoomPoint(point) => point.valid(),
+            Self::Stereo(_) | Self::Surround(_) => true,
+        }
+    }
+}
+
 /// One output or microphone a device offers to speaker groups.
 #[derive(Model, Default, Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SpeakerEndpoint {
@@ -61,6 +181,16 @@ pub struct SpeakerEqBand {
     pub gain_mb: i32,
     /// Quality factor × 1000.
     pub q_milli: u32,
+}
+
+impl SpeakerEqBand {
+    /// Whether the band lies in the range a calibration may produce.
+    #[must_use]
+    pub fn valid(self) -> bool {
+        (10..=24_000).contains(&self.center_hz)
+            && (-2_400..=MAX_GAIN_MB).contains(&self.gain_mb)
+            && (100..=30_000).contains(&self.q_milli)
+    }
 }
 
 /// One member of a group as its leader wrote it.
@@ -184,68 +314,61 @@ pub fn groups(record: &Devices) -> Vec<&SpeakerLedGroup> {
 /// Whether `role` is one a member may contribute.
 #[must_use]
 pub fn valid_role(role: &str) -> bool {
-    match role.split_once(':') {
-        Some(("room", point)) => {
-            let mut parts = point.split(':');
-            let (Some(x), Some(y), Some(z), None) =
-                (parts.next(), parts.next(), parts.next(), parts.next())
-            else {
-                return false;
-            };
-            [x, y, z].into_iter().all(|coordinate| {
-                coordinate
-                    .parse::<i32>()
-                    .is_ok_and(|value| value.unsigned_abs() <= MAX_ROOM_MM.unsigned_abs())
-            })
-        }
-        Some(_) => false,
-        None => matches!(
-            role,
-            "left" | "right" | "center" | "lfe" | "surround-left" | "surround-right"
-        ),
-    }
+    SpeakerRole::from_record(role).is_some_and(SpeakerRole::valid)
 }
 
-/// Whether the roles of `members` form a group the source can play: each role once, a stereo
-/// side with its partner, and either all room points or none.
+/// Whether `roles` form a group the source can play: each role once, a stereo side with its
+/// partner, and either all room points or none.
+#[must_use]
+pub fn roles_hold(roles: &[SpeakerRole]) -> bool {
+    let mut seen = BTreeSet::new();
+    if !roles.iter().all(|role| seen.insert(*role)) {
+        return false;
+    }
+    let room = roles
+        .iter()
+        .filter(|role| matches!(role, SpeakerRole::RoomPoint(_)))
+        .count();
+    if room != 0 && room != roles.len() {
+        return false;
+    }
+    let has = |role: SpeakerRole| seen.contains(&role);
+    let left = has(SpeakerRole::Stereo(StereoSide::Left));
+    let right = has(SpeakerRole::Stereo(StereoSide::Right));
+    let surround_left = has(SpeakerRole::Surround(SurroundChannel::SurroundLeft));
+    let surround_right = has(SpeakerRole::Surround(SurroundChannel::SurroundRight));
+    let any_surround = roles
+        .iter()
+        .any(|role| matches!(role, SpeakerRole::Surround(_)));
+    left == right && surround_left == surround_right && !(any_surround && !(left && right))
+}
+
+/// Whether the roles of `members` form a group the source can play.
 #[must_use]
 pub fn valid_roles(members: &[SpeakerLedMember]) -> bool {
-    let mut roles = std::collections::BTreeSet::new();
-    if !members
+    let Some(roles) = members
         .iter()
-        .all(|member| roles.insert(member.role.as_str()))
-    {
+        .map(|member| SpeakerRole::from_record(&member.role))
+        .collect::<Option<Vec<_>>>()
+    else {
         return false;
-    }
-    let room = members
-        .iter()
-        .filter(|member| member.role.starts_with("room:"))
-        .count();
-    if room != 0 && room != members.len() {
-        return false;
-    }
-    let has = |role: &str| roles.contains(role);
-    let left = has("left");
-    let right = has("right");
-    let surround_left = has("surround-left");
-    let surround_right = has("surround-right");
-    let any_surround = members.iter().any(|member| {
-        member.role.starts_with("surround-") || member.role == "center" || member.role == "lfe"
-    });
-    left == right && surround_left == surround_right && !(any_surround && !(left && right))
+    };
+    roles_hold(&roles)
 }
 
 /// Whether a trim holds: a bounded delay, level and bands.
 #[must_use]
+pub fn trim_holds(delay_ns: u64, gain_mb: i32, eq: &[SpeakerEqBand]) -> bool {
+    delay_ns <= MAX_DELAY_NS
+        && (MIN_GAIN_MB..=MAX_GAIN_MB).contains(&gain_mb)
+        && eq.len() <= MAX_EQ_BANDS
+        && eq.iter().all(|band| band.valid())
+}
+
+/// Whether `member`'s trim holds.
+#[must_use]
 pub fn valid_trim(member: &SpeakerLedMember) -> bool {
-    member.delay_ns <= MAX_DELAY_NS
-        && (MIN_GAIN_MB..=MAX_GAIN_MB).contains(&member.gain_mb)
-        && member.eq.len() <= MAX_EQ_BANDS
-        && member.eq.iter().all(|band| {
-            (10..=24_000).contains(&band.center_hz)
-                && (-2_400..=MAX_GAIN_MB).contains(&band.gain_mb)
-                && (100..=30_000).contains(&band.q_milli)
-        })
+    trim_holds(member.delay_ns, member.gain_mb, &member.eq)
 }
 
 /// Whether `value` is a usable group name: trimmed, bounded, printable.
@@ -258,11 +381,24 @@ pub fn valid_name(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
+/// Whether `value` is a usable endpoint label: non-empty, bounded, printable.
+#[must_use]
+pub fn valid_label(value: &str) -> bool {
+    !value.is_empty() && value.len() <= MAX_LABEL_BYTES && !value.chars().any(char::is_control)
+}
+
+/// The 16 bytes `value` spells in canonical lowercase hex.
+#[must_use]
+pub fn selector_bytes(value: &str) -> Option<[u8; 16]> {
+    let mut bytes = [0; 16];
+    (hex::decode_to_slice(value, &mut bytes).is_ok() && value == hex::encode(bytes))
+        .then_some(bytes)
+}
+
 /// Whether `value` is a selector: 16 bytes in lowercase hex.
 #[must_use]
 pub fn valid_selector(value: &str) -> bool {
-    let mut bytes = [0; 16];
-    hex::decode_to_slice(value, &mut bytes).is_ok() && value == hex::encode(bytes)
+    selector_bytes(value).is_some()
 }
 
 /// `groups`, with `group` added or replacing the one with its id: the count bounded.
