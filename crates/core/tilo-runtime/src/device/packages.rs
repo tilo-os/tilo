@@ -470,6 +470,31 @@ fn cache_root() -> Option<PathBuf> {
     return package_store::layout::default_user_root();
 }
 
+/// Compile every package the store at `root` holds into the cache under `data_home`, as an
+/// install does: what a test device does when it installs an app, so its first open reads the
+/// machine code, also after the daemon starts again.
+#[cfg(feature = "test-support")]
+pub fn compile_installed_at(root: &Path, data_home: &Path) {
+    let Some(compiler) = super::compiled::compiler_in(data_home) else {
+        return;
+    };
+    let catalog = package_store::Catalog::at(root, None);
+    let Ok(packages) = catalog.list() else {
+        return;
+    };
+    // The runtime bundles a device keeps beside its cache, under its data home.
+    let runtimes = data_home.join("tilo-runtime");
+    for package in packages {
+        super::compiled::compile_package(
+            &compiler,
+            &package.id,
+            &package.manifest_path,
+            &package.payload_root,
+            &runtimes,
+        );
+    }
+}
+
 /// The cache this computer's daemon keeps ([`PackageCache::this_device`]).
 static CACHE: OnceLock<Arc<PackageCache>> = OnceLock::new();
 
@@ -574,7 +599,8 @@ impl Writer {
 
     /// Compile the modules of every package installed since `before`: the machine code the
     /// device runs them as, on the one compiler, so a process deserializes it instead of
-    /// compiling anything itself, and the app opens without a compile.
+    /// compiling anything itself, and the app opens without a compile. How many of them the
+    /// cache did not hold is said with the time each package took.
     fn compile_installed(&self, before: &std::collections::BTreeSet<String>) {
         let Some(compiler) = super::compiled::compiler() else {
             return;
@@ -584,32 +610,19 @@ impl Writer {
         let Ok(packages) = catalog.list() else {
             return;
         };
+        // The runtime bundles this device keeps, whose standard library each package's code
+        // runs beside.
+        let runtimes = runtime_bundle::bundle_root().unwrap_or_default();
         for package in packages {
             if before.contains(&format!("{}:{}", package.id, package.package_id_hex)) {
                 continue;
             }
-            let modules = super::compiled::payload_modules(&package.payload_root);
-            if modules.is_empty() {
-                continue;
-            }
-            let parts: Vec<&[u8]> = modules.iter().map(Vec::as_slice).collect();
-            let began = std::time::Instant::now();
-            let entries = compiler.ensure_all(&parts);
-            for (index, entry) in entries.iter().enumerate() {
-                if let Err(error) = entry {
-                    tracing::warn!(
-                        app = %package.id,
-                        module = index,
-                        %error,
-                        "an installed module is not compiled for this device: it runs interpreted"
-                    );
-                }
-            }
-            tracing::debug!(
-                app = %package.id,
-                modules = parts.len(),
-                took_us = began.elapsed().as_micros(),
-                "an installed package's modules are compiled for this device"
+            super::compiled::compile_package(
+                &compiler,
+                &package.id,
+                &package.manifest_path,
+                &package.payload_root,
+                &runtimes,
             );
         }
     }

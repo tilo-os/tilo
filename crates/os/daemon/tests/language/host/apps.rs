@@ -65,6 +65,9 @@ pub fn install(root: &Path, data: &Path, apps: &[&str]) -> Vec<(&'static str, Os
         // The app is built last, after the packages it is made with; only it is installed.
         install_tapp(&store, &built.last().unwrap().tapp);
     }
+    // Installing compiles the machine code each app runs, into the device's own cache: what a
+    // computer that installs an app does, so its first open does not compile it.
+    tilo_runtime::device::packages::compile_installed_at(&store, data);
     env.push(("TILO_APPS_DATA_DIR", store.into()));
     env
 }
@@ -103,6 +106,10 @@ pub fn install_source(name: &str, source: &str) {
     )
     .unwrap_or_else(|error| panic!("{name} builds: {error}"));
     install_tapp(&store, &built.last().unwrap().tapp);
+    // This device installs what it was handed, compiling the machine code the app runs.
+    if let Some(data) = tilo_paths::data_dir() {
+        tilo_runtime::device::packages::compile_installed_at(&store, &data);
+    }
 }
 
 /// Install the package at `tapp` into the app store at `store`.

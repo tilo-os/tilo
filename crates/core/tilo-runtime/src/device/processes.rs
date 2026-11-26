@@ -76,6 +76,22 @@ fn send_instance(
     .send(socket)
 }
 
+/// What the last hand-over found of the modules it handed a process: the app, how many parts it
+/// carries and how many the device's cache held. A test reads this to say an open compiled
+/// nothing, without a clock.
+#[cfg(feature = "test-support")]
+static LAST_HANDOVER: std::sync::Mutex<Option<(String, usize, usize)>> =
+    std::sync::Mutex::new(None);
+
+/// [`LAST_HANDOVER`], for a test.
+#[cfg(feature = "test-support")]
+pub fn last_handover() -> Option<(String, usize, usize)> {
+    LAST_HANDOVER
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
+}
+
 /// The app that keeps each person's own views (`apps/tl/views`): views they, their agents or
 /// others wrote, which read whatever the workspace has installed.
 const PERSON_VIEWS_APP: &str = "so.tilo.lang.views";
@@ -375,54 +391,42 @@ impl Processes {
 
     /// The device's compiled modules, on the one compiler, made the first time a module is
     /// handed to a process.
-    fn compiler(&self) -> Option<&tilo_wasm_aot::Cache> {
+    fn compiler(&self) -> Option<Arc<tilo_wasm_aot::Cache>> {
         self.compiler
             .get_or_init(|| super::compiled::compiler_in(&self.data_home))
-            .as_deref()
+            .clone()
     }
 
-    /// Fill in the machine code the process `module` runs: each part compiled here, for this
-    /// device, when the cache does not hold it yet, so the process deserializes it instead of
-    /// compiling anything itself. A part that does not compile is left without an entry, and
-    /// runs on the interpreter there. Parts are compiled side by side.
-    fn compile(&self, module: &mut runtime_portal::process_link::Module) {
+    /// Fill in the machine code the process `module` runs from the cache the installs fill:
+    /// each part it holds is handed over, and a part it does not is left without an entry — it
+    /// runs on the interpreter this time — and compiled on a thread of its own for the next
+    /// hand-over, so no open waits for a compile. Answers how many parts the module carries and
+    /// how many the cache held.
+    fn compile(&self, module: &mut runtime_portal::process_link::Module) -> (usize, usize) {
         let parts: Vec<&[u8]> = std::iter::once(&module.wasm)
             .chain(module.imports.iter())
             .map(Vec::as_slice)
             .collect();
         if parts.is_empty() {
-            return;
+            return (0, 0);
         }
         let Some(compiler) = self.compiler() else {
-            return;
+            return (parts.len(), 0);
         };
-        let began = std::time::Instant::now();
-        let entries: Vec<Vec<u8>> = compiler
-            .ensure_all(&parts)
-            .into_iter()
-            .enumerate()
-            .map(|(index, entry)| match entry {
-                Ok(entry) => entry,
-                Err(error) => {
-                    tracing::warn!(
-                        part = index,
-                        %error,
-                        "a tilolang module is not compiled for this device: it runs interpreted"
-                    );
-                    Vec::new()
-                }
-            })
-            .collect();
-        // A part that did not compile leaves an empty place so the rest stay aligned; nothing
-        // compiled at all leaves the bundle as the session handed it over.
-        if entries.iter().any(|entry| !entry.is_empty()) {
+        let (entries, cached) = super::compiled::at_open(&compiler, &parts);
+        // A part the cache does not hold leaves an empty place so the rest stay aligned; none
+        // held leaves the bundle as the session handed it over.
+        if cached > 0 {
             module.compiled = entries;
         }
-        tracing::debug!(
-            parts = parts.len(),
-            took_us = began.elapsed().as_micros(),
-            "a tilolang module was compiled for this device"
-        );
+        if cached < parts.len() {
+            tracing::debug!(
+                parts = parts.len(),
+                cached,
+                "a tilolang module runs interpreted this time: the cache does not hold it yet"
+            );
+        }
+        (parts.len(), cached)
     }
 
     /// Record each process this device starts in `attests` from now on: the daemon's launch
@@ -885,8 +889,17 @@ impl Processes {
             app_runtime: verified.app_runtime,
         };
         let mut module = self.module_for(&instance.app, verified.module, &key);
-        // The machine code this device runs it as, compiled here before the process sees it.
-        self.compile(&mut module);
+        // The machine code this device runs it as, as the installs compiled it.
+        let (parts, cached) = self.compile(&mut module);
+        #[cfg(feature = "test-support")]
+        {
+            let mut last = LAST_HANDOVER
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *last = Some((instance.app.clone(), parts, cached));
+        }
+        #[cfg(not(feature = "test-support"))]
+        let _ = (parts, cached);
         // A package the app uses that is installed as an app is another app: its instance reads
         // that app's records from where it keeps them.
         let uses_packages = !module.imports.is_empty();

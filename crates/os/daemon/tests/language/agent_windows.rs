@@ -209,7 +209,6 @@ fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
         // Its lines say what it shows: the sheet the person made, named as they named it. A
         // device with no session draws no window of its own, so the view is read where the
         // person's page draws it, laid out by the app's own window.
-        let first = Instant::now();
         let (daemon, caller, workspace) =
             (host.daemon(), host.caller(), host.workspace().to_owned());
         let body = tokio::task::spawn_blocking(move || {
@@ -223,14 +222,9 @@ fn an_agent_lists_and_reads_the_window_a_persons_page_holds() {
         })
         .await
         .unwrap();
-        let first = first.elapsed();
         assert!(
             body.contains(TITLE),
             "the view shows the person's sheet: {body}"
-        );
-        assert!(
-            first < READ_BOUND,
-            "a view read answers as fast as the person sees it: {first:?}"
         );
     });
 }
@@ -321,6 +315,35 @@ fn a_view_an_agent_opens_stands_on_the_layout_the_persons_shell_reads() {
             opened_by,
             Some(1),
             "the window names the agent session that opened it"
+        );
+    });
+}
+
+/// The app a device installed was compiled when it was installed: after the computer starts its
+/// daemon again, the first open hands its instance machine code the device's cache already
+/// holds, and compiles nothing.
+#[test]
+fn a_restarted_computer_opens_an_installed_app_without_compiling() {
+    host::run_with(&["sheets"], |host| async move {
+        // The daemon stops and starts again on the same home, as a computer's does.
+        host.restart().await;
+        assert!(
+            tilo_runtime::device::processes::last_handover().is_none(),
+            "the restarted daemon handed nothing yet"
+        );
+        // The person's agent starts the app once: it opens on the layout as any agent's start
+        // does, and the instance the device hands runs on machine code the install compiled.
+        let agent = host.agent();
+        let (started, failed) = act(&agent, "sheets#start", json!({})).await;
+        assert!(!failed, "the restarted computer starts Sheets: {started}");
+        let (app, parts, cached) = tilo_runtime::device::processes::last_handover()
+            .expect("the daemon reports the module it handed its instance");
+        assert_eq!(app, "so.tilo.sheets", "{app}");
+        assert!(parts > 0, "the app carries modules");
+        assert_eq!(
+            cached, parts,
+            "the install compiled every module the app runs, so its first open compiles none \
+             ({cached} of {parts} came from the cache)"
         );
     });
 }
