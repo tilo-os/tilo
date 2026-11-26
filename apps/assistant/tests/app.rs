@@ -189,7 +189,11 @@ fn the_live_work_panel_opens_tasks_and_the_assistants_private_chat() {
     let assistant = agents(&mut app).remove(0).0;
     assert!(says(&mut app, "Ask what your assistant remembers"));
     app.harness()
-        .click_named("assistant-panel-tabs:segment:1")
+        .perform_semantic_named(
+            "assistant-panel-tabs",
+            Some("assistant-panel-tabs:segment:1"),
+            &ui::a11y::Action::Activate,
+        )
         .unwrap();
     app.frame();
     app.harness()
@@ -341,9 +345,12 @@ fn a_refused_job_does_not_open_chat_and_keeps_the_job_for_retry() {
     english();
     let mut env = tilo_test_env::ScopedEnv::new();
     env.set("TILO_WORKSPACE_ID", WORKSPACE);
-    let chat = Arc::new(
-        TestProvider::new().answering(|_, _| Pending::ready(Err(ActionCallError::NotPermitted))),
-    );
+    let reason = "The workspace has not granted this assistant access to Chat";
+    let chat = Arc::new(TestProvider::new().answering(move |_, _| {
+        Pending::ready(Err(ActionCallError::Refused {
+            reason: reason.to_owned(),
+        }))
+    }));
     let _served = ui::RemoteActions::enter(chat.clone(), Caller::local_person("ada"));
     let mut app = TestApp::<App>::in_workspace(WORKSPACE).expect("the window");
     app.frame();
@@ -363,15 +370,24 @@ fn a_refused_job_does_not_open_chat_and_keeps_the_job_for_retry() {
         1,
         "Chat refused the send before any open"
     );
-    assert!(app.refused().is_some(), "the refusal reaches the window");
-    app.harness()
-        .click_named("assistant-start-sub-agent")
-        .unwrap();
-    app.frame();
+    assert!(
+        says(&mut app, reason),
+        "the form shows why Chat refused the job"
+    );
     assert!(
         says(&mut app, "Review the invoice"),
         "the original job is available to retry"
     );
+    app.harness().click_named("assistant-job-start").unwrap();
+    app.settle();
+    let asked = chat.asked();
+    assert_eq!(
+        asked.len(),
+        2,
+        "retry sends the same job without opening Chat"
+    );
+    assert_eq!(asked[0].target, asked[1].target);
+    assert_eq!(asked[0].argument, asked[1].argument);
 }
 
 /// The workspace's document of its agents, by its id.

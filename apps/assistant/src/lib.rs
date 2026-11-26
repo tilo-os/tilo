@@ -86,8 +86,16 @@ pub(crate) struct Nav {
     pub(crate) asking: LocalState<bool>,
     /// The job as typed so far.
     pub(crate) job: LocalState<String>,
+    job_submission: LocalState<JobSubmission>,
     /// Moves when this window changed a resource it reads, so its parts read it again.
     pub(crate) changed: LocalState<u64>,
+}
+
+#[derive(Clone)]
+enum JobSubmission {
+    Ready,
+    Sending,
+    Refused(String),
 }
 
 impl Nav {
@@ -104,6 +112,9 @@ impl Nav {
 
     /// Ask the person for the job a sub-agent is started with.
     pub(crate) fn ask_for_job(&self) {
+        if matches!(self.job_submission.get(), JobSubmission::Refused(_)) {
+            self.job_submission.set(JobSubmission::Ready);
+        }
         self.asking.set(true);
         self.pane.set(ui::widget::NavPane::Content);
     }
@@ -320,6 +331,7 @@ impl ResourceApp for App {
             tab: cx.local(panel::Tab::Active),
             asking: cx.local(false),
             job: cx.local(String::new()),
+            job_submission: cx.local(JobSubmission::Ready),
             changed: cx.local(0),
         };
         #[cfg(feature = "samples")]
@@ -391,7 +403,17 @@ fn answer(
             let assistant = hands.assistant()?;
             let send = Hands::job_for_main_agent(&assistant, &job)?;
             let nav = nav.clone();
+            let from_prompt = nav.asking.get() && nav.job.get() == job;
+            if from_prompt {
+                nav.job_submission.set(JobSubmission::Sending);
+            }
             return Ok(cx.call(&send, move |(), sent, cx| {
+                if from_prompt {
+                    nav.job_submission.set(match &sent {
+                        Ok(_) => JobSubmission::Ready,
+                        Err(why) => JobSubmission::Refused(why.clone()),
+                    });
+                }
                 sent?;
                 if nav.job.get() == job {
                     nav.job.set(String::new());
@@ -429,7 +451,7 @@ fn window(cx: &ViewCx<Window>, nav: &Nav, hands: &Hands) -> Element {
         .inspector_header(tr("assistant-tasks"), Vec::new());
     let shell = if nav.asking.get() && has_assistant {
         shell
-            .content(job_prompt(cx, nav, hands, &assistant))
+            .content(job_prompt(nav, hands, &assistant))
             .content_header(tr("assistant-start-sub-agent"), Vec::new())
     } else {
         let start = |nav: &Nav| -> Vec<Element> {
@@ -539,34 +561,31 @@ fn sub_agent(hands: &Hands, id: &str) -> (String, Element) {
 
 /// Asking for a sub-agent's job: the job, and nothing else. The main agent picks the role
 /// and the model.
-fn job_prompt(
-    cx: &ViewCx<Window>,
-    nav: &Nav,
-    hands: &Hands,
-    assistant: &Read<Option<Assistant>>,
-) -> Element {
+fn job_prompt(nav: &Nav, hands: &Hands, assistant: &Read<Option<Assistant>>) -> Element {
     let name = match assistant {
         Read::Here(Some(assistant)) => assistant.name.clone(),
         Read::Here(None) | Read::NotHere => tr("assistant-name"),
     };
-    let refused = cx.local(String::new());
     let job = TextInput::from_state(&nav.job)
         .with_id("assistant-job")
         .with_accessible_name(tr("assistant-job-placeholder"))
         .with_placeholder("assistant-job-placeholder")
         .multiline(true);
     let start = {
-        let (nav, hands, said) = (nav.clone(), hands.clone(), refused.clone());
+        let (nav, hands) = (nav.clone(), hands.clone());
         Button::new("assistant-job-start", "assistant-job-start")
             .role(ButtonRole::Primary)
+            .enabled_while(&nav.job_submission, |status| {
+                !matches!(status, JobSubmission::Sending)
+            })
             .on_effect(move || {
                 let job = nav.job.get();
                 if job.trim().is_empty() {
-                    said.set(tr("assistant-job-empty"));
+                    nav.job_submission
+                        .set(JobSubmission::Refused(tr("assistant-job-empty")));
                     return;
                 }
                 if nav.asking.get() {
-                    nav.show(&Place::Overview);
                     hands.start_sub_agent(job);
                 }
             })
@@ -589,11 +608,14 @@ fn job_prompt(
                 .push(Box::new(cancel)),
         ),
         Box::new(
-            Text::from_state(&refused, |why: &String| why.clone())
-                .with_id("assistant-job-refused")
-                .with_role(TextRole::Caption)
-                .dimmed()
-                .with_live(ui::a11y::Politeness::Polite),
+            Text::from_state(&nav.job_submission, |status| match status {
+                JobSubmission::Refused(why) => why.clone(),
+                JobSubmission::Ready | JobSubmission::Sending => String::new(),
+            })
+            .with_id("assistant-job-refused")
+            .with_role(TextRole::Caption)
+            .dimmed()
+            .with_live(ui::a11y::Politeness::Polite),
         ),
     ])
 }
