@@ -6,7 +6,7 @@
 //! its distance below where the page begins. Nothing leaves the rect: the page is its own clip,
 //! so a line a paragraph overhangs or a glyph's colour never paints over the page's neighbours.
 
-use ui::text_render::{FontChoice, TextRenderer, TextWeight};
+use tilo_ui_base::{text_render::FontChoice, text_render::TextRenderer, text_render::TextWeight};
 use vello::Scene;
 use vello::kurbo::Affine;
 use vello::kurbo::{Line, Point, Rect, Stroke};
@@ -140,7 +140,7 @@ fn draw_decoration(
             paint.ink_dim,
             transform * Affine::translate((left + f64::from(block.indent) - 22.0, at)),
             None,
-            &ui::text_render::TextStyle::new(block.size),
+            &tilo_ui_base::text_render::TextStyle::new(block.size),
         );
     }
 }
@@ -258,7 +258,7 @@ fn draw_lines(
                     * Affine::translate((x, run_y))
                     * Affine::scale_non_uniform(f64::from(line.glyph_scale), 1.0),
                 None,
-                &ui::text_render::TextStyle::new(block.size)
+                &tilo_ui_base::text_render::TextStyle::new(block.size)
                     .with_weight(weight)
                     .with_italic(run.italic)
                     .with_family(family),

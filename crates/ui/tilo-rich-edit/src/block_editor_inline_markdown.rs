@@ -7,7 +7,7 @@ use winit::event::{ElementState, Ime, KeyEvent, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::{BlockEditor, BlockKind, EditScope};
-use ui::widget::EventCtx;
+use tilo_ui_base::widget::EventCtx;
 use ui::widget::markdown_input::{self, InlineKind, InlineMatch};
 use ui::widget::marks::{self, Mark, MarkSpan};
 
@@ -399,7 +399,7 @@ mod tests {
 
     use super::super::{Block, BlockEditor, CursorPlacement};
     use ui::testing::Dispatch;
-    use ui::widget::Widget;
+    use tilo_ui_base::widget::Widget;
     use ui::widget::marks::{Mark, MarkSpan};
 
     fn press(editor: &mut BlockEditor, doc: &mut AutoCommit, key: Key) {
@@ -408,11 +408,11 @@ mod tests {
             Key::Named(NamedKey::Space) => Some(" ".into()),
             _ => None,
         };
-        let event = ui::synthetic_input::key_event(key, text, ElementState::Pressed);
+        let event = tilo_ui_base::synthetic_input::key_event(key, text, ElementState::Pressed);
         Dispatch::new()
             .doc(doc)
-            .send(editor, &ui::synthetic_input::keyboard_input(event));
-        editor.settle(&mut ui::widget::Edits::lend(doc), &ROOT);
+            .send(editor, &tilo_ui_base::synthetic_input::keyboard_input(event));
+        editor.settle(&mut tilo_ui_base::widget::Edits::lend(doc), &ROOT);
         editor.sync(doc, &ROOT);
     }
 

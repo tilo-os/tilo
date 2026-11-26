@@ -6,7 +6,7 @@ use automerge::ROOT;
 use ui::testing::Dispatch;
 
 fn send(editor: &mut BlockEditor, doc: &mut AutoCommit, key: Key) {
-    let event = ui::synthetic_input::key_event(
+    let event = tilo_ui_base::synthetic_input::key_event(
         key.clone(),
         match &key {
             Key::Character(text) => Some(text.clone()),
@@ -16,7 +16,7 @@ fn send(editor: &mut BlockEditor, doc: &mut AutoCommit, key: Key) {
     );
     Dispatch::new()
         .doc(doc)
-        .send(editor, &ui::synthetic_input::keyboard_input(event));
+        .send(editor, &tilo_ui_base::synthetic_input::keyboard_input(event));
     editor.sync(doc, &ROOT);
 }
 

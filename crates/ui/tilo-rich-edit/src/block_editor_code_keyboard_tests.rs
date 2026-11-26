@@ -20,11 +20,11 @@ fn dispatch_key(
     key: &Key,
     modifiers: ModifiersState,
 ) -> bool {
-    let event = ui::synthetic_input::key_event(key.clone(), None, ElementState::Pressed);
+    let event = tilo_ui_base::synthetic_input::key_event(key.clone(), None, ElementState::Pressed);
     let handled = Dispatch::new()
         .modifiers(modifiers)
         .doc(doc)
-        .send(editor, &ui::synthetic_input::keyboard_input(event))
+        .send(editor, &tilo_ui_base::synthetic_input::keyboard_input(event))
         .handled;
     editor.sync(doc, &ROOT);
     handled
@@ -118,7 +118,7 @@ tilo_test_env::scenario! {
                 &Key::Character("c".into()),
                 ModifiersState::CONTROL | ModifiersState::SHIFT,
             );
-            assert_eq!(ui::clipboard_paste().as_deref(), Some("one\ntwo"));
+            assert_eq!(tilo_ui_base::clipboard_paste().as_deref(), Some("one\ntwo"));
             assert_eq!(editor.focused, Some(1));
             assert_eq!(editor.blocks[1].line.cursor_pos(), 1);
             for press in 0..4 {

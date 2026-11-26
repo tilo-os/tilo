@@ -5,7 +5,7 @@
 use taffy::Size;
 
 use super::BlockEditor;
-use ui::text_render::TextRenderer;
+use tilo_ui_base::text_render::TextRenderer;
 
 impl BlockEditor {
     /// The width a line assumes where no definite one is given: the theme's reading measure.

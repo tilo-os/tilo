@@ -4,14 +4,14 @@ use ui::testing::Dispatch;
 
 fn type_text(editor: &mut BlockEditor, doc: &mut AutoCommit, text: &str) {
     for character in text.chars() {
-        let key = ui::synthetic_input::key_event(
+        let key = tilo_ui_base::synthetic_input::key_event(
             Key::Character(character.to_string().into()),
             Some(character.to_string().into()),
             ElementState::Pressed,
         );
         let handled = Dispatch::new()
             .doc(doc)
-            .send(editor, &ui::synthetic_input::keyboard_input(key))
+            .send(editor, &tilo_ui_base::synthetic_input::keyboard_input(key))
             .handled;
         assert!(handled);
         editor.sync(doc, &ROOT);
@@ -27,9 +27,9 @@ tilo_test_env::scenario! {
     {
         fn visible_slash_menu_is_semantic_and_activation_uses_the_conversion_path() {
             fn find<'a>(
-                node: &'a ui::a11y::AccessNode,
+                node: &'a tilo_ui_base::a11y::AccessNode,
                 key: &str,
-            ) -> Option<&'a ui::a11y::AccessNode> {
+            ) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
                 if node.semantic_key.as_deref() == Some(key) {
                     return Some(node);
                 }
@@ -41,7 +41,7 @@ tilo_test_env::scenario! {
             editor.open_slash_menu_for_test();
             let tree = Widget::accessibility(&editor).unwrap();
             let menu = find(&tree, "notes.slash-menu").unwrap();
-            assert_eq!(menu.role, ui::a11y::Role::Menu);
+            assert_eq!(menu.role, tilo_ui_base::a11y::Role::Menu);
             assert_eq!(menu.state.expanded, Some(true));
             assert!(!menu.state.hidden);
             let heading = menu
@@ -54,8 +54,8 @@ tilo_test_env::scenario! {
             let mut doc = AutoCommit::new();
             assert!(editor.perform_semantic_action(
                 &heading,
-                &ui::a11y::Action::Activate,
-                &mut ui::widget::Edits::lend(&mut doc),
+                &tilo_ui_base::a11y::Action::Activate,
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &ROOT,
             ));
             assert!(matches!(editor.blocks[0].kind, BlockKind::Heading(1)));

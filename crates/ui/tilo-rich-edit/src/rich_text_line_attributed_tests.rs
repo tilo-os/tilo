@@ -4,14 +4,14 @@
 use super::*;
 use taffy::{Size, TaffyTree};
 use ui::testing::dispatch;
-use ui::text_render::TextRenderer;
-use ui::theme::Theme;
-use ui::tokens::TextRole;
+use tilo_ui_base::text_render::TextRenderer;
+use tilo_ui_base::theme::Theme;
+use tilo_ui_base::tokens::TextRole;
 use vello::Scene;
 use vello::kurbo::Affine;
 
 fn body_size() -> f32 {
-    ui::tokens::typography::stock().size(TextRole::Body)
+    tilo_ui_base::tokens::typography::stock().size(TextRole::Body)
 }
 
 fn draw_rich_line_for_test(line: &mut RichTextLine, theme: &Theme) -> Scene {
@@ -23,7 +23,7 @@ fn draw_rich_line_for_test(line: &mut RichTextLine, theme: &Theme) -> Scene {
         Affine::IDENTITY,
         &mut renderer,
         theme,
-        ui::presence::PresenceCtx::empty().draw_env(),
+        tilo_ui_base::presence::PresenceCtx::empty().draw_env(),
     ));
     scene
 }
@@ -39,7 +39,7 @@ tilo_test_env::scenario! {
     {
         use ui::widget::marks::{Mark, MarkSpan};
         use crate::rich_text_line::RichTextLine;
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         for scale in [1.0, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
             let mut line = RichTextLine::new().with_text("aBz");
@@ -72,7 +72,7 @@ tilo_test_env::scenario! {
     phase attributed_single_line_preedit_preserves_utf8_marks_and_commit_route;
     {
         use ui::widget::marks::{Mark, MarkSpan};
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         for scale in [1.0, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
             let mut line = crate::RichTextLine::new().with_text("éW");
@@ -131,7 +131,7 @@ tilo_test_env::scenario! {
     phase attributed_single_line_chip_and_link_rules_follow_shaped_ranges;
     {
         use ui::widget::marks::{Mark, MarkSpan};
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         for scale in [1.0, 2.0] {
             let theme = Theme::dark().with_text_scale(scale);
             let mut line = crate::RichTextLine::new().with_text("aWWWz");
@@ -186,7 +186,7 @@ tilo_test_env::scenario! {
     phase attributed_single_line_sync_undo_redo_rebuilds_runs;
     {
         use ui::widget::marks::{Mark, MarkSpan};
-        let _settled = ui::motion::testing::settled();
+        let _settled = tilo_ui_base::motion::testing::settled();
         let mut state = ui::State::new();
         let text = state
             .doc

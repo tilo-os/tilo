@@ -8,11 +8,11 @@ use winit::event::{ElementState, KeyEvent, MouseButton, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use ui::ColorCompat as _;
-use ui::component::{Component, Described, Event, Value};
-use ui::motion::{Drill, Pose, Presence};
-use ui::text_render::{FontChoice, TextRenderer};
-use ui::tokens::MotionSource;
-use ui::widget::{TaffyTreeExt as _, Widget};
+use tilo_ui_base::{component::Component, component::Described, component::Event, component::Value};
+use tilo_ui_base::{motion::Drill, motion::Pose, motion::Presence};
+use tilo_ui_base::{text_render::FontChoice, text_render::TextRenderer};
+use tilo_ui_base::tokens::MotionSource;
+use tilo_ui_base::{widget::TaffyTreeExt as _, widget::Widget};
 
 use super::from_rich;
 use super::layout::{ChapterLayout, ChapterLayoutRequest, LaidBlock, LayoutKind, layout_chapter};
@@ -187,10 +187,10 @@ impl Reading {
             "" | "serif" => FontChoice::Serif,
             "sans" => FontChoice::SansSerif,
             "mono" => FontChoice::Monospace,
-            "libertinus" => FontChoice::Named(ui::ReadingFace::Libertinus.family().to_owned()),
-            "literata" => FontChoice::Named(ui::ReadingFace::Literata.family().to_owned()),
-            "garamond" => FontChoice::Named(ui::ReadingFace::Garamond.family().to_owned()),
-            "source_serif" => FontChoice::Named(ui::ReadingFace::SourceSerif.family().to_owned()),
+            "libertinus" => FontChoice::Named(tilo_ui_base::ReadingFace::Libertinus.family().to_owned()),
+            "literata" => FontChoice::Named(tilo_ui_base::ReadingFace::Literata.family().to_owned()),
+            "garamond" => FontChoice::Named(tilo_ui_base::ReadingFace::Garamond.family().to_owned()),
+            "source_serif" => FontChoice::Named(tilo_ui_base::ReadingFace::SourceSerif.family().to_owned()),
             family => FontChoice::Named(family.to_owned()),
         }
     }
@@ -529,8 +529,8 @@ impl Reading {
     fn offset(&self, laid: &Laid) -> f32 {
         match self.mode {
             ReadingMode::Continuous => {
-                let head = laid.layout.total_height - ui::num::f32_of_f64(self.rect.height());
-                head.max(0.0) * ui::num::f32_of_f64(self.place).clamp(0.0, 1.0)
+                let head = laid.layout.total_height - tilo_ui_base::num::f32_of_f64(self.rect.height());
+                head.max(0.0) * tilo_ui_base::num::f32_of_f64(self.place).clamp(0.0, 1.0)
             }
             _ => 0.0,
         }
@@ -541,9 +541,9 @@ impl Reading {
         scene: &mut vello::Scene,
         transform: Affine,
         text: &mut TextRenderer,
-        theme: &ui::theme::Theme,
+        theme: &tilo_ui_base::theme::Theme,
     ) {
-        let now = ui::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let motion = theme.motion();
         if self.pending_turn != 0.0 {
             if let Some(turn) = &mut self.turn {
@@ -794,9 +794,9 @@ impl Described for Reading {
             selected,
             showing,
         } = props;
-        let mut style = ReadingStyle::with_scale(scale.map_or(1.0, ui::num::f32_of_f64));
+        let mut style = ReadingStyle::with_scale(scale.map_or(1.0, tilo_ui_base::num::f32_of_f64));
         if let Some(spacing) = spacing {
-            style.line_spacing = ui::num::f32_of_f64(spacing)
+            style.line_spacing = tilo_ui_base::num::f32_of_f64(spacing)
                 .clamp(ReadingStyle::SPACING_MIN, ReadingStyle::SPACING_MAX);
         }
         style.composition = if justified {
@@ -880,7 +880,7 @@ impl Widget for Reading {
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        _theme: &ui::theme::Theme,
+        _theme: &tilo_ui_base::theme::Theme,
         node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn Widget>,
     ) -> taffy::NodeId {
         let style = taffy::Style {
@@ -923,7 +923,7 @@ impl Widget for Reading {
         node: taffy::NodeId,
         origin: vello::kurbo::Point,
     ) {
-        let rect = ui::widget::layout_rect(taffy, node, origin);
+        let rect = tilo_ui_base::widget::layout_rect(taffy, node, origin);
         if (rect.width() - self.rect.width()).abs() > 0.5
             || (rect.height() - self.rect.height()).abs() > 0.5
         {
@@ -932,13 +932,13 @@ impl Widget for Reading {
         self.rect = rect;
     }
 
-    fn draw(&mut self, ctx: &mut ui::DrawCtx<'_>) {
+    fn draw(&mut self, ctx: &mut tilo_ui_base::DrawCtx<'_>) {
         #[allow(unused_variables, reason = "a draw binds only the parts it uses")]
         let (scene, transform, text, theme, env) = ctx.parts();
         let rect = self.rect;
         self.lay_out(
-            ui::num::f32_of_f64(rect.width()),
-            ui::num::f32_of_f64(rect.height()),
+            tilo_ui_base::num::f32_of_f64(rect.width()),
+            tilo_ui_base::num::f32_of_f64(rect.height()),
             text,
         );
         self.paint(scene, transform, text, theme);
@@ -953,25 +953,25 @@ impl Widget for Reading {
             || self
                 .turn
                 .as_ref()
-                .is_some_and(|turn| turn.anim.is_moving(ui::motion::frame_now()))
+                .is_some_and(|turn| turn.anim.is_moving(tilo_ui_base::motion::frame_now()))
     }
 
     fn mark_drawn(&mut self) {
         self.dirty = self.needs_animation_frame();
     }
 
-    fn sync(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) {
+    fn sync(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &tilo_ui_base::widget::ModelPath) {
         self.report_pages();
     }
 
-    fn update(&mut self, _state: &ui::widget::AppModel, _path: &ui::widget::ModelPath) -> bool {
+    fn update(&mut self, _state: &tilo_ui_base::widget::AppModel, _path: &tilo_ui_base::widget::ModelPath) -> bool {
         self.report_pages()
     }
 
     fn is_layout_dirty(&self) -> bool {
         let (width, height) = self.layout_size(
-            ui::num::f32_of_f64(self.rect.width()),
-            ui::num::f32_of_f64(self.rect.height()),
+            tilo_ui_base::num::f32_of_f64(self.rect.width()),
+            tilo_ui_base::num::f32_of_f64(self.rect.height()),
         );
         self.laid.as_ref().is_none_or(|laid| {
             (laid.width - width).abs() > 0.5 || (laid.height - height).abs() > 0.5
@@ -982,7 +982,7 @@ impl Widget for Reading {
         self.rect
     }
 
-    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut ui::widget::EventCtx<'_>) {
+    fn handle_event(&mut self, event: &WindowEvent, ctx: &mut tilo_ui_base::widget::EventCtx<'_>) {
         match event {
             WindowEvent::KeyboardInput {
                 event:
@@ -1124,7 +1124,7 @@ impl Widget for Reading {
         "Reading"
     }
 
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         let laid = self.laid.as_ref()?;
         let start = laid
             .layout
@@ -1150,17 +1150,17 @@ impl Widget for Reading {
         // The page reads as a document of its paragraphs, each a line a reader meets in order,
         // as the page sets them.
         let mut node =
-            ui::a11y::AccessNode::new(ui::a11y::Role::Document).with_name(words.join("\n"));
+            tilo_ui_base::a11y::AccessNode::new(tilo_ui_base::a11y::Role::Document).with_name(words.join("\n"));
         node.children = shown
             .iter()
             .filter(|block| !block.text.trim().is_empty())
             .map(|block| {
                 let role = match block.kind {
-                    LayoutKind::Heading => ui::a11y::Role::Heading { level: block.level },
-                    LayoutKind::Separator => ui::a11y::Role::StaticText,
-                    _ => ui::a11y::Role::Paragraph,
+                    LayoutKind::Heading => tilo_ui_base::a11y::Role::Heading { level: block.level },
+                    LayoutKind::Separator => tilo_ui_base::a11y::Role::StaticText,
+                    _ => tilo_ui_base::a11y::Role::Paragraph,
                 };
-                ui::a11y::AccessNode::new(role).with_name(block.text.clone())
+                tilo_ui_base::a11y::AccessNode::new(role).with_name(block.text.clone())
             })
             .collect();
         Some(node)
@@ -1190,14 +1190,14 @@ fn mark_range(entry: &str) -> Option<(usize, usize, usize, Color)> {
 #[cfg(test)]
 mod tests {
     use tilo_ui_graph::rich::{Block as WireBlock, RichText};
-    use ui::component::{Fired, Intent};
+    use tilo_ui_base::{component::Fired, component::Intent};
     use ui::testing::{dispatch, lay_out};
     use winit::keyboard::NamedKey;
 
     use super::*;
 
-    fn reader(text: &str, scale: Option<f64>) -> (Reading, ui::Intents<Fired>) {
-        let queue = ui::Intents::default();
+    fn reader(text: &str, scale: Option<f64>) -> (Reading, tilo_ui_base::Intents<Fired>) {
+        let queue = tilo_ui_base::Intents::default();
         let props = ReadingProps {
             value: Some(RichText {
                 blocks: vec![WireBlock {
@@ -1262,7 +1262,7 @@ mod tests {
         let _ = queue.take();
         assert!(dispatch(
             &mut reading,
-            &ui::synthetic_input::named_key(NamedKey::ArrowRight)
+            &tilo_ui_base::synthetic_input::named_key(NamedKey::ArrowRight)
         ));
         let fired = queue.take();
         assert_eq!(fired.len(), 1, "one turn: {fired:?}");
@@ -1350,7 +1350,7 @@ mod tests {
         assert!(reading.turn.is_none(), "a page at rest does not move");
         assert!(dispatch(
             &mut reading,
-            &ui::synthetic_input::named_key(NamedKey::ArrowRight)
+            &tilo_ui_base::synthetic_input::named_key(NamedKey::ArrowRight)
         ));
         assert!(reading.turn.is_some(), "the page it left is in motion");
         assert!(
@@ -1364,7 +1364,7 @@ mod tests {
         let (mut reading, _) = reader("A passage read aloud.", None);
         lay_out(&mut reading, 480.0, 320.0).expect("the page lays out");
         let node = reading.accessibility().expect("a page reads as a document");
-        assert_eq!(node.role, ui::a11y::Role::Document);
+        assert_eq!(node.role, tilo_ui_base::a11y::Role::Document);
         assert!(
             node.name
                 .unwrap_or_default()
@@ -1378,7 +1378,7 @@ mod tests {
         );
         assert_eq!(
             node.children[0].role,
-            ui::a11y::Role::Paragraph,
+            tilo_ui_base::a11y::Role::Paragraph,
             "each line is a paragraph a reader meets"
         );
     }
@@ -1416,10 +1416,10 @@ mod tests {
         assert_eq!(node.children.len(), 2);
         assert_eq!(
             node.children[0].role,
-            ui::a11y::Role::Heading { level: 2 },
+            tilo_ui_base::a11y::Role::Heading { level: 2 },
             "a heading reads as a heading, at its level"
         );
-        assert_eq!(node.children[1].role, ui::a11y::Role::Paragraph);
+        assert_eq!(node.children[1].role, tilo_ui_base::a11y::Role::Paragraph);
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! intrinsic-size cache and conceal stale paragraph heights.
 use super::*;
 use ui::testing::Dispatch;
-use ui::widget::bound_nodes::BoundNodeMap;
+use tilo_ui_base::widget::bound_nodes::BoundNodeMap;
 use winit::event::MouseButton;
 use winit::keyboard::ModifiersState;
 
@@ -85,7 +85,7 @@ impl RetainedEditor {
         editor.set_blocks(blocks);
         editor.focus_block(0, CursorPlacement::Start);
         let theme = Theme::dark().with_text_scale(scale);
-        let mut text = ui::font_catalog::fixture_renderer();
+        let mut text = tilo_ui_base::font_catalog::fixture_renderer();
         text.set_text_scale(scale);
         let mut tree = TaffyTree::new();
         let mut nodes = HashMap::new();
@@ -133,7 +133,7 @@ impl RetainedEditor {
         // SAFETY: this fixture exclusively owns the stable boxed editor and
         // matching maps; callbacks never replace blocks while measuring.
         unsafe {
-            ui::widget::compute_widget_layout(
+            tilo_ui_base::widget::compute_widget_layout(
                 &mut self.tree,
                 self.root,
                 Size {
@@ -168,7 +168,7 @@ impl RetainedEditor {
     }
 
     fn key(&mut self, key: Key, modifiers: Modifiers) {
-        let event = ui::synthetic_input::key_event(
+        let event = tilo_ui_base::synthetic_input::key_event(
             key.clone(),
             match &key {
                 Key::Character(s) => Some(s.clone()),
@@ -182,7 +182,7 @@ impl RetainedEditor {
             .layout(&self.tree, self.root)
             .send(
                 &mut *self.editor,
-                &ui::synthetic_input::keyboard_input(event),
+                &tilo_ui_base::synthetic_input::keyboard_input(event),
             )
             .handled;
         assert!(handled, "editor must receive each test keystroke");
@@ -247,8 +247,8 @@ fn retained_paragraph_typing_damage_matches_full_gpu_pixels() {
         .collect();
     let mut fixture = RetainedEditor::with_blocks(1000.0, 1.0, blocks);
     let background = fixture.theme.tokens.colors.surfaces.content;
-    let mut retained = ui::offscreen::OffscreenRenderer::new(1200, 900);
-    let mut full = ui::offscreen::OffscreenRenderer::new(1200, 900);
+    let mut retained = tilo_ui_base::offscreen::OffscreenRenderer::new(1200, 900);
+    let mut full = tilo_ui_base::offscreen::OffscreenRenderer::new(1200, 900);
     let before = retained.render(&fixture.scene, background);
     fixture.key(Key::Character("x".into()), Modifiers::default());
     assert_eq!(
@@ -411,8 +411,8 @@ fn a_key_in_a_markdown_tables_source_damages_its_line_and_cell_not_the_table() {
 
 fn assert_damage_pixels(before: &Scene, fixture: &RetainedEditor, sparse: bool) {
     let background = fixture.theme.tokens.colors.surfaces.content;
-    let mut retained = ui::offscreen::OffscreenRenderer::new(1200, 1100);
-    let mut full = ui::offscreen::OffscreenRenderer::new(1200, 1100);
+    let mut retained = tilo_ui_base::offscreen::OffscreenRenderer::new(1200, 1100);
+    let mut full = tilo_ui_base::offscreen::OffscreenRenderer::new(1200, 1100);
     retained.render(before, background);
     let damage: Vec<_> = fixture
         .damage
@@ -433,9 +433,9 @@ fn assert_damage_pixels(before: &Scene, fixture: &RetainedEditor, sparse: bool) 
     // Where they differ, as pixel bounds, rather than two framebuffers. The
     // rasterizer renders a pixel ±1 depending on the rest of the encoding,
     // so retained paint (undamaged pixels kept from the earlier scene) is
-    // compared as the GPU helper compares frames (see `ui::offscreen`).
+    // compared as the GPU helper compares frames (see `tilo_ui_base::offscreen`).
     let differing =
-        ui::offscreen::OffscreenRenderer::positions_differing_beyond_aa(&actual, &expected, 1200);
+        tilo_ui_base::offscreen::OffscreenRenderer::positions_differing_beyond_aa(&actual, &expected, 1200);
     let spread = differing.iter().fold(None, |spread, &(x, y)| {
         Some(spread.map_or(
             (x, y, x, y),
@@ -928,7 +928,7 @@ fn render_window(fixture: &mut RetainedEditor, viewport: Option<Rect>, top: f64)
         presence.draw_env(),
     ));
     let background = fixture.theme.tokens.colors.surfaces.content;
-    ui::offscreen::OffscreenRenderer::new(640, 600).render(&scene, background)
+    tilo_ui_base::offscreen::OffscreenRenderer::new(640, 600).render(&scene, background)
 }
 
 /// Culling and caching change nothing on screen: a culled frame from warm
@@ -964,7 +964,7 @@ fn culled_cached_frames_render_what_a_full_frame_does() {
     }
 }
 
-fn subtree_len(tree: &ui::a11y_tree::SemanticTree, id: &ui::a11y::SemanticId) -> usize {
+fn subtree_len(tree: &ui::a11y_tree::SemanticTree, id: &tilo_ui_base::a11y::SemanticId) -> usize {
     tree.node(id).map_or(0, |node| {
         node.children
             .iter()
@@ -1014,7 +1014,7 @@ tilo_test_env::scenario! {
             let typed = tree
                 .iter()
                 .find(|node| {
-                    node.role == ui::a11y::Role::ListItem && node.place.pos_in_set == Some(1)
+                    node.role == tilo_ui_base::a11y::Role::ListItem && node.place.pos_in_set == Some(1)
                 })
                 .map(|node| node.id.clone())
                 .expect("the typed block's row");
@@ -1119,7 +1119,7 @@ tilo_test_env::scenario! {
                     .layout(&fixture.tree, fixture.root)
                     .send(
                         &mut *fixture.editor,
-                        &ui::synthetic_input::cursor_moved(over_text.x, over_text.y),
+                        &tilo_ui_base::synthetic_input::cursor_moved(over_text.x, over_text.y),
                     );
                 fixture.frame();
             });
@@ -1158,14 +1158,14 @@ tilo_test_env::scenario! {
                 "and its host wakes it then"
             );
         });
-        let midway = rest + ui::animation::CHROME_FADE / 2;
+        let midway = rest + tilo_ui_base::animation::CHROME_FADE / 2;
         with_monotonic_time(midway, || {
             assert!(Widget::needs_animation_frame(&*fixture.editor), "fading");
             fixture.frame();
         });
         let fading = fixture.editor.handle_opacity_drawn_for_test();
         assert!(fading > 0.0 && fading < 1.0, "halfway faded: {fading}");
-        let gone = rest + ui::animation::CHROME_FADE;
+        let gone = rest + tilo_ui_base::animation::CHROME_FADE;
         with_monotonic_time(midway, || {
             assert_eq!(
                 Widget::next_wake_deadline(&*fixture.editor),
@@ -1197,7 +1197,7 @@ tilo_test_env::scenario! {
                 .layout(&fixture.tree, fixture.root)
                 .send(
                     &mut *fixture.editor,
-                    &ui::synthetic_input::cursor_moved(over_text.x, over_text.y),
+                    &tilo_ui_base::synthetic_input::cursor_moved(over_text.x, over_text.y),
                 );
         });
         let rest = at(0) + HANDLE_HOLD;
@@ -1208,13 +1208,13 @@ tilo_test_env::scenario! {
             );
             assert_eq!(fixture.editor.handle_fade_deadline(), Some(rest));
         });
-        with_monotonic_time(rest + ui::animation::CHROME_FADE / 2, || {
+        with_monotonic_time(rest + tilo_ui_base::animation::CHROME_FADE / 2, || {
             assert!(
                 Widget::needs_animation_frame(&*fixture.editor),
                 "the fade has frames"
             );
         });
-        with_monotonic_time(rest + ui::animation::CHROME_FADE, || {
+        with_monotonic_time(rest + tilo_ui_base::animation::CHROME_FADE, || {
             assert!(
                 !Widget::needs_animation_frame(&*fixture.editor),
                 "an undrawn editor asks for no frame once the fade is over"
@@ -1506,11 +1506,11 @@ fn blocks_measured_first_in_another_tree_are_placed_at_the_width_they_stand_at()
 #[test]
 fn text_shown_to_be_read_says_it_is_read_only() {
     let text_of = |fixture: &RetainedEditor| {
-        let document = ui::widget::Widget::accessibility(&*fixture.editor).expect("a document");
+        let document = tilo_ui_base::widget::Widget::accessibility(&*fixture.editor).expect("a document");
         let row = document
             .children
             .iter()
-            .find(|row| row.role == ui::a11y::Role::ListItem)
+            .find(|row| row.role == tilo_ui_base::a11y::Role::ListItem)
             .expect("the block's row");
         row.children
             .iter()

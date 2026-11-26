@@ -13,7 +13,7 @@ tilo_test_env::scenario! {
     // goes to the line end, Shift+End and Ctrl+Right extend or move from it, and
     // what is typed or copied is what is shown selected.
     {
-        use ui::synthetic_input::{cursor_moved, key_press, mouse_press, mouse_release};
+        use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::key_press, synthetic_input::mouse_press, synthetic_input::mouse_release};
         use winit::keyboard::ModifiersState;
         const TEXT: &str = "alpha beta gamma delta";
         let dragged = || {
@@ -102,7 +102,7 @@ tilo_test_env::scenario! {
     // A selection across blocks follows the keys that move its caret inside
     // the block it ends in, instead of keeping the range it had.
     {
-        use ui::synthetic_input::key_press;
+        use tilo_ui_base::synthetic_input::key_press;
         use winit::keyboard::ModifiersState;
         let key = |editor: &mut BlockEditor, key: NamedKey, modifiers: ModifiersState| {
             Dispatch::new()

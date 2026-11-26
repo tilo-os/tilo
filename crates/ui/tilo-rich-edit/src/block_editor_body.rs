@@ -7,8 +7,8 @@ use tilo_ui_graph::rich::RichText;
 use crate::block_editor::FindReplace;
 use crate::rich_doc;
 use crate::{Block, BlockContent, BlockEditor, PresenceKeyFn};
-use ui::component::{Bound, Value};
-use ui::presence::{PathSegment, PresenceKey};
+use tilo_ui_base::{component::Bound, component::Value};
+use tilo_ui_base::{presence::PathSegment, presence::PresenceKey};
 
 #[derive(Clone)]
 pub(super) enum Stored {

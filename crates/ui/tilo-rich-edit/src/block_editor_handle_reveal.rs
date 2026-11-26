@@ -6,7 +6,7 @@ use winit::event::{ElementState, WindowEvent};
 use winit::keyboard::{Key, NamedKey};
 
 use super::BlockEditor;
-use ui::animation::{CHROME_FADE, IdleFade};
+use tilo_ui_base::{animation::CHROME_FADE, animation::IdleFade};
 use ui::time::{Duration, Instant};
 
 pub(super) const HANDLE_HOLD: Duration = Duration::from_secs(3);
@@ -48,12 +48,12 @@ impl BlockEditor {
     pub(super) fn reveal_handles_for(
         &mut self,
         event: &WindowEvent,
-        ctx: &ui::widget::EventCtx<'_>,
+        ctx: &tilo_ui_base::widget::EventCtx<'_>,
     ) {
         match event {
             WindowEvent::CursorMoved { position, .. } => {
                 if self.rect.contains(ctx.logical(position)) {
-                    self.handle_reveal.fade.wake(ui::motion::frame_now());
+                    self.handle_reveal.fade.wake(tilo_ui_base::motion::frame_now());
                     if self.handle_reveal.drawn < 1.0 {
                         self.dirty = true;
                     }
@@ -104,7 +104,7 @@ impl BlockEditor {
     pub(super) fn handles_need_frame(&self) -> bool {
         let reveal = &self.handle_reveal;
         let held = self.hovered_drag_handle().is_some();
-        reveal.fade.fading_at(ui::motion::frame_now(), held)
+        reveal.fade.fading_at(tilo_ui_base::motion::frame_now(), held)
             && (!reveal.reduce_motion || reveal.drawn > 0.0)
     }
 
@@ -116,19 +116,19 @@ impl BlockEditor {
     pub(super) fn handle_fade_deadline(&self) -> Option<Instant> {
         self.handle_reveal
             .fade
-            .fade_deadline_at(ui::motion::frame_now(), false)
+            .fade_deadline_at(tilo_ui_base::motion::frame_now(), false)
     }
 
     pub(super) fn handle_fade_end(&self) -> Option<Instant> {
         let fade = &self.handle_reveal.fade;
-        fade.fade_end().filter(|end| *end > ui::motion::frame_now())
+        fade.fade_end().filter(|end| *end > tilo_ui_base::motion::frame_now())
     }
 
     /// Retire a fade that has run its course: the handles are gone, and if
     /// the last draw still painted some of them, one repaint removes them.
     /// Runs on every sync, so it needs no frame of its own.
     pub(super) fn retire_finished_handle_fade(&mut self) {
-        let now = ui::motion::frame_now();
+        let now = tilo_ui_base::motion::frame_now();
         let held = self.hovered_drag_handle().is_some();
         if held || !self.handle_reveal.fade.finished_at(now) {
             return;

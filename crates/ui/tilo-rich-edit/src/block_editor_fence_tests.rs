@@ -3,7 +3,7 @@ use automerge::ROOT;
 use ui::testing::Dispatch;
 
 fn send(editor: &mut BlockEditor, doc: &mut AutoCommit, key: Key) {
-    let event = ui::synthetic_input::key_event(
+    let event = tilo_ui_base::synthetic_input::key_event(
         key.clone(),
         match &key {
             Key::Character(text) => Some(text.clone()),
@@ -13,7 +13,7 @@ fn send(editor: &mut BlockEditor, doc: &mut AutoCommit, key: Key) {
     );
     let handled = Dispatch::new()
         .doc(doc)
-        .send(editor, &ui::synthetic_input::keyboard_input(event))
+        .send(editor, &tilo_ui_base::synthetic_input::keyboard_input(event))
         .handled;
     assert!(handled);
     editor.sync(doc, &ROOT);
@@ -50,7 +50,7 @@ tilo_test_env::scenario! {
             let mut text = TextRenderer::new();
             editor.draw(&mut tilo_ui_base::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut text, &theme, PresenceCtx::empty().draw_env()));
             assert!(editor.copy_code_run(0, 0));
-            assert_eq!(ui::clipboard_paste().as_deref(), Some("print(1)"));
+            assert_eq!(tilo_ui_base::clipboard_paste().as_deref(), Some("print(1)"));
             let id = editor.blocks[0].id.clone();
             assert_eq!(
                 editor.copied_code_feedback.as_ref().map(|(id, _)| id),

@@ -155,7 +155,7 @@ pub fn set_cell_text(doc: &mut AutoCommit, t: &ObjId, row: usize, col: usize, te
             Err(_) => return,
         },
     };
-    ui::doc::splice_text_diffed(doc, &obj, text);
+    tilo_ui_base::doc::splice_text_diffed(doc, &obj, text);
 }
 
 /// Insert a fresh empty row at display index `at` (clamped to `0..=rows`).

@@ -1,7 +1,7 @@
 use super::*;
-use ui::component::{Fired, Intent};
+use tilo_ui_base::{component::Fired, component::Intent};
 use ui::testing::dispatch;
-use ui::text_render::TextRenderer;
+use tilo_ui_base::text_render::TextRenderer;
 use ui::widget::MentionCandidate;
 use ui::widget::completion::{Candidate, CompletionSource, Tier};
 use vello::Scene;
@@ -16,7 +16,7 @@ fn topic(name: &str) -> InlineView {
 }
 
 /// A composer whose system sources offer two topics for `#`, and the workspace's Ada for `@`.
-fn field(edits: &ui::Intents<Fired>) -> RichInput {
+fn field(edits: &tilo_ui_base::Intents<Fired>) -> RichInput {
     let props = RichInputProps {
         value: Bound {
             edits: Some(Intent::new(edits, "draft", "value")),
@@ -40,7 +40,7 @@ fn field(edits: &ui::Intents<Fired>) -> RichInput {
         .set_mention_candidates(vec![MentionCandidate::new(
             MemberId::person("u_ada"),
             "Ada Lovelace",
-            ui::tokens::PresenceHue::of_identity("u_ada"),
+            tilo_ui_base::tokens::PresenceHue::of_identity("u_ada"),
         )]);
     Widget::set_focus(&mut input, true);
     input
@@ -50,12 +50,12 @@ fn type_text(input: &mut RichInput, text: &str) {
     for character in text.chars() {
         dispatch(
             input,
-            &ui::synthetic_input::char_key(&character.to_string()),
+            &tilo_ui_base::synthetic_input::char_key(&character.to_string()),
         );
     }
 }
 
-fn last_value(edits: &ui::Intents<Fired>) -> Option<RichText> {
+fn last_value(edits: &tilo_ui_base::Intents<Fired>) -> Option<RichText> {
     edits
         .take()
         .into_iter()
@@ -73,13 +73,13 @@ tilo_test_env::scenario! {
 
     phase a_picked_reference_goes_in_as_a_reference_with_how_it_reads;
     {
-        let _settled = ui::motion::testing::settled();
-        let edits = ui::Intents::default();
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let edits = tilo_ui_base::Intents::default();
         let mut input = field(&edits);
         type_text(&mut input, "see #rel");
         dispatch(
             &mut input,
-            &ui::synthetic_input::named_key(winit::keyboard::NamedKey::Tab),
+            &tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::Tab),
         );
         type_text(&mut input, "now");
         let rich = last_value(&edits).expect("each edit reports the rich text");
@@ -100,13 +100,13 @@ tilo_test_env::scenario! {
 
     phase a_person_from_the_workspace_goes_in_as_a_mention_of_their_member_id;
     {
-        let _settled = ui::motion::testing::settled();
-        let edits = ui::Intents::default();
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let edits = tilo_ui_base::Intents::default();
         let mut input = field(&edits);
         type_text(&mut input, "@ad");
         dispatch(
             &mut input,
-            &ui::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
+            &tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
         );
         let rich = last_value(&edits).expect("the pick reported the rich text");
         assert_eq!(crate::rich_doc::plain_text(&rich), "@Ada Lovelace ");
@@ -125,8 +125,8 @@ tilo_test_env::scenario! {
 
     phase the_people_the_system_gives_are_the_at_drawer_who_spoke_last_first_beside_the_other_sources;
     {
-        let _settled = ui::motion::testing::settled();
-        let edits = ui::Intents::default();
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let edits = tilo_ui_base::Intents::default();
         let mut input = field(&edits);
         let given = RichInputProps {
             value: input.value.clone(),
@@ -192,7 +192,7 @@ tilo_test_env::scenario! {
         type_text(&mut input, "@pla");
         dispatch(
             &mut input,
-            &ui::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
+            &tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
         );
         let rich = last_value(&edits).expect("the pick reported the rich text");
         assert_eq!(
@@ -203,8 +203,8 @@ tilo_test_env::scenario! {
 
     phase a_value_cleared_elsewhere_empties_the_field;
     {
-        let _settled = ui::motion::testing::settled();
-        let edits = ui::Intents::default();
+        let _settled = tilo_ui_base::motion::testing::settled();
+        let edits = tilo_ui_base::Intents::default();
         let mut input = field(&edits);
         type_text(&mut input, "hello");
         assert_eq!(crate::rich_doc::plain_text(&input.rich()), "hello");
@@ -217,7 +217,7 @@ tilo_test_env::scenario! {
     {
         // The host finds the field by this id to give it the keyboard and to type what a press
         // left waiting into it: a field with no id is one nothing can reach.
-        let edits = ui::Intents::<Fired>::default();
+        let edits = tilo_ui_base::Intents::<Fired>::default();
         let input = field(&edits);
         assert_eq!(Widget::test_id(&input), Some("draft"));
     }
@@ -244,8 +244,8 @@ tilo_test_env::scenario! {
 
     phase with_submit_enter_sends_what_was_written_and_breaks_no_line;
     {
-        let edits = ui::Intents::<Fired>::default();
-        let submits = ui::Intents::<Fired>::default();
+        let edits = tilo_ui_base::Intents::<Fired>::default();
+        let submits = tilo_ui_base::Intents::<Fired>::default();
         let props = RichInputProps {
             value: Bound {
                 edits: Some(Intent::new(&edits, "draft", "value")),
@@ -260,7 +260,7 @@ tilo_test_env::scenario! {
         type_text(&mut input, "On all three");
         dispatch(
             &mut input,
-            &ui::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
+            &tilo_ui_base::synthetic_input::named_key(winit::keyboard::NamedKey::Enter),
         );
         assert_eq!(submits.take().len(), 1, "Enter sends");
         let written = last_value(&edits).expect("what was typed");

@@ -170,7 +170,7 @@ tilo_test_env::scenario! {
             let first = node
                 .children
                 .iter()
-                .find(|child| child.role == ui::a11y::Role::ListItem && child.pos_in_set == Some(1))
+                .find(|child| child.role == tilo_ui_base::a11y::Role::ListItem && child.pos_in_set == Some(1))
                 .expect("first block group");
             let first_group_key = first.key.expect("block group has durable AT identity");
             assert!(first.children[0].state.disabled, "top block cannot move up");
@@ -183,8 +183,8 @@ tilo_test_env::scenario! {
             assert!(Widget::perform_semantic_action(
                 &mut editor,
                 &down_target,
-                &ui::a11y::Action::Activate,
-                &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+                &tilo_ui_base::a11y::Action::Activate,
+                &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                 &automerge::ROOT,
             ));
             assert_eq!(editor.blocks()[1].id, first_id);
@@ -210,8 +210,8 @@ tilo_test_env::scenario! {
                 !Widget::perform_semantic_action(
                     &mut editor,
                     "notes.block-move:missing:down",
-                    &ui::a11y::Action::Activate,
-                    &mut ui::widget::Edits::lend(&mut AutoCommit::new()),
+                    &tilo_ui_base::a11y::Action::Activate,
+                    &mut tilo_ui_base::widget::Edits::lend(&mut AutoCommit::new()),
                     &automerge::ROOT,
                 ),
                 "a stale stable id must refuse instead of moving another block"
@@ -342,7 +342,7 @@ tilo_test_env::scenario! {
 
     phase typing_enter_and_backspace_write_split_and_join_lines;
     {
-        use ui::synthetic_input::named_key;
+        use tilo_ui_base::synthetic_input::named_key;
 
         // A new note is one empty line to write on.
         let mut e = BlockEditor::new();
@@ -701,7 +701,7 @@ tilo_test_env::scenario! {
 
         assert_eq!(
             Widget::next_wake_deadline(&editor),
-            Some(now + ui::text_edit::SUGGESTION_SETTLE)
+            Some(now + tilo_ui_base::text_edit::SUGGESTION_SETTLE)
         );
     }
 
@@ -718,13 +718,13 @@ tilo_test_env::scenario! {
         editor.settle_caret_suggestion_at(now);
         editor.dirty = false;
 
-        editor.settle_caret_suggestion_at(now + ui::text_edit::SUGGESTION_SETTLE);
+        editor.settle_caret_suggestion_at(now + tilo_ui_base::text_edit::SUGGESTION_SETTLE);
         assert!(
             editor.dirty,
             "the settled word's suggestion repaints the editor"
         );
         editor.dirty = false;
-        editor.settle_caret_suggestion_at(now + ui::text_edit::SUGGESTION_SETTLE * 2);
+        editor.settle_caret_suggestion_at(now + tilo_ui_base::text_edit::SUGGESTION_SETTLE * 2);
         assert!(
             !editor.dirty,
             "an offer already shown asks for nothing more"
@@ -1159,7 +1159,7 @@ tilo_test_env::scenario! {
         fn ctrl_shift_arrow_extends_selection_across_blocks() {
             use winit::keyboard::{ModifiersState, NamedKey};
 
-            use ui::synthetic_input::named_key;
+            use tilo_ui_base::synthetic_input::named_key;
 
             let mut e = BlockEditor::new();
             e.set_blocks(vec![
@@ -1262,11 +1262,11 @@ tilo_test_env::scenario! {
     phase presence_payload_reports_caret_selection_or_nothing;
     {
         fn presence_payload_reports_focused_block_caret() {
-            use ui::collaboration::PresencePayload;
+            use tilo_ui_base::collaboration::PresencePayload;
             let mut ed = BlockEditor::new();
             ed.set_blocks(vec![Block::paragraph("hello world")]);
             ed.focus_block(0, CursorPlacement::Byte(3));
-            match ui::presence::capability::presence_payload(&ed) {
+            match tilo_ui_base::presence::capability::presence_payload(&ed) {
                 Some((key, PresencePayload::Caret { pos })) => {
                     assert_eq!(key, block_presence_key(&ed.blocks[0].id));
                     assert_eq!(pos, 3);
@@ -1276,7 +1276,7 @@ tilo_test_env::scenario! {
         }
 
         fn presence_payload_carries_one_ordered_cross_block_selection() {
-            use ui::collaboration::PresencePayload;
+            use tilo_ui_base::collaboration::PresencePayload;
 
             let mut ed = BlockEditor::new();
             ed.set_blocks(vec![
@@ -1290,7 +1290,7 @@ tilo_test_env::scenario! {
             );
 
             assert_eq!(
-                ui::presence::capability::presence_payload(&ed),
+                tilo_ui_base::presence::capability::presence_payload(&ed),
                 Some((
                     document_selection_presence_key(&ed.blocks[0].id, 2),
                     PresencePayload::Selection { start: 2, end: 3 },
@@ -1301,7 +1301,7 @@ tilo_test_env::scenario! {
         fn presence_payload_none_when_unfocused() {
             let mut ed = BlockEditor::new();
             ed.set_blocks(vec![Block::paragraph("hi")]);
-            assert!(ui::presence::capability::presence_payload(&ed).is_none());
+            assert!(tilo_ui_base::presence::capability::presence_payload(&ed).is_none());
         }
 
         presence_payload_reports_focused_block_caret();
@@ -1389,12 +1389,12 @@ tilo_test_env::scenario! {
             use winit::keyboard::{Key, ModifiersState};
 
             fn character(key: &str, text: Option<&str>) -> WindowEvent {
-                let event = ui::synthetic_input::key_event(
+                let event = tilo_ui_base::synthetic_input::key_event(
                     Key::Character(key.into()),
                     text.map(Into::into),
                     ElementState::Pressed,
                 );
-                ui::synthetic_input::keyboard_input(event)
+                tilo_ui_base::synthetic_input::keyboard_input(event)
             }
 
             let mut editor = BlockEditor::new();
@@ -1475,7 +1475,7 @@ tilo_test_env::scenario! {
         ]);
         let target = ed.blocks[1].id.clone();
         ed.focus_block(1, CursorPlacement::Byte(4));
-        let Some((published, _)) = ui::presence::capability::presence_payload(&ed) else {
+        let Some((published, _)) = tilo_ui_base::presence::capability::presence_payload(&ed) else {
             panic!("focused block publishes a caret");
         };
         assert_eq!(published, block_presence_key(&target));
@@ -1490,7 +1490,7 @@ tilo_test_env::scenario! {
         assert_eq!(receiver.blocks[2].id, target);
         let empty = presence_paths(&mut receiver, &PresenceCtx::empty());
         let mut presence = PresenceCtx::empty();
-        presence.set_caret(&published, ui::permissions::MemberId::person("peer"), 4);
+        presence.set_caret(&published, tilo_ui_base::permissions::MemberId::person("peer"), 4);
         assert!(
             presence_paths(&mut receiver, &presence) > empty,
             "the caret is drawn"
@@ -1498,7 +1498,7 @@ tilo_test_env::scenario! {
         let mut stranger = PresenceCtx::empty();
         stranger.set_caret(
             &block_presence_key("missing"),
-            ui::permissions::MemberId::person("peer"),
+            tilo_ui_base::permissions::MemberId::person("peer"),
             4,
         );
         assert_eq!(presence_paths(&mut receiver, &stranger), empty);
@@ -1515,11 +1515,11 @@ tilo_test_env::scenario! {
         ]);
         let start = ed.blocks[1].id.clone();
         let mut presence = PresenceCtx::empty();
-        let user = ui::permissions::MemberId::person("peer");
+        let user = tilo_ui_base::permissions::MemberId::person("peer");
         presence.set_selection(
             &document_selection_presence_key(&start, 1),
             user.clone(),
-            ui::presence::SelectionRange { start: 1, end: 2 },
+            tilo_ui_base::presence::SelectionRange { start: 1, end: 2 },
         );
         let resolved = ed.resolve_document_selections(&presence);
         assert_eq!(resolved.len(), 1);
@@ -1530,13 +1530,13 @@ tilo_test_env::scenario! {
         // A span past the end is clamped; an unknown start is ignored.
         presence.set_selection(
             &document_selection_presence_key(&start, 40),
-            ui::permissions::MemberId::person("p2"),
-            ui::presence::SelectionRange { start: 0, end: 1 },
+            tilo_ui_base::permissions::MemberId::person("p2"),
+            tilo_ui_base::presence::SelectionRange { start: 0, end: 1 },
         );
         presence.set_selection(
             &document_selection_presence_key("gone", 1),
-            ui::permissions::MemberId::person("p3"),
-            ui::presence::SelectionRange { start: 0, end: 1 },
+            tilo_ui_base::permissions::MemberId::person("p3"),
+            tilo_ui_base::presence::SelectionRange { start: 0, end: 1 },
         );
         drop(user);
         let mut spans = ed
@@ -1601,7 +1601,7 @@ tilo_test_env::scenario! {
         use winit::keyboard::{Key, ModifiersState, NamedKey};
 
         fn named(key: NamedKey) -> WindowEvent {
-            ui::synthetic_input::keyboard_input(ui::synthetic_input::key_event(
+            tilo_ui_base::synthetic_input::keyboard_input(tilo_ui_base::synthetic_input::key_event(
                 Key::Named(key),
                 None,
                 ElementState::Pressed,
@@ -1643,7 +1643,7 @@ tilo_test_env::scenario! {
     // is drawn: the blocks it spans, not only the caret's line, so the shell's
     // composer can keep clear of every selected line.
     {
-        use ui::presence::capability::PublishesPresence as _;
+        use tilo_ui_base::presence::capability::PublishesPresence as _;
         let theme = Theme::dark();
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![
@@ -1673,7 +1673,7 @@ tilo_test_env::scenario! {
 }
 
 fn type_keys(editor: &mut BlockEditor, text: &str) {
-    use ui::synthetic_input::{char_key, key_press};
+    use tilo_ui_base::{synthetic_input::char_key, synthetic_input::key_press};
     for ch in text.chars() {
         let typed = ch.to_string();
         let event = if ch == ' ' {
@@ -1799,7 +1799,7 @@ tilo_test_env::scenario! {
 
     phase slash_commands_keep_what_was_written_and_the_query_stays_text;
     {
-        use ui::synthetic_input::named_key;
+        use tilo_ui_base::synthetic_input::named_key;
         let focused_editor = |text: &str| {
             let mut editor = BlockEditor::new();
             editor.set_blocks(vec![Block::paragraph(text)]);
@@ -1887,7 +1887,7 @@ tilo_test_env::scenario! {
 
     phase host_slash_commands_hand_the_block_to_the_host;
     {
-        use ui::synthetic_input::named_key;
+        use tilo_ui_base::synthetic_input::named_key;
         use crate::slash_menu::SlashHostCommand;
         let mut editor = BlockEditor::new();
         editor.set_slash_commands(true, &[SlashHostCommand::Page, SlashHostCommand::Image]);
@@ -1927,8 +1927,8 @@ tilo_test_env::scenario! {
     phase a_view_makes_the_block_a_page_was_made_from_a_link_to_it;
     {
         use crate::slash_menu::SlashHostCommand;
-        use ui::component::Link;
-        use ui::synthetic_input::named_key;
+        use tilo_ui_base::component::Link;
+        use tilo_ui_base::synthetic_input::named_key;
         // A person chooses `/page` in a block, the view makes the page, and the editor writes the
         // block the words stood in as the link to it: the words stay where they were, and read
         // as the page from then on.
@@ -1972,7 +1972,7 @@ tilo_test_env::scenario! {
     phase document_accessibility_exposes_role_focus_tables_and_images;
     {
         fn accessibility_reports_multiline_document_role() {
-            use ui::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let ed = BlockEditor::new();
             let node = Widget::accessibility(&ed).expect("editor is a document");
             assert_eq!(node.role, Role::Document);
@@ -1993,7 +1993,7 @@ tilo_test_env::scenario! {
         }
 
         fn markdown_table_exposes_rows_and_cells_to_accessibility() {
-            use ui::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let mut editor = BlockEditor::new();
             editor.set_blocks(vec![Block::table(
                 "| Name | Status |\n| --- | --- |\n| Search | Done |",
@@ -2017,7 +2017,7 @@ tilo_test_env::scenario! {
         }
 
         fn standalone_markdown_image_exposes_alt_text() {
-            use ui::a11y::Role;
+            use tilo_ui_base::a11y::Role;
             let mut editor = BlockEditor::new();
             editor.set_blocks(vec![Block::paragraph("![Architecture](diagram.png)")]);
             let document = Widget::accessibility(&editor).expect("document semantics");
@@ -2072,7 +2072,7 @@ tilo_test_env::scenario! {
             let h1 = BlockKind::Heading(1).font_size();
             assert_eq!(
                 h1,
-                Theme::dark().text(ui::tokens::TextRole::LargeTitle).size
+                Theme::dark().text(tilo_ui_base::tokens::TextRole::LargeTitle).size
             );
             layout_and_draw_editor(&mut editor, &Theme::dark());
             assert_eq!(
@@ -2148,7 +2148,7 @@ tilo_test_env::scenario! {
             let checklist = editor.blocks[0].line.get_rect();
             let code = editor.blocks[1].line.get_rect();
             let band = |kind: BlockKind| {
-                let style = ui::tokens::typography::stock().style(kind.text_role());
+                let style = tilo_ui_base::tokens::typography::stock().style(kind.text_role());
                 let leading = f64::from(style.line_height_px() / style.size).max(1.0);
                 f64::from(kind.font_size()) * 2.0 * leading - 0.01
             };
@@ -2423,8 +2423,8 @@ tilo_test_env::scenario! {
         let mut doc = AutoCommit::new();
         assert!(editor.perform_semantic_action(
             &target,
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
+            &tilo_ui_base::a11y::Action::Activate,
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert_eq!(editor.take_resource_link_open().as_deref(), Some(href));
@@ -2470,8 +2470,8 @@ tilo_test_env::scenario! {
         let mut doc = AutoCommit::new();
         assert!(editor.perform_semantic_action(
             &format!("notes.external-link:{href}"),
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(&mut doc),
+            &tilo_ui_base::a11y::Action::Activate,
+            &mut tilo_ui_base::widget::Edits::lend(&mut doc),
             &automerge::ROOT
         ));
         assert_eq!(editor.take_external_link_open().as_deref(), Some(href));
@@ -2504,8 +2504,8 @@ tilo_test_env::scenario! {
     {
         fn image_attachment_sizes_to_available_width_without_layout_feedback() {
             let bytes = ui::png::encode_rgba8(160, 100, &vec![255; 160 * 100 * 4]).unwrap();
-            let fetch: ui::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
-            let store = ui::ImageStore::new(&fetch);
+            let fetch: tilo_ui_base::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
+            let store = tilo_ui_base::ImageStore::new(&fetch);
             let mut editor = BlockEditor::new();
             editor.set_blocks(vec![
                 Block::paragraph("![Document scan](assets/scanned-document.png)"),
@@ -2553,13 +2553,13 @@ tilo_test_env::scenario! {
 
         fn a_tall_image_takes_at_most_its_share_of_the_viewport_at_its_aspect() {
             let bytes = ui::png::encode_rgba8(300, 1200, &vec![255; 300 * 1200 * 4]).unwrap();
-            let fetch: ui::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
+            let fetch: tilo_ui_base::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
             let mut editor = BlockEditor::new();
             editor.set_blocks(vec![
                 Block::paragraph("![Phone screenshot](assets/tall.png)"),
                 Block::paragraph("Text below the screenshot"),
             ]);
-            editor.set_image_store(Some(ui::ImageStore::new(&fetch)));
+            editor.set_image_store(Some(tilo_ui_base::ImageStore::new(&fetch)));
             assert!(
                 editor.prewarm_images_for_shots(),
                 "fixture image must decode"
@@ -2657,8 +2657,8 @@ tilo_test_env::scenario! {
             editor.begin_edit();
             assert!(editor.perform_semantic_action(
                 &format!("notes.image-edit:{id}"),
-                &ui::a11y::Action::Activate,
-                &mut ui::widget::Edits::lend(&mut doc),
+                &tilo_ui_base::a11y::Action::Activate,
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(
@@ -2689,8 +2689,8 @@ tilo_test_env::scenario! {
             editor.begin_edit();
             assert!(editor.perform_semantic_action(
                 &format!("notes.image-done:{id}"),
-                &ui::a11y::Action::Activate,
-                &mut ui::widget::Edits::lend(&mut doc),
+                &tilo_ui_base::a11y::Action::Activate,
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
             assert!(editor.take_edit_ops().is_empty());
@@ -2699,8 +2699,8 @@ tilo_test_env::scenario! {
             assert_eq!(editor.blocks[0].text(), source);
             assert!(!editor.perform_semantic_action(
                 &format!("notes.image-source:{id}"),
-                &ui::a11y::Action::SetValue("hidden overwrite".into()),
-                &mut ui::widget::Edits::lend(&mut doc),
+                &tilo_ui_base::a11y::Action::SetValue("hidden overwrite".into()),
+                &mut tilo_ui_base::widget::Edits::lend(&mut doc),
                 &automerge::ROOT
             ));
         }
@@ -2713,12 +2713,12 @@ tilo_test_env::scenario! {
             let mut renderer = TextRenderer::new();
             layout_image_editor(&mut editor, 640.0, &mut renderer);
             editor.focus_block(0, CursorPlacement::Start);
-            let event = ui::synthetic_input::key_event(
+            let event = tilo_ui_base::synthetic_input::key_event(
                 Key::Character("x".into()),
                 Some("x".into()),
                 ElementState::Pressed,
             );
-            let character = ui::synthetic_input::keyboard_input(event);
+            let character = tilo_ui_base::synthetic_input::keyboard_input(event);
             editor.begin_edit();
             for event in [character, WindowEvent::Ime(Ime::Commit("hidden".into()))] {
                 let handled = dispatch(&mut editor, &event);
@@ -2726,12 +2726,12 @@ tilo_test_env::scenario! {
                 assert_eq!(editor.blocks[0].text(), source);
             }
             assert!(editor.take_edit_ops().is_empty());
-            let key = ui::synthetic_input::key_event(
+            let key = tilo_ui_base::synthetic_input::key_event(
                 Key::Named(NamedKey::Backspace),
                 None,
                 ElementState::Pressed,
             );
-            let event = ui::synthetic_input::keyboard_input(key);
+            let event = tilo_ui_base::synthetic_input::keyboard_input(key);
             editor.begin_edit();
             dispatch(&mut editor, &event);
             assert_eq!(
@@ -2751,7 +2751,7 @@ tilo_test_env::scenario! {
 
     phase a_picture_is_sized_by_its_handle_and_keeps_the_width_in_its_markdown;
     {
-        use ui::synthetic_input::{cursor_moved, mouse_input};
+        use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_input};
         use winit::event::{ElementState, MouseButton};
         assert_eq!(
             markdown_image_parts("![Scan|240](a.png)"),
@@ -2768,13 +2768,13 @@ tilo_test_env::scenario! {
         );
 
         let bytes = ui::png::encode_rgba8(160, 100, &vec![255; 160 * 100 * 4]).unwrap();
-        let fetch: ui::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
+        let fetch: tilo_ui_base::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![
             Block::paragraph("![Scan|320](assets/scan.png)"),
             Block::paragraph("Below"),
         ]);
-        editor.set_image_store(Some(ui::ImageStore::new(&fetch)));
+        editor.set_image_store(Some(tilo_ui_base::ImageStore::new(&fetch)));
         assert!(editor.prewarm_images_for_shots());
         let mut renderer = TextRenderer::new();
         layout_image_editor(&mut editor, 1000.0, &mut renderer);
@@ -2829,14 +2829,14 @@ tilo_test_env::scenario! {
     // it was walked to, not whichever picture the attachments happened to be stored under.
     {
         let bytes = ui::png::encode_rgba8(4, 2, &[255; 4 * 2 * 4]).unwrap();
-        let fetch: ui::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
+        let fetch: tilo_ui_base::image_store::Fetcher = std::sync::Arc::new(move |_| Some(bytes.clone()));
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![
             Block::paragraph("![First](assets/first.png)"),
             Block::paragraph("Text between the pictures"),
             Block::paragraph("![Second](assets/second.png)"),
         ]);
-        editor.set_image_store(Some(ui::ImageStore::new(&fetch)));
+        editor.set_image_store(Some(tilo_ui_base::ImageStore::new(&fetch)));
         let mut renderer = TextRenderer::new();
         layout_image_editor(&mut editor, 1000.0, &mut renderer);
         let listed: Vec<*const ()> = editor

@@ -1,10 +1,10 @@
 //! [`RichTextLine`] as a described component: one editable line of text.
 
-use ui::component::{Bound, Component, Described, Event, Value};
-use ui::tokens::TextRole;
+use tilo_ui_base::{component::Bound, component::Component, component::Described, component::Event, component::Value};
+use tilo_ui_base::tokens::TextRole;
 
 use super::{LineSignal, RichTextLine};
-use ui::widget::DrawChild;
+use tilo_ui_base::widget::DrawChild;
 use ui::widget::TextInput;
 
 /// One line of text edited in place (a block editor's cell, a composer's message), with its
@@ -116,7 +116,7 @@ fn build(
     line
 }
 
-impl ui::widget::Widget for DeclaredLine {
+impl tilo_ui_base::widget::Widget for DeclaredLine {
     fn needs_redraw(&self) -> bool {
         self.line.needs_redraw() || self.line.needs_animation_frame()
     }
@@ -145,12 +145,12 @@ impl ui::widget::Widget for DeclaredLine {
         Some(self)
     }
 
-    fn sync(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) {
+    fn sync(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) {
         self.line.sync(state, path);
         self.report();
     }
 
-    fn update(&mut self, state: &ui::widget::AppModel, path: &ui::widget::ModelPath) -> bool {
+    fn update(&mut self, state: &tilo_ui_base::widget::AppModel, path: &tilo_ui_base::widget::ModelPath) -> bool {
         let changed = self.line.update(state, path);
         changed | self.report()
     }
@@ -158,8 +158,8 @@ impl ui::widget::Widget for DeclaredLine {
     fn build_layout(
         &mut self,
         taffy: &mut taffy::TaffyTree<()>,
-        theme: &ui::theme::Theme,
-        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn ui::widget::Widget>,
+        theme: &tilo_ui_base::theme::Theme,
+        node_map: &mut std::collections::HashMap<taffy::NodeId, *mut dyn tilo_ui_base::widget::Widget>,
     ) -> taffy::NodeId {
         self.line.build_layout(taffy, theme, node_map)
     }
@@ -186,7 +186,7 @@ impl ui::widget::Widget for DeclaredLine {
     fn handle_event(
         &mut self,
         event: &winit::event::WindowEvent,
-        ctx: &mut ui::widget::EventCtx<'_>,
+        ctx: &mut tilo_ui_base::widget::EventCtx<'_>,
     ) {
         self.line.handle_event(event, ctx);
     }
@@ -199,7 +199,7 @@ impl ui::widget::Widget for DeclaredLine {
         "RichTextLine"
     }
 
-    fn accessibility(&self) -> Option<ui::a11y::AccessNode> {
+    fn accessibility(&self) -> Option<tilo_ui_base::a11y::AccessNode> {
         self.line.accessibility()
     }
 }

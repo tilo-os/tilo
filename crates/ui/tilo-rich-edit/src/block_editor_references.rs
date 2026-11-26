@@ -13,8 +13,8 @@ use super::{BlockEditor, Pages};
 use crate::block_editor::{ImageInserter, PictureIn};
 use crate::block_editor_body::BodyBinding;
 use crate::slash_menu::SlashHostCommand;
-use ui::component::{Bound, Component, Described, Event, Link, Value};
-use ui::theme::Theme;
+use tilo_ui_base::{component::Bound, component::Component, component::Described, component::Event, component::Link, component::Value};
+use tilo_ui_base::theme::Theme;
 use ui::widget::link_popover::PageEntry;
 use ui::widget::marks::{MentionColors, MentionPaint};
 
@@ -349,8 +349,8 @@ impl BlockEditor {
         let colors = &theme.tokens.colors;
         let ground = colors.surfaces.base;
         let accent = colors.intent.accent_ink;
-        let contrast = ui::tokens::contrast::BODY_TEXT_MIN_CONTRAST;
-        let band = ui::tokens::colors::mix8(accent, ground, 0.86);
+        let contrast = tilo_ui_base::tokens::contrast::BODY_TEXT_MIN_CONTRAST;
+        let band = tilo_ui_base::tokens::colors::mix8(accent, ground, 0.86);
         let resource = MentionColors {
             ink: colors.ink_on(band, accent, contrast),
             band: Some(band),
@@ -565,7 +565,7 @@ impl Described for BlockEditor {
             footer.clone(),
             [margin_top, margin_right, margin_bottom, margin_left],
         ));
-        editor.set_zoom(zoom.map_or(1.0, ui::num::f32_of_f64));
+        editor.set_zoom(zoom.map_or(1.0, tilo_ui_base::num::f32_of_f64));
         editor.publish_headings();
         editor.publish_changes();
         // A view opened with a heading asked for, of the note shown before, is just opened; a
@@ -660,7 +660,7 @@ impl Described for BlockEditor {
             footer.clone(),
             [margin_top, margin_right, margin_bottom, margin_left],
         ));
-        self.set_zoom(zoom.map_or(1.0, ui::num::f32_of_f64));
+        self.set_zoom(zoom.map_or(1.0, tilo_ui_base::num::f32_of_f64));
         // A formatting ask is one command: the same ask twice is the command it already ran.
         let formatted = self.format_asked(format);
         let inserted = self.insert_asked(insert);
@@ -966,10 +966,10 @@ mod tests {
     use vello::kurbo::{Affine, Point};
 
     use super::*;
-    use ui::component::{Fired, Intent};
-    use ui::presence::PresenceCtx;
-    use ui::text_render::TextRenderer;
-    use ui::widget::Widget as _;
+    use tilo_ui_base::{component::Fired, component::Intent};
+    use tilo_ui_base::presence::PresenceCtx;
+    use tilo_ui_base::text_render::TextRenderer;
+    use tilo_ui_base::widget::Widget as _;
 
     const TASK: &str = r#"{"app":"so.tilo.lang.board","id":"tl:so.tilo.lang.board:d/f:t1","kind":"tl.so.tilo.lang.board.Task"}"#;
     const SECRET: &str =
@@ -1056,12 +1056,12 @@ mod tests {
         for ch in text.chars() {
             let typed = ch.to_string();
             let event = if ch == ' ' {
-                ui::synthetic_input::key_press(
+                tilo_ui_base::synthetic_input::key_press(
                     winit::keyboard::Key::Named(winit::keyboard::NamedKey::Space),
                     Some(" "),
                 )
             } else {
-                ui::synthetic_input::char_key(&typed)
+                tilo_ui_base::synthetic_input::char_key(&typed)
             };
             ui::testing::dispatch(editor, &event);
         }
@@ -1125,7 +1125,7 @@ mod tests {
 
         phase an_embed_of_a_record_shows_its_start_and_opens_what_it_names;
         {
-            let queue = ui::Intents::<Fired>::default();
+            let queue = tilo_ui_base::Intents::<Fired>::default();
             let mut editor = BlockEditor::from_props(
                 "n",
                 BlockEditorProps {
@@ -1161,7 +1161,7 @@ mod tests {
             let mut renderer = TextRenderer::new();
             laid_out(&mut editor, &mut renderer);
             let card = {
-                let document = ui::widget::Widget::accessibility(&editor).expect("semantics");
+                let document = tilo_ui_base::widget::Widget::accessibility(&editor).expect("semantics");
                 document
                     .children
                     .iter()
@@ -1200,11 +1200,11 @@ mod tests {
                 .expect("the note it names, painted");
             ui::testing::dispatch(
                 &mut editor,
-                &ui::synthetic_input::cursor_moved(plan.x, plan.y),
+                &tilo_ui_base::synthetic_input::cursor_moved(plan.x, plan.y),
             );
             assert!(ui::testing::dispatch(
                 &mut editor,
-                &ui::synthetic_input::mouse_release()
+                &tilo_ui_base::synthetic_input::mouse_release()
             ));
             assert_eq!(
                 queue.take(),
@@ -1227,11 +1227,11 @@ mod tests {
             );
             ui::testing::dispatch(
                 &mut editor,
-                &ui::synthetic_input::cursor_moved(at.x, at.y),
+                &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y),
             );
             assert!(ui::testing::dispatch(
                 &mut editor,
-                &ui::synthetic_input::mouse_release()
+                &tilo_ui_base::synthetic_input::mouse_release()
             ));
             assert_eq!(
                 queue.take(),
@@ -1247,8 +1247,8 @@ mod tests {
 
         phase a_document_being_edited_shows_an_embed_of_a_record_as_it_reads_and_opens_it;
         {
-            let fired = ui::Intents::<Fired>::default();
-            let body = ui::LocalState::new(embedding(vec![
+            let fired = tilo_ui_base::Intents::<Fired>::default();
+            let body = tilo_ui_base::LocalState::new(embedding(vec![
                 (
                     GROCERIES,
                     InlineView::Resource {
@@ -1277,7 +1277,7 @@ mod tests {
             let mut renderer = TextRenderer::new();
             laid_out(&mut editor, &mut renderer);
             let card = {
-                let document = ui::widget::Widget::accessibility(&editor).expect("semantics");
+                let document = tilo_ui_base::widget::Widget::accessibility(&editor).expect("semantics");
                 document
                     .children
                     .iter()
@@ -1309,11 +1309,11 @@ mod tests {
             let at = Point::new(card.x0 + 4.0, card.y0 + 3.0);
             ui::testing::dispatch(
                 &mut editor,
-                &ui::synthetic_input::cursor_moved(at.x, at.y),
+                &tilo_ui_base::synthetic_input::cursor_moved(at.x, at.y),
             );
             assert!(ui::testing::dispatch(
                 &mut editor,
-                &ui::synthetic_input::mouse_release()
+                &tilo_ui_base::synthetic_input::mouse_release()
             ));
             assert_eq!(
                 fired.take(),
@@ -1369,13 +1369,13 @@ mod tests {
             use ui::widget::marks::Mark;
             use winit::keyboard::{Key, NamedKey};
 
-            let fired = ui::Intents::<Fired>::default();
+            let fired = tilo_ui_base::Intents::<Fired>::default();
             let reference = "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1";
             let editor_of = || {
                 BlockEditor::from_props(
                     "b",
                     BlockEditorProps {
-                        rich: bound(&fired, ui::LocalState::new(RichText::default())),
+                        rich: bound(&fired, tilo_ui_base::LocalState::new(RichText::default())),
                         links: vec![Link {
                             reference: reference.into(),
                             title: "Plan".into(),
@@ -1390,7 +1390,7 @@ mod tests {
             assert!(editor.link_popover().is_visible());
             ui::testing::dispatch(
                 &mut editor,
-                &ui::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
+                &tilo_ui_base::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
             );
             assert_eq!(editor.blocks()[0].text(), "Plan");
             assert!(
@@ -1407,7 +1407,7 @@ mod tests {
             type_keys(&mut editor, " /embed");
             ui::testing::dispatch(
                 &mut editor,
-                &ui::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
+                &tilo_ui_base::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
             );
             assert!(
                 editor.link_popover().is_visible(),
@@ -1415,7 +1415,7 @@ mod tests {
             );
             ui::testing::dispatch(
                 &mut editor,
-                &ui::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
+                &tilo_ui_base::synthetic_input::key_press(Key::Named(NamedKey::Enter), None),
             );
             assert_eq!(editor.blocks()[0].text(), "Plan");
             assert!(
@@ -1437,7 +1437,7 @@ mod tests {
 
         phase each_reference_reads_as_the_readers_inline_view_and_a_click_opens_it;
         {
-            let queue = ui::Intents::<Fired>::default();
+            let queue = tilo_ui_base::Intents::<Fired>::default();
             let props = BlockEditorProps {
                 value: Some(text(vec![
                     (
@@ -1490,11 +1490,11 @@ mod tests {
 
             ui::testing::dispatch(
                 &mut editor,
-                &ui::synthetic_input::cursor_moved(task.center().x, task.center().y),
+                &tilo_ui_base::synthetic_input::cursor_moved(task.center().x, task.center().y),
             );
             assert!(ui::testing::dispatch(
                 &mut editor,
-                &ui::synthetic_input::mouse_release()
+                &tilo_ui_base::synthetic_input::mouse_release()
             ));
             assert_eq!(
                 queue.take(),
@@ -1506,8 +1506,8 @@ mod tests {
                 }],
                 "a click opens the reference, by the reference"
             );
-            ui::testing::dispatch(&mut editor, &ui::synthetic_input::cursor_moved(1.0, 1.0));
-            ui::testing::dispatch(&mut editor, &ui::synthetic_input::mouse_release());
+            ui::testing::dispatch(&mut editor, &tilo_ui_base::synthetic_input::cursor_moved(1.0, 1.0));
+            ui::testing::dispatch(&mut editor, &tilo_ui_base::synthetic_input::mouse_release());
             assert!(
                 queue.take().is_empty(),
                 "a click beside a reference opens nothing"
@@ -1519,8 +1519,8 @@ mod tests {
             use crate::CursorPlacement;
             use ui::widget::marks::Mark;
 
-            let fired = ui::Intents::<Fired>::default();
-            let body = ui::LocalState::new(RichText::default());
+            let fired = tilo_ui_base::Intents::<Fired>::default();
+            let body = tilo_ui_base::LocalState::new(RichText::default());
             let plan = |title: &str| Link {
                 reference: "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1".into(),
                 title: title.into(),
@@ -1546,7 +1546,7 @@ mod tests {
             );
             ui::testing::dispatch(
                 &mut editor,
-                &ui::synthetic_input::key_press(
+                &tilo_ui_base::synthetic_input::key_press(
                     winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
                     None,
                 ),
@@ -1605,9 +1605,9 @@ mod tests {
         {
             use crate::CursorPlacement;
 
-            let fired = ui::Intents::<Fired>::default();
-            let asked = ui::Intents::<Fired>::default();
-            let body = ui::LocalState::new(RichText::default());
+            let fired = tilo_ui_base::Intents::<Fired>::default();
+            let asked = tilo_ui_base::Intents::<Fired>::default();
+            let body = tilo_ui_base::LocalState::new(RichText::default());
             let link = |title: &str| Link {
                 reference: "tl:so.tilo.notes:tl.so.tilo.notes.d/f:t1".into(),
                 title: title.into(),
@@ -1655,7 +1655,7 @@ mod tests {
             // Closing tells it the picker is shut, so a view reading a collection stops.
             ui::testing::dispatch(
                 &mut editor,
-                &ui::synthetic_input::key_press(
+                &tilo_ui_base::synthetic_input::key_press(
                     winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape),
                     None,
                 ),
@@ -1677,7 +1677,7 @@ mod tests {
         {
             use tilo_ui_graph::rich::{Attr, Block};
 
-            let fired = ui::Intents::<Fired>::default();
+            let fired = tilo_ui_base::Intents::<Fired>::default();
             let rich = RichText {
                 blocks: vec![
                     Block {
@@ -1695,8 +1695,8 @@ mod tests {
                 styles: Default::default(),
                 embeds: Vec::new(),
             };
-            let body = ui::LocalState::new(rich);
-            let props = |value: &ui::LocalState<RichText>| BlockEditorProps {
+            let body = tilo_ui_base::LocalState::new(rich);
+            let props = |value: &tilo_ui_base::LocalState<RichText>| BlockEditorProps {
                 rich: bound(&fired, value.clone()),
                 commands: vec!["Link to note…".into()],
                 command: Event::View(Intent::new(&fired, "b", "command")),
@@ -1729,7 +1729,7 @@ mod tests {
             let _ = fired.take();
             ui::testing::dispatch(
                 &mut editor,
-                &ui::synthetic_input::key_press(
+                &tilo_ui_base::synthetic_input::key_press(
                     winit::keyboard::Key::Named(winit::keyboard::NamedKey::Enter),
                     None,
                 ),
@@ -1745,7 +1745,7 @@ mod tests {
         {
             use tilo_ui_graph::rich::{Attr, Block};
 
-            let fired = ui::Intents::<Fired>::default();
+            let fired = tilo_ui_base::Intents::<Fired>::default();
             let heading = |level: i64| RichText {
                 blocks: vec![Block {
                     kind: "heading".into(),
@@ -1825,8 +1825,8 @@ mod tests {
     }
 
     fn bound<T: Default + 'static>(
-        fired: &ui::Intents<Fired>,
-        state: ui::LocalState<T>,
+        fired: &tilo_ui_base::Intents<Fired>,
+        state: tilo_ui_base::LocalState<T>,
     ) -> Bound<T> {
         Bound {
             state,
@@ -1853,7 +1853,7 @@ mod tests {
                 "no time, nothing to wake for"
             );
             let soon = crate::rich_doc::InlineTime {
-                at: ui::clock::local_now().timestamp() + jiff::SignedDuration::from_hours(1),
+                at: tilo_ui_base::clock::local_now().timestamp() + jiff::SignedDuration::from_hours(1),
                 show: crate::rich_doc::TimeShow::Countdown,
             };
             rich.blocks[0].marks.push(RichMark {
@@ -1898,8 +1898,8 @@ mod tests {
 
         phase a_value_from_elsewhere_shows_and_the_shown_markdown_follows_it;
         {
-            let fired = ui::Intents::<Fired>::default();
-            let value = ui::LocalState::new("First line".to_owned());
+            let fired = tilo_ui_base::Intents::<Fired>::default();
+            let value = tilo_ui_base::LocalState::new("First line".to_owned());
             let props = BlockEditorProps {
                 markdown: bound(&fired, value.clone()),
                 ..BlockEditorProps::default()
@@ -1913,7 +1913,7 @@ mod tests {
 
         phase a_rich_document_shows_as_its_blocks;
         {
-            let fired = ui::Intents::<Fired>::default();
+            let fired = tilo_ui_base::Intents::<Fired>::default();
             let rich = RichText {
                 blocks: vec![
                     Block {
@@ -1931,7 +1931,7 @@ mod tests {
                 styles: Default::default(),
                 embeds: Vec::new(),
             };
-            let value = ui::LocalState::new(rich.clone());
+            let value = tilo_ui_base::LocalState::new(rich.clone());
             let props = BlockEditorProps {
                 rich: bound(&fired, value.clone()),
                 ..BlockEditorProps::default()

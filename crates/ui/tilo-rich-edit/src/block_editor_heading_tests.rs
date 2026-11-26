@@ -13,11 +13,11 @@ fn chord(
     key: &str,
 ) -> bool {
     let event =
-        ui::synthetic_input::key_event(Key::Character(key.into()), None, ElementState::Pressed);
+        tilo_ui_base::synthetic_input::key_event(Key::Character(key.into()), None, ElementState::Pressed);
     let handled = Dispatch::new()
         .modifiers(modifiers)
         .doc(doc)
-        .send(editor, &ui::synthetic_input::keyboard_input(event))
+        .send(editor, &tilo_ui_base::synthetic_input::keyboard_input(event))
         .handled;
     editor.sync(doc, &ROOT);
     handled
@@ -54,7 +54,7 @@ fn texts(editor: &BlockEditor) -> Vec<String> {
 }
 
 fn activate_row(editor: &mut BlockEditor, doc: &mut AutoCommit, name: &str) {
-    fn find<'a>(node: &'a ui::a11y::AccessNode, name: &str) -> Option<&'a ui::a11y::AccessNode> {
+    fn find<'a>(node: &'a tilo_ui_base::a11y::AccessNode, name: &str) -> Option<&'a tilo_ui_base::a11y::AccessNode> {
         if node.name.as_deref() == Some(name) {
             return Some(node);
         }
@@ -69,8 +69,8 @@ fn activate_row(editor: &mut BlockEditor, doc: &mut AutoCommit, name: &str) {
     assert!(
         editor.perform_semantic_action(
             &target,
-            &ui::a11y::Action::Activate,
-            &mut ui::widget::Edits::lend(doc),
+            &tilo_ui_base::a11y::Action::Activate,
+            &mut tilo_ui_base::widget::Edits::lend(doc),
             &ROOT,
         ),
         "the row {name} runs"

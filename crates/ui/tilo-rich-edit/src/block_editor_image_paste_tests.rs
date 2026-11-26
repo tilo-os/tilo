@@ -3,17 +3,17 @@
 
 use super::*;
 use automerge::ROOT;
-use ui::component::Described as _;
+use tilo_ui_base::component::Described as _;
 use ui::testing::Dispatch;
 use winit::keyboard::ModifiersState;
 
 fn ctrl_v(editor: &mut BlockEditor, doc: &mut AutoCommit) -> bool {
     let event =
-        ui::synthetic_input::key_event(Key::Character("v".into()), None, ElementState::Pressed);
+        tilo_ui_base::synthetic_input::key_event(Key::Character("v".into()), None, ElementState::Pressed);
     let handled = Dispatch::new()
         .modifiers(ModifiersState::CONTROL)
         .doc(doc)
-        .send(editor, &ui::synthetic_input::keyboard_input(event))
+        .send(editor, &tilo_ui_base::synthetic_input::keyboard_input(event))
         .handled;
     editor.sync(doc, &ROOT);
     handled
@@ -73,7 +73,7 @@ fn ctrl_v_hands_a_copied_image_to_the_host() {
         let (services, recorder) = ui::process::ProcessServices::recording();
         let _host = ui::process::enter(&services);
         recorder.copy_image_elsewhere(screenshot());
-        ui::clipboard_copy(" more");
+        tilo_ui_base::clipboard_copy(" more");
         let mut editor = BlockEditor::new();
         editor.set_blocks(vec![Block::paragraph("caption")]);
         editor.focus_block(0, CursorPlacement::End);
@@ -188,15 +188,15 @@ fn a_pasted_picture_names_itself_as_one_gesture_with_its_edit() {
     let (services, recorder) = ui::process::ProcessServices::recording();
     let _host = ui::process::enter(&services);
     recorder.copy_image_elsewhere(screenshot());
-    let queue = ui::Intents::<ui::component::Fired>::default();
+    let queue = tilo_ui_base::Intents::<tilo_ui_base::component::Fired>::default();
     let mut editor = BlockEditor::from_props(
         "b",
         crate::BlockEditorProps {
-            rich: ui::component::Bound {
-                edits: Some(ui::component::Intent::new(&queue, "b", "richtext")),
-                ..ui::component::Bound::default()
+            rich: tilo_ui_base::component::Bound {
+                edits: Some(tilo_ui_base::component::Intent::new(&queue, "b", "richtext")),
+                ..tilo_ui_base::component::Bound::default()
             },
-            image: ui::component::Event::View(ui::component::Intent::new(&queue, "b", "image")),
+            image: tilo_ui_base::component::Event::View(tilo_ui_base::component::Intent::new(&queue, "b", "image")),
             ..crate::BlockEditorProps::default()
         },
     );
@@ -212,9 +212,9 @@ fn a_pasted_picture_names_itself_as_one_gesture_with_its_edit() {
         .expect("the view hears the picture's name and where its bytes are");
     assert_eq!(
         image.value,
-        Some(ui::component::Value::List(vec![
-            ui::component::Value::Text("Pasted image.png".to_owned()),
-            ui::component::Value::Text("tilo-blob://pixels".to_owned()),
+        Some(tilo_ui_base::component::Value::List(vec![
+            tilo_ui_base::component::Value::Text("Pasted image.png".to_owned()),
+            tilo_ui_base::component::Value::Text("tilo-blob://pixels".to_owned()),
         ]))
     );
     let gesture = image.gesture.expect("the naming is one act with the edit");

@@ -16,13 +16,13 @@ use std::collections::HashMap;
 
 use tilo_app as ui;
 use ui::app::driver::{FrameOptions, Framed};
-use ui::presence::PresenceCtx;
-use ui::synthetic_input::{cursor_moved, mouse_press, mouse_release, named_key};
+use tilo_ui_base::presence::PresenceCtx;
+use tilo_ui_base::{synthetic_input::cursor_moved, synthetic_input::mouse_press, synthetic_input::mouse_release, synthetic_input::named_key};
 use ui::taffy::prelude::*;
-use ui::theme::Theme;
+use tilo_ui_base::theme::Theme;
 use ui::vello::Scene;
 use ui::vello::kurbo::{Affine, Rect};
-use ui::widget::Widget;
+use tilo_ui_base::widget::Widget;
 use ui::winit;
 use ui::winit::event::{Modifiers, WindowEvent};
 use ui::winit::keyboard::NamedKey;
@@ -30,8 +30,8 @@ use tilo_ui_base::widget::DrawChild;
 
 /// A text renderer over the checkout's fixture fonts, so geometry does not
 /// depend on the machine's.
-fn renderer() -> ui::TextRenderer {
-    ui::font_catalog::fixture_renderer()
+fn renderer() -> tilo_ui_base::TextRenderer {
+    tilo_ui_base::font_catalog::fixture_renderer()
 }
 
 /// Mount `editor` in the production frame host `width` wide at its content
