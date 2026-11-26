@@ -81,7 +81,9 @@ pub struct IdentityBrokerHandle {
     stop: Arc<AtomicBool>,
     listener: Option<thread::JoinHandle<()>>,
     clients: Arc<Mutex<HashMap<u64, Stream>>>,
-    admit: Admit,
+    /// Held here alone, besides the listener while it runs: a handover keeps it weakly, so what
+    /// it serves with (the device's workspaces among it) is let go of once the broker stops.
+    admit: Arc<Admit>,
 }
 
 impl IdentityBrokerHandle {
@@ -90,15 +92,17 @@ impl IdentityBrokerHandle {
     /// takes its apps' connections where the broker's own socket is out of their reach.
     #[must_use]
     pub fn handover(&self) -> Arc<dyn Fn(Stream) + Send + Sync> {
-        let admit = self.admit.clone();
+        let admit = Arc::downgrade(&self.admit);
         Arc::new(move |stream| {
-            admit.client(stream);
+            // A broker that stopped serves nothing more: the stream closes as it drops.
+            if let Some(admit) = admit.upgrade() {
+                admit.client(stream);
+            }
         })
     }
 }
 
 /// What a connection is served with, and the clients the broker closes when it stops.
-#[derive(Clone)]
 struct Admit {
     tree: Arc<dyn WorkspaceMembership>,
     groups: Arc<dyn GroupKeySource>,
@@ -191,15 +195,15 @@ pub fn spawn(
     let thread_stop = Arc::clone(&stop);
     let clients = Arc::new(Mutex::new(HashMap::new()));
     let thread_clients = clients.clone();
-    let admit = Admit {
+    let admit = Arc::new(Admit {
         tree,
         groups,
         person,
         clients: clients.clone(),
         next_client: Arc::new(std::sync::atomic::AtomicU64::new(1)),
         stop: Arc::clone(&stop),
-    };
-    let accepting = admit.clone();
+    });
+    let accepting = Arc::clone(&admit);
     let listener_thread = thread::Builder::new()
         .name("tilo-identity-broker".into())
         .spawn(move || {
@@ -1872,5 +1876,39 @@ params = []
         });
         tilo_test_env::recv("dropping the broker to end its listener", &done);
         assert!(!socket.exists(), "the socket is removed with the broker");
+    }
+
+    /// The person's shell keeps the broker's handover for as long as it runs, which can be longer
+    /// than the broker: once the broker stopped, the handover holds nothing it served with (the
+    /// device's workspaces among it), and a connection handed to it is closed, not served.
+    #[test]
+    fn a_handover_kept_after_its_listener_stopped_lets_go_of_what_it_served() {
+        let temp = tempfile::tempdir().expect("temp");
+        let tree: Arc<dyn WorkspaceMembership> = Arc::new(WorkspaceTree::default().shared());
+        let broker = spawn(
+            temp.path().join("identity.sock"),
+            Arc::clone(&tree),
+            Arc::new(()),
+            Arc::new(()),
+        )
+        .expect("broker");
+        let handover = broker.handover();
+        drop(broker);
+        assert_eq!(
+            Arc::strong_count(&tree),
+            1,
+            "the handover still holds what the stopped broker served with"
+        );
+        let (mut handed, served) = UnixStream::pair().expect("pair");
+        handover(served);
+        handed
+            .set_read_timeout(Some(tilo_test_env::hang_bound()))
+            .expect("timeout");
+        let mut answered = Vec::new();
+        assert_eq!(
+            handed.read_to_end(&mut answered).expect("closed"),
+            0,
+            "a stopped broker answered a connection handed to it"
+        );
     }
 }
