@@ -99,7 +99,16 @@ pub(super) async fn make_agent(
     limit_micros: Option<u64>,
 ) {
     let record = collab_types::workspace_document_id(ui::tilo_workspace_agent::KIND);
-    let mut made = ui::tilo_resource::Replica::<WorkspaceAgents>::new().as_author(person);
+    let checkout = ui::resource::DocumentCheckout::new(
+        ui::resource::DocumentId::parse(&record).unwrap(),
+        ui::resource::ResourceType::new(ui::tilo_workspace_agent::KIND),
+    );
+    let mut doc = ui::tilo_resource::Doc::new();
+    ui::resource::genesis(&mut doc, &checkout, workspace, |doc| {
+        WorkspaceAgents::initialize(doc).map_err(|error| error.to_string())
+    })
+    .unwrap();
+    let mut made = ui::tilo_resource::Replica::<WorkspaceAgents>::from_doc(doc).as_author(person);
     made.apply(
         WorkspaceAgents::CREATE_AGENT.with(workspace_agents::CreateAgent {
             name: ui::tilo_resource::NonBlank::parse("Scout").unwrap(),

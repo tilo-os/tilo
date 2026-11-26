@@ -1757,12 +1757,13 @@ fn a_search_row_for_an_app_starts_it_through_the_sessions_own_host() {
 /// A session with the apps a development session seeds, which keep Chat's records: the
 /// conversations and the agents a workspace keeps. Its shell's search reads the agents each
 /// workspace keeps, which the pass hands it before a search opens.
-fn session_with_agents() -> Session {
+fn session_with_agents(apps: Rc<dyn AppActions>) -> Session {
     let mut session = crate::common::headless(Options {
         person: crate::common::PERSON.to_owned(),
         shell: true,
         collab: false,
         services: crate::common::seeded_apps(),
+        apps: Some(apps),
         ..Options::default()
     });
     for _ in 0..3 {
@@ -1783,7 +1784,8 @@ fn session_with_agents() -> Session {
 fn the_first_request_typed_into_search_makes_the_workspaces_agent_and_the_second_goes_to_it() {
     let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
-    let mut session = session_with_agents();
+    let chat = Rc::new(crate::common::ChatRequests::default());
+    let mut session = session_with_agents(chat.clone());
 
     // The first request: the person keeps no agent yet.
     let request = "book a table for two";
@@ -1806,18 +1808,13 @@ fn the_first_request_typed_into_search_makes_the_workspaces_agent_and_the_second
     assert_eq!(first["text"], request, "{first}");
     assert_eq!(
         first["to"],
-        serde_json::json!([{"kind": "new-agent", "name": "Assistant"}]),
-        "the person kept no agent yet: {first}"
+        serde_json::json!([{"kind": "assistant", "name": "Assistant"}])
     );
+    assert!(first.get("refused").is_none(), "{first}");
+    let agent = chat.assistant(&session, &[request], true);
     until(&mut session, |session| {
         find(&session.resources(), SEARCH_RESOURCE).is_none()
     });
-
-    // The agent the send made is the workspace's to keep once the pass has read its record, as a
-    // person's next search is opened long after.
-    for _ in 0..10 {
-        session.step(Duration::from_millis(16)).expect("step");
-    }
 
     // The second request: the agent the first one made is kept, and asked.
     let row = find_row(&mut session, "and move it to Friday", "Send to Assistant");
@@ -1829,21 +1826,17 @@ fn the_first_request_typed_into_search_makes_the_workspaces_agent_and_the_second
     );
     let second = crate::common::sent(&mut session, 1);
     assert_eq!(second["text"], "and move it to Friday", "{second}");
-    let asked = second["to"].as_array().expect("whom the second went to");
-    assert_eq!(asked.len(), 1, "one agent is asked again: {second}");
-    let to = &second["to"][0];
-    assert_eq!(to["kind"], "agent", "the agent kept now: {second}");
-    assert_eq!(to["name"], "Assistant", "{second}");
-    assert!(
-        to["id"].as_str().is_some_and(|id| !id.is_empty()),
-        "named by its id: {second}"
+    assert_eq!(second["to"], first["to"], "{second}");
+    assert!(second.get("refused").is_none(), "{second}");
+    assert_eq!(
+        chat.assistant(&session, &[request, "and move it to Friday"], true),
+        agent
     );
     until(&mut session, |session| {
         find(&session.resources(), SEARCH_RESOURCE).is_none()
     });
 
-    // Two requests are two sends, each carried out once, and the second leaves the first as it was
-    // sent: the agent the first made is named in the second, not written back over the first.
+    // A new request leaves the preceding send intact in the session's reading.
     let reading = session
         .read("session:send-to")
         .expect("the sends' own reading");

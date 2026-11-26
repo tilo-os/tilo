@@ -26,10 +26,18 @@ use crate::common::{CANVAS, PERSON, layout, on_screen, private_home, show_preset
 /// A headless session with the shell as the whole screen and the apps a development session seeds,
 /// the framed canvas in front.
 fn session(root: &std::path::Path) -> Session {
+    canvas_session(root, None)
+}
+
+fn canvas_session(
+    root: &std::path::Path,
+    apps: Option<std::rc::Rc<dyn tilo_session::AppActions>>,
+) -> Session {
     let mut session = crate::common::headless(Options {
         person: PERSON.to_owned(),
         shell: true,
         collab: false,
+        apps,
         services: crate::common::seeded_apps(),
         questions: Some(Questions::new()),
         app_socket: AppSocket::At(root.join("app_wire.sock")),
@@ -60,9 +68,11 @@ fn ask(session: &mut Session, text: &str) {
 /// second is the ask after the first, as it is for the person.
 #[test]
 fn the_first_ask_on_the_canvas_makes_the_workspaces_agent_and_the_second_goes_to_it() {
+    let _home = tilo_test_env::TestHome::new().unwrap();
     let _settled = ui::motion::testing::settled();
     let root = private_home();
-    let mut session = session(root.path());
+    let chat = std::rc::Rc::new(crate::common::ChatRequests::default());
+    let mut session = canvas_session(root.path(), Some(chat.clone()));
     let places = layout(&session).places.len();
 
     // The first ask: the person keeps no agent yet.
@@ -70,13 +80,12 @@ fn the_first_ask_on_the_canvas_makes_the_workspaces_agent_and_the_second_goes_to
 
     let first = crate::common::sent(&mut session, 0);
     assert_eq!(first["text"], "what is on my task list?", "{first}");
-    let to = first["to"].as_array().expect("whom it went to");
-    assert_eq!(to.len(), 1, "one agent is asked: {first}");
     assert_eq!(
-        to[0]["kind"], "new-agent",
-        "the person kept no agent yet: {first}"
+        first["to"],
+        serde_json::json!([{"kind": "assistant", "name": "Assistant"}])
     );
-    assert_eq!(to[0]["name"], "Assistant", "{first}");
+    assert!(first.get("refused").is_none(), "{first}");
+    let agent = chat.assistant(&session, &["what is on my task list?"], false);
     assert_eq!(
         layout(&session).places.len(),
         places,
@@ -88,14 +97,15 @@ fn the_first_ask_on_the_canvas_makes_the_workspaces_agent_and_the_second_goes_to
 
     let second = crate::common::sent(&mut session, 1);
     assert_eq!(second["text"], "and what is due today?", "{second}");
-    let asked = second["to"].as_array().expect("whom the second went to");
-    assert_eq!(asked.len(), 1, "one agent is asked again: {second}");
-    let to = &second["to"][0];
-    assert_eq!(to["kind"], "agent", "the agent kept now: {second}");
-    assert_eq!(to["name"], "Assistant", "{second}");
-    assert!(
-        to["id"].as_str().is_some_and(|id| !id.is_empty()),
-        "named by its id: {second}"
+    assert_eq!(second["to"], first["to"], "{second}");
+    assert!(second.get("refused").is_none(), "{second}");
+    assert_eq!(
+        chat.assistant(
+            &session,
+            &["what is on my task list?", "and what is due today?"],
+            false
+        ),
+        agent
     );
     assert_eq!(
         layout(&session).places.len(),
@@ -103,8 +113,7 @@ fn the_first_ask_on_the_canvas_makes_the_workspaces_agent_and_the_second_goes_to
         "the second ask stands no place of its own on the canvas either"
     );
 
-    // Two asks are two sends, each carried out once, and the second leaves the first as it was
-    // sent: the agent the first made is named in the second, not written back over the first.
+    // A new ask leaves the preceding send intact in the session's reading.
     let reading = session
         .read("session:send-to")
         .expect("the sends' own reading");

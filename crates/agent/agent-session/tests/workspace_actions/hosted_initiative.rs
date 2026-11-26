@@ -143,8 +143,10 @@ async fn proposal_review_checks_the_proposal_grant_on_every_request() {
         "Bo",
     )
     .await;
-    let mut browser = Browser::open_workspace(&hosted, &device, &host, &workspace).await;
+    let mut browser =
+        super::resource_support::open_admitted_peer(&hosted, &device, &host, &workspace).await;
     let id = browser.workspace;
+    crate::support::admitted_to(&browser.peer, id).await;
     let caller =
         tilo_workspace_service::service::local_caller(&device.cert).in_workspace(&workspace);
     let initiative = hosted.roster.initiative.as_ref().unwrap();

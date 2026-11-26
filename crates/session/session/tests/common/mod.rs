@@ -190,6 +190,64 @@ pub fn sent(session: &mut Session, n: usize) -> Value {
     })
 }
 
+/// The app host at the desktop's boundary with Chat. The shell resolves the
+/// workspace roster and hands this host the action Chat would receive.
+#[derive(Default)]
+pub struct ChatRequests(std::cell::RefCell<Vec<(RemoteActionTarget, Map<String, Value>)>>);
+
+impl tilo_session::AppActions for ChatRequests {
+    fn invoke(
+        &self,
+        target: RemoteActionTarget,
+        arguments: Map<String, Value>,
+    ) -> Result<(), tilo_actions::ApiError> {
+        self.0.borrow_mut().push((target, arguments));
+        Ok(())
+    }
+}
+
+impl ChatRequests {
+    /// Check every handoff in this workspace and return the one concrete
+    /// agent that Chat received both times when the person asks again.
+    #[track_caller]
+    pub fn assistant(&self, session: &Session, messages: &[&str], opens: bool) -> String {
+        let workspace = session.handle().read(|tree| {
+            tree.active_workspace()
+                .expect("the open workspace")
+                .id()
+                .to_string()
+        });
+        let target = tilo_actions::remote::application_action_target(
+            &workspace,
+            ui::apps::CHAT,
+            "chat.workspace",
+            "send",
+        );
+        let calls = self.0.borrow();
+        assert_eq!(
+            calls.len(),
+            messages.len(),
+            "one Chat send per ask: {calls:?}"
+        );
+        let recipient = &calls[0].1["to"];
+        let id = recipient[0]["id"]
+            .as_str()
+            .filter(|id| !id.is_empty())
+            .expect("the workspace roster resolved its assistant");
+        assert_eq!(
+            recipient,
+            &json!([{"kind": "agent", "id": id, "name": "Assistant"}])
+        );
+        for ((address, arguments), text) in calls.iter().zip(messages) {
+            assert_eq!(address, &target);
+            assert_eq!(arguments["to"], *recipient);
+            assert_eq!(arguments["text"], *text);
+            assert_eq!(arguments["opens"], opens);
+        }
+        id.to_owned()
+    }
+}
+
 /// The newest send the session carried out, as `session:send-to` reads, once there is one.
 pub fn last_sent(session: &mut Session) -> Value {
     wait_for(session, "the last send to be carried out", |session| {
