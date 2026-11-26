@@ -18,7 +18,7 @@ use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CatalogueQuery, InvokeArgument, InvokeRequest,
     ReceiptStatus, RemoteActionMessage, RemoteActionTarget, TestProvider,
 };
-use tilo_actions::{ActionAddress, InvocationId, InvocationUpdate};
+use tilo_actions::{ActionAddress, ActionOutput, InvocationId, InvocationUpdate};
 use tilo_peer_state::actions::{ACTIONS_ALPN, ActionService, Bounds, RemoteDevice};
 use tilo_peer_state::direct::Replica;
 use tilo_peer_state::join::{
@@ -958,6 +958,50 @@ async fn a_device_asking_from_an_endpoint_keyed_apart_is_answered_once_named() {
     serving.shutdown().await.unwrap();
     endpoint.close().await;
     b_endpoint.close().await;
+}
+
+/// A device whose endpoint is keyed apart from its device key, as a Tilo server's is, answers a
+/// request addressed to that endpoint once it says the endpoint is its own: what a computer
+/// logging in with a ticket names, since the ticket carries no device key.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_device_answers_a_request_named_at_the_endpoint_it_is_reached_at() {
+    use tilo_device_identity::login::SCOPE;
+
+    let root = SigningKey::from_bytes(&[1; 32]);
+    let a = device(&root, 2);
+    let apart = SigningKey::from_bytes(&[32; 32]);
+    let endpoint = localhost_endpoint(&apart).await;
+    let action_service = ActionService::new(a.0.clone(), Arc::new(TestProvider::new()));
+    action_service.admit_uncertified(SCOPE, Arc::new(TestProvider::new()));
+    let serving = Router::builder(endpoint.clone())
+        .accept(ACTIONS_ALPN, action_service.clone())
+        .spawn();
+
+    // A computer that knows no device key, only the endpoint: the ticket it holds names one.
+    let desk = device(&root, 4);
+    let (desk_endpoint, desk_service) = asking(&desk.0).await;
+    let remote = desk_service.remote(&desk_endpoint, &addr(&endpoint), SCOPE);
+    let who = Caller::visitor(desk.0.verifying_key().to_bytes());
+    let refused = invoked(&remote, &who, InvocationId::new())
+        .await
+        .expect_err("an endpoint nobody claimed asks as the device it is keyed by");
+    assert!(refusal(&refused).contains("another device"), "{refused:?}");
+
+    action_service.reach_device_at(
+        a.0.verifying_key().to_bytes(),
+        apart.verifying_key().to_bytes(),
+    );
+    assert_eq!(
+        invoked(&remote, &who, InvocationId::new()).await,
+        Ok(ReceiptStatus::Completed {
+            output: ActionOutput::default(),
+        }),
+        "the device answers a request that names the endpoint it is reached at"
+    );
+
+    serving.shutdown().await.unwrap();
+    endpoint.close().await;
+    desk_endpoint.close().await;
 }
 
 /// `action` on the address `entry-1` left at the workspace's entry, as a visitor's page asks it.

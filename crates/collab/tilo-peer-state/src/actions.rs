@@ -359,10 +359,11 @@ impl ActionService {
     }
 
     /// Take a connection from the endpoint `endpoint` as one from the device
-    /// `device`, and address what this device asks there to `device`: a
-    /// device whose endpoint is keyed apart from its device key, as a Tilo
-    /// server's is, asks and answers at that endpoint as the device. Every
-    /// other endpoint is the device it is keyed by.
+    /// `device`, address what this device asks there to `device`, and answer
+    /// requests that name `endpoint` as ones for `device`: a device whose
+    /// endpoint is keyed apart from its device key, as a Tilo server's is,
+    /// asks and answers at that endpoint as the device. Every other endpoint
+    /// is the device it is keyed by.
     pub fn reach_device_at(&self, device: [u8; 32], endpoint: [u8; 32]) {
         if device != endpoint {
             self.0.endpoints.lock_recover().insert(endpoint, device);
@@ -641,7 +642,10 @@ impl ActionService {
         if signed.verify(&source).is_err() {
             return Err(not_permitted(source, "its signature does not verify"));
         }
-        if action.target != self.device() {
+        // The request names the device it is for, or the endpoint that device is reached
+        // at when it is keyed apart from its device key: a computer logging in with a
+        // ticket knows only the endpoint the ticket names ([`ActionService::reach_device_at`]).
+        if self.device_of(action.target) != self.device() {
             return Err(ActionCallError::Refused {
                 reason: "the request names another device".into(),
             });

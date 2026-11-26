@@ -592,6 +592,13 @@ impl Server {
         )
         .await?;
         let governed = governed.map(|governed| governed.workspaces);
+        if let Some(governed) = &governed {
+            // This server's endpoint is keyed apart from its device key (server_node_id), and a
+            // ticket a page hands an agent names the endpoint: the workspaces' device answers a
+            // request that names it there as one for itself.
+            let actions = governed.action_service();
+            actions.reach_device_at(actions.device(), *endpoint.id().as_bytes());
+        }
         if let (Some(workspace_keys), Some(governed)) = (&workspace_keys, &governed) {
             workspace_keys.attach(governed);
         }

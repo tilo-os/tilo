@@ -1487,3 +1487,30 @@ async fn a_page_asks_its_host_for_the_ticket_its_agent_works_with() {
     assert_eq!(code, 404, "{refused}");
     stop(server, serving).await;
 }
+
+/// A setup ticket names the host's endpoint, which is keyed apart from its device key
+/// (`server_node_id`), so a computer logging in with it can address no device key: the host
+/// answers a request that names its endpoint as one for its device.
+#[tokio::test]
+async fn a_host_answers_a_request_named_at_its_endpoint_as_its_device() {
+    let root = SigningKey::from_bytes(&[153; 32]);
+    let keeper = host(&root, 154, DeviceCapabilities::member());
+    let state = tempfile::tempdir().unwrap();
+    let server = server_at(&state, keeper.identity(), ServerConfig::default()).await;
+    let actions = server
+        .workspaces()
+        .expect("the host governs its workspaces")
+        .action_service();
+    let endpoint = *server.node_addr().id.as_bytes();
+    assert_ne!(
+        actions.device(),
+        endpoint,
+        "the host's endpoint is keyed apart from its device key"
+    );
+    assert_eq!(
+        actions.device_of(endpoint),
+        actions.device(),
+        "a request that names the host's endpoint is one for its device"
+    );
+    crate::daemon::Server::shutdown(server).await;
+}
