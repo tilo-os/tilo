@@ -440,36 +440,31 @@ fn a_stopped_agent_is_cancelled_refused_and_goes_on() {
     });
 }
 
-/// The person's MCP server, as the person reads it: every agent it let in, and the runs open now.
+/// The person's MCP server, as their shell reads it in `workspace`: every agent it let in, and
+/// the runs open now.
 async fn mcp_server(
     host: &host::Host,
-    caller: &tilo_actions::remote::Caller,
-) -> Option<tilo_actions::remote::mcp_server::Server> {
-    use tilo_actions::remote::{ReadAnswer, RemoteActionMessage, ResourceReadRequest, mcp_server};
-    let reads = host.dispatch().resource_reads()?;
-    let answer = reads
-        .answer_read(
-            caller,
-            0,
-            ResourceReadRequest {
-                workspace: host.workspace().to_owned(),
-                app: mcp_server::RESOURCE.to_owned(),
-                record: String::new(),
-                joined: false,
-                wait_ms: Some(0),
-                after: None,
-                answer: ReadAnswer::Reading,
-            },
-        )
-        .await;
-    let RemoteActionMessage::ResourceReading { result, .. } = answer else {
-        return None;
-    };
-    let Ok(reading) = result else {
-        return None;
-    };
-    let value: Value = serde_json::from_str(&reading).ok()?;
-    serde_json::from_value(value.get("value").cloned().unwrap_or(value)).ok()
+    workspace: &str,
+) -> tilo_actions::remote::mcp_server::Server {
+    use tilo_actions::remote::mcp_server;
+    use tilo_session_client::daemon_documents::{DaemonShell, whole};
+    let link = host
+        .daemon()
+        .shell_link()
+        .expect("the daemon hands its shell a link");
+    link.set_nonblocking(true)
+        .expect("the link is made nonblocking");
+    let client = runtime_collab::ShellClient::open(
+        tokio::net::UnixStream::from_std(link).expect("a socket"),
+    )
+    .0;
+    let shell = DaemonShell::new(Ok(client), tokio::runtime::Handle::current());
+    let read = whole(workspace, mcp_server::RESOURCE, "");
+    let answer = shell
+        .read(read)
+        .await
+        .expect("the daemon reads its MCP server");
+    serde_json::from_value(answer["records"][0]["value"].clone()).expect("the server reads as one")
 }
 
 /// The MCP server lists the run this device's daemon makes for the person's agent, from the
@@ -483,9 +478,7 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
         let agent = host.agent();
         let (_, failed) = ls(&agent, None).await;
         assert!(!failed, "the agent lists the workspace");
-        let listed = mcp_server(&host, &host.caller())
-            .await
-            .expect("the person reads their MCP server");
+        let listed = mcp_server(&host, &host.workspace()).await;
         assert_eq!(listed.grants.len(), 1, "the run is listed: {listed:?}");
         assert_eq!(listed.grants[0].sessions.len(), 1, "{listed:?}");
         // The person stops it: the listing keeps the agent, with no run open.
@@ -502,9 +495,7 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
             ),
             "{stopped:?}"
         );
-        let after = mcp_server(&host, &host.caller())
-            .await
-            .expect("the person reads their MCP server");
+        let after = mcp_server(&host, &host.workspace()).await;
         assert_eq!(after.grants.len(), 1, "the agent stays: {after:?}");
         assert!(
             after.grants[0].sessions.is_empty(),
@@ -514,17 +505,13 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
         let again = host.agent();
         let (_, failed) = ls(&again, None).await;
         assert!(!failed, "the agent comes back");
-        let back = mcp_server(&host, &host.caller())
-            .await
-            .expect("the person reads their MCP server");
+        let back = mcp_server(&host, &host.workspace()).await;
         assert_eq!(back.grants.len(), 1, "one agent, not two: {back:?}");
         assert_eq!(back.grants[0].sessions.len(), 1, "{back:?}");
-        // Nobody else reads the server or stops its runs.
+        // Nobody else stops its runs. A server is read over the shell link the daemon makes for
+        // its own person's shell alone, so another person has no link to read it on, and what
+        // they can reach — the device's dispatch — refuses them.
         let stranger = tilo_actions::remote::Caller::local_person("someone else");
-        assert!(
-            mcp_server(&host, &stranger).await.is_none(),
-            "another person reads no server of this device's"
-        );
         let refused = host
             .dispatch()
             .invoke(&stranger, stop(mcp_server::STOP))
@@ -533,9 +520,7 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
             refused.as_ref().is_none_or(|answer| answer.is_err()),
             "another person stops nothing: {refused:?}"
         );
-        let still = mcp_server(&host, &host.caller())
-            .await
-            .expect("the person reads their MCP server");
+        let still = mcp_server(&host, &host.workspace()).await;
         assert_eq!(still.grants[0].sessions.len(), 1, "{still:?}");
         // The person revokes the key their agent runs under: its run ends, it leaves the
         // listing, and its key is refused from then on.
@@ -576,9 +561,7 @@ fn the_persons_mcp_server_lists_stops_and_lists_again_the_agent_this_device_runs
         );
         let until = Instant::now() + COMES_BACK_WITHIN;
         loop {
-            let listed = mcp_server(&host, &host.caller())
-                .await
-                .expect("the person reads their MCP server");
+            let listed = mcp_server(&host, &host.workspace()).await;
             if listed.grants.is_empty() {
                 break;
             }
