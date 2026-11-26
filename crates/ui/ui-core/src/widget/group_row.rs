@@ -375,6 +375,9 @@ struct ApartDrawing {
     /// Nothing changed in the group since the drawing was made; a drawing replayed through a frame
     /// that may have changed it is not current, and is never shown.
     current: bool,
+    /// The peers' carets and name tags the drawing noted: a replay notes them again, moved with
+    /// the drawing, so a reader is told each peer where the frame shows them.
+    notes: tilo_ui_base::presence::DrawnNotes,
 }
 
 /// One display's horizontal extent in the compositor's combined space, plus the width
@@ -5339,11 +5342,18 @@ impl GroupRow {
         local.reset();
         tilo_ui_base::part_paint::backdrop::nest_scene(&local);
         let secrets = tilo_ui_base::secret_paint::SecretPaint::begin();
+        let boundary = env
+            .presence
+            .map(tilo_ui_base::presence::PresenceCtx::notes_boundary);
         let group = &mut self.groups[i];
         let (id, rect) = (group.id, group.get_rect());
         let ((), parts) = tilo_ui_base::scene_parts::record(&mut local, |local| {
             group.draw_child(local, transform, tr, theme, env);
         });
+        let notes = match (env.presence, boundary) {
+            (Some(presence), Some(boundary)) => presence.notes_since(boundary),
+            _ => tilo_ui_base::presence::DrawnNotes::default(),
+        };
         GroupDrawing(ApartDrawing {
             id,
             rect,
@@ -5353,6 +5363,7 @@ impl GroupRow {
             shows_secret: secrets.finish(),
             seen: seen_across(env, rect),
             current: true,
+            notes,
         })
     }
 
@@ -5409,6 +5420,11 @@ impl GroupRow {
             let dx = rect.x0 - drawing.rect.x0;
             let moved =
                 Affine::translate(transform * Point::new(dx, 0.0) - transform * Point::ORIGIN);
+            // What the drawing noted for a reader is noted again where the replay shows it, so a
+            // disclosed place follows the pan instead of naming where it was drawn.
+            if let Some(presence) = env.presence {
+                presence.note_notes_moved(&drawing.notes, moved);
+            }
             tilo_ui_base::scene_parts::append(
                 scene,
                 &drawing.scene,
