@@ -155,7 +155,28 @@ fn a_members_device_takes_what_its_role_lets_it() {
             "a commenter creates no issue: {created:?}"
         );
         // A comment on a task is the system's discussion, not Tasks' own: Discussion's `comment`,
-        // made from the task it is about, which puts it in that task's thread.
+        // made from the task it is about, which puts it in that task's thread. Discussion keeps
+        // those comments in its own record, and a write an app makes by itself is decided against
+        // the version the workspace runs, so the device installs it in the workspace first, as a
+        // person installing an app does: the install is what gives it its records there.
+        let installed = owner_device
+            .call(
+                tilo_actions::remote::WORKSPACE_GOVERNANCE_PROVIDER,
+                tilo_actions::remote::workspace_governance_address(&workspace, "install-app"),
+                &json!({
+                    "app": DISCUSSION,
+                    "version": "0.1.0",
+                    "surface": "00".repeat(32),
+                    "package": "00".repeat(32),
+                    "publisher": "00".repeat(32),
+                    "dev": true,
+                }),
+            )
+            .await;
+        assert!(
+            matches!(installed, Ok(InvocationUpdate::Succeeded { .. })),
+            "the workspace runs Discussion: {installed:?}"
+        );
         host::start_app(host.as_ref(), DISCUSSION)
             .await
             .unwrap_or_else(|refused| panic!("Discussion starts with no window: {refused:?}"));
