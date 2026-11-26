@@ -9,7 +9,7 @@ use crate::component::{
 
 use super::sheet::{CellKind, Peer, Sheet, SheetCell, SheetSize};
 
-crate::component::choice!(CellKind, "SheetCellKind", {
+crate::choice!(CellKind, "SheetCellKind", {
     Text => "text",
     Number => "number",
     Bool => "bool",

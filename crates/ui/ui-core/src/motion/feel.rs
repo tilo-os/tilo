@@ -36,7 +36,7 @@ impl Feel {
     }
 }
 
-crate::component::choice!(Feel, "Motion", {
+crate::choice!(Feel, "Motion", {
     Standard => "standard",
     Brisk => "brisk",
     Calm => "calm",

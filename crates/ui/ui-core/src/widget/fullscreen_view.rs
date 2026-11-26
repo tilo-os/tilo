@@ -53,7 +53,7 @@ impl Screen {
     }
 }
 
-crate::component::choice!(Screen, "Screen", {
+crate::choice!(Screen, "Screen", {
     Auto => "auto", Largest => "largest", Primary => "primary",
     PrimaryExternal => "primary_external",
 });

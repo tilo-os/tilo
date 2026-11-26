@@ -11,7 +11,7 @@ use crate::widget::history::{
 };
 use crate::widget::{ActivityTimeline, ArtifactKind, Widget};
 
-crate::component::choice!(crate::widget::EntryKind, "EntryKind", {
+crate::choice!(crate::widget::EntryKind, "EntryKind", {
     Text => "text",
     Move => "move",
     Details => "details",
@@ -33,7 +33,7 @@ pub enum ActivityArtifact {
     ChatLog,
 }
 
-crate::component::choice!(ActivityArtifact, "ActivityArtifact", {
+crate::choice!(ActivityArtifact, "ActivityArtifact", {
     Note => "note",
     File => "file",
     Cluster => "cluster",

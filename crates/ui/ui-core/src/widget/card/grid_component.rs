@@ -62,7 +62,7 @@ pub struct CardGridProps {
     pub delete: Event,
 }
 
-crate::component::choice!(CardWidth, "CardWidth", {
+crate::choice!(CardWidth, "CardWidth", {
     Compact => "compact",
     Regular => "regular",
     Wide => "wide",

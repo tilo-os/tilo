@@ -5,7 +5,7 @@ use crate::pictures::Pictures;
 
 use super::{Image, ImageFit};
 
-crate::component::choice!(ImageFit, "ImageFit", {
+crate::choice!(ImageFit, "ImageFit", {
     Contain => "contain",
     Cover => "cover",
     Fill => "fill",

@@ -6,7 +6,7 @@ use crate::widget::activation::Activation;
 
 use super::{StatGroup, StatTile, Trend};
 
-crate::component::choice!(Trend, "Trend", {
+crate::choice!(Trend, "Trend", {
     Up => "up",
     Down => "down",
     Flat => "flat",

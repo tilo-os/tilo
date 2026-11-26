@@ -80,7 +80,7 @@ impl TimelineMode {
     }
 }
 
-crate::component::choice!(TimelineMode, "TimelineMode", {
+crate::choice!(TimelineMode, "TimelineMode", {
     Day => "day",
     Week => "week",
     Month => "month",
@@ -122,7 +122,7 @@ impl TimelineTone {
     }
 }
 
-crate::component::choice!(TimelineTone, "TimelineTone", {
+crate::choice!(TimelineTone, "TimelineTone", {
     First => "first",
     Second => "second",
     Third => "third",

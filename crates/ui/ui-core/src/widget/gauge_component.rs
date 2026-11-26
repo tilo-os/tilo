@@ -7,7 +7,7 @@ use super::{
     BarGauge, Fillcolor, GaugeStyle, GaugeThresholds, ProgressRing, ProgressRingSize, RingFill,
 };
 
-crate::component::choice!(ProgressRingSize, "ProgressRingSize", {
+crate::choice!(ProgressRingSize, "ProgressRingSize", {
     Small => "small",
     Regular => "regular",
     Large => "large",

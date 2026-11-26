@@ -133,7 +133,7 @@ impl Curve {
     }
 }
 
-crate::component::choice!(Curve, "Curve", {
+crate::choice!(Curve, "Curve", {
     Line => "line",
     Smooth => "smooth",
     Step => "step",
@@ -165,7 +165,7 @@ impl Marker {
     }
 }
 
-crate::component::choice!(Marker, "Marker", {
+crate::choice!(Marker, "Marker", {
     Circle => "circle", Square => "square", Diamond => "diamond",
 });
 

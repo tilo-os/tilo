@@ -61,7 +61,7 @@ pub enum State {
     Focused,
 }
 
-crate::component::choice!(State, "InteractionState", {
+crate::choice!(State, "InteractionState", {
     Rest => "rest", Hovered => "hovered", Pressed => "pressed", Focused => "focused",
 });
 

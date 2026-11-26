@@ -9,7 +9,7 @@ use crate::component::{
 use super::{FunnelChart, FunnelDirection};
 use crate::widget::chart_data::ChartItem;
 
-crate::component::choice!(FunnelDirection, "FunnelDirection", {
+crate::choice!(FunnelDirection, "FunnelDirection", {
     Funnel => "funnel", Pyramid => "pyramid",
 });
 

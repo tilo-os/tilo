@@ -528,7 +528,7 @@ pub enum MapTrackTone {
     Quiet,
 }
 
-crate::component::choice!(MapTrackTone, "MapTrackTone", {
+crate::choice!(MapTrackTone, "MapTrackTone", {
     Route => "route",
     Walk => "walk",
     Transit => "transit",
@@ -562,7 +562,7 @@ pub enum MapMarkerKind {
     Poi,
 }
 
-crate::component::choice!(MapMarkerKind, "MapMarkerKind", {
+crate::choice!(MapMarkerKind, "MapMarkerKind", {
     Landmark => "landmark",
     Cafe => "cafe",
     Restaurant => "restaurant",

@@ -253,7 +253,7 @@ pub enum MediaAspect {
 }
 
 // The shapes a component's art takes by name; a photo's own ratio comes from the photo.
-crate::component::choice!(MediaAspect, "MediaAspect", {
+crate::choice!(MediaAspect, "MediaAspect", {
     Square => "square",
     Wide => "wide",
     Portrait => "portrait",
@@ -284,7 +284,7 @@ pub enum RowLeadingShape {
     Media(MediaAspect),
 }
 
-crate::component::choice!(RowLeadingShape, "RowLeadingShape", {
+crate::choice!(RowLeadingShape, "RowLeadingShape", {
     None => "none",
     Mark => "mark",
     Avatar => "avatar",

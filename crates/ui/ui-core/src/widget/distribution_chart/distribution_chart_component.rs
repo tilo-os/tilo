@@ -9,7 +9,7 @@ use crate::component::{
 
 use super::{DistributionChart, DistributionKind, DistributionSeries};
 
-crate::component::choice!(DistributionKind, "DistributionKind", {
+crate::choice!(DistributionKind, "DistributionKind", {
     Box => "box", Violin => "violin", BoxAndViolin => "both",
 });
 

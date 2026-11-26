@@ -67,7 +67,7 @@ pub fn bars_description() -> EnumDescription {
     }
 }
 
-crate::component::choice!(CategoryLayout, "BarLayout", {
+crate::choice!(CategoryLayout, "BarLayout", {
     Grouped => "grouped", Stacked => "stacked", Percent => "share", Waterfall => "waterfall",
 });
 

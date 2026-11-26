@@ -85,7 +85,7 @@ pub enum MediaSize {
     Large,
 }
 
-crate::component::choice!(MediaSize, "MediaSize", {
+crate::choice!(MediaSize, "MediaSize", {
     Small => "small",
     Regular => "regular",
     Large => "large",
@@ -1442,7 +1442,7 @@ impl Widget for MediaCard {
         }
     }
 
-    crate::widget::pressable!(rect);
+    crate::pressable!(rect);
 
     fn needs_redraw(&self) -> bool {
         self.dirty || self.wants_measure

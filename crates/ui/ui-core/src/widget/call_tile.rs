@@ -31,7 +31,7 @@ pub enum CallSource {
     Screen,
 }
 
-crate::component::choice!(CallSource, "CallSource", {
+crate::choice!(CallSource, "CallSource", {
     Camera => "camera",
     Screen => "screen",
 });

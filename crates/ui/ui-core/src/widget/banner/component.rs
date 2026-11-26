@@ -6,7 +6,7 @@ use crate::widget::{Button, Press};
 
 use super::{Banner, BannerKind, BannerNotice};
 
-crate::component::choice!(BannerKind, "BannerKind", {
+crate::choice!(BannerKind, "BannerKind", {
     Neutral => "neutral",
     Info => "info",
     Success => "success",

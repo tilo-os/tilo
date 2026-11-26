@@ -45,13 +45,13 @@ use crate::widget::{Interaction, TaffyTreeExt, Widget};
 mod component;
 pub use component::{KeyPadProps, key_pad_description};
 
-crate::component::choice!(PadSize, "PadSize", {
+crate::choice!(PadSize, "PadSize", {
     Compact => "compact",
     Standard => "standard",
     Large => "large",
 });
 
-crate::component::choice!(PadTone, "PadTone", {
+crate::choice!(PadTone, "PadTone", {
     Plain => "plain",
     Modifier => "modifier",
     Active => "active",

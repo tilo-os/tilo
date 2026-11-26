@@ -454,7 +454,7 @@ pub enum ChromeMaterial {
     Calm,
 }
 
-crate::component::choice!(ChromeMaterial, "ChromeMaterial", {
+crate::choice!(ChromeMaterial, "ChromeMaterial", {
     Bar => "bar",
     Glass => "glass",
     Calm => "calm",

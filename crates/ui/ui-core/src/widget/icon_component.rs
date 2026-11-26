@@ -6,7 +6,7 @@ use crate::widget::{IconSize, Tone};
 
 use super::IconWidget;
 
-crate::component::choice!(IconSize, "IconSize", {
+crate::choice!(IconSize, "IconSize", {
     Small => "small",
     Regular => "regular",
     Large => "large",

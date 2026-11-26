@@ -96,7 +96,7 @@ pub enum PictureKind {
     BannerMessage,
 }
 
-crate::component::choice!(PictureKind, "PictureKind", {
+crate::choice!(PictureKind, "PictureKind", {
     TextSizeSmall => "text_size_small",
     TextSizeRegular => "text_size_regular",
     TextSizeLarge => "text_size_large",

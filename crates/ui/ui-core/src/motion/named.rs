@@ -533,7 +533,7 @@ pub enum Swap {
     CrossFade,
 }
 
-crate::component::choice!(Swap, "Transition", {
+crate::choice!(Swap, "Transition", {
     None => "none",
     CrossFade => "cross_fade",
 });

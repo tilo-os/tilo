@@ -148,6 +148,8 @@ impl crate::widget::identity::AsDynWidget for dyn AppWidget {
     }
 }
 
+crate::draw_child_of_dyn!(AppWidget);
+
 /// Trait every in-process app implements so the shell can host it inside a `TileContent::App`.
 pub trait AppWidget: Widget {
     /// Capture app-owned local presentation alongside the ordinary View.

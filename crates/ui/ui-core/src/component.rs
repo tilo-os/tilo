@@ -604,6 +604,8 @@ impl PropType for Link {
     }
 }
 
+#[doc(hidden)]
+#[macro_export]
 macro_rules! choice {
     ($ty:ty, $name:literal, { $($case:ident => $text:literal),+ $(,)? }) => {
         impl $crate::component::PropType for $ty {
@@ -627,11 +629,6 @@ macro_rules! choice {
     };
 }
 
-#[allow(
-    unused_imports,
-    reason = "a component declares its choices beside itself; none outside this file may yet"
-)]
-pub(crate) use choice;
 
 macro_rules! part_type {
     ($props:ty) => {

@@ -272,7 +272,7 @@ pub enum PopoverSide {
     Right,
 }
 
-crate::component::choice!(PopoverSide, "PopoverSide", {
+crate::choice!(PopoverSide, "PopoverSide", {
     Above => "above",
     Below => "below",
     Left => "left",

@@ -654,7 +654,7 @@ impl Widget for StatTile {
         }
     }
 
-    crate::widget::pressable!(rect);
+    crate::pressable!(rect);
 
     crate::redraw_flag!();
 

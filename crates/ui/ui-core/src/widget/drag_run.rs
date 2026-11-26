@@ -30,7 +30,7 @@ pub enum RunAxis {
     Vertical,
 }
 
-crate::component::choice!(RunAxis, "Axis", { Horizontal => "horizontal", Vertical => "vertical" });
+crate::choice!(RunAxis, "Axis", { Horizontal => "horizontal", Vertical => "vertical" });
 
 impl RunAxis {
     fn along(self, point: Point) -> f64 {
@@ -55,21 +55,21 @@ pub enum RunGroup {
     Space,
 }
 
-crate::component::choice!(RunGroup, "RunGroup", {
+crate::choice!(RunGroup, "RunGroup", {
     Leading => "leading",
     Center => "center",
     Trailing => "trailing",
     Space => "space",
 });
 
-crate::component::choice!(crate::widget::arrange::Distribute, "Distribute", {
+crate::choice!(crate::widget::arrange::Distribute, "Distribute", {
     Start => "start",
     Center => "center",
     End => "end",
     Between => "between",
 });
 
-crate::component::choice!(crate::widget::arrange::Align, "Align", {
+crate::choice!(crate::widget::arrange::Align, "Align", {
     Start => "start",
     Center => "center",
     End => "end",

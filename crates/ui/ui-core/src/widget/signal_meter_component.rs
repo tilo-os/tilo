@@ -5,7 +5,7 @@ use crate::widget::SignalLevel;
 
 use super::SignalMeter;
 
-crate::component::choice!(SignalLevel, "SignalLevel", {
+crate::choice!(SignalLevel, "SignalLevel", {
     Unknown => "unknown",
     Weak => "weak",
     Fair => "fair",

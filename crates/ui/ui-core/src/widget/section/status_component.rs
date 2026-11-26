@@ -6,7 +6,7 @@ use crate::widget::list_row::RowStatus;
 
 use super::{ObjectHeader, ObjectLead, StatusLine};
 
-crate::component::choice!(RowStatus, "RowStatus", {
+crate::choice!(RowStatus, "RowStatus", {
     Active => "active",
     Warning => "warning",
     Error => "error",

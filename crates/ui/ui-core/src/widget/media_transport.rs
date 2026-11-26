@@ -78,7 +78,7 @@ pub enum TransportRepeat {
     One,
 }
 
-crate::component::choice!(TransportRepeat, "TransportRepeat", {
+crate::choice!(TransportRepeat, "TransportRepeat", {
     Off => "off",
     All => "all",
     One => "one",

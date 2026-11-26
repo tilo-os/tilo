@@ -5,7 +5,7 @@ use crate::component::{Component, Described, Moment, ResourceId};
 use crate::widget::Widget;
 use crate::widget::conversation::{ConversationLine, ConversationList, DeliveryState};
 
-crate::component::choice!(crate::widget::conversation::DeliveryState, "Delivery", {
+crate::choice!(crate::widget::conversation::DeliveryState, "Delivery", {
     Queued => "queued",
     Sending => "sending",
     Submitted => "submitted",

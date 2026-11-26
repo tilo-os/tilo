@@ -863,7 +863,7 @@ impl ButtonRole {
     }
 }
 
-crate::component::choice!(ButtonRole, "ButtonRole", {
+crate::choice!(ButtonRole, "ButtonRole", {
     Primary => "primary",
     Secondary => "secondary",
     Destructive => "destructive",

@@ -6,7 +6,7 @@ use crate::component::{Component, Described, Event};
 use super::super::code_editor::Language;
 use super::{DiffGrid, DiffSide};
 
-crate::component::choice!(DiffSide, "DiffSide", {
+crate::choice!(DiffSide, "DiffSide", {
     Both => "both",
     Left => "left",
     Right => "right",

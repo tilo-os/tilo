@@ -12,7 +12,7 @@ use crate::text_render::TextKind;
 use crate::widget::Widget;
 use crate::widget::data_table::{ColumnDef, ColumnWidth, DataTable};
 
-crate::component::choice!(crate::text_render::TextKind, "TextKind", {
+crate::choice!(crate::text_render::TextKind, "TextKind", {
     Prose => "prose",
     Numeric => "numeric",
     Secret => "secret",
@@ -29,7 +29,7 @@ pub enum TableColumnWidth {
     Fixed,
 }
 
-crate::component::choice!(TableColumnWidth, "TableColumnWidth", {
+crate::choice!(TableColumnWidth, "TableColumnWidth", {
     Auto => "auto",
     Flex => "flex",
     Fixed => "fixed",

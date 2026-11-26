@@ -88,7 +88,7 @@ pub enum RangeKind {
     Milestones,
 }
 
-crate::component::choice!(RangeKind, "RangeKind", {
+crate::choice!(RangeKind, "RangeKind", {
     Timeline => "timeline",
     Plan => "plan",
     Intervals => "intervals",

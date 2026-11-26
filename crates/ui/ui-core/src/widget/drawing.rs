@@ -63,7 +63,7 @@ impl Ink {
     }
 }
 
-crate::component::choice!(Ink, "Ink", {
+crate::choice!(Ink, "Ink", {
     Accent => "accent", Ink => "ink", Muted => "muted", Track => "track",
     Success => "success", Warning => "warning", Danger => "danger", Info => "info",
     Base => "base", Surface => "surface", Sidebar => "sidebar",
@@ -91,7 +91,7 @@ impl Weight {
     }
 }
 
-crate::component::choice!(Weight, "Weight", {
+crate::choice!(Weight, "Weight", {
     Hairline => "hairline", Regular => "regular", Strong => "strong",
 });
 
@@ -108,7 +108,7 @@ pub enum Meaning {
     Decoration,
 }
 
-crate::component::choice!(Meaning, "Meaning", {
+crate::choice!(Meaning, "Meaning", {
     Progress => "progress", Chart => "chart", Picture => "picture", Decoration => "decoration",
 });
 
@@ -122,7 +122,7 @@ pub enum Anchor {
     End,
 }
 
-crate::component::choice!(Anchor, "Anchor", {
+crate::choice!(Anchor, "Anchor", {
     Start => "start", Middle => "middle", End => "end",
 });
 

@@ -95,7 +95,7 @@ pub enum Language {
     Tilolang,
 }
 
-crate::component::choice!(Language, "Language", {
+crate::choice!(Language, "Language", {
     PlainText => "plain_text",
     Rust => "rust",
     Typst => "typst",

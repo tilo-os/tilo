@@ -22,7 +22,7 @@ pub enum SkeletonForm {
     Block,
 }
 
-crate::component::choice!(SkeletonForm, "SkeletonForm", {
+crate::choice!(SkeletonForm, "SkeletonForm", {
     Text => "text",
     Row => "row",
     Media => "media",

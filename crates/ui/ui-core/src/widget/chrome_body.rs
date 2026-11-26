@@ -19,7 +19,7 @@ pub enum ChromeShape {
     Rounded,
 }
 
-crate::component::choice!(ChromeShape, "ChromeShape", {
+crate::choice!(ChromeShape, "ChromeShape", {
     Square => "square",
     Rounded => "rounded",
 });
@@ -33,7 +33,7 @@ pub enum ChromeEdge {
     Trailing,
 }
 
-crate::component::choice!(ChromeEdge, "ChromeEdge", {
+crate::choice!(ChromeEdge, "ChromeEdge", {
     Top => "top",
     Bottom => "bottom",
     Leading => "leading",

@@ -19,7 +19,7 @@ pub enum HistogramScale {
     Density,
 }
 
-crate::component::choice!(HistogramScale, "HistogramScale", {
+crate::choice!(HistogramScale, "HistogramScale", {
     Count => "count", Probability => "probability", Density => "density",
 });
 

@@ -38,7 +38,7 @@ impl Tone {
     }
 }
 
-crate::component::choice!(Tone, "Tone", {
+crate::choice!(Tone, "Tone", {
     Neutral => "neutral",
     Success => "success",
     Warning => "warning",

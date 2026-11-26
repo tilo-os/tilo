@@ -5,7 +5,7 @@ use crate::component::{Component, Described, Event};
 
 use super::{HexColumn, HexGrid};
 
-crate::component::choice!(HexColumn, "HexColumn", {
+crate::choice!(HexColumn, "HexColumn", {
     Hex => "hex",
     Ascii => "ascii",
 });

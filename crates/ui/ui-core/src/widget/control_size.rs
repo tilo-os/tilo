@@ -20,7 +20,7 @@ pub enum ControlSize {
     Large,
 }
 
-crate::component::choice!(ControlSize, "ControlSize", {
+crate::choice!(ControlSize, "ControlSize", {
     Small => "small",
     Regular => "regular",
     Large => "large",

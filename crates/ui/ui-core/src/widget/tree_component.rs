@@ -75,7 +75,7 @@ pub enum TreeTone {
     Secondary,
 }
 
-crate::component::choice!(TreeTone, "TreeTone", {
+crate::choice!(TreeTone, "TreeTone", {
     Primary => "primary",
     Secondary => "secondary",
 });

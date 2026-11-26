@@ -743,7 +743,7 @@ impl Widget for Card {
         "Card"
     }
 
-    crate::widget::pressable!(parts.rect);
+    crate::pressable!(parts.rect);
 
     fn test_id(&self) -> Option<&str> {
         self.activation.is_bound().then(|| self.activation.id())

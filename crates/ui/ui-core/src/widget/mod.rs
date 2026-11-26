@@ -311,14 +311,16 @@ macro_rules! rect_geometry {
     };
 }
 
+#[doc(hidden)]
+#[macro_export]
 macro_rules! pressable {
     ($($rect:ident).+) => {
         fn cursor_shape(
             &self,
             point: $crate::kurbo::Point,
-        ) -> Option<winit::window::CursorIcon> {
+        ) -> Option<$crate::winit::window::CursorIcon> {
             (self.activation.is_bound() && self.$($rect).+.contains(point))
-                .then_some(winit::window::CursorIcon::Pointer)
+                .then_some($crate::winit::window::CursorIcon::Pointer)
         }
 
         fn is_focusable(&self) -> bool {
@@ -347,7 +349,6 @@ macro_rules! pressable {
         }
     };
 }
-pub(crate) use pressable;
 
 #[macro_export]
 macro_rules! redraw_flag {
@@ -565,31 +566,35 @@ impl<W: Widget> DrawChild for W {
     }
 }
 
+/// `DrawChild` for a widget trait object, boxed or not: drawn whole, never culled, since a
+/// trait object's own box is all a parent knows of it.
+#[doc(hidden)]
+#[macro_export]
 macro_rules! draw_child_of_dyn {
     ($($object:path),* $(,)?) => {$(
-        impl DrawChild for dyn $object + '_ {
+        impl $crate::widget::DrawChild for dyn $object + '_ {
             fn draw_child(
                 &mut self,
-                scene: &mut Scene,
-                transform: Affine,
-                text_renderer: &mut TextRenderer,
-                theme: &Theme,
-                env: &DrawEnv<'_>,
+                scene: &mut $crate::vello::Scene,
+                transform: $crate::kurbo::Affine,
+                text_renderer: &mut $crate::text_render::TextRenderer,
+                theme: &$crate::theme::Theme,
+                env: &$crate::draw::DrawEnv<'_>,
             ) {
-                draw_child_unculled(self, None, scene, transform, text_renderer, theme, env);
+                $crate::widget::draw_child_unculled(self, None, scene, transform, text_renderer, theme, env);
             }
         }
 
-        impl DrawChild for Box<dyn $object + '_> {
+        impl $crate::widget::DrawChild for Box<dyn $object + '_> {
             fn draw_child(
                 &mut self,
-                scene: &mut Scene,
-                transform: Affine,
-                text_renderer: &mut TextRenderer,
-                theme: &Theme,
-                env: &DrawEnv<'_>,
+                scene: &mut $crate::vello::Scene,
+                transform: $crate::kurbo::Affine,
+                text_renderer: &mut $crate::text_render::TextRenderer,
+                theme: &$crate::theme::Theme,
+                env: &$crate::draw::DrawEnv<'_>,
             ) {
-                draw_child_unculled(
+                $crate::widget::draw_child_unculled(
                     &mut **self,
                     None,
                     scene,
@@ -603,7 +608,7 @@ macro_rules! draw_child_of_dyn {
     )*};
 }
 
-draw_child_of_dyn!(Widget, AppWidget,);
+crate::draw_child_of_dyn!(Widget);
 
 /// What a widget draws over itself once drawn: the denied-permission scrim
 /// its authority forbids, then whatever the host paints over it — the focus
