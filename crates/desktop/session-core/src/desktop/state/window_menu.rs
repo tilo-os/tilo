@@ -1465,6 +1465,20 @@ mod tests {
         found
     }
 
+    /// The window a menu is on is named as a person knows it, by the one rule every surface names a
+    /// window by: its title and the app it shows, never the id the app installs under.
+    #[test]
+    fn the_subject_names_the_window_the_way_a_person_does() {
+        let handle = one_window_shell(1);
+        let tab = handle.read(|tree| tree.workspaces[0].strips[0].window_groups[0].tabs[0].id);
+        let subject = handle.window_subject(tab).expect("the window's subject");
+        assert_eq!(
+            subject.name, "App0",
+            "the window's title is its app's name, so it is said once: {}",
+            subject.name
+        );
+    }
+
     /// A window offers every row the desktop has for it, in the groups the desktop shows them in,
     /// and each means the command it names.
     #[test]
@@ -1633,6 +1647,123 @@ mod tests {
         settle(&handle);
         assert!(!floating(&handle), "the record has it back in its strip");
         assert_eq!(row(&handle.window_menu(route.tab), SNAP_BACK), None);
+    }
+
+    /// Filling the strip is offered, and once filled the row gives the strip back.
+    #[test]
+    fn filling_the_strip_is_offered_and_then_giving_it_back() {
+        let handle = apps_shell(1);
+        let route = first_route(&handle);
+        assert!(row(&handle.window_menu(route.tab), MAXIMIZE).is_some());
+        handle
+            .choose_window_menu(route.tab, MAXIMIZE, None)
+            .unwrap();
+        settle(&handle);
+        assert!(handle.read(|tree| group_at(tree, route).maximized));
+        let rows = handle.window_menu(route.tab);
+        assert!(row(&rows, MAXIMIZE).is_none());
+        assert!(row(&rows, RESTORE).is_some());
+        handle.choose_window_menu(route.tab, RESTORE, None).unwrap();
+        settle(&handle);
+        assert!(!handle.read(|tree| group_at(tree, route).maximized));
+    }
+
+    /// Each width row gives the window the share of its strip it names, and the wider and narrower rows
+    /// step between the same shares, stopping at both ends with a row that says why.
+    #[test]
+    fn every_width_row_gives_the_window_the_share_it_names() {
+        let handle = apps_shell(1);
+        let route = first_route(&handle);
+        for (id, width) in [
+            (HALF, WindowWidth::Fraction(500)),
+            (WIDTH_NARROW, WindowWidth::Narrow),
+            (WIDTH_NORMAL, WindowWidth::Normal),
+            (WIDTH_WIDE, WindowWidth::Wide),
+        ] {
+            let tree = handle.read(Clone::clone);
+            assert!(
+                matches!(
+                    command(&tree, &route, id, None),
+                    Some(Verb::Chrome(ChromeEffect::SetWidth {
+                        preset: Some(_),
+                        ..
+                    }))
+                ),
+                "{id} is the share it names"
+            );
+            handle.choose_window_menu(route.tab, id, None).expect(id);
+            settle(&handle);
+            assert_eq!(
+                handle.read(|tree| group_at(tree, route).width),
+                width,
+                "{id}"
+            );
+        }
+        let rows = handle.window_menu(route.tab);
+        let widest = row(&rows, WIDER).unwrap();
+        assert!(!widest.enabled, "no wider than the strip");
+        assert_eq!(widest.reason.as_deref(), Some("Widest"), "the row says why");
+        let tree = handle.read(Clone::clone);
+        assert!(matches!(
+            command(&tree, &route, NARROWER, None),
+            Some(Verb::Chrome(ChromeEffect::SetWidth { permille: Some(permille), .. })) if permille == WIDTH_NORMAL_PERMILLE
+        ));
+        handle
+            .choose_window_menu(route.tab, NARROWER, None)
+            .unwrap();
+        settle(&handle);
+        assert_eq!(
+            handle.read(|tree| group_at(tree, route).width.permille()),
+            WIDTH_NORMAL_PERMILLE
+        );
+        handle
+            .choose_window_menu(route.tab, NARROWER, None)
+            .unwrap();
+        settle(&handle);
+        assert_eq!(
+            handle.read(|tree| group_at(tree, route).width.permille()),
+            WIDTH_NARROW_PERMILLE
+        );
+        let rows = handle.window_menu(route.tab);
+        let narrowest = row(&rows, NARROWER).unwrap();
+        assert!(!narrowest.enabled, "no narrower than a window goes");
+        assert_eq!(narrowest.reason.as_deref(), Some("Narrowest"));
+        assert!(
+            handle
+                .choose_window_menu(route.tab, NARROWER, None)
+                .is_err(),
+            "and it means no command"
+        );
+        let _ = WIDTH_WIDE_PERMILLE;
+    }
+
+    /// Equalising gives every window of the strip the same share of it.
+    #[test]
+    fn equalizing_gives_every_window_of_the_strip_the_same_share() {
+        let handle = apps_shell(2);
+        let route = first_route(&handle);
+        let mut tree = handle.read(Clone::clone);
+        tree.workspaces[0].strips[0].window_groups[0].width = WindowWidth::Narrow;
+        tree.workspaces[0].strips[0].window_groups[1].width = WindowWidth::Wide;
+        handle.replace_tree(tree);
+        settle(&handle);
+
+        handle
+            .choose_window_menu(route.tab, EQUALIZE, None)
+            .unwrap();
+        settle(&handle);
+        let widths: Vec<WindowWidth> = handle.read(|tree| {
+            tree.workspaces[0].strips[0]
+                .window_groups
+                .iter()
+                .map(|group| group.width)
+                .collect()
+        });
+        assert_eq!(
+            widths,
+            vec![WindowWidth::Fraction(500), WindowWidth::Fraction(500)],
+            "two windows share the strip evenly"
+        );
     }
 
     /// A window moves into another strip of its workspace, by that strip's name: the strip is made
@@ -2334,6 +2465,27 @@ mod tests {
         assert!(handle.take_workspace_share_asks().is_empty());
     }
 
+    /// A window held by someone nobody named says whose it is without hanging a possessive on the
+    /// words that stand for their name.
+    #[test]
+    fn someone_unnamed_elses_window_says_someone_else() {
+        ui::i18n::I18nManager::init("en-US");
+        let (handle, tab) = shell_showing(7, mapped_notes());
+        let _shares = session_sharing_with(&handle);
+        assert!(handle.set_holders(HashMap::from([(
+            tab,
+            TabHolder {
+                name: ui::presence::unnamed_person_label(),
+                rgb: (200, 120, 40),
+                keeps: true,
+            },
+        )])));
+        let rows = handle.window_menu(tab);
+        let share = row(&rows, SHARE_WITH_WORKSPACE).expect("the row is shown");
+        assert!(!share.enabled);
+        assert_eq!(share.reason.as_deref(), Some("Someone else's window"));
+    }
+
     /// A window the sharing app lists offers both shares, side by side in the sharing group, and each
     /// says which it is: the window's live picture to the workspace, or its record in a channel.
     #[test]
@@ -2666,5 +2818,35 @@ mod tests {
         let tree = handle.read(Clone::clone);
         assert!(super::rows(&tree, &route, &Facts::default()).is_empty());
         assert!(command(&tree, &route, CLOSE, None).is_none());
+    }
+
+    /// A window moves one place along its strip from its menu, and a side it cannot go to offers no row.
+    #[test]
+    fn a_window_moves_one_place_along_its_strip() {
+        let handle = apps_shell(3);
+        let order = || -> Vec<TabId> { (0..3).map(|group| tab_at(&handle, group)).collect() };
+        let [first, second, third] = order()[..] else {
+            panic!("three windows");
+        };
+        let offers = |tab: TabId| {
+            let rows = handle.window_menu(tab);
+            (
+                row(&rows, MOVE_LEFT).is_some(),
+                row(&rows, MOVE_RIGHT).is_some(),
+            )
+        };
+        assert_eq!(
+            [offers(first), offers(second), offers(third)],
+            [(false, true), (true, true), (true, false)]
+        );
+        for (id, after) in [
+            (MOVE_RIGHT, [second, first, third]),
+            (MOVE_RIGHT, [second, third, first]),
+            (MOVE_LEFT, [second, first, third]),
+        ] {
+            handle.choose_window_menu(first, id, None).unwrap();
+            settle(&handle);
+            assert_eq!(order(), after, "{id}");
+        }
     }
 }

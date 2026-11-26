@@ -15,6 +15,7 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::language::host;
+use crate::language::host::said;
 
 /// Chat's package under the tree's `apps/tl`, which the device installs to run it.
 const CHAT_PACKAGE: &str = "chat";
@@ -153,18 +154,6 @@ async fn every_message(key: &host::Key, workspace: &str, path: &str) -> (Vec<Val
         read.push_str(&reply["structuredContent"].to_string());
     }
     (messages, read)
-}
-
-/// The text of an MCP tool's result, and whether it failed.
-fn said(result: &Value) -> (String, bool) {
-    let text = result["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|part| part["text"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    (text, result["isError"].as_bool().unwrap_or(false))
 }
 
 /// A minted key's agent goes by the name the key was minted with: History names its changes

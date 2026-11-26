@@ -7,18 +7,7 @@ use tilo_actions::remote::ActionProvider as _;
 use tilo_actions::remote::device_tickets;
 
 use crate::language::host;
-
-/// The text of an MCP tool's result, and whether it failed.
-fn said(result: &Value) -> (String, bool) {
-    let text = result["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|part| part["text"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    (text, result["isError"].as_bool().unwrap_or(false))
-}
+use crate::language::host::said;
 
 /// A backend's key lists what the workspace publishes on the daemon, runs an action and follows the invocation over `/v1`, and its agent lists and acts over the
 /// workspace's MCP endpoint: every call answered by the daemon's dispatch.

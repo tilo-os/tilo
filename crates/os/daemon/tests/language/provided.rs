@@ -5,13 +5,14 @@
 
 use std::sync::Arc;
 
-use serde_json::{Value, json};
+use serde_json::json;
 use tilo_actions::remote::{
     CataloguePage, CatalogueProvider, CatalogueRow, InvokeArgument, TestProvider,
 };
 use tilo_actions::{ActionAddress, ActionOutput, InvocationUpdate};
 
 use crate::language::host;
+use crate::language::host::said;
 
 const PROVIDER: &str = "so.tilo.probe";
 
@@ -69,18 +70,6 @@ fn probe() -> Arc<TestProvider> {
                 }
             }),
     )
-}
-
-/// The text of an MCP tool's result, and whether it failed.
-fn said(result: &Value) -> (String, bool) {
-    let text = result["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|part| part["text"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    (text, result["isError"].as_bool().unwrap_or(false))
 }
 
 /// A key's agent on the device runs a registered provider's action with `tilo_do`, as

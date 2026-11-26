@@ -32,9 +32,11 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::language::host;
+use crate::language::host::act;
+use crate::language::host::open_app;
 
 const LIST: usize = 200;
 const LISTS: usize = 10;
@@ -80,30 +82,6 @@ struct Call {
     began: usize,
     answered: usize,
     took: Duration,
-}
-
-/// `app` started in the workspace with no window, as the workspace's own start does: its records'
-/// actions are answered there from then on.
-async fn open_app(host: &host::Host, app: &str) {
-    host::start_app(host, app)
-        .await
-        .unwrap_or_else(|refused| panic!("the workspace starts {app}: {refused:?}"));
-}
-
-/// The action `resource#action` with `args`, as the device's own agent runs it through the
-/// tool surface `tilo do` drives; its typed answer, which must say it ran.
-async fn act(agent: &host::Agent, resource: &str, action: &str, args: &Value) -> Value {
-    let answer = agent
-        .tool_structured(
-            "tilo_do",
-            &json!({"path": format!("{resource}#{action}"), "args": args}),
-        )
-        .await;
-    assert_ne!(
-        answer["isError"], true,
-        "{resource}#{action} {args}: {answer}"
-    );
-    answer["structuredContent"].clone()
 }
 
 /// What `tilo ls` of the tracker reads.

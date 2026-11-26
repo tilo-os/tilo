@@ -40,6 +40,12 @@ fn inspect_controls(preview: &InstallerPreview, ids: &[&str], viewport: (u32, u3
     }
 }
 
+fn paint_screen(scenario: &str, ids: &[&str], viewport: (u32, u32), theme: Theme, tag: &str) {
+    let mut app = TestHost::capture_at(Some(scenario), viewport);
+    app.harness().set_theme(theme.with_reduce_motion(true));
+    paint_app(&mut app, scenario, ids, viewport, tag);
+}
+
 pub(super) fn paint_app(
     app: &mut TestHost,
     scenario: &str,
@@ -77,6 +83,131 @@ pub(super) fn paint_app(
         ));
         app.harness().render_png(&path);
         eprintln!("installer visual evidence: {}", path.display());
+    }
+}
+
+#[test]
+fn viewport_growth_keeps_logical_type_and_controls_and_pointer_mapping() {
+    fn heading_font(root: &mut dyn Widget, theme: &Theme) -> Option<f32> {
+        if root.test_id() == Some("installer.heading") {
+            let mut scene = Scene::new();
+            root.draw_child(
+                &mut scene,
+                Affine::IDENTITY,
+                &mut ui::TextRenderer::new(),
+                theme,
+                &ui::draw::DrawEnv::default(),
+            );
+            let runs = &scene.encoding().resources.glyph_runs;
+            assert!(!runs.is_empty(), "the heading must paint real glyphs");
+            let size = runs[0].font_size;
+            assert!(runs.iter().all(|run| run.font_size == size));
+            return Some(size);
+        }
+        root.children_mut()
+            .into_iter()
+            .find_map(|child| heading_font(child, theme))
+    }
+    for theme in [Theme::dark(), Theme::light()] {
+        let mut unscaled: Option<(f32, f64, f64)> = None;
+        for host_scale in [1.0, 1.5, 2.0] {
+            let initial = match host_scale {
+                1.0 => (1180, 820),
+                1.5 => (1770, 1230),
+                _ => (2360, 1640),
+            };
+            let mut app = TestHost::capture_at(Some("installer-migrate"), initial);
+            app.harness().set_theme(
+                theme
+                    .clone()
+                    .with_ui_scale(host_scale)
+                    .with_reduce_motion(true),
+            );
+            let mut original = None;
+            for viewport in [initial, (5120, 2822), (3840, 2160), (2560, 1440)] {
+                app.harness().resize(viewport).unwrap();
+                paint_app(
+                    &mut app,
+                    "installer-migrate",
+                    &["installer.ticket", "installer.next"],
+                    viewport,
+                    &format!("logical-size-{host_scale}"),
+                );
+                let dimensions = app
+                    .with_widget::<InstallerPreview, _>(|preview| {
+                        let heading_size =
+                            heading_font(preview, &theme.clone().with_ui_scale(host_scale))
+                                .unwrap();
+                        let name = control(preview, "installer.ticket").unwrap().get_rect();
+                        let next = control(preview, "installer.next").unwrap().get_rect();
+                        let metrics = &theme.tokens.metrics;
+                        assert!(
+                            (name.width() - f64::from(metrics.content_min_width * host_scale))
+                                .abs()
+                                < 1.0
+                        );
+                        assert!((name.center().x - preview.rect.center().x).abs() < 1.0);
+                        (heading_size, name.height(), next.height())
+                    })
+                    .unwrap();
+                if let Some(expected) = original {
+                    assert_eq!(
+                        dimensions, expected,
+                        "viewport growth must add whitespace, not magnify: {viewport:?}"
+                    );
+                } else {
+                    original = Some(dimensions);
+                }
+                if let Some((font, field, button)) = unscaled {
+                    assert_eq!(dimensions.0, font * host_scale);
+                    for (actual, base) in [(dimensions.1, field), (dimensions.2, button)] {
+                        assert!(
+                            (actual - base * f64::from(host_scale)).abs() < 0.01,
+                            "host UI scale must apply exactly once: {actual}, {base}, {host_scale}"
+                        );
+                    }
+                } else {
+                    unscaled = Some(dimensions);
+                }
+                let next = app
+                    .with_widget::<InstallerPreview, _>(|preview| {
+                        control(preview, "installer.next")
+                            .unwrap()
+                            .get_rect()
+                            .center()
+                    })
+                    .unwrap();
+                app.harness().click_at(next.x, next.y);
+                app.settle();
+                app.with_widget::<InstallerPreview, _>(|preview| {
+                    assert_eq!(
+                        preview.journey.page,
+                        Page::Devices,
+                        "pointer coordinates must match the resized painted control"
+                    );
+                    preview.journey.page = Page::Password;
+                    preview.dirty = true;
+                })
+                .unwrap();
+                paint_app(
+                    &mut app,
+                    "installer-password",
+                    &[
+                        "installer.password",
+                        "installer.confirmation",
+                        "installer.next",
+                    ],
+                    viewport,
+                    &format!("logical-size-{host_scale}"),
+                );
+                app.harness().click_named("installer.back").unwrap();
+                app.settle();
+                app.with_widget::<InstallerPreview, _>(|preview| {
+                    assert_eq!(preview.journey.page, Page::Migrate);
+                })
+                .unwrap();
+            }
+        }
     }
 }
 
@@ -150,6 +281,59 @@ fn destination_review_edit_exposes_cancel_and_restores_choices_through_public_ac
     }
 }
 
+#[test]
+fn guided_pages_paint_at_small_normal_and_large_host_scales_in_both_themes() {
+    let screens: &[(&str, &[&str])] = &[
+        (
+            "installer-destination",
+            &["installer.choice.computer", "installer.choice.another"],
+        ),
+        ("installer-migrate", &["installer.ticket", "installer.next"]),
+        (
+            "installer-password",
+            &[
+                "installer.password",
+                "installer.confirmation",
+                "installer.next",
+            ],
+        ),
+        (
+            "installer-devices",
+            &["installer.device-name", "installer.next"],
+        ),
+        (
+            "installer-storage",
+            &["installer.storage.size", "installer.next"],
+        ),
+        (
+            "installer-review",
+            &["installer.review.destination", "installer.next"],
+        ),
+    ];
+    for (name, theme) in [
+        ("dark", Theme::dark()),
+        ("light", Theme::light()),
+        ("high-contrast", Theme::high_contrast()),
+    ] {
+        for (viewport, scale) in [
+            ((480, 800), 1.0),
+            ((800, 600), 1.0),
+            ((1180, 820), 1.0),
+            ((2560, 1440), 2.0),
+        ] {
+            for (scenario, ids) in screens {
+                paint_screen(
+                    scenario,
+                    ids,
+                    viewport,
+                    theme.clone().with_ui_scale(scale),
+                    name,
+                );
+            }
+        }
+    }
+}
+
 fn validation_copy<'a>(root: &'a dyn Widget, error: &str) -> Option<&'a dyn Widget> {
     if root.accessibility().is_some_and(|node| {
         node.name.as_deref() == Some(t(error).as_str())
@@ -199,6 +383,65 @@ pub(super) fn body_scroll_geometry(root: &mut dyn Widget) -> Option<(vello::kurb
     root.children_mut()
         .into_iter()
         .find_map(body_scroll_geometry)
+}
+
+#[test]
+#[cfg(unix)]
+fn resizing_or_changing_host_scale_discards_old_transition_geometry() {
+    let ownership = crate::setup::test_support::qualified_tempdir();
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment.set("XDG_STATE_HOME", ownership.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
+    let mut app = TestHost::launched(&["--setup"]);
+    app.with_widget::<InstallerPreview, _>(|preview| {
+        preview.live = false;
+        preview.journey = Journey::new();
+        preview.journey.destination = Some(Destination::Computer);
+        preview.journey.history = vec![Page::Destination];
+        preview.journey.page = Page::Migrate;
+        preview.dirty = true;
+    })
+    .unwrap();
+    app.harness().resize((1180, 820)).unwrap();
+    let mut theme = Theme::dark().with_reduce_motion(false);
+    theme.tokens.motion.durations.base_ms = 30_000;
+    app.harness().set_theme(theme.clone());
+    app.settle();
+    for change_scale in [false, true] {
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert!(
+                preview.slide.is_some(),
+                "stable geometry retains page transitions"
+            );
+            assert!(preview.outgoing.is_some());
+        })
+        .unwrap();
+        if change_scale {
+            app.harness().set_theme(theme.clone().with_ui_scale(1.5));
+        } else {
+            app.harness().resize((5120, 2822)).unwrap();
+        }
+        app.settle();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert!(preview.slide.is_none());
+            assert!(preview.outgoing.is_none());
+            assert!(preview.pending_slide.is_none());
+        })
+        .unwrap();
+        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert!(
+                preview.slide.is_some(),
+                "navigation resumes at the new geometry"
+            );
+            assert!(preview.outgoing.is_some());
+            preview.slide = None;
+            preview.outgoing = None;
+        })
+        .unwrap();
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -976,6 +1219,220 @@ fn password_enter_focuses_confirmation_and_then_submits() {
         );
     })
     .unwrap();
+}
+
+#[test]
+#[cfg(unix)]
+fn password_form_labels_and_navigation_share_the_real_page_alignment() {
+    fn field_label<'a>(root: &'a dyn Widget, id: &str) -> Option<&'a dyn Widget> {
+        if root.name() == "Field" && control(root, id).is_some() {
+            return root
+                .children()
+                .into_iter()
+                .find(|child| child.name() == "FieldLabel");
+        }
+        root.children()
+            .into_iter()
+            .find_map(|child| field_label(child, id))
+    }
+    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
+        for (viewport, scale) in [((320, 720), 1.0), ((1180, 820), 1.0), ((2560, 1440), 2.0)] {
+            let mut app = TestHost::launched(&["--setup"]);
+            app.with_widget::<InstallerPreview, _>(|preview| {
+                preview.live = false;
+                preview.capture = true;
+                preview.journey = Journey::new();
+                preview.journey.destination = Some(Destination::Computer);
+                preview.journey.page = Page::Password;
+                preview.dirty = true;
+            })
+            .unwrap();
+            app.harness()
+                .set_theme(theme.clone().with_ui_scale(scale).with_reduce_motion(true));
+            app.harness().resize(viewport).unwrap();
+            app.settle();
+            app.with_widget::<InstallerPreview, _>(|preview| {
+                let password = control(preview, "installer.password").unwrap().get_rect();
+                let confirmation = control(preview, "installer.confirmation")
+                    .unwrap()
+                    .get_rect();
+                let heading = control(preview, "installer.heading").unwrap().get_rect();
+                let back = control(preview, "installer.back").unwrap().get_rect();
+                let next = control(preview, "installer.next").unwrap().get_rect();
+                assert!((password.x0 - confirmation.x0).abs() < 1.0);
+                assert!((password.width() - confirmation.width()).abs() < 1.0);
+                assert!(
+                    (heading.x0 - password.x0).abs() < 1.0,
+                    "heading and above-field labels use the form's leading edge"
+                );
+                for (id, input) in [
+                    ("installer.password", password),
+                    ("installer.confirmation", confirmation),
+                ] {
+                    let label = field_label(preview, id)
+                        .expect("actual shared FieldLabel")
+                        .get_rect();
+                    assert!(
+                        (label.x0 - input.x0).abs() < 1.0,
+                        "{id}: label={label:?}, input={input:?}"
+                    );
+                    assert!(label.y1 <= input.y0, "label belongs above its control");
+                }
+                assert!(confirmation.y0 >= password.y1);
+                assert!((password.center().x - preview.rect.center().x).abs() < 1.0);
+                assert!(
+                    (f64::midpoint(back.x0, next.x1) - password.center().x).abs() < 1.0,
+                    "navigation is centered on the same page axis"
+                );
+                let (scroll, _) = body_scroll_geometry(preview).unwrap();
+                assert!(
+                    scroll.y1 <= next.y0,
+                    "the body cannot cover the pinned navigation"
+                );
+                assert!(next.y1 <= preview.rect.y1);
+                assert!(password.width() >= 180.0, "usable compact form");
+            })
+            .unwrap();
+        }
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn password_route_keeps_disabled_continue_and_real_back_in_every_frame() {
+    fn has_guidance(root: &dyn Widget) -> bool {
+        root.accessibility().is_some_and(|node| {
+            node.name.as_deref() == Some(t("installer-preview-password-hint").as_str())
+        }) || root.children().into_iter().any(has_guidance)
+    }
+    let ownership = crate::setup::test_support::qualified_tempdir();
+    let mut environment = tilo_test_env::ScopedEnv::new();
+    environment.set("XDG_STATE_HOME", ownership.path().join("state"));
+    environment.set("XDG_CONFIG_HOME", ownership.path().join("config"));
+    for (viewport, theme, tag) in [
+        ((480, 800), Theme::light(), "compact-light"),
+        ((1180, 820), Theme::dark(), "dark"),
+    ] {
+        let mut app = TestHost::launched(&["--setup"]);
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            preview.live = false;
+            preview.capture = false;
+            preview.linux = true;
+            preview.journey = Journey::new();
+            preview.dirty = true;
+        })
+        .unwrap();
+        app.harness().resize(viewport).unwrap();
+        app.harness().set_theme(theme.with_reduce_motion(true));
+        app.effect(&InstallerPreviewEffect::ChoosePreview {
+            choice: "computer".into(),
+        })
+        .unwrap();
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        app.effect(&InstallerPreviewEffect::ContinuePreview)
+            .unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            preview.journey.page = Page::Password;
+            preview.dirty = true;
+        })
+        .unwrap();
+        app.settle();
+        let footer = app
+            .with_widget::<InstallerPreview, _>(|preview| {
+                assert_eq!(preview.journey.page, Page::Password);
+                assert_eq!(preview.journey.history.last(), Some(&Page::Migrate));
+                assert!(
+                    has_guidance(preview),
+                    "inline password guidance must be visible"
+                );
+                (
+                    control(preview, "installer.back").unwrap().get_rect(),
+                    control(preview, "installer.next").unwrap().get_rect(),
+                )
+            })
+            .unwrap();
+        for (state, password, confirmation, disabled) in [
+            ("empty", "", "", true),
+            (
+                "valid",
+                "several unrelated installation words",
+                "several unrelated installation words",
+                false,
+            ),
+            (
+                "mismatch",
+                "several unrelated installation words",
+                "different unrelated installation words",
+                true,
+            ),
+            ("short", "short", "short", true),
+        ] {
+            app.effect(&InstallerPreviewEffect::SetPreviewPassword {
+                value: password.into(),
+            })
+            .unwrap();
+            app.effect(&InstallerPreviewEffect::SetPreviewConfirmation {
+                value: confirmation.into(),
+            })
+            .unwrap();
+            app.settle();
+            app.with_widget::<InstallerPreview, _>(|preview| {
+                inspect_controls(preview, &["installer.back", "installer.next"], viewport);
+                let next = control(preview, "installer.next").unwrap();
+                let back = control(preview, "installer.back").unwrap();
+                assert_eq!(next.accessibility().unwrap().state.disabled, disabled);
+                assert!(!back.accessibility().unwrap().state.disabled);
+                assert_eq!((back.get_rect(), next.get_rect()), footer);
+                let next_rect = next.get_rect();
+                let (body, _) = body_scroll_geometry(preview).unwrap();
+                assert!(body.y1 <= next_rect.y0);
+            })
+            .unwrap();
+            if disabled {
+                app.harness()
+                    .click_at(footer.1.center().x, footer.1.center().y);
+                app.settle();
+                assert!(
+                    app.effect(&InstallerPreviewEffect::ContinuePreview)
+                        .is_err()
+                );
+                app.with_widget::<InstallerPreview, _>(|preview| {
+                    assert_eq!(preview.journey.page, Page::Password);
+                })
+                .unwrap();
+            }
+            let status = app
+                .effect(&InstallerPreviewEffect::ReadPreview)
+                .unwrap()
+                .value
+                .unwrap();
+            assert_eq!(status["page"], "password");
+            if !password.is_empty() {
+                assert!(
+                    !status.to_string().contains(password),
+                    "private input cannot enter public status"
+                );
+            }
+            paint_app(
+                &mut app,
+                &format!("installer-password-route-{state}"),
+                &[
+                    "installer.password",
+                    "installer.confirmation",
+                    "installer.back",
+                    "installer.next",
+                ],
+                viewport,
+                tag,
+            );
+        }
+        app.effect(&InstallerPreviewEffect::BackInPreview).unwrap();
+        app.with_widget::<InstallerPreview, _>(|preview| {
+            assert_eq!(preview.journey.page, Page::Migrate);
+        })
+        .unwrap();
+    }
 }
 
 #[test]

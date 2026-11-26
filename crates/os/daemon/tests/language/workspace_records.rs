@@ -12,18 +12,7 @@ use tilo_actions::remote::ActionCallError;
 
 use crate::language::guests::guest;
 use crate::language::host;
-
-/// The text of an MCP tool's result, and whether it failed.
-fn said(result: &Value) -> (String, bool) {
-    let text = result["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|part| part["text"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    (text, result["isError"].as_bool().unwrap_or(false))
-}
+use crate::language::host::said;
 
 /// `name` of a tool's answer: typed, or in the JSON its text carries.
 fn field(result: &Value, name: &str) -> Value {

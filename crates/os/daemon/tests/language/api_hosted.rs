@@ -20,6 +20,7 @@ use tilo_actions::remote::{ActionProvider, ResourceAddress, ResourceCopy, person
 use tilo_workspace_service::models as model_providers;
 
 use crate::language::host;
+use crate::language::host::said;
 
 /// One delivery a receiver was posted.
 #[derive(Clone, Debug)]
@@ -446,18 +447,6 @@ fn a_logged_in_computers_agent_reads_and_invites_people_as_its_grants_let_it() {
             "the asked record is named: {invited}"
         );
     });
-}
-
-/// The text of an MCP tool's result, and whether it failed.
-fn said(result: &Value) -> (String, bool) {
-    let text = result["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|part| part["text"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    (text, result["isError"].as_bool().unwrap_or(false))
 }
 
 /// What the workspace keeps (what its members sign in with, their model keys) answers its

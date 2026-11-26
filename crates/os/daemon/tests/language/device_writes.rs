@@ -9,6 +9,7 @@ use tilo_actions::remote::ActionCallError;
 
 use crate::language::guests::guest;
 use crate::language::host;
+use crate::language::host::said;
 
 /// Discussion's package id: the system's comments on any resource of the workspace.
 const DISCUSSION: &str = "so.tilo.lang.discussion";
@@ -18,18 +19,6 @@ const TASKS: &str = "so.tilo.tasks";
 const CHAT: &str = ui::apps::CHAT;
 /// Chat's package under the tree's `apps/tl`, which the device installs to run it.
 const CHAT_PACKAGE: &str = "chat";
-
-/// The text of an MCP tool's result, and whether it failed.
-fn said(result: &Value) -> (String, bool) {
-    let text = result["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|part| part["text"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    (text, result["isError"].as_bool().unwrap_or(false))
-}
 
 /// The person's own computer asks the workspace to make tasks as them, and each is answered done
 /// once the workspace took it.

@@ -46,6 +46,9 @@ use std::time::{Duration, Instant};
 use serde_json::{Value, json};
 
 use crate::language::host;
+use crate::language::host::act;
+use crate::language::host::made_address;
+use crate::language::host::open_app;
 
 /// The most one action may take, at the smallest size measured: an
 /// in-process action is tens of milliseconds optimized and some hundreds
@@ -187,55 +190,6 @@ impl Row {
 
 fn ms(duration: Duration) -> f64 {
     duration.as_secs_f64() * 1000.0
-}
-
-/// `app` started in the workspace with no window, as the workspace's own start does: its records'
-/// actions are answered there from then on.
-async fn open_app(host: &host::Host, app: &str) {
-    host::start_app(host, app)
-        .await
-        .unwrap_or_else(|refused| panic!("the workspace starts {app}: {refused:?}"));
-}
-
-/// The address of what `answer`, a call that made one thing, names, under the app `app` that
-/// made it: the path the tools take it at.
-fn made_address(answer: &Value, app: &str) -> String {
-    let shown = |resource: &str| {
-        resource
-            .strip_prefix("tl:")
-            .and_then(|rest| rest.split_once(':'))
-            .map_or_else(|| resource.to_owned(), |(app, id)| format!("{app}/{id}"))
-    };
-    for field in ["resources", "made"] {
-        if let Some(entry) = answer[field].as_array().and_then(|made| made.first()) {
-            if let Some(address) = entry["address"].as_str().or_else(|| entry["path"].as_str()) {
-                return shown(address);
-            }
-            if let Some(id) = entry.as_str() {
-                return shown(id);
-            }
-            if let Some(id) = entry["id"].as_str() {
-                return format!("{app}/{id}");
-            }
-        }
-    }
-    panic!("the call names what it made: {answer}")
-}
-
-/// The action `resource#action` with `args`, as the device's own agent runs it through the
-/// tool surface `tilo do` drives; its typed answer, which must say it ran.
-async fn act(agent: &host::Agent, resource: &str, action: &str, args: &Value) -> Value {
-    let answer = agent
-        .tool_structured(
-            "tilo_do",
-            &json!({"path": format!("{resource}#{action}"), "args": args}),
-        )
-        .await;
-    assert_ne!(
-        answer["isError"], true,
-        "{resource}#{action} {args}: {answer}"
-    );
-    answer["structuredContent"].clone()
 }
 
 /// The text of an MCP tool's result, and whether it failed.

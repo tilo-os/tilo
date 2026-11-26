@@ -10,6 +10,7 @@ use tilo_server_protocol::page::{PageAction, PageAddress};
 use tilo_workspace_service::app_serving::PageAct;
 
 use crate::language::host;
+use crate::language::host::button_labelled;
 
 /// The app the views show.
 const NOTES: &str = "so.tilo.notes";
@@ -154,18 +155,4 @@ fn settled<T>(answer: tilo_actions::remote::Pending<T>) -> T {
         .ok()
         .flatten()
         .expect("the page answers")
-}
-
-/// The element number (`data-p`) of the button on `body` whose label is `label`.
-fn button_labelled(body: &str, label: &str) -> Option<u32> {
-    body.split("<button").skip(1).find_map(|button| {
-        let (tag, rest) = button.split_once('>')?;
-        let text = rest.split("</button>").next().unwrap_or_default();
-        let attribute = |name: &str| {
-            let (_, value) = tag.split_once(&format!("{name}=\""))?;
-            value.split('"').next()
-        };
-        let named = attribute("aria-label") == Some(label) || text.trim() == label;
-        named.then(|| attribute("data-p")?.parse().ok()).flatten()
-    })
 }

@@ -13,18 +13,7 @@
 use serde_json::{Value, json};
 
 use crate::language::host;
-
-/// The text of an MCP tool's result, and whether it failed.
-fn said(result: &Value) -> (String, bool) {
-    let text = result["content"]
-        .as_array()
-        .into_iter()
-        .flatten()
-        .filter_map(|part| part["text"].as_str())
-        .collect::<Vec<_>>()
-        .join("\n");
-    (text, result["isError"].as_bool().unwrap_or(false))
-}
+use crate::language::host::said;
 
 /// One listing, one text: `GET …/resources` answers exactly what the `tilo_ls` tool answers an
 /// agent in the same workspace, so a person and an agent read the same listing.

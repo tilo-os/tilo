@@ -22,6 +22,7 @@ use tilo_test_env::SpawnUnderEnvLock as _;
 use tilo_user_identity::{DeviceCapabilities, DeviceCert};
 
 use crate::language::host;
+use crate::language::host::button_labelled;
 
 /// Names the test the process [`run`] starts runs, and where its profile is.
 const OWN: &str = "TILO_KEEPING_TEST";
@@ -168,20 +169,6 @@ fn settled<T>(answer: Pending<T>) -> T {
         .ok()
         .flatten()
         .expect("the page answers")
-}
-
-/// The element number (`data-p`) of the button on `body` whose label is `label`.
-fn button_labelled(body: &str, label: &str) -> Option<u32> {
-    body.split("<button").skip(1).find_map(|button| {
-        let (tag, rest) = button.split_once('>')?;
-        let text = rest.split("</button>").next().unwrap_or_default();
-        let attribute = |name: &str| {
-            let (_, value) = tag.split_once(&format!("{name}=\""))?;
-            value.split('"').next()
-        };
-        let named = attribute("aria-label") == Some(label) || text.trim() == label;
-        named.then(|| attribute("data-p")?.parse().ok()).flatten()
-    })
 }
 
 /// A browser at a keeping server's `/w/<workspace>/calculator` reaches the daemon's page of the
