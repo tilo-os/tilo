@@ -626,7 +626,7 @@ impl passwords_engine::Device for EngineContent<'_> {
 /// to draw it. Never polled.
 #[cfg(feature = "app-launch")]
 struct StreamFrames {
-    push: Arc<dyn tilolang_tilo::runtime::host_work::Push>,
+    push: Arc<dyn tilolang_engine::Push>,
     wake: Waker,
 }
 
@@ -643,7 +643,7 @@ fn frames_of(stream: &Arc<StreamFrames>) -> tilo_engine_loader::Frames {
 fn said(context: *mut std::ffi::c_void, slot: &str, state: &str) {
     // SAFETY: the context is the `StreamFrames` the stream's caller kept for the process's life.
     let frames = unsafe { &*context.cast::<StreamFrames>() };
-    tilolang_tilo::runtime::host_work::Push::state(frames, slot, state);
+    tilolang_engine::Push::state(frames, slot, state);
 }
 
 /// One frame a loaded engine made, shown by the window the stream belongs to.
@@ -658,9 +658,9 @@ fn pushed(
 ) {
     // SAFETY: the context is the `StreamFrames` the stream's caller kept for the process's life.
     let frames = unsafe { &*context.cast::<StreamFrames>() };
-    tilolang_tilo::runtime::host_work::Push::frame(
+    tilolang_engine::Push::frame(
         frames,
-        tilolang_tilo::runtime::host_work::Frame {
+        tilolang_engine::Frame {
             slot: slot.to_owned(),
             generation,
             width,
@@ -680,8 +680,8 @@ fn streams() -> &'static std::sync::Mutex<std::collections::BTreeMap<String, Arc
 }
 
 #[cfg(feature = "app-launch")]
-impl tilolang_tilo::runtime::host_work::Push for StreamFrames {
-    fn frame(&self, frame: tilolang_tilo::runtime::host_work::Frame) {
+impl tilolang_engine::Push for StreamFrames {
+    fn frame(&self, frame: tilolang_engine::Frame) {
         ui_core::live_pictures::publish(
             &frame.slot,
             frame.generation,
@@ -899,7 +899,7 @@ impl Platform for HostPlatform {
         }
         crate::engines::register_all();
         self.register_content_engines();
-        tilolang_tilo::engine::answer(app, op, input)
+        tilolang_engine::answer(app, op, input)
     }
 
     /// A job, started where its op runs: the device's shared engine host, or this process for
@@ -947,7 +947,7 @@ impl Platform for HostPlatform {
         app: &str,
         op: &str,
         input: &str,
-        push: Arc<dyn tilolang_tilo::runtime::host_work::Push>,
+        push: Arc<dyn tilolang_engine::Push>,
     ) -> Result<String, String> {
         let frames = Arc::new(StreamFrames {
             push,
@@ -964,7 +964,7 @@ impl Platform for HostPlatform {
             return Ok(answer);
         }
         self.register_content_engines();
-        tilolang_tilo::engine::stream(app, op, input, frames)
+        tilolang_engine::stream(app, op, input, frames)
     }
 
     /// A check the project's host approved, for the invocation the broker is serving on this
@@ -1007,7 +1007,7 @@ impl Platform for HostPlatform {
     fn engine_job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
         Ok(self.checks.status(job).map_or_else(
             || crate::engines::job(job),
-            |said| tilolang_tilo::engine::record_of(job, &said),
+            |said| tilolang_engine::record_of(job, &said),
         ))
     }
 
@@ -1021,14 +1021,14 @@ impl Platform for HostPlatform {
     #[cfg(feature = "app-launch")]
     fn engine_job(&self, job: &str) -> Result<Option<serde_json::Value>, String> {
         if let Some(said) = self.checks.status(job) {
-            return Ok(tilolang_tilo::engine::record_of(job, &said));
+            return Ok(tilolang_engine::record_of(job, &said));
         }
         if let Some(record) = crate::engines::job(job) {
             return Ok(Some(record));
         }
         // A stream a loaded engine runs keeps no record: its engine says how it stands.
         match crate::loaded_engines::status(self, job) {
-            Some(said) => Ok(tilolang_tilo::engine::record_of(job, &said?)),
+            Some(said) => Ok(tilolang_engine::record_of(job, &said?)),
             None => Ok(None),
         }
     }

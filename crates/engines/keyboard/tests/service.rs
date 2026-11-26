@@ -14,7 +14,7 @@ const APP: &str = "so.tilo.osk";
 
 fn ask(op: &str, input: &Value) -> Value {
     tilo_keyboard_engine::register();
-    let answer = tilolang_tilo::engine::answer(APP, op, &input.to_string())
+    let answer = tilolang_engine::answer(APP, op, &input.to_string())
         .unwrap_or_else(|why| panic!("`{op}` is answered: {why}"));
     serde_json::from_str(&answer).expect("an answer is JSON")
 }
@@ -23,11 +23,11 @@ fn ask(op: &str, input: &Value) -> Value {
 fn the_keyboard_asks_its_own_engine_and_no_other() {
     tilo_keyboard_engine::register();
     assert!(
-        tilolang_tilo::engine::answer("so.tilo.notes", "suggest", "{}").is_err(),
+        tilolang_engine::answer("so.tilo.notes", "suggest", "{}").is_err(),
         "an app's engine answers that app alone"
     );
     assert!(
-        tilolang_tilo::engine::answer(APP, "no-such-op", "{}").is_err(),
+        tilolang_engine::answer(APP, "no-such-op", "{}").is_err(),
         "an op the keyboard does not make is refused"
     );
 }

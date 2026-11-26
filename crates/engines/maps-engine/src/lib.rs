@@ -25,7 +25,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use serde_json::json;
 use tilo_tiles::{Area, AreaBounds, Tiles};
-use tilolang_tilo::engine::{JobOp, JobSink, Needs, Provider, State};
+use tilolang_engine::{JobOp, JobSink, Needs, Provider, State};
 
 /// The app whose engine this is: the one that asks these ops, and no other.
 pub const APP: &str = "so.tilo.maps";
@@ -42,7 +42,7 @@ const LOCATE_TIMEOUT: Duration = Duration::from_secs(30);
 /// start, before the app asks.
 pub fn register() {
     if let Some(tiles) = Tiles::of_app(CACHE_APP) {
-        tilolang_tilo::engine::register(APP, Arc::new(Maps::with(Arc::new(tiles))));
+        tilolang_engine::register(APP, Arc::new(Maps::with(Arc::new(tiles))));
     }
 }
 

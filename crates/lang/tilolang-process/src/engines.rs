@@ -3,7 +3,7 @@
 //! Engine work is the device's: a job an app starts (`engine.start`) is named by its record,
 //! `devices/<device>/jobs/<job>`, and tells every move it makes to the device, which keeps that
 //! record ([`FromProcess::Job`]). Where it runs is decided from what its op declared it needs
-//! ([`tilolang_tilo::engine::Needs`]):
+//! ([`tilolang_engine::Needs`]):
 //!
 //! - work that needs nothing of the app's own goes to the device, which runs it in its one engine
 //!   host, admitted as the call that asked ([`FromProcess::EngineStart`]). The host is a process
@@ -26,8 +26,8 @@ use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use runtime_portal::process_link::{Descriptor, EngineJob, FromProcess, JobNeeds, Packet as _};
 use serde_json::json;
+use tilolang_engine::{self as engine, JobOp, JobSink, Needs, Place, Provider, State};
 use tilolang_tilo::background::Waker;
-use tilolang_tilo::engine::{self, JobOp, JobSink, Needs, Place, Provider, State};
 
 /// Register every engine this process links, once, before any app asks.
 pub fn register_all() {

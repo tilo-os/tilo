@@ -69,7 +69,7 @@ mod cases {
             };
             Ok(said()
                 .ok()
-                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
+                .and_then(|said| tilolang_engine::record_of(job, &said)))
         }
 
         fn cancel(&self, job: &str) -> bool {
@@ -168,7 +168,7 @@ mod cases {
                     .expect("the scan's start named this handler")
             };
             let said = self.engine.state.borrow().clone();
-            let record = tilolang_tilo::engine::record_of("scan-1", &said).expect("a job record");
+            let record = tilolang_engine::record_of("scan-1", &said).expect("a job record");
             let call = self
                 .rt
                 .job_call(&kept, &record)

@@ -419,7 +419,7 @@ mod cases {
                 .statuses
                 .pop_front()
                 .expect("the app reads how the check stands only while the host has an answer");
-            Ok(tilolang_tilo::engine::record_of(job, &status.to_string()))
+            Ok(tilolang_engine::record_of(job, &status.to_string()))
         }
 
         fn cancel(&self, job: &str) -> bool {

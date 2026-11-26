@@ -486,7 +486,7 @@ pub struct Connections {
 
 /// Each word heard, kept where the runtime's views read it, and the instance woken for it.
 struct Pushed {
-    push: Arc<dyn tilolang_runtime::host_work::Push>,
+    push: Arc<dyn tilolang_engine::Push>,
     wake: crate::background::Waker,
 }
 
@@ -522,7 +522,7 @@ impl tilolang_runtime::host_work::HeldHost for Connections {
             .is_ok_and(|closed| closed == "true")
     }
 
-    fn follow(&self, push: Arc<dyn tilolang_runtime::host_work::Push>) {
+    fn follow(&self, push: Arc<dyn tilolang_engine::Push>) {
         let pushed: Arc<dyn Heard> = Arc::new(Pushed {
             push,
             wake: Arc::clone(&self.wake),

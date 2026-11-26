@@ -9,7 +9,8 @@ mod cases {
     use std::sync::Arc;
 
     use crate::common::*;
-    use tilolang_runtime::host_work::{EngineHost, Frame, Push};
+    use tilolang_engine::{Frame, Push};
+    use tilolang_runtime::host_work::EngineHost;
     use tilolang_runtime::{
         AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
     };
@@ -138,7 +139,7 @@ view window(s: Screen) {
             };
             Ok(said()
                 .ok()
-                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
+                .and_then(|said| tilolang_engine::record_of(job, &said)))
         }
 
         fn cancel(&self, job: &str) -> bool {
@@ -170,7 +171,7 @@ view window(s: Screen) {
                 || -> Result<String, String> { Err(format!("no job `{job}` runs on this device")) };
             Ok(said()
                 .ok()
-                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
+                .and_then(|said| tilolang_engine::record_of(job, &said)))
         }
 
         fn cancel(&self, _job: &str) -> bool {

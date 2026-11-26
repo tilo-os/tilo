@@ -51,8 +51,8 @@ mod cases {
                 op,
                 input,
                 std::sync::Arc::new(move |state, detail| {
-                    let state = tilolang_tilo::engine::State::from_word(state)
-                        .unwrap_or(tilolang_tilo::engine::State::Running);
+                    let state = tilolang_engine::State::from_word(state)
+                        .unwrap_or(tilolang_engine::State::Running);
                     moved.moved(state, detail);
                 }),
             )?;

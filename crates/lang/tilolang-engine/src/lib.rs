@@ -22,7 +22,36 @@ use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 use tilo_clock::time::{Duration, Instant};
 
-use tilolang_runtime::host_work::Push;
+/// One picture a running stream holds for its app: the stream's slot, the frame's number in that
+/// stream, and its pixels — `width`×`height` RGBA8, straight alpha.
+#[derive(Clone, Debug)]
+pub struct Frame {
+    pub slot: String,
+    pub generation: u64,
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Arc<Vec<u8>>,
+}
+
+/// What an engine hands its app's window as a stream runs: each frame, as it arrives, and what
+/// the stream says of itself. The host keeps the newest of each and wakes the window, which
+/// paints the frame and reads the state on its next draw; nothing here is polled.
+pub trait Push: Send + Sync {
+    /// The stream `frame.slot` shows `frame` now.
+    fn frame(&self, frame: Frame);
+
+    /// The stream `slot` says `state` of itself now, as JSON a view reads with `engine.state`:
+    /// that it is connecting, what it shows once it runs, or why it ended. The host keeps the
+    /// newest and wakes the window; a host that reads no stream state keeps nothing.
+    fn state(&self, slot: &str, state: &str) {
+        let _ = (slot, state);
+    }
+
+    /// The job `slot` ended, saying `state` of itself last: what it made, or why it stopped.
+    fn ended(&self, slot: &str, state: &str) {
+        self.state(slot, state);
+    }
+}
 
 /// What a job op needs beyond the engine's code, as its engine declares it.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]

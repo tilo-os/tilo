@@ -28,7 +28,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 
 use serde::Deserialize;
 use serde_json::json;
-use tilolang_tilo::engine::{JobOp, JobSink, Needs, Provider, State};
+use tilolang_engine::{JobOp, JobSink, Needs, Provider, State};
 
 use crate::scan::{ScanCancellation, ScanResult};
 
@@ -38,7 +38,7 @@ pub const APP: &str = "so.tilo.disk-usage";
 /// Register this crate as the analyzer's engine: what the session calls once at its start,
 /// before any app asks.
 pub fn register() {
-    tilolang_tilo::engine::register(APP, Arc::new(DiskUsage::default()));
+    tilolang_engine::register(APP, Arc::new(DiskUsage::default()));
 }
 
 /// The measurements under way, by the job the app was given.

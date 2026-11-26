@@ -190,7 +190,7 @@ impl EngineHost for Engine {
         if !job.starts_with("print-") && !job.starts_with("scan-") {
             return Err(format!("no job `{job}`"));
         }
-        Ok(tilolang_tilo::engine::record_of(job, &self.state.borrow()))
+        Ok(tilolang_engine::record_of(job, &self.state.borrow()))
     }
 
     fn cancel(&self, job: &str) -> bool {

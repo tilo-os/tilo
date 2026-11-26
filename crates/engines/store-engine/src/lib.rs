@@ -15,14 +15,14 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
-use tilolang_tilo::engine::{JobOp, JobSink, Needs, Provider};
+use tilolang_engine::{JobOp, JobSink, Needs, Provider};
 
 /// The one app this device answers engine work for.
 pub const APP: &str = "so.tilo.store";
 
 /// Registers the App Store's engine with the session.
 pub fn register() {
-    tilolang_tilo::engine::register(APP, Arc::new(Store));
+    tilolang_engine::register(APP, Arc::new(Store));
 }
 
 /// The App Store's engine.
@@ -1446,7 +1446,7 @@ mod jobs {
         Arc, AtomicBool, Job, JobState, Mutex, Ordering, change, json, prepare_report,
         report_status, uninstall, update_all,
     };
-    use tilolang_tilo::engine::{JobSink, Running, State};
+    use tilolang_engine::{JobSink, Running, State};
 
     fn table() -> &'static Running<Job> {
         static JOBS: std::sync::OnceLock<Running<Job>> = std::sync::OnceLock::new();

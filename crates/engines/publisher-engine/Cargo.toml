@@ -14,7 +14,7 @@ path = "src/lib.rs"
 app-registry = { package = "tilo-app-registry", path = "../../core/app-registry" }
 registry-types = { package = "tilo-registry-types", path = "../../core/registry-types" }
 tilo-secrets = { path = "../../platform/tilo-secrets" }
-tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+tilolang-engine = { path = "../../lang/tilolang-engine" }
 anyhow.workspace = true
 ed25519-dalek.workspace = true
 hex.workspace = true

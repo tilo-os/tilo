@@ -17,8 +17,8 @@ use std::sync::{Arc, Mutex, PoisonError};
 use serde::Deserialize;
 use serde_json::json;
 use tilo_content::ContentStore;
+use tilolang_engine::Push;
 use tilolang_tilo::runtime::blob::FileValue;
-use tilolang_tilo::runtime::host_work::Push;
 
 /// The app whose engine this is.
 pub const APP: &str = "so.tilo.photos";
@@ -251,7 +251,7 @@ struct Engine {
 
 /// Register Photos' engine over the app's content store `store` and the device's preview cache.
 pub fn register(store: &ContentStore, previews: Option<Previews>) {
-    tilolang_tilo::engine::register(
+    tilolang_engine::register(
         APP,
         Arc::new(Engine {
             store: store.clone(),
@@ -261,12 +261,12 @@ pub fn register(store: &ContentStore, previews: Option<Previews>) {
     );
 }
 
-impl tilolang_tilo::engine::Provider for Engine {
-    fn jobs(&self) -> &'static [tilolang_tilo::engine::JobOp] {
+impl tilolang_engine::Provider for Engine {
+    fn jobs(&self) -> &'static [tilolang_engine::JobOp] {
         // An import keeps what it reads in the app's content store.
-        const JOBS: &[tilolang_tilo::engine::JobOp] = &[tilolang_tilo::engine::JobOp::new(
+        const JOBS: &[tilolang_engine::JobOp] = &[tilolang_engine::JobOp::new(
             "import",
-            tilolang_tilo::engine::Needs::APP_STATE,
+            tilolang_engine::Needs::APP_STATE,
         )];
         JOBS
     }
@@ -280,7 +280,7 @@ impl tilolang_tilo::engine::Provider for Engine {
         job: &str,
         op: &str,
         input: &str,
-        moved: tilolang_tilo::engine::JobSink,
+        moved: tilolang_engine::JobSink,
     ) -> Result<(), String> {
         let said = start(
             self.store.clone(),
@@ -311,10 +311,10 @@ impl tilolang_tilo::engine::Provider for Engine {
 }
 
 /// An import's records, told as the job's moves: what it read so far is the move's detail.
-struct Moves(tilolang_tilo::engine::JobSink);
+struct Moves(tilolang_engine::JobSink);
 
 impl Push for Moves {
-    fn frame(&self, _frame: tilolang_tilo::runtime::host_work::Frame) {}
+    fn frame(&self, _frame: tilolang_engine::Frame) {}
 
     fn state(&self, _slot: &str, state: &str) {
         let detail: serde_json::Value = serde_json::from_str(state).unwrap_or_else(
@@ -325,9 +325,9 @@ impl Push for Moves {
             .and_then(serde_json::Value::as_str)
             .unwrap_or("running");
         let state = match word {
-            "done" => tilolang_tilo::engine::State::Done,
-            "stopped" => tilolang_tilo::engine::State::Cancelled,
-            _ => tilolang_tilo::engine::State::Running,
+            "done" => tilolang_engine::State::Done,
+            "stopped" => tilolang_engine::State::Cancelled,
+            _ => tilolang_engine::State::Running,
         };
         self.0.moved(state, detail);
     }
@@ -361,7 +361,7 @@ mod tests {
     }
 
     impl Push for Said {
-        fn frame(&self, _frame: tilolang_tilo::runtime::host_work::Frame) {}
+        fn frame(&self, _frame: tilolang_engine::Frame) {}
 
         fn state(&self, _slot: &str, state: &str) {
             self.states.lock().unwrap().push(state.to_owned());

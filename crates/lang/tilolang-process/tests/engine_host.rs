@@ -12,8 +12,8 @@ use runtime_portal::process_link::{
     Descriptor, EngineJob, FromProcess, JobNeeds, Packet as _, pair,
 };
 use serde_json::{Value, json};
+use tilolang_engine::{self as engine, JobOp, JobSink, Needs, Provider, State};
 use tilolang_process::engines;
-use tilolang_tilo::engine::{self, JobOp, JobSink, Needs, Provider, State};
 
 /// The device the tests' process runs on, and where it keeps its jobs' records.
 pub(crate) const DEVICE: [u8; 32] = [0x0a; 32];

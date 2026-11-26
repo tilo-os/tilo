@@ -19,7 +19,8 @@ mod cases {
 
     use crate::common::*;
     use serde_json::{Value as Json, json};
-    use tilolang_runtime::host_work::{EngineHost, JobHandlers, Push};
+    use tilolang_engine::Push;
+    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{
         AmStore, EnumValue, InvokeOutcome, ResourceRef, Runtime, UiNode, Value, ViewInstance,
     };

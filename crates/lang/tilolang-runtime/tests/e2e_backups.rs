@@ -103,7 +103,7 @@ mod cases {
             if !job.starts_with("job-") {
                 return Err(format!("no job `{job}` runs on this device"));
             }
-            Ok(tilolang_tilo::engine::record_of(job, &self.said()))
+            Ok(tilolang_engine::record_of(job, &self.said()))
         }
 
         fn cancel(&self, job: &str) -> bool {
@@ -334,7 +334,7 @@ mod cases {
             };
             let id = self.text(&self.root, "job");
             let record =
-                tilolang_tilo::engine::record_of(&id, &self.engine.said()).expect("a job record");
+                tilolang_engine::record_of(&id, &self.engine.said()).expect("a job record");
             let call = self
                 .rt
                 .job_call(&kept, &record)

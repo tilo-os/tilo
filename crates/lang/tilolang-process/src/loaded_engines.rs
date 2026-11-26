@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use tilo_engine_loader::{Device, EngineApi, File};
-use tilolang_tilo::engine::{JobSink, State};
+use tilolang_engine::{JobSink, State};
 use tilolang_tilo::instance::Platform;
 
 /// The app whose typesetting `libtilo_typst_engine.so` answers.

@@ -9,7 +9,7 @@ use std::path::Path;
 
 use serde_json::{Value, json};
 use tilo_test_env::ScopedEnv;
-use tilolang_tilo::engine::Provider as _;
+use tilolang_engine::Provider as _;
 
 /// A bot program as a registry lists it: a schedule that posts in a chat, in the canonical
 /// spelling a program file has.

@@ -65,18 +65,18 @@ impl<L: Loads> Platform for OnSession<L> {
         app: &str,
         op: &str,
         input: &str,
-        push: std::sync::Arc<dyn tilolang_tilo::runtime::host_work::Push>,
+        push: std::sync::Arc<dyn tilolang_engine::Push>,
     ) -> Result<String, String> {
         let frames = std::sync::Arc::new(SessionStreamFrames {
             push,
             wake: std::sync::Arc::clone(&self.waker),
         });
-        tilolang_tilo::engine::stream(app, op, input, frames)
+        tilolang_engine::stream(app, op, input, frames)
     }
 
     fn engine_cancel(&self, job: &str) -> bool {
         ui::live_pictures::forget(job);
-        tilolang_tilo::engine::stop_here(job)
+        tilolang_engine::stop_here(job)
     }
 }
 
@@ -84,12 +84,12 @@ impl<L: Loads> Platform for OnSession<L> {
 /// the window paints live pictures from, kept for an embedder that reads them, and the window is
 /// woken to draw it.
 struct SessionStreamFrames {
-    push: std::sync::Arc<dyn tilolang_tilo::runtime::host_work::Push>,
+    push: std::sync::Arc<dyn tilolang_engine::Push>,
     wake: Waker,
 }
 
-impl tilolang_tilo::runtime::host_work::Push for SessionStreamFrames {
-    fn frame(&self, frame: tilolang_tilo::runtime::host_work::Frame) {
+impl tilolang_engine::Push for SessionStreamFrames {
+    fn frame(&self, frame: tilolang_engine::Frame) {
         ui::live_pictures::publish(
             &frame.slot,
             frame.generation,

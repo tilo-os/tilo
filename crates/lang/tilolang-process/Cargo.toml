@@ -102,6 +102,7 @@ tilo-history = { version = "0.1.0", path = "../../sdk/tilo-history" }
 # The device's clock, which is the person's: the same clock their window's dates and days read
 # by, so what an instance writes as today is the day their window shows it under.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tilolang-engine = { version = "0.1.0", path = "../tilolang-engine" }
 # One rule for which language a locale names, shared with the packs.
 tilo-paths = { version = "0.1.0", path = "../../platform/tilo-paths" }
 serde = { workspace = true, features = ["derive"] }

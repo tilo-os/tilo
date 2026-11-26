@@ -263,10 +263,10 @@ impl Checks {
         };
         if let Some(recorded) = &job.recorded {
             let state = match &job.heard.end {
-                None => tilolang_tilo::engine::State::Running,
-                Some(End::Observed(_)) => tilolang_tilo::engine::State::Done,
-                Some(End::Failed(_)) => tilolang_tilo::engine::State::Failed,
-                Some(End::Cancelled) => tilolang_tilo::engine::State::Cancelled,
+                None => tilolang_engine::State::Running,
+                Some(End::Observed(_)) => tilolang_engine::State::Done,
+                Some(End::Failed(_)) => tilolang_engine::State::Failed,
+                Some(End::Cancelled) => tilolang_engine::State::Cancelled,
             };
             recorded.moved(state, &status_of(&job.heard));
         }

@@ -11,8 +11,9 @@ mod cases {
 
     use crate::common::*;
     use std::sync::{Arc, Mutex};
+    use tilolang_engine::Push;
     use tilolang_runtime::blob::BlobHost;
-    use tilolang_runtime::host_work::{EngineHost, HeldHost, JobHandlers, Push, held_slot};
+    use tilolang_runtime::host_work::{EngineHost, HeldHost, JobHandlers, held_slot};
     use tilolang_runtime::{AmStore, InvokeOutcome, ResourceRef, Runtime, UiNode, Value};
 
     const SOURCE: &str = include_str!("../../../../apps/tl/code-editor/app.tl");
@@ -115,7 +116,7 @@ mod cases {
             };
             Ok(said()
                 .ok()
-                .and_then(|said| tilolang_tilo::engine::record_of(job, &said)))
+                .and_then(|said| tilolang_engine::record_of(job, &said)))
         }
 
         fn cancel(&self, job: &str) -> bool {

@@ -10,7 +10,7 @@
 
 use std::sync::Arc;
 
-use tilolang_tilo::engine::{JobOp, JobSink, Needs, Provider};
+use tilolang_engine::{JobOp, JobSink, Needs, Provider};
 
 /// The one app this device answers database work for.
 pub const APP: &str = tilo_db::APP;
@@ -58,5 +58,5 @@ impl Provider for Databases {
 
 /// Register this device's databases for the app, once, at the host's start.
 pub fn register() {
-    tilolang_tilo::engine::register(APP, Arc::new(Databases::new()));
+    tilolang_engine::register(APP, Arc::new(Databases::new()));
 }

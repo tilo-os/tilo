@@ -41,7 +41,7 @@ use ed25519_dalek::Signer as _;
 use serde::Deserialize;
 use serde_json::json;
 use tilo_secrets::SecretStore;
-use tilolang_tilo::engine::{JobOp, JobSink, Needs, Provider};
+use tilolang_engine::{JobOp, JobSink, Needs, Provider};
 
 /// The app whose engine this is: the one that asks these ops, and no other.
 pub const APP: &str = key::SECRETS_APP;
@@ -49,7 +49,7 @@ pub const APP: &str = key::SECRETS_APP;
 /// Register this crate as the App Publisher's engine: what the app host calls once at its start,
 /// before any app asks.
 pub fn register() {
-    tilolang_tilo::engine::register(APP, Arc::new(Publisher::machine()));
+    tilolang_engine::register(APP, Arc::new(Publisher::machine()));
 }
 
 /// The key and the registry applications of one device.
@@ -154,7 +154,7 @@ mod jobs {
     //! The registry's calls as jobs: what a person waits for, and can stop.
 
     use super::{Arc, AtomicBool, Deserialize, Ordering, RegistryClient, SecretStore, json, key};
-    use tilolang_tilo::engine::{JobSink, Running, State};
+    use tilolang_engine::{JobSink, Running, State};
 
     /// One registry call under way.
     struct Job {

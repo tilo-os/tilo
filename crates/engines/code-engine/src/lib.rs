@@ -69,7 +69,7 @@ use std::sync::{Arc, Mutex};
 
 use serde::Deserialize;
 use serde_json::{Value, json};
-use tilolang_tilo::engine::{JobOp, JobSink, Needs, State};
+use tilolang_engine::{JobOp, JobSink, Needs, State};
 
 pub mod disk;
 pub mod held;
@@ -164,7 +164,7 @@ fn read_ask<T: serde::de::DeserializeOwned>(input: &str) -> Result<T, String> {
     serde_json::from_str(input).map_err(|error| format!("the ask does not read: {error}"))
 }
 
-impl tilolang_tilo::engine::Provider for CodeEngine {
+impl tilolang_engine::Provider for CodeEngine {
     fn call(&self, op: &str, input: &str) -> Result<String, String> {
         match op {
             "load" => {
@@ -509,5 +509,5 @@ fn listing_entries(listing: &Listing) -> Vec<Value> {
 /// Register this crate as the engine of the code editor: what the session calls once at its
 /// start, before any app asks.
 pub fn register() {
-    tilolang_tilo::engine::register(APP, Arc::new(CodeEngine::new()));
+    tilolang_engine::register(APP, Arc::new(CodeEngine::new()));
 }

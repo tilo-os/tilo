@@ -468,7 +468,7 @@ impl HexEngine {
     }
 }
 
-impl tilolang_tilo::engine::Provider for HexEngine {
+impl tilolang_engine::Provider for HexEngine {
     fn call(&self, op: &str, input: &str) -> Result<String, String> {
         match op {
             "open" => Self::op_open(input),
@@ -486,7 +486,7 @@ impl tilolang_tilo::engine::Provider for HexEngine {
 
 /// Register the hex editor's engine for the session's lifetime.
 pub fn register() {
-    tilolang_tilo::engine::register(APP, std::sync::Arc::new(HexEngine::new()));
+    tilolang_engine::register(APP, std::sync::Arc::new(HexEngine::new()));
 }
 
 fn read_ask<T: serde::de::DeserializeOwned>(input: &str) -> Result<T, String> {

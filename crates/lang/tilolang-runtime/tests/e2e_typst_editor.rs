@@ -121,7 +121,7 @@ mod cases {
         }
     }
 
-    impl tilolang_tilo::engine::Provider for Engine {
+    impl tilolang_engine::Provider for Engine {
         fn call(&self, op: &str, input: &str) -> Result<String, String> {
             self.asked
                 .borrow_mut()

@@ -206,6 +206,7 @@ members = [
 
     # Language
     "crates/lang/tilolang-runtime",
+    "crates/lang/tilolang-engine",
     "crates/lang/tilolang-web",
     "crates/lang/tilolang-window",
     "crates/lang/tilo-model-engine",

@@ -1967,6 +1967,7 @@ dependencies = [
  "tilo-files",
  "tilo-process",
  "tilo-test-env",
+ "tilolang-engine",
  "tilolang-tilo",
  "url",
  "workspace-hack",
@@ -5500,7 +5501,7 @@ dependencies = [
  "tilo-resource",
  "tilo-test-env",
  "tilo-wake",
- "tilolang-tilo",
+ "tilolang-engine",
  "workspace-hack",
 ]
 
@@ -11410,7 +11411,7 @@ dependencies = [
  "tilo-registry-types",
  "tilo-secrets",
  "tilo-test-env",
- "tilolang-tilo",
+ "tilolang-engine",
  "workspace-hack",
 ]
 
@@ -17121,7 +17122,7 @@ dependencies = [
  "serde_json",
  "tilo-files",
  "tilo-test-env",
- "tilolang-tilo",
+ "tilolang-engine",
  "workspace-hack",
 ]
 
@@ -17954,7 +17955,7 @@ dependencies = [
  "tilo-spellcheck",
  "tilo-test-env",
  "tilo-vello",
- "tilolang-tilo",
+ "tilolang-engine",
  "tracing",
  "workspace-hack",
 ]
@@ -18146,7 +18147,7 @@ dependencies = [
  "tilo-location",
  "tilo-rt",
  "tilo-tiles",
- "tilolang-tilo",
+ "tilolang-engine",
  "workspace-hack",
 ]
 
@@ -20598,6 +20599,7 @@ dependencies = [
  "tilo-workspace-service",
  "tilolang-calendar",
  "tilolang-cli",
+ "tilolang-engine",
  "tilolang-mail",
  "tilolang-music",
  "tilolang-process",
@@ -21028,7 +21030,7 @@ dependencies = [
  "tilo-registry-types",
  "tilo-resource",
  "tilo-test-env",
- "tilolang-tilo",
+ "tilolang-engine",
  "tracing",
  "workspace-hack",
 ]
@@ -21148,7 +21150,7 @@ dependencies = [
  "tilo-test-env",
  "tilo-ui",
  "tilo-ui-base",
- "tilolang-tilo",
+ "tilolang-engine",
  "tracing",
  "unicode-width",
  "uuid",
@@ -22554,6 +22556,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilolang-engine"
+version = "0.1.0"
+dependencies = [
+ "serde_json",
+ "tilo-clock",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilolang-grayjay"
 version = "0.1.0"
 dependencies = [
@@ -22721,6 +22732,7 @@ dependencies = [
  "tilo-workspace-search",
  "tilolang",
  "tilolang-calendar",
+ "tilolang-engine",
  "tilolang-mail",
  "tilolang-music",
  "tilolang-process",
@@ -22782,6 +22794,7 @@ dependencies = [
  "tilo-wasm-aot",
  "tilo-wasm-host",
  "tilolang",
+ "tilolang-engine",
  "tilolang-grayjay",
  "tilolang-tilo",
  "totp-engine",
@@ -22852,6 +22865,7 @@ dependencies = [
  "tilo-workspace-emoji",
  "tilo-workspace-search",
  "tilolang",
+ "tilolang-engine",
  "tilolang-mail",
  "tilolang-runtime",
  "tilolang-youtube",
@@ -28116,6 +28130,7 @@ dependencies = [
  "tilolang",
  "tilolang-calendar",
  "tilolang-cli",
+ "tilolang-engine",
  "tilolang-grayjay",
  "tilolang-lex",
  "tilolang-mail",

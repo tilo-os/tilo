@@ -1,0 +1,21 @@
+[package]
+name = "tilolang-engine"
+version = "0.1.0"
+edition = "2024"
+publish = true
+license = "MIT"
+readme = "../../../docs/crates/supporting-crate.md"
+description = "The device's work for tilolang apps: the engines a crate registers for its app, their jobs and streams, and the frames a stream pushes to the app's window."
+repository.workspace = true
+homepage.workspace = true
+
+[dependencies]
+serde_json.workspace = true
+tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+
+[lints]
+workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# The workspace-hack's native feature set does not build for wasm32.
+workspace-hack = { version = "0.1" }

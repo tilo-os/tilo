@@ -22,7 +22,7 @@ unicode-width = { version = "0.2.2" }
 # Where a session can run, and the environment records it can run in.
 tilo-environment = { version = "0.1.0", path = "../../vm/environment" }
 # The registry an app reaches its device's engines through (`engine.call`, `engine.start`).
-tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+tilolang-engine = { path = "../../lang/tilolang-engine" }
 
 # A session's process only exists where one can run: a page has no shell of its own.
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]

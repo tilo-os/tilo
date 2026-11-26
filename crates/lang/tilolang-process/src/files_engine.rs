@@ -15,7 +15,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Deserialize;
 
-use tilolang_tilo::engine::{JobOp, JobSink, Needs, State};
+use tilolang_engine::{JobOp, JobSink, Needs, State};
 
 use crate::files::{STOPPED, copy_tree_told, remove_tree};
 
@@ -25,13 +25,13 @@ pub const APP: &str = "so.tilo.file-explorer";
 /// Registers the engine for the Files app, once per process.
 pub fn register() {
     static ONCE: OnceLock<()> = OnceLock::new();
-    ONCE.get_or_init(|| tilolang_tilo::engine::register(APP, Arc::new(Transfers)));
+    ONCE.get_or_init(|| tilolang_engine::register(APP, Arc::new(Transfers)));
 }
 
 /// The registry's entry for the Files app.
 struct Transfers;
 
-impl tilolang_tilo::engine::Provider for Transfers {
+impl tilolang_engine::Provider for Transfers {
     /// A transfer reads and writes the files of the device the app's window is on, so it runs in
     /// the app's own process.
     fn jobs(&self) -> &'static [JobOp] {

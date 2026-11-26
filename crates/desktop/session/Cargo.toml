@@ -336,6 +336,7 @@ winit.workspace = true
 tilo-presentation = { path = "../../platform/tilo-presentation", features = ["vulkan-damage"] }
 # The shell's package (`apps/tl/shell`), compiled as the session starts, and the shell's
 # action vocabulary.
+tilolang-engine = { path = "../../lang/tilolang-engine" }
 tilolang-tilo = { path = "../../lang/tilolang-tilo" }
 # Each workspace's tilolang records, served to the session as its service, and their notices.
 tilolang-service = { path = "../../lang/tilolang-service" }

@@ -252,7 +252,7 @@ impl ClipboardHost for Clipboard {
 /// A provider that answers each call with `F`, and starts no jobs.
 struct Calls<F>(F);
 
-impl<F: Fn(&str, &str) -> Result<String, String>> tilolang_tilo::engine::Provider for Calls<F> {
+impl<F: Fn(&str, &str) -> Result<String, String>> tilolang_engine::Provider for Calls<F> {
     fn call(&self, op: &str, input: &str) -> Result<String, String> {
         (self.0)(op, input)
     }
@@ -263,7 +263,7 @@ impl<F: Fn(&str, &str) -> Result<String, String>> tilolang_tilo::engine::Provide
 /// writes down what it was asked and the handlers each job runs.
 #[derive(Clone)]
 pub struct DeviceEngine {
-    provider: Rc<dyn tilolang_tilo::engine::Provider>,
+    provider: Rc<dyn tilolang_engine::Provider>,
     scope: Rc<tilo_wake::WakeScope>,
     pub jobs: super::DeviceJobs,
     app: Option<String>,
@@ -286,7 +286,7 @@ pub struct Started {
 
 impl DeviceEngine {
     /// `provider` as the device's engine, in the scope of `files`.
-    pub fn new(provider: impl tilolang_tilo::engine::Provider + 'static, files: &Files) -> Self {
+    pub fn new(provider: impl tilolang_engine::Provider + 'static, files: &Files) -> Self {
         Self {
             provider: Rc::new(provider),
             scope: Rc::clone(&files.scope),
@@ -457,7 +457,7 @@ impl tilolang_runtime::host_work::EngineHost for DeviceEngine {
         app: &str,
         op: &str,
         input: &str,
-        push: std::sync::Arc<dyn tilolang_runtime::host_work::Push>,
+        push: std::sync::Arc<dyn tilolang_engine::Push>,
     ) -> Result<String, String> {
         self.owns(app)?;
         let _window = self.scope.enter();

@@ -8,13 +8,13 @@
 
 use std::sync::{Arc, OnceLock};
 
-use tilolang_tilo::engine::{JobOp, JobSink, Needs, Provider};
+use tilolang_engine::{JobOp, JobSink, Needs, Provider};
 
 /// Register the engine once: every later ask finds it.
 pub fn register() {
     static ONCE: OnceLock<()> = OnceLock::new();
     ONCE.get_or_init(|| {
-        tilolang_tilo::engine::register(tilo_backups_engine::APP, Arc::new(Backups));
+        tilolang_engine::register(tilo_backups_engine::APP, Arc::new(Backups));
     });
 }
 

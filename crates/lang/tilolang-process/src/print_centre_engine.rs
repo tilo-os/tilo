@@ -13,7 +13,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use tilo_content::ContentStore;
-use tilolang_tilo::engine::{self, JobOp, JobSink, Needs, Provider, Running, State};
+use tilolang_engine::{self as engine, JobOp, JobSink, Needs, Provider, Running, State};
 
 /// The one app this device answers engine work for.
 pub const APP: &str = "so.tilo.print-centre";

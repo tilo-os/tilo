@@ -339,11 +339,11 @@ view bar(p: Page) {
 /// The painter's engine: its work needs nothing of the app's own, so the device runs it.
 struct Painter;
 
-impl tilolang_tilo::engine::Provider for Painter {
-    fn jobs(&self) -> &'static [tilolang_tilo::engine::JobOp] {
-        const JOBS: &[tilolang_tilo::engine::JobOp] = &[tilolang_tilo::engine::JobOp::new(
+impl tilolang_engine::Provider for Painter {
+    fn jobs(&self) -> &'static [tilolang_engine::JobOp] {
+        const JOBS: &[tilolang_engine::JobOp] = &[tilolang_engine::JobOp::new(
             "page.paint",
-            tilolang_tilo::engine::Needs::NOTHING,
+            tilolang_engine::Needs::NOTHING,
         )];
         JOBS
     }
@@ -357,7 +357,7 @@ impl tilolang_tilo::engine::Provider for Painter {
         _job: &str,
         _op: &str,
         _input: &str,
-        _moved: tilolang_tilo::engine::JobSink,
+        _moved: tilolang_engine::JobSink,
     ) -> Result<(), String> {
         Err("the device's engine host runs it".to_owned())
     }
@@ -371,7 +371,7 @@ impl tilolang_tilo::engine::Provider for Painter {
 fn a_window_that_did_not_start_a_job_follows_it_from_the_devices_records() {
     let _ = tracing_subscriber::fmt().with_test_writer().try_init();
     let device = device();
-    tilolang_tilo::engine::register(PAINTER, Arc::new(Painter));
+    tilolang_engine::register(PAINTER, Arc::new(Painter));
     let compiled = compile(PAINTER_SOURCE, &tilolang::IdsLock::new(), &[])
         .unwrap_or_else(|diagnostics| panic!("the painter compiles: {diagnostics:?}"));
     let bundle = Bundle::new(&compiled, []);

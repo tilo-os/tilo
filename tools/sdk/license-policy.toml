@@ -255,6 +255,7 @@ toolkit_reaches = [
     "tilo-winit-x11",                   # crates/ui/winit-x11
     "tilo-wire-frame",                  # crates/platform/wire-frame
     "tilo-words",                       # crates/core/tilo-words
+    "tilolang-engine",                  # crates/lang/tilolang-engine
     "tilolang-lex",                     # crates/lang/tilolang-lex
 ]
 

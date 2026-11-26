@@ -440,7 +440,7 @@ mod cases {
                 return Some(ended.clone());
             }
             let said = tilolang_grayjay::Engine::status(job).ok()?;
-            tilolang_tilo::engine::record_of(job, &said)
+            tilolang_engine::record_of(job, &said)
         }
 
         /// The record of `job` once the bridge tells it ended.
@@ -484,7 +484,7 @@ mod cases {
                 op,
                 input,
                 Arc::new(move |_, detail| {
-                    let record = tilolang_tilo::engine::record_of(&named, &detail.to_string())
+                    let record = tilolang_engine::record_of(&named, &detail.to_string())
                         .expect("the bridge tells a job's end as an object");
                     ended.0.lock().unwrap().insert(named.clone(), record);
                     ended.1.notify_all();

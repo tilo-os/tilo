@@ -7,7 +7,7 @@ license.workspace = true
 description = "The disk usage analyzer's device work: a folder measured all the way down, its folders largest first"
 
 [dependencies]
-tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+tilolang-engine = { path = "../../lang/tilolang-engine" }
 # What a file takes on the disk, and one file hard-linked twice counted once.
 tilo-files = { path = "../../platform/tilo-files" }
 serde.workspace = true

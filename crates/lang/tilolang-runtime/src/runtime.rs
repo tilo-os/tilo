@@ -1623,14 +1623,14 @@ impl Runtime {
     /// host is set, every open is refused, saying the device holds no connection for the app.
     pub fn set_held(&self, host: impl crate::host_work::HeldHost + 'static) {
         host.follow(std::sync::Arc::clone(&self.core.live_frames)
-            as std::sync::Arc<dyn crate::host_work::Push>);
+            as std::sync::Arc<dyn tilolang_engine::Push>);
         *self.core.held_work.borrow_mut() = Some(Box::new(host));
     }
 
     /// The newest frame of the stream `slot` a device's engine ran (`engine.stream`): what a
     /// window that shows `tilo-live://<slot>` paints.
     #[must_use]
-    pub fn frame(&self, slot: &str) -> Option<crate::host_work::Frame> {
+    pub fn frame(&self, slot: &str) -> Option<tilolang_engine::Frame> {
         self.core.live_frames.get(slot)
     }
 

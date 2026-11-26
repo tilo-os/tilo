@@ -8,7 +8,7 @@
 use std::sync::Arc;
 
 use serde_json::{Value, json};
-use tilolang_tilo::engine::{JobOp, JobSink, Needs, Provider, State};
+use tilolang_engine::{JobOp, JobSink, Needs, Provider, State};
 
 use crate::live::{self, Event, Live};
 use crate::provider::{
@@ -449,7 +449,7 @@ impl Provider for Answers {
 /// calls once at its start, before the app asks. `opener` is the device's way to open a link a
 /// program printed.
 pub fn register(opener: Arc<dyn Opener>) {
-    tilolang_tilo::engine::register(APP, Arc::new(Answers { opener }));
+    tilolang_engine::register(APP, Arc::new(Answers { opener }));
 }
 
 /// The sessions the runs started here drive, by the job the device named.

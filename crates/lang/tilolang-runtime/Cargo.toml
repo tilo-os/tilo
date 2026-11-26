@@ -74,6 +74,7 @@ thiserror.workspace = true
 wasmi = { version = "1.1", default-features = false, features = ["std"] }
 # The clock that also reads in a browser page, where std has none.
 tilo-clock = { version = "0.1.0", path = "../../platform/tilo-clock" }
+tilolang-engine = { version = "0.1.0", path = "../tilolang-engine" }
 # Engine construction, the call's limits, the refuel and the one text of a failure: shared with
 # every other wasm host in the tree.
 tilo-wasm-host = { version = "0.1.0", path = "../../core/tilo-wasm-host", default-features = false }

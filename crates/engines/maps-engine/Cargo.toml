@@ -8,7 +8,7 @@ description = "Maps' device work: the map's imagery kept for offline use, listed
 
 [dependencies]
 tilo-tiles = { version = "0.1.0", path = "../tilo-tiles" }
-tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+tilolang-engine = { path = "../../lang/tilolang-engine" }
 # Where the device is, asked of the platform: the location portal, CoreLocation, the browser.
 tilo-location = { version = "0.1.0", path = "../../platform/tilo-location" }
 # The app's one async runtime, which the platform's location request runs on.

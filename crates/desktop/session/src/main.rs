@@ -1240,13 +1240,13 @@ type Following = Vec<Box<dyn std::any::Any>>;
 struct Databases(tilo_db::Database);
 
 #[cfg(target_os = "linux")]
-impl tilolang_tilo::engine::Provider for Databases {
+impl tilolang_engine::Provider for Databases {
     fn call(&self, op: &str, input: &str) -> Result<String, String> {
         self.0.call(op, input)
     }
 
-    fn jobs(&self) -> &'static [tilolang_tilo::engine::JobOp] {
-        use tilolang_tilo::engine::{JobOp, Needs};
+    fn jobs(&self) -> &'static [tilolang_engine::JobOp] {
+        use tilolang_engine::{JobOp, Needs};
         // A connection holds the database's login, reaches it over the network, and is what the
         // app's calls read.
         const NEEDS: Needs = Needs {
@@ -1263,9 +1263,9 @@ impl tilolang_tilo::engine::Provider for Databases {
         job: &str,
         op: &str,
         input: &str,
-        moved: tilolang_tilo::engine::JobSink,
+        moved: tilolang_engine::JobSink,
     ) -> Result<(), String> {
-        use tilolang_tilo::engine::State;
+        use tilolang_engine::State;
         self.0.start(
             job,
             op,
@@ -1310,7 +1310,7 @@ fn services(
     tilo_keyboard_engine::register();
     // The database engine the Database Client asks by name: its drivers stay off the app's side,
     // and the app reads the JSON answers into its own records.
-    tilolang_tilo::engine::register(
+    tilolang_engine::register(
         tilo_db::APP,
         std::sync::Arc::new(Databases(tilo_db::Database::new())),
     );

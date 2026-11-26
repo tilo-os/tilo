@@ -47,7 +47,7 @@ mod cases {
         declines: Rc<Cell<bool>>,
     }
 
-    impl tilolang_tilo::engine::Provider for Device {
+    impl tilolang_engine::Provider for Device {
         fn call(&self, op: &str, input: &str) -> Result<String, String> {
             if self.declines.get() {
                 return Err("the device declines this design".to_owned());

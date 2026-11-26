@@ -13,7 +13,7 @@ use std::sync::{Arc, Mutex, OnceLock};
 
 use serde::Deserialize;
 
-use tilolang_tilo::engine::{JobOp, JobSink, Needs, Provider, Running, State};
+use tilolang_engine::{JobOp, JobSink, Needs, Provider, Running, State};
 
 /// The one app this device answers engine work for.
 pub const APP: &str = "so.tilo.containers";
@@ -24,7 +24,7 @@ const LINES_KEPT: usize = 500;
 /// Register the engine once: every later ask finds it.
 pub fn register() {
     static ONCE: OnceLock<()> = OnceLock::new();
-    ONCE.get_or_init(|| tilolang_tilo::engine::register(APP, Arc::new(Containers)));
+    ONCE.get_or_init(|| tilolang_engine::register(APP, Arc::new(Containers)));
 }
 
 /// The registry's entry for the Containers app.

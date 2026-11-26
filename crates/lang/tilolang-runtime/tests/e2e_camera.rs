@@ -7,7 +7,8 @@ mod cases {
     use crate::common::*;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use tilolang_runtime::host_work::{EngineHost, JobHandlers, Push};
+    use tilolang_engine::Push;
+    use tilolang_runtime::host_work::{EngineHost, JobHandlers};
     use tilolang_runtime::{AmStore, ResourceRef, Runtime, Value};
 
     const APP: &str = include_str!("../../../../apps/tl/camera/app.tl");

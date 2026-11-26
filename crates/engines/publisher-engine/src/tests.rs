@@ -11,7 +11,7 @@ use ed25519_dalek::{Signature, Verifier as _, VerifyingKey};
 use registry_types::application::PublisherApplication;
 use serde_json::Value;
 use tilo_secrets::SecretStore;
-use tilolang_tilo::engine::Provider as _;
+use tilolang_engine::Provider as _;
 
 use crate::{APP, Publisher};
 
@@ -111,11 +111,11 @@ impl Registry {
 }
 
 /// The moves one job tells.
-type Moves = std::sync::mpsc::Receiver<(tilolang_tilo::engine::State, Value)>;
+type Moves = std::sync::mpsc::Receiver<(tilolang_engine::State, Value)>;
 
 /// One job started on `machine`'s engine, with the moves it tells.
 fn start(machine: &Machine, op: &str, ask: &str) -> Result<Moves, String> {
-    use tilolang_tilo::engine::JobSink;
+    use tilolang_engine::JobSink;
     static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
     let job = format!(
         "job-{}",

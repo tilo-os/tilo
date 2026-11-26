@@ -34,7 +34,7 @@ pub const APP: &str = "so.tilo.osk";
 /// draws the keys.
 struct Keyboard;
 
-impl tilolang_tilo::engine::Provider for Keyboard {
+impl tilolang_engine::Provider for Keyboard {
     fn call(&self, op: &str, input: &str) -> Result<String, String> {
         service::call(op, input)
     }
@@ -45,5 +45,5 @@ impl tilolang_tilo::engine::Provider for Keyboard {
 /// this; a process that runs the app alone calls it too, as every host registers the engines it
 /// links.
 pub fn register() {
-    tilolang_tilo::engine::register(APP, std::sync::Arc::new(Keyboard));
+    tilolang_engine::register(APP, std::sync::Arc::new(Keyboard));
 }

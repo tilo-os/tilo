@@ -674,13 +674,13 @@ pub trait Platform {
     }
 
     /// The device's own work for `app`: an op answered now. The engines this session runs for its
-    /// apps answer it ([`crate::engine`]); one it does not run is refused.
+    /// apps answer it ([`tilolang_engine`]); one it does not run is refused.
     ///
     /// # Errors
     ///
     /// The engine's refusal.
     fn engine_call(&self, app: &str, op: &str, input: &str) -> Result<String, String> {
-        crate::engine::answer(app, op, input)
+        tilolang_engine::answer(app, op, input)
     }
 
     /// The device's own work for `app`, started as a job that runs `handlers` as it moves:
@@ -703,7 +703,7 @@ pub trait Platform {
             "job-{}",
             NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         );
-        crate::engine::begin_here(app, &job, op, input, |_, _| {})?;
+        tilolang_engine::begin_here(app, &job, op, input, |_, _| {})?;
         Ok(job)
     }
 
@@ -717,9 +717,9 @@ pub trait Platform {
         app: &str,
         op: &str,
         input: &str,
-        push: std::sync::Arc<dyn tilolang_runtime::host_work::Push>,
+        push: std::sync::Arc<dyn tilolang_engine::Push>,
     ) -> Result<String, String> {
-        crate::engine::stream(app, op, input, push)
+        tilolang_engine::stream(app, op, input, push)
     }
 
     /// The job `path` as the latest record of it this process heard, as JSON; `None` for a job
@@ -729,12 +729,12 @@ pub trait Platform {
     ///
     /// The read was refused.
     fn engine_job(&self, path: &str) -> Result<Option<serde_json::Value>, String> {
-        Ok(crate::engine::job(path))
+        Ok(tilolang_engine::job(path))
     }
 
     /// Stop the job `job`: false when no engine runs it or it had finished.
     fn engine_cancel(&self, job: &str) -> bool {
-        crate::engine::stop_here(job)
+        tilolang_engine::stop_here(job)
     }
 
     /// One check the project's host approved, started by its id for `app` as a job
@@ -853,7 +853,7 @@ impl tilolang_runtime::host_work::EngineHost for PlatformEngine {
         app: &str,
         op: &str,
         input: &str,
-        push: std::sync::Arc<dyn tilolang_runtime::host_work::Push>,
+        push: std::sync::Arc<dyn tilolang_engine::Push>,
     ) -> Result<String, String> {
         self.0.engine_stream(app, op, input, push)
     }

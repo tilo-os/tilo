@@ -163,7 +163,7 @@ impl Invocations {
         for (path, followed) in &mut self.jobs {
             let Some((space, id)) = followed.address.clone() else {
                 // Read where it runs: told whenever it moved since.
-                let record = tilolang_tilo::engine::job(path);
+                let record = tilolang_engine::job(path);
                 if record != followed.record {
                     followed.record = record;
                     followed.told = false;

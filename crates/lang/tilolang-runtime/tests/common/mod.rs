@@ -1148,7 +1148,7 @@ impl DeviceJobs {
     /// path.
     pub fn start(
         &self,
-        engine: &dyn tilolang_tilo::engine::Provider,
+        engine: &dyn tilolang_engine::Provider,
         app: &str,
         op: &str,
         input: &str,
@@ -1160,7 +1160,7 @@ impl DeviceJobs {
 
     /// A job of `op` for `app` about to start: its path, and the sink its engine tells its moves
     /// to.
-    pub fn begin(&self, app: &str, op: &str) -> (String, tilolang_tilo::engine::JobSink) {
+    pub fn begin(&self, app: &str, op: &str) -> (String, tilolang_engine::JobSink) {
         self.started.set(self.started.get().wrapping_add(1));
         let job = format!("devices/test/jobs/{}", self.started.get());
         let (records, named, app, doing) = (
@@ -1169,8 +1169,8 @@ impl DeviceJobs {
             app.to_owned(),
             op.to_owned(),
         );
-        let moved = tilolang_tilo::engine::JobSink::new(move |state, detail| {
-            let record = tilolang_tilo::engine::record(&named, &app, &doing, state, &detail);
+        let moved = tilolang_engine::JobSink::new(move |state, detail| {
+            let record = tilolang_engine::record(&named, &app, &doing, state, &detail);
             records.lock().unwrap().insert(named.clone(), record);
         });
         (job, moved)

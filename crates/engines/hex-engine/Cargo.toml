@@ -7,7 +7,7 @@ license.workspace = true
 description = "The hex editor's device work: a file read as bytes, the edits a person typed applied to them, a pattern found and the bytes around a place read as numbers"
 
 [dependencies]
-tilolang-tilo = { path = "../../lang/tilolang-tilo" }
+tilolang-engine = { path = "../../lang/tilolang-engine" }
 # A file's bytes are kept where every device of the workspace reads them by their address.
 tilo-resource = { path = "../../core/tilo-resource" }
 serde.workspace = true
