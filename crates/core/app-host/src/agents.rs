@@ -650,6 +650,26 @@ fn agent_caller(
         .on_roster(agent.created_at, person))
 }
 
+/// [`agent_caller`], awaited: the agent's key can wait for its person's root to certify it, which
+/// a thread of the blocking pool waits for, never the runtime's own thread.
+async fn agent_caller_waiting(
+    roster: &Roster,
+    workspace: WorkspaceId,
+    agent: &Agent,
+    person: [u8; 32],
+    owner: [u8; 32],
+) -> Result<Caller, String> {
+    let (roster, agent) = (Arc::clone(roster), agent.clone());
+    tokio::task::spawn_blocking(move || agent_caller(&roster, workspace, &agent, person, owner))
+        .await
+        .unwrap_or_else(|stopped| {
+            if stopped.is_panic() {
+                std::panic::resume_unwind(stopped.into_panic());
+            }
+            Err("this device's agents are stopping".to_owned())
+        })
+}
+
 /// Which agents an engine acts as: those whose key the device makes from a root it holds. The agent's own
 /// record says whose it is. With them, the agents whose answer the engine takes.
 struct EngineKeys {
@@ -701,14 +721,10 @@ impl tilo_workspace_service::work::AgentEngine for EngineKeys {
             if !agent.is_active() {
                 return false;
             }
-            agent_caller(
-                &self.roster,
-                id,
-                agent,
-                [0; 32],
-                workspaces.device_cert().user_public_key,
-            )
-            .is_ok()
+            let owner = workspaces.device_cert().user_public_key;
+            agent_caller_waiting(&self.roster, id, agent, [0; 32], owner)
+                .await
+                .is_ok()
         })
     }
 
@@ -942,14 +958,9 @@ impl ServerAgents {
         person: [u8; 32],
     ) -> Result<Caller, String> {
         // A sub-agent acts under the approval of the agent that heads its line.
+        let owner = self.workspaces.device_cert().user_public_key;
         if agent.sub.is_none() {
-            return agent_caller(
-                &self.roster,
-                workspace,
-                agent,
-                person,
-                self.workspaces.device_cert().user_public_key,
-            );
+            return agent_caller_waiting(&self.roster, workspace, agent, person, owner).await;
         }
         let record = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let roster = self
@@ -959,14 +970,11 @@ impl ServerAgents {
         // A line whose head is gone ends at the sub-agent itself, which holds no approval:
         // nothing is done in its name then.
         let approved = roster.root_of(agent);
-        Ok(agent_caller(
-            &self.roster,
-            workspace,
-            approved,
-            person,
-            self.workspaces.device_cert().user_public_key,
-        )?
-        .working_under(agent.id.0.clone(), &agent.name))
+        Ok(
+            agent_caller_waiting(&self.roster, workspace, approved, person, owner)
+                .await?
+                .working_under(agent.id.0.clone(), &agent.name),
+        )
     }
 
     /// These agents, told the devices this server placed itself for its workspaces' windows:

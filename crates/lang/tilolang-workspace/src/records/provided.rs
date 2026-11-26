@@ -161,8 +161,14 @@ impl BuiltInRecords {
         (invoker, context): (&ActionInvoker, &ActionContext),
     ) -> Result<tilo_actions::ActionOutput, String> {
         self.rooted(workspace, person).await?;
-        let descriptor = self
-            .rows(caller)
+        // The rows are read by running the app's program, as a page of them is ([`Self::query`]).
+        let rows = {
+            let (records, caller) = (self.clone(), caller.clone());
+            tokio::task::spawn_blocking(move || records.rows(&caller))
+                .await
+                .map_err(|error| error.to_string())?
+        };
+        let descriptor = rows
             .into_iter()
             .filter_map(|row| row.action)
             .find(|action| &action.address == address)
@@ -262,12 +268,24 @@ impl ActionProvider for BuiltInRecords {
             if let Err(error) = records.rooted(&workspace, &person).await {
                 tracing::warn!(app = records.app, %workspace, %error, "a built-in app's record has no root");
             }
-            let page = records.workspaces.record_page(
-                &workspace,
-                &records.route(&workspace),
-                &person,
-                &query,
-            );
+            // The page is read by running the app's program, whose reads can wait for the
+            // workspace: on a thread of the blocking pool, never on the runtime's own thread,
+            // where a task waiting for the same workspace could then never run.
+            let page = tokio::task::spawn_blocking(move || {
+                records.workspaces.record_page(
+                    &workspace,
+                    &records.route(&workspace),
+                    &person,
+                    &query,
+                )
+            })
+            .await
+            .unwrap_or_else(|stopped| {
+                if stopped.is_panic() {
+                    std::panic::resume_unwind(stopped.into_panic());
+                }
+                None
+            });
             done.complete(Ok(page.unwrap_or_else(nothing)));
         });
         page
@@ -763,20 +781,18 @@ mod tests {
             !seen(&records, &cy).contains("4711"),
             "a member outside the conversation reads nothing of it"
         );
+        let searched = |person: &str| {
+            let found = workspaces.record_entries(&workspace, CHAT, None, person);
+            format!("{:?}", found.expect("the person's search reads the record"))
+        };
         let cy_person = hex::encode(cy_root.verifying_key().to_bytes());
-        let found = workspaces
-            .record_entries(&workspace, CHAT, None, &cy_person)
-            .expect("Cy's search reads the record");
         assert!(
-            !format!("{found:?}").contains("4711"),
+            !searched(&cy_person).contains("4711"),
             "search finds nothing of it for a member outside the conversation"
         );
         let ada_person = hex::encode(owner.user_public_key);
-        let found = workspaces
-            .record_entries(&workspace, CHAT, None, &ada_person)
-            .expect("Ada's search reads the record");
         assert!(
-            format!("{found:?}").contains("4711"),
+            searched(&ada_person).contains("4711"),
             "search finds it for the conversation's own person"
         );
         // Every level of the record's pages as `person` reads them, from the top down.
