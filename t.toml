@@ -658,6 +658,9 @@ fix = "python3 -I tools/docs/codemap.py"
 [[check]]
 name = "docs-reference"
 egress = { to = ["code.tilo.so:443"], pinned = true }
+# The `tilo` it runs is the one its need built, so both run on one architecture: an arm build
+# restored on an x86 node execs as `Exec format error`.
+requires = ["arch=x86_64"]
 run = "bash tools/ci/docs-reference.sh"
 needs = ["docs-reference-bins"]
 outputs = [
@@ -672,6 +675,8 @@ outputs = [
 [[check]]
 name = "docs-reference-bins"
 egress = { to = ["code.tilo.so:443"], pinned = true }
+# The binary these outputs carry is exec'd by `docs-reference`, which is x86_64 for that reason.
+requires = ["arch=x86_64"]
 run = "cargo build --locked -p tilo-cli -p tilo-runtime --bin tilo --bin tilo-runtime\n"
 outputs = ["/target/debug/tilo", "/target/debug/tilo-runtime"]
 default = false
@@ -6864,12 +6869,18 @@ name = "e2e"
 # a failure is still bisected to the commit that broke it and told to its pusher. At every head
 # it and the release-profile builds it needs cost about 2 core-hours of the node's (11-14).
 on = ["idle"]
-# No egress: every flow meets the stack on loopback (the server and API on 127.0.0.1 and localhost,
-# the site at tilo.localhost, which the image's resolver answers itself), and its programs, fonts
-# and Caddy are its needs'. Its sandbox refuses a router search (UPnP, 239.255.255.250:1900, as
-# iroh's endpoints make) and DNS lookups: with the open network the same flows failed as without
-# it, so none of them needs either.
-run = "bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-entry/bundle /target/e2e"
+# No egress but what a member's runtime asks the network for: every flow meets the stack on
+# loopback (the server and API on 127.0.0.1 and localhost, the site at tilo.localhost, which the
+# image's resolver answers itself), and its programs, fonts and Caddy are its needs'. A computer a
+# flow logs in takes its workspaces' work on a runtime that holds number 0's relays: its net report
+# looks a relay's name up at the sandbox's resolver and probes a router for a port (iroh's
+# portmapper, SSDP to 239.255.255.250:1900). By design on a computer at home, and refused here
+# where the flows and the check need neither. Exactly those two, as the page checks declare them.
+egress = { to = ["169.254.1.1:53", "239.255.255.250:1900"] }
+# `--input flows=signin` runs the flows named there (space separated) instead of all of them, the
+# script's E2E_FLOWS: one flow's pages, and what it says, without the rest waiting on it.
+dispatch_inputs = { flows = "" }
+run = "E2E_FLOWS=\"$T_INPUT_FLOWS\" bash os/containers/tilo-lounge/test-e2e.sh /target/publish/web-entry/bundle /target/e2e"
 needs = ["lounge-check-binaries", "lounge-fonts", "lounge-check-cli", "lounge-check-tools", "web-entry-bundle", "tilo-sh-binaries", "tilo-sh-caddy", "image-web-entry-context"]
 # Its setup is not pinned: dnf installs the newest build Fedora's updates repository holds, which
 # changes as updates land, from mirrors no fixed list names.
