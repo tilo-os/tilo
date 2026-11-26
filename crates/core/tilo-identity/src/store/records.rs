@@ -25,11 +25,11 @@ pub use recovery_words::{
     recovery_words_error, recovery_words_progress, recovery_words_public_key,
     unknown_recovery_words,
 };
+pub(crate) use secure_store::file_provider;
 pub use secure_store::{
     BrokerFileProvider, FILE_SECRETS_ENV, SEALED_FILE_BACKEND, SealedFileProvider, SecretProvider,
     account_dir_uid, file_secrets_requested,
 };
-pub(crate) use secure_store::file_provider;
 pub use tilo_identity_client::PortableBackupInfo;
 
 pub use ondisk::{IdentityRecord, SerializableIdentity};
@@ -87,8 +87,8 @@ pub fn identity_dir_from_env() -> io::Result<PathBuf> {
     // A daemon placed apart serves the profile it was named with: everything of that profile's,
     // its person's identity store among them, lives under it, so the programs that reach that
     // daemon resolve the store it made, whoever they run as.
-    if let Some(profile) = tilo_device_identity::login::daemon::named_profile()
-        .filter(|profile| profile.is_absolute())
+    if let Some(profile) =
+        tilo_device_identity::login::daemon::named_profile().filter(|profile| profile.is_absolute())
     {
         return Ok(profile.join("identity"));
     }
@@ -173,15 +173,18 @@ pub fn served_identity_dir() -> Option<PathBuf> {
 }
 
 /// [`account_identity_dir`] for this process's Tilo profile, or the store this process serves
-/// when its host named one ([`serve_identity_dir`]).
+/// when its host named one ([`serve_identity_dir`]). The person a computer kept before each
+/// account kept its own is taken up into it first ([`super::take_up_person_kept_above`]).
 ///
 /// # Errors
-/// This host keeps no Tilo profile.
+/// This host keeps no Tilo profile, or the person kept before cannot be taken up.
 pub fn account_identity_dir_from_env() -> io::Result<PathBuf> {
     if let Some(dir) = served_identity_dir() {
         return Ok(dir);
     }
-    Ok(account_identity_dir(&identity_dir_from_env()?))
+    let dir = account_identity_dir(&identity_dir_from_env()?);
+    super::take_up_person_kept_above(&dir)?;
+    Ok(dir)
 }
 
 /// The active record of the person of the account this process runs as.
@@ -2956,7 +2959,10 @@ mod identity_record_vector_tests {
         let _env = tilo_test_env::ScopedEnv::new();
         let first = tempfile::tempdir().unwrap();
         let served = crate::store::serve_identity_dir(first.path());
-        assert_eq!(crate::store::served_identity_dir().as_deref(), Some(first.path()));
+        assert_eq!(
+            crate::store::served_identity_dir().as_deref(),
+            Some(first.path())
+        );
         assert_eq!(
             crate::store::account_identity_dir_from_env().unwrap(),
             first.path()

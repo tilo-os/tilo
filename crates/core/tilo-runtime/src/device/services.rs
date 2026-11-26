@@ -636,6 +636,15 @@ pub(crate) fn device_identity_dir(
     keys: &tilo_device_identity::IdentityPaths,
 ) -> io::Result<std::path::PathBuf> {
     let own_store = account_identity_dir(own)?;
+    // A computer set up before each account kept its own store keeps its person above it: the
+    // account that runs takes that person up before anything reads its store, or this device
+    // would find nobody and a new person would be founded in its person's place.
+    if tilo_identity::store::take_up_person_kept_above(&own_store)? {
+        tracing::info!(
+            store = %own_store.display(),
+            "this account took up the person its computer kept before each account kept its own"
+        );
+    }
     let Some(person) =
         tilo_device_identity::login::served_cert(keys).map(|cert| cert.user_public_key)
     else {

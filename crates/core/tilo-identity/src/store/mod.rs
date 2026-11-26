@@ -8,6 +8,7 @@
 //! The identity is never handed to an app: the [`broker`](crate::broker)
 //! reads its public metadata and signs on the app's behalf.
 
+mod kept_above;
 mod records;
 mod registry;
 
@@ -15,6 +16,7 @@ mod registry;
 #[cfg(unix)]
 pub(crate) mod test_wire;
 
+pub use kept_above::take_up_person_kept_above;
 pub use records::*;
 pub use registry::{
     IdentityProfile, IdentityRegistry, IdentityRegistryStore, identity_for_workspace,
