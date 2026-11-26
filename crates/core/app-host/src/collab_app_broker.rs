@@ -82,7 +82,6 @@ mod file_clipboard;
 // The workspace's folder as its listing offers it.
 #[cfg(feature = "files")]
 mod files_listing;
-#[cfg(feature = "files")]
 mod host_workers;
 mod invocations;
 use tilo_actions::remote::invocation_record;
