@@ -574,33 +574,6 @@ def asked_once(socket_path: Path, path: str, args: dict) -> tuple[dict, int | No
     return said_answer, (handed[0] if handed else None)
 
 
-def native_ask(socket_path: Path, request: dict, within: float = 10.0) -> dict:
-    """Ask this computer's daemon's own endpoint a request that is not one of its actions, as the
-    account this process runs as, and answer its line as data. A session's founding link is
-    established this way."""
-    line = json.dumps(request)
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as stream:
-        stream.settimeout(within)
-        stream.connect(str(socket_path))
-        stream.sendall((line + "\n").encode())
-        answered = b""
-        while b"\n" not in answered:
-            data = stream.recv(1 << 16)
-            if not data:
-                break
-            answered += data
-    said = answered.split(b"\n", 1)[0].decode(errors="replace")
-    if not said:
-        raise Failed(f"the machine's daemon answered nothing to {request.get('native')}")
-    try:
-        answer = json.loads(said)
-    except ValueError:
-        raise Failed(f"the machine's daemon's answer is not JSON: {said}") from None
-    if "error" in answer:
-        raise Failed(f"the machine's daemon refused {request.get('native')}: {said}")
-    return answer
-
-
 class MachineDaemon:
     """This computer's device daemon, started the way Tilo OS's system unit starts it, and the
     login that starts the session as the person.
@@ -715,28 +688,17 @@ class MachineDaemon:
             raise Failed("the machine's daemon answered no person for the sign-in")
         return person, fd
 
-    def login(self, session_env: dict) -> tuple[dict, dict]:
-        """The login: seat the session's account, found its person, and take the one-use secret
-        the second sign-in answers with. Answered as the environment the session gains and the
-        descriptors handed on."""
+    def login(self, _session_env: dict) -> tuple[dict, dict]:
+        """The login: seat the session's account and take the one-use secret its sign-in answers
+        with. Answered as the environment the session gains and the descriptors handed on.
+
+        An account with no person yet is answered a founding secret: the session redeems it and
+        founds its person itself at startup, as a session a sign-in started does, since the daemon
+        admits the founding call only from the process the secret was handed to. A person's
+        services that are still starting answer no secret yet, so the sign-in is asked again."""
         if self.account is None:
             return {}, {}
         uid = self.account.pw_uid
-        person, _ = self._signed_in(uid)
-        if person.get("founding"):
-            # The sign-in answered the account's session a founding link. The first command runs
-            # as the account, redeems that link, and founds the person through it, as the session
-            # a sign-in started does: only the process the sign-in's secret was handed to may
-            # make the person.
-            token = person.get("token")
-            if not token:
-                raise Failed(
-                    "the sign-in answered no founding link for the account's first command: "
-                    f"{json.dumps(person)}")
-            run([*as_account(self.account), sys.executable, "-I", "-B",
-                 str(Path(__file__).resolve()), "--found-device", str(self.NATIVE),
-                 "--founding-link", token],
-                env={**os.environ, **session_env, **self._account_env()})
         deadline = time.monotonic() + self.LINK_WITHIN
         while True:
             said, _ = self._signed_in(uid)
@@ -3896,24 +3858,6 @@ def walks() -> list[str]:
     return sorted(path.stem for path in WALKS.glob("*.json") if path != MOVED)
 
 
-def found_device(socket_path: Path, founding_token: str | None = None) -> int:
-    """Found this computer's person as the account this runs as, through the founding link its
-    sign-in answered (`devices#found`). The link ties this process to the sign-in, and the daemon
-    admits the founding call from it alone. Run as the session's account, never as root."""
-    try:
-        if founding_token:
-            linked = native_ask(socket_path,
-                                {"native": "shells#link", "token": founding_token})
-            if linked.get("founding") is not True:
-                raise Failed(
-                    f"the sign-in's founding link is not this account's to redeem: {linked}")
-        daemon_ask(socket_path, "devices#found", {})
-    except Failed as error:
-        print(f"app-walk: {error}", file=sys.stderr)
-        return 1
-    return 0
-
-
 def main() -> int:
     parser = argparse.ArgumentParser(
         description="Walk an app's first hour in each version its step file names.")
@@ -3940,18 +3884,10 @@ def main() -> int:
                         help="write OUT/index.md from a run's outputs (scripts/headless-examples/walk.sh)")
     parser.add_argument("--baseline-dir", type=Path,
                         help="with --side-by-side: the baseline run's outputs")
-    parser.add_argument("--found-device", type=Path, metavar="SOCKET",
-                        help="found this computer's person through the daemon at SOCKET, as the "
-                             "account this runs as (the walk's login runs this as its account)")
-    parser.add_argument("--founding-link", metavar="TOKEN",
-                        help="with --found-device: the one-use secret the sign-in answered, which "
-                             "this process redeems for the link the founding call is admitted by")
     parser.add_argument("--opens", type=Path, metavar="WALKS",
                         help="hold every open the walks under WALKS recorded to the open bar, "
                              f"{OPEN_BAR_MS} ms, writing opens.md to --out (the app-walk/open check)")
     options = parser.parse_args()
-    if options.found_device:
-        return found_device(options.found_device, options.founding_link)
     if options.opens:
         return hold_opens(options.opens.resolve(), (options.out or Path.cwd()).resolve())
     if options.side_by_side:
