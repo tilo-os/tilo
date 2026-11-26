@@ -677,8 +677,6 @@ pub struct WorkspaceService {
 /// uses finishes whatever those threads wait for.
 struct WritesThread {
     runtime: tokio::runtime::Handle,
-    /// The thread that drives it, so work it starts itself is never waited for there.
-    thread: std::thread::ThreadId,
     /// Dropped with the service, which ends the thread.
     _stop: tokio::sync::oneshot::Sender<()>,
 }
@@ -690,19 +688,15 @@ impl WritesThread {
             .build()?;
         let handle = runtime.handle().clone();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-        let (named, naming) = std::sync::mpsc::channel();
         std::thread::Builder::new()
             .name("tilo-ws-writes".into())
             .spawn(move || {
-                let _ = named.send(std::thread::current().id());
                 runtime.block_on(async {
                     let _ = stopped.await;
                 });
             })?;
-        let thread = naming.recv().map_err(std::io::Error::other)?;
         Ok(Self {
             runtime: handle,
-            thread,
             _stop: stop,
         })
     }
@@ -767,9 +761,7 @@ impl WorkspaceService {
             handlers,
             writes: std::sync::OnceLock::new(),
         };
-        // The writes thread starts with the service: a write a synchronous caller makes runs
-        // there, on a thread nothing else drives, and starts its own work on a runtime that can
-        // run it while the caller waits.
+        // The writes thread starts with the service, so the first write is carried there too.
         let _ = service.writes_runtime();
         Ok(service)
     }
@@ -789,9 +781,8 @@ impl WorkspaceService {
         // The records this service serves carry their writes there too: a write waits on the key
         // service or a link, and the thread that asked for it may be a record's reactor, which
         // the write needs to run what it awaited.
-        if let Some(writes) = started {
-            self.workspaces
-                .carry_writes_on(writes.runtime.clone(), writes.thread);
+        if let Some(runtime) = &runtime {
+            self.workspaces.carry_record_writes_on(runtime.clone());
         }
         runtime
     }

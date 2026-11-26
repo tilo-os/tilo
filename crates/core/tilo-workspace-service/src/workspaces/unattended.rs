@@ -33,9 +33,13 @@ const fn unknown() -> ActionCallError {
 impl Workspaces {
     /// A branch `branch` of `source` holds what its source holds: running
     /// commands unattended too, when the source does.
-    pub(super) fn branch_unattended(&self, source: &str, branch: &str) -> Result<(), String> {
-        if self.runs_unattended(source) {
-            self.set_unattended(branch, true)
+    pub(super) async fn branch_unattended(&self, source: &str, branch: &str) -> Result<(), String> {
+        if self
+            .ownership(source)
+            .await
+            .is_some_and(|ownership| ownership.unattended)
+        {
+            self.set_unattended(branch, true).await
         } else {
             Ok(())
         }
@@ -107,8 +111,14 @@ impl Workspaces {
             ));
         }
         let answer = |on: bool| json!({"workspace": workspace, "unattended": on});
-        if !on || self.runs_unattended(&workspace) {
+        if !on
+            || self
+                .ownership(&workspace)
+                .await
+                .is_some_and(|ownership| ownership.unattended)
+        {
             self.set_unattended(&workspace, on)
+                .await
                 .map_err(ActionCallError::refused)?;
             return Ok(answer(on));
         }
@@ -125,6 +135,7 @@ impl Workspaces {
             ..AskedFacts::by(super::asking::asked_by(caller))
         })?;
         self.set_unattended(&workspace, true)
+            .await
             .map_err(ActionCallError::refused)?;
         tracing::info!(%workspace, "a workspace runs commands unattended");
         Ok(answer(true))

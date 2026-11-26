@@ -629,7 +629,7 @@ impl Workspaces {
     /// What `workspace`'s owner labelled it with ([`Ownership`]): none for one they did not label.
     #[must_use]
     pub fn labels_of(&self, workspace: &str) -> WorkspaceLabels {
-        self.ownership(workspace)
+        self.ownership_waited(workspace)
             .map(|ownership| ownership.labels)
             .unwrap_or_default()
     }
@@ -638,64 +638,85 @@ impl Workspaces {
     /// without asking them each time ([`Ownership`]).
     #[must_use]
     pub fn runs_unattended(&self, workspace: &str) -> bool {
-        self.ownership(workspace)
+        self.ownership_waited(workspace)
             .is_some_and(|ownership| ownership.unattended)
     }
 
     /// `workspace`'s record of what its owner alone keeps of it, as this host holds it.
-    fn ownership(&self, workspace: &str) -> Option<Ownership> {
-        let workspaces = self.clone();
-        let workspace = workspace.to_owned();
-        crate::device_documents::on_its_own(async move {
-            person_workspace::read_on::<Ownership>(&workspaces, &workspace, membership::OWNERSHIP)
-                .await
-        })
-        .ok()
-    }
-
-    /// [`Self::labels_of`], awaited where the caller runs: a label nobody has read yet is read
-    /// on that runtime, never waited for on a thread of its own.
-    pub(super) async fn labels_of_awaiting(&self, workspace: &str) -> WorkspaceLabels {
+    pub(super) async fn ownership(&self, workspace: &str) -> Option<Ownership> {
         person_workspace::read_on::<Ownership>(self, workspace, membership::OWNERSHIP)
             .await
-            .map(|ownership: Ownership| ownership.labels)
-            .unwrap_or_default()
+            .ok()
     }
 
-    /// Apply `action` to a record of `workspace`, as this host.
-    fn change<R: tilo_resource::Resource>(
+    /// [`Self::ownership`] for a synchronous caller. On a worker of a multi-threaded runtime the
+    /// worker hands its queued tasks to another while it waits: the read awaits the tasks that
+    /// answer it (the key service, a write holding the workspace), and one of them may be queued
+    /// on this very worker, which would never run it while blocked. Elsewhere the read waits on
+    /// a thread of its own.
+    #[cfg(not(target_arch = "wasm32"))]
+    fn ownership_waited(&self, workspace: &str) -> Option<Ownership> {
+        match tokio::runtime::Handle::try_current() {
+            Ok(runtime)
+                if runtime.runtime_flavor() == tokio::runtime::RuntimeFlavor::MultiThread =>
+            {
+                tokio::task::block_in_place(|| runtime.block_on(self.ownership(workspace)))
+            }
+            _ => crate::device_documents::on_its_own(self.ownership(workspace)),
+        }
+    }
+
+    /// [`Self::ownership`] for a synchronous caller: a page drives no runtime beside it.
+    #[cfg(target_arch = "wasm32")]
+    fn ownership_waited(&self, workspace: &str) -> Option<Ownership> {
+        crate::device_documents::on_its_own(self.ownership(workspace))
+    }
+
+    /// Apply `action` to a record of `workspace`, as this host, carried where the service keeps
+    /// its writes ([`Self::carry_write`]): the write waits on the key service, and the caller's
+    /// thread is never the one that has to answer it.
+    async fn change<R: tilo_resource::Resource + Send + 'static>(
         &self,
         workspace: &str,
         record: (&str, &str),
         action: tilo_resource::Invoke<R>,
     ) -> Result<(), String> {
         let workspaces = self.clone();
-        let inside = workspaces.clone();
         let workspace = workspace.to_owned();
         let (app, record) = (record.0.to_owned(), record.1.to_owned());
-        workspaces.on_its_own(async move {
-            person_workspace::apply_on(&inside, &workspace, (&app, &record), action).await
+        self.carry_write(async move {
+            person_workspace::apply_on(&workspaces, &workspace, (&app, &record), action).await
         })
+        .await
     }
 
     /// Label `workspace` with `labels`, in place of what it was labelled with before (none takes
-    /// them all off).
-    pub(super) fn label(&self, workspace: &str, labels: &WorkspaceLabels) -> Result<(), String> {
-        let labels = serde_json::to_string(labels).map_err(|error| error.to_string())?;
+    /// them all off). A write that is not kept refuses the call that asked for it.
+    pub(super) async fn label(
+        &self,
+        workspace: &str,
+        labels: &WorkspaceLabels,
+    ) -> Result<(), tilo_actions::remote::ActionCallError> {
+        let labels = serde_json::to_string(labels).map_err(|error| {
+            tilo_actions::remote::ActionCallError::invalid_request(error.to_string())
+        })?;
         self.change(
             workspace,
             membership::OWNERSHIP,
             Ownership::RELABEL.with(labels),
         )
+        .await
+        .map_err(tilo_actions::remote::ActionCallError::refused)
     }
 
     /// Turn [`Self::runs_unattended`] for `workspace` on or off.
-    pub(super) fn set_unattended(&self, workspace: &str, on: bool) -> Result<(), String> {
+    pub(super) async fn set_unattended(&self, workspace: &str, on: bool) -> Result<(), String> {
         self.change(
             workspace,
             membership::OWNERSHIP,
             Ownership::RUN_UNATTENDED.with(on),
         )
+        .await
     }
 
     /// Record `workspace`, which this host keeps for its own person, as one of `person`'s own: a

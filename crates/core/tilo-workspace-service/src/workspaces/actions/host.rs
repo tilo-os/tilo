@@ -1145,13 +1145,17 @@ impl Workspaces {
             let mut kept = self.listings_of(&wanted).await;
             let mut listed: Vec<WorkspaceListing> = Vec::new();
             for workspace in &own {
-                if !wanted.contains(workspace) || !labelled(&self.labels_of(workspace), labels) {
+                if !wanted.contains(workspace) {
+                    continue;
+                }
+                let ownership = self.ownership(workspace).await.unwrap_or_default();
+                if !labelled(&ownership.labels, labels) {
                     continue;
                 }
                 if let Some(mut one) = kept.remove(workspace) {
                     one.role = Some(OWNER_ROLE.to_owned());
-                    one.labels = self.labels_of(workspace);
-                    one.unattended = self.runs_unattended(workspace);
+                    one.labels = ownership.labels;
+                    one.unattended = ownership.unattended;
                     listed.push(one);
                 }
             }
@@ -1184,10 +1188,11 @@ impl Workspaces {
             {
                 continue;
             }
+            let ownership = self.ownership(&summary.workspace).await.unwrap_or_default();
             let mut one = WorkspaceListing {
                 role: Some(OWNER_ROLE.to_owned()),
-                labels: self.labels_of(&summary.workspace),
-                unattended: self.runs_unattended(&summary.workspace),
+                labels: ownership.labels,
+                unattended: ownership.unattended,
                 ..listing(&summary)
             };
             one.made_at_ms = self
@@ -1326,8 +1331,7 @@ impl Workspaces {
                 .await?
         };
         if let Some(labels) = labels {
-            self.label(&summary.workspace, &labels)
-                .map_err(ActionCallError::refused)?;
+            self.label(&summary.workspace, &labels).await?;
         }
         drop(making);
         self.invite_own_person(
@@ -1445,7 +1449,8 @@ impl Workspaces {
         }
         let labels = labels.filter(|labels| !labels.is_empty())?;
         for workspace in own.of(&person) {
-            if self.labels_of_awaiting(&workspace).await == *labels {
+            let ownership = self.ownership(&workspace).await.unwrap_or_default();
+            if ownership.labels == *labels {
                 return Some(workspace);
             }
         }
@@ -1555,8 +1560,9 @@ impl Workspaces {
         if let Some(own) = self.own()
             && own.is_of(&person, &summary.workspace)
         {
-            workspace.labels = self.labels_of(&summary.workspace);
-            workspace.unattended = self.runs_unattended(&summary.workspace);
+            let ownership = self.ownership(&summary.workspace).await.unwrap_or_default();
+            workspace.labels = ownership.labels;
+            workspace.unattended = ownership.unattended;
         }
         answer(&CreatedWorkspace {
             workspace,
