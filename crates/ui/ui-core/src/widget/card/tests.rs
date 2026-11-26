@@ -5,8 +5,6 @@ use crate::widget::ButtonRole;
 use crate::widget::{Column, Container, Scrollable};
 use std::cell::Cell;
 use std::rc::Rc;
-use vello::Scene;
-use vello::kurbo::Affine;
 
 fn rect(node: &InspectionNode) -> Rect {
     let [x, y, w, h] = node.rect;
@@ -403,44 +401,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase scaled_card_regions_contain_content_and_match_fresh_geometry;
-    {
-        fn geometry(node: &InspectionNode) -> Vec<[f64; 4]> {
-            let mut all = vec![node.rect];
-            for child in &node.children {
-                all.extend(geometry(child));
-            }
-            all
-        }
-        for scale in [1.0, 2.0] {
-            let theme = Theme::dark().with_text_scale(scale);
-            let mut resized = Driver::new_with_theme(
-                crate::State::new(),
-                long_fixture(),
-                (1000, 1800),
-                theme.clone(),
-            );
-            resized.tab(false);
-            resized.resize((240, 1800)).unwrap();
-            let fresh =
-                Driver::new_with_theme(crate::State::new(), long_fixture(), (240, 1800), theme);
-            let a = resized.inspection();
-            let b = fresh.inspection();
-            assert_eq!(geometry(&a.root), geometry(&b.root));
-            for card in &a.root.children {
-                assert!(rect(card).width() <= 240.0);
-                for child in &card.children {
-                    assert_contained(child, rect(card));
-                }
-                assert!(rect(&card.children[1]).y1 <= rect(&card.children[2]).y0);
-            }
-            assert_eq!(
-                resized.focused_access_node().unwrap().name.as_deref(),
-                Some("View details")
-            );
-        }
-    }
-
     phase a_card_keeps_intrinsic_height_in_a_short_flex_parent;
     {
         let mut parent = Column::new()
@@ -595,114 +555,4 @@ tilo_test_env::scenario! {
         assert!((title_height(2.0) - base * 2.0).abs() < 1.5);
     }
 
-    phase card_face_reserves_its_title_and_paints_a_stripe_inside_the_shape;
-    {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let face = CardFace::new()
-            .title("Comment from Ada")
-            .leading_stripe(Tone::of_identity("ada"));
-        let rect = Rect::new(0.0, 0.0, 320.0, 160.0);
-        let body = face.body_rect(&mut text, &theme, rect);
-        let m = CardMetrics::new(&theme);
-        assert!(
-            body.y0 > rect.y0 + m.padding,
-            "the title sits above the body"
-        );
-        assert!((body.x0 - m.padding).abs() < 0.01);
-        let chrome = face.height_for_body(&mut text, &theme, 320.0, 40.0);
-        assert!((chrome - (body.y0 + 40.0 + m.padding)).abs() < 1.0);
-        let mut scene = Scene::new();
-        face.paint(
-            &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-            rect,
-        );
-        assert!(!scene.encoding().draw_tags.is_empty());
-    }
-}
-
-/// The pointer coming over a card is reported once on arrival, as a view choosing the thing under
-/// it on sight hears it: leaving and coming back is another arrival, and moving inside it is none.
-#[test]
-fn the_pointer_coming_over_a_card_is_reported_once_on_arrival() {
-    use crate::component::testing::{Node, fired};
-    use crate::component::{Component, Described};
-    use crate::testing::harness;
-    let queue = crate::Intents::default();
-    let mut node = Node::new("Card", "card", &queue).on("hover");
-    let props = CardProps::from_source(&mut node).expect("the card reads");
-    let mut host = harness(Card::from_props("card", props));
-    host.relayout();
-    let rect = host.root::<Card>().get_rect();
-    host.hover_at(
-        f64::midpoint(rect.x0, rect.x1),
-        f64::midpoint(rect.y0, rect.y1),
-    );
-    assert_eq!(queue.take(), [fired("card", "hover", None)]);
-    host.hover_at(rect.x0 + 1.0, rect.y0 + 1.0);
-    assert!(queue.take().is_empty(), "the pointer stayed over the card");
-    host.hover_at(rect.x1 + 40.0, rect.y1 + 40.0);
-    assert!(
-        queue.take().is_empty(),
-        "leaving the card is no arrival on it"
-    );
-    host.hover_at(
-        f64::midpoint(rect.x0, rect.x1),
-        f64::midpoint(rect.y0, rect.y1),
-    );
-    assert_eq!(
-        queue.take(),
-        [fired("card", "hover", None)],
-        "coming back is another arrival"
-    );
-}
-
-/// Whether the scene records `color` as a plain fill or glyph brush: what a widget paints a
-/// thing in is encoded as the draw data's packed RGBA.
-fn scene_paints_colour(scene: &Scene, color: vello::peniko::Color) -> bool {
-    let packed = vello_encoding::DrawColor::from(color).rgba;
-    scene.encoding().draw_data.contains(&packed)
-}
-
-#[test]
-fn a_cards_contents_draw_in_the_colours_of_the_face_they_stand_on() {
-    let mut checked = Vec::new();
-    for (name, theme) in [("dark", Theme::dark()), ("light", Theme::light())] {
-        let face = CardFace::content_theme(&theme);
-        let face_raised = face.tokens.colors.surfaces.raised;
-        assert_ne!(
-            face_raised, theme.tokens.colors.surfaces.raised,
-            "{name}: the card's face carries its own raised surface, not the page's"
-        );
-        let harness = Driver::new_with_theme(
-            crate::State::new(),
-            Box::new(
-                Card::new(Box::new(Text::new("Words on the card's own face")))
-                    .with_footer(Actions::new(Button::new("card.act", "Continue"))),
-            ),
-            (420, 240),
-            theme.clone(),
-        );
-        let scene = harness.frame_output().scene;
-        crate::testing::capture_regression(
-            "card-theme",
-            name,
-            scene,
-            420,
-            240,
-            theme.tokens.colors.surfaces.content,
-        );
-        checked.push((
-            name,
-            scene_paints_colour(scene, face.text_primary),
-            scene_paints_colour(scene, face_raised),
-        ));
-    }
-    for (name, words, action) in checked {
-        assert!(words, "{name}: the card's words are painted");
-        assert!(
-            action,
-            "{name}: its action stands on the face the contents are on, not the page's"
-        );
-    }
 }

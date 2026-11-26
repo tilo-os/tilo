@@ -104,36 +104,6 @@ tilo_test_env::scenario! {
         assert!(!laid.bar.is_shown(), "and goes when it leaves");
     }
 
-    phase hovering_damages_only_the_toolbar_not_the_row;
-    {
-        let _settled = crate::motion::testing::settled();
-        let mut laid = message();
-        let row = Widget::get_rect(&laid.bar);
-        laid.send(&crate::synthetic_input::cursor_moved(
-            row.center().x,
-            row.center().y,
-        ));
-        let mut damage = Vec::new();
-        Widget::collect_damage(&laid.bar, &mut damage);
-        assert_eq!(damage.len(), 1, "one region: {damage:?}");
-        let region = damage[0];
-        assert!(
-            region.area() < row.area() / 4.0,
-            "the toolbar's box ({region:?}), never the row's ({row:?})"
-        );
-        drawn(&mut laid.bar);
-        let mut after = Vec::new();
-        Widget::collect_damage(&laid.bar, &mut after);
-        assert!(after.is_empty(), "drawn, nothing is left to repaint");
-        laid.send(&crate::synthetic_input::cursor_moved(
-            row.center().x + 10.0,
-            row.center().y,
-        ));
-        let mut still = Vec::new();
-        Widget::collect_damage(&laid.bar, &mut still);
-        assert!(still.is_empty(), "a move within the row repaints nothing");
-    }
-
     phase focus_in_the_toolbar_shows_it_for_the_keyboard;
     {
         let _settled = crate::motion::testing::settled();

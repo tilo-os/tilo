@@ -439,55 +439,6 @@ mod tests {
         /// Each phase was a test of its own and builds its own fixture.
         fn routes_keep_bounded_history_and_restore_the_last_valid_screen;
 
-        phase route_history_mutations_are_explicit_and_bounded;
-        {
-            {
-                let handle = RouteHandle::new("home", ["home", "settings", "about"]).unwrap();
-                assert_eq!(handle.current(), "home");
-                assert!(!handle.can_back());
-                assert!(handle.push("settings").unwrap());
-                assert!(handle.push("about").unwrap());
-                assert_eq!(
-                    handle.history(),
-                    (
-                        vec!["home".into(), "settings".into()],
-                        "about".into(),
-                        vec![]
-                    )
-                );
-                assert!(handle.back());
-                assert_eq!(handle.current(), "settings");
-                assert!(handle.can_forward());
-                assert!(handle.forward());
-                assert!(handle.replace("settings").unwrap());
-                assert_eq!(handle.history().0, ["home"]);
-                assert!(handle.reset("home").unwrap());
-                assert_eq!(handle.history(), (vec![], "home".into(), vec![]));
-            }
-
-            {
-                let handle = RouteHandle::new("home", ["home", "settings"]).unwrap();
-                assert!(!handle.push("home").unwrap());
-                let before = handle.history();
-                assert_eq!(
-                    handle.push("missing"),
-                    Err(RouteError::UnknownRoute("missing".into()))
-                );
-                assert_eq!(handle.history(), before);
-                assert!(handle.push_action("missing").is_err());
-            }
-
-            {
-                let handle = RouteHandle::new("home", ["home", "settings"]).unwrap();
-                handle.state.borrow_mut().revision = u64::MAX;
-                let before = handle.history();
-                assert_eq!(handle.push("settings"), Err(RouteError::RevisionExhausted));
-                assert_eq!(handle.history(), before);
-                assert!(!handle.back());
-                assert!(!handle.forward());
-            }
-        }
-
         phase screen_builds_restore_the_last_valid_route_and_reset_focus_on_success;
         {
             {

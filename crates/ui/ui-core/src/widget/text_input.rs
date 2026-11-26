@@ -1234,15 +1234,6 @@ impl TextInput {
         true
     }
 
-    /// Convert the highlighter's logical-line ranges into a complete set of
-    /// attributed document spans, then insert IME preedit as a display-only
-    /// default-colour run. Concatenating the result always reproduces
-    /// `layout_display_text()` byte-for-byte.
-    #[cfg(test)]
-    fn highlighted_display_spans(&self, theme: &Theme) -> Vec<RichSpan> {
-        self.palette_display_spans(&theme.tokens.syntax)
-    }
-
     fn palette_display_spans(&self, syntax: &SyntaxPalette) -> Vec<RichSpan> {
         let mut colored = Vec::<(usize, usize, [u8; 3])>::new();
         if self.highlighter.is_some() {
@@ -3148,25 +3139,6 @@ impl TextInput {
             }
         }
         out
-    }
-
-    #[cfg(test)]
-    pub(crate) fn code_row_colors(&self, theme: &Theme) -> Vec<(String, vello::peniko::Color)> {
-        let default = if self.effectively_disabled() {
-            theme.text_dim
-        } else {
-            theme.text_primary
-        };
-        self.highlighted_display_spans(theme)
-            .into_iter()
-            .filter(|span| !span.text.is_empty())
-            .map(|span| {
-                let color = span.color.map_or(default, |[r, g, b]| {
-                    vello::peniko::Color::from_rgb8(r, g, b)
-                });
-                (span.text, color)
-            })
-            .collect()
     }
 
     pub fn take_dirty(&mut self) -> Option<String> {
@@ -6205,10 +6177,6 @@ impl TextInput {
 #[cfg(test)]
 #[path = "text_input_tests.rs"]
 mod tests;
-
-#[cfg(test)]
-#[path = "text_input_preparation_tests.rs"]
-mod preparation_tests;
 
 #[cfg(test)]
 #[path = "text_input_touch_tests.rs"]

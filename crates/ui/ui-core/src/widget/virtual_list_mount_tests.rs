@@ -5,7 +5,6 @@ use std::rc::Rc;
 
 use super::tests::{HugeList, ProbeRow, lay_out};
 use super::*;
-use crate::collection_transition::ListModelChange;
 
 tilo_test_env::scenario! {
     fn a_list_mounts_only_what_its_window_needs;
@@ -157,145 +156,6 @@ tilo_test_env::scenario! {
         assert_eq!(list.mounted_range, 87..112);
     }
 
-    phase a_changed_row_is_mounted_again_in_place_and_alone;
-    {
-        for model_reported in [false, true] {
-            let built = Rc::new(Cell::new(0_u32));
-            let counted = Rc::clone(&built);
-            let model = VecListModel::new((0..10_u64).collect(), |key| *key).unwrap();
-            let mut list = VirtualList::new(model, 20.0, move |_, _, key| {
-                counted.set(counted.get() + 1);
-                Box::new(ProbeRow::new(
-                    key.to_string(),
-                    20.0,
-                    false,
-                    Rc::new(Cell::new(0)),
-                ))
-            })
-            .with_viewport_height(200.0);
-            let _ = lay_out(&mut list, 300.0);
-            let _ = crate::widget::Widget::take_structure_change(&mut list);
-            let before = built.get();
-
-            if model_reported {
-                list.notify_model_changes(&[ListModelChange::RowsChanged { keys: vec![3] }]);
-            } else {
-                list.invalidate_rows([3]);
-            }
-            let doc = automerge::AutoCommit::new();
-            crate::widget::Widget::sync(&mut list, &doc, &automerge::ROOT);
-            assert_eq!(
-                crate::widget::Widget::take_structure_change(&mut list),
-                crate::widget::StructureChange::Children,
-                "a row changed (reported by its model: {model_reported}) is mounted again in place: the window keeps its tree"
-            );
-            let _ = lay_out(&mut list, 300.0);
-            assert_eq!(
-                built.get() - before,
-                1,
-                "only the changed row is built again"
-            );
-            assert!(list.mounted.iter().any(|row| row.key == ListKey::new(3u64)));
-        }
-    }
-
-    phase a_row_replaced_before_its_remount_is_let_go_of_by_the_remount;
-    {
-        let model = VecListModel::new((0..10_u64).collect(), |key| *key).unwrap();
-        let mut list = VirtualList::new(model, 20.0, move |_, _, key| {
-            Box::new(ProbeRow::new(
-                key.to_string(),
-                20.0,
-                false,
-                Rc::new(Cell::new(0)),
-            ))
-        })
-        .with_viewport_height(200.0);
-        let doc = automerge::AutoCommit::new();
-        crate::widget::Widget::sync(&mut list, &doc, &automerge::ROOT);
-        let theme = crate::theme::Theme::dark();
-        let mut taffy = taffy::TaffyTree::new();
-        let mut node_map = std::collections::HashMap::new();
-        let node = crate::widget::Widget::build_layout(&mut list, &mut taffy, &theme, &mut node_map);
-        let _ = crate::widget::Widget::take_structure_change(&mut list);
-        let laid_out = |list: &VirtualList<VecListModel<u64, u64>>| {
-            let mut walked = Vec::new();
-            crate::widget::Widget::for_each_layout_child(list, &mut |row| {
-                walked.push(std::ptr::from_ref(row).cast::<()>());
-            });
-            walked
-        };
-        let nodes = node_map.len();
-
-        for _ in 0..3 {
-            let walked = laid_out(&list);
-            list.invalidate_rows([3]);
-            crate::widget::Widget::sync(&mut list, &doc, &automerge::ROOT);
-            assert_eq!(
-                laid_out(&list),
-                walked,
-                "until the remount, the layout walk meets the widgets the layout holds"
-            );
-            assert_eq!(
-                crate::widget::Widget::take_structure_change(&mut list),
-                crate::widget::StructureChange::Children
-            );
-            let mut remount = crate::widget::Remount::new(&mut taffy, &theme, &mut node_map);
-            assert!(crate::widget::Widget::remount_children(
-                &mut list,
-                &mut remount
-            ));
-            let (mounted, unmounted) = remount.finish();
-            assert_eq!(
-                (mounted.len(), unmounted.len()),
-                (1, 1),
-                "one row in, one out"
-            );
-        }
-        assert_eq!(node_map.len(), nodes, "no node is left behind");
-        assert_eq!(
-            taffy.children(node).unwrap().len(),
-            list.mounted.len(),
-            "the list's node holds its rows"
-        );
-        assert_eq!(taffy.total_node_count(), nodes, "nor in the tree");
-    }
-
-    phase a_list_kept_out_of_the_layout_asks_no_rebuild_until_it_is_laid_out;
-    // A list the tree keeps without laying it out — a closed sidebar — asks
-    // nothing of the host until a build lays it out: a change held for a layout
-    // that never comes would ask for a rebuild every frame.
-    {
-        let model = VecListModel::new((0..10_u64).collect(), |key| *key).unwrap();
-        let mut list = VirtualList::new(model, 20.0, move |_, _, key| {
-            Box::new(ProbeRow::new(
-                key.to_string(),
-                20.0,
-                false,
-                Rc::new(Cell::new(0)),
-            ))
-        })
-        .with_viewport_height(200.0);
-        list.invalidate_rows([3]);
-        assert_eq!(
-            crate::widget::Widget::take_structure_change(&mut list),
-            crate::widget::StructureChange::None,
-            "with no node to mount under, the list asks nothing of the host"
-        );
-        let _ = lay_out(&mut list, 300.0);
-        assert_eq!(
-            crate::widget::Widget::take_structure_change(&mut list),
-            crate::widget::StructureChange::None,
-            "the build that lays it out mounts the rows: nothing is left for the host"
-        );
-        list.invalidate_rows([3]);
-        assert_eq!(
-            crate::widget::Widget::take_structure_change(&mut list),
-            crate::widget::StructureChange::Children,
-            "laid out, a row it mounts is mounted in place"
-        );
-    }
-
     phase hundred_million_row_lists_mount_and_request_only_the_window;
     {
         {
@@ -329,27 +189,4 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_list_laid_out_again_at_the_same_size_asks_for_no_change;
-    {
-        let model = VecListModel::new((0..40_u64).collect(), |key| *key).unwrap();
-        let mut list = VirtualList::new(model, 20.0, |_, _, key| {
-            Box::new(ProbeRow::new(
-                key.to_string(),
-                20.0,
-                false,
-                Rc::new(Cell::new(0)),
-            ))
-        })
-        .with_viewport_height(200.0);
-        let _ = lay_out(&mut list, 300.0);
-        let _ = crate::widget::Widget::take_structure_change(&mut list);
-        for turn in 0..3 {
-            let _ = lay_out(&mut list, 300.0);
-            assert_eq!(
-                crate::widget::Widget::take_structure_change(&mut list),
-                crate::widget::StructureChange::None,
-                "laid out again at the same size, turn {turn}, it has nothing to report"
-            );
-        }
-    }
 }

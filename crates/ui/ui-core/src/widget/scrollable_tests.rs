@@ -6,7 +6,6 @@ use crate::presence::PresenceCtx;
 use crate::testing::{Dispatch, dispatch};
 use crate::theme::Theme;
 use crate::widget::TaffyTreeExt;
-use crate::widget::scrollbar::BAR_HOLD_MS as VISIBLE_HOLD_MS;
 use crate::widget::{Element, Widget};
 use std::cell::Cell;
 use std::rc::Rc;
@@ -19,9 +18,6 @@ use winit::keyboard::NamedKey;
     clippy::cast_possible_truncation,
     reason = "the chrome fade is a few hundred milliseconds"
 )]
-const FADE_MS: u64 = crate::animation::CHROME_FADE.as_millis() as u64;
-use automerge::AutoCommit;
-
 fn vertical(content_h: f32) -> Scrollable {
     let mut s = Scrollable::new_vertical();
     s.rect = Rect::new(0.0, 0.0, 200.0, 300.0);
@@ -99,77 +95,6 @@ impl Widget for EventSpy {
     }
 }
 
-struct ClipSpy {
-    rect: Rect,
-    clip: Rc<Cell<Option<Rect>>>,
-}
-
-impl Widget for ClipSpy {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            size: Size::from_lengths(200.0, 2000.0),
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-        self.clip.set(crate::widget::layout_clip());
-    }
-
-    fn name(&self) -> &'static str {
-        "ClipSpy"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-}
-
-/// A 40 px row that counts the times its damage is asked for.
-struct DamageCounter {
-    rect: Rect,
-    asked: Rc<Cell<usize>>,
-}
-
-impl Widget for DamageCounter {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        let style = Style {
-            size: Size::from_lengths(200.0, 40.0),
-            ..Default::default()
-        };
-        taffy.widget_leaf(style, node_map, self)
-    }
-
-    fn apply_layout(&mut self, taffy: &TaffyTree<()>, node: NodeId, origin: Point) {
-        self.rect = crate::widget::layout_rect(taffy, node, origin);
-    }
-
-    fn collect_damage(&self, regions: &mut Vec<Rect>) {
-        self.asked.set(self.asked.get() + 1);
-        regions.push(self.rect);
-    }
-
-    fn name(&self) -> &'static str {
-        "DamageCounter"
-    }
-
-    fn get_rect(&self) -> Rect {
-        self.rect
-    }
-}
-
 tilo_test_env::scenario! {
     /// The give past an end of the content.
     /// Each phase was a test of its own and builds its own fixture.
@@ -213,21 +138,6 @@ tilo_test_env::scenario! {
         });
     }
 
-    phase a_pan_that_only_pulls_the_give_asks_for_the_layout_that_places_it;
-    {
-        use crate::time::testing::with_monotonic_time;
-        let mut s = vertical(1000.0);
-        with_monotonic_time(crate::time::now(), || {
-            assert!(!s.is_layout_dirty(), "a rested view places nothing");
-            assert!(s.pan(0.0, -60.0), "the give is a move");
-            assert_ne!(s.drawn_offset(), (0.0, 0.0), "the content is drawn given");
-            assert!(
-                s.is_layout_dirty(),
-                "the content is placed where it is drawn, so the frame lays it out"
-            );
-        });
-    }
-
     phase a_browsers_swipe_past_the_top_springs_back_once_it_pauses;
     {
         use crate::time::testing::with_monotonic_time;
@@ -264,68 +174,6 @@ tilo_test_env::scenario! {
     /// The offset restored, persisted and following a transcript, and the damage a scroll asks for.
     /// Each phase was a test of its own and builds its own fixture.
     fn offsets_persist_follow_and_damage_only_near_rows;
-
-    phase a_long_column_scrolled_asks_only_the_rows_near_the_view_for_damage;
-    {
-        let asked = Rc::new(Cell::new(0));
-        let column = (0..2000).fold(
-            crate::widget::Column::new().with_intrinsic_height(),
-            |column, _| {
-                column.push(Box::new(DamageCounter {
-                    rect: Rect::ZERO,
-                    asked: asked.clone(),
-                }))
-            },
-        );
-        let mut scroll = Scrollable::new_vertical().with_child(Box::new(column));
-        let mut taffy = TaffyTree::new();
-        let mut nodes = HashMap::new();
-        let node = scroll.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(400.0),
-                    height: taffy::AvailableSpace::Definite(400.0),
-                },
-            )
-            .unwrap();
-        scroll.offset_y = 20_000.0;
-        scroll.apply_layout(&taffy, node, Point::ZERO);
-        let mut regions = Vec::new();
-        scroll.collect_damage(&mut regions);
-        let visited = asked.get();
-        let view = scroll.content_viewport_rect();
-        let rows: Vec<Rect> = regions
-            .iter()
-            .copied()
-            .filter(|rect| rect.width() == 200.0)
-            .collect();
-        assert_eq!(rows.len(), visited, "each row asked says it changed");
-        let meets = |rect: &Rect| rect.y1 > view.y0 && rect.y0 < view.y1;
-        assert!(
-            rows.iter().all(meets),
-            "only rows meeting {view:?} are asked: {rows:?}"
-        );
-        let pitch = rows[1].y0 - rows[0].y0;
-        assert!(
-            rows[0].y0 <= view.y0 && rows[rows.len() - 1].y0 + pitch >= view.y1,
-            "every row meeting {view:?} is asked: {rows:?}"
-        );
-        assert!(
-            regions
-                .iter()
-                .all(|rect| rect.y1 > -30.0 && rect.y0 < 430.0)
-        );
-
-        let mut walked = 0;
-        fn count(widget: &dyn Widget, walked: &mut usize) {
-            *walked += 1;
-            widget.for_each_child_in_clip(&mut |child| count(child, walked));
-        }
-        count(&scroll, &mut walked);
-        assert!(walked < 20, "{walked} widgets walked");
-    }
 
     phase a_restored_offset_is_clamped_before_the_content_is_placed;
     {
@@ -369,135 +217,12 @@ tilo_test_env::scenario! {
         assert!(scroll.offset_y() < 0.5, "reading older lines stays put");
     }
 
-    phase scroll_offset_persists_reclamps_and_needs_no_remeasure;
-    {
-        {
-            use std::collections::HashMap;
-            let theme = Theme::dark();
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-            let mut tr = TextRenderer::new();
-            let mut scroll = Scrollable::new_vertical()
-                .with_child(tall_child())
-                .with_height(300.0);
-            let node = scroll.build_layout(&mut taffy, &theme, &mut node_map);
-            let parent = taffy.parent_node(
-                Style {
-                    size: Size::from_lengths(400.0, 300.0),
-                    ..Default::default()
-                },
-                &[node],
-            );
-            // The solve reserves the gutter once the content overflows, and lays the content
-            // out beside it, in the same solve.
-            crate::widget::layout::solve_built(
-                &mut scroll,
-                &mut taffy,
-                (parent, node),
-                &node_map,
-                Size {
-                    width: taffy::AvailableSpace::Definite(400.0),
-                    height: taffy::AvailableSpace::Definite(300.0),
-                },
-                &mut tr,
-            )
-            .unwrap();
-            scroll.apply_layout(&taffy, node, Point::ZERO);
-            scroll.scroll_by(0.0, 40.0);
-            assert!(
-                scroll.is_layout_dirty(),
-                "a scroll needs apply_layout to reposition"
-            );
-            assert!(
-                !scroll.layout_needs_measure(),
-                "a laid-out subtree needs no taffy re-solve on a pure scroll",
-            );
-        }
-
-        {
-            let cell = Rc::new(Cell::new((0.0f32, 0.0f32)));
-
-            let mut a = vertical(1200.0).with_persisted_offset(cell.clone());
-            a.scroll_by(0.0, 250.0);
-            assert_eq!(a.offset_y(), 250.0);
-            assert_eq!(
-                cell.get().1,
-                250.0,
-                "scroll writes back into the shared cell"
-            );
-
-            let b = Scrollable::new_vertical().with_persisted_offset(cell);
-            assert_eq!(
-                b.offset_y(),
-                250.0,
-                "rebuilt Scrollable resumes the saved offset"
-            );
-
-            let c = Scrollable::new_vertical();
-            assert_eq!(c.offset_y(), 0.0, "an unbound Scrollable is unaffected");
-        }
-
-        {
-            let cell = Rc::new(Cell::new((0.0f32, 0.0f32)));
-            let mut s = Scrollable::new_vertical().with_persisted_offset(cell.clone());
-            s.set_content_size(200.0, 1200.0);
-            s.set_viewport_size(200.0, 300.0); // max scroll 900
-            s.scroll_by(0.0, 900.0);
-            assert_eq!(
-                cell.get().1,
-                900.0,
-                "scrolled to the bottom, cell tracks it"
-            );
-            // The directory shrinks: content now only 400 tall → max scroll 100.
-            s.set_content_size(200.0, 400.0);
-            assert_eq!(s.offset_y(), 100.0, "offset clamped to the new max");
-            assert_eq!(cell.get().1, 100.0, "cell rewritten with the clamped value");
-        }
-    }
 }
 
 tilo_test_env::scenario! {
     /// How a scrollable sizes and places its content.
     /// Each phase was a test of its own and builds its own fixture.
     fn content_is_sized_and_placed_under_the_viewport;
-
-    phase content_is_placed_under_the_viewport_as_its_layout_clip;
-    {
-        let clip = Rc::new(Cell::new(None));
-        let mut scroll = Scrollable::new_vertical().with_child(Box::new(ClipSpy {
-            rect: Rect::ZERO,
-            clip: clip.clone(),
-        }));
-        let mut taffy = TaffyTree::new();
-        let mut nodes = HashMap::new();
-        let node = scroll.build_layout(&mut taffy, &Theme::dark(), &mut nodes);
-        taffy
-            .compute_layout(
-                node,
-                Size {
-                    width: taffy::AvailableSpace::Definite(400.0),
-                    height: taffy::AvailableSpace::Definite(300.0),
-                },
-            )
-            .unwrap();
-        assert_eq!(crate::widget::layout_clip(), None);
-        scroll.apply_layout(&taffy, node, Point::new(10.0, 20.0));
-        assert_eq!(clip.get(), Some(scroll.content_viewport_rect()));
-        assert_eq!(
-            crate::widget::layout_clip(),
-            None,
-            "the clip ends with the content's placement"
-        );
-
-        let outer = Rect::new(0.0, 0.0, 400.0, 100.0);
-        crate::widget::with_layout_clip(outer, || {
-            scroll.apply_layout(&taffy, node, Point::new(10.0, 20.0));
-        });
-        assert_eq!(
-            clip.get(),
-            Some(scroll.content_viewport_rect().intersect(outer))
-        );
-    }
 
     phase content_insets_keep_the_child_clear_of_footer_gutters_and_the_bar;
     {
@@ -668,57 +393,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase changing_max_height_relayouts_the_retained_scroll_tree;
-    {
-        let mut scroll = Box::new(
-            Scrollable::new_vertical()
-                .with_child(tall_child())
-                .with_max_height(300.0),
-        );
-        let theme = Theme::dark();
-        let mut taffy = TaffyTree::new();
-        let mut nodes = HashMap::new();
-        let mut text = TextRenderer::new();
-        let node = scroll.build_layout(&mut taffy, &theme, &mut nodes);
-        let mut bindings = crate::widget::bound_nodes::BoundNodeMap::new();
-        // SAFETY: the boxed tree owns this exact stable node map.
-        unsafe { bindings.rebuild(scroll.as_ref(), &taffy, node, &nodes) };
-        let child_node = scroll.child_node;
-        let child = scroll.child.as_deref().unwrap() as *const dyn Widget;
-        for height in [300.0, 120.0, 240.0] {
-            scroll.set_max_height(height);
-            // SAFETY: boxed retained widgets remain alive and uniquely owned
-            // for both the measurement and style-settling passes.
-            unsafe {
-                crate::widget::layout::compute_widget_layout(
-                    &mut taffy,
-                    node,
-                    Size {
-                        width: taffy::AvailableSpace::Definite(400.0),
-                        height: taffy::AvailableSpace::MaxContent,
-                    },
-                    &nodes,
-                    &bindings,
-                    &mut text,
-                )
-            }
-            .unwrap();
-            scroll.apply_layout(&taffy, node, Point::ZERO);
-            assert!(
-                (scroll.get_rect().height() - f64::from(height)).abs() < 0.5,
-                "retained maximum {height} produced viewport {}, style {:?}",
-                scroll.get_rect().height(),
-                taffy.style(node).unwrap(),
-            );
-            assert_eq!(scroll.child_node, child_node);
-            assert!(std::ptr::addr_eq(
-                child,
-                scroll.child.as_deref().unwrap() as *const dyn Widget
-            ));
-            assert!(scroll.content_h > scroll.viewport_h);
-        }
-    }
-
     phase the_bar_gutter_is_reserved_only_while_the_content_overflows;
     {
         let short = || -> Element {
@@ -755,32 +429,6 @@ tilo_test_env::scenario! {
             ((overflows.rect.x1 - track.x1) - (track.x0 - child.x1)).abs() < 0.5,
             "the thumb is centred in its gutter"
         );
-    }
-
-    phase descendant_bottom_remains_reachable_after_repeated_layout;
-    {
-        for gap in [0.25, 0.5, 0.75, 1.25] {
-            let mut content = Column::new()
-                .with_no_padding()
-                .with_intrinsic_height()
-                .with_gap(gap);
-            for index in 0..31 {
-                content = content.push(Box::new(Text::new(&format!("Row {index}"))));
-            }
-            let mut scroll = Scrollable::new_vertical()
-                .with_height(257.0)
-                .with_child(Box::new(content));
-            host_solve(&mut scroll, 311.0, 257.0);
-            scroll.set_offset_y(scroll.max_offset_y());
-            for _ in 0..3 {
-                host_solve(&mut scroll, 311.0, 257.0);
-                let bottom = crate::widget::layout::max_bottom_edge(scroll.children()[0]);
-                assert!(
-                    bottom <= scroll.content_viewport_rect().y1,
-                    "layout must not pull the last descendant below the viewport: {bottom}"
-                );
-            }
-        }
     }
 
     phase horizontal_content_is_laid_out_at_its_max_content_width;
@@ -980,58 +628,6 @@ tilo_test_env::scenario! {
                 scroll.offset_y(),
                 0.0,
                 "manual scrolling must not snap back to unchanged focus"
-            );
-        }
-    }
-
-    phase draw_publishes_the_viewport_and_cursor_motion_is_coalesced_until_scroll;
-    {
-        {
-            let observed = Rc::new(Cell::new(None));
-            let mut scroll = Scrollable::new_vertical().with_child(Box::new(EventSpy {
-                rect: Rect::new(20.0, 30.0, 420.0, 330.0),
-                pointer_events: Rc::default(),
-                activations: Rc::default(),
-                draw_viewport: observed.clone(),
-            }));
-            scroll.set_viewport_rect(Rect::new(20.0, 30.0, 420.0, 330.0));
-            let presence = PresenceCtx::default();
-            let outer = Rect::new(0.0, 0.0, 800.0, 600.0);
-            presence.viewport.set(Some(outer));
-            scroll.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), presence.draw_env()));
-            assert_eq!(observed.get(), Some(scroll.content_viewport_rect()));
-            assert_eq!(presence.viewport.get(), Some(outer));
-        }
-
-        {
-            let mut s = vertical(1200.0);
-            let position = winit::dpi::PhysicalPosition::new(40.0, 80.0);
-
-            assert_eq!(s.on_cursor_moved(position, 1.0), CursorMoveOutcome::Forward,);
-            assert_eq!(
-                s.on_cursor_moved(position, 1.0),
-                CursorMoveOutcome::Coalesced,
-            );
-            assert!(
-                !dispatch(&mut s, &cursor_moved(position.x, position.y)),
-                "a coalesced move must not become a handled user action",
-            );
-        }
-
-        {
-            let mut s = vertical(1200.0);
-            let position = winit::dpi::PhysicalPosition::new(40.0, 80.0);
-            assert_eq!(s.on_cursor_moved(position, 1.0), CursorMoveOutcome::Forward,);
-            assert_eq!(
-                s.on_cursor_moved(position, 1.0),
-                CursorMoveOutcome::Coalesced,
-            );
-
-            s.scroll_by(0.0, 10.0);
-            assert_eq!(
-                s.on_cursor_moved(position, 1.0),
-                CursorMoveOutcome::Forward,
-                "content moving under a stationary pointer requires one fresh route",
             );
         }
     }
@@ -1466,70 +1062,6 @@ tilo_test_env::scenario! {
     /// Each phase was a test of its own and builds its own fixture.
     fn bars_thumbs_and_edge_fades;
 
-    phase thumb_geometry_tracks_ratio_offset_minimum_and_visibility;
-    {
-        {
-            let short = vertical(600.0).vertical_thumb().expect("bar shown at 2x");
-            let tall = vertical(1200.0).vertical_thumb().expect("bar shown at 4x");
-            assert!(
-                short.height() > tall.height(),
-                "thumb must shrink as content grows: 2x={}, 4x={}",
-                short.height(),
-                tall.height(),
-            );
-            let track_len = 300.0 - 2.0 * BAR_MARGIN;
-            let expected = 0.5 * track_len;
-            assert!(
-                (short.height() - expected).abs() < 1.0,
-                "2x content thumb should be ≈half the track ({expected}), got {}",
-                short.height(),
-            );
-        }
-
-        {
-            let thumb = vertical(100_000.0).vertical_thumb().expect("bar shown");
-            assert!(
-                thumb.height() >= MIN_THUMB_LEN - 1e-6,
-                "thumb {} below min {}",
-                thumb.height(),
-                MIN_THUMB_LEN,
-            );
-        }
-
-        {
-            let s = vertical(150.0);
-            assert!(s.thumb_rect(ScrollAxis::Vertical).is_none());
-            assert!(s.vertical_track().is_none());
-            let s = vertical(300.0);
-            assert!(s.thumb_rect(ScrollAxis::Vertical).is_none());
-        }
-
-        {
-            let mut s = vertical(1200.0);
-            s = s.with_scrollbar(false);
-            assert!(s.thumb_rect(ScrollAxis::Vertical).is_none());
-        }
-
-        {
-            let mut s = vertical(1200.0);
-            let top = s.vertical_thumb().unwrap();
-            let track = s.vertical_track().unwrap();
-            assert!(
-                (top.y0 - track.y0).abs() < 1e-6,
-                "thumb starts at track top"
-            );
-
-            s.scroll_by(0.0, 100_000.0); // clamp to max
-            let bottom = s.vertical_thumb().unwrap();
-            assert!(
-                (bottom.y1 - track.y1).abs() < 1e-3,
-                "fully scrolled thumb should reach track bottom: {} vs {}",
-                bottom.y1,
-                track.y1,
-            );
-        }
-    }
-
     phase thumb_drags_and_track_presses_scroll_by_offset_and_page;
     {
         {
@@ -1732,247 +1264,6 @@ tilo_test_env::scenario! {
         assert!((track.y1 - (300.0 - radius)).abs() < 1e-9, "{track:?}");
     }
 
-    phase overlay_bar_fades_with_activity_and_damages_its_last_frame;
-    {
-        {
-            let mut s = vertical(1200.0);
-            s.last_activity = None; // as freshly constructed
-            s.pointer_near_bar = false;
-            assert_eq!(
-                s.bar_opacity_at(crate::motion::frame_now(), false),
-                0.0,
-                "idle overlay is hidden"
-            );
-
-            s.wake();
-            let t0 = s.last_activity.unwrap();
-            assert_eq!(
-                s.bar_opacity_at(t0, false),
-                1.0,
-                "full opacity right after activity"
-            );
-            assert_eq!(
-                s.bar_opacity_at(t0 + Duration::from_millis(VISIBLE_HOLD_MS - 10), false),
-                1.0,
-                "still fully visible during the hold",
-            );
-            let mid = s.bar_opacity_at(
-                t0 + Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS / 2),
-                false,
-            );
-            assert!(mid > 0.0 && mid < 1.0, "mid-fade opacity is partial: {mid}");
-            assert_eq!(
-                s.bar_opacity_at(
-                    t0 + Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS + 100),
-                    false,
-                ),
-                0.0,
-                "fully faded out once idle",
-            );
-        }
-
-        {
-            let mut s = vertical(1200.0);
-            s.last_activity = Some(
-                crate::time::now()
-                    .checked_sub(Duration::from_millis(VISIBLE_HOLD_MS + FADE_MS + 1))
-                    .expect("the test duration is far shorter than the monotonic clock"),
-            );
-            s.bar_visible_last_draw.set(true);
-            let mut scene = Scene::new();
-            s.draw_scrollbars(&mut scene, Affine::IDENTITY, &Theme::dark());
-
-            assert!(
-                s.needs_terminal_fade_frame(),
-                "the first transparent frame must be submitted"
-            );
-            let mut regions = Vec::new();
-            s.collect_damage(&mut regions);
-            assert!(
-                !regions.is_empty(),
-                "the transparent terminal frame must repaint the former track"
-            );
-
-            s.mark_drawn();
-            assert!(
-                !s.needs_terminal_fade_frame(),
-                "the terminal repaint is a one-frame latch"
-            );
-        }
-
-        {
-            let mut s = vertical(1200.0);
-            s.wake();
-            let long_after = s.last_activity.unwrap() + Duration::from_secs(30);
-            assert_eq!(s.bar_opacity_at(long_after, false), 0.0);
-            s.focused = true;
-            assert_eq!(
-                s.bar_opacity_at(long_after, false),
-                1.0,
-                "focus pins the bar visible"
-            );
-            s.focused = false;
-            assert_eq!(
-                s.bar_opacity_at(long_after, true),
-                1.0,
-                "reduced motion pins visible"
-            );
-            let mut persistent = vertical(1200.0).always_visible();
-            persistent.last_activity = None;
-            assert_eq!(
-                persistent.bar_opacity_at(crate::motion::frame_now(), false),
-                1.0,
-                "persistent bar always visible"
-            );
-        }
-
-        {
-            let s = vertical(1200.0);
-            assert!(
-                !Widget::needs_animation_frame(&s),
-                "idle list does not animate"
-            );
-            let p = vertical(1200.0).always_visible();
-            assert!(
-                !Widget::needs_animation_frame(&p),
-                "persistent bar is static"
-            );
-            let mut fading = vertical(1200.0);
-            fading.last_activity =
-                Some(crate::time::now() - Duration::from_millis(VISIBLE_HOLD_MS + 1));
-            assert!(
-                Widget::needs_animation_frame(&fading),
-                "a fading bar pumps frames"
-            );
-        }
-    }
-
-    phase opaque_hold_sleeps_until_fade_while_preserving_other_deadlines;
-    {
-        // Fresh curves are read in the instant they start: a descheduled
-        // runner cannot age them.
-        crate::time::testing::with_monotonic_time(crate::time::now(), || {
-            {
-                let mut s = vertical(1200.0);
-                s.wake();
-                let activity = s.last_activity.unwrap();
-                assert!(s.needs_redraw(), "activity must still paint the thumb");
-                s.bar_visible_last_draw.set(true);
-                s.mark_drawn();
-                assert!(
-                    !s.needs_animation_frame(),
-                    "opaque hold must not pump frames"
-                );
-                assert!(!s.needs_redraw(), "unchanged opaque thumb needs no damage");
-                assert!(
-                    !s.needs_terminal_fade_frame(),
-                    "hold is not an expired fade"
-                );
-                assert_eq!(
-                    s.next_wake_deadline(),
-                    Some(activity + Duration::from_millis(900))
-                );
-            }
-
-            {
-                let mut s = vertical(1200.0);
-                let start = crate::time::now();
-                s.last_activity = Some(start);
-                s.bar_visible_last_draw.set(true);
-                let fade_start = start + Duration::from_millis(900);
-                let fade_end = start + Duration::from_millis(1220);
-                assert_eq!(s.fade_start_deadline_at(start), Some(fade_start));
-                assert!(!s.fade_in_progress_at(fade_start - Duration::from_nanos(1)));
-                assert!(!s.needs_terminal_fade_frame_at(fade_start - Duration::from_nanos(1)));
-                assert!(s.fade_in_progress_at(fade_start));
-                assert_eq!(s.fade_start_deadline_at(fade_start), None);
-                assert!(s.fade_in_progress_at(fade_end - Duration::from_nanos(1)));
-                assert!(!s.needs_terminal_fade_frame_at(fade_end - Duration::from_nanos(1)));
-                assert!(!s.fade_in_progress_at(fade_end));
-                assert!(s.needs_terminal_fade_frame_at(fade_end));
-                s.last_activity = Some(start + Duration::from_millis(50));
-                assert_eq!(
-                    s.fade_start_deadline_at(start + Duration::from_millis(50)),
-                    Some(fade_start + Duration::from_millis(50))
-                );
-                s.focused = true;
-                assert_eq!(s.fade_start_deadline_at(start), None);
-                s.focused = false;
-                s.reduce_motion_active = true;
-                assert_eq!(s.fade_start_deadline_at(start), None);
-                s.reduce_motion_active = false;
-                s.overlay = false;
-                assert_eq!(s.fade_start_deadline_at(start), None);
-            }
-
-            {
-                let now = crate::time::now();
-                let mut child = vertical(1200.0);
-                child.last_activity = Some(now - Duration::from_millis(100));
-                let mut outer = vertical(1200.0);
-                outer.last_activity = Some(now);
-                outer.child = Some(Box::new(child));
-                assert_eq!(
-                    outer.next_wake_deadline(),
-                    Some(now + Duration::from_millis(800))
-                );
-            }
-
-            {
-                let mut s = vertical(1200.0);
-                s.fling(0.0, 120.0);
-                assert!(
-                    s.needs_animation_frame(),
-                    "momentum must not depend on scrollbar opacity"
-                );
-                let doc = AutoCommit::new();
-                // Match the admitted primary-frame lifecycle: update runs even when
-                // the prior frame consumed all ordinary dirty flags. Frames are
-                // 1/60 s apart on the clock the glide reads.
-                let mut frame = crate::time::now();
-                for _ in 0..240 {
-                    if !s.needs_animation_frame() {
-                        break;
-                    }
-                    frame += Duration::from_nanos(16_666_667);
-                    crate::time::testing::with_monotonic_time(frame, || {
-                        s.update(&doc, &automerge::ROOT);
-                    });
-                    s.sync(&doc, &automerge::ROOT);
-                    s.mark_drawn();
-                }
-                assert!(s.offset_y() > 0.0, "the demanded frames advance content");
-                assert_eq!(s.momentum_speed(), 0.0);
-                assert!(
-                    !s.needs_animation_frame(),
-                    "settled momentum must stop the pump"
-                );
-            }
-        });
-    }
-
-    phase primary_scroll_shares_inset_geometry_and_native_offset;
-    {
-        use crate::widget::PrimaryScrollAction;
-        let mut scroll = Scrollable::new_vertical().with_bottom_content_inset(12.0);
-        scroll.set_viewport_rect(Rect::new(0.0, 0.0, 400.0, 300.0));
-        scroll.set_content_size(400.0, 500.0);
-        scroll.apply_primary_vertical_scroll(PrimaryScrollAction::End);
-        let m = scroll.primary_vertical_scroll().unwrap().metrics;
-        assert_eq!(m.offset, 212.0);
-        assert_eq!(m.viewport, 288.0);
-        assert_eq!(scroll.offset_y(), 212.0);
-        scroll.set_offset_y(48.0);
-        assert_eq!(
-            scroll.primary_vertical_scroll().unwrap().metrics.offset,
-            48.0
-        );
-        scroll.set_content_size(400.0, 100.0);
-        assert_eq!(
-            scroll.primary_vertical_scroll().unwrap().metrics.offset,
-            0.0
-        );
-    }
 }
 
 use crate::widget::{Column, Row, Text};

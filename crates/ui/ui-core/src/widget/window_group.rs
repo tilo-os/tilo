@@ -127,13 +127,6 @@ impl WindowGroup {
     pub(crate) fn step_rect_spring_for_tests(&mut self) {
         self.step_rect_spring();
     }
-
-    #[cfg(test)]
-    pub(crate) fn rect_spring_width_velocity(&self) -> Option<f32> {
-        self.rect_spring
-            .as_ref()
-            .map(|spring| f32_of_f64(spring.velocity().width()))
-    }
 }
 
 const SEARCH_CONTROL_WIDTH: f64 =
@@ -2100,11 +2093,6 @@ impl WindowGroup {
     #[cfg(any(test, debug_assertions))]
     pub fn bar_for_tests(&self) -> &crate::widget::TabBar {
         &self.bar
-    }
-
-    #[cfg(test)]
-    pub fn close_glyph_icon_for_tests() -> icons::Icon {
-        icons::Icon::X
     }
 
     #[cfg(test)]

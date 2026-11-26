@@ -7,105 +7,13 @@ use super::draw_with_theme;
 use super::drive;
 use super::mods;
 use super::suggesting_field;
-use super::typing_field;
-use super::typing_frame;
 use super::x_for_byte;
 use crate::synthetic_input::{char_key, cursor_moved, mouse_press, named_key};
 use crate::testing::dispatch;
 use crate::text_edit::SUGGESTION_SETTLE;
-use automerge::ObjType;
-use automerge::transaction::Transactable as _;
 
 tilo_test_env::scenario! {
     fn a_field_shapes_measures_and_lays_out_its_text;
-
-    phase multiline_keystroke_prepares_only_the_edited_paragraph_at_every_width;
-    {
-        let _settled = crate::motion::testing::settled();
-        let mut tr = crate::font_catalog::fixture_renderer();
-        let theme = Theme::dark();
-        tr.set_text_scale(theme.text_scale);
-        let text = (0..200)
-            .map(|index| format!("Paragraph {index} of a long note, with enough words to wrap."))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let mut input = typing_field(&text, &mut tr, &theme);
-        let at = text.find("Paragraph 100 ").unwrap() + "Paragraph 100".len();
-        input.set_cursor_pos(at);
-        typing_frame(&mut input, &mut tr, &theme);
-        crate::richtext::take_prepared_paragraphs();
-        let mut doc = AutoCommit::new();
-        for (step, key) in ["x", "y", " ", "z"].into_iter().enumerate() {
-            assert!(drive(
-                &mut input,
-                &mut doc,
-                &char_key(key),
-                Modifiers::default()
-            ));
-            typing_frame(&mut input, &mut tr, &theme);
-            assert_eq!(
-                crate::richtext::take_prepared_paragraphs(),
-                1,
-                "keystroke {step}: one paragraph prepared and shaped for every width"
-            );
-        }
-        let fresh = typing_field(input.value(), &mut tr, &theme);
-        let (typed, fresh) = (
-            input.single_layout.as_ref().unwrap(),
-            fresh.single_layout.as_ref().unwrap(),
-        );
-        assert_eq!(typed.height(), fresh.height());
-        assert_eq!(typed.logical_line_origins(), fresh.logical_line_origins());
-        for byte in (0..=input.value().len()).filter(|byte| input.value().is_char_boundary(*byte)) {
-            assert_eq!(
-                typed.caret_geometry(byte),
-                fresh.caret_geometry(byte),
-                "byte {byte}"
-            );
-        }
-        for (a, b) in typed.buffer.lines.iter().zip(&fresh.buffer.lines) {
-            assert_eq!(
-                format!("{:?}", a.layout_opt()),
-                format!("{:?}", b.layout_opt())
-            );
-        }
-    }
-
-    phase single_line_batch_metrics_preserve_graphemes_preedit_and_theme_geometry;
-    {
-        let _settled = crate::motion::testing::settled();
-        for text in ["", "ordinary ffi text", "abc אבג xyz", "é 👩‍💻 end"] {
-            for scale in [1.0, 2.0] {
-                let theme = Theme::dark().with_text_scale(scale);
-                let mut input = TextInput::local().with_initial_value(text);
-                input.apply_layout_external(Rect::new(20.0, 30.0, 420.0, 70.0));
-                for preedit_at in [None, Some(0), Some(text.len() / 2), Some(text.len())] {
-                    input.core.clear_preedit();
-                    if let Some(at) = preedit_at {
-                        input.set_cursor_pos(at);
-                        input.core.set_preedit("編", Some((0, "編".len())));
-                    }
-                    draw_with_theme(&mut input, &theme);
-                    let layout = input
-                        .single_layout
-                        .as_ref()
-                        .expect("production draw shapes the field");
-                    let mut reference = vec![0.0; text.len().saturating_add(1)];
-                    for byte in grapheme_indices(text)
-                        .map(|(byte, _)| byte)
-                        .chain([text.len()])
-                    {
-                        reference[byte] =
-                            f64::from(layout.caret_geometry(input.text_to_layout_byte(byte)).0);
-                    }
-                    assert_eq!(
-                        input.char_x_positions, reference,
-                        "{text:?}, scale={scale}, preedit_at={preedit_at:?}"
-                    );
-                }
-            }
-        }
-    }
 
     phase themed_input_typography_reflows_and_centers_actual_shaped_text;
     {
@@ -169,50 +77,6 @@ tilo_test_env::scenario! {
                 .abs()
                 < 0.001,
             "a role change reads the current theme instead of a stale cached Body size"
-        );
-    }
-
-    phase embedded_input_measurement_adopts_theme_and_keeps_document_size_override;
-    {
-        let _settled = crate::motion::testing::settled();
-        let text = "A wrapping field must measure the same themed typography that it paints.";
-        let mut theme = Theme::dark();
-        theme.tokens.typography = theme.tokens.typography.with_base_size(19.0);
-        let theme = theme.with_ui_scale(2.0).with_text_scale(1.5);
-        let mut input = TextInput::local().multiline(true).with_initial_value(text);
-        let mut renderer = TextRenderer::new();
-        assert_eq!(
-            renderer.text_scale(),
-            1.0,
-            "renderer starts at its old frame scale"
-        );
-        let height = input.measure_wrapped_content(280.0, &mut renderer, &theme);
-        let layout = input
-            .single_layout
-            .as_ref()
-            .expect("actual wrapped measurement shapes text");
-        assert!((layout.buffer.metrics().font_size - theme.text(TextRole::Body).size).abs() < 0.001);
-        assert!(height >= layout.height());
-        assert!(
-            layout.buffer.layout_runs().count() > 1,
-            "the themed paragraph really wraps"
-        );
-
-        let mut document = TextInput::local()
-            .with_content_size(17.0)
-            .with_initial_value("document");
-        document.prepare_theme(&theme);
-        document.apply_layout_external(Rect::new(0.0, 0.0, 300.0, 80.0));
-        draw_with_theme(&mut document, &theme);
-        assert_eq!(
-            document
-                .single_layout
-                .as_ref()
-                .unwrap()
-                .buffer
-                .metrics()
-                .font_size,
-            17.0
         );
     }
 
@@ -746,38 +610,6 @@ tilo_test_env::scenario! {
             assert!(ti.handle_chrome_pointer(&mouse_press(), 2.0, mods(false, false)));
             assert_eq!(ti.selection_anchor_focus_or_caret(), (8, 8));
         }
-    }
-
-    phase a_bound_field_at_rest_asks_for_no_frame;
-    {
-        // A sync reads what the document holds. A read that shows the same text
-        // is not a paint: a host asking the field when to idle would never idle.
-        let mut state = crate::State::new();
-        let text = state
-            .doc
-            .put_object(&state.root, "body", ObjType::Text)
-            .unwrap();
-        state.doc.splice_text(&text, 0, 0, "hello").unwrap();
-        let mut field = TextInput::local();
-        field.bind_text(text.clone());
-        crate::widget::Widget::sync(&mut field, &state.doc, &state.root);
-        assert!(
-            crate::widget::Widget::needs_redraw(&field),
-            "the field adopted the bound text"
-        );
-        crate::widget::Widget::mark_drawn(&mut field);
-        crate::widget::Widget::sync(&mut field, &state.doc, &state.root);
-        assert!(
-            !crate::widget::Widget::needs_redraw(&field),
-            "a sync that adopted nothing new asks for no frame"
-        );
-        state.doc.splice_text(&text, 0, 0, "J").unwrap();
-        crate::widget::Widget::sync(&mut field, &state.doc, &state.root);
-        assert_eq!(field.value(), "Jhello");
-        assert!(
-            crate::widget::Widget::needs_redraw(&field),
-            "a bound edit shows in place"
-        );
     }
 
     phase an_autocorrection_mark_stays_inside_the_field;

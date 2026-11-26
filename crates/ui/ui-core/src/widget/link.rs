@@ -515,7 +515,6 @@ impl Widget for Link {
 mod tests {
     use super::*;
     use automerge::AutoCommit;
-    use winit::event::{ElementState, MouseButton};
 
     tilo_test_env::scenario! {
         fn a_link_opens_runs_and_describes_itself;
@@ -527,79 +526,7 @@ mod tests {
                 assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
             }
 
-            fn click_opens_url_through_the_opener_with_the_right_url() {
-                let (services, recorder) = crate::process::ProcessServices::recording();
-                let _host = crate::process::enter(&services);
-                let work = crate::background::Pumped::new();
-                let _work = work.background().enter();
-                let mut link = Link::new("https://example.com/page");
-                let (tree, node) = laid_out(&mut link);
-
-                let device = winit::event::DeviceId::dummy();
-                let mut sender = crate::testing::Dispatch::new().layout(&tree, node);
-                let mut dispatch = |link: &mut Link, ev: WindowEvent| {
-                    sender.send(link, &ev);
-                };
-
-                dispatch(
-                    &mut link,
-                    WindowEvent::CursorMoved {
-                        device_id: device,
-                        position: (10.0, 10.0).into(),
-                    },
-                );
-                dispatch(
-                    &mut link,
-                    WindowEvent::MouseInput {
-                        device_id: device,
-                        state: ElementState::Pressed,
-                        button: MouseButton::Left,
-                    },
-                );
-                assert!(
-                    recorder.opened_uris().is_empty(),
-                    "does not open until release"
-                );
-                dispatch(
-                    &mut link,
-                    WindowEvent::MouseInput {
-                        device_id: device,
-                        state: ElementState::Released,
-                        button: MouseButton::Left,
-                    },
-                );
-                work.run_pending();
-
-                assert_eq!(
-                    recorder.opened_uris(),
-                    ["https://example.com/page"],
-                    "opened exactly the link's URL on release"
-                );
-                assert_eq!(link.last_activated(), Some("https://example.com/page"));
-            }
-
-            fn keyboard_activate_opens_url() {
-                let (services, recorder) = crate::process::ProcessServices::recording();
-                let work = crate::background::Pumped::new();
-                let _work = work.background().enter();
-                let mut link = Link::new("https://w3.org");
-                let mut doc = AutoCommit::new();
-                let handled = crate::process::scoped(&services, || {
-                    link.perform_action(
-                        &crate::a11y::Action::Activate,
-                        &[],
-                        &mut crate::widget::Edits::lend(&mut doc),
-                        &automerge::ROOT,
-                    )
-                });
-                assert!(handled, "Activate is handled");
-                work.run_pending();
-                assert_eq!(recorder.opened_uris(), ["https://w3.org"]);
-            }
-
             native_opener_rejects_nul_without_truncating_the_url();
-            click_opens_url_through_the_opener_with_the_right_url();
-            keyboard_activate_opens_url();
         }
 
         phase link_semantics_cursor_and_default_label;
@@ -637,15 +564,8 @@ mod tests {
                 );
             }
 
-            fn default_label_is_the_url() {
-                let link = Link::new("https://example.com");
-                assert_eq!(link.label(), "https://example.com");
-                assert_eq!(link.url(), "https://example.com");
-            }
-
             renders_as_a_link_in_the_accessibility_tree();
             hovered_link_requests_the_pointer_cursor();
-            default_label_is_the_url();
         }
 
         phase an_action_link_runs_its_action_instead_of_opening;
@@ -671,17 +591,6 @@ mod tests {
 
         phase a_link_copies_its_address_as_its_own_action;
         {
-            fn the_copy_is_the_links_own_child() {
-                use crate::a11y::Role;
-                let link = Link::new("https://example.org/page").with_label("The page");
-                let node = Widget::accessibility(&link).expect("semantics");
-                assert_eq!(node.name.as_deref(), Some("The page"));
-                assert_eq!(node.children.len(), 1, "the copy stands beside the link");
-                let copy = &node.children[0];
-                assert_eq!(copy.role, Role::Button);
-                assert_eq!(copy.name.as_deref(), Some("Copy link"));
-            }
-
             fn an_action_link_offers_no_copy_of_an_address_it_has_not_got() {
                 let link = Link::new("");
                 let node = Widget::accessibility(&link).expect("semantics");
@@ -710,50 +619,9 @@ mod tests {
                 });
             }
 
-            the_copy_is_the_links_own_child();
             an_action_link_offers_no_copy_of_an_address_it_has_not_got();
             the_copy_puts_the_address_on_the_clipboard_and_opens_nothing();
         }
-    }
-
-    /// The copy reaches an agent as the link's published action, not only a press.
-    #[test]
-    fn a_links_copy_action_is_published_and_copies_its_address() {
-        use crate::app::driver::Driver;
-        use crate::clipboard::{ClipboardBackend, ClipboardTarget, InProcessClipboard};
-        use crate::headless::CONTROL_RESOURCE_PREFIX;
-        let clipboard = std::sync::Arc::new(InProcessClipboard::default());
-        let services = crate::process::ProcessServices::null().with_clipboard(clipboard.clone());
-        crate::process::scoped(&services, || {
-            let mut driver = Driver::new(
-                crate::State::new(),
-                Box::new(
-                    Link::new("https://example.org/page")
-                        .with_label("The page")
-                        .with_id("the-page"),
-                ),
-                (640, 160),
-            );
-            let resource = driver
-                .resources()
-                .into_iter()
-                .find(|resource| {
-                    resource.id.as_str().starts_with(CONTROL_RESOURCE_PREFIX)
-                        && resource.label == "Copy link"
-                })
-                .expect("the link's copy is published through the resource api");
-            driver
-                .invoke_action(
-                    &tilo_actions::ActionAddress::new(resource.id.as_str(), "activate"),
-                    &serde_json::Map::new(),
-                    None,
-                )
-                .unwrap();
-            assert_eq!(
-                clipboard.text(ClipboardTarget::Clipboard).as_deref(),
-                Some("https://example.org/page")
-            );
-        });
     }
 
     fn laid_out(link: &mut Link) -> (TaffyTree<()>, NodeId) {

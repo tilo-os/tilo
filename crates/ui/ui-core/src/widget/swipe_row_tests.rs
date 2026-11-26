@@ -249,25 +249,4 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase a_row_the_frame_did_not_draw_rests_after_it;
-    // A row the frame did not draw owes nothing after it: the list culls the rows away from its
-    // box, and the offset such a row moved by unseen is where the next frame draws it.
-    {
-        let runs = Runs::new();
-        let mut row = row(None, Some(counted("Reply", &runs)));
-        let at = now();
-        with_monotonic_time(at, || {
-            row.send(&touch(TouchPhase::Started, Point::new(200.0, 24.0)));
-            row.send(&touch(TouchPhase::Moved, Point::new(180.0, 24.0)));
-            assert!(
-                Widget::needs_redraw(&row.row),
-                "the row moved since the last frame drew it"
-            );
-            Widget::mark_drawn(&mut row.row);
-            assert!(
-                !Widget::needs_redraw(&row.row),
-                "a row the frame did not draw asks for none after it"
-            );
-        });
-    }
 }

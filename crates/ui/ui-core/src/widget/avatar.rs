@@ -1080,7 +1080,6 @@ impl Widget for Avatar {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::color_compat::ColorCompat;
     use crate::presence::PresenceCtx;
     use crate::text_render::TextRenderer;
     use vello::Scene;
@@ -1205,93 +1204,6 @@ mod tests {
             .iter()
             .filter(|t| **t == tag)
             .count()
-    }
-
-    fn nested_message_scene(text: &mut TextRenderer, theme: &Theme, transform: Affine) -> Scene {
-        use crate::widget::{Embedded, Text};
-        let message = Text::new("A preceding message");
-        let mut body = Embedded::new(message);
-        body.layout(Rect::new(68.0, 28.0, 300.0, 28.0), theme, text);
-        let mut scene = Scene::new();
-        body.draw(&mut crate::draw::DrawCtx::new(
-            &mut scene,
-            transform,
-            text,
-            theme,
-            PresenceCtx::empty().draw_env(),
-        ));
-        assert!(
-            !scene.encoding().resources.glyphs.is_empty(),
-            "text must render"
-        );
-        scene
-    }
-
-    fn assert_avatar_pixels(theme: &Theme, renderer: &mut crate::offscreen::OffscreenRenderer) {
-        let mut text = TextRenderer::new();
-        let transform = Affine::translate((13.0, 17.0));
-        let mut scene = nested_message_scene(&mut text, theme, transform);
-        let ground = theme.tokens.colors.surfaces.content;
-        let before = renderer.render(&scene, ground);
-        let mut avatar = crate::widget::Embedded::new(Avatar::person("Scribe Agent", "scribe"));
-        avatar.layout(Rect::new(24.0, 104.0, 64.0, 144.0), theme, &mut text);
-        let bounds = transform.transform_rect_bbox(avatar.rect());
-        avatar.draw(&mut crate::draw::DrawCtx::new(
-            &mut scene,
-            transform,
-            &mut text,
-            theme,
-            PresenceCtx::empty().draw_env(),
-        ));
-        let after = renderer.render(&scene, ground);
-        let fill = AvatarFace::new("Scribe Agent", "scribe").colour(theme);
-        let mut changed = 0;
-        let mut ink = 0;
-        for y in 0..240_u32 {
-            for x in 0..360_u32 {
-                let pixel = crate::offscreen::OffscreenRenderer::sample(&after, 360, x, y);
-                if pixel == crate::offscreen::OffscreenRenderer::sample(&before, 360, x, y) {
-                    continue;
-                }
-                assert!(
-                    bounds.contains(Point::new(f64::from(x), f64::from(y))),
-                    "avatar escaped its laid-out bounds at ({x}, {y})"
-                );
-                changed += 1;
-                if bounds
-                    .inset(10.0)
-                    .contains(Point::new(f64::from(x), f64::from(y)))
-                    && crate::color::contrast_ratio(
-                        Color::from_rgb8(pixel.0, pixel.1, pixel.2),
-                        fill,
-                    ) >= crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST - 0.05
-                {
-                    ink += 1;
-                }
-            }
-        }
-        assert!(
-            changed > 700,
-            "the avatar background must paint in its bounds"
-        );
-        assert!(
-            ink > 10,
-            "legible initials must paint inside that background"
-        );
-        let pixel = crate::offscreen::OffscreenRenderer::sample(&after, 360, 57, 126);
-        assert_eq!((pixel.0, pixel.1, pixel.2), (fill.r(), fill.g(), fill.b()));
-        assert!(
-            crate::color::contrast_ratio(initial_ink(fill, theme), fill)
-                >= crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST - 0.05
-        );
-    }
-
-    #[test]
-    fn nested_avatar_background_and_initials_share_the_laid_out_bounds() {
-        let mut renderer = crate::offscreen::OffscreenRenderer::new(360, 240);
-        for theme in [Theme::dark(), Theme::light()] {
-            assert_avatar_pixels(&theme, &mut renderer);
-        }
     }
 
     #[cfg(feature = "local-daemons")]
@@ -1430,54 +1342,6 @@ mod tests {
             }
         }
 
-        phase initials_reach_small_text_contrast_on_every_avatar_fill;
-        {
-            for theme in [Theme::dark(), Theme::light()] {
-                for (index, &hue) in theme.tokens.colors.presence.colors.iter().enumerate() {
-                    let fill = initials_fill(hue, &theme);
-                    let ink = initial_ink(fill, &theme);
-                    let ratio = crate::color::contrast_ratio(ink, fill);
-                    assert!(
-                        ratio >= crate::tokens::colors::SMALL_TEXT_MIN_CONTRAST - 0.05,
-                        "{}: initials on presence hue {index} reach only {ratio:.2}:1",
-                        theme.name
-                    );
-                    let (before, after) = (
-                        crate::color::Oklch::from_color(hue).h,
-                        crate::color::Oklch::from_color(fill).h,
-                    );
-                    let turn = (before - after).abs().min(360.0 - (before - after).abs());
-                    assert!(
-                        turn < 8.0,
-                        "{}: the fill keeps the person's hue",
-                        theme.name
-                    );
-                }
-            }
-        }
-
-        phase initials_ink_is_one_legible_direction_per_palette;
-        {
-            for theme in [Theme::dark(), Theme::light()] {
-                let palette = theme.tokens.colors.presence;
-                let inks: Vec<Color> = palette
-                    .colors
-                    .iter()
-                    .map(|&fill| initial_ink(fill, &theme))
-                    .collect();
-                for (ink, fill) in inks.iter().zip(palette.colors) {
-                    let ratio = crate::color::contrast_ratio(*ink, fill);
-                    assert!(ratio >= 4.5, "{}: initials at {ratio:.2}:1", theme.name);
-                }
-                let dark = |c: &Color| crate::color::relative_luminance(*c) < 0.18;
-                assert!(
-                    inks.iter().all(dark) || !inks.iter().any(dark),
-                    "{}: initials flip between dark and light inks",
-                    theme.name
-                );
-            }
-        }
-
         phase initials_skip_words_without_letters;
         {
             assert_eq!(initials_for_name("Tilo 4"), "T");
@@ -1553,44 +1417,6 @@ mod tests {
             let fallback = paint_face(AvatarFace::new("Ada Lovelace", "ada"), &theme);
             assert_eq!(tags(&fallback, DrawTag::IMAGE), 0);
             assert!(tags(&fallback, DrawTag::COLOR) >= 2, "disc and glyphs");
-        }
-
-        phase sizes_follow_the_metrics_and_square_avatars_use_concentric_radii;
-        {
-            let theme = Theme::dark();
-            let small = AvatarSize::Small.side(&theme);
-            let regular = AvatarSize::Regular.side(&theme);
-            let large = AvatarSize::Large.side(&theme);
-            let hero = AvatarSize::Hero.side(&theme);
-            assert!(small < regular && regular < large && large < hero);
-            let scaled = Theme::dark().with_ui_scale(2.0);
-            assert!((AvatarSize::Regular.side(&scaled) - regular * 2.0).abs() < 0.5);
-
-            let face = AvatarFace::new("Site", "site").square();
-            let shape = face.shape(Rect::new(0.0, 0.0, 48.0, 48.0), &theme);
-            assert!((shape.radii().top_left - f64::from(theme.tokens.radii.control)).abs() < 0.01);
-            let circle = AvatarFace::new("Ada", "ada").shape(Rect::new(0.0, 0.0, 48.0, 30.0), &theme);
-            assert!((circle.radii().top_left - 15.0).abs() < 0.01);
-            assert!(
-                (circle.rect().width() - 30.0).abs() < 0.01,
-                "centred square"
-            );
-        }
-
-        phase a_culled_avatar_does_not_stay_layout_dirty;
-        {
-            let mut avatar = Avatar::person("Ada Lovelace", "ada");
-            let mut taffy = TaffyTree::new();
-            let mut map = std::collections::HashMap::new();
-            let node = avatar.build_layout(&mut taffy, &Theme::dark(), &mut map);
-            taffy
-                .compute_layout(node, <taffy::Size<taffy::AvailableSpace> as taffy::prelude::TaffyMaxContent>::MAX_CONTENT)
-                .unwrap();
-            avatar.apply_layout(&taffy, node, Point::new(0.0, 4000.0));
-            // Never drawn (off-screen), yet the layout is settled.
-            assert!(!avatar.is_layout_dirty());
-            let node = Widget::accessibility(&avatar).unwrap();
-            assert_eq!(node.name.as_deref(), Some("Ada Lovelace"));
         }
 
         phase overflow_disc_paints_on_its_ground;

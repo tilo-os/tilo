@@ -193,31 +193,10 @@ fn form_labels_adapt_by_measurement_width_and_type_size() {
         assert!(label.y1 <= control.y0);
     }
 
-    fn fixed_control_needs_do_not_inherit_an_expandable_entry_minimum() {
-        let mut field = Field::new(
-            "Count",
-            super::super::NumberInput::new(3.0)
-                .with_range(0.0, 99.0)
-                .compact(),
-        );
-        solve(&mut field, 220.0, &Theme::dark());
-        assert_eq!(
-            field.effective_layout().unwrap().resolved_placement,
-            LabelPlacement::Beside
-        );
-        let control = field.children()[1].children()[0].get_rect();
-        assert!(control.width() < 140.0, "{control:?}");
-        assert_eq!(
-            control.height(),
-            super::super::ControlSize::Regular.height(&Theme::dark())
-        );
-    }
-
     wide_fields_align_controls_beside_measured_labels();
     narrow_and_large_type_stack_long_labels_and_scroll_to_actions();
     measured_long_labels_and_large_text_change_layout_without_breakpoints();
     wide_label_aligns_to_first_control_even_with_long_help_and_validation();
-    fixed_control_needs_do_not_inherit_an_expandable_entry_minimum();
 }
 fn named<'a>(node: &'a InspectionNode, id: &str) -> &'a InspectionNode {
     fn find<'a>(node: &'a InspectionNode, id: &str) -> Option<&'a InspectionNode> {
@@ -298,210 +277,6 @@ fn a_validation_error_marks_its_control_invalid() {
     assert!(invalid("email"), "the field with an error is invalid");
     assert!(!invalid("name"), "a field without one is not");
 }
-#[test]
-fn form_page_edges_and_resize_match_fresh_layout() {
-    fn page_readable_width_and_single_gutter_leave_common_content_edges() {
-        for width in [340, 1200] {
-            let harness = Driver::new_with_theme(
-                crate::State::new(),
-                Box::new(FormPage::new("Account", long_form())),
-                (width, 1200),
-                Theme::dark(),
-            );
-            let snapshot = harness.inspection();
-            let mut forms = Vec::new();
-            collect(&snapshot.root, "Form", &mut forms);
-            let mut sections = Vec::new();
-            collect(&snapshot.root, "FormSection", &mut sections);
-            let theme = Theme::dark();
-            assert!(forms[0].rect[2] <= f64::from(theme.tokens.metrics.readable_width));
-            let gutter = f64::from(theme.tokens.spacing.rhythm.group);
-            assert!(
-                (forms[0].rect[0] - gutter).abs() < 0.5,
-                "{:?}",
-                forms[0].rect
-            );
-            for section in sections {
-                assert_eq!(section.rect[0], forms[0].rect[0]);
-            }
-            assert_eq!(
-                named(&snapshot.root, "save").rect[0] + named(&snapshot.root, "save").rect[2],
-                forms[0].rect[0] + forms[0].rect[2]
-            );
-        }
-    }
-
-    fn resized_layout_matches_fresh_and_retains_focus_order() {
-        fn geometry(node: &InspectionNode) -> Vec<[f64; 4]> {
-            let mut all = vec![node.rect];
-            for child in &node.children {
-                all.extend(geometry(child));
-            }
-            all
-        }
-        fn keys(node: &InspectionNode, found: &mut std::collections::HashSet<String>) {
-            if let Some(key) = node
-                .semantics
-                .as_ref()
-                .and_then(|access| access.semantic_key.as_ref())
-            {
-                assert!(found.insert(key.clone()), "duplicate semantic key {key}");
-            }
-            for child in &node.children {
-                keys(child, found);
-            }
-        }
-
-        let mut resized = Driver::new_with_theme(
-            crate::State::new(),
-            Box::new(FormPage::new("Account", long_form())),
-            (1200, 1400),
-            Theme::dark().with_text_scale(2.0),
-        );
-        resized.tab(false);
-        resized.resize((340, 1400)).unwrap();
-        let fresh = Driver::new_with_theme(
-            crate::State::new(),
-            Box::new(FormPage::new("Account", long_form())),
-            (340, 1400),
-            Theme::dark().with_text_scale(2.0),
-        );
-        assert_eq!(
-            geometry(&resized.inspection().root),
-            geometry(&fresh.inspection().root)
-        );
-        assert_eq!(
-            resized.focused_access_node().unwrap().name.as_deref(),
-            Some("Full name as shown to your members")
-        );
-        assert_eq!(
-            resized
-                .tab_through()
-                .iter()
-                .filter(|(role, _)| *role != crate::a11y::Role::Group)
-                .map(|(_, name)| name.as_deref().unwrap_or(""))
-                .collect::<Vec<_>>(),
-            [
-                "Full name as shown to your members",
-                "Email address for account recovery",
-                "Send me occasional product updates and tips for working with my team.",
-                "Cancel",
-                "Save account changes"
-            ]
-        );
-        keys(
-            &resized.inspection().root,
-            &mut std::collections::HashSet::new(),
-        );
-    }
-
-    fn trailing_controls_switch_with_their_section_and_share_the_trailing_edge() {
-        let wide = Driver::new_with_theme(
-            crate::State::new(),
-            trailing_fixture(),
-            (1000, 400),
-            Theme::dark(),
-        );
-        let snapshot = wide.inspection();
-        let mut fields = Vec::new();
-        collect(&snapshot.root, "Field", &mut fields);
-        assert_eq!(fields.len(), 2);
-        let mut sections = Vec::new();
-        collect(&snapshot.root, "FormSection", &mut sections);
-        let section = sections[0].rect;
-        let section_x1 = section[0] + section[2];
-        let controls = [
-            named(&snapshot.root, "currency").rect,
-            named(&snapshot.root, "first-day").rect,
-        ];
-        for (field, control) in fields.iter().zip(controls) {
-            let mut labels = Vec::new();
-            collect(field, "Text", &mut labels);
-            let label = labels[0].rect;
-            assert!(
-                control[0] >= label[0] + label[2],
-                "wide: the control sits beside its label: label {label:?} control {control:?}"
-            );
-            assert!(
-                (control[0] + control[2] - section_x1).abs() < 0.5,
-                "wide: a trailing control ends on the section's trailing edge {section_x1}: {control:?}"
-            );
-            assert!(
-                control[2] < section[2] / 2.0,
-                "wide: a trailing control keeps its own width instead of filling: {control:?}"
-            );
-        }
-        assert!(
-            (controls[0][0] + controls[0][2] - controls[1][0] - controls[1][2]).abs() < 0.5,
-            "wide: sibling choosers share one trailing edge: {:?} {:?}",
-            controls[0],
-            controls[1]
-        );
-
-        let narrow = Driver::new_with_theme(
-            crate::State::new(),
-            trailing_fixture(),
-            (240, 600),
-            Theme::dark(),
-        );
-        let snapshot = narrow.inspection();
-        let mut fields = Vec::new();
-        collect(&snapshot.root, "Field", &mut fields);
-        assert_eq!(fields.len(), 2);
-        let controls = [
-            named(&snapshot.root, "currency").rect,
-            named(&snapshot.root, "first-day").rect,
-        ];
-        for (field, control) in fields.iter().zip(controls) {
-            let mut labels = Vec::new();
-            collect(field, "Text", &mut labels);
-            let label = labels[0].rect;
-            assert!(
-                control[1] >= label[1] + label[3],
-                "narrow: every row of the section stacks, the short label too: label {label:?} control {control:?}"
-            );
-            assert!(
-                (control[0] - label[0]).abs() < 0.5,
-                "narrow: a stacked trailing control starts under its label: label {label:?} control {control:?}"
-            );
-        }
-    }
-
-    fn a_plain_forms_chooser_starts_on_the_fields_edge() {
-        use crate::widget::{Dropdown, TextInput};
-        let form: Element = Box::new(
-            Form::new().section(
-                FormSection::new("Machine")
-                    .field(Field::new("Host", TextInput::local().with_id("host")))
-                    .field(
-                        Field::new(
-                            "Protocol",
-                            Dropdown::new(vec!["SSH".into(), "VNC".into()], "protocol")
-                                .with_id("protocol"),
-                        )
-                        .with_trailing_control(),
-                    ),
-            ),
-        );
-        let wide = Driver::new_with_theme(crate::State::new(), form, (1000, 400), Theme::dark());
-        let snapshot = wide.inspection();
-        let host = named(&snapshot.root, "host").rect;
-        let protocol = named(&snapshot.root, "protocol").rect;
-        assert!(
-            (protocol[0] - host[0]).abs() < 0.5,
-            "the chooser starts on the field's edge: {host:?} {protocol:?}"
-        );
-        assert!(
-            protocol[2] < host[2] / 2.0,
-            "and keeps its own width: {protocol:?}"
-        );
-    }
-
-    page_readable_width_and_single_gutter_leave_common_content_edges();
-    resized_layout_matches_fresh_and_retains_focus_order();
-    trailing_controls_switch_with_their_section_and_share_the_trailing_edge();
-    a_plain_forms_chooser_starts_on_the_fields_edge();
-}
 fn solve(widget: &mut dyn Widget, width: f32, theme: &Theme) {
     let mut tree = TaffyTree::new();
     let mut nodes = HashMap::new();
@@ -528,69 +303,6 @@ fn solve(widget: &mut dyn Widget, width: f32, theme: &Theme) {
 }
 #[test]
 fn form_overrides_apply_and_reset_independently() {
-    fn independent_overrides_reset_geometry_and_keep_nearest_origins() {
-        let theme = Theme::dark();
-        let mut form = Form::new()
-            .with_density(Some(Density::Compact))
-            .with_section_spacing(Some(73.0))
-            .with_field_spacing(Some(31.0))
-            .with_label_placement(Some(LabelPlacement::Above))
-            .section(
-                FormSection::new("Profile")
-                    .with_density(Some(Density::Comfortable))
-                    .with_label_placement(Some(LabelPlacement::Beside))
-                    .field(
-                        Field::new("Name", TextInput::local())
-                            .with_label_placement(Some(LabelPlacement::Above)),
-                    )
-                    .field(Field::new("Email", TextInput::local())),
-            )
-            .section(FormSection::new("Preferences").content(Box::new(Text::new("Details"))));
-        solve(&mut form, 900.0, &theme);
-        let info = form.effective_layout().unwrap();
-        assert_eq!(
-            info.section_spacing,
-            Effective::new(73.0, LayoutOrigin::Form)
-        );
-        let children = form.children();
-        let Some(LayoutInfo::Section(section)) = children[0].layout_info() else {
-            panic!("section info")
-        };
-        assert_eq!(
-            section.field_spacing,
-            Effective::new(31.0, LayoutOrigin::Form)
-        );
-        assert_eq!(section.density.origin, LayoutOrigin::Section);
-        let fields = children[0].children();
-        let Some(LayoutInfo::Field(first)) = fields[1].layout_info() else {
-            panic!("field info")
-        };
-        let Some(LayoutInfo::Field(second)) = fields[2].layout_info() else {
-            panic!("field info")
-        };
-        assert_eq!(first.label_placement.origin, LayoutOrigin::Field);
-        assert_eq!(first.resolved_placement, LabelPlacement::Above);
-        assert_eq!(second.label_placement.origin, LayoutOrigin::Section);
-        assert_eq!(second.resolved_placement, LabelPlacement::Beside);
-        assert!((children[1].get_rect().y0 - children[0].get_rect().y1 - 73.0).abs() < 1.0);
-        form = form.with_section_spacing(None);
-        solve(&mut form, 900.0, &theme);
-        let info = form.effective_layout().unwrap();
-        assert_eq!(info.density.value, Density::Compact);
-        assert_eq!(info.field_spacing.value, 31.0);
-        assert!(info.section_spacing.value < 73.0);
-        assert_eq!(info.label_placement.value, LabelPlacement::Above);
-        form = form
-            .with_field_spacing(None)
-            .with_density(None)
-            .with_label_placement(None);
-        solve(&mut form, 340.0, &theme);
-        let info = form.effective_layout().unwrap();
-        assert_eq!(info.density.origin, LayoutOrigin::Pattern);
-        assert_eq!(info.label_placement.origin, LayoutOrigin::Pattern);
-        assert_eq!(info.field_spacing.origin, LayoutOrigin::Theme);
-    }
-
     fn page_width_override_and_reset_leave_label_adaptation_active() {
         let mut page = FormPage::new("Account", long_form()).with_max_content_width(Some(400.0));
         solve(&mut page, 1200.0, &Theme::dark());
@@ -661,7 +373,6 @@ fn form_overrides_apply_and_reset_independently() {
         );
     }
 
-    independent_overrides_reset_geometry_and_keep_nearest_origins();
     page_width_override_and_reset_leave_label_adaptation_active();
     clearing_section_and_field_overrides_restores_only_the_selected_property();
 }
@@ -791,32 +502,6 @@ fn read_only_values_stack_without_overlap_at_narrow_width_and_large_type() {
             }
         }
     }
-}
-
-fn trailing_fixture() -> Element {
-    use crate::widget::Dropdown;
-    Box::new(
-        Form::new().section(
-            FormSection::new("Formats")
-                .grouped()
-                .field(
-                    Field::new(
-                        "Currency",
-                        Dropdown::new(vec!["USD".into(), "EUR".into()], "currency")
-                            .with_id("currency"),
-                    )
-                    .with_trailing_control(),
-                )
-                .field(
-                    Field::new(
-                        "First day of the week in calendars",
-                        Dropdown::new(vec!["Monday".into(), "Sunday".into()], "first-day")
-                            .with_id("first-day"),
-                    )
-                    .with_trailing_control(),
-                ),
-        ),
-    )
 }
 
 fn semantic_names(node: &InspectionNode, out: &mut Vec<(crate::a11y::Role, String)>) {

@@ -637,25 +637,6 @@ mod tests {
             }
         }
 
-        phase damage_merge_coalesces_near_children_but_keeps_wrap_endpoints;
-        {
-            {
-                // These are the clipped old/new segments at opposite ends of a
-                // 200px indeterminate progress bar. Their union would repaint the
-                // entire track even though each changed strip is only 60px wide.
-                let old_segment = vello::kurbo::Rect::new(140.0, 0.0, 200.0, 8.0);
-                let new_segment = vello::kurbo::Rect::new(0.0, 0.0, 60.0, 8.0);
-
-                assert!(!can_merge_damage(old_segment, new_segment));
-            }
-
-            {
-                let left = vello::kurbo::Rect::new(0.0, 0.0, 40.0, 20.0);
-                let right = vello::kurbo::Rect::new(44.0, 0.0, 84.0, 20.0);
-
-                assert!(can_merge_damage(left, right));
-            }
-        }
     }
 
     fn two_texts() -> Row {

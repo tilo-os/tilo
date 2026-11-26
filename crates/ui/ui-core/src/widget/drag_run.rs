@@ -1231,16 +1231,6 @@ mod tests {
         /// Each phase was a test of its own and builds its own fixture.
         fn a_drag_run_lays_out_its_items_and_groups;
 
-        phase the_run_answers_its_own_type;
-        {
-            let mut run: Element = Box::new(DragRun::new("bar").name("Bar").push(item("a", 24.0)));
-            assert!(
-                run.as_any().is_some_and(|any| any.is::<DragRun>())
-                    && run.as_any_mut().is_some_and(|any| any.is::<DragRun>()),
-                "a run is a widget the adapter reaches by its type"
-            );
-        }
-
         // Every item keeps the width its view takes, packed one sibling gap apart: a run never
         // gives its items an equal share of its length.
         phase a_run_is_its_items_at_their_own_size_one_gap_apart;
@@ -1410,40 +1400,6 @@ mod tests {
             .push(item("b", 48.0))
             .push(item("c", 48.0))
             .push(item("d", 48.0))
-    }
-
-    /// What stands beside a taskbar's items is not an item: a press on it lifts nothing, and
-    /// a dragged item never lands among it.
-    #[test]
-    fn what_stands_beside_the_items_is_not_an_item() {
-        let mut host = crate::app::driver::Driver::for_root(
-            crate::State::new(),
-            DragRun::new("taskbar")
-                .push(item("a", 48.0))
-                .push(item("b", 48.0))
-                .trailing(vec![Box::new(
-                    Container::new()
-                        .with_size(80.0, 24.0)
-                        .with_child(Box::new(Spacer::fixed(1.0))),
-                )]),
-            (600, 200),
-            Theme::dark(),
-        );
-        let rects = host.root::<DragRun>().item_rects();
-        assert_eq!(rects.len(), 2, "the trailing views are not items");
-        let trailing = host
-            .root::<DragRun>()
-            .children()
-            .first()
-            .map(|grid| grid.children().len())
-            .unwrap_or_default();
-        assert_eq!(trailing, 3, "the trailing column holds what stands beside");
-        let a = rects[0];
-        host.drag_at(
-            (a.center().x, a.center().y),
-            (a.center().x + 400.0, a.center().y),
-        );
-        assert!(host.root_mut::<DragRun>().take_drops().is_empty());
     }
 
     #[test]

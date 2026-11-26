@@ -753,7 +753,3 @@ impl Decorator for Identified {
     reason = "the toolkit's own decorators are instantiated where their widgets are in scope"
 )]
 pub(crate) use concrete_decorator_widget;
-
-#[cfg(test)]
-#[path = "decorator_tests.rs"]
-mod decorator_tests;

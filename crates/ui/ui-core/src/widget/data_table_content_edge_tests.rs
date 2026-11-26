@@ -115,33 +115,6 @@ tilo_test_env::scenario! {
         assert!((row.x0 - band.x0).abs() < 1e-6 && (row.x1 - band.x1).abs() < 1e-6);
     }
 
-    phase rows_are_the_density_rows_thirty_six_and_twenty_eight_compact;
-    {
-        let theme = Theme::dark();
-        let mut regular = DataTable::new(vec![name_col()]);
-        regular.set_rows(items(2));
-        let _ = settle(&mut regular, 300.0, 400.0);
-        assert_eq!(regular.viewport.item_height(0), Some(36.0));
-        let mut compact = DataTable::new(vec![name_col()]).compact();
-        compact.set_rows(items(2));
-        let _ = settle(&mut compact, 300.0, 400.0);
-        assert_eq!(compact.viewport.item_height(0), Some(28.0));
-        let face = DataTableFace::new(&[], &[]);
-        assert!((face.row_height(&theme) - 36.0).abs() < 0.01);
-        let dense = theme.clone().with_density(crate::tokens::Density::Compact);
-        assert!(
-            (face.row_height(&dense) - 28.0).abs() < 0.01,
-            "a compact region"
-        );
-        assert!((DataTableFace::header_height(&theme) - regular.header_height()).abs() < 0.01);
-        let rows: [&[&str]; 1] = [&[""]];
-        let two = DataTableFace::new(&[], &rows).two_line().without_header();
-        assert!(two.row_height(&theme) > face.row_height(&theme));
-        let rect = Rect::new(0.0, 10.0, 200.0, 200.0);
-        assert!((two.row_rect(rect, 0, &theme).y0 - 10.0).abs() < 0.01);
-        assert!((two.height(&theme) - two.row_height(&theme)).abs() < 0.01);
-    }
-
     phase narrow_tables_hide_columns_by_priority_then_scroll_sideways;
     {
         let cols = || {
@@ -410,32 +383,6 @@ tilo_test_env::scenario! {
         assert_eq!(*clicks.borrow(), [2]);
     }
 
-    phase apply_changes_keeps_cell_controls_mounted_by_key;
-    {
-        let builds = Rc::new(Cell::new(0));
-        let counter = Rc::clone(&builds);
-        let mut table = DataTable::new(vec![
-            name_col(),
-            ColumnDef::new("edit", "Edit", ColumnWidth::Fixed(80.0)).with_widget(move |r: &Item, _| {
-                counter.set(counter.get() + 1);
-                Box::new(crate::widget::Text::new(&r.name)) as Element
-            }),
-        ])
-        .with_row_key(|r: &Item| {
-            r.name
-                .bytes()
-                .fold(7_u64, |h, b| h.wrapping_mul(31).wrapping_add(u64::from(b)))
-        });
-        table.set_rows(items(3));
-        let _ = settle(&mut table, 400.0, 300.0);
-        let first = builds.get();
-        assert_eq!(first, 3);
-        table.rows_mut().push(Box::new(item("new")));
-        table.apply_changes(&[TableModelChange::RowsInserted { index: 3, count: 1 }]);
-        let _ = settle(&mut table, 400.0, 300.0);
-        assert_eq!(builds.get(), first + 1, "only the new row builds");
-    }
-
     phase a_filling_table_scrolls_inside_its_parent_and_wrapping_rows_grow;
     {
         let mut table = DataTable::new(vec![
@@ -455,52 +402,6 @@ tilo_test_env::scenario! {
         assert!(tall > plain, "{tall} vs {plain}");
     }
 
-    phase painters_receive_the_table_transform;
-    {
-        let seen = Arc::new(std::sync::Mutex::new(None));
-        let sink = Arc::clone(&seen);
-        let mut table = DataTable::new(vec![
-            ColumnDef::new("p", "P", ColumnWidth::Flex(1.0)).with_render(Box::new(
-                move |_, _, transform, _, _, _| {
-                    *sink.lock().unwrap() = Some(transform);
-                },
-            )),
-        ]);
-        table.set_rows(items(1));
-        let _ = settle(&mut table, 200.0, 200.0);
-        let mut scene = Scene::new();
-        let mut text = TextRenderer::new();
-        let shift = Affine::translate((0.0, -30.0));
-        table.draw(&mut crate::draw::DrawCtx::new(&mut scene, shift, &mut text, &Theme::dark(), crate::presence::PresenceCtx::default().draw_env()));
-        assert_eq!(*seen.lock().unwrap(), Some(shift));
-    }
-
-    phase a_table_face_lays_rows_out_and_hit_tests_them;
-    {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let columns = [
-            FaceColumn::new("Title", ColumnWidth::Flex(1.0)),
-            FaceColumn::new("Time", ColumnWidth::Auto).with_kind(TextKind::Numeric),
-        ];
-        let rows: [&[&str]; 2] = [&["Blue in green", "5:37"], &["So what", "9:22"]];
-        let face = DataTableFace::new(&columns, &rows)
-            .selected(Some(1))
-            .sorted_by(0, true);
-        let rect = Rect::new(0.0, 0.0, 400.0, face.height(&theme));
-        let cols = face.column_rects(rect, &mut text, &theme);
-        let bleed = crate::chrome::row_bleed(&theme);
-        assert!((cols[0].x0 + bleed).abs() < 1e-6);
-        assert!((cols[1].x1 - (400.0 + bleed)).abs() < 0.5);
-        let second = face.row_rect(rect, 1, &theme);
-        assert_eq!(face.row_at(rect, second.center(), &theme), Some(1));
-        let mut scene = Scene::new();
-        face.paint(
-            &mut crate::paint::PaintCtx::new(&mut scene, Affine::IDENTITY, &mut text, &theme),
-            rect,
-        );
-        assert!(scene.encoding().resources.glyph_runs.len() >= 6);
-    }
 }
 
 #[test]

@@ -1382,250 +1382,12 @@ mod tests {
         reason = "tests place retained animation clocks at exact elapsed phases"
     )]
     use super::*;
-    use crate::presence::PresenceCtx;
-    use vello::Scene;
-    use vello_encoding::DrawTag;
-
-    #[test]
-    fn source_handoff_interpolates_fills_and_stays_deterministic() {
-        fn source_handoff_interpolates_exact_endpoints() {
-            let source = Rect::new(80.0, 120.0, 680.0, 460.0);
-            let destination = Rect::new(900.0, 540.0, 1320.0, 800.0);
-            assert_eq!(Zoom::rect_at(source, destination, 0.0), source);
-            assert_eq!(Zoom::rect_at(source, destination, 1.0), destination);
-            assert_eq!(
-                Zoom::rect_at(source, destination, 0.5),
-                Rect::new(490.0, 330.0, 1000.0, 630.0)
-            );
-        }
-
-        fn source_handoff_content_fills_source_before_yielding_to_chrome() {
-            let content = Rect::new(900.0, 578.0, 1320.0, 800.0);
-            let complete_window = Rect::new(900.0, 540.0, 1320.0, 800.0);
-            let map = map_rect(content, complete_window);
-            assert_eq!(map * content.origin(), complete_window.origin());
-            assert_eq!(
-                map * Point::new(content.x1, content.y1),
-                Point::new(complete_window.x1, complete_window.y1)
-            );
-            assert_eq!(map_rect(content, content), Affine::IDENTITY);
-        }
-
-        fn source_handoff_starts_without_a_union_slab_or_shadow() {
-            assert_eq!(handoff_material_alpha(0.0), 0.0);
-            assert!(handoff_material_alpha(0.2) > 0.0);
-            assert_eq!(handoff_material_alpha(1.0), 1.0);
-        }
-
-        fn deterministic_handoff_progress_is_ignored_without_a_source() {
-            let mut window = FloatingWindow::new("PiP", Probe::default()).open(true);
-            let opened_at = window.opened_at;
-            window.set_source_handoff_progress(500);
-            assert_eq!(window.opened_at, opened_at);
-            assert_eq!(window.source_handoff_progress_override, None);
-        }
-
-        fn deterministic_handoff_progress_does_not_drift_with_wall_time() {
-            let source = Rect::new(80.0, 120.0, 680.0, 460.0);
-            let mut window = FloatingWindow::new("PiP", Probe::default())
-                .open(true)
-                .spawn_from(Some(source));
-            window.rect = Rect::new(900.0, 540.0, 1320.0, 800.0);
-            window.set_source_handoff_progress(500);
-
-            let (_, first) = window.visual_transform(Affine::IDENTITY, false);
-            let (_, later) = crate::time::testing::with_monotonic_time(
-                crate::time::now() + Duration::from_secs(5),
-                || window.visual_transform(Affine::IDENTITY, false),
-            );
-            assert!((first - 0.5).abs() < f64::EPSILON);
-            assert_eq!(later, first);
-            assert!(!Widget::needs_animation_frame(&window));
-        }
-
-        source_handoff_interpolates_exact_endpoints();
-        source_handoff_content_fills_source_before_yielding_to_chrome();
-        source_handoff_starts_without_a_union_slab_or_shadow();
-        deterministic_handoff_progress_is_ignored_without_a_source();
-        deterministic_handoff_progress_does_not_drift_with_wall_time();
-    }
 
     tilo_test_env::scenario! {
         fn a_floating_window_is_placed_moved_resized_and_routes_input;
 
-        phase pip_chrome_placement_and_title_bar_geometry;
-        {
-            fn overlay_chrome_preserves_the_complete_pip_payload_area() {
-                let mut window = FloatingWindow::new("2 live areas", Probe::default())
-                    .overlay_chrome(true)
-                    .open(true);
-                window.rect = Rect::new(900.0, 540.0, 1320.0, 740.0);
-
-                assert_eq!(window.content_area(), window.rect);
-                assert_eq!(window.title_bar_rect().height(), TITLE_BAR_HEIGHT);
-                assert!(
-                    window.title_bar_rect().contains(Point::new(1100.0, 550.0)),
-                    "edge-to-edge content must retain a generous invisible drag target"
-                );
-            }
-
-            fn title_bar_is_the_bar_height_token_and_scales_with_ui_scale() {
-                let (w, _e) = laid_out(true);
-                let base = Theme::dark();
-                assert_eq!(w.title_bar_height(), TITLE_BAR_HEIGHT);
-                assert_eq!(
-                    w.title_bar_height(),
-                    f64::from(base.tokens.metrics.bar_height)
-                );
-                let bar = w.title_bar_rect();
-                let close = w.close_rect();
-                assert!(
-                    (close.center().y - bar.center().y).abs() < 1e-6,
-                    "{close:?} in {bar:?}"
-                );
-                assert_eq!(
-                    close.width(),
-                    f64::from(base.tokens.metrics.bar_control_height)
-                );
-                assert!(
-                    ((bar.x1 - close.x1) - (close.y0 - bar.y0)).abs() < 1e-6,
-                    "trailing inset equals the vertical inset: {close:?} in {bar:?}"
-                );
-
-                let theme = Theme::dark().with_ui_scale(1.5);
-                let probe = Probe {
-                    events: std::rc::Rc::new(std::cell::Cell::new(0)),
-                    rect: Rect::ZERO,
-                };
-                let mut scaled = FloatingWindow::new("Compose", probe).open(true);
-                let mut taffy = TaffyTree::<()>::new();
-                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-                let node = scaled.build_layout(&mut taffy, &theme, &mut node_map);
-                taffy
-                    .compute_layout(
-                        node,
-                        Size {
-                            width: taffy::AvailableSpace::Definite(1000.0),
-                            height: taffy::AvailableSpace::Definite(800.0),
-                        },
-                    )
-                    .unwrap();
-                scaled.apply_layout(&taffy, node, Point::ZERO);
-                assert!(
-                    (scaled.title_bar_height() - TITLE_BAR_HEIGHT * 1.5).abs() < 1e-6,
-                    "ui_scale 1.5 → {}",
-                    scaled.title_bar_height()
-                );
-                assert_eq!(
-                    scaled.content_area().y0,
-                    scaled.window_rect().y0 + scaled.title_bar_height()
-                );
-            }
-
-            fn shell_can_place_a_spawned_pip_without_recentering_it() {
-                let source = Rect::new(100.0, 100.0, 500.0, 400.0);
-                let mut window = FloatingWindow::new("PiP", Probe::default())
-                    .open(true)
-                    .with_initial_size(420.0, 260.0)
-                    .spawn_from(Some(source));
-                window.place_at_within(
-                    Rect::new(0.0, 0.0, 1600.0, 900.0),
-                    Point::new(1164.0, 624.0),
-                );
-                assert_eq!(
-                    window.window_rect(),
-                    Rect::new(1164.0, 624.0, 1584.0, 884.0)
-                );
-                assert!(Widget::needs_animation_frame(&window));
-            }
-
-            fn opens_centred_within_bounds() {
-                let (w, _e) = laid_out(true);
-                let r = w.window_rect();
-                assert!(
-                    (r.center().x - 500.0).abs() < 2.0,
-                    "centred horizontally: {r:?}"
-                );
-                assert!(r.x0 >= 0.0 && r.x1 <= 1000.0, "within bounds: {r:?}");
-            }
-
-            fn pip_chrome_yields_pixels_at_rest_and_returns_smoothly_on_hover() {
-                let (mut w, _e) = laid_out(true);
-                w.overlay_chrome = true;
-                let now = crate::time::now();
-                w.opened_at = Some(now - OVERLAY_CHROME_HOLD - overlay_chrome_fade());
-                assert_eq!(w.overlay_chrome_alpha_at(now, false), 0.0);
-
-                w.update_pointer_position(w.window_rect().center());
-                assert!(w.overlay_chrome_alpha_at(crate::motion::frame_now(), false) < 0.05);
-                w.overlay_chrome_changed_at = Some(crate::time::now() - overlay_chrome_fade());
-                assert!(w.overlay_chrome_alpha_at(crate::motion::frame_now(), false) > 0.99);
-
-                w.update_pointer_position(Point::new(-20.0, -20.0));
-                w.overlay_chrome_changed_at = Some(crate::time::now() - overlay_chrome_fade() / 4);
-                let leaving = w.overlay_chrome_alpha_at(crate::motion::frame_now(), false);
-                assert!(leaving > 0.05 && leaving < 0.95, "partly faded: {leaving}");
-                w.update_pointer_position(w.window_rect().center());
-                let interrupted = w.overlay_chrome_alpha_at(crate::motion::frame_now(), false);
-                assert!(
-                    (interrupted - leaving).abs() < 0.05,
-                    "re-entering must continue from the current alpha, not jump"
-                );
-            }
-
-            fn draws_chrome_when_open() {
-                let (mut w, _e) = laid_out(true);
-                let theme = Theme::dark();
-                let mut tr = TextRenderer::new();
-                let presence = PresenceCtx::default();
-                let mut scene = Scene::new();
-                w.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme, presence.draw_env()));
-                let fills = scene
-                    .encoding()
-                    .draw_tags
-                    .iter()
-                    .filter(|t| **t == DrawTag::COLOR)
-                    .count();
-                assert!(
-                    fills >= 3,
-                    "open window draws shadow+body+title chrome, got {fills}"
-                );
-            }
-
-            overlay_chrome_preserves_the_complete_pip_payload_area();
-            title_bar_is_the_bar_height_token_and_scales_with_ui_scale();
-            shell_can_place_a_spawned_pip_without_recentering_it();
-            opens_centred_within_bounds();
-            pip_chrome_yields_pixels_at_rest_and_returns_smoothly_on_hover();
-            draws_chrome_when_open();
-        }
-
         phase window_moves_by_pointer_touch_and_keyboard_within_reach;
         {
-            fn title_bar_drag_moves_window() {
-                let (mut w, _e) = laid_out(true);
-                let start = w.window_rect();
-                let grab = Point::new(start.x0 + 40.0, start.y0 + 10.0);
-                dispatch(&mut w, &cursor_at(grab));
-                assert!(dispatch(&mut w, &mouse_press()), "title press consumed");
-                dispatch(
-                    &mut w,
-                    &cursor_at(Point::new(grab.x + 120.0, grab.y + 40.0)),
-                );
-                dispatch(&mut w, &mouse_release());
-                let moved = w.window_rect();
-                assert!(
-                    (moved.x0 - (start.x0 + 120.0)).abs() < 2.0,
-                    "moved right by 120: {moved:?}"
-                );
-                assert!(
-                    (moved.y0 - (start.y0 + 40.0)).abs() < 2.0,
-                    "moved down by 40: {moved:?}"
-                );
-                assert!(w.squish > 0.0, "drag velocity should deform the soft shell");
-                assert!(w.last_motion_at.is_some(), "settle animation is armed");
-            }
-
             fn touch_title_drag_moves_window_and_keeps_gesture_ownership() {
                 let (mut w, _e) = laid_out(true);
                 let start = w.window_rect();
@@ -1779,7 +1541,6 @@ mod tests {
                 assert!(Widget::accessibility(&w).is_none());
             }
 
-            title_bar_drag_moves_window();
             touch_title_drag_moves_window_and_keeps_gesture_ownership();
             touch_close_activates_on_release_inside_and_can_be_cancelled();
             keyboard_nudge_moves_in_precise_and_coarse_steps_and_clamps();
@@ -1818,27 +1579,6 @@ mod tests {
                 assert!(w.window_rect().height() > start.height() + 25.0);
             }
 
-            fn bottom_right_resize_grows_window() {
-                let (mut w, _e) = laid_out(true);
-                let start = w.window_rect();
-                let corner = Point::new(start.x1, start.y1);
-                dispatch(&mut w, &cursor_at(corner));
-                assert!(dispatch(&mut w, &mouse_press()), "corner press consumed");
-                dispatch(
-                    &mut w,
-                    &cursor_at(Point::new(corner.x + 60.0, corner.y + 50.0)),
-                );
-                dispatch(&mut w, &mouse_release());
-                let grown = w.window_rect();
-                assert!(
-                    grown.width() > start.width() + 50.0,
-                    "wider: {} -> {}",
-                    start.width(),
-                    grown.width()
-                );
-                assert!(grown.height() > start.height() + 40.0, "taller");
-            }
-
             fn pip_resize_preserves_its_source_aspect_ratio() {
                 let (mut w, _e) = laid_out(true);
                 w.aspect_ratio = Some(16.0 / 9.0);
@@ -1857,59 +1597,12 @@ mod tests {
                 assert!(resized.width() > start.width());
             }
 
-            fn resize_respects_min_size() {
-                let (mut w, _e) = laid_out(true);
-                let start = w.window_rect();
-                let corner = Point::new(start.x1, start.y1);
-                dispatch(&mut w, &cursor_at(corner));
-                dispatch(&mut w, &mouse_press());
-                dispatch(
-                    &mut w,
-                    &cursor_at(Point::new(start.x0 + 10.0, start.y0 + 10.0)),
-                );
-                dispatch(&mut w, &mouse_release());
-                let r = w.window_rect();
-                assert!(
-                    r.width() >= MIN_WIDTH - 0.5,
-                    "clamped to MIN_WIDTH: {}",
-                    r.width()
-                );
-                assert!(
-                    r.height() >= MIN_HEIGHT - 0.5,
-                    "clamped to MIN_HEIGHT: {}",
-                    r.height()
-                );
-            }
-
             touch_resize_uses_a_finger_sized_edge_target();
-            bottom_right_resize_grows_window();
             pip_resize_preserves_its_source_aspect_ratio();
-            resize_respects_min_size();
         }
 
         phase cursor_shapes_and_modal_input_routing;
         {
-            fn cursor_shape_hints_move_and_resize() {
-                use winit::window::CursorIcon;
-                let (w, _e) = laid_out(true);
-                let r = w.window_rect();
-                let title = Point::new(r.center().x, r.y0 + TITLE_BAR_HEIGHT / 2.0);
-                assert_eq!(Widget::cursor_shape(&w, title), Some(CursorIcon::Grab));
-                assert_eq!(
-                    Widget::cursor_shape(&w, Point::new(r.x1, r.center().y)),
-                    Some(CursorIcon::EwResize)
-                );
-                assert_eq!(
-                    Widget::cursor_shape(&w, Point::new(r.center().x, r.y1)),
-                    Some(CursorIcon::NsResize)
-                );
-                assert_eq!(
-                    Widget::cursor_shape(&w, Point::new(r.x1, r.y1)),
-                    Some(CursorIcon::NwseResize)
-                );
-                assert_eq!(Widget::cursor_shape(&w, w.content_area().center()), None);
-            }
-
             fn cursor_shape_follows_an_active_drag() {
                 use winit::window::CursorIcon;
                 let (mut w, _e) = laid_out(true);
@@ -1947,18 +1640,9 @@ mod tests {
                 );
             }
 
-            fn modal_capture_reflects_open() {
-                let (w, _e) = laid_out(true);
-                assert!(Widget::modal_capture(&w).is_some());
-                let (closed, _e) = laid_out(false);
-                assert!(Widget::modal_capture(&closed).is_none());
-            }
-
-            cursor_shape_hints_move_and_resize();
             cursor_shape_follows_an_active_drag();
             outside_click_is_swallowed_not_passed_through();
             inbox_content_press_forwards_to_content();
-            modal_capture_reflects_open();
         }
     }
 

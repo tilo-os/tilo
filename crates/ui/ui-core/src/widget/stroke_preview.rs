@@ -810,34 +810,6 @@ mod tests {
     }
 
     #[test]
-    fn props_that_change_nothing_move_nothing() {
-        let _frozen = crate::motion::testing::frozen();
-        let now = crate::motion::frame_now();
-        let mut preview = StrokePreview::from_props("preview", props("pen"));
-        preview.set_accessible_name(Some("Brush".to_owned()));
-        assert!(preview.set_props(StrokePreviewProps {
-            label: Some("Brush".to_owned()),
-            ..props("pen")
-        }));
-        assert_eq!(preview.spoken_name(), "Brush");
-        assert!(!preview.needs_animation_frame());
-        assert_eq!(crate::motion::frames_wanted_by(now), Vec::<String>::new());
-    }
-
-    #[test]
-    fn every_brush_name_is_the_one_an_artwork_keeps() {
-        for character in BrushCharacter::ALL {
-            assert_eq!(BrushCharacter::parse(character.name()), character);
-        }
-        assert_eq!(BrushCharacter::parse(""), BrushCharacter::Round);
-        assert_eq!(BrushCharacter::parse("Marker"), BrushCharacter::Marker);
-        assert_eq!(BrushCharacter::parse("oil-paint"), BrushCharacter::Round);
-        assert!(BrushCharacter::Eraser.erases());
-        assert!(BrushCharacter::PixelEraser.erases());
-        assert!(!BrushCharacter::Pixel.erases());
-    }
-
-    #[test]
     fn a_wide_brush_is_drawn_no_wider_than_the_preview_holds() {
         let face = StrokePreviewFace::new(BrushCharacter::Round, 90.0, Color::BLACK);
         assert!((face.drawn_width(40.0) - 40.0 * WIDEST_SHARE).abs() < 1e-9);

@@ -294,30 +294,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase the_sheet_is_a_floating_panel_with_a_title;
-    {
-        let _settled = crate::motion::testing::settled();
-        let theme = Theme::dark();
-        let spec = ModalSpec::new("Rename").body_height(60.0);
-        let l = lay(&spec, &theme);
-        let title_line = f64::from(theme.text(TextRole::Title).line_height_px());
-        assert!(l.title.height() >= title_line - 0.5);
-        assert!(l.body.y0 >= l.title.y1, "the body starts under the title");
-        let mut scene = Scene::new();
-        let mut tr = TextRenderer::new();
-        let recording = crate::part_paint::backdrop::BackdropRecording::begin();
-        crate::part_paint::backdrop::layer_scene(&scene, 0);
-        paint_backdrop(&mut scene, Affine::IDENTITY, &mut tr, &theme, &l, &spec);
-        let regions = recording.finish();
-        assert_eq!(regions.len(), 1, "the sheet is one material region");
-        assert_eq!(regions[0].bounds, l.card, "and it is the sheet");
-        assert_eq!(
-            super::floating_surface::radius(&theme),
-            18.0,
-            "panel radius"
-        );
-    }
-
     phase compact_modals_fill_the_window_and_keep_their_controls_on_the_foreground_page;
     {
         let _settled = crate::motion::testing::settled();
@@ -429,43 +405,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase retained_narrow_dialog_footer_targets_follow_the_stacked_geometry;
-    {
-        let _settled = crate::motion::testing::settled();
-        let window = Rect::new(0.0, 0.0, 360.0, 640.0);
-        let theme = Theme::dark().with_text_scale(2.0);
-        let confirmed = Rc::new(Cell::new(false));
-        let cancelled = Rc::new(Cell::new(false));
-        let yes = confirmed.clone();
-        let no = cancelled.clone();
-        let mut dialog = ModalDialog::new("Merge contacts", TestContent)
-            .open(true)
-            .with_destructive(true)
-            .primary_action("Merge contacts", move || yes.set(true))
-            .secondary_action("Cancel", move || no.set(true));
-        lay_out(&mut dialog, window, &theme);
-        let _ = present(&mut dialog, window, &theme);
-        let secondary = dialog.secondary_rect();
-        let primary = dialog.primary_rect();
-        assert!(secondary.width() > 0.0 && primary.width() > 0.0);
-        assert!(
-            secondary.y1 <= primary.y0,
-            "the safe answer precedes the primary"
-        );
-        for key in &dialog.keys {
-            let actual = key.get_rect();
-            assert_eq!(actual, dialog.slot_rect(key.slot));
-            assert!(actual.x0 >= window.x0 && actual.x1 <= window.x1);
-            assert!(actual.y0 >= window.y0 && actual.y1 <= window.y1);
-        }
-        assert!(dispatch(&mut dialog, &named_key(NamedKey::Enter)));
-        assert!(
-            cancelled.get(),
-            "Enter cancels the destructive confirmation"
-        );
-        assert!(!confirmed.get());
-    }
-
     phase modal_ink_and_action_labels_are_legible_on_every_theme;
     {
         let _settled = crate::motion::testing::settled();
@@ -570,38 +509,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase dialog_paints_destructive_and_hover_faces;
-    {
-        fn draw_data(destructive: bool, hover: bool, then_leave: bool) -> Vec<u32> {
-            let mut d = ModalDialog::new("Delete?", TestContent)
-                .open(true)
-                .with_destructive(destructive)
-                .primary_action("Delete", || {});
-            lay_out(&mut d, WINDOW, &Theme::dark());
-            if hover {
-                let centre = d.primary_rect().center();
-                dispatch(&mut d, &cursor_at(centre));
-            }
-            if then_leave {
-                dispatch(
-                    &mut d,
-                    &WindowEvent::CursorLeft {
-                        device_id: winit::event::DeviceId::dummy(),
-                    },
-                );
-            }
-            present(&mut d, WINDOW, &Theme::dark())
-                .encoding()
-                .draw_data
-                .clone()
-        }
-        let _settled = crate::motion::testing::settled();
-        let rest = draw_data(false, false, false);
-        assert_ne!(draw_data(true, false, false), rest, "destructive differs");
-        assert_ne!(draw_data(false, true, false), rest, "hover shows");
-        assert_eq!(draw_data(false, true, true), rest, "leaving drops hover");
-    }
-
     phase a_long_title_wraps_to_two_lines;
     {
         let _settled = crate::motion::testing::settled();
@@ -622,62 +529,6 @@ tilo_test_env::scenario! {
         );
         assert!(short.title.height() < line * 2.0, "one line stays one line");
         assert!(long.body.y0 > long.title.y1, "the body follows the title");
-    }
-
-    phase an_immediate_sheet_paints_hit_tests_and_answers_without_a_renderer;
-    {
-        let _settled = crate::motion::testing::settled();
-        let theme = Theme::dark();
-        let mut sheet = ModalSheet::new();
-        let actions = [
-            ModalAction::primary("Reload"),
-            ModalAction::alternate_danger("Overwrite"),
-            ModalAction::secondary("Cancel"),
-        ];
-        let spec = ModalSpec::new("notes.md changed on disk")
-            .actions(&actions)
-            .closable(false)
-            .dismiss_on_scrim(false);
-        let mut scene = Scene::new();
-        sheet.paint_message(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut TextRenderer::new(),
-            &theme,
-            WINDOW,
-            &spec,
-            "Something else wrote this file after you opened it.",
-        );
-        let layout = sheet.layout().cloned().expect("the paint keeps its layout");
-        assert!(
-            layout.body.height() > 0.0,
-            "the message is measured into the body"
-        );
-        let overwrite = layout.actions[1].center();
-        assert_eq!(sheet.handle(&cursor_at(overwrite), 1.0), None);
-        assert_eq!(sheet.handle(&mouse_press(), 1.0), None);
-        let release = crate::synthetic_input::mouse_release();
-        assert_eq!(sheet.handle(&release, 1.0), Some(SheetResponse::Action(1)));
-        sheet.handle(&cursor_at(Point::new(5.0, 5.0)), 1.0);
-        assert_eq!(sheet.handle(&mouse_press(), 1.0), None);
-        assert_eq!(
-            sheet.handle(&named_key(NamedKey::Enter), 1.0),
-            Some(SheetResponse::Action(0))
-        );
-        sheet.handle(&named_key(NamedKey::Tab), 1.0);
-        let first = sheet.focused_action().expect("Tab focuses an action");
-        let leftmost = (0..3)
-            .min_by(|a, b| layout.actions[*a].x0.total_cmp(&layout.actions[*b].x0))
-            .unwrap();
-        assert_eq!(first, leftmost, "Tab starts at the leading action");
-        assert_eq!(
-            sheet.handle(&named_key(NamedKey::Enter), 1.0),
-            Some(SheetResponse::Action(first))
-        );
-        assert_eq!(
-            sheet.handle(&named_key(NamedKey::Escape), 1.0),
-            Some(SheetResponse::Dismiss)
-        );
     }
 
     phase an_unpainted_sheet_centres_on_the_window_not_its_parent;

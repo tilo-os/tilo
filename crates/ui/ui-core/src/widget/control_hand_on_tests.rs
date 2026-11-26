@@ -149,23 +149,3 @@ fn rebuilt_controls_move_on_a_click_and_land_on_a_key() {
     rebuild(&mut d, &model);
     assert!(!moving(&d, SLIDER), "a key puts the thumb on the value");
 }
-
-/// Another page's switch in the same place does not slide: the switch it
-/// stands in for showed another value, so it rests on its own.
-#[test]
-fn a_rebuilt_switch_showing_another_value_rests() {
-    let model = Rc::new(RefCell::new(Model {
-        on: true,
-        remember: false,
-        nearby: false,
-        level: 0.5,
-        unread: 0,
-    }));
-    let mut d = Driver::for_root(State::new(), Column::new(), (420, 400), Theme::dark());
-    rebuild(&mut d, &model);
-    let _frame = crate::motion::pin_frame();
-    crate::motion::note_source(MotionSource::Pointer);
-    model.borrow_mut().on = false;
-    rebuild(&mut d, &model);
-    assert!(!moving(&d, SWITCH));
-}

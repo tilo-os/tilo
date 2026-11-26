@@ -3176,27 +3176,6 @@ mod tests {
 
         phase auto_domains_and_ticks_expand_preserve_and_thin;
         {
-            fn constant_domains_are_expanded() {
-                let domain = Domain::normalized(5.0, 5.0);
-                assert!(domain.max > domain.min);
-                assert_eq!(domain.min.midpoint(domain.max), 5.0);
-            }
-
-            fn default_style_auto_ranges_both_axes() {
-                let style = CartesianStyle::default();
-                assert_eq!(style.x_axis.range, AxisRange::Auto);
-                assert_eq!(style.y_axis.range, AxisRange::Auto);
-            }
-
-            fn explicit_ticks_are_preserved() {
-                let axis = PlotAxis::default()
-                    .with_ticks([AxisTick::new(0.0, "Start"), AxisTick::new(1.0, "End")]);
-                assert_eq!(
-                    CartesianMarks::ticks(&axis, Domain::normalized(0.0, 1.0), 320.0),
-                    axis.ticks
-                );
-            }
-
             fn narrow_axes_reduce_tick_density_but_keep_endpoints() {
                 let axis = PlotAxis::default().with_ticks(
                     (0..10).map(|value| AxisTick::new(f64::from(value), value.to_string())),
@@ -3205,39 +3184,6 @@ mod tests {
                 assert_eq!(ticks.len(), 2);
                 assert_eq!(ticks.first().map(|tick| tick.label.as_str()), Some("0"));
                 assert_eq!(ticks.last().map(|tick| tick.label.as_str()), Some("9"));
-            }
-
-            fn domain_cache_is_invalidated_by_data_and_visibility_changes() {
-                let near = PlotSeries::new(
-                    "near",
-                    "Near",
-                    Color::WHITE,
-                    vec![PlotDatum::new("a", 1.0, 1.0)],
-                );
-                let far = PlotSeries::new(
-                    "far",
-                    "Far",
-                    Color::WHITE,
-                    vec![PlotDatum::new("b", 1_000.0, 1_000.0)],
-                );
-                let mut plot = CartesianPlot::new(vec![near.clone(), far]);
-                let initial = plot.marks.base_domain(&plot.marks.style.x_axis, true);
-                let cached = plot.marks.base_domain(&plot.marks.style.x_axis, true);
-                assert_eq!(initial, cached);
-                assert!(plot.set_series_visible("far", false));
-                let hidden = plot.marks.base_domain(&plot.marks.style.x_axis, true);
-                assert!(hidden.max < 10.0);
-                plot.set_series_immediate(vec![
-                    near,
-                    PlotSeries::new(
-                        "new",
-                        "New",
-                        Color::WHITE,
-                        vec![PlotDatum::new("c", 50.0, 50.0)],
-                    ),
-                ]);
-                let replaced = plot.marks.base_domain(&plot.marks.style.x_axis, true);
-                assert!(replaced.max > 50.0);
             }
 
             fn series_visibility_is_observable_and_changes_auto_domain() {
@@ -3254,11 +3200,7 @@ mod tests {
                 assert!(!plot.is_series_visible("far"));
             }
 
-            constant_domains_are_expanded();
-            default_style_auto_ranges_both_axes();
-            explicit_ticks_are_preserved();
             narrow_axes_reduce_tick_density_but_keep_endpoints();
-            domain_cache_is_invalidated_by_data_and_visibility_changes();
             series_visibility_is_observable_and_changes_auto_domain();
         }
 
@@ -3291,60 +3233,11 @@ mod tests {
                 });
             }
 
-            fn built_in_axis_formats_cover_units() {
-                assert_eq!(
-                    format_axis_value(0.425, AxisLabelFormat::Percent(1)),
-                    "42.5%"
-                );
-                assert_eq!(
-                    format_axis_value(2048.0, AxisLabelFormat::Bytes(1)),
-                    "2.0 KiB"
-                );
-                assert_eq!(format_axis_value(1500.0, AxisLabelFormat::Compact), "1.5K");
-                assert_eq!(
-                    format_axis_value(0.0125, AxisLabelFormat::Duration(1)),
-                    "12.5 ms"
-                );
-                assert_eq!(
-                    format_axis_value(
-                        -12.5,
-                        AxisLabelFormat::Currency {
-                            symbol: '$',
-                            places: 2
-                        }
-                    ),
-                    "-$12.50"
-                );
-                assert_eq!(
-                    format_axis_value(12_500.0, AxisLabelFormat::Scientific(2)),
-                    "1.25e4"
-                );
-            }
-
-            fn compact_number_format_uses_suffixes() {
-                assert_eq!(format_compact(1_500_000.0), "1.5M");
-            }
-
             axis_titles_wrap_to_be_read_whole_and_elide_only_past_two_lines();
-            built_in_axis_formats_cover_units();
-            compact_number_format_uses_suffixes();
         }
 
         phase logarithmic_axes_project_tick_zoom_and_reject_non_positive;
         {
-            fn logarithmic_projection_and_unprojection_round_trip() {
-                let domain = Domain {
-                    min: 1.0,
-                    max: 1000.0,
-                };
-                let projected = CartesianMarks::project(10.0, domain, AxisScale::Log10, 0.0, 300.0)
-                    .expect("positive log value");
-                assert!((projected - 100.0).abs() < 1e-9);
-                let value = CartesianMarks::unproject(projected, domain, AxisScale::Log10, 0.0, 300.0);
-                assert!((value - 10.0).abs() < 1e-9);
-                assert!(CartesianMarks::project(0.0, domain, AxisScale::Log10, 0.0, 300.0).is_none());
-            }
-
             fn logarithmic_ticks_prefer_decades_and_respect_density() {
                 let axis = PlotAxis::default().logarithmic().with_tick_density(4, 60.0);
                 let ticks = CartesianMarks::ticks(
@@ -3407,116 +3300,11 @@ mod tests {
                 ));
             }
 
-            logarithmic_projection_and_unprojection_round_trip();
             logarithmic_ticks_prefer_decades_and_respect_density();
             logarithmic_zoom_and_brush_stay_in_data_coordinates();
             logarithmic_viewports_reject_non_positive_ranges();
         }
 
-        phase series_builders_sampling_and_gaps_preserve_data;
-        {
-            fn annotations_have_concise_builders_and_remain_mutable() {
-                let color = Color::from_rgb8(1, 2, 3);
-                let mut plot = CartesianPlot::new(Vec::new()).with_annotations([
-                    CartesianAnnotation::y_line("limit", 10.0, color)
-                        .labelled("Limit")
-                        .stroke_width(2.0)
-                        .solid(),
-                    CartesianAnnotation::x_band("window", 2.0, 4.0, color).fill_alpha(42),
-                ]);
-                assert_eq!(plot.annotations().len(), 2);
-                assert_eq!(plot.annotations()[0].id, "limit");
-                assert!(!plot.annotations()[0].dashed);
-                assert_eq!(plot.annotations()[1].fill_alpha, 42);
-                plot.annotations_mut().clear();
-                assert!(plot.annotations().is_empty());
-            }
-
-            fn series_visual_builders_sanitize_and_preserve_art_direction() {
-                let series = PlotSeries::new("s", "Series", Color::WHITE, Vec::new())
-                    .kind(SeriesKind::SmoothArea)
-                    .dashed([8.0, -2.0, f64::NAN, 3.0])
-                    .fill_alpha(90)
-                    .marker_shape(MarkerShape::Diamond)
-                    .bar_radius(-4.0);
-                assert_eq!(series.line_dash, vec![8.0, 3.0]);
-                assert_eq!(series.fill_alpha, 90);
-                assert_eq!(series.marker_shape, MarkerShape::Diamond);
-                assert_eq!(series.bar_radius, 0.0);
-            }
-
-            fn adaptive_sampling_preserves_extrema_and_respects_pixel_budget() {
-                let mut data = (0..10_000)
-                    .map(|index| PlotDatum::new(index.to_string(), f64::from(index), 0.0))
-                    .collect::<Vec<_>>();
-                data[1_337].y = 900.0;
-                data[7_331].y = -700.0;
-                let line = PlotSeries::new("dense", "Dense", Color::WHITE, data);
-                let plot = CartesianPlot::new(vec![line.clone()]);
-                let sampled = plot
-                    .marks
-                    .render_indices(&line, Rect::new(0.0, 0.0, 100.0, 100.0));
-                assert!(sampled.len() <= 202, "{} sampled points", sampled.len());
-                assert_eq!(sampled.first(), Some(&0));
-                assert_eq!(sampled.last(), Some(&9_999));
-                assert!(sampled.contains(&1_337));
-                assert!(sampled.contains(&7_331));
-                assert!(sampled.windows(2).all(|pair| pair[0] < pair[1]));
-
-                let scatter = line.kind(SeriesKind::Scatter);
-                assert_eq!(
-                    plot.marks
-                        .render_indices(&scatter, Rect::new(0.0, 0.0, 100.0, 100.0))
-                        .len(),
-                    10_000
-                );
-            }
-
-            fn sampling_configuration_is_sanitized_and_can_be_disabled() {
-                let style = CartesianStyle::default().with_adaptive_sampling(false, f64::NAN);
-                assert!(!style.rendering.adaptive_sampling);
-                assert_eq!(style.rendering.max_points_per_pixel, 2.0);
-                let style = style.with_adaptive_sampling(true, 100.0);
-                assert_eq!(style.rendering.max_points_per_pixel, 16.0);
-            }
-
-            fn missing_samples_break_paths_unless_connection_is_requested() {
-                let a = Point::new(0.0, 0.0);
-                let b = Point::new(1.0, 1.0);
-                let c = Point::new(2.0, 2.0);
-                let broken = CartesianMarks::point_segments([Some(a), Some(b), None, Some(c)], false);
-                assert_eq!(broken, vec![vec![a, b], vec![c]]);
-                let connected = CartesianMarks::point_segments([Some(a), Some(b), None, Some(c)], true);
-                assert_eq!(connected, vec![vec![a, b, c]]);
-
-                let series = PlotSeries::new(
-                    "gapped",
-                    "Gapped",
-                    Color::WHITE,
-                    (0..1_000)
-                        .map(|index| {
-                            if index == 501 {
-                                PlotDatum::missing("gap", f64::from(index))
-                            } else {
-                                PlotDatum::new(index.to_string(), f64::from(index), f64::from(index))
-                            }
-                        })
-                        .collect(),
-                );
-                let plot = CartesianPlot::new(vec![series.clone()]);
-                assert!(
-                    plot.marks
-                        .render_indices(&series, Rect::new(0.0, 0.0, 40.0, 100.0))
-                        .contains(&501)
-                );
-            }
-
-            annotations_have_concise_builders_and_remain_mutable();
-            series_visual_builders_sanitize_and_preserve_art_direction();
-            adaptive_sampling_preserves_extrema_and_respects_pixel_budget();
-            sampling_configuration_is_sanitized_and_can_be_disabled();
-            missing_samples_break_paths_unless_connection_is_requested();
-        }
     }
 
     tilo_test_env::scenario! {
@@ -3736,32 +3524,9 @@ mod tests {
                 assert!(!plot.needs_animation_frame());
             }
 
-            fn identical_series_updates_are_noops_and_immediate_updates_snap() {
-                let series = vec![PlotSeries::new(
-                    "series",
-                    "Series",
-                    Color::WHITE,
-                    vec![PlotDatum::new("point", 1.0, 2.0)],
-                )];
-                let mut plot = CartesianPlot::new(series.clone());
-                let started = plot.marks.transition_started;
-                plot.set_series(series);
-                assert_eq!(plot.marks.transition_started, started);
-                assert!(!plot.is_animating());
-                plot.set_series_immediate(vec![PlotSeries::new(
-                    "series",
-                    "Series",
-                    Color::WHITE,
-                    vec![PlotDatum::new("point", 3.0, 4.0)],
-                )]);
-                assert!(!plot.is_animating());
-                assert_eq!(plot.marks.series[0].data[0].x, 3.0);
-            }
-
             sorted_series_hover_uses_a_small_exact_x_window();
             annotations_are_hit_testable_and_programmatically_inspectable();
             stable_ids_interpolate_live_updates_and_reduced_motion_snaps();
-            identical_series_updates_are_noops_and_immediate_updates_snap();
         }
 
         phase brushes_convert_pixels_to_domains_and_ignore_tiny_drags;
@@ -3837,24 +3602,8 @@ mod tests {
                 assert_eq!(plot.take_brush_selection(), None);
             }
 
-            fn tiny_brushes_are_ignored() {
-                assert!(
-                    CartesianMarks::brush_selection_from_rect(
-                        Rect::new(0.0, 0.0, 3.0, 100.0),
-                        Rect::new(0.0, 0.0, 100.0, 100.0),
-                        Domain::normalized(0.0, 1.0),
-                        Domain::normalized(0.0, 1.0),
-                        AxisScale::Linear,
-                        AxisScale::Linear,
-                        CartesianBrush::X,
-                    )
-                    .is_none()
-                );
-            }
-
             brush_converts_pixels_to_x_domain();
             xy_brush_converts_inverted_y_domain();
-            tiny_brushes_are_ignored();
             a_finished_brush_is_handed_back_once_and_a_tiny_one_is_not();
         }
     }

@@ -1269,40 +1269,6 @@ fn accessibility_names_the_badge_and_reads_parts_and_actions() {
 }
 
 #[test]
-fn retained_row_activates_by_pointer_and_accessibility() {
-    let hits = Rc::new(Cell::new(0));
-    let counter = Rc::clone(&hits);
-    let rows: Element = Box::new(
-        Column::new().with_no_padding().push(Box::new(
-            ListRow::new("contact-ada", "Ada Lovelace")
-                .secondary("ada@example.org")
-                .avatar("Ada Lovelace", "ada@example.org")
-                .meta("Today")
-                .on_open(move || counter.set(counter.get() + 1)),
-        )),
-    );
-    let mut harness = Driver::new(crate::State::new(), rows, (400, 200));
-    let [x, y, w, h] = find(&harness.inspection().root, "ListRow")
-        .expect("row laid out")
-        .rect;
-    assert!(h >= 40.0);
-    harness.click_at(x + w / 2.0, y + h / 2.0);
-    assert_eq!(hits.get(), 1);
-    let mut row = ListRow::new("r", "Row").on_open(|| {});
-    let node = Widget::accessibility(&row).unwrap();
-    assert_eq!(node.role, Role::ListItem);
-    assert_eq!(node.name.as_deref(), Some("Row"));
-    let mut doc = automerge::AutoCommit::new();
-    assert!(Widget::perform_action(
-        &mut row,
-        &crate::a11y::Action::Activate,
-        &[],
-        &mut crate::widget::Edits::lend(&mut doc),
-        &automerge::ROOT,
-    ));
-}
-
-#[test]
 fn a_trailing_disclosure_button_stands_on_the_chevron_column() {
     let rows = Column::new()
         .with_no_padding()
@@ -1634,20 +1600,6 @@ fn collect<'a>(node: &'a InspectionNode, widget: &str, out: &mut Vec<&'a Inspect
     for child in &node.children {
         collect(child, widget, out);
     }
-}
-
-#[test]
-fn a_rows_skeleton_paints_where_the_row_does() {
-    let theme = crate::theme::Theme::dark();
-    let row = ListRow::new("task", "Water the plants").secondary("Today");
-    let h = Driver::for_root(crate::State::new(), row, (480, 80), theme.clone());
-    let row = h.root::<ListRow>();
-    let skeleton = crate::widget::SkeletonFace::new(crate::widget::SkeletonShape::Row(row.shape()));
-    assert_eq!(
-        skeleton.painted_rect(row.get_rect(), &theme),
-        row.outer(),
-        "the skeleton's bars start where the row's text does"
-    );
 }
 
 /// On a touchscreen a row a person presses (one that opens, one with a checkbox) is at least

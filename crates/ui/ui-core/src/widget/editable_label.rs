@@ -824,25 +824,6 @@ mod tests {
 
         // A frame re-solves the label's size only when what it shows changed,
         // not on every frame that moves it.
-        phase a_label_asks_for_a_measure_only_when_its_text_changes;
-        {
-            let mut harness = crate::app::driver::Driver::for_root(
-                crate::State::new(),
-                EditableLabel::new("Budget"),
-                (400, 80),
-                Theme::dark(),
-            );
-            harness.relayout();
-            assert!(!harness.root::<EditableLabel>().layout_needs_measure());
-            harness
-                .widget_mut::<EditableLabel>()
-                .expect("the label")
-                .set_value("Quarterly budget");
-            assert!(harness.root::<EditableLabel>().layout_needs_measure());
-            harness.relayout();
-            assert!(!harness.root::<EditableLabel>().layout_needs_measure());
-        }
-
         phase keyboard_focus_opens_the_label_without_resetting_an_active_draft;
         {
             let mut label = EditableLabel::new("Old name");

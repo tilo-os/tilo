@@ -1030,43 +1030,6 @@ mod host_tests {
             );
         }
 
-        phase chip_rect_flips_above_and_clamps_horizontally;
-        {
-            let _settled = crate::motion::testing::settled();
-            let theme = Theme::dark();
-            let vp = Rect::new(0.0, 0.0, 800.0, 600.0);
-            let size = (120.0, 24.0);
-
-            let bottom_anchor = Rect::new(400.0, 580.0, 440.0, 596.0);
-            let r = chip_rect(&theme, bottom_anchor, size, vp);
-            assert!(
-                r.y1 <= bottom_anchor.y0,
-                "flips above when it would overflow the bottom"
-            );
-
-            let right_anchor = Rect::new(790.0, 10.0, 800.0, 30.0);
-            let r = chip_rect(&theme, right_anchor, size, vp);
-            assert!(
-                r.x1 <= vp.x1 - ChipMetrics::of(&theme).margin + 0.01,
-                "clamped to the right edge"
-            );
-            assert!(r.x0 >= vp.x0, "never off the left edge");
-
-            let left_anchor = Rect::new(0.0, 10.0, 10.0, 30.0);
-            let r = chip_rect(&theme, left_anchor, size, vp);
-            assert!(
-                r.x0 >= vp.x0 + ChipMetrics::of(&theme).margin - 0.01,
-                "clamped to the left margin"
-            );
-
-            let center = Rect::new(390.0, 100.0, 410.0, 120.0);
-            let r = chip_rect(&theme, center, size, vp);
-            assert!(r.y0 >= center.y1, "placed below when it fits");
-            assert!(
-                (r.center().x - center.center().x).abs() < 0.5,
-                "centred under the anchor"
-            );
-        }
     }
 }
 

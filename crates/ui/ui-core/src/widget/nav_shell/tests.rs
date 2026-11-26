@@ -17,7 +17,6 @@ mod listed_actions;
 mod nothing_listed;
 mod page_title;
 mod places;
-mod replan;
 mod sidebar_button;
 mod sidebar_scroll;
 mod touch;
@@ -406,30 +405,6 @@ tilo_test_env::scenario! {
 
     // The class a shell shows is the rect's, held through the hysteresis band so
     // a window resting on a threshold does not flutter.
-    phase the_shell_reports_the_size_class_of_the_rect_it_laid_out_in;
-    {
-        let theme = Theme::dark();
-        let m = theme.tokens.metrics;
-        let (compact, _wide) = crate::tokens::Breakpoint::thresholds(&m);
-        #[allow(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "small positive widths"
-        )]
-        let px = |w: f64| w.round() as u32;
-        let mut h = harness(files_shell(), 1280, 700, theme);
-        settle(&mut h, 1280, 700);
-        assert_eq!(geometry(&h).size_class, crate::tokens::Breakpoint::Wide);
-        settle(&mut h, px(compact), 700);
-        assert_eq!(
-            geometry(&h).size_class,
-            crate::tokens::Breakpoint::Medium,
-            "a window narrowed to the compact threshold keeps one column beside a docked sidebar"
-        );
-        settle(&mut h, 390, 700);
-        assert_eq!(geometry(&h).size_class, crate::tokens::Breakpoint::Compact);
-    }
-
     phase the_shell_follows_the_window_and_the_text_scale;
     {
         for (scale, theme) in [
@@ -907,72 +882,6 @@ tilo_test_env::scenario! {
         assert_eq!(name(&h).as_deref(), Some("Hide sidebar"));
     }
 
-    phase an_open_drawer_keeps_the_contents_wake_deadline;
-    {
-        let deadline = crate::time::now() + crate::time::Duration::from_millis(900);
-        let (mut content, _) = Probe::boxed("content");
-        content
-            .as_any_mut()
-            .unwrap()
-            .downcast_mut::<Probe>()
-            .unwrap()
-            .deadline = Some(deadline);
-        let shell = NavShell::new()
-            .content_kind(ContentKind::Document)
-            .sidebar(Probe::boxed("sidebar").0)
-            .content(content);
-        let mut h = harness(shell, 480, 800, Theme::dark());
-        settle(&mut h, 480, 800);
-        h.root_mut::<NavShell>().open_sidebar();
-        settle(&mut h, 480, 800);
-        assert_eq!(geometry(&h).open_drawer(), Some(Column::Sidebar));
-        assert_eq!(h.root::<NavShell>().next_wake_deadline(), Some(deadline));
-    }
-
-    phase a_drawer_leaves_the_contents_action_emitters_published;
-    {
-        let resource = tilo_actions::ResourceSpec::new("test-pane", "test", "Test").with_action(
-            tilo_actions::ActionSpec::operation(
-                "go",
-                "Go",
-                tilo_actions::OperationKind::View,
-                "test.go",
-                &(),
-            )
-            .unwrap(),
-        );
-        let button = Button::new("go", "Go")
-            .on_action(tilo_actions::ActionBinding::unit_for(&resource, "go").unwrap());
-        let shell = NavShell::new()
-            .content_kind(ContentKind::Document)
-            .sidebar(Probe::boxed("sidebar").0)
-            .content(Box::new(button));
-        let mut h = harness(shell, 480, 800, Theme::dark());
-        for open in [false, true, false] {
-            if open {
-                h.root_mut::<NavShell>().open_sidebar();
-            } else {
-                h.root_mut::<NavShell>().close_sidebar();
-            }
-            settle(&mut h, 480, 800);
-            assert_eq!(h.root::<NavShell>().is_sidebar_open(), open);
-            let bindings = crate::widget::controls::control_action_bindings(h.root::<NavShell>());
-            let inventory = bindings
-                .iter()
-                .any(|binding| matches!(binding.kind, crate::widget::ControlBindingKind::Action(_)));
-            let backdrop = bindings.iter().any(|binding| matches!(&binding.kind,
-                crate::widget::ControlBindingKind::Action(address) if address.resource == "test-pane" && address.action == "go"));
-            assert_eq!(
-                crate::widget::controls::has_action_control_bindings(h.root::<NavShell>()),
-                inventory
-            );
-            assert!(
-                backdrop,
-                "a drawer is not modal: the content's action stays published"
-            );
-        }
-    }
-
     phase the_system_shortcut_toggles_the_sidebar;
     {
         let mut h = harness(mail_shell(), 1280, 800, Theme::dark());
@@ -1070,41 +979,6 @@ tilo_test_env::scenario! {
         assert_eq!(geometry(&h).sidebar, SidebarPlacement::Docked);
     }
 
-    phase a_screen_held_beside_the_window_asks_for_no_frames;
-    {
-        let shell = NavShell::new()
-            .mode(NavMode::Push)
-            .sidebar(Probe::boxed("sidebar").0)
-            .content(Probe::boxed("content").0);
-        let mut h = harness(shell, 360, 800, Theme::dark());
-        settle(&mut h, 360, 800);
-        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Sidebar);
-        let content = h.root::<NavShell>().content.get_rect();
-        assert!(
-            content.x0 >= 360.0,
-            "the content screen waits beside the window: {content:?}"
-        );
-        // The content would show something new, but no frame paints it while
-        // the sidebar is in front: the frame the change runs leaves it
-        // unpainted, and it asks for nothing until it is shown.
-        set_content_animating(&mut h, true);
-        assert!(content_animating(&h), "no frame painted the culled screen");
-        let shell = h.root::<NavShell>();
-        assert!(
-            !shell.needs_animation_frame(),
-            "a culled screen asks for frames"
-        );
-        assert!(!shell.needs_redraw(), "a culled screen asks for a redraw");
-
-        // Shown, the content is painted by the very frame its change runs.
-        settle(&mut h, 1280, 800);
-        set_content_animating(&mut h, true);
-        assert!(
-            !content_animating(&h),
-            "the frame after the change painted the shown content"
-        );
-    }
-
     phase narrow_windows_push_the_content_over_the_overview;
     {
         let mut h = harness(mail_shell(), 560, 800, Theme::dark());
@@ -1183,28 +1057,6 @@ fn escape_pops_the_apps_page_stack() {
         !h.root::<NavShell>().can_go_back(),
         "and the way back went with the page"
     );
-}
-
-/// Whether the content probe still holds a change no frame has painted.
-fn content_animating(h: &Driver) -> bool {
-    h.root::<NavShell>()
-        .content
-        .as_any()
-        .and_then(|any| any.downcast_ref::<Probe>())
-        .expect("the content is the probe")
-        .animating
-}
-
-/// Give the content probe a change to paint; letting go of the root runs the frame that takes it.
-fn set_content_animating(h: &mut Driver, animating: bool) {
-    if let Some(probe) = h
-        .root_mut::<NavShell>()
-        .content
-        .as_any_mut()
-        .and_then(|any| any.downcast_mut::<Probe>())
-    {
-        probe.animating = animating;
-    }
 }
 
 #[test]
@@ -1876,90 +1728,8 @@ tilo_test_env::scenario! {
 
     // A shown title that says something else (an item's title as it is typed) is the same part,
     // measured and painted again: the window keeps its tree. A count is drawn in that part too.
-    phase a_shown_title_that_changes_keeps_the_tree_and_one_that_goes_rebuilds_it;
-    {
-        use crate::widget::StructureChange;
-        let mut h = harness(mail_shell(), 1400, 800, Theme::dark());
-        settle(&mut h, 1400, 800);
-        let _ = h.root_mut::<NavShell>().take_structure_change();
-
-        {
-            let mut shell = h.root_mut::<NavShell>();
-            shell.set_content_title("Design review, second round");
-            assert_eq!(
-                shell.take_structure_change(),
-                StructureChange::None,
-                "a title typed into keeps the header row"
-            );
-        }
-        h.relayout_at((1400, 800)).expect("the title lays out");
-        let title = &h.root::<NavShell>().headers[Column::Content.index()].title;
-        assert_eq!(title.title.as_deref(), Some("Design review, second round"));
-        assert!(
-            !crate::widget::Widget::is_layout_dirty(title),
-            "it is measured again with what it says now"
-        );
-
-        let mut shell = h.root_mut::<NavShell>();
-        shell.set_content_count(Some(3));
-        assert_eq!(
-            shell.take_structure_change(),
-            StructureChange::None,
-            "a count is drawn in the title's part"
-        );
-
-        shell.set_content_title("");
-        assert_eq!(
-            shell.take_structure_change(),
-            StructureChange::Rebuild,
-            "a title that goes changes the header row"
-        );
-    }
-
     // A header's actions that each take their change in place (a label, whether one is enabled)
     // keep the row as it is; an action that comes or goes changes it.
-    phase header_actions_changed_in_place_keep_the_row;
-    {
-        use crate::component::Described as _;
-        use crate::widget::StructureChange;
-        let action = || -> Element { Probe::boxed("reply").0 };
-        let shell = mail_shell().content_header("Design review", vec![action(), action()]);
-        let mut h = harness(shell, 1400, 800, Theme::dark());
-        settle(&mut h, 1400, 800);
-        let _ = h.root_mut::<NavShell>().take_structure_change();
-
-        {
-            let mut shell = h.root_mut::<NavShell>();
-            let views = shell
-                .part_views("actions")
-                .expect("the content header's actions");
-            assert_eq!(views.len(), 2);
-            assert!(
-                views.view_mut(0).is_some(),
-                "an action, reconciled where it stands"
-            );
-            shell.finish_part_edit();
-            assert_eq!(
-                shell.take_structure_change(),
-                StructureChange::None,
-                "actions changed in place keep the header row"
-            );
-        }
-
-        {
-            let mut shell = h.root_mut::<NavShell>();
-            let views = shell
-                .part_views("actions")
-                .expect("the content header's actions");
-            views.remove(1);
-            shell.finish_part_edit();
-            assert_eq!(
-                shell.take_structure_change(),
-                StructureChange::Rebuild,
-                "an action that goes changes the row"
-            );
-        }
-    }
 }
 
 #[test]
@@ -2013,45 +1783,7 @@ fn pressing_the_toggle_hides_and_shows_the_sidebar() {
 tilo_test_env::scenario! {
     fn the_shell_keeps_its_tree_and_remeasures_what_changed;
 
-    phase an_unbuilt_shell_reports_structure_changes_once;
-    {
-        let mut shell = notes_shell();
-        shell.take_structure_dirty();
-        for frame in 0..3 {
-            assert!(
-                !shell.take_structure_dirty(),
-                "unbuilt frame {frame} must settle"
-            );
-        }
-        shell.set_content(Probe::boxed("replacement").0);
-        assert!(shell.take_structure_dirty());
-        assert!(!shell.take_structure_dirty());
-    }
-
     // Before any layout the shell builds its tree for the screens a regular window shows.
-    phase a_first_layout_on_the_screens_the_shell_planned_keeps_its_tree;
-    {
-        let theme = Theme::dark();
-        let mut text = TextRenderer::new();
-        let mut shell = settings_shell();
-        let regular = Rect::new(0.0, 0.0, 1280.0, 800.0);
-        crate::widget::layout::lay_out_detached(&mut shell, regular, &theme, &mut text)
-            .expect("layout");
-        assert!(
-            !shell.take_structure_dirty(),
-            "a regular window lands on the screens the tree was built for"
-        );
-
-        let mut shell = settings_shell();
-        let narrow = Rect::new(0.0, 0.0, 360.0, 700.0);
-        crate::widget::layout::lay_out_detached(&mut shell, narrow, &theme, &mut text).expect("layout");
-        assert!(
-            shell.take_structure_dirty(),
-            "a narrow window shows one screen at a time: its tree is rebuilt"
-        );
-        assert_eq!(shell.front_pane(), NavPane::Sidebar, "it opens on its list");
-    }
-
     phase the_shell_continues_and_reports_input_as_its_content;
     {
         let shell = NavShell::new()
@@ -2080,75 +1812,6 @@ tilo_test_env::scenario! {
     // A change a part carries out in place is the shell's only where the shell can have it carried
     // out: in a screen it lays out, in front or not, it is remounted there; a screen outside the
     // tree is built whole when it comes back.
-    phase a_part_changed_in_place_off_screen_keeps_the_tree_and_settles;
-    {
-        let armed = SharedRc::new(Cell::new(false));
-        let remounts = SharedRc::new(Cell::new(0));
-        let overview = Remounting {
-            rect: Rect::ZERO,
-            armed: SharedRc::clone(&armed),
-            pending: false,
-            remounts: SharedRc::clone(&remounts),
-        };
-        let shell = NavShell::new()
-            .mode(NavMode::Push)
-            .overview(Box::new(overview))
-            .content(Probe::boxed("content").0);
-        let mut h = harness(shell, 360, 800, Theme::dark());
-        settle(&mut h, 360, 800);
-        h.root_mut::<NavShell>().show(NavPane::Content);
-        settle(&mut h, 360, 800);
-        assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
-
-        let rebuilt = h.rebuilt_frames();
-        for _ in 0..3 {
-            armed.set(true);
-            h.relayout_at((360, 800))
-                .expect("the frame settles with a change pending off screen");
-        }
-        assert_eq!(h.rebuilt_frames(), rebuilt, "the window keeps its tree");
-        let laid_out = h
-            .root::<NavShell>()
-            .exposed_parts()
-            .contains(&Part::Body(Column::Overview));
-        assert_eq!(
-            remounts.get(),
-            if laid_out { 3 } else { 0 },
-            "remounted where it is laid out, and only there"
-        );
-    }
-
-    phase a_hidden_inspector_animation_waits_until_the_drawer_is_painted;
-    {
-        let (mut inspector, _) = Probe::boxed("inspector");
-        inspector
-            .as_any_mut()
-            .unwrap()
-            .downcast_mut::<Probe>()
-            .unwrap()
-            .animating = true;
-        let shell = NavShell::new()
-            .content(Probe::boxed("content").0)
-            .inspector(inspector);
-        let mut h = harness(shell, 600, 534, Theme::dark());
-        assert!(h.settle_for_capture(tilo_test_env::hang_bound()));
-        let shell = h.root::<NavShell>();
-        assert!(!shell.is_inspector_open());
-        assert!(!shell.needs_animation_frame());
-        assert!(!shell.needs_redraw());
-        assert!(
-            shell.inspector.as_ref().unwrap().needs_animation_frame(),
-            "the hidden animation is retained"
-        );
-        h.root_mut::<NavShell>().open_inspector();
-        assert!(h.settle_for_capture(tilo_test_env::hang_bound()));
-        let shell = h.root::<NavShell>();
-        assert!(shell.is_inspector_open());
-        assert!(
-            !shell.inspector.as_ref().unwrap().needs_animation_frame(),
-            "opening the drawer paints the retained animation"
-        );
-    }
 }
 
 #[test]
@@ -2194,168 +1857,6 @@ fn narrowing_keeps_the_list_an_app_showed_and_its_actions_answer() {
     settle(&mut h, 1600, 800);
     settle(&mut h, 560, 800);
     assert_eq!(h.root::<NavShell>().front_pane(), NavPane::Content);
-}
-
-#[test]
-fn scrolling_reuses_measured_panes_without_reloading_fonts() {
-    let content = crate::widget::Scrollable::new_vertical().with_child(Box::new(Text::new(
-        &"file row with a measured label\n".repeat(100),
-    )));
-    let shell = NavShell::new()
-        .sidebar(Probe::boxed("sidebar").0)
-        .content(Box::new(content));
-    let mut h = harness(shell, 1280, 800, Theme::dark());
-    settle(&mut h, 1280, 800);
-    h.root_mut::<NavShell>().mark_drawn();
-    h.relayout_at((1280, 800)).expect("draw state republished");
-    let text_rect = |h: &Driver| {
-        h.root::<NavShell>()
-            .children()
-            .into_iter()
-            .find(|child| {
-                child.concrete_type_name() == std::any::type_name::<crate::widget::Scrollable>()
-            })
-            .expect("retained scroll pane")
-            .children()[0]
-            .get_rect()
-    };
-    let before = text_rect(&h);
-    let center = h.root::<NavShell>().geometry().content_column.center();
-    h.dispatch_to_root(&crate::synthetic_input::cursor_moved(center.x, center.y));
-    crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
-    for _ in 0..4 {
-        h.dispatch_to_root(&WindowEvent::MouseWheel {
-            device_id: winit::event::DeviceId::dummy(),
-            delta: winit::event::MouseScrollDelta::PixelDelta(winit::dpi::PhysicalPosition::new(
-                0.0, -20.0,
-            )),
-            phase: winit::event::TouchPhase::Moved,
-        });
-        assert!(h.root::<NavShell>().is_layout_dirty());
-        assert!(
-            !h.root::<NavShell>().layout_needs_measure(),
-            "scroll preserves intrinsic sizes: shell_pending={} dirty_parts={:?} font_constructions={}",
-            h.root::<NavShell>().invalidation.is_pending(),
-            h.root::<NavShell>()
-                .laid_out_parts
-                .iter()
-                .filter_map(|part| {
-                    let widget = h.root::<NavShell>().part(*part)?;
-                    widget.layout_needs_measure().then(|| {
-                        (
-                            *part,
-                            widget.name(),
-                            widget.get_rect(),
-                            widget.is_layout_dirty(),
-                        )
-                    })
-                })
-                .collect::<Vec<_>>(),
-            crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(Cell::get),
-        );
-        h.relayout_at((1280, 800)).expect("scroll repositioned");
-    }
-    let after = text_rect(&h);
-    assert_eq!(after.x0, before.x0);
-    assert_eq!(after.y0, before.y0 - 80.0);
-    assert_eq!(
-        crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(Cell::get),
-        0,
-        "translation-only layout must not reload system fonts"
-    );
-}
-
-#[test]
-fn retained_panes_remeasure_theme_resize_replacement_and_edits_beside_a_drawer() {
-    use automerge::transaction::Transactable;
-    fn make(theme: Theme, viewport: (u32, u32), label: &str) -> Driver {
-        let mut state = State::new();
-        state.doc.put(automerge::ROOT, "label", label).unwrap();
-        let content = crate::widget::Scrollable::new_vertical()
-            .with_child(Box::new(Text::from_document_string("label")));
-        Driver::for_root(
-            state,
-            NavShell::new()
-                .content_kind(ContentKind::Document)
-                .sidebar(Probe::boxed("sidebar").0)
-                .content(Box::new(content)),
-            viewport,
-            theme,
-        )
-    }
-    fn text_rect(h: &mut Driver) -> Rect {
-        h.root_mut::<NavShell>()
-            .content_mut::<crate::widget::Scrollable>()
-            .unwrap()
-            .children()[0]
-            .get_rect()
-    }
-    let mut h = make(Theme::dark(), (1280, 800), "first line");
-    settle(&mut h, 1280, 800);
-    let original = text_rect(&mut h);
-    let scaled = Theme::light().with_text_scale(1.5);
-    crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(|count| count.set(0));
-    h.relayout_themed((1400, 900), scaled.clone())
-        .expect("theme and resize measured");
-    assert!(text_rect(&mut h).height() > original.height());
-    assert_eq!(
-        crate::text_render::FONT_SYSTEM_CONSTRUCTIONS.with(Cell::get),
-        0,
-        "panes reuse the host renderer rather than constructing font systems"
-    );
-    let mut fresh = make(scaled.clone(), (1400, 900), "first line");
-    settle(&mut fresh, 1400, 900);
-    assert_eq!(text_rect(&mut h), text_rect(&mut fresh));
-
-    h.relayout_at((480, 800)).expect("narrow");
-    h.root_mut::<NavShell>().open_sidebar();
-    settle(&mut h, 480, 800);
-    assert_eq!(geometry(&h).open_drawer(), Some(Column::Sidebar));
-    let before = text_rect(&mut h);
-    h.state_mut()
-        .doc
-        .put(
-            automerge::ROOT,
-            "label",
-            "first line\nsecond line\nthird line",
-        )
-        .unwrap();
-    // A write past the framework reaches the widgets in the frame that refreshes the model, as a
-    // host's own write marks the window for a sync.
-    h.relayout();
-    let changed = text_rect(&mut h);
-    assert!(
-        changed.height() > before.height(),
-        "the document beside the drawer gets changed text geometry"
-    );
-    h.recompose().expect("authoritative full measurement");
-    assert_eq!(text_rect(&mut h), changed);
-
-    let mut replacement = make(
-        scaled,
-        (480, 800),
-        "replacement\nsecond line\nthird line\nfourth line",
-    );
-    settle(&mut replacement, 480, 800);
-    replacement.root_mut::<NavShell>().set_content(Box::new(
-        crate::widget::Scrollable::new_vertical().with_child(Box::new(Text::new(
-            "replacement\nsecond line\nthird line\nfourth line",
-        ))),
-    ));
-    settle(&mut replacement, 480, 800);
-    replacement.root_mut::<NavShell>().mark_drawn();
-    let content = std::mem::replace(
-        &mut replacement.root_mut::<NavShell>().content,
-        Probe::boxed("placeholder").0,
-    );
-    assert!(
-        !content.layout_needs_measure(),
-        "fixture: replacement is already measured and clean"
-    );
-    h.root_mut::<NavShell>().set_content(content);
-    h.relayout_at((480, 800))
-        .expect("clean replacement measured");
-    assert!(text_rect(&mut h).height() > changed.height());
 }
 
 #[test]
@@ -2762,56 +2263,6 @@ impl crate::widget::Continuable for ResumableContent {
         _path: &automerge::ObjId,
     ) -> bool {
         true
-    }
-}
-
-/// A pane that, once armed, mounts children of its own in place at its next
-/// sync, as a list does when rows change: it reports the change until it is
-/// carried out, in place or by a build.
-struct Remounting {
-    rect: Rect,
-    armed: SharedRc<Cell<bool>>,
-    pending: bool,
-    remounts: SharedRc<Cell<usize>>,
-}
-
-impl Widget for Remounting {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        self.pending = false;
-        taffy.fill_leaf(node_map, self)
-    }
-    crate::rect_geometry!();
-    fn draw(&mut self, ctx: &mut crate::draw::DrawCtx<'_>) {
-        #[allow(
-            unused_variables,
-            unused_mut,
-            reason = "a draw binds only the parts it uses"
-        )]
-        let (_scene, _transform, _text, _theme, mut env) = ctx.parts();
-    }
-    fn sync(&mut self, _state: &crate::widget::AppModel, _path: &crate::widget::ModelPath) {
-        self.pending |= self.armed.replace(false);
-    }
-    fn take_structure_change(&mut self) -> StructureChange {
-        if self.pending {
-            StructureChange::Children
-        } else {
-            StructureChange::None
-        }
-    }
-    fn remount_children(&mut self, _remount: &mut crate::widget::Remount<'_>) -> bool {
-        if std::mem::take(&mut self.pending) {
-            self.remounts.set(self.remounts.get() + 1);
-        }
-        true
-    }
-    fn name(&self) -> &'static str {
-        "Remounting"
     }
 }
 

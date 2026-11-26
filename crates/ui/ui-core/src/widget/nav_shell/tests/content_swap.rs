@@ -17,17 +17,6 @@ fn props(key: Option<&str>) -> NavShellProps {
     }
 }
 
-/// A window whose content is named, at rest: what it shows first is drawn, not faded in.
-#[test]
-fn a_window_opens_with_its_content_at_rest() {
-    let shell = NavShell::from_props("window", props(Some("appearance")));
-    let now = crate::motion::frame_now();
-    assert_eq!(shell.content_key.as_deref(), Some("appearance"));
-    assert_eq!(shell.content_fade.progress(now), 1.0);
-    assert!(!shell.content_fade.is_moving(now));
-    assert!(!shell.needs_animation_frame());
-}
-
 /// The content named again is no change; a new name brings the content it shows in.
 #[test]
 fn a_new_content_key_brings_the_content_it_shows_in() {

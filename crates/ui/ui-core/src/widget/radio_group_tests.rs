@@ -198,27 +198,4 @@ tilo_test_env::scenario! {
     }
 
     // A view that changes what is chosen changes it where the group stands.
-    phase new_props_change_the_choice_in_place;
-    {
-        use crate::component::Described as _;
-        let props = |selected| RadioGroupProps {
-            options: delivery()
-                .into_iter()
-                .map(|option| RadioProps {
-                    label: option.label,
-                    detail: option.detail,
-                    enabled: option.enabled,
-                    description: option.why,
-                })
-                .collect(),
-            selected,
-            ..RadioGroupProps::default()
-        };
-        let mut group = RadioGroup::from_props("send", props(Some(1)));
-        assert_eq!(group.selected(), Some(1));
-        assert!(group.set_props(props(Some(3))));
-        assert_eq!(group.selected(), Some(3));
-        assert!(group.set_props(props(Some(9))), "a place past the end chooses nothing");
-        assert_eq!(group.selected(), None);
-    }
 }

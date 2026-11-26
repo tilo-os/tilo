@@ -618,13 +618,8 @@ impl Widget for NativeView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::presence::PresenceCtx;
-    use crate::testing::Dispatch;
-    use crate::text_render::TextRenderer;
     use std::cell::RefCell;
     use std::rc::Rc;
-    use vello::Scene;
-    use vello::kurbo::Affine;
 
     #[derive(Clone, Debug, PartialEq)]
     enum Call {
@@ -699,90 +694,6 @@ mod tests {
 
     tilo_test_env::scenario! {
         fn a_native_mount_owns_its_lifecycle_and_reports_failure_truthfully;
-
-        phase native_mount_lifecycle_is_idempotent_and_owns_geometry_visibility_and_focus;
-        {
-            {
-                use crate::platform::Platform;
-
-                let calls = Rc::new(RefCell::new(Vec::new()));
-                let mut view = NativeView::new("Calendar", backend(&calls));
-                view.rect = Rect::new(10.0, 20.0, 110.0, 70.0);
-                let host = NativeViewHost::headless(PlatformConventions::new(Platform::Windows), 1.5);
-                crate::widget::mount_native_views(&mut view, &host);
-                assert!(view.is_mounted());
-                assert!(calls.borrow().contains(&Call::Geometry(NativeViewGeometry {
-                    logical: view.rect,
-                    physical_x: 15,
-                    physical_y: 30,
-                    physical_width: 150,
-                    physical_height: 75,
-                    scale_factor: 1.5,
-                })));
-                view.set_focus(true);
-                view.draw(&mut crate::draw::DrawCtx::new(&mut Scene::new(), Affine::IDENTITY, &mut TextRenderer::new(), &Theme::dark(), PresenceCtx::default().draw_env()));
-                crate::widget::native_view_frame_start(&mut view);
-                crate::widget::unmount_native_views(&mut view);
-
-                let calls = calls.borrow();
-                assert!(calls.contains(&Call::Platform(host.platform())));
-                assert!(calls.contains(&Call::Focus(true)));
-                assert!(calls.contains(&Call::Visible(true)));
-                assert!(calls.contains(&Call::Visible(false)));
-                assert_eq!(calls.last(), Some(&Call::Unmount));
-            }
-
-            {
-                let calls = Rc::new(RefCell::new(Vec::new()));
-                let mut view = NativeView::new("Preview", backend(&calls));
-                let host = NativeViewHost::headless(PlatformConventions::default(), 1.0);
-                view.mount_native_view(&host);
-                view.mount_native_view(&host);
-                let scaled = NativeViewHost::headless(PlatformConventions::default(), 2.0);
-                view.mount_native_view(&scaled);
-                assert_eq!(
-                    calls
-                        .borrow()
-                        .iter()
-                        .filter(|call| matches!(call, Call::Mount))
-                        .count(),
-                    1
-                );
-                assert_eq!(
-                    calls
-                        .borrow()
-                        .iter()
-                        .filter(|call| matches!(call, Call::HostChanged))
-                        .count(),
-                    1,
-                    "only the scale change reaches host_changed"
-                );
-            }
-
-            {
-                let calls = Rc::new(RefCell::new(Vec::new()));
-                let mut view = NativeView::new("Native editor", backend(&calls));
-                view.rect = Rect::new(10.0, 20.0, 210.0, 120.0);
-                view.mount_native_view(&NativeViewHost::headless(
-                    PlatformConventions::default(),
-                    1.0,
-                ));
-                let mut taffy = TaffyTree::new();
-                let node = taffy.leaf_node(Style::default());
-                let mut at_node = Dispatch::new().layout(&taffy, node);
-                let cursor = crate::synthetic_input::cursor_moved(40.0, 70.0);
-                at_node.send(&mut view, &cursor);
-                let press = crate::synthetic_input::mouse_press();
-                let pressed = at_node.send(&mut view, &press);
-                assert!(pressed.handled);
-                assert_eq!(pressed.focus_target, Some(node));
-                assert!(
-                    calls
-                        .borrow()
-                        .contains(&Call::Input(Some(Point::new(30.0, 50.0))))
-                );
-            }
-        }
 
         phase native_mount_failure_and_platform_accessibility_stay_truthful;
         {

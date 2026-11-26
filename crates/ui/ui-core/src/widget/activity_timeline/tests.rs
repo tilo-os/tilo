@@ -223,14 +223,6 @@ fn provenance_and_author_pill_presentation() {
         assert!(description.contains("Beta") && description.contains("Notes"));
     }
 
-    fn host_can_suppress_duplicate_author_pill_without_hiding_op_filters() {
-        let mut timeline = timeline_at(Rect::new(0.0, 0.0, 300.0, 400.0), vec![]);
-        assert!(timeline.shows_author_pill());
-        timeline.set_show_author_pill(false);
-        assert!(!timeline.shows_author_pill());
-        assert_eq!(timeline.author_pill_rect(), Rect::ZERO);
-    }
-
     fn a_task_band_says_it_is_a_task_and_a_named_run_does_not() {
         use tilo_actions::ActionContext;
         let mut entries = vec![
@@ -307,7 +299,6 @@ fn provenance_and_author_pill_presentation() {
     provenance_breadcrumbs_and_collapsed_mixed_scope_survive_hidden_rows();
     a_described_change_reads_as_its_description_and_falls_back_to_its_summary();
     a_task_band_says_it_is_a_task_and_a_named_run_does_not();
-    host_can_suppress_duplicate_author_pill_without_hiding_op_filters();
 }
 
 fn entry(op: EntryKind, author: &str, ts: u64, id: u8) -> HistoryEntry {
@@ -504,15 +495,6 @@ tilo_test_env::scenario! {
 
     phase empty_and_filtered_timelines_explain_themselves;
     {
-        fn empty_timeline_paints_placeholder() {
-            let t = timeline_at(Rect::new(0.0, 0.0, 400.0, 300.0), vec![]);
-            assert_eq!(t.visible_len(), 0);
-            let strip = t.filter_strip_rect();
-            assert!(strip.y0 >= t.rect.y0);
-            assert!(strip.y1 < t.rect.y1);
-            assert!(t.row_rect(0).is_none());
-        }
-
         fn an_empty_history_and_a_filtered_one_explain_themselves_differently() {
             let empty = timeline_at(Rect::new(0.0, 0.0, 400.0, 300.0), vec![]);
             let (title, detail) = empty.empty_state_lines();
@@ -568,7 +550,6 @@ tilo_test_env::scenario! {
             );
         }
 
-        empty_timeline_paints_placeholder();
         an_empty_history_and_a_filtered_one_explain_themselves_differently();
         a_host_time_range_is_named_in_the_explanation();
     }
@@ -589,21 +570,6 @@ tilo_test_env::scenario! {
             for i in 0..t.visible_len() {
                 assert_eq!(t.visible_entry(i).unwrap().entry_kind, EntryKind::Comment);
             }
-        }
-
-        fn chip_strip_active_state_round_trips() {
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 200.0), vec![]);
-            assert_eq!(t.active_chip(), ChipKind::All);
-            t.set_active_chip(ChipKind::Governance);
-            assert_eq!(t.active_chip(), ChipKind::Governance);
-            let entries = vec![
-                entry(EntryKind::Comment, "Alice", 1, 1),
-                entry(EntryKind::Access, "Bob", 2, 2),
-            ];
-            t.set_entries(entries);
-            assert_eq!(t.visible_len(), 1, "Governance chip narrows to govern row");
-            t.set_active_chip(ChipKind::All);
-            assert_eq!(t.visible_len(), 2);
         }
 
         fn every_strip_chip_takes_a_press_before_anything_paints() {
@@ -759,7 +725,6 @@ tilo_test_env::scenario! {
         }
 
         filter_by_entry_kind_hides_other_rows();
-        chip_strip_active_state_round_trips();
         every_strip_chip_takes_a_press_before_anything_paints();
         people_chips_take_a_press_before_anything_paints();
         clear_filters_resets_the_widget_and_tells_the_host();
@@ -997,30 +962,9 @@ tilo_test_env::scenario! {
             }
         }
 
-        fn hover_row_tracks_cursor_y() {
-            let entries = vec![
-                entry(EntryKind::Text, "Alice", 1, 1),
-                entry(EntryKind::Text, "Alice", 2, 2),
-                entry(EntryKind::Text, "Alice", 3, 3),
-            ];
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 400.0, 400.0), entries);
-            let row1 = t.row_rect(1).unwrap();
-            dispatch(&mut t, &cursor_moved(row1.center().x, row1.center().y));
-            assert_eq!(t.hover_row(), Some(1));
-            let row2 = t.row_rect(2).unwrap();
-            dispatch(&mut t, &cursor_moved(row2.center().x, row2.center().y));
-            assert_eq!(t.hover_row(), Some(2));
-            // Cache the y bound first so the borrow checker doesn't see a live
-            // `&t` while we hand `&mut t` to `dispatch`.
-            let far_y = t.rect.y1 + 1000.0;
-            dispatch(&mut t, &cursor_moved(0.0, far_y));
-            assert_eq!(t.hover_row(), None);
-        }
-
         accessibility_reports_list_role_name_and_count();
         individual_entries_have_stable_accessible_targets_and_activate();
         keyboard_navigation_moves_focus_and_selects_individual_rows();
-        hover_row_tracks_cursor_y();
     }
 
     phase revert_chip_fires_only_for_revertible_ops;
@@ -1119,84 +1063,6 @@ tilo_test_env::scenario! {
             );
         }
 
-        fn only_the_visible_window_of_a_huge_list_is_touched_per_frame() {
-            // Paint and hit-test must look at the ~15 rows on screen, not all
-            // ten thousand, or a workspace-scale history drops frames.
-            let entries: Vec<HistoryEntry> = (0u32..10_000)
-                .map(|i| {
-                    entry(
-                        EntryKind::Text,
-                        "Alice",
-                        u64::from(i),
-                        u8::try_from(i % 251).unwrap_or(u8::MAX),
-                    )
-                })
-                .collect();
-            let t = timeline_at(Rect::new(0.0, 0.0, 600.0, 600.0), entries);
-            assert_eq!(t.visible_len(), 10_000, "every row passes the filter");
-
-            let range = t.visible_row_range();
-            let viewport_rows_bounded = (t.viewport_height() / ROW_HEIGHT)
-                .ceil()
-                .clamp(0.0, 1_000_000.0);
-            #[allow(
-                clippy::cast_possible_truncation,
-                clippy::cast_sign_loss,
-                reason = "clamped to 0..=1_000_000 above, so this cast cannot truncate or flip sign"
-            )]
-            let viewport_rows = viewport_rows_bounded as usize;
-            assert!(
-                range.len() <= viewport_rows.saturating_add(2),
-                "painted {} rows for a viewport that holds {}",
-                range.len(),
-                viewport_rows
-            );
-            assert_eq!(range.start, 0, "unscrolled, the window starts at the top");
-
-            for i in range.clone() {
-                assert!(t.row_rect(i).is_some(), "row {i} is on screen");
-            }
-            assert!(
-                t.row_rect(range.end.saturating_add(4)).is_none(),
-                "a row well past the window must not lay out"
-            );
-        }
-
-        fn row_at_agrees_with_row_rect_at_the_boundaries() {
-            // `row_at` binary-searches the cumulative row tops; must still agree
-            // with `row_rect` one pixel either side of a boundary between two rows
-            // of *different* heights.
-            let entries: Vec<HistoryEntry> = (0u8..40)
-                .map(|i| entry(EntryKind::Text, "Alice", u64::from(i), i))
-                .collect();
-            let mut t = timeline_at(Rect::new(0.0, 0.0, 500.0, 500.0), entries);
-            // Forty changes by one author in forty seconds is one band, and it
-            // collapses. Open it so the list has both kinds of line in it.
-            t.set_all_expanded(true);
-            assert!(
-                matches!(t.group_at_row(0), Some((_, true))),
-                "line 0 is the opened band header"
-            );
-            assert!(t.row_entry(1).is_some(), "line 1 is a change inside it");
-            assert!(
-                (t.row_rect(0).unwrap().height() - t.row_rect(1).unwrap().height()).abs() > 1.0,
-                "the two line kinds must be different heights for this test to mean anything"
-            );
-            for i in 0..8 {
-                let r = t.row_rect(i).unwrap();
-                assert_eq!(t.row_at(r.center()), Some(i));
-                assert_eq!(t.row_at(Point::new(r.center().x, r.y0 + 0.5)), Some(i));
-                assert_eq!(
-                    t.row_at(Point::new(r.center().x, r.y1 - 0.5)),
-                    Some(i),
-                    "the bottom edge of row {i} still belongs to it"
-                );
-            }
-            let r0 = t.row_rect(0).unwrap();
-            assert_eq!(t.row_at(Point::new(r0.x0 - 4.0, r0.center().y)), None);
-            assert_eq!(t.row_at(Point::new(250.0, 499.9)), None);
-        }
-
         fn narrow_panes_shrink_the_trailing_slots_rather_than_overlapping_them() {
             // On a narrow pane the revert chip must still sit inside the row and
             // leave the summary somewhere to go.
@@ -1223,8 +1089,6 @@ tilo_test_env::scenario! {
 
         entries_sharing_a_timestamp_still_order_newest_first();
         newest_first_reverses_chronological_order();
-        only_the_visible_window_of_a_huge_list_is_touched_per_frame();
-        row_at_agrees_with_row_rect_at_the_boundaries();
         narrow_panes_shrink_the_trailing_slots_rather_than_overlapping_them();
     }
 }

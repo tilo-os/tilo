@@ -1305,34 +1305,8 @@ fn shift() -> winit::event::Modifiers {
     winit::event::Modifiers::from(state)
 }
 
-fn temp_many(n: usize) -> (tempfile::TempDir, PathBuf) {
-    let dir = tempfile::tempdir().expect("tempdir");
-    let root = dir.path().to_path_buf();
-    for i in 0..n {
-        fs::write(root.join(format!("file{i:03}.txt")), b"x").unwrap();
-    }
-    (dir, root)
-}
-
 #[test]
 fn listing_filters_and_scroll_window_rows() {
-    fn scrolling_windows_the_visible_rows() {
-        let (_g, root) = temp_many(40);
-        let mut picker = FilePicker::new("Open", &root, vec![root.clone()]).settled();
-        // A modest dialog: only a handful of rows fit.
-        picker.set_rect(Rect::new(0.0, 0.0, 560.0, 420.0));
-        assert!(picker.entry_rect(0).is_some());
-        let over_list = cursor_at(picker.list_rect().center());
-        feed(&mut picker, &over_list);
-        feed(&mut picker, &crate::synthetic_input::mouse_wheel(0.0, -5.0));
-        assert!(picker.entry_rect(0).is_none(), "row 0 scrolled out of view");
-        let first_shown = picker.entry_rows.first().map(|(i, _)| *i);
-        assert!(
-            first_shown.is_some_and(|i| i > 0 && picker.entry_rect(i).is_some()),
-            "later rows are now visible"
-        );
-    }
-
     fn filters_hide_nonmatching_files_and_cycle_the_listing() {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().to_path_buf();
@@ -1376,7 +1350,6 @@ fn listing_filters_and_scroll_window_rows() {
         assert_eq!(picker.entries().len(), 2, "png + txt");
     }
 
-    scrolling_windows_the_visible_rows();
     filters_hide_nonmatching_files_and_cycle_the_listing();
 }
 

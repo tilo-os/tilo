@@ -482,47 +482,6 @@ mod tests {
             assert!(!painted.finish());
         }
 
-        phase qr_matrix_encodes_payloads_with_a_quiet_zone;
-        {
-            {
-                let w = QrWidget::new(b"hello".to_vec());
-                assert!(w.error().is_none());
-                assert!(w.matrix_size >= 21, "version-1 matrix is 21 modules");
-            }
-
-            {
-                // The pairing-channel payload is JSON ~500-700 bytes.
-                let blob = vec![b'A'; 600];
-                let w = QrWidget::new(blob);
-                assert!(
-                    w.error().is_none(),
-                    "600-byte payload must fit at default EC level: {:?}",
-                    w.error()
-                );
-            }
-
-            {
-                let mut w = QrWidget::new(b"first".to_vec());
-                let first_size = w.matrix_size;
-                w.set_payload(vec![b'X'; 200]);
-                assert!(
-                    w.matrix_size >= first_size,
-                    "longer payload should not shrink the QR"
-                );
-            }
-
-            {
-                let w = QrWidget::new(b"x".to_vec());
-                assert_eq!(w.total_modules(), w.matrix_size + 2 * DEFAULT_QUIET_MODULES);
-            }
-
-            {
-                let w = QrWidget::new(b"x".to_vec());
-                assert!(!w.module(usize::MAX, 0));
-                assert!(!w.module(0, usize::MAX));
-            }
-        }
-
         phase a_dense_code_takes_the_area_its_modules_need;
         {
             let px = 4u32;

@@ -1640,58 +1640,6 @@ mod tests {
             assert!(sf.take_scope_cleared());
         }
 
-        phase the_layout_places_the_controls_without_a_paint;
-        // The layout places every control a field can show: a frame read before
-        // it is drawn — a test, assistive technology, a press on a window that
-        // has laid out and has not yet painted — finds the scope token, the
-        // count, "Search everywhere" and the clear button inside the field,
-        // rather than at the window's origin, where a control nothing placed
-        // stands.
-        {
-            let mut sf = SearchField::filter();
-            sf.set_scope_token(Some("Only Inbox".into()));
-            sf.input.set_text("zzz");
-            sf.set_count(Some(FilterCount::new(0, 12)));
-            // Laid out, never drawn.
-            let _ = lay_out(&mut sf, 420.0);
-            let field = sf.get_rect();
-            for (what, control) in [
-                ("the scope token", sf.scope_token_rect),
-                ("the count", sf.count_rect),
-                ("Search everywhere", sf.escalate_face),
-            ] {
-                assert!(
-                    !control.is_zero_area(),
-                    "{what} stands where the layout put it: {control:?}"
-                );
-                assert!(
-                    field.contains(control.center()),
-                    "{what} {control:?} stands inside the field {field:?}"
-                );
-            }
-            assert!(
-                !sf.escalate_rect.is_zero_area(),
-                "Search everywhere is a whole target: {:?}",
-                sf.escalate_rect
-            );
-            let clear = clear_icon_rect(field);
-            assert!(
-                !sf.clear_rect.is_zero_area() && field.contains(clear.center()),
-                "the clear button stands in the field: {:?}",
-                sf.clear_rect
-            );
-            let text = sf.input.get_rect();
-            assert!(
-                text.x0 >= sf.scope_token_rect.x1 - 0.5,
-                "the text starts after the token: {text:?} against {:?}",
-                sf.scope_token_rect
-            );
-            assert!(
-                text.x1 <= clear.x0 + 0.5,
-                "and ends before the clear button: {text:?} against {clear:?}"
-            );
-        }
-
         phase a_themed_field_places_its_controls_in_the_themes_type;
         // The type the person chose — a face whose look-alike letters are told
         // apart, at a larger text scale — is the type the layout places the

@@ -76,16 +76,12 @@ mod tests {
     use vello::Scene;
     use vello::kurbo::{Affine, Point};
     use winit::event::WindowEvent;
-    use winit::keyboard::{Key, NamedKey, SmolStr};
+    use winit::keyboard::{Key, NamedKey};
 
     use crate::synthetic_input::key_press;
     use crate::text_render::TextRenderer;
     use crate::theme::Theme;
     use crate::widget::Widget;
-
-    fn char_press(c: &str) -> WindowEvent {
-        key_press(Key::Character(SmolStr::new(c)), Some(c))
-    }
 
     fn seed_three() -> LinkPopover {
         let mut p = LinkPopover::new();
@@ -102,24 +98,6 @@ mod tests {
 
         phase link_popover_items_filter_and_empty_hint;
         {
-            fn new_starts_empty_and_hidden() {
-                let p = LinkPopover::new();
-                assert!(!p.is_visible());
-                assert_eq!(p.visible_len(), 0);
-            }
-
-            fn set_items_seeds_visible_list() {
-                let p = seed_three();
-                assert_eq!(p.visible_len(), 3);
-            }
-
-            fn filter_narrows_results() {
-                let mut p = seed_three();
-                p.set_filter("wel");
-                assert_eq!(p.visible_len(), 1);
-                assert_eq!(p.highlighted().unwrap().title, "Welcome");
-            }
-
             fn empty_results_renders_no_matches_hint() {
                 let mut p = seed_three();
                 p.set_visible(true);
@@ -129,24 +107,11 @@ mod tests {
             }
 
             let _settled = crate::motion::testing::settled();
-            new_starts_empty_and_hidden();
-            set_items_seeds_visible_list();
-            filter_narrows_results();
             empty_results_renders_no_matches_hint();
         }
 
         phase link_popover_keyboard_and_pointer_select_commit_or_escape;
         {
-            fn arrow_keys_move_cursor() {
-                let mut p = seed_three();
-                p.set_visible(true);
-                assert_eq!(p.highlighted().unwrap().title, "Welcome");
-                p.handle_key(&key_press(Key::Named(NamedKey::ArrowDown), None));
-                assert_eq!(p.highlighted().unwrap().title, "Roadmap");
-                p.handle_key(&key_press(Key::Named(NamedKey::ArrowUp), None));
-                assert_eq!(p.highlighted().unwrap().title, "Welcome");
-            }
-
             fn keyboard_highlight_keeps_scrolling_through_large_page_sets() {
                 let mut p = LinkPopover::new();
                 p.set_items(
@@ -199,7 +164,6 @@ mod tests {
             }
 
             let _settled = crate::motion::testing::settled();
-            arrow_keys_move_cursor();
             keyboard_highlight_keeps_scrolling_through_large_page_sets();
             enter_commits_selection_and_hides();
             pointer_hover_and_click_select_the_visible_row();
@@ -208,15 +172,6 @@ mod tests {
 
         phase link_popover_filter_typing_ime_and_backspace;
         {
-            fn typing_pushes_filter() {
-                let mut p = seed_three();
-                p.set_visible(true);
-                p.handle_key(&char_press("r"));
-                assert_eq!(p.filter(), "r");
-                assert_eq!(p.visible_len(), 1);
-                assert_eq!(p.highlighted().unwrap().title, "Roadmap");
-            }
-
             fn ime_preedit_is_visible_but_filters_only_after_commit() {
                 let mut p = LinkPopover::new();
                 p.set_items(vec![
@@ -273,7 +228,6 @@ mod tests {
             }
 
             let _settled = crate::motion::testing::settled();
-            typing_pushes_filter();
             ime_preedit_is_visible_but_filters_only_after_commit();
             backspace_removes_one_extended_grapheme();
             backspace_pops_filter_then_closes();

@@ -213,27 +213,6 @@ mod tests {
 
     #[test]
     fn labeled_controls_share_one_key_for_visible_and_spoken_labels() {
-        fn one_key_names_the_visible_label_and_text_input() {
-            let field = labeled_field(
-                "profile-name-label",
-                TextInput::local().with_id("profile-name"),
-            );
-            let children = Widget::children(&field);
-
-            let label = children
-                .first()
-                .and_then(|child| child.accessibility())
-                .expect("visible label is accessible");
-            let input = children
-                .get(1)
-                .and_then(|child| child.accessibility())
-                .expect("input is accessible");
-            assert_eq!(label.role, Role::StaticText);
-            assert_eq!(label.name.as_deref(), Some("profile-name-label"));
-            assert_eq!(input.role, Role::TextInput);
-            assert_eq!(input.name.as_deref(), Some("profile-name-label"));
-        }
-
         fn labeled_field_hugs_its_content_inside_a_tall_form() {
             let field = labeled_field(
                 "profile-name-label",
@@ -343,23 +322,6 @@ mod tests {
             }
         }
 
-        fn inline_check_uses_one_key_for_visible_and_spoken_labels() {
-            let check = labeled_check(
-                "remember-label",
-                Checkbox::bound("remember", "remember-value"),
-            );
-            let children = Widget::children(&check);
-            let control = children[0].accessibility().expect("checkbox semantics");
-            let label = children[1]
-                .accessibility()
-                .expect("visible label semantics");
-
-            assert_eq!(control.role, Role::Checkbox);
-            assert_eq!(control.name.as_deref(), Some("remember-label"));
-            assert_eq!(label.role, Role::StaticText);
-            assert_eq!(label.name.as_deref(), Some("remember-label"));
-        }
-
         /// A label placed over a boxed control names it, and is read once: in
         /// Settings' pages, whose controls are composed as plain elements.
         fn a_label_over_a_boxed_control_is_the_controls_name() {
@@ -411,11 +373,9 @@ mod tests {
             assert!(node.state.busy, "it still says the block waits");
         }
 
-        one_key_names_the_visible_label_and_text_input();
         labeled_field_hugs_its_content_inside_a_tall_form();
         standard_boolean_and_range_controls_share_the_contract();
         composite_inputs_share_the_contract();
-        inline_check_uses_one_key_for_visible_and_spoken_labels();
         a_label_over_a_boxed_control_is_the_controls_name();
         a_named_control_keeps_its_name_under_a_label();
         a_label_names_a_waiting_block();

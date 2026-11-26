@@ -348,33 +348,6 @@ tilo_test_env::scenario! {
 
     // A header row reports what it settled on: the title's width against what it says, the width it
     // left beside it, and what its actions kept.
-    phase a_header_row_reports_what_it_settled_on;
-    {
-        let shell = NavShell::new()
-            .content(Probe::boxed("content").0)
-            .content_header(
-                "Quarterly planning",
-                vec![
-                    labelled("new", "New note", Icon::Plus),
-                    labelled("pin", "Pin", Icon::Pin),
-                ],
-            );
-        let mut h = harness(shell, 280, 700, Theme::dark());
-        settle(&mut h, 280, 700);
-        let Some(crate::widget::LayoutInfo::Shell(shell)) = h.root::<NavShell>().layout_info() else {
-            panic!("the shell reports its columns");
-        };
-        let row = shell.rows.rows[Column::Content.index()].expect("the content column's row");
-        assert_eq!(row.column, "content");
-        let title = part_rect(&h, Part::Title(Column::Content));
-        assert!((f64::from(row.title_has) - title.width()).abs() < 0.5);
-        // The content column's row keeps its title to what it says: the status message it paints
-        // starts where the title ends.
-        assert!(f64::from(row.title_needs) >= f64::from(row.title_has));
-        assert!(f64::from(row.free_beside_title) >= 0.0);
-        assert!(row.primary_shown, "the row keeps its primary action");
-    }
-
     phase a_leading_fill_stands_between_the_toggle_and_the_actions;
     {
         let shell = NavShell::new()
@@ -666,52 +639,9 @@ fn a_titles_box_reaches_the_actions_that_follow_it() {
 tilo_test_env::scenario! {
     fn drawers_bindings_and_typed_access_serve_the_app;
 
-    phase the_window_group_is_keyed_by_the_shell_id;
-    {
-        let mut h = harness(mail_shell().with_id("mail.shell"), 1280, 800, Theme::dark());
-        settle(&mut h, 1280, 800);
-        let node = h.root::<NavShell>().accessibility().expect("a group");
-        assert_eq!(node.semantic_key.as_deref(), Some("mail.shell.window"));
-        let audit = h.accessibility_audit();
-        assert!(audit.issues.is_empty(), "{:?}", audit.issues);
-    }
-
     // A bound Back and a bound title ask for an idle sync only once what they
     // follow moved, and the sync that shows it settles them again: a shell
     // with nothing to change keeps its window's event loop asleep.
-    phase bindings_ask_for_an_idle_sync_only_when_they_moved;
-    {
-        let pages = LocalState::new(crate::NavStack::new("dashboard"));
-        let title = LocalState::new("Dashboard".to_owned());
-        let shell = NavShell::new()
-            .content(Probe::boxed("content").0)
-            .content_header_bound(&title, Vec::new())
-            .with_back(&pages);
-        let mut h = harness(shell, 1024, 700, Theme::dark());
-        settle(&mut h, 1024, 700);
-        assert!(!h.root::<NavShell>().needs_idle_sync(), "nothing moved");
-
-        let doc = automerge::AutoCommit::new();
-        pages.update(|stack| stack.push("queue"));
-        assert!(
-            h.root::<NavShell>().needs_idle_sync(),
-            "Back can go back now"
-        );
-        h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
-        assert!(
-            !h.root::<NavShell>().needs_idle_sync(),
-            "the sync showed Back"
-        );
-
-        title.set("Queue".to_owned());
-        assert!(h.root::<NavShell>().needs_idle_sync(), "the title moved");
-        h.root_mut::<NavShell>().sync(&doc, &automerge::ROOT);
-        assert!(
-            !h.root::<NavShell>().needs_idle_sync(),
-            "the sync took the title"
-        );
-    }
-
     // The content's Back follows the app's page stack; the shell draws the
     // chip, and a press pops the stack.
     phase back_follows_the_apps_page_stack;

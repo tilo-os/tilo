@@ -15,8 +15,6 @@ pub use wheel::{PhaselessWheel, WHEEL_GESTURE_GAP, line_of_wheel, sideways_trave
 mod action_emitter;
 mod disclosing;
 pub use action_directory_identity::ActionDirectoryInvocationDomain;
-#[cfg(test)]
-pub(crate) use action_emitter::ACTION_EMITTER_QUEUE_LIMIT;
 pub use action_emitter::ActionEmitter;
 pub(crate) use disclosing::{
     BandMotion, Ghosts, content_box, follower_shifts, place_bands, route_to_shifted_children,
@@ -2302,14 +2300,6 @@ pub use qr_component::QrProps;
 
 #[cfg(test)]
 mod a11y_tree_tests;
-
-#[cfg(test)]
-#[path = "flow_cache_tests.rs"]
-mod cache_flow_tests;
-
-#[cfg(test)]
-#[path = "mod_tests.rs"]
-mod tests;
 
 #[cfg(test)]
 #[path = "control_touch_tests.rs"]

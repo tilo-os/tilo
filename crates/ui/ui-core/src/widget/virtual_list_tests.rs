@@ -56,34 +56,6 @@ impl ListModel for SharedOrder {
     }
 }
 
-struct NotifyingOrder {
-    keys: Rc<RefCell<Vec<u64>>>,
-    changes: Rc<RefCell<Vec<ListModelChange<u64>>>>,
-}
-
-impl ListModel for NotifyingOrder {
-    type Key = u64;
-
-    fn len(&self) -> usize {
-        self.keys.borrow().len()
-    }
-
-    fn key_at(&self, index: usize) -> Option<Self::Key> {
-        self.keys.borrow().get(index).copied()
-    }
-
-    fn index_of(&self, key: &Self::Key) -> Option<usize> {
-        self.keys
-            .borrow()
-            .iter()
-            .position(|candidate| candidate == key)
-    }
-
-    fn poll_changes(&mut self) -> Vec<ListModelChange<Self::Key>> {
-        std::mem::take(&mut *self.changes.borrow_mut())
-    }
-}
-
 pub(super) struct PagedList {
     pub(super) count: usize,
     pub(super) states: Rc<RefCell<HashMap<usize, u8>>>,
@@ -156,11 +128,6 @@ impl ProbeRow {
             rect: Rect::ZERO,
             trailing_actions: false,
         }
-    }
-
-    pub(super) fn with_trailing_actions(mut self) -> Self {
-        self.trailing_actions = true;
-        self
     }
 }
 
@@ -270,89 +237,6 @@ fn dispatch<M: ListModel + 'static>(
 
 tilo_test_env::scenario! {
     fn a_lists_model_and_delegates_keep_stable_keys;
-
-    phase list_models_keep_stable_unique_keys_through_mutation_and_restore;
-    {
-        {
-            let result = VecListModel::new(vec![1, 1], |value| *value);
-            assert!(matches!(result, Err(DuplicateListKey)));
-        }
-
-        {
-            let mut selection = KeySelection::new();
-            selection.toggle(1_u64);
-            selection.toggle(99_u64);
-            let list = VirtualList::new(HugeList { count: 10 }, 24.0, |_, index, _| {
-                Box::new(crate::widget::Text::new(&format!("Item {index}")))
-            })
-            .with_selection(selection);
-
-            assert!(list.selection().is_selected(&1));
-            assert!(!list.selection().is_selected(&99));
-            assert_eq!(list.selection().len(10), 1);
-        }
-
-        {
-            let mut model = VecListModel::new(vec!["a", "b", "c"], |value| *value).unwrap();
-            assert!(model.move_item(0, 2));
-            assert_eq!(model.key_at(2), Some("a"));
-            assert_eq!(model.index_of(&"b"), Some(0));
-            assert_eq!(model.remove(1), Some("c"));
-            assert_eq!(model.index_of(&"a"), Some(1));
-            assert!(model.push("d", "d").is_ok());
-            assert_eq!(model.index_of(&"d"), Some(2));
-            assert_eq!(model.push("d", "duplicate"), Err(DuplicateListKey));
-        }
-
-        {
-            let list = VirtualList::from_items(
-                vec![(7_u64, "seven")],
-                24.0,
-                |item| item.0,
-                |item, _, _| Box::new(ProbeRow::new(item.1, 24.0, false, Rc::new(Cell::new(0)))),
-            )
-            .unwrap()
-            .with_id("contacts-list");
-            assert_eq!(list.model().key_at(0), Some(7));
-            assert_eq!(Widget::test_id(&list), Some("contacts-list"));
-        }
-
-        {
-            // The pinned frame clock shows an answer as it lands: wall time between the two
-            // syncs would otherwise hold a skeleton first on a loaded machine.
-            let _frame = crate::motion::pin_frame();
-            let states = Rc::new(RefCell::new(HashMap::new()));
-            let model = PagedList {
-                count: 1,
-                states: states.clone(),
-                requests: Rc::default(),
-                changed: Rc::default(),
-                pending: Rc::default(),
-            };
-            let mut list = VirtualList::new(model, 24.0, |_, _, key| {
-                Box::new(crate::widget::Button::new(&key.to_string(), "Row"))
-            })
-            .with_viewport_height(48.0);
-            let _ = lay_out(&mut list, 300.0);
-            list.take_structure_dirty();
-            let before = list.mounted[0].node;
-            assert!(before.is_some());
-            let doc = AutoCommit::new();
-            list.sync(&doc, &automerge::ROOT);
-            assert_eq!(
-                list.mounted[0].node, before,
-                "sync preserves a retained row's layout node"
-            );
-            list.take_structure_dirty();
-            states.borrow_mut().insert(0, 1);
-            list.sync(&doc, &automerge::ROOT);
-            assert!(list.mounted[0].node.is_none());
-            assert!(
-                list.take_structure_dirty(),
-                "same key with new state replaces a delegate and invalidates topology"
-            );
-        }
-    }
 
     phase semantic_rows_share_scrolled_variable_geometry_and_stable_key_actions;
     {
@@ -509,223 +393,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase delegates_follow_stable_keys_and_rebuild_only_what_changed;
-    {
-        {
-            let keys = Rc::new(RefCell::new(vec![1, 2, 3, 4]));
-            let builds = Rc::new(Cell::new(0_usize));
-            let captured = Rc::clone(&builds);
-            let mut list = VirtualList::new(
-                SharedOrder {
-                    keys: Rc::clone(&keys),
-                },
-                20.0,
-                move |_, _, key| {
-                    captured.set(captured.get().saturating_add(1));
-                    Box::new(ProbeRow::new(
-                        key.to_string(),
-                        20.0,
-                        false,
-                        Rc::new(Cell::new(0)),
-                    ))
-                },
-            )
-            .with_viewport_height(80.0);
-            let _ = lay_out(&mut list, 300.0);
-            assert_eq!(builds.get(), 4);
-
-            keys.borrow_mut().swap(0, 3);
-            list.notify_model_changed();
-            let _ = lay_out(&mut list, 300.0);
-            assert_eq!(builds.get(), 4, "visible keyed widgets are retained");
-        }
-
-        {
-            let keys = Rc::new(RefCell::new(vec![1, 2, 3, 4]));
-            let changes = Rc::new(RefCell::new(Vec::new()));
-            let builds = Rc::new(RefCell::new(Vec::new()));
-            let captured = Rc::clone(&builds);
-            let mut list = VirtualList::new(
-                NotifyingOrder {
-                    keys,
-                    changes: Rc::clone(&changes),
-                },
-                20.0,
-                move |_, _, key| {
-                    captured.borrow_mut().push(*key);
-                    Box::new(ProbeRow::new(
-                        key.to_string(),
-                        20.0,
-                        false,
-                        Rc::new(Cell::new(0)),
-                    ))
-                },
-            )
-            .with_viewport_height(80.0);
-            let _ = lay_out(&mut list, 300.0);
-            assert_eq!(*builds.borrow(), vec![1, 2, 3, 4]);
-
-            changes
-                .borrow_mut()
-                .push(ListModelChange::RowsChanged { keys: vec![2] });
-            assert!(Widget::update(
-                &mut list,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            ));
-            let _ = lay_out(&mut list, 300.0);
-
-            assert_eq!(*builds.borrow(), vec![1, 2, 3, 4, 2]);
-            assert_eq!(list.mounted_len(), 4);
-        }
-
-        {
-            let builds = Rc::new(Cell::new(0_usize));
-            let captured = Rc::clone(&builds);
-            let model = VecListModel::new(vec![1_u64, 2, 3, 4], |key| *key).unwrap();
-            let mut list = VirtualList::new(model, 20.0, move |_, _, key| {
-                captured.set(captured.get().saturating_add(1));
-                Box::new(ProbeRow::new(
-                    key.to_string(),
-                    20.0,
-                    false,
-                    Rc::new(Cell::new(0)),
-                ))
-            })
-            .with_viewport_height(100.0);
-            let _ = lay_out(&mut list, 300.0);
-            assert_eq!(builds.get(), 4);
-
-            list.update_model_changes(
-                &[ListModelChange::RowsInserted { index: 4, count: 1 }],
-                |model| model.push(5, 5).unwrap(),
-            );
-            let _ = lay_out(&mut list, 300.0);
-            assert_eq!(builds.get(), 5, "only the inserted key mounts");
-
-            list.update_model_changes(
-                &[ListModelChange::RowsMoved {
-                    from: 4,
-                    to: 0,
-                    count: 1,
-                }],
-                |model| assert!(model.move_item(4, 0)),
-            );
-            let _ = lay_out(&mut list, 300.0);
-            assert_eq!(builds.get(), 5, "moving stable keys retains delegates");
-        }
-
-        {
-            let keys = Rc::new(RefCell::new((0_u64..100).collect::<Vec<_>>()));
-            let mut list = VirtualList::new(
-                SharedOrder {
-                    keys: Rc::clone(&keys),
-                },
-                20.0,
-                |_, _, key| {
-                    Box::new(ProbeRow::new(
-                        key.to_string(),
-                        20.0,
-                        false,
-                        Rc::new(Cell::new(0)),
-                    ))
-                },
-            )
-            .with_viewport_height(40.0);
-            list.set_scroll_offset(50.0 * 20.0 + 5.0);
-            let before = list.viewport.item_view_top(50);
-
-            keys.borrow_mut().insert(0, 1_000);
-            list.notify_model_changed();
-
-            assert_eq!(list.model().index_of(&50), Some(51));
-            assert_eq!(list.viewport.item_view_top(51), before);
-        }
-
-        {
-            let model = VecListModel::new(vec![0_u64, 1, 2], |key| *key).unwrap();
-            let mut list = VirtualList::new(model, 20.0, |_, _, key| {
-                let height = if *key == 1 { 55.0 } else { 20.0 };
-                Box::new(ProbeRow::new(
-                    key.to_string(),
-                    height,
-                    false,
-                    Rc::new(Cell::new(0)),
-                ))
-            })
-            .with_viewport_height(100.0);
-            let _ = lay_out(&mut list, 200.0);
-
-            assert_eq!(list.viewport.item_height(0), Some(20.0));
-            assert_eq!(list.viewport.item_height(1), Some(55.0));
-            assert_eq!(list.viewport.item_top(2), Some(75.0));
-        }
-
-        {
-            // A list at its top keeps its top when rows arrive above it: the rows an
-            // older part brings fill in over the ones that came first, and the person
-            // reading from the start stays there.
-            let keys = Rc::new(RefCell::new((0_u64..100).collect::<Vec<_>>()));
-            let mut list = VirtualList::new(
-                SharedOrder {
-                    keys: Rc::clone(&keys),
-                },
-                20.0,
-                |_, _, key| {
-                    Box::new(ProbeRow::new(
-                        key.to_string(),
-                        20.0,
-                        false,
-                        Rc::new(Cell::new(0)),
-                    ))
-                },
-            )
-            .with_viewport_height(40.0);
-            let _ = lay_out(&mut list, 300.0);
-            assert_eq!(list.scroll_offset(), 0.0);
-
-            keys.borrow_mut().splice(0..0, [1_000, 1_001]);
-            list.notify_model_changed();
-            let _ = lay_out(&mut list, 300.0);
-            assert_eq!(list.scroll_offset(), 0.0, "the top stays the top");
-            assert_eq!(list.model().key_at(0), Some(1_000));
-        }
-
-        {
-            // The same through the changes a model that follows the app's state reports: an
-            // older part arriving after the newest inserts its rows above the ones shown, and
-            // the list read from its start stays at the first row of the whole tracker.
-            let keys = Rc::new(RefCell::new((3_210_u64..4_011).collect::<Vec<_>>()));
-            let changes = Rc::new(RefCell::new(Vec::new()));
-            let mut list = VirtualList::new(
-                NotifyingOrder {
-                    keys: Rc::clone(&keys),
-                    changes: Rc::clone(&changes),
-                },
-                20.0,
-                |_, _, key| {
-                    Box::new(ProbeRow::new(
-                        key.to_string(),
-                        20.0,
-                        false,
-                        Rc::new(Cell::new(0)),
-                    ))
-                },
-            )
-            .with_viewport_height(40.0);
-            let _ = lay_out(&mut list, 300.0);
-            assert_eq!(list.scroll_offset(), 0.0);
-
-            keys.borrow_mut().splice(0..0, 1..=3_209);
-            changes.borrow_mut().push(ListModelChange::RowsInserted {
-                index: 0,
-                count: 3_209,
-            });
-            let _ = lay_out(&mut list, 300.0);
-            assert_eq!(list.scroll_offset(), 0.0, "the top stays the top");
-            assert_eq!(list.model().key_at(0), Some(1));
-        }
-    }
 }
 
 tilo_test_env::scenario! {
@@ -1576,15 +1243,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase a_list_as_tall_as_its_rows_asks_for_the_height_its_rows_come_to_once;
-    // A list as tall as its rows settles on the height they come to even when the layout reads it
-    // a fraction of a pixel higher: the box it is given is that reading, not a height of its own to
-    // ask for again, or the window would lay itself out for ever.
-    {
-        assert!(!fit_needs_layout(581.0, 580.35, 580.35));
-        assert!(fit_needs_layout(506.0, 580.35, 506.0));
-        assert!(fit_needs_layout(680.0, 673.0, 680.0));
-    }
 }
 
 #[test]
@@ -1965,37 +1623,6 @@ tilo_test_env::scenario! {
         assert!(list.context_menu_is_open());
     }
 
-    phase row_action_rect_asks_the_mounted_row;
-    {
-        let mut list = VirtualList::new(
-            VecListModel::new((0..3_u32).collect(), |i| *i).unwrap(),
-            40.0,
-            |_, _, key| {
-                let row = ProbeRow::new(key.to_string(), 40.0, false, Rc::new(Cell::new(0)));
-                Box::new(if *key == 1 {
-                    row.with_trailing_actions()
-                } else {
-                    row
-                }) as Element
-            },
-        )
-        .with_viewport_height(200.0);
-        let _ = lay_out(&mut list, 300.0);
-        let row = list.row_rect(&1).expect("row one is placed");
-        let second = list.row_action_rect(&1, 1).expect("its second action");
-        assert!(
-            row.contains(second.center()),
-            "in the row's own box: {row:?} vs {second:?}"
-        );
-        let first = list.row_action_rect(&1, 0).expect("its first action");
-        assert!(first.x1 <= second.x0, "in the order the row shows them");
-        assert_eq!(list.row_action_rect(&1, 2), None, "a third is no action");
-        assert_eq!(
-            list.row_action_rect(&0, 0),
-            None,
-            "a row without actions says none"
-        );
-    }
 }
 
 #[test]

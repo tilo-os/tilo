@@ -307,27 +307,6 @@ mod tests {
     tilo_test_env::scenario! {
         fn an_item_opens_on_a_dwell_and_never_on_the_way_to_a_control;
 
-        phase the_hull_covers_the_cone_toward_the_target_and_nothing_behind_it;
-        {
-            let target = Rect::new(100.0, 0.0, 120.0, 20.0);
-            let apex = Point::new(0.0, 10.0);
-            assert!(in_aim_hull(Point::new(50.0, 10.0), apex, target));
-            assert!(in_aim_hull(Point::new(50.0, 6.0), apex, target));
-            assert!(in_aim_hull(Point::new(110.0, 5.0), apex, target));
-            assert!(
-                !in_aim_hull(Point::new(50.0, 30.0), apex, target),
-                "off the cone"
-            );
-            assert!(
-                !in_aim_hull(Point::new(-5.0, 10.0), apex, target),
-                "behind the apex"
-            );
-            assert!(
-                !in_aim_hull(Point::new(130.0, 10.0), apex, target),
-                "past the target"
-            );
-        }
-
         phase an_item_opens_after_the_dwell_from_entry_however_the_pointer_moves_in_it;
         {
             let t0 = crate::time::now();

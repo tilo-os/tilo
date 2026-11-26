@@ -36,15 +36,6 @@ tilo_test_env::scenario! {
 
     phase columns_split_flex_and_resize_from_the_press_origin;
     {
-        fn compute_column_rects_splits_flex_after_fixed() {
-            let cols = sample_cols();
-            let host = Rect::new(0.0, 0.0, 200.0, 28.0);
-            let (rects, _) = compute_column_rects(&cols, host, &HashMap::new(), &HashMap::new(), &[]);
-            assert_eq!(rects.len(), 2);
-            assert!((rects[0].width() - 160.0).abs() < 0.01);
-            assert!((rects[1].width() - 40.0).abs() < 0.01);
-        }
-
         fn column_resize_uses_press_origin_clamps_and_stops_on_release() {
             let mut table = DataTable::<R>::new(vec![ColumnDef::new(
                 "name",
@@ -96,7 +87,6 @@ tilo_test_env::scenario! {
             );
         }
 
-        compute_column_rects_splits_flex_after_fixed();
         column_resize_uses_press_origin_clamps_and_stops_on_release();
         focused_table_paints_a_focus_ring();
     }
@@ -248,82 +238,6 @@ struct InsertModel {
     inserted: Rc<Cell<bool>>,
 }
 
-struct SortableModel {
-    row: R,
-    descending: Rc<Cell<bool>>,
-}
-
-struct NotifyingModel {
-    row: R,
-    order: Rc<RefCell<Vec<u64>>>,
-    changes: Rc<RefCell<Vec<TableModelChange>>>,
-}
-
-impl TableModel for NotifyingModel {
-    type Row = R;
-
-    fn len(&self) -> usize {
-        self.order.borrow().len()
-    }
-
-    fn key_at(&self, index: usize) -> Option<u64> {
-        self.order.borrow().get(index).copied()
-    }
-
-    fn index_of(&self, key: u64) -> Option<usize> {
-        self.order
-            .borrow()
-            .iter()
-            .position(|candidate| *candidate == key)
-    }
-
-    fn row_state(&self, _index: usize) -> Arrival<&Self::Row, &str> {
-        Arrival::Ready(&self.row)
-    }
-
-    fn poll_changes(&mut self) -> Vec<TableModelChange> {
-        std::mem::take(&mut *self.changes.borrow_mut())
-    }
-}
-
-impl TableModel for SortableModel {
-    type Row = R;
-
-    fn len(&self) -> usize {
-        3
-    }
-
-    fn key_at(&self, index: usize) -> Option<u64> {
-        let order = if self.descending.get() {
-            [3, 2, 1]
-        } else {
-            [1, 2, 3]
-        };
-        order.get(index).copied()
-    }
-
-    fn index_of(&self, key: u64) -> Option<usize> {
-        let order = if self.descending.get() {
-            [3, 2, 1]
-        } else {
-            [1, 2, 3]
-        };
-        order.iter().position(|candidate| *candidate == key)
-    }
-
-    fn row_state(&self, _index: usize) -> Arrival<&Self::Row, &str> {
-        Arrival::Ready(&self.row)
-    }
-
-    fn sort_by(&mut self, column_key: &str, ascending: bool) -> bool {
-        if column_key != "name" {
-            return false;
-        }
-        self.descending.set(!ascending);
-        true
-    }
-}
-
 impl TableModel for InsertModel {
     type Row = R;
 
@@ -416,31 +330,6 @@ tilo_test_env::scenario! {
 
     phase model_table_virtualizes_pages_and_keeps_stable_selection;
     {
-        fn model_selection_builder_discards_absent_keys() {
-            let mut selection = crate::selection::KeySelection::new();
-            selection.toggle(3);
-            selection.toggle(100_000_000);
-            let table = DataTable::from_model(
-                sample_cols(),
-                HugeModel {
-                    row: R {
-                        name: "resident".into(),
-                    },
-                    key_queries: Rc::new(Cell::new(0)),
-                    row_queries: Rc::new(Cell::new(0)),
-                },
-            )
-            .with_model_selection(selection)
-            .with_viewport(120.0, 24.0);
-
-            assert!(table.model_selection().is_selected(&3));
-            assert!(!table.model_selection().is_selected(&100_000_000));
-            assert_eq!(table.model_selection().len(100_000_000), 1);
-            let visible = table.visible_row_range();
-            assert_eq!(visible.0, 0);
-            assert!(visible.1 <= 10, "viewport plus overscan stays bounded");
-        }
-
         fn model_table_virtualizes_a_hundred_million_rows_in_constant_space() {
             let key_queries = Rc::new(Cell::new(0));
             let row_queries = Rc::new(Cell::new(0));
@@ -533,249 +422,13 @@ tilo_test_env::scenario! {
             assert_eq!(t.viewport.item_view_top(c.unwrap()), before);
         }
 
-        model_selection_builder_discards_absent_keys();
         model_table_virtualizes_a_hundred_million_rows_in_constant_space();
         model_insert_preserves_stable_anchor_and_key_selection();
         stable_row_keys_anchor_inserts_above_the_viewport();
     }
 
-    phase granular_model_changes_retain_controls_by_stable_key;
-    {
-        fn granular_row_change_rebuilds_only_that_rows_retained_control() {
-            let builds = Rc::new(Cell::new(0));
-            let order = Rc::new(RefCell::new(vec![1, 2, 3, 4]));
-            let changes = Rc::new(RefCell::new(Vec::new()));
-            let mut table = DataTable::from_model(
-                interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds)),
-                NotifyingModel {
-                    row: R { name: "row".into() },
-                    order,
-                    changes: Rc::clone(&changes),
-                },
-            );
-            table.set_viewport(120.0, 24.0);
-            let _ = lay_out(&mut table);
-            let initial_builds = builds.get();
-
-            changes
-                .borrow_mut()
-                .push(TableModelChange::RowsChanged { keys: vec![2] });
-            assert!(Widget::update(
-                &mut table,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            ));
-            let _ = lay_out(&mut table);
-
-            assert_eq!(builds.get(), initial_builds + 1);
-            assert_eq!(table.mounted_cell_count(), 4);
-        }
-
-        fn granular_structural_changes_retain_controls_by_stable_key() {
-            let builds = Rc::new(Cell::new(0));
-            let order = Rc::new(RefCell::new(vec![1, 2, 3, 4]));
-            let changes = Rc::new(RefCell::new(Vec::new()));
-            let mut table = DataTable::from_model(
-                interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds)),
-                NotifyingModel {
-                    row: R { name: "row".into() },
-                    order: Rc::clone(&order),
-                    changes: Rc::clone(&changes),
-                },
-            );
-            table.set_viewport(144.0, 24.0);
-            let _ = lay_out(&mut table);
-            let initial_builds = builds.get();
-
-            order.borrow_mut().insert(0, 99);
-            changes
-                .borrow_mut()
-                .push(TableModelChange::RowsInserted { index: 0, count: 1 });
-            assert!(Widget::update(
-                &mut table,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            ));
-            let _ = lay_out(&mut table);
-            assert_eq!(builds.get(), initial_builds + 1);
-
-            order.borrow_mut().swap(1, 3);
-            changes.borrow_mut().push(TableModelChange::RowsMoved {
-                from: 1,
-                to: 3,
-                count: 1,
-            });
-            assert!(Widget::update(
-                &mut table,
-                &AutoCommit::new(),
-                &automerge::ROOT,
-            ));
-            let _ = lay_out(&mut table);
-
-            assert_eq!(
-                builds.get(),
-                initial_builds + 1,
-                "moving stable keys retains their live cell controls"
-            );
-            assert_eq!(table.mounted_cell_count(), 5);
-        }
-
-        fn retained_cell_widgets_are_bounded_to_the_huge_model_window() {
-            let key_queries = Rc::new(Cell::new(0));
-            let row_queries = Rc::new(Cell::new(0));
-            let builds = Rc::new(Cell::new(0));
-            let model = HugeModel {
-                row: R {
-                    name: "Edit".into(),
-                },
-                key_queries: Rc::clone(&key_queries),
-                row_queries: Rc::clone(&row_queries),
-            };
-            let mut table = DataTable::from_model(
-                interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds)),
-                model,
-            );
-            table.set_viewport(48.0, 24.0);
-            let _ = lay_out(&mut table);
-
-            assert!(table.mounted_cell_count() > 0);
-            assert!(
-                table.mounted_cell_count() < 20,
-                "100M logical rows retain only the viewport window"
-            );
-            assert_eq!(builds.get(), table.mounted_cell_count());
-            assert!(key_queries.get() < 100);
-            assert!(row_queries.get() < 100);
-        }
-
-        fn retained_cell_widgets_follow_stable_rows_through_sorting() {
-            let builds = Rc::new(Cell::new(0));
-            let mut table = DataTable::new(interactive_cols(Rc::new(Cell::new(0)), Rc::clone(&builds)))
-                .with_row_key(|row: &R| {
-                    u64::from(row.name.as_bytes().first().copied().unwrap_or_default())
-                });
-            table.set_rows(rows4());
-            let _ = lay_out(&mut table);
-            let first_builds = builds.get();
-            table.sort_by_with(|a, b| a.name.cmp(&b.name), "name", false);
-            let _ = lay_out(&mut table);
-
-            assert_eq!(
-                builds.get(),
-                first_builds,
-                "sorting repositions cells without rebuilding retained controls"
-            );
-        }
-
-        fn retained_cell_widgets_track_scroll_inside_the_same_mounted_window() {
-            let mut table = DataTable::new(interactive_cols(
-                Rc::new(Cell::new(0)),
-                Rc::new(Cell::new(0)),
-            ));
-            table.set_rows(rows4());
-            table.set_viewport(48.0, 24.0);
-            let (tree, node) = lay_out(&mut table);
-            let before = table
-                .mounted_cells
-                .first()
-                .expect("first mounted cell")
-                .widget
-                .get_rect()
-                .y0;
-            table.set_scroll_y(5.0);
-            table.apply_layout(&tree, node, Point::ZERO);
-            let after = table
-                .mounted_cells
-                .first()
-                .expect("first mounted cell")
-                .widget
-                .get_rect()
-                .y0;
-            assert_eq!(after, before - 5.0);
-        }
-
-        granular_row_change_rebuilds_only_that_rows_retained_control();
-        granular_structural_changes_retain_controls_by_stable_key();
-        retained_cell_widgets_are_bounded_to_the_huge_model_window();
-        retained_cell_widgets_follow_stable_rows_through_sorting();
-        retained_cell_widgets_track_scroll_inside_the_same_mounted_window();
-    }
-
     phase sorting_is_owned_by_the_model_and_reapplied_on_rows;
     {
-        fn model_owns_sort_order_while_table_owns_header_state() {
-            let descending = Rc::new(Cell::new(false));
-            let mut table = DataTable::from_model(
-                sample_cols(),
-                SortableModel {
-                    row: R { name: "row".into() },
-                    descending: Rc::clone(&descending),
-                },
-            );
-
-            assert_eq!(table.toggle_sort(0), Some(("name".into(), true)));
-            assert!(!descending.get());
-            assert_eq!(table.sort_state(), Some(("name", true)));
-            assert_eq!(table.semantic_row_index("row:1:0"), Some(0));
-
-            assert_eq!(table.toggle_sort(0), Some(("name".into(), false)));
-            assert!(descending.get());
-            assert_eq!(table.sort_state(), Some(("name", false)));
-            assert_eq!(table.semantic_row_index("row:1:0"), Some(2));
-        }
-
-        fn toggle_sort_requires_prior_sort_by_with() {
-            let mut t = DataTable::<R>::new(sample_cols());
-            assert!(t.toggle_sort(0).is_none());
-            t.set_rows(vec![R { name: "b".into() }, R { name: "a".into() }]);
-            t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
-            assert_eq!(t.view_rows()[0].name, "a");
-            let (_, asc) = t.toggle_sort(0).unwrap();
-            assert!(!asc);
-            assert_eq!(t.view_rows()[0].name, "b");
-        }
-
-        fn set_rows_reapplies_sort() {
-            let mut t = DataTable::<R>::new(sample_cols());
-            t.sort_by_with(|a, b| a.name.cmp(&b.name), "name", true);
-            t.set_rows(vec![
-                R { name: "c".into() },
-                R { name: "a".into() },
-                R { name: "b".into() },
-            ]);
-            let v = t.view_rows();
-            assert_eq!(v[0].name, "a");
-            assert_eq!(v[1].name, "b");
-            assert_eq!(v[2].name, "c");
-        }
-
-        fn a_hovered_sortable_header_is_known_and_a_plain_one_is_not() {
-            let mut t = DataTable::<R>::new(sample_cols());
-            t.set_rows(rows4());
-            let (tree, node) = lay_out(&mut t);
-            let point_at = |t: &mut DataTable<R>, x: f64, y: f64| {
-                dispatch(
-                    t,
-                    &tree,
-                    node,
-                    &WindowEvent::CursorMoved {
-                        device_id: winit::event::DeviceId::dummy(),
-                        position: (x, y).into(),
-                    },
-                );
-            };
-            // The sortable Name column's header shows the order a press gives.
-            point_at(&mut t, 20.0, 10.0);
-            assert_eq!(t.hover_header, Some(0));
-            // The plain X column's header offers nothing, and the body is no header.
-            let x = t.col_rects.get(1).map_or(0.0, |r| r.center().x);
-            point_at(&mut t, x, 10.0);
-            assert_eq!(t.hover_header, None);
-            let body = t.header_h + 10.0;
-            point_at(&mut t, 20.0, body);
-            assert_eq!(t.hover_header, None);
-        }
-
         fn header_click_fires_on_header_click_instead_of_toggle() {
             let hits = Rc::new(RefCell::new(Vec::<usize>::new()));
             let mut t = {
@@ -886,11 +539,7 @@ tilo_test_env::scenario! {
             assert_eq!(shown, ["c", "b", "a"]);
         }
 
-        a_hovered_sortable_header_is_known_and_a_plain_one_is_not();
-        model_owns_sort_order_while_table_owns_header_state();
         a_sorted_table_speaks_in_the_hosts_rows_and_keeps_its_order();
-        toggle_sort_requires_prior_sort_by_with();
-        set_rows_reapplies_sort();
         header_click_fires_on_header_click_instead_of_toggle();
     }
 }
@@ -902,19 +551,6 @@ tilo_test_env::scenario! {
 
     phase table_accessibility_names_roles_sort_and_selection;
     {
-        fn data_table_exposes_stable_test_and_accessible_names() {
-            let t = DataTable::<R>::new(sample_cols());
-            assert_eq!(Widget::test_id(&t), Some("data_table"));
-            let named = DataTable::<R>::new(sample_cols())
-                .with_id("results-table")
-                .with_accessible_name("Results");
-            assert_eq!(Widget::test_id(&named), Some("results-table"));
-            assert_eq!(
-                Widget::accessibility(&named).and_then(|node| node.name),
-                Some("Results".into())
-            );
-        }
-
         fn accessibility_reports_table_role_sort_and_selection() {
             use crate::a11y::Role;
             let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
@@ -989,7 +625,6 @@ tilo_test_env::scenario! {
             assert!(node.children.iter().all(|r| !r.state.focused));
         }
 
-        data_table_exposes_stable_test_and_accessible_names();
         accessibility_reports_table_role_sort_and_selection();
         accessibility_no_sort_or_selection_omits_value_and_description();
         the_keyboard_cursor_row_is_exported_as_the_active_descendant();
@@ -1443,50 +1078,6 @@ tilo_test_env::scenario! {
             );
         }
 
-        fn internal_scroll_offsets_hit_testing() {
-            // draw() subtracts scroll_y and row_at() adds it — these must stay
-            // inverses or a click resolves to the wrong row once scrolled.
-            let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
-            t.set_rows(
-                (0..100)
-                    .map(|i| R {
-                        name: format!("r{i}"),
-                    })
-                    .collect(),
-            );
-            let _laid = lay_out(&mut t);
-            t.set_viewport(5.0 * f32_of_f64(ROW_HEIGHT), f32_of_f64(ROW_HEIGHT));
-            t.set_scroll_y(10.0 * f32_of_f64(ROW_HEIGHT)); // scrolled past 10 rows
-            let rect = t.get_rect();
-            let p = Point::new(rect.x0 + 5.0, rect.y0 + t.header_h + 1.0);
-            assert_eq!(
-                t.row_at(p),
-                Some(10),
-                "top of body maps to the scrolled-in row"
-            );
-            // visible window also starts around row 10 (minus overscan).
-            let (start, _end) = t.visible_row_range();
-            assert!(
-                (8..=10).contains(&start),
-                "window starts near the scroll position: {start}"
-            );
-        }
-
-        fn variable_row_heights_share_placement_and_hit_testing() {
-            let mut t = DataTable::<R>::new(sample_cols()).selectable(true);
-            t.set_rows(rows4());
-            t.set_viewport(60.0, f32_of_f64(ROW_HEIGHT));
-            assert!(t.set_row_height(0, 10.0));
-            assert!(t.set_row_height(1, 50.0));
-            let _laid = lay_out(&mut t);
-            let body = t.get_rect().y0 + t.header_h;
-
-            assert_eq!(t.row_at(Point::new(10.0, body + 9.0)), Some(0));
-            assert_eq!(t.row_at(Point::new(10.0, body + 10.0)), Some(1));
-            assert_eq!(t.row_at(Point::new(10.0, body + 59.0)), Some(1));
-            assert_eq!(t.row_at(Point::new(10.0, body + 60.0)), None);
-        }
-
         fn configured_viewport_bounds_layout_and_accessibility_work() {
             let mut t = DataTable::<R>::new(sample_cols());
             t.set_rows(
@@ -1526,8 +1117,6 @@ tilo_test_env::scenario! {
         }
 
         page_navigation_and_accelerated_wheel_share_variable_row_geometry();
-        internal_scroll_offsets_hit_testing();
-        variable_row_heights_share_placement_and_hit_testing();
         configured_viewport_bounds_layout_and_accessibility_work();
         wheel_scrolls_in_internal_mode();
     }

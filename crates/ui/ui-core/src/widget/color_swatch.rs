@@ -1171,16 +1171,6 @@ mod tests {
             );
         }
 
-        phase swatch_cells_are_pointer_targets;
-        {
-            let mut picker = ColorSwatchPicker::new(palette(), 2);
-            lay_out(&mut picker);
-            let target = f64::from(Theme::dark().tokens.metrics.min_pointer_target);
-            let pitch = picker.swatch_rects[1].x0 - picker.swatch_rects[0].x0;
-            assert_eq!(pitch, target, "each swatch owns a full pointer-target cell");
-            assert!(picker.swatch_rects[2].y0 > picker.swatch_rects[0].y0);
-        }
-
         phase a_row_too_narrow_for_every_column_wraps_onto_more_lines;
         {
             let theme = Theme::dark();

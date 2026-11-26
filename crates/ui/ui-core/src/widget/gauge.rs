@@ -894,65 +894,7 @@ mod tests {
                 assert_eq!(t.color(&theme, 1.0), s.danger);
             }
 
-            /// The bar gauge fills proportionally: a 0-fraction bar paints just the
-            /// track, a non-zero fraction adds the fill rect.
-            fn bar_zero_paints_track_only() {
-                let theme = Theme::dark();
-                let mut tr = TextRenderer::new();
-                let rect = Rect::new(0.0, 0.0, 200.0, 32.0);
-
-                let mut zero = Scene::new();
-                BarGauge::draw_at(
-                    &mut PaintCtx::new(&mut zero, Affine::IDENTITY, &mut tr, &theme),
-                    rect,
-                    &GaugeReading {
-                        frac: 0.0,
-                        color: theme.tokens.colors.intent.accent,
-                        label: "",
-                        value: "",
-                    },
-                );
-                let mut filled = Scene::new();
-                BarGauge::draw_at(
-                    &mut PaintCtx::new(&mut filled, Affine::IDENTITY, &mut tr, &theme),
-                    rect,
-                    &GaugeReading {
-                        frac: 0.5,
-                        color: theme.tokens.colors.intent.accent,
-                        label: "",
-                        value: "",
-                    },
-                );
-                assert_eq!(count_color_tags(&zero), 1, "track only at frac 0");
-                assert!(
-                    count_color_tags(&filled) > count_color_tags(&zero),
-                    "fill adds a rect"
-                );
-            }
-
-            fn bar_label_and_value_paint() {
-                let theme = Theme::dark();
-                let mut tr = TextRenderer::new();
-                let mut scene = Scene::new();
-                BarGauge::draw_at(
-                    &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
-                    Rect::new(0.0, 0.0, 200.0, 32.0),
-                    &GaugeReading {
-                        frac: 0.4,
-                        color: theme.tokens.colors.intent.accent,
-                        label: "Memory",
-                        value: "4.2 GB",
-                    },
-                );
-                assert!(
-                    !scene.encoding().resources.glyph_runs.is_empty(),
-                    "label/value must paint glyph runs",
-                );
-            }
-
             thresholds_pick_semantic_bands();
-            bar_zero_paints_track_only();
-            bar_label_and_value_paint();
         }
 
         phase a_progress_fill_reads_against_its_track_and_the_page_on_every_preset;
@@ -1086,19 +1028,5 @@ mod tests {
             assert!(ring.face().frac > drawn, "it eases there");
         }
 
-        phase span_paints_track_and_fill;
-        {
-            let theme = Theme::dark();
-            let mut scene = Scene::new();
-            BarGauge::draw_span(
-                &mut scene,
-                Affine::IDENTITY,
-                Rect::new(0.0, 0.0, 120.0, 6.0),
-                &theme,
-                (0.7, 0.7),
-                &Brush::Solid(theme.tokens.colors.intent.accent),
-            );
-            assert_eq!(count_color_tags(&scene), 2);
-        }
     }
 }

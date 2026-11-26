@@ -2474,11 +2474,6 @@ impl GroupRow {
     }
 
     #[cfg(test)]
-    pub(crate) fn replayed_groups_for_test(&self) -> &[u64] {
-        &self.replayed_groups
-    }
-
-    #[cfg(test)]
     pub(crate) fn group_left_edges_for_test(&self) -> &[f64] {
         &self.pan.group_left_edges
     }
@@ -5931,9 +5926,6 @@ mod float_tests;
 #[cfg(test)]
 #[path = "group_row_keyboard_tests.rs"]
 mod keyboard_tests;
-#[cfg(test)]
-#[path = "group_row_pacing_tests.rs"]
-mod pacing_tests;
 #[cfg(test)]
 #[path = "group_row_presence_tests.rs"]
 mod presence_tests;

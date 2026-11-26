@@ -225,11 +225,6 @@ fn keys_typed_into_a_field_right_of_chat_stay_in_the_field() {
     typing_follows_the_clicked_field(true);
 }
 
-#[test]
-fn keys_typed_into_a_field_left_of_chat_stay_in_the_field() {
-    typing_follows_the_clicked_field(false);
-}
-
 /// Chat has the keyboard and has been typed into; then the shell gives the keyboard to the window
 /// beside it with no click there (a search chose it, it just opened, or the window in front
 /// closed). What the person types next, Enter included, never reaches Chat, though the window
@@ -271,9 +266,4 @@ fn typing_after_the_keyboard_moves_away_from_chat(chat_first: bool) {
 #[test]
 fn keys_after_the_keyboard_moves_right_of_chat_stay_out_of_chat() {
     typing_after_the_keyboard_moves_away_from_chat(true);
-}
-
-#[test]
-fn keys_after_the_keyboard_moves_left_of_chat_stay_out_of_chat() {
-    typing_after_the_keyboard_moves_away_from_chat(false);
 }

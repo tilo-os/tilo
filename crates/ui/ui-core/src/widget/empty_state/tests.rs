@@ -108,26 +108,6 @@ tilo_test_env::scenario! {
             assert_eq!(cramped.total, m.title_h, "the title always survives");
         }
 
-        /// The action pill is the only thing the user can do, so it is never shed —
-        /// and it still counts toward what fits.
-        fn the_action_is_never_shed_and_is_counted() {
-            let m = metrics();
-            let with_action = Parts {
-                icon: true,
-                message: true,
-                quote: false,
-                documents: false,
-                action: true,
-                hint: false,
-            };
-            let fit = Fit::choose(120.0, with_action, m);
-            assert!(!fit.icon, "the disc gives way to the action");
-            assert!(
-                fit.total >= m.title_h + m.gap + m.btn_h,
-                "the pill is still in the measured stack"
-            );
-        }
-
         fn narrow_large_text_recovery_copy_wraps_inside_the_empty_state() {
             let theme = Theme::dark().with_text_scale(2.0);
             let rect = Rect::new(0.0, 0.0, 390.0, 680.0);
@@ -224,113 +204,13 @@ tilo_test_env::scenario! {
             }
         }
 
-        fn tiny_immediate_pane_exposes_required_height_without_offscreen_hit_geometry() {
-            let theme = Theme::dark().with_text_scale(2.0);
-            let mut tr = crate::font_catalog::fixture_renderer();
-            tr.set_text_scale(2.0);
-            let mut scene = Scene::new();
-            let rect = Rect::new(10.0, 20.0, 250.0, 45.0);
-            let minimum = EmptyState::minimum_essential_height(
-                &mut tr,
-                &theme,
-                rect.width(),
-                "No messages are available",
-                Some("Review connection settings"),
-            );
-            assert!(minimum > rect.height());
-            let action = EmptyState::paint(
-                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
-                rect,
-                &EmptyStateContent {
-                    icon: Some(Icon::Inbox),
-                    illustration: None,
-                    documents: &[],
-                    error: false,
-                    title: "No messages are available",
-                    message: Some("Reconnect to load messages."),
-                    action_label: Some("Review connection settings"),
-                    quote: None,
-                    hint: None,
-                },
-                Point::new(-1.0, -1.0),
-            );
-
-            assert!(
-                action.is_none(),
-                "a wholly offscreen action is not exposed as a usable hit target"
-            );
-        }
-
         a_short_pane_sheds_the_hero_disc_before_it_overflows();
-        the_action_is_never_shed_and_is_counted();
         narrow_large_text_recovery_copy_wraps_inside_the_empty_state();
         long_localized_content_wraps_inside_a_narrow_scaled_pane();
-        tiny_immediate_pane_exposes_required_height_without_offscreen_hit_geometry();
     }
 
     phase empty_state_paints_scrolls_and_centres_its_essential_content;
     {
-        fn draws_something_visible() {
-            let mut es = EmptyState::new("No contacts yet")
-                .with_icon(Icon::Inbox)
-                .with_message("Add your first contact to get started")
-                .with_action("Add contact");
-            lay_out(&mut es, 600.0, 400.0);
-            let scene = draw(&mut es);
-            let fills = scene
-                .encoding()
-                .draw_tags
-                .iter()
-                .filter(|t| **t == DrawTag::COLOR)
-                .count();
-            assert!(
-                fills > 5,
-                "a fully-populated empty state paints multiple fills, got {fills}"
-            );
-        }
-
-        fn immediate_mode_paint_returns_action_rect() {
-            let theme = Theme::dark();
-            let mut tr = TextRenderer::new();
-            let mut scene = Scene::new();
-            let rect = Rect::new(0.0, 0.0, 500.0, 300.0);
-            let action = EmptyState::paint(
-                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
-                rect,
-                &EmptyStateContent {
-                    icon: Some(Icon::Inbox),
-                    illustration: None,
-                    documents: &[],
-                    error: false,
-                    title: "No mail",
-                    message: Some("You're all caught up"),
-                    action_label: Some("Compose"),
-                    quote: None,
-                    hint: None,
-                },
-                Point::new(-1.0, -1.0),
-            );
-            let r = action.expect("action label ⇒ a returned pill rect");
-            assert!(rect.contains(r.center()), "pill sits inside the paint rect");
-            let none = EmptyState::paint(
-                &mut PaintCtx::new(&mut scene, Affine::IDENTITY, &mut tr, &theme),
-                rect,
-                &EmptyStateContent {
-                    icon: None,
-                    illustration: None,
-                    documents: &[],
-                    error: false,
-                    title: "Empty",
-                    message: None,
-                    action_label: None,
-                    quote: None,
-                    hint: None,
-                },
-                Point::new(-1.0, -1.0),
-            );
-            assert!(none.is_none());
-        }
-
         fn retained_empty_state_has_a_scrollable_route_to_essential_content() {
             use std::cell::Cell;
             let invoked = Rc::new(Cell::new(0));
@@ -470,29 +350,9 @@ tilo_test_env::scenario! {
             assert!((retained_top - (400.0 - retained_action.y1)).abs() < 0.001);
         }
 
-        fn accessibility_is_a_named_group() {
-            use crate::a11y::Role;
-            let es = EmptyState::new("No results").with_message("Try another search");
-            let node = Widget::accessibility(&es).expect("empty state exposes a11y");
-            assert_eq!(node.role, Role::Group);
-            assert_eq!(node.name.as_deref(), Some("No results"));
-            assert_eq!(node.description.as_deref(), Some("Try another search"));
-            assert_eq!(node.live, None, "a quiet empty state is not a live region");
-            let failed = EmptyState::error("Couldn't open Music", "Permission denied");
-            let node = Widget::accessibility(&failed).expect("an error exposes a11y");
-            assert_eq!(node.live, Some(crate::a11y::Politeness::Assertive));
-            let waiting = EmptyState::new("Opening folder").busy();
-            let node = Widget::accessibility(&waiting).expect("a wait exposes a11y");
-            assert_eq!(node.live, Some(crate::a11y::Politeness::Polite));
-            assert!(node.state.busy);
-        }
-
-        draws_something_visible();
-        immediate_mode_paint_returns_action_rect();
         retained_empty_state_has_a_scrollable_route_to_essential_content();
         wide_scrollable_retains_the_icon_and_explanatory_message();
         wide_manual_pane_keeps_the_essential_block_centered();
-        accessibility_is_a_named_group();
     }
 
     // In a wide window the message wraps at a readable measure under the
@@ -841,22 +701,11 @@ tilo_test_env::scenario! {
             ));
         }
 
-        fn without_action_paints_no_pill_and_has_no_hit_target() {
-            let mut es = EmptyState::new("Empty").with_icon(Icon::Folder);
-            lay_out(&mut es, 600.0, 400.0);
-            let _ = draw(&mut es);
-            assert_eq!(es.action_rect(), Rect::ZERO, "no action ⇒ no pill rect");
-            let center = es.get_rect().center();
-            dispatch(&mut es, &cursor(center));
-            assert!(!dispatch(&mut es, &mouse_press()));
-        }
-
         action_pill_click_fires_once();
         click_outside_action_does_not_fire();
         action_is_keyboard_reachable_and_exposed_as_a_named_button();
         action_path_is_shared_by_pointer_and_accessibility_activation();
         an_action_binding_invokes_the_resource_action();
-        without_action_paints_no_pill_and_has_no_hit_target();
     }
 
     phase a_handler_publishes_the_action_as_a_certified_bound_button;

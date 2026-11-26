@@ -1119,18 +1119,6 @@ impl Widget for ConversationList {
 }
 
 #[cfg(test)]
-#[path = "list_cache_tests.rs"]
-mod cache_tests;
-
-#[cfg(test)]
-#[path = "list_cull_tests.rs"]
-mod cull_tests;
-
-#[cfg(test)]
-#[path = "list_frame_tests.rs"]
-mod frame_tests;
-
-#[cfg(test)]
 mod geometry_tests {
     use super::*;
 

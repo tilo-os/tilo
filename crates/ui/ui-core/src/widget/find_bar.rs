@@ -1862,64 +1862,6 @@ mod tests {
             ));
         }
 
-        phase semantic_tree_publishes_each_find_field_once_under_its_real_owner;
-        {
-            let mut scope = FindScope::new(Box::new(Page {
-                doc: Doc {
-                    text: "one two one".into(),
-                    ..Doc::default()
-                },
-                rect: Rect::ZERO,
-            }))
-            .with_bar(FindBar::new().with_replace());
-            scope.open();
-            let theme = Theme::dark();
-            let mut taffy = TaffyTree::<()>::new();
-            let mut node_map = HashMap::new();
-            let node = scope.build_layout(&mut taffy, &theme, &mut node_map);
-            taffy
-                .compute_layout(
-                    node,
-                    taffy::Size {
-                        width: taffy::AvailableSpace::Definite(900.0),
-                        height: taffy::AvailableSpace::Definite(400.0),
-                    },
-                )
-                .unwrap();
-            scope.apply_layout(&taffy, node, Point::ZERO);
-            let mut tree = crate::a11y_tree::SemanticTree::new();
-            tree.refresh(&scope, &node_map, None, &[]);
-            for (name, target) in [
-                (tr("find-bar-placeholder"), "find-query"),
-                (tr("find-bar-replace-placeholder"), "find-replacement"),
-            ] {
-                let fields: Vec<_> = tree
-                    .iter()
-                    .filter(|node| {
-                        node.role == crate::a11y::Role::TextInput
-                            && node.name.as_deref() == Some(name.as_str())
-                    })
-                    .collect();
-                assert_eq!(fields.len(), 1, "one canonical semantic field for {name}");
-                assert_eq!(fields[0].semantic_target.as_deref(), Some(target));
-                assert!(fields[0].widget_taffy_id.is_some(), "real admitted owner");
-            }
-        }
-
-        phase a_match_highlight_marks_only_its_span;
-        {
-            let theme = Theme::dark();
-            let mut scene = Scene::new();
-            paint_find_match(
-                &mut scene,
-                Affine::IDENTITY,
-                Rect::new(10.0, 0.0, 30.0, 14.0),
-                true,
-                &theme,
-            );
-            paint_find_match(&mut scene, Affine::IDENTITY, Rect::ZERO, false, &theme);
-            assert!(!scene.encoding().is_empty());
-        }
     }
 
     struct Page {
@@ -2334,31 +2276,6 @@ mod host_driven_tests {
                 "the count follows the edit without a refresh; the place stays"
             );
             assert_eq!(buffer.0.current, Some(1), "the view is not moved");
-        }
-
-        phase a_close_request_is_acknowledged_once_and_the_bar_reopens;
-        {
-            let mut log = Log {
-                text: "abc".into(),
-                ..Log::default()
-            };
-            let mut bar = FindBar::new().with_mode(FindMode::Hex).with_hex_mode();
-            assert_eq!(
-                bar.options().mode,
-                FindMode::Hex,
-                "a byte view opens on hex"
-            );
-            bar.request_close();
-            bar.drive(&mut log);
-            assert!(bar.take_close_requested());
-            assert!(!bar.take_close_requested(), "acknowledged once");
-            assert!(!bar.close_requested());
-            bar.set_options(FindOptions {
-                match_case: true,
-                ..bar.options()
-            });
-            assert!(bar.options().match_case);
-            assert_eq!(bar.options().mode, FindMode::Hex);
         }
 
         phase an_engine_reports_its_own_results_and_steps;

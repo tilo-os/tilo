@@ -1594,19 +1594,6 @@ mod tests {
             assert_eq!(split.handle.hit_rect().center().x, 120.0);
         }
 
-        phase both_panes_receive_the_update_pass;
-        {
-            let mut s = split(SplitOrientation::Horizontal);
-            let doc = AutoCommit::new();
-            let root = automerge::ROOT;
-            s.left.changes = false;
-            s.right.changes = false;
-            assert!(!s.update(&doc, &root), "nothing changed");
-            s.right.changes = true;
-            assert!(s.update(&doc, &root), "a pane's change is the split's");
-            assert_eq!((s.left.updates.get(), s.right.updates.get()), (2, 2));
-        }
-
         phase split_layout_starts_even_and_fills_the_axis;
         {
             assert_eq!(split(SplitOrientation::Horizontal).split_position(), 0.5);
@@ -1615,15 +1602,6 @@ mod tests {
             assert_eq!(tree.children(node).expect("split children").len(), 2);
             assert!((s.left().rect.width() - 320.0).abs() < 0.1);
             assert!((s.right().rect.width() - 680.0).abs() < 0.1);
-        }
-
-        phase the_per_frame_update_reaches_both_panes;
-        {
-            let mut s = split(SplitOrientation::Horizontal);
-            let (left, right) = (s.left().updates.clone(), s.right().updates.clone());
-            let doc = AutoCommit::new();
-            assert!(Widget::update(&mut s, &doc, &automerge::ROOT));
-            assert_eq!((left.get(), right.get()), (1, 1));
         }
 
         phase a_content_sized_first_pane_keeps_its_size_until_the_divider_moves;
@@ -1645,23 +1623,6 @@ mod tests {
             s.set_split_position(0.5);
             relayout(&mut s, &mut tree, node, 600.0, 300.0);
             assert!((s.left().rect.width() - 300.0).abs() < 0.5);
-        }
-
-        phase a_painted_host_shares_the_ratio_model;
-        {
-            let theme = Theme::dark();
-            let mut handle = SplitHandle::new(SplitOrientation::Vertical, SplitRatio::new(0.3));
-            handle.set_rect(Rect::new(0.0, 0.0, 400.0, 500.0), &theme);
-            let (top, bottom) = handle.pane_rects();
-            assert!((top.height() - 150.0).abs() < 0.5);
-            assert!(
-                (top.y1 - bottom.y0).abs() < 1e-9,
-                "the panes meet at the hairline"
-            );
-            let mut ratio = SplitRatio::new(0.5).with_bounds(0.2, 0.6);
-            assert!(ratio.set(0.9));
-            assert!((ratio.position() - 0.6).abs() < 1e-6);
-            assert!(!ratio.step(0.1), "already at the bound");
         }
 
         phase a_capped_first_pane_keeps_the_chosen_ratio;

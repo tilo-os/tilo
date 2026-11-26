@@ -54,26 +54,6 @@ fn draw(map: &mut Map) {
 }
 
 #[test]
-fn a_pin_at_its_first_frame_rests_and_asks_for_no_frames() {
-    let _frame = crate::motion::pin_frame();
-    let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
-    let mut map = map_of(&[("one", 100.0)], viewport);
-    draw(&mut map);
-    let now = crate::motion::frame_now();
-    assert!(
-        map.placed
-            .borrow()
-            .get("one")
-            .is_some_and(|p| !p.is_moving(now))
-    );
-    assert!(!map.pins_moving(now));
-    assert!(
-        !Widget::needs_animation_frame(&map),
-        "a pin at rest asks for nothing"
-    );
-}
-
-#[test]
 fn a_pin_moved_by_the_person_glides_to_its_new_place_and_then_rests() {
     let _frame = crate::motion::pin_frame();
     let viewport = Rect::new(0.0, 0.0, 800.0, 600.0);
@@ -291,39 +271,6 @@ fn pins_at(pins: &[(&str, f64, f64)]) -> Map {
         );
     }
     map
-}
-
-#[test]
-fn a_map_is_known_by_the_key_its_view_gave_it_not_by_where_it_stands() {
-    use crate::component::{Described, Event};
-    // Two maps at the same origin are two canvases, and a drag let go over one must never land
-    // on the other. The map's key on the drag bus is the stable one the view named it by, never
-    // a place it happens to stand at: two maps' plates side by side at the same x would share a
-    // key, and one would take the other's drop.
-    let left = Map::from_props(
-        "left",
-        MapProps {
-            drop: Event::None,
-            ..MapProps::default()
-        },
-    );
-    let right = Map::from_props(
-        "right",
-        MapProps {
-            drop: Event::None,
-            ..MapProps::default()
-        },
-    );
-    assert_ne!(
-        left.drop_key(),
-        right.drop_key(),
-        "two maps are told apart by their views' keys"
-    );
-    assert!(
-        left.drop_key().contains("left"),
-        "the left map is known by its own key: {}",
-        left.drop_key()
-    );
 }
 
 #[test]

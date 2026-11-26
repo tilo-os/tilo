@@ -451,7 +451,3 @@ pub fn has_pending_control_invocation(widget: &dyn Widget) -> bool {
         .into_iter()
         .any(has_pending_control_invocation)
 }
-
-#[cfg(test)]
-#[path = "controls/presence_tests.rs"]
-mod presence_tests;

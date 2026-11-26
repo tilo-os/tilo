@@ -133,57 +133,6 @@ pub(super) fn shaped_row(ti: &TextInput, byte: usize) -> usize {
         .visual_line_index(ti.text_to_layout_byte(byte))
 }
 
-pub(super) fn typing_frame(input: &mut TextInput, tr: &mut TextRenderer, theme: &Theme) {
-    let mut height = 0.0f32;
-    for (known, available) in [
-        (Some(0.0), taffy::AvailableSpace::Definite(0.0)),
-        (None, taffy::AvailableSpace::MinContent),
-        (None, taffy::AvailableSpace::MaxContent),
-        (Some(600.0), taffy::AvailableSpace::Definite(600.0)),
-    ] {
-        height = Widget::measure(
-            input,
-            taffy::Size {
-                width: known,
-                height: None,
-            },
-            taffy::Size {
-                width: available,
-                height: taffy::AvailableSpace::MaxContent,
-            },
-            tr,
-        )
-        .height;
-    }
-    input.apply_layout_external(Rect::new(0.0, 0.0, 600.0, f64::from(height)));
-    let presence = crate::presence::PresenceCtx::empty();
-    presence.push_viewport(Rect::new(0.0, 0.0, 600.0, 400.0));
-    let mut scene = Scene::new();
-    Widget::draw(
-        input,
-        &mut crate::draw::DrawCtx::new(
-            &mut scene,
-            Affine::IDENTITY,
-            tr,
-            theme,
-            presence.draw_env(),
-        ),
-    );
-}
-
-pub(super) fn typing_field(text: &str, tr: &mut TextRenderer, theme: &Theme) -> TextInput {
-    let mut input = TextInput::local()
-        .multiline(true)
-        .with_spell_language("en_US")
-        .with_initial_value(text);
-    input.set_focus(true);
-    let mut taffy = TaffyTree::new();
-    let mut nodes = std::collections::HashMap::new();
-    Widget::build_layout(&mut input, &mut taffy, theme, &mut nodes);
-    typing_frame(&mut input, tr, theme);
-    input
-}
-
 #[path = "text_input_attributed_tests.rs"]
 mod attributed;
 #[path = "text_input_caret_tests.rs"]

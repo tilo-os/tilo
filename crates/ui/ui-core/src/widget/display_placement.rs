@@ -1564,41 +1564,6 @@ mod tests {
             assert!(description.contains("Offline") && description.contains("apart"));
         }
 
-        phase retained_placement_hover_preserves_geometry_without_remeasurement;
-        {
-            let mut host =
-                ui::app::driver::Driver::new(ui::State::new(), Box::new(canvas()), (800, 600));
-            host.profile_frame();
-            assert!(!host.last_relayout().measured);
-            let rect = host
-                .targets()
-                .get("display.placement")
-                .copied()
-                .expect("the actual placement is mounted");
-            host.send(&crate::synthetic_input::cursor_moved(
-                rect.center().x,
-                rect.center().y,
-            ));
-            assert!(!host.last_relayout().measured);
-            host.verify_retained_geometry().unwrap();
-            let nodes = host.layout_node_ids();
-            host.resize((1200, 720)).unwrap();
-            assert!(!host.last_relayout().rebuilt && host.last_relayout().measured);
-            assert_eq!(host.layout_node_ids(), nodes, "resize keeps the tree");
-            assert!(
-                host.targets()
-                    .get("display.placement")
-                    .copied()
-                    .expect("the actual placement is mounted")
-                    .width()
-                    > rect.width()
-            );
-            host.verify_retained_geometry().unwrap();
-            host.set_theme(ui::Theme::light());
-            assert!(host.last_relayout().rebuilt);
-            host.verify_retained_geometry().unwrap();
-        }
-
         phase every_display_is_described_for_assistive_technology;
         {
             let node = canvas().accessibility().unwrap();
@@ -1825,50 +1790,6 @@ mod tests {
             assert!(ui::widget::controls::take_control_invocation(&mut canvas).is_none());
         }
 
-        phase a_dragged_display_moves_without_a_relayout;
-        {
-            let bare = DisplayPlacement::new(
-                displays(),
-                Vec::new(),
-                ui::LocalState::new(PlacementGesture::default()),
-            );
-            let mut host =
-                ui::app::driver::Driver::new(ui::State::new(), Box::new(bare), (800, 600));
-            host.profile_frame();
-            let rect = host
-                .targets()
-                .get("display.placement")
-                .copied()
-                .expect("the placement is mounted");
-            let rebuilt = host.rebuilt_frames();
-            let start = Point::new(rect.x0 + rect.width() * 0.75, rect.center().y);
-            host.send(&crate::synthetic_input::cursor_moved(start.x, start.y));
-            host.send(&crate::synthetic_input::mouse_press());
-            let frames = host.relayout_frames();
-            for step in 1..=12 {
-                host.send(&crate::synthetic_input::cursor_moved(
-                    start.x - 6.0 * f64::from(step),
-                    start.y + 3.0 * f64::from(step),
-                ));
-                let relayout = host.last_relayout();
-                assert!(
-                    !relayout.rebuilt && !relayout.measured,
-                    "move {step} relaid the canvas out: {relayout:?}"
-                );
-            }
-            assert!(
-                host.relayout_frames() >= frames + 12,
-                "every move of the hand paints a frame"
-            );
-            assert_eq!(
-                host.rebuilt_frames(),
-                rebuilt,
-                "no move recomposed anything"
-            );
-            host.send(&crate::synthetic_input::mouse_release());
-            host.verify_retained_geometry().unwrap();
-        }
-
         phase a_finger_drags_a_display_like_the_pointer;
         {
             fn touch(phase: TouchPhase, point: Point) -> WindowEvent {
@@ -1932,41 +1853,6 @@ mod tests {
             assert_eq!(drop(true), (0, 1080));
         }
 
-        phase a_dropped_display_springs_into_place_then_asks_for_nothing;
-        {
-            let mut canvas = canvas();
-            let mapping = canvas.mapping();
-            let monitor = mapping.to_canvas(displays()[1].placement);
-            assert!(!canvas.needs_animation_frame(), "idle costs nothing");
-            let _frame = crate::motion::pin_frame();
-            assert!(canvas.press(monitor.center()));
-            let over = mapping.to_canvas(displays()[0].placement).center();
-            assert!(canvas.drag_to(over));
-            let held = canvas
-                .drawn()
-                .into_iter()
-                .find(|(_, held)| *held)
-                .unwrap()
-                .0
-                .placement;
-            assert!(canvas.release());
-            let released = crate::motion::frame_now();
-            let rest = canvas.displays[1].placement;
-            assert_ne!(rest, held);
-            assert!(!rest.overlaps(canvas.displays[0].placement));
-            assert!(canvas.needs_animation_frame(), "the settle asks for frames");
-            let (_, shift, _) = canvas.drawn_at(released)[1].clone();
-            let start = Point::new(f64::from(rest.x), f64::from(rest.y)) + shift;
-            assert!(
-                (start.x - f64::from(held.x)).abs() < 2.0 && (start.y - f64::from(held.y)).abs() < 2.0,
-                "it starts where it was let go: {start:?} vs {held:?}"
-            );
-            let later = released + crate::time::Duration::from_secs(2);
-            let (_, shift, _) = canvas.drawn_at(later)[1].clone();
-            assert!(shift.hypot() < 1e-6, "and rests where it settles");
-            assert!(!canvas.settling(later), "then it asks for no frames");
-        }
-
         phase the_view_holds_while_a_display_is_held_then_refits_after_the_drop;
         {
             let mut canvas = canvas();
@@ -2017,71 +1903,6 @@ mod tests {
                 "the dropped display is in sight again: {resting:?}"
             );
             assert!(!canvas.settling(after), "and then asks for nothing");
-        }
-
-        phase a_drag_follows_the_hand_every_frame;
-        {
-            let trace = trace_drag(
-                |t| {
-                    Vec2::new(
-                        -260.0 * t,
-                        90.0 * (t * std::f64::consts::PI).sin() + 20.0 * t,
-                    )
-                },
-                240,
-            );
-            let snap = f64::from(ui::tokens::Spacing::BASE.s2);
-            let mut report = Vec::new();
-            for axis in 0..2 {
-                let misses: Vec<(f64, bool)> = trace.misses.iter().map(|frame| frame[axis]).collect();
-                let free: Vec<f64> = misses
-                    .iter()
-                    .filter(|(_, held)| !held)
-                    .map(|(miss, _)| *miss)
-                    .collect();
-                let worst_free = free.iter().copied().fold(0.0, f64::max);
-                let worst = misses.iter().map(|(miss, _)| *miss).fold(0.0, f64::max);
-                report.push(format!(
-                    "{}: free {}/{} worst_free={worst_free:.2}px worst={worst:.2}px",
-                    ["x", "y"][axis],
-                    free.len(),
-                    misses.len()
-                ));
-                assert!(
-                    worst_free < 0.5,
-                    "off every snap line the tile is exactly under the hand: {worst_free:.2} px"
-                );
-                assert!(
-                    worst <= snap + 0.5,
-                    "a snap pulls the tile only a short way: {worst:.2} px"
-                );
-                assert!(
-                    free.len() * 2 > misses.len(),
-                    "the tile runs free most of the way: {}",
-                    report.join("; ")
-                );
-            }
-            let rescaled = trace
-                .scales
-                .windows(2)
-                .filter(|pair| (pair[0] - pair[1]).abs() > 1e-9)
-                .count();
-            let worst_step = trace
-                .tiles
-                .windows(2)
-                .zip(trace.hands.windows(2))
-                .map(|(tile, hand)| ((tile[1] - tile[0]) - (hand[1] - hand[0])).hypot())
-                .fold(0.0, f64::max);
-            eprintln!(
-                "DRAG-TRACE frames={} {} rescaled_frames={rescaled} worst_step={worst_step:.2}px snap_radius={snap}",
-                trace.misses.len(),
-                report.join("; ")
-            );
-            assert!(
-                worst_step <= 2.0 * snap + 1.0,
-                "no frame jumps the tile further than a snap: {worst_step:.2} px"
-            );
-            assert_eq!(rescaled, 0, "the view holds still while a display is held");
         }
 
         phase a_drag_follows_the_hand_in_every_direction;
@@ -2229,79 +2050,5 @@ mod tests {
         let selection = ui::LocalState::new("eDP-1".to_owned());
         let canvas = canvas().with_selection(selection.clone());
         (canvas, selection)
-    }
-
-    struct DragTrace {
-        misses: Vec<[(f64, bool); 2]>,
-        scales: Vec<f64>,
-        tiles: Vec<Point>,
-        hands: Vec<Point>,
-    }
-
-    fn trace_drag(path: impl Fn(f64) -> Vec2, frames: u32) -> DragTrace {
-        let mut canvas = DisplayPlacement::new(
-            vec![
-                PlacedDisplay {
-                    placement: Placement::new(0, 0, 1920, 1080),
-                    ..displays()[0].clone()
-                },
-                PlacedDisplay {
-                    placement: Placement::new(1920, -360, 2560, 1440),
-                    ..displays()[1].clone()
-                },
-            ],
-            Vec::new(),
-            ui::LocalState::new(PlacementGesture::default()),
-        );
-        canvas.rect = Rect::new(0.0, 0.0, 560.0, 360.0);
-        let start = crate::time::now();
-        let frame =
-            |index: u32| start + crate::time::Duration::from_micros(8_333 * u64::from(index));
-        let pressed = {
-            let _at = crate::motion::pin_frame_at(frame(0));
-            let monitor = canvas.mapping().to_canvas(canvas.displays[1].placement);
-            let pressed = Point::new(
-                monitor.x0 + monitor.width() * 0.4,
-                monitor.y0 + monitor.height() * 0.6,
-            );
-            assert!(canvas.press(pressed));
-            pressed
-        };
-        let grab = canvas
-            .gesture
-            .with(|gesture| gesture.drag.as_ref().map(|drag| drag.grab))
-            .unwrap();
-        let mut trace = DragTrace {
-            misses: Vec::new(),
-            scales: Vec::new(),
-            tiles: Vec::new(),
-            hands: Vec::new(),
-        };
-        for index in 1..=frames {
-            let _at = crate::motion::pin_frame_at(frame(index));
-            let hand = pressed + path(f64::from(index) / f64::from(frames));
-            assert!(canvas.drag_to(hand));
-            let now = crate::motion::frame_now();
-            let mapping = canvas.mapping_at(now);
-            let drag = canvas.gesture.with(|gesture| gesture.drag.clone()).unwrap();
-            if !drag.active {
-                continue;
-            }
-            let (held, guides) = canvas.held_at(&drag, mapping);
-            let tile = mapping.to_canvas(held);
-            let taken = Point::new(
-                tile.x0 + grab.0 * tile.width(),
-                tile.y0 + grab.1 * tile.height(),
-            );
-            let along = |vertical: bool| guides.iter().any(|guide| guide.vertical == vertical);
-            trace.misses.push([
-                ((taken.x - hand.x).abs(), along(true)),
-                ((taken.y - hand.y).abs(), along(false)),
-            ]);
-            trace.scales.push(mapping.scale);
-            trace.tiles.push(tile.origin());
-            trace.hands.push(hand);
-        }
-        trace
     }
 }

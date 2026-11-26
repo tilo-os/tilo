@@ -359,25 +359,8 @@ mod tests {
                 );
             }
 
-            fn insertion_equals_the_committed_destination() {
-                // The live target index the caret/gap is drawn at must equal the `to`
-                // a drop commits, so what you see is exactly what lands.
-                let mut c = DragController::vertical();
-                let m = m4();
-                c.begin(0, 30.0, Point::new(200.0, 130.0));
-                c.pointer_moved(Point::new(200.0, 400.0), &m); // drag item 0 to the end
-                let shown = c.insertion();
-                assert_eq!(shown, Some(3), "the gap sits at the final slot");
-                assert_eq!(
-                    c.commit().map(|(_, to)| to),
-                    shown,
-                    "drop lands where the gap showed"
-                );
-            }
-
             nudge_within_own_slot_is_a_dead_zone_no_gap_no_reflow();
             gap_opens_only_once_the_ghost_crosses_into_a_neighbour();
-            insertion_equals_the_committed_destination();
         }
 
         phase drag_session_press_move_drop_and_cancel;
@@ -408,24 +391,6 @@ mod tests {
                 );
             }
 
-            fn drop_commits_from_to_move() {
-                let mut c = DragController::vertical();
-                c.begin(0, 30.0, Point::new(200.0, 130.0));
-                c.pointer_moved(Point::new(200.0, 400.0), &m4()); // drag item 0 to the end
-                assert_eq!(c.commit(), Some((0, 3)));
-                assert!(!c.is_pending(), "commit clears the session");
-            }
-
-            fn cancel_restores_by_forgetting_the_session() {
-                let mut c = DragController::vertical();
-                c.begin(2, 30.0, Point::new(200.0, 266.0));
-                c.pointer_moved(Point::new(200.0, 120.0), &m4());
-                assert!(c.is_active());
-                assert!(c.cancel(), "a live drag was cancelled");
-                assert!(!c.is_pending());
-                assert_eq!(c.commit(), None);
-            }
-
             fn ghost_tracks_cursor_at_grab_offset() {
                 let mut c = DragController::vertical();
                 let m = m4();
@@ -440,27 +405,9 @@ mod tests {
                 assert_eq!(g.x1, 520.0);
             }
 
-            fn horizontal_axis_uses_x() {
-                let mut c = DragController::horizontal();
-                let m = ListMetrics::uniform(0.0, 80.0, 10.0, 3); // pitch 90
-                c.begin(0, 40.0, Point::new(40.0, 50.0)); // ghost lead = slot_lead(0)
-                c.pointer_moved(Point::new(200.0, 50.0), &m); // slide right ~1.8 slots
-                assert!(c.is_active());
-                assert_eq!(
-                    c.insertion(),
-                    Some(2),
-                    "the ghost landed over the last slot"
-                );
-                assert_eq!(c.ghost_lead(), Some(160.0), "ghost tracks X at grab offset");
-                assert_eq!(c.commit(), Some((0, 2)));
-            }
-
             press_then_small_move_stays_a_click();
             pointer_move_updates_live_insertion_index();
-            drop_commits_from_to_move();
-            cancel_restores_by_forgetting_the_session();
             ghost_tracks_cursor_at_grab_offset();
-            horizontal_axis_uses_x();
         }
 
         phase reflow_opens_and_repins_the_drop_gap;

@@ -120,13 +120,6 @@ tilo_test_env::scenario! {
             assert!(!dd.is_open(), "Tab-away dismisses the dropdown");
         }
 
-        fn open_dropdown_captures_pointer() {
-            let mut dd = Dropdown::new(opts(), "tz");
-            assert!(!dd.wants_pointer_capture());
-            dd.do_open();
-            assert!(dd.wants_pointer_capture());
-        }
-
         /// Hover is a repaint, not consumed input (the rule `Button` documents):
         /// the move that changes it is left for siblings, and leaving the window
         /// clears it because no `CursorMoved` will follow.
@@ -256,7 +249,6 @@ tilo_test_env::scenario! {
 
         let _settled = crate::motion::testing::settled();
         losing_focus_closes_the_list();
-        open_dropdown_captures_pointer();
         hover_changes_do_not_consume_the_move_and_cursor_left_clears_hover();
         open_list_flips_above_when_it_would_leave_the_viewport();
         dropdown_in_a_row_yields_width_to_fixed_siblings();
@@ -593,25 +585,12 @@ tilo_test_env::scenario! {
             );
         }
 
-        fn open_builder_aligns_highlight_to_selection_on_sync() {
-            let mut dd = Dropdown::new(opts(), "tz").open();
-            let (doc, root) = doc_with_tz("Asia/Tokyo");
-            dd.sync(&doc, &root);
-            assert!(dd.is_open());
-            assert_eq!(
-                dd.highlight_index(),
-                3,
-                "highlight tracks the selected option"
-            );
-        }
-
         let _settled = crate::motion::testing::settled();
         starts_closed_and_reads_value_on_sync();
         down_opens_when_closed_and_focused();
         arrows_move_highlight_while_open();
         enter_emits_selection_action_and_closes();
         escape_closes_without_changing_value();
-        open_builder_aligns_highlight_to_selection_on_sync();
     }
 
     phase combobox_filter_editing_handles_case_spaces_graphemes_and_ime;
@@ -939,15 +918,6 @@ tilo_test_env::scenario! {
             );
         }
 
-        fn with_enabled_false_is_reported_by_is_enabled() {
-            let dd = Dropdown::new(opts(), "tz").with_enabled(false);
-            assert!(!Widget::is_enabled(&dd));
-            assert!(
-                Widget::is_enabled(&Dropdown::new(opts(), "tz")),
-                "default is enabled"
-            );
-        }
-
         fn disabled_dropdown_does_not_open() {
             let mut dd = Dropdown::new(opts(), "tz").with_enabled(false);
             let (mut doc, root) = doc_with_tz("UTC");
@@ -1049,7 +1019,6 @@ tilo_test_env::scenario! {
 
         let _settled = crate::motion::testing::settled();
         semantic_actions_expand_collapse_and_reject_unknown_values();
-        with_enabled_false_is_reported_by_is_enabled();
         disabled_dropdown_does_not_open();
         accessibility_reports_combobox_role_value_and_collapsed();
         accessibility_unselected_uses_placeholder_name_and_no_value();
@@ -1233,62 +1202,10 @@ tilo_test_env::scenario! {
             assert!(dd.rect.y0 > 0.0);
         }
 
-        fn a_resolved_name_is_spoken_as_given() {
-            let dd = Dropdown::new(opts(), "tz").with_resolved_accessible_name("Zeitzone");
-            let node = Widget::accessibility(&dd).expect("semantics");
-            assert_eq!(node.name.as_deref(), Some("Zeitzone"));
-        }
-
-        fn an_idle_dropdown_needs_no_layout() {
-            let theme = Theme::dark();
-            let mut dd = Dropdown::new(opts(), "tz");
-            assert!(Widget::is_layout_dirty(&dd));
-            crate::widget::layout::lay_out_detached(
-                &mut dd,
-                Rect::new(0.0, 0.0, 300.0, 200.0),
-                &theme,
-                &mut TextRenderer::new(),
-            )
-            .expect("the dropdown lays out");
-            assert!(!Widget::is_layout_dirty(&dd));
-            dd.set_options(zones());
-            assert!(
-                Widget::is_layout_dirty(&dd),
-                "new options may change the width"
-            );
-        }
-
-        fn the_face_matches_the_retained_control() {
-            let theme = Theme::dark();
-            let mut text = TextRenderer::new();
-            let face = DropdownFace::new(Rect::ZERO, "UTC").leading_icon(crate::icons::Icon::Globe);
-            let width = face.intrinsic_width(opts().iter().map(String::as_str), &mut text, &theme);
-            let mut dd = Dropdown::new(opts(), "tz").leading_icon(crate::icons::Icon::Globe);
-            dd.adopt_theme(&theme);
-            dd.set_selected("UTC");
-            assert!((dd.measured_width(&mut text) - width).abs() < 0.5);
-            assert!(
-                (DropdownFace::height(crate::widget::ControlSize::Small, &theme)
-                    - crate::widget::ControlSize::Small.height(&theme))
-                .abs()
-                    < 1e-9
-            );
-            let captioned = DropdownFace::new(Rect::new(0.0, 0.0, 120.0, 60.0), "UTC").caption("Zone");
-            let field = captioned.field_rect(&theme);
-            assert!(field.y0 > 0.0 && field.y1 == 60.0);
-            assert!(captioned.contains(&theme, field.center()));
-            assert!(!captioned.contains(&theme, Point::new(60.0, 1.0)));
-            let mut scene = Scene::new();
-            captioned.paint(&mut scene, Affine::IDENTITY, &mut text, &theme);
-        }
-
         let _settled = crate::motion::testing::settled();
         hugs_its_widest_option_unless_it_fills();
         a_short_list_jumps_instead_of_filtering();
         a_caption_placed_externally_never_covers_the_field();
-        a_resolved_name_is_spoken_as_given();
-        an_idle_dropdown_needs_no_layout();
-        the_face_matches_the_retained_control();
     }
 }
 

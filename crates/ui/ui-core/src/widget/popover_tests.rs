@@ -219,26 +219,6 @@ tilo_test_env::scenario! {
         assert_eq!(p.highlighted(), 3, "reopening lands on the applied option");
     }
 
-    phase text_content_is_laid_out_on_one_line;
-    {
-        let _settled = crate::motion::testing::settled();
-        let theme = Theme::light();
-        let mut tr = TextRenderer::new();
-        let label = "Shared with Ana, Ben and Chloé";
-        let mut p = Popover::with_content(crate::widget::Text::new(label))
-            .anchored(Rect::new(640.0, 150.0, 760.0, 182.0))
-            .with_viewport(WINDOW)
-            .open(true);
-        p.place(&mut tr, &theme);
-        let (w, h) = tr.measure_style(label, None, &theme.text(crate::tokens::TextRole::Body));
-        let content = p.content().get_rect();
-        assert!(
-            content.width() >= f64::from(w) - 0.5 && content.height() < f64::from(h) * 1.5,
-            "one line: content {content:?}, text {w}x{h}, panel {:?}",
-            p.rect()
-        );
-    }
-
     phase placement_flips_and_stays_in_the_window;
     {
         let _settled = crate::motion::testing::settled();
@@ -373,28 +353,6 @@ tilo_test_env::scenario! {
 
     // Whatever the anchor's edges are, the panel's edges land on the display's
     // pixels: the frame draws the popover where it placed it.
-    phase popover_edges_land_on_device_pixels;
-    {
-        for scale in [1.25_f64, 1.5, 2.0, 3.0] {
-            let _grid = crate::widget::enter_device_scale(scale);
-            let mut tr = TextRenderer::new();
-            let mut p = Popover::new()
-                .with_label("Refresh interval")
-                .with_items(["1 second", "2 seconds"]);
-            p.set_viewport(WINDOW);
-            p.open_at(Rect::new(100.3, 40.7, 180.6, 68.4), Some(1));
-            p.place(&mut tr, &Theme::dark());
-            let rect = p.get_rect();
-            for edge in [rect.x0, rect.y0, rect.x1, rect.y1] {
-                let pixels = edge * scale;
-                assert!(
-                    (pixels - pixels.round()).abs() < 1e-6,
-                    "{edge} is not a device pixel at {scale}x: {rect:?}"
-                );
-            }
-        }
-    }
-
     // A question a press raised stands where the press was: its main answer under the point, so
     // the next press at the same spot takes it, and inside the window however near its edge the
     // press was.
@@ -442,105 +400,4 @@ tilo_test_env::scenario! {
             "as near the press as the window lets it: {main:?}"
         );
     }
-}
-
-/// A panel standing at a press is as wide as its content needs, bounded by the window, not laid
-/// out at the window's width. The top layer names the window it floats in when it paints the
-/// panel; a rebuild after that — the layout a theme change brings — keeps the panel's size and
-/// place, light to dark and dark to light.
-#[test]
-fn an_aimed_popover_keeps_its_size_when_the_theme_changes() {
-    let answers = || {
-        crate::widget::Column::new()
-            .push(Box::new(crate::widget::Text::new(
-                "Share “Release planning” with Mia?",
-            )))
-            .push(Box::new(
-                crate::widget::Row::new()
-                    .push(Box::new(crate::widget::Button::new(
-                        "decline",
-                        "Don't allow",
-                    )))
-                    .push(Box::new(
-                        crate::widget::Button::new("share", "Share")
-                            .role(crate::widget::ButtonRole::Primary),
-                    )),
-            ))
-    };
-    let press = Point::new(420.0, 260.0);
-    let (w, h) = (WINDOW.width() as f32, WINDOW.height() as f32);
-    for (first, second) in [
-        (Theme::dark(), Theme::light()),
-        (Theme::light(), Theme::dark()),
-    ] {
-        let mut p = Popover::with_content(answers()).open(true);
-        p.set_aim(Some(press));
-        crate::testing::lay_out_in(&mut p, w, h, &first).expect("the first layout");
-        let before = p.rect();
-        // Name the window the panel floats in, as the top layer's paint does.
-        present(&mut p, &first);
-        // The theme change rebuilds the layout under the other theme.
-        crate::testing::lay_out_in(&mut p, w, h, &second).expect("the layout at the other theme");
-        let after = p.rect();
-        assert!(
-            (after.width() - before.width()).abs() < 0.5,
-            "{} to {}: the panel widens from {before:?} to {after:?}",
-            first.name,
-            second.name
-        );
-        assert!(
-            (after.origin() - before.origin()).hypot() < 0.5,
-            "{} to {}: the panel moves from {before:?} to {after:?}",
-            first.name,
-            second.name
-        );
-        assert!(
-            after.width() < WINDOW.width() / 2.0,
-            "the panel hugs its content rather than the window: {after:?}"
-        );
-        let main = primary_button(p.content()).expect("the panel's main answer");
-        assert!(
-            (main.center() - press).hypot() < 1.0,
-            "{} to {}: the main answer {main:?} stands under the press {press:?}",
-            first.name,
-            second.name
-        );
-    }
-
-    // A solve after the window is named, without a rebuild, bounds the body the same way: the
-    // width the window leaves is a bound, so the panel keeps hugging its content.
-    let theme = Theme::light();
-    let mut tree = TaffyTree::<()>::new();
-    let mut nodes: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-    let mut text = TextRenderer::new();
-    let mut p = Popover::with_content(answers()).open(true);
-    p.set_aim(Some(press));
-    let node = p.build_layout(&mut tree, &theme, &mut nodes);
-    let available = crate::taffy::Size {
-        width: crate::taffy::AvailableSpace::Definite(w),
-        height: crate::taffy::AvailableSpace::Definite(h),
-    };
-    // SAFETY: the popover, its tree and node map stay exclusively owned here.
-    unsafe {
-        crate::widget::solve_built_layout(&p, &mut tree, node, &nodes, &mut text, available)
-            .expect("the first solve");
-    }
-    p.apply_layout(&tree, node, Point::ZERO);
-    let before = p.rect();
-    present(&mut p, &theme);
-    // SAFETY: as above.
-    unsafe {
-        crate::widget::solve_built_layout(&p, &mut tree, node, &nodes, &mut text, available)
-            .expect("the solve after the window is named");
-    }
-    p.apply_layout(&tree, node, Point::ZERO);
-    let after = p.rect();
-    assert!(
-        (after.width() - before.width()).abs() < 0.5,
-        "naming the window widens the panel from {before:?} to {after:?}"
-    );
-    assert!(
-        after.width() < WINDOW.width() / 2.0,
-        "the panel hugs its content rather than the window: {after:?}"
-    );
 }

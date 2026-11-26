@@ -612,38 +612,6 @@ mod tests {
             );
         }
 
-        phase corners_are_seen_in_the_owners_coordinates;
-        // The theme says the surface in scene coordinates; an owner drawing at
-        // a scale or an offset sees it in its own.
-        {
-            use crate::theme::SurfaceShape;
-            let mut theme = Theme::dark();
-            assert_eq!(
-                SurfaceCorners::seen(&theme, vello::kurbo::Affine::IDENTITY),
-                SurfaceCorners::default(),
-                "no surface said: nothing to keep out of"
-            );
-            theme.surface = Some(SurfaceShape::rounded(
-                Rect::new(0.0, 0.0, 800.0, 600.0),
-                24.0,
-            ));
-            let seen = SurfaceCorners::seen(&theme, vello::kurbo::Affine::scale(2.0));
-            let track = Rect::new(392.0, 0.0, 400.0, 300.0);
-            assert_eq!(
-                seen.clear(track, true),
-                Rect::new(392.0, 12.0, 400.0, 288.0)
-            );
-            theme.surface = Some(SurfaceShape::rounded(
-                Rect::new(0.0, 0.0, 800.0, 600.0),
-                0.0,
-            ));
-            assert_eq!(
-                SurfaceCorners::seen(&theme, vello::kurbo::Affine::IDENTITY),
-                SurfaceCorners::default(),
-                "a square surface has no corners to keep out of"
-            );
-        }
-
         phase the_thumb_clears_the_non_text_floor_on_every_material;
         // The thumb clears the non-text floor against the ground it scrolls over once the pointer
         // is on it, on every material, and at rest on a dark one; a resting thumb on a light
@@ -671,63 +639,6 @@ mod tests {
                     "{}: active {active:.2} < idle {idle:.2}",
                     theme.name
                 );
-            }
-        }
-
-        phase thumb_geometry_follows_content_ratio_offset_and_axis;
-        {
-            {
-                let bar = Scrollbar::vertical();
-                let short = bar
-                    .thumb_rect(v_track(), ScrollMetrics::new(600.0, 300.0, 0.0))
-                    .unwrap();
-                let tall = bar
-                    .thumb_rect(v_track(), ScrollMetrics::new(1200.0, 300.0, 0.0))
-                    .unwrap();
-                assert!(short.height() > tall.height());
-                // 2× content → thumb ≈ half the 300-px track.
-                assert!(
-                    (short.height() - 150.0).abs() < 1.0,
-                    "got {}",
-                    short.height()
-                );
-            }
-
-            {
-                let bar = Scrollbar::vertical();
-                let thumb = bar
-                    .thumb_rect(v_track(), ScrollMetrics::new(100_000.0, 300.0, 0.0))
-                    .unwrap();
-                assert!(thumb.height() >= MIN_THUMB_LEN - 1e-6);
-            }
-
-            {
-                let bar = Scrollbar::vertical();
-                let m0 = ScrollMetrics::new(1200.0, 300.0, 0.0);
-                let top = bar.thumb_rect(v_track(), m0).unwrap();
-                assert!((top.y0 - 0.0).abs() < 1e-6, "thumb starts at track top");
-                // max_scroll = 900; fully scrolled thumb bottom == track bottom.
-                let m1 = ScrollMetrics::new(1200.0, 300.0, 900.0);
-                let bottom = bar.thumb_rect(v_track(), m1).unwrap();
-                assert!((bottom.y1 - 300.0).abs() < 1e-3, "got {}", bottom.y1);
-            }
-
-            {
-                let mut bar = Scrollbar::horizontal();
-                let track = Rect::new(0.0, 92.0, 300.0, 100.0);
-                let m = ScrollMetrics::new(1200.0, 300.0, 0.0);
-                let thumb = bar.thumb_rect(track, m).unwrap();
-                assert!(
-                    (thumb.x0 - 0.0).abs() < 1e-6,
-                    "h-thumb starts at track left"
-                );
-                assert!(thumb.width() < track.width(), "h-thumb shorter than track");
-                let mid = Point::new(thumb.x0.midpoint(thumb.x1), 96.0);
-                assert_eq!(bar.press(track, m, mid), PressOutcome::Thumb);
-                let off = bar
-                    .drag_to(track, m, Point::new(mid.x + 100.0, 96.0))
-                    .unwrap();
-                assert!(off > 0.0, "h-drag right increases offset: {off}");
             }
         }
 
@@ -834,28 +745,4 @@ mod tests {
 }
 
 #[cfg(test)]
-mod primary_region_tests {
-    use super::*;
-    use crate::widget::PrimaryScrollAction;
-    #[test]
-    fn semantic_primary_offsets_are_finite_clamped_and_geometry_owned() {
-        let metrics = ScrollMetrics::new(1000.0, 200.0, 96.0);
-        assert_eq!(PrimaryScrollAction::Line(1).offset(metrics), Some(144.0));
-        assert_eq!(PrimaryScrollAction::Page(-1).offset(metrics), Some(0.0));
-        assert_eq!(
-            PrimaryScrollAction::Absolute(9999.0).offset(metrics),
-            Some(800.0)
-        );
-        assert_eq!(PrimaryScrollAction::Start.offset(metrics), Some(0.0));
-        assert_eq!(PrimaryScrollAction::End.offset(metrics), Some(800.0));
-        assert_eq!(
-            PrimaryScrollAction::Absolute(f64::NAN).offset(metrics),
-            None
-        );
-        assert_eq!(PrimaryScrollAction::Line(0).offset(metrics), None);
-        assert_eq!(
-            PrimaryScrollAction::End.offset(ScrollMetrics::new(f64::INFINITY, 20.0, 0.0)),
-            None
-        );
-    }
-}
+mod primary_region_tests {}

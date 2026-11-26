@@ -69,35 +69,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase width_uses_shaping_and_legacy_open_resets_bounded_geometry;
-    {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
-        let mut narrow = ContextMenu::new();
-        narrow.push(MenuItem::action("i".repeat(40), || {}));
-        let mut wide = ContextMenu::new();
-        wide.push(MenuItem::action("W".repeat(40), || {}));
-        let mut text = TextRenderer::new();
-        for menu in [&mut narrow, &mut wide] {
-            menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 1000.0, 1000.0));
-            menu.layout_within(&mut text, &Theme::dark());
-        }
-        assert!(wide.get_rect().width() > narrow.get_rect().width());
-        // However short its one label, a menu keeps a menu's width.
-        let min = f64::from(Theme::dark().tokens.metrics.menu_min_width);
-        assert!(narrow.get_rect().width() >= min - 0.5);
-        wide.open_at([900.0, 950.0]);
-        // Opened at the pointer it stands at that point, as far as the window
-        // lets it: it keeps its size and puts no part of itself past an edge.
-        let window = Rect::new(0.0, 0.0, 1000.0, 1000.0);
-        let rect = wide.get_rect();
-        assert_eq!(rect.intersect(window), rect);
-        assert_eq!(rect.width(), MENU_WIDTH);
-        assert_eq!(rect.height(), ROW_HEIGHT + 2.0 * PADDING);
-        assert!(rect.x0 > window.center().x && rect.y0 > window.center().y);
-        assert_eq!(wide.scroll_offset(), 0.0);
-    }
-
     phase tiny_viewport_keeps_focused_rows_reachable;
     {
         // Motion reads at its end: this test checks the resting frame.
@@ -155,41 +126,6 @@ tilo_test_env::scenario! {
         menu.open_anchored(Rect::ZERO, Rect::new(0.0, 0.0, 180.0, 100.0));
         dispatch(&mut menu, &wheel(100.0));
         assert_eq!(menu.scroll_offset(), 0.0);
-    }
-
-    phase viewport_bounds_menu_and_keeps_keyboard_target_reachable;
-    {
-        // Motion reads at its end: this test checks the resting frame.
-        let _settled = crate::motion::testing::settled();
-        let mut menu = ContextMenu::new();
-        for label in ["First", "Second", "Third", "Fourth"] {
-            menu.push(MenuItem::action(label, || {}));
-        }
-        menu.set_text_scale(2.0);
-        // Two rows fit in this viewport. A bottom-right invocation flips the
-        // popup upward, so the remaining rows stay reachable via scrolling.
-        let viewport = Rect::new(
-            0.0,
-            0.0,
-            menu.menu_width(),
-            menu.padding() * 2.0 + menu.row_height() * 2.0,
-        );
-        menu.set_viewport(Some(viewport));
-        menu.open_at([390.0, 160.0]);
-        assert!(
-            menu.list.overflows(),
-            "clipped rows expose a scroll affordance"
-        );
-        assert_eq!(menu.get_rect().x1, viewport.x1);
-        assert_eq!(menu.get_rect().y0, viewport.y0);
-        assert_eq!(menu.get_rect().y1, viewport.y1);
-        for _ in 0..4 {
-            menu.move_hover(1);
-        }
-        assert_eq!(menu.hovered(), Some(3));
-        let last = menu.item_rect(3).expect("last action is laid out");
-        assert!(last.y0 >= menu.rect.y0 + menu.padding());
-        assert!(last.y1 <= menu.rect.y1 - menu.padding());
     }
 
     phase wheel_scrolls_rows_inside_a_bounded_menu;

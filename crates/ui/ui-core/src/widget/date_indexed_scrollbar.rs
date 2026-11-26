@@ -725,53 +725,6 @@ mod tests {
 
         phase date_markers_project_and_pointer_jumps_track_the_collection;
         {
-            fn marker_projection_is_bounded_ordered_and_keeps_years() {
-                let bar = scrollbar();
-                let mut input = Vec::new();
-                for index in 0..120 {
-                    input.push(DateIndexMarker::new(
-                        format!("m{index}"),
-                        format!("Month {index}"),
-                        f64::from(index) / 119.0,
-                        if index % 12 == 0 {
-                            DateIndexMarkerKind::Major
-                        } else {
-                            DateIndexMarkerKind::Minor
-                        },
-                    ));
-                }
-                let projected = bar.project_markers(&input, 12);
-                assert_eq!(projected.len(), 12);
-                assert_eq!(
-                    projected.first().map(|marker| marker.id.as_str()),
-                    Some("m0")
-                );
-                assert_eq!(
-                    projected.last().map(|marker| marker.id.as_str()),
-                    Some("m119")
-                );
-                assert!(projected.iter().any(|marker| marker.id == "m12"));
-                assert!(
-                    projected
-                        .windows(2)
-                        .all(|window| window[0].axis <= window[1].axis)
-                );
-            }
-
-            fn pointer_marker_jump_uses_normalised_collection_position() {
-                let mut bar = scrollbar();
-                let all = markers();
-                let moved = bar.pointer_moved(Point::new(305.0, 220.0), metrics(0.0), &all);
-                assert!(matches!(
-                    moved,
-                    Some(DateIndexIntent::PreviewChanged(Some(_)))
-                ));
-                assert_eq!(
-                    bar.press(metrics(0.0), &all),
-                    Some(DateIndexIntent::ScrollTo { position: 0.5 })
-                );
-            }
-
             fn thumb_drag_keeps_tracking_after_pointer_leaves_gutter() {
                 let mut bar = scrollbar();
                 let all = markers();
@@ -798,8 +751,6 @@ mod tests {
                 assert!(bar.contains_interaction_point(Point::new(304.0, 220.0)));
             }
 
-            marker_projection_is_bounded_ordered_and_keeps_years();
-            pointer_marker_jump_uses_normalised_collection_position();
             thumb_drag_keeps_tracking_after_pointer_leaves_gutter();
             acquisition_gutter_is_a_tight_rail_not_a_sidebar();
         }

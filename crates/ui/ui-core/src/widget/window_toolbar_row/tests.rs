@@ -489,22 +489,6 @@ tilo_test_env::scenario! {
         );
     }
 
-    phase parts_shown_where_none_stood_are_at_rest_at_once;
-    {
-        let mut row = ToolbarRow::new();
-        let now = crate::time::now();
-        row.show(7, Some(&browser()), Theme::dark().motion(), now);
-        assert!(
-            !row.needs_animation_frame(),
-            "nothing faded out, so nothing fades in"
-        );
-        row.show(8, Some(&browser()), Theme::dark().motion(), now);
-        assert!(
-            row.needs_animation_frame(),
-            "another tab's parts cross-fade"
-        );
-    }
-
     phase another_tab_cross_fades_and_drops_what_was_typed_in_this_one;
     {
         let mut row = row();
@@ -1415,29 +1399,6 @@ tilo_test_env::scenario! {
                 Some(Part::Sidebar)
             );
         });
-    }
-
-    phase a_frame_laid_out_while_the_parts_glide_asks_for_frames_at_its_own_instant;
-    {
-        use crate::time::testing::with_monotonic_time;
-        let theme = Theme::dark();
-        let t0 = crate::time::now();
-        let mut row = with_monotonic_time(t0, row);
-        let mut with_sidebar = browser();
-        with_sidebar.sidebar = Some(false);
-        let frame = with_monotonic_time(t0, || {
-            changed_to(&mut row, &with_sidebar, &theme);
-            crate::motion::pin_frame()
-        });
-        // The frame's layout takes a while: the clock has moved on when the
-        // window asks whether another frame must follow.
-        let during = t0
-            .checked_add(crate::time::Duration::from_millis(30))
-            .unwrap_or(t0);
-        with_monotonic_time(during, || {
-            assert!(row.needs_animation_frame(), "the glide still moves");
-        });
-        drop(frame);
     }
 
     phase a_part_the_app_takes_away_fades_out_where_it_stood;

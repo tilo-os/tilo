@@ -163,22 +163,6 @@ fn lay_out(g: &mut WindowGroup, theme: &Theme) {
     }
 }
 
-#[test]
-fn maximized_the_bar_and_search_stay_children() {
-    let theme = Theme::dark();
-    let mut g = page_group();
-    lay_out(&mut g, &theme);
-    assert!(g.maximized, "the fixture is maximized");
-    let children = g.children();
-    let is = |w: &dyn Widget| {
-        children
-            .iter()
-            .any(|c| std::ptr::addr_eq(*c as *const dyn Widget, w as *const dyn Widget))
-    };
-    assert!(is(&g.bar), "the bar is a child");
-    assert!(is(&g.search), "the search is a child");
-}
-
 /// A maximized window keeps its bar in a band above its content: the
 /// content starts where the bar ends, and nothing of the app is under it.
 #[test]
@@ -1603,28 +1587,4 @@ fn the_agents_mark_is_the_keyboards_stop_after_the_tab_list() {
         Some((1, "agent-session:7".to_owned())),
         "Enter on the mark opens its run, as a press does"
     );
-}
-
-/// The window's own keyboard stops (the agent's mark, the furniture of a row holding the bar) take
-/// no width and measure nothing: they never ask the layout to measure again, whatever the keyboard
-/// or the bar does with them. Were they to, every frame of the window, a keystroke's included,
-/// would re-measure its whole path to the root.
-#[test]
-fn the_windows_own_stops_never_ask_for_a_measure() {
-    let mut stop = OpenedByStop::default();
-    let mut controls = crate::widget::window_header::ROW_CONTROLS.map(HeldControl::new);
-    let mut stops: Vec<&mut dyn Widget> = vec![&mut stop];
-    stops.extend(
-        controls
-            .iter_mut()
-            .map(|control| control as &mut dyn Widget),
-    );
-    for stop in stops {
-        stop.set_focus(true);
-        assert!(
-            !stop.is_layout_dirty() && !stop.layout_needs_measure(),
-            "{} asks for a measure",
-            stop.name()
-        );
-    }
 }

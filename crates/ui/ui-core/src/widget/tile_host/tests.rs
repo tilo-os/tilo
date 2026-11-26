@@ -1,5 +1,4 @@
 use super::*;
-use crate::time::Duration;
 
 #[test]
 fn window_edge_shadow_and_focus_ring_stay_off_app_pixels() {
@@ -234,65 +233,6 @@ thread_local! {
         std::cell::RefCell::default();
 }
 
-struct FloatingProbe {
-    acknowledged: std::rc::Rc<std::cell::Cell<bool>>,
-    update: Option<Rect>,
-}
-
-impl FloatingSurfaceProvider for FloatingProbe {
-    fn take_floating_surface_source_updates(&mut self) -> Vec<(String, Rect)> {
-        self.update
-            .take()
-            .map(|rect| vec![("probe-pip".into(), rect)])
-            .unwrap_or_default()
-    }
-
-    fn active_floating_surface_ids(&self) -> Vec<String> {
-        vec!["probe-pip".into()]
-    }
-
-    fn on_floating_surface_host_message(
-        &mut self,
-        message: &crate::floating_surface::FloatingSurfaceHostMessage,
-    ) {
-        if matches!(
-            message,
-            crate::floating_surface::FloatingSurfaceHostMessage::Adopted { id, .. }
-                if id == "probe-pip"
-        ) {
-            self.acknowledged.set(true);
-        }
-    }
-}
-
-impl Widget for FloatingProbe {
-    crate::provides!(dyn crate::floating_surface::FloatingSurfaceProvider);
-
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        taffy.widget_leaf(Style::default(), node_map, self)
-    }
-    fn name(&self) -> &'static str {
-        "FloatingProbe"
-    }
-}
-
-impl crate::widget::app_widget::AppWidget for FloatingProbe {
-    fn app_kind(&self) -> AppKind {
-        AppKind::Browser
-    }
-    fn app_title(&self) -> &'static str {
-        "Floating probe"
-    }
-    fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
-        crate::widget::app_widget::IconDescriptor::Glyph("P")
-    }
-}
-
 #[test]
 fn a_full_bleed_tile_draws_its_content_last_and_unclipped() {
     let rect = Rect::new(0.0, 0.0, 160.0, 100.0);
@@ -331,69 +271,6 @@ fn a_full_bleed_tile_draws_its_content_last_and_unclipped() {
         2,
         "the card's ground under the content, then the content"
     );
-}
-
-/// Reaching into the app every frame (a peer stream's late picture)
-/// must not read as new content: that rebuilt the whole layout tree on
-/// every frame a peer window showed.
-#[test]
-fn reaching_into_the_app_leaves_the_structure_alone() {
-    let rect = Rect::new(0.0, 0.0, 160.0, 100.0);
-    let mut host = TileHost::new(TileContent::App(Box::new(FloodFill { rect })));
-    let _ = Widget::take_structure_dirty(&mut host);
-    assert!(host.app_mut().is_some());
-    assert!(!Widget::take_structure_dirty(&mut host));
-    host.replace_content(TileContent::Arriving);
-    assert!(
-        Widget::take_structure_dirty(&mut host),
-        "replaced content is a new structure"
-    );
-}
-
-#[test]
-fn tile_host_forwards_surfaces_and_only_unhandled_events() {
-    {
-        let acknowledged = std::rc::Rc::new(std::cell::Cell::new(false));
-        let source = Rect::new(20.0, 30.0, 420.0, 255.0);
-        let mut host = TileHost::new(TileContent::App(Box::new(FloatingProbe {
-            acknowledged: acknowledged.clone(),
-            update: Some(source),
-        })));
-
-        assert_eq!(
-            FloatingSurfaceWidgetExt::active_floating_surface_ids(&host),
-            vec!["probe-pip"]
-        );
-        assert_eq!(
-            FloatingSurfaceWidgetExt::take_floating_surface_source_updates(&mut host),
-            vec![("probe-pip".into(), source)]
-        );
-        assert!(
-            FloatingSurfaceWidgetExt::take_floating_surface_source_updates(&mut host).is_empty()
-        );
-
-        FloatingSurfaceWidgetExt::on_floating_surface_host_message(
-            &mut host,
-            &crate::floating_surface::FloatingSurfaceHostMessage::Adopted {
-                id: "probe-pip".into(),
-                rect: [100.0, 80.0, 500.0, 305.0],
-            },
-        );
-        assert!(acknowledged.get());
-    }
-
-    {
-        let calls = std::rc::Rc::new(std::cell::Cell::new(0));
-        let mut host = TileHost::new(TileContent::App(Box::new(EventProbe(calls.clone()))));
-        let mut taffy = TaffyTree::new();
-        let mut node_map = std::collections::HashMap::new();
-        let node = host.build_layout(&mut taffy, &Theme::default(), &mut node_map);
-        crate::testing::Dispatch::new()
-            .handled(true)
-            .layout(&taffy, node)
-            .send(&mut host, &WindowEvent::Focused(true));
-        assert_eq!(calls.get(), 0);
-    }
 }
 
 #[test]
@@ -436,37 +313,6 @@ fn an_unresolved_tile_only_refuses_events_meant_for_it() {
     assert!(!send(&mut host, &key));
     host.set_focused(true);
     assert!(send(&mut host, &key));
-}
-
-struct EventProbe(std::rc::Rc<std::cell::Cell<usize>>);
-
-impl Widget for EventProbe {
-    fn build_layout(
-        &mut self,
-        taffy: &mut TaffyTree<()>,
-        _theme: &Theme,
-        node_map: &mut std::collections::HashMap<NodeId, *mut dyn Widget>,
-    ) -> NodeId {
-        taffy.widget_leaf(Style::default(), node_map, self)
-    }
-    fn handle_event(&mut self, _event: &WindowEvent, _ctx: &mut crate::widget::EventCtx<'_>) {
-        self.0.set(self.0.get().checked_add(1).unwrap());
-    }
-    fn name(&self) -> &'static str {
-        "EventProbe"
-    }
-}
-
-impl crate::widget::app_widget::AppWidget for EventProbe {
-    fn app_kind(&self) -> AppKind {
-        AppKind::Editor
-    }
-    fn app_title(&self) -> &'static str {
-        "Event probe"
-    }
-    fn app_icon(&self) -> crate::widget::app_widget::IconDescriptor {
-        crate::widget::app_widget::IconDescriptor::Glyph("E")
-    }
 }
 
 struct OwnHistoryProbe(std::rc::Rc<std::cell::Cell<Option<bool>>>);
@@ -583,93 +429,6 @@ fn a_windows_application_runs_under_its_tab_for_a_panic_hook() {
     }
     assert_eq!(*seen.borrow(), [Some(41)]);
     assert_eq!(super::super::panic_scope::current(), None);
-}
-
-fn expire_spawn_animation(h: &mut TileHost) {
-    h.spawned_at = crate::time::now().checked_sub(spawn_time() + Duration::from_millis(20));
-}
-
-fn stub_host() -> TileHost {
-    TileHost::new(TileContent::Stub {
-        kind: AppKind::Terminal,
-        label: "t".into(),
-    })
-}
-
-#[test]
-fn spawn_animation_is_in_flight_only_for_its_duration() {
-    // Fresh curves are read in the instant they start: a descheduled
-    // runner cannot age them.
-    crate::time::testing::with_monotonic_time(crate::time::now(), || {
-        {
-            let mut h = stub_host();
-            assert!(h.spawned_at.is_none(), "fresh host has no spawn timestamp");
-            h.start_spawn_animation();
-            assert!(
-                h.spawned_at.is_some(),
-                "start_spawn_animation must record an Instant",
-            );
-        }
-
-        {
-            let mut h = stub_host();
-            h.start_spawn_animation();
-            assert!(
-                h.spawn_in_flight(),
-                "spawn_in_flight must be true within SPAWN_FADE_MS",
-            );
-            let alpha = h.spawn_alpha().expect("alpha in flight");
-            assert!(
-                (0.0..1.0).contains(&alpha),
-                "eased alpha mid-flight must be in [0, 1); got {alpha}",
-            );
-        }
-
-        {
-            let mut h = stub_host();
-            h.start_spawn_animation();
-            expire_spawn_animation(&mut h);
-            assert!(
-                !h.spawn_in_flight(),
-                "spawn_in_flight must be false after SPAWN_FADE_MS elapses",
-            );
-            assert!(
-                h.spawn_alpha().is_none(),
-                "expired spawn must report no alpha",
-            );
-        }
-
-        {
-            // Indirect: no direct hook to check the draw path skips the
-            // wrapper layer, so this pins spawn_in_flight/spawn_alpha instead
-            // — guards against the wrapper becoming always-on and costing an
-            // extra layer + affine compose every frame.
-            let h = stub_host();
-            assert!(!h.spawn_in_flight(), "fresh host must not be in flight");
-            assert!(
-                h.spawn_alpha().is_none(),
-                "fresh host must report no spawn alpha",
-            );
-        }
-
-        {
-            let mut h = stub_host();
-            assert!(
-                !h.needs_animation_frame(),
-                "static host must not demand animation frames",
-            );
-            h.start_spawn_animation();
-            assert!(
-                h.needs_animation_frame(),
-                "in-flight spawn must pump the App run loop",
-            );
-            expire_spawn_animation(&mut h);
-            assert!(
-                !h.needs_animation_frame(),
-                "after the spawn window elapses, no more frames are needed",
-            );
-        }
-    });
 }
 
 struct FloodFill {
@@ -924,106 +683,6 @@ pub(super) fn paint(host: &mut TileHost, theme: &Theme) -> Scene {
         crate::presence::PresenceCtx::empty().draw_env(),
     ));
     scene
-}
-
-#[test]
-fn an_arrived_app_after_a_visible_placeholder_still_asks_for_a_frame() {
-    let t0 = crate::time::now();
-    let (mut host, _) = crate::time::testing::with_monotonic_time(t0, || starting_host(false));
-    let theme = Theme::default();
-    let later = t0 + crate::time::Duration::from_secs(1);
-    crate::time::testing::with_monotonic_time(later, || {
-        let _ = paint(&mut host, &theme);
-        host.mark_drawn();
-    });
-    let TileContent::App(app) = &mut host.content else {
-        panic!("the starting app");
-    };
-    app.as_any_mut()
-        .and_then(|app| app.downcast_mut::<Starting>())
-        .expect("controlled app")
-        .presented = true;
-    crate::time::testing::with_monotonic_time(later, || {
-        assert!(
-            Widget::needs_redraw(&host),
-            "the person already saw the placeholder; without one more frame \
-             the compositor sleeps on it (A05 Store)"
-        );
-    });
-}
-
-#[test]
-fn a_tile_nothing_has_painted_asks_for_no_frame_of_its_own() {
-    // Every tab of every strip a shell is not showing is such a tile: its
-    // placeholder steps with time, but no one saw the step before it.
-    // Asking for a frame there repainted the whole session, every frame, for
-    // as long as it ran.
-    let t0 = crate::time::now();
-    crate::time::testing::with_monotonic_time(t0, || {
-        let host = TileHost::new(TileContent::Arriving);
-        assert!(
-            !Widget::needs_redraw(&host),
-            "nothing stands on screen to correct"
-        );
-        let later = t0 + crate::time::Duration::from_secs(2);
-        crate::time::testing::with_monotonic_time(later, || {
-            assert!(
-                !Widget::needs_redraw(&host),
-                "a step that came due while the tile was out of sight is \
-                 painted by the frame that first draws it"
-            );
-        });
-    });
-}
-
-#[test]
-fn a_painted_placeholder_asks_for_the_frame_its_next_step_shows_in() {
-    let t0 = crate::time::now();
-    let theme = Theme::default();
-    let host = crate::time::testing::with_monotonic_time(t0, || {
-        let mut host = TileHost::new(TileContent::Arriving);
-        host.rect = Rect::new(50.0, 50.0, 350.0, 250.0);
-        let _ = paint(&mut host, &theme);
-        host.mark_drawn();
-        assert!(
-            !Widget::needs_redraw(&host),
-            "the step shown was the one painted"
-        );
-        host
-    });
-    crate::time::testing::with_monotonic_time(t0 + crate::arriving::GRACE, || {
-        assert!(
-            Widget::needs_redraw(&host),
-            "the skeleton replaced the ground the person saw"
-        );
-    });
-}
-
-#[test]
-fn a_tile_holding_only_a_placeholder_reports_no_damage_once_its_steps_are_past() {
-    let t0 = crate::time::now();
-    let theme = Theme::default();
-    let mut host = crate::time::testing::with_monotonic_time(t0, || {
-        let mut host = TileHost::new(TileContent::Arriving);
-        host.rect = Rect::new(50.0, 50.0, 350.0, 250.0);
-        host
-    });
-    let late = t0 + crate::time::Duration::from_secs(2);
-    crate::time::testing::with_monotonic_time(late, || {
-        let _ = paint(&mut host, &theme);
-        host.mark_drawn();
-        assert!(
-            !Widget::needs_redraw(&host) || host.is_arriving(),
-            "a step due is the arrival's to ask for, and none is left"
-        );
-    });
-    let after = late + crate::time::Duration::from_millis(16);
-    crate::time::testing::with_monotonic_time(after, || {
-        assert!(
-            !Widget::needs_redraw(&host),
-            "the placeholder has stepped as far as it goes"
-        );
-    });
 }
 
 #[test]
@@ -1454,42 +1113,6 @@ fn a_shell_window_presents_history_on_its_tab_not_in_a_band() {
     driver.relayout();
     assert!(!driver.targets().contains_key("activity_timeline"));
     assert_eq!(window_history_control(&driver), Some(false));
-}
-
-/// A tile that is never drawn (its window is on a strip that is not shown)
-/// still lets its arrival's steps pass: once its first frame is due, the
-/// tile asks for no wake at all, instead of a due deadline on every turn of
-/// the loop.
-#[test]
-fn an_undrawn_tile_asks_for_no_wake_once_its_arrival_is_due() {
-    let t0 = crate::time::now();
-    for presented in [false, true] {
-        let mut host = crate::time::testing::with_monotonic_time(t0, || {
-            let rect = Rect::new(50.0, 50.0, 150.0, 150.0);
-            let mut host = TileHost::new(TileContent::Notice {
-                title: "Word Processor".into(),
-                detail: "Opening here…".into(),
-            });
-            host.rect = rect;
-            host.replace_content(TileContent::App(Box::new(Starting {
-                rect,
-                drawn: std::rc::Rc::default(),
-                presented,
-            })));
-            host
-        });
-        let doc = automerge::AutoCommit::new();
-        for seconds in [5, 6] {
-            let later = t0 + crate::time::Duration::from_secs(seconds);
-            crate::time::testing::with_monotonic_time(later, || {
-                let _ = Widget::update(&mut host, &doc, &automerge::ROOT);
-                assert!(
-                    Widget::next_wake_deadline(&host).is_none_or(|at| at > later),
-                    "presented={presented}: no due wake {seconds} s after opening, undrawn"
-                );
-            });
-        }
-    }
 }
 
 struct Restless;

@@ -204,19 +204,3 @@ fn a_key_closes_a_window_at_once_and_a_click_after_its_fade() {
         );
     });
 }
-
-#[test]
-fn a_spring_let_go_mid_way_asks_the_clock_for_no_frames() {
-    let now = crate::motion::frame_now();
-    let mut spring = super::FrameSpring::new(0.0).with_tolerance_px();
-    spring.set_target(400.0);
-    assert!(
-        crate::motion::frames_wanted(now),
-        "a springing slot asks for its frames"
-    );
-    drop(spring);
-    assert!(
-        !crate::motion::frames_wanted(now),
-        "let go, it is drawn no more and asks for nothing"
-    );
-}

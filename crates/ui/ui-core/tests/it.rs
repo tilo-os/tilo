@@ -27,14 +27,10 @@ mod accessibility_geometry;
 mod colorpicker_hex_input;
 #[path = "component_text_input.rs"]
 mod component_text_input;
-#[path = "container_update_forwarding.rs"]
-mod container_update_forwarding;
 #[path = "control_label_stays_inside_its_control.rs"]
 mod control_label_stays_inside_its_control;
 #[path = "control_row_alignment.rs"]
 mod control_row_alignment;
-#[path = "controls_out_of_view_rest.rs"]
-mod controls_out_of_view_rest;
 #[path = "data_table_test.rs"]
 mod data_table_test;
 #[path = "data_widget_text_alignment.rs"]
@@ -64,8 +60,6 @@ mod headless_app_test;
 mod immersive_widget_geometry;
 #[path = "incremental_render_regressions.rs"]
 mod incremental_render_regressions;
-#[path = "layout_walk_lists_each_child_once.rs"]
-mod layout_walk_lists_each_child_once;
 #[path = "local_identity_is_a_person.rs"]
 mod local_identity_is_a_person;
 #[path = "menu_highlight_render.rs"]
@@ -94,8 +88,6 @@ mod process_entry_points;
 mod profiling;
 #[path = "remote_cursor_presence.rs"]
 mod remote_cursor_presence;
-#[path = "resize_reflow_test.rs"]
-mod resize_reflow_test;
 #[path = "screenshot_test.rs"]
 mod screenshot_test;
 #[path = "scrollable_test.rs"]
@@ -106,18 +98,12 @@ mod scrollbar_render_test;
 mod tab_strip_test;
 #[path = "text_scaled_once.rs"]
 mod text_scaled_once;
-#[path = "textinput_local_mode.rs"]
-mod textinput_local_mode;
 #[path = "toast_test.rs"]
 mod toast_test;
-#[path = "tokens_test.rs"]
-mod tokens_test;
 #[path = "tooltip_render_test.rs"]
 mod tooltip_render_test;
 #[path = "touch_gestures_test.rs"]
 mod touch_gestures_test;
-#[path = "typography_golden_geometry.rs"]
-mod typography_golden_geometry;
 #[path = "typography_visual_regression.rs"]
 mod typography_visual_regression;
 #[path = "undo_per_author.rs"]

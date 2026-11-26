@@ -158,12 +158,6 @@ fn lay_out(case: Case) -> Laid {
     }
 }
 
-/// Pixel size of a case's frame, from layout alone.
-pub(crate) fn frame_size(case: Case) -> (u32, u32) {
-    let laid = lay_out(case);
-    (laid.width, laid.height)
-}
-
 pub(crate) fn baseline_path(case: Case) -> PathBuf {
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     let fixtures = root.join("tests/fixtures/typography");

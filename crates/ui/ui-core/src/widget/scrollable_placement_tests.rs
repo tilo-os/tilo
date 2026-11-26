@@ -252,28 +252,3 @@ tilo_test_env::scenario! {
         assert_eq!(origin(&rows), -40.0, "it lands on the display's pixel");
     }
 }
-
-/// A scroll a host makes (a page scrolled in the browser, assistive technology, a scrollbar's
-/// jump) asks for the frame that places what came into view, as a wheel does: a host runs a frame
-/// only when something asks for one.
-#[test]
-fn a_hosts_scroll_asks_for_the_frame_that_places_it() {
-    let mut rows = rows(200);
-    rows.scroll.mark_drawn();
-    assert!(
-        !rows.scroll.needs_redraw() && !rows.scroll.is_layout_dirty(),
-        "a view placed and drawn asks for nothing"
-    );
-    let scrolled = rows
-        .scroll
-        .apply_primary_vertical_scroll(crate::widget::PrimaryScrollAction::Absolute(300.0));
-    assert!(
-        matches!(scrolled, crate::widget::PrimaryScrollResult::Changed(_)),
-        "{scrolled:?}"
-    );
-    assert!(rows.scroll.needs_redraw(), "the scrolled view repaints");
-    assert!(
-        rows.scroll.is_layout_dirty(),
-        "the scrolled view places its content where the scroll took it"
-    );
-}

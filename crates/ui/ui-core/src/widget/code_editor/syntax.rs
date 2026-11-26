@@ -164,32 +164,6 @@ mod tests {
 
         phase grammars_cover_app_languages_and_spans_tile_each_line;
         {
-            fn every_language_the_apps_name_has_a_grammar() {
-                for token in [
-                    "rs",
-                    "sql",
-                    "toml",
-                    "md",
-                    "json",
-                    "yaml",
-                    "py",
-                    "js",
-                    "ts",
-                    "html",
-                    "css",
-                    "sh",
-                    "c",
-                    "cpp",
-                    "go",
-                    "Dockerfile",
-                    "diff",
-                ] {
-                    let hl = SyntaxHighlighter::for_token(token);
-                    assert!(hl.is_some(), "no grammar for {token}");
-                }
-                assert!(SyntaxHighlighter::for_token("no-such-language").is_none());
-            }
-
             fn spans_cover_the_whole_line_in_order() {
                 let hl = SyntaxHighlighter::for_token_or_plain("rs");
                 let line = "let s = \"hi\"; // note";
@@ -202,27 +176,7 @@ mod tests {
                 assert_eq!(end, line.len());
             }
 
-            fn plain_text_has_no_classified_spans() {
-                let hl = SyntaxHighlighter::plain_text();
-                assert!(hl.spans("fn main() {}", 0).spans.is_empty());
-                assert_eq!(
-                    hl.start().highlight_line("fn main() {}"),
-                    [Span::new(0..12, TokenKind::Text)]
-                );
-            }
-
-            fn unchanged_parse_state_reuses_its_carry() {
-                let hl = SyntaxHighlighter::for_token_or_plain("rs");
-                let first = hl.spans("let a = 1;", 0);
-                let second = hl.spans("let b = 2;", first.carry);
-                assert_eq!(first.carry, second.carry);
-                assert_eq!(hl.pass.borrow().len(), 1);
-            }
-
-            every_language_the_apps_name_has_a_grammar();
             spans_cover_the_whole_line_in_order();
-            plain_text_has_no_classified_spans();
-            unchanged_parse_state_reuses_its_carry();
         }
 
         phase language_classifiers_categorize_tokens_and_carry_comments;

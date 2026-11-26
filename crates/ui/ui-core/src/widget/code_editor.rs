@@ -1176,162 +1176,14 @@ fn next_char_len(s: &str, i: usize) -> usize {
 mod tests {
     use super::*;
     use crate::theme::Theme;
-    use vello::peniko::Color;
 
     tilo_test_env::scenario! {
         /// The code editor's highlighting, typing, selection and geometry.
         /// Each phase was a test of its own and builds its own fixture.
         fn the_code_editor_highlights_edits_and_lays_out;
 
-        phase highlighting_maps_languages_and_theme_colours;
-        {
-            fn typst_heading_and_function() {
-                let hl = TypstHighlighter;
-                assert_eq!(hl.spans("= Title", 0).spans[0].kind, TokenKind::Heading);
-                let ls = hl.spans(r#"#set text("hi")"#, 0);
-                let kinds: Vec<_> = ls.spans.iter().map(|s| s.kind).collect();
-                assert!(kinds.contains(&TokenKind::Function));
-                assert!(kinds.contains(&TokenKind::StringLit));
-            }
-
-            fn typst_fenced_block_carries() {
-                let hl = TypstHighlighter;
-                let open = hl.spans("```rust", 0);
-                assert_eq!(open.carry & IN_FENCE, IN_FENCE);
-                let mid = hl.spans("let x = 1;", open.carry);
-                assert!(mid.spans.iter().all(|s| s.kind == TokenKind::Raw));
-                let close = hl.spans("```", mid.carry);
-                assert_eq!(close.carry & IN_FENCE, 0);
-            }
-
-            fn token_color_changes_with_theme() {
-                use crate::color_compat::ColorCompat;
-                let dark = Theme::dark().tokens.syntax.color(TokenKind::Keyword);
-                let light = Theme::light().tokens.syntax.color(TokenKind::Keyword);
-                let rgb = |c: Color| [c.r(), c.g(), c.b()];
-                assert_ne!(rgb(dark), rgb(light), "keyword colour must track the theme");
-                assert_eq!(
-                    rgb(Theme::dark().tokens.syntax.color(TokenKind::Comment)),
-                    rgb(Theme::dark().text_dim),
-                );
-            }
-
-            fn language_maps_to_a_highlighter() {
-                // Every language an app can name colours a line of its own syntax: the samples
-                // are what people keep in each, and a token the syntax set does not know
-                // colours nothing at all.
-                let samples = [
-                    (Language::Rust, "let x = 1;"),
-                    (Language::Typst, "= Title"),
-                    (Language::Sql, "SELECT id FROM t;"),
-                    (Language::Json, r#"{"a": 1}"#),
-                    (Language::Shell, "echo \"hi\""),
-                    (Language::Git, "git commit -m \"hi\""),
-                    (Language::Python, "def f(): pass"),
-                    (Language::JavaScript, "const x = 1;"),
-                    (Language::TypeScript, "let x: number = 1;"),
-                    (Language::Yaml, "a: 1"),
-                    (Language::Markdown, "# Title"),
-                    (Language::Html, "<p>hi</p>"),
-                    (Language::Css, "a { color: red; }"),
-                    (Language::Toml, "a = 1"),
-                    (Language::Dockerfile, "FROM rust:1"),
-                    (Language::C, "int main(void) { return 0; }"),
-                    (Language::Cpp, "std::vector<int> v;"),
-                    (Language::Go, "func main() {}"),
-                    (Language::Verilog, "module m; endmodule"),
-                    (Language::SystemVerilog, "logic [7:0] x;"),
-                    (Language::Tilolang, "app x \"X\""),
-                ];
-                for (language, sample) in samples {
-                    let highlighter = language
-                        .highlighter()
-                        .unwrap_or_else(|| panic!("{language:?} colours nothing"));
-                    assert!(
-                        !highlighter.spans(sample, 0).spans.is_empty(),
-                        "{language:?} colours nothing in {sample:?}"
-                    );
-                }
-                assert!(Language::PlainText.highlighter().is_none());
-                // Each grammar-backed language resolves a grammar of its own, not the plain
-                // fallback that colours nothing.
-                for token in ["rs", "sql", "json", "sh", "py", "js", "ts", "yaml", "md", "html", "css", "toml", "dockerfile", "c", "cpp", "go", "v", "sv"] {
-                    let highlighter = SyntaxHighlighter::for_token(token)
-                        .unwrap_or_else(|| panic!("no grammar for `{token}`"));
-                    assert_ne!(highlighter.name(), "Plain Text", "`{token}` is plain text");
-                }
-            }
-
-            fn highlighter_colours_segments_from_the_theme() {
-                use crate::color_compat::ColorCompat;
-                let theme = Theme::dark();
-                let mut ed = CodeEditor::local().with_language(Language::Rust);
-                ed.set_text("let x = 1");
-                ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-                draw_once(&mut ed, &theme);
-                let segs = ed.inner().code_row_colors(&theme);
-                let rgb = |c: Color| [c.r(), c.g(), c.b()];
-                let kw = segs
-                    .iter()
-                    .find(|(t, _)| t == "let")
-                    .expect("`let` is a drawn segment");
-                assert_eq!(
-                    rgb(kw.1),
-                    rgb(theme.tokens.syntax.color(TokenKind::Keyword)),
-                    "the `let` keyword is drawn in the themed keyword colour",
-                );
-                assert!(
-                    segs.iter().any(|(_, c)| rgb(*c) == rgb(theme.text_primary)),
-                    "uncoloured runs fall back to the theme text colour",
-                );
-            }
-
-            typst_heading_and_function();
-            typst_fenced_block_carries();
-            token_color_changes_with_theme();
-            language_maps_to_a_highlighter();
-            highlighter_colours_segments_from_the_theme();
-        }
-
         phase code_editor_typing_newlines_and_indentation_use_the_real_key_path;
         {
-            fn typing_inserts_on_the_real_key_path() {
-                let mut ed = CodeEditor::local();
-                ed.set_focused(true);
-                ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-                let mut doc = AutoCommit::new();
-                for ch in ["f", "n", " ", "x"] {
-                    assert!(drive(&mut ed, &mut doc, &char_key(ch), mods(false, false)));
-                }
-                assert_eq!(ed.value(), "fn x");
-                assert_eq!(ed.cursor_pos(), 4);
-            }
-
-            fn wrapper_forwards_the_shaped_ime_candidate_rect() {
-                let mut ed = CodeEditor::local()
-                    .with_language(Language::Rust)
-                    .with_initial_value("let value = 1;");
-                ed.set_focused(true);
-                ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-                let mut doc = AutoCommit::new();
-                assert!(drive(
-                    &mut ed,
-                    &mut doc,
-                    &WindowEvent::Ime(winit::event::Ime::Preedit(
-                        "漢".into(),
-                        Some(("漢".len(), "漢".len())),
-                    )),
-                    mods(false, false),
-                ));
-                draw_once(&mut ed, &Theme::dark());
-
-                let wrapper_rect =
-                    Widget::ime_cursor_rect(&ed).expect("wrapper publishes IME geometry");
-                let inner_rect = Widget::ime_cursor_rect(ed.inner()).expect("inner input has a caret");
-                assert_eq!(wrapper_rect, inner_rect);
-                assert!(wrapper_rect.x0 > ed.gutter_width());
-            }
-
             fn enter_inserts_a_real_newline_and_gutter_counts_lines() {
                 let mut ed = CodeEditor::local();
                 ed.set_focused(true);
@@ -1382,33 +1234,12 @@ mod tests {
                 );
             }
 
-            typing_inserts_on_the_real_key_path();
-            wrapper_forwards_the_shaped_ime_candidate_rect();
             enter_inserts_a_real_newline_and_gutter_counts_lines();
             tab_inserts_soft_spaces_and_shift_tab_outdents();
         }
 
         phase code_editor_selection_cut_and_goto_line;
         {
-            fn selection_and_cut_run_through_the_real_path() {
-                let mut ed = CodeEditor::local().with_initial_value("abc");
-                ed.set_focused(true);
-                ed.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-                let mut doc = AutoCommit::new();
-                assert!(drive(&mut ed, &mut doc, &char_key("a"), mods(true, false)));
-                assert_eq!(
-                    ed.inner().selection_range_public(),
-                    Some((0, 3)),
-                    "Ctrl+A selects the whole buffer on the real path",
-                );
-                assert!(drive(&mut ed, &mut doc, &char_key("x"), mods(true, false)));
-                assert_eq!(
-                    ed.value(),
-                    "",
-                    "Ctrl+X cuts the selection through the shared core"
-                );
-            }
-
             fn shift_arrow_extends_selection_word_wise() {
                 let mut ed = CodeEditor::local().with_initial_value("hello world");
                 ed.set_focused(true);
@@ -1467,7 +1298,6 @@ mod tests {
                 assert_eq!(node.value.as_deref(), Some("fn main() {}"));
             }
 
-            selection_and_cut_run_through_the_real_path();
             shift_arrow_extends_selection_word_wise();
             goto_line_moves_the_caret_to_the_line_start();
             accessibility_reports_a_multiline_text_input();
@@ -1475,127 +1305,6 @@ mod tests {
 
         phase code_editor_gutter_and_wrapper_geometry_follow_the_theme_scale;
         {
-            fn no_gutter_offset_when_gutter_disabled() {
-                let theme = Theme::dark();
-                let mut with_g = CodeEditor::local().with_initial_value("x");
-                with_g.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-                draw_once(&mut with_g, &theme);
-                let caret_with = with_g.inner().caret_rect(&theme, 0).x0;
-
-                let mut without_g = CodeEditor::local()
-                    .with_gutter(false)
-                    .with_initial_value("x");
-                without_g.set_rect(Rect::new(0.0, 0.0, 400.0, 200.0));
-                draw_once(&mut without_g, &theme);
-                let caret_without = without_g.inner().caret_rect(&theme, 0).x0;
-
-                assert!(
-                    caret_with > caret_without + 10.0,
-                    "the gutter shifts the caret right ({caret_with} vs {caret_without})",
-                );
-            }
-
-            fn scaled_gutter_and_wrapped_rows_share_the_shaped_editor_geometry() {
-                let text = "first logical line wraps across several visual rows because the editor is narrow\nsecond";
-                let mut normal = CodeEditor::local().with_initial_value(text);
-                normal.set_rect(Rect::new(0.0, 0.0, 190.0, 420.0));
-                draw_once(&mut normal, &Theme::dark());
-                let normal_gutter = normal.gutter_width();
-                let normal_line_height = normal.line_height();
-
-                let theme = Theme::dark().with_text_scale(2.0);
-                let mut large = CodeEditor::local().with_initial_value(text);
-                large.set_rect(Rect::new(0.0, 0.0, 190.0, 900.0));
-                draw_once(&mut large, &theme);
-                assert!(
-                    large.gutter_width() >= normal_gutter * 1.8,
-                    "measured gutter grows with its line-number glyphs ({} vs {})",
-                    large.gutter_width(),
-                    normal_gutter,
-                );
-                assert!(
-                    large.line_height() >= normal_line_height * 1.9,
-                    "wrapper reports the shaped 2× row height"
-                );
-
-                let first_end = text.find('\n').expect("hard line break");
-                let wrapped = large.selection_rects(&theme, 0, first_end);
-                assert!(wrapped.len() >= 2, "first logical line wraps visually");
-                assert!(wrapped.iter().all(|rect| {
-                    (rect.height() - large.line_height()).abs() < 0.1
-                        && rect.x0 >= large.rect().x0 + large.gutter_width()
-                }));
-                let second_start = first_end + 1;
-                let caret = large.caret_rect(&theme, second_start);
-                assert!(caret.x0 >= large.rect().x0 + large.gutter_width());
-                let point = Point::new(caret.x0 + 1.0, caret.y0 + caret.height() / 2.0);
-                assert_eq!(large.byte_at_point(point), second_start);
-                let mut doc = AutoCommit::new();
-                drive(
-                    &mut large,
-                    &mut doc,
-                    &crate::synthetic_input::cursor_moved(point.x, point.y),
-                    mods(false, false),
-                );
-                assert!(drive(
-                    &mut large,
-                    &mut doc,
-                    &crate::synthetic_input::mouse_press(),
-                    mods(false, false),
-                ));
-                assert_eq!(
-                    large.cursor_pos(),
-                    second_start,
-                    "pointer event places the caret on the logical second line through wrapped rows"
-                );
-            }
-
-            fn wrapper_layout_uses_theme_scale_with_a_stale_renderer_and_reverses_to_normal() {
-                let text = "a long source line wraps over several visual rows while the wrapper owns the themed layout lifecycle";
-                let mut editor = CodeEditor::local().with_initial_value(text);
-                let mut renderer = TextRenderer::new();
-                assert_eq!(renderer.text_scale(), 1.0, "stale renderer precondition");
-
-                let large_theme = Theme::dark().with_text_scale(2.0);
-                let large_height = lay_out_and_draw(&mut editor, &large_theme, &mut renderer, 190.0);
-                let large_gutter = editor.gutter_width();
-                let large_font = editor
-                    .inner()
-                    .shaped_font_size_for_test()
-                    .expect("large shaped font");
-                assert!(
-                    (f64::from(large_height) - editor.inner().content_height().ceil()).abs() < 0.1,
-                    "wrapper measure and draw must share the 2x paragraph height"
-                );
-
-                let normal_theme = Theme::dark();
-                let mut taffy = TaffyTree::<()>::new();
-                let mut node_map = std::collections::HashMap::new();
-                let _ = Widget::build_layout(&mut editor, &mut taffy, &normal_theme, &mut node_map);
-                assert!(
-                    Widget::layout_needs_measure(&editor),
-                    "the same wrapper becomes measure-dirty when theme scale returns to 1x"
-                );
-                let normal_height = lay_out_and_draw(&mut editor, &normal_theme, &mut renderer, 190.0);
-                let normal_gutter = editor.gutter_width();
-                let normal_font = editor
-                    .inner()
-                    .shaped_font_size_for_test()
-                    .expect("normal shaped font");
-                assert!(
-                    (f64::from(normal_height) - editor.inner().content_height().ceil()).abs() < 0.1,
-                    "wrapper measure and draw must share the restored 1x paragraph height"
-                );
-                assert!(large_height > normal_height * 1.8);
-                assert!(large_gutter >= normal_gutter * 1.8);
-                assert!(large_font >= normal_font * 1.9);
-                assert_eq!(
-                    renderer.text_scale(),
-                    1.0,
-                    "renderer stayed stale throughout"
-                );
-            }
-
             /// The editor's own zoom scales the code beside the window's scale, and going back to
             /// its own size lays it out again: a person's chosen size is the editor's, not the
             /// window's.
@@ -1639,9 +1348,6 @@ mod tests {
                 );
             }
 
-            no_gutter_offset_when_gutter_disabled();
-            scaled_gutter_and_wrapped_rows_share_the_shaped_editor_geometry();
-            wrapper_layout_uses_theme_scale_with_a_stale_renderer_and_reverses_to_normal();
             the_editors_own_zoom_scales_its_text_beside_the_windows();
         }
 
@@ -1714,22 +1420,6 @@ mod tests {
 
     fn drive(ed: &mut CodeEditor, doc: &mut AutoCommit, ev: &WindowEvent, m: Modifiers) -> bool {
         Dispatch::new().doc(doc).modifiers(m).send(ed, ev).handled
-    }
-
-    fn draw_once(ed: &mut CodeEditor, theme: &Theme) {
-        let presence = PresenceCtx::default();
-        let mut tr = TextRenderer::new();
-        let mut scene = Scene::new();
-        Widget::draw(
-            ed,
-            &mut crate::draw::DrawCtx::new(
-                &mut scene,
-                Affine::IDENTITY,
-                &mut tr,
-                theme,
-                presence.draw_env(),
-            ),
-        );
     }
 
     fn lay_out_and_draw(

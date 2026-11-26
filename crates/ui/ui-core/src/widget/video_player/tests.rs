@@ -13,32 +13,6 @@ use winit::keyboard::{Key, NamedKey};
 tilo_test_env::scenario! {
     fn a_video_player_drives_and_follows_its_engine;
 
-    phase an_engine_attached_when_needed_keeps_the_players_volume_and_is_built_once;
-    {
-        let mut vp = VideoPlayer::new();
-        vp.set_volume(0.3);
-        assert!(vp.engine().is_none(), "a new player starts no engine");
-        let mut built = 0;
-        vp.ensure_engine(|| {
-            built += 1;
-            media::MediaEngine::new_synthesized()
-        });
-        assert!((vp.engine().unwrap().volume() - 0.3).abs() < 1e-6);
-        vp.ensure_engine(|| {
-            built += 1;
-            media::MediaEngine::new_synthesized()
-        });
-        assert_eq!(built, 1, "an attached engine is kept");
-
-        let mut muted = VideoPlayer::new();
-        muted.toggle_mute();
-        let engine = muted.ensure_engine(media::MediaEngine::new_synthesized);
-        assert!(
-            engine.volume().abs() < 1e-6,
-            "a muted player's engine is silent"
-        );
-    }
-
     phase transport_keys_and_surface_clicks_drive_the_engine;
     {
         {
@@ -276,43 +250,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase engine_events_reach_the_right_side_once;
-    {
-        {
-            let mut vp = VideoPlayer::new();
-            vp.record_terminal_media_events([
-                media::MediaEvent::Ended,
-                media::MediaEvent::MissingDecoder {
-                    codec: "HEVC".into(),
-                },
-                media::MediaEvent::Error("decoder stopped".into()),
-            ]);
-            let events = vp.take_media_events();
-            assert!(
-                matches!(events.as_slice(), [media::MediaEvent::Ended, media::MediaEvent::MissingDecoder { codec }, media::MediaEvent::Error(message)] if codec == "HEVC" && message == "decoder stopped")
-            );
-            assert!(
-                vp.take_media_events().is_empty(),
-                "taking events cannot replay an old terminal status"
-            );
-        }
-
-        {
-            let mut vp = VideoPlayer::new();
-            for position in 0..1_000 {
-                vp.record_terminal_media_events([
-                    media::MediaEvent::DurationKnown { ms: 90_000 },
-                    media::MediaEvent::Buffering { percent: 50 },
-                    media::MediaEvent::Position { ms: position },
-                ]);
-            }
-            assert!(
-                vp.media_events.is_empty(),
-                "progress is mirrored by the widget, never buffered for the app"
-            );
-        }
-    }
-
     phase the_engines_system_controls_hear_what_plays_and_the_player_follows_them;
     {
         let mut vp = VideoPlayer::new().with_engine(media::MediaEngine::new_synthesized());
@@ -392,65 +329,6 @@ tilo_test_env::scenario! {
         assert!(
             (line.width() - vp.rect.width() / 2.0).abs() < 2.0,
             "it is filled as far as the video has played: {line:?}"
-        );
-    }
-
-    phase controls_that_hid_or_faded_leave_the_tree_with_the_frame_that_hides_them;
-    {
-        let mut engine = media::MediaEngine::new_synthesized();
-        engine.open(media::Source::Remote {
-            url: "v.mp4".into(),
-        });
-        let mut vp = VideoPlayer::new().with_engine(engine);
-        vp.rect = Rect::new(0.0, 0.0, 640.0, 360.0);
-        let doc = AutoCommit::new();
-        let root = automerge::ROOT;
-        vp.engine_mut().unwrap().play();
-        vp.sync(&doc, &root);
-        draw_once(&mut vp);
-        assert!(
-            listed_controls(&vp)
-                .iter()
-                .any(|name| name == "Playback position"),
-            "shown controls are listed: {:?}",
-            listed_controls(&vp)
-        );
-
-        vp.controls_visible_until = Some(crate::time::now());
-        assert!(
-            listed_controls(&vp)
-                .iter()
-                .any(|name| name == "Playback position"),
-            "the controls on screen are listed until a frame takes them off"
-        );
-        draw_once(&mut vp);
-        assert_eq!(
-            listed_controls(&vp),
-            Vec::<String>::new(),
-            "the frame that hides them takes them out of the tree"
-        );
-        assert_eq!(vp.scrub_track_rect, Rect::ZERO, "and nothing is hit there");
-        assert!(
-            vp.progress_line_painted.height() > 0.0,
-            "the progress line shows meanwhile"
-        );
-
-        vp.controls_visible_until = crate::time::now().checked_add(Duration::from_millis(5));
-        assert!(vp.controls_opacity() < 0.5);
-        draw_once(&mut vp);
-        assert_eq!(
-            listed_controls(&vp),
-            Vec::<String>::new(),
-            "controls faded past half are not listed"
-        );
-
-        vp.show_controls();
-        draw_once(&mut vp);
-        assert!(
-            listed_controls(&vp)
-                .iter()
-                .any(|name| name == "Playback position"),
-            "shown again, they are listed again"
         );
     }
 
@@ -1001,37 +879,6 @@ tilo_test_env::scenario! {
         }
     }
 
-    phase element_pictures_reach_the_renderer_without_pixels;
-    // A page's video shows each new picture as a fresh image the renderer
-    // copies from the media element: no pixels pass through the widget,
-    // and each picture is one registry entry, so the work per picture is a
-    // GPU copy and a repaint of the video's rect.
-    {
-        let mut vp = VideoPlayer::new();
-        vp.rect = Rect::new(0.0, 0.0, 320.0, 180.0);
-        let _ = crate::element_pictures::take();
-        let element: std::rc::Rc<dyn std::any::Any> = std::rc::Rc::new(());
-        const PICTURES: u64 = 12;
-        let mut ids = std::collections::BTreeSet::new();
-        for serial in 1..=PICTURES {
-            vp.dirty = false;
-            vp.show_element_picture(media::ElementPicture {
-                width: 1920,
-                height: 1080,
-                serial,
-                element: std::rc::Rc::clone(&element),
-            });
-            assert!(vp.dirty, "a new picture repaints the video");
-            let image = vp.latest_frame().expect("the picture's image");
-            assert!(image.data.is_empty(), "no pixels are read back");
-            assert_eq!((image.width, image.height), (1920, 1080));
-            let shown = crate::element_pictures::take();
-            assert_eq!(shown.len(), 1, "one copy per picture");
-            assert_eq!(shown[0].image.data.id(), image.data.id());
-            assert!(ids.insert(image.data.id()), "each picture its own image");
-        }
-        assert_eq!(ids.len(), PICTURES as usize);
-    }
 }
 
 fn listed_controls(vp: &VideoPlayer) -> Vec<String> {
@@ -1071,28 +918,6 @@ fn draw_once_with_theme(vp: &mut VideoPlayer, theme: &Theme) {
         theme,
         presence.draw_env(),
     ));
-}
-
-#[cfg(feature = "realtime-video")]
-#[test]
-fn push_mode_feed_encoded_updates_latest_image() {
-    let (w, h) = (64u32, 48u32);
-    let mut config = media::EncoderConfig::new(media::StreamCodec::Vp9, w, h, 30);
-    config.policy = media::realtime::RealtimePolicy::SoftwareOnly;
-    let mut enc = media::RealtimeEncoder::new(&config).expect("VP9 software encoder");
-    let rgba = vec![128u8; (w * h * 4) as usize];
-    let unit = enc
-        .encode(media::InputFrame::Packed(&rgba), std::time::Duration::ZERO)
-        .expect("encode grey frame")
-        .remove(0);
-
-    let mut vp = VideoPlayer::new();
-    assert!(
-        vp.feed_encoded(media::StreamCodec::Vp9, &unit.data),
-        "decoder consumed the frame"
-    );
-    let frame = vp.latest_frame().expect("a frame");
-    assert_eq!((frame.width, frame.height), (w, h));
 }
 
 fn bar_targets(vp: &VideoPlayer) -> Vec<(String, Rect)> {

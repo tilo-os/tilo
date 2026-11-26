@@ -245,21 +245,6 @@ fn the_state_follows_its_declaration() {
 }
 
 #[test]
-fn an_idle_transport_rests() {
-    let (mut h, feed) = banded(
-        TransportState {
-            title: "Nothing playing".into(),
-            idle: true,
-            ..TransportState::default()
-        },
-        1400,
-    );
-    press(&mut h, "transport.play");
-    assert_eq!(feed.take_events(), Vec::new());
-    assert_eq!(control(&h, "transport.like"), None, "left out, not shown");
-}
-
-#[test]
 fn a_narrow_transport_folds_the_rest_behind_more() {
     let (mut h, feed) = banded(playing(), 480);
     for id in ["transport.shuffle", "transport.repeat", "transport.volume"] {

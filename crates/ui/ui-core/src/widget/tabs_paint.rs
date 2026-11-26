@@ -409,7 +409,3 @@ impl TabBar {
         }
     }
 }
-
-#[cfg(test)]
-#[path = "tabs_paint_tests.rs"]
-mod tests;

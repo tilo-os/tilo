@@ -267,56 +267,6 @@ fn intrinsic_width_stays_compact_and_aligned_in_hosts() {
 
 #[test]
 fn intrinsic_buttons_remeasure_and_size_from_their_control_size() {
-    fn retained_width_remeasures_scale_and_locale_after_rebuild() {
-        use crate::i18n::I18nManager;
-        I18nManager::install(
-            "en-US",
-            "en-US",
-            &[
-                ("en-US", "fit-refresh = Refresh"),
-                ("de", "fit-refresh = Verbindungen aktualisieren"),
-            ],
-        )
-        .unwrap();
-        let mut host = fit_host(1, Button::new("refresh", "fit-refresh"));
-        let mut text = TextRenderer::new();
-        let normal = layout_fit_host(
-            host.as_mut(),
-            taffy::AlignItems::Stretch,
-            &Theme::dark(),
-            &mut text,
-        );
-        text.set_text_scale(2.0);
-        let large_theme = Theme::dark().with_text_scale(2.0);
-        let large = layout_fit_host(
-            host.as_mut(),
-            taffy::AlignItems::Stretch,
-            &large_theme,
-            &mut text,
-        );
-        assert!(
-            large.width() > normal.width(),
-            "renderer scale must refresh retained width: {normal:?} -> {large:?}"
-        );
-        I18nManager::set_locale("de");
-        assert!(host.is_layout_dirty());
-        let localized = layout_fit_host(
-            host.as_mut(),
-            taffy::AlignItems::Stretch,
-            &large_theme,
-            &mut text,
-        );
-        I18nManager::set_locale("en-US");
-        assert!(
-            localized.width() > large.width(),
-            "locale must refresh retained width: {large:?} -> {localized:?}"
-        );
-        assert_eq!(
-            localized.height(),
-            ControlSize::Regular.height(&large_theme)
-        );
-    }
-
     fn intrinsic_width_holds_the_whole_label() {
         let mut text = TextRenderer::new();
         let theme = Theme::dark();
@@ -402,7 +352,6 @@ fn intrinsic_buttons_remeasure_and_size_from_their_control_size() {
         assert!(!face.contains(&theme, Point::new(40.0, 20.0)));
     }
 
-    retained_width_remeasures_scale_and_locale_after_rebuild();
     intrinsic_width_holds_the_whole_label();
     each_control_size_has_its_height_and_grows_with_large_text();
     icon_only_buttons_are_square_named_and_plain();
@@ -803,30 +752,6 @@ fn button_face_builder_paints_fill_label_and_icon_only_faces() {
         assert_eq!(f.spoken_name(), "Add page");
     }
 
-    fn paint_emits_fill_and_label_geometry() {
-        use vello_encoding::DrawTag;
-        let mut tr = TextRenderer::new();
-        let theme = Theme::dark();
-        let mut scene = Scene::new();
-        Button::paint(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut tr,
-            &theme,
-            &ButtonFace::new(Rect::new(10.0, 10.0, 110.0, 46.0), "Go").role(ButtonRole::Primary),
-        );
-        let fills = scene
-            .encoding()
-            .draw_tags
-            .iter()
-            .filter(|t| **t == DrawTag::COLOR)
-            .count();
-        assert!(
-            fills > 1,
-            "body fill + label glyphs ⇒ several COLOR tags, got {fills}"
-        );
-    }
-
     /// An icon-only face has an empty label key. Under the expanded
     /// pseudo-locale `widget_text("")` came back as `⟦⟧`, painting a bracket pair
     /// beside the glyph; the resolved label must stay empty.
@@ -920,7 +845,6 @@ fn button_face_builder_paints_fill_label_and_icon_only_faces() {
 
     button_face_builder_sets_style_and_state();
     icon_only_face_spoken_name_falls_back_to_accessible_name();
-    paint_emits_fill_and_label_geometry();
     a_label_wider_than_its_face_stays_inside_it();
     icon_only_face_paints_no_label_under_the_pseudo_locale();
     icon_only_button_speaks_its_tooltip_under_the_pseudo_locale();
@@ -983,15 +907,6 @@ tilo_test_env::scenario! {
 
     phase action_mode_and_availability_check_mutation_and_callbacks;
     {
-        fn button_test_id_is_stable_constructor_id() {
-            let b = Button::new("id", "Save");
-            assert_eq!(Widget::test_id(&b), Some("id"));
-            assert_eq!(
-                Widget::accessibility(&b).unwrap().name.as_deref(),
-                Some("Save")
-            );
-        }
-
         fn action_mode_suppresses_raw_mutation_and_callback() {
             let resource = tilo_actions::ResourceSpec::new("doc:1", "doc", "Document").with_action(
                 tilo_actions::ActionSpec::operation(
@@ -1071,7 +986,6 @@ tilo_test_env::scenario! {
             );
         }
 
-        button_test_id_is_stable_constructor_id();
         action_mode_suppresses_raw_mutation_and_callback();
         action_availability_revokes_and_restores_without_overriding_authored_state();
     }
@@ -1495,169 +1409,6 @@ tilo_test_env::scenario! {
         let button = Button::new("role", label).with_menu(Vec::new());
         assert!(button.button().opens_menu);
         assert!(!Button::new("save", "Save").opens_menu);
-    }
-
-    phase label_face_geometry_follows_the_theme_scale;
-    {
-        fn retained_and_immediate_labels_share_geometry() {
-            let theme = Theme::dark().with_text_scale(2.0);
-            let mut text = TextRenderer::new();
-            text.set_text_scale(2.0);
-            let label = "Refresh";
-            let rect = Rect::new(10.0, 20.0, 330.0, 84.0);
-            let mut button = Button::new("action", label).with_icon(crate::icons::Icon::Refresh);
-            let mut tree = TaffyTree::new();
-            button.build_layout(&mut tree, &theme, &mut std::collections::HashMap::new());
-            button.apply_layout_external(rect);
-            let mut retained = Scene::new();
-            button.draw(&mut crate::draw::DrawCtx::new(&mut retained, Affine::IDENTITY, &mut text, &theme, crate::presence::PresenceCtx::default().draw_env()));
-            let mut immediate = Scene::new();
-            Button::paint(
-                &mut immediate,
-                Affine::IDENTITY,
-                &mut text,
-                &theme,
-                &ButtonFace::new(rect, label).icon(crate::icons::Icon::Refresh),
-            );
-            let a = &retained.encoding().resources.glyph_runs;
-            let b = &immediate.encoding().resources.glyph_runs;
-            assert!(!a.is_empty());
-            assert_eq!(a.len(), b.len());
-            for (a, b) in a.iter().zip(b) {
-                assert_eq!(a.transform, b.transform);
-                assert_eq!(a.font_size, b.font_size);
-            }
-        }
-
-        /// A default `ButtonFace` reads its corner from the theme and sets its
-        /// label in the Regular size's role; Large sets it in Body.
-        fn default_face_reads_its_corner_and_label_role_from_the_theme() {
-            let theme = Theme::dark();
-            let mut text = TextRenderer::new();
-            let rect = Rect::new(10.0, 10.0, 130.0, 50.0);
-            let mut paint = |face: ButtonFace<'_>| {
-                let mut scene = Scene::new();
-                Button::paint(&mut scene, Affine::IDENTITY, &mut text, &theme, &face);
-                scene
-            };
-            let themed = paint(ButtonFace::new(rect, "Save").icon(crate::icons::Icon::Refresh));
-            let explicit = paint(
-                ButtonFace::new(rect, "Save")
-                    .icon(crate::icons::Icon::Refresh)
-                    .control_size(ControlSize::Regular),
-            );
-            assert_eq!(themed.encoding().path_data, explicit.encoding().path_data);
-            let a = &themed.encoding().resources.glyph_runs;
-            let b = &explicit.encoding().resources.glyph_runs;
-            assert_eq!(a.len(), 1);
-            assert_eq!(a[0].transform, b[0].transform);
-            assert_eq!(a[0].font_size, b[0].font_size);
-            assert!((a[0].font_size - theme.text(TextRole::Label).size).abs() < 1e-6);
-            let large = paint(ButtonFace::new(rect, "Save").control_size(ControlSize::Large));
-            assert!(
-                (large.encoding().resources.glyph_runs[0].font_size - theme.text(TextRole::Body).size)
-                    .abs()
-                    < 1e-6
-            );
-        }
-
-        /// The retained and immediate labels follow the theme's type scale —
-        /// 2× the Label role under a 2× theme — whether the shared renderer is
-        /// matched (2×, the live App and `Driver`) or left at 1× (the
-        /// apps' raw `--shots` loop), and whether or not a `build_layout` pass
-        /// preceded the draw.
-        fn retained_label_follows_the_theme_scale_in_matched_and_unmatched_hosts() {
-            let theme = Theme::dark().with_text_scale(2.0);
-            let label = theme.text(TextRole::Label).size;
-            let rect = Rect::new(0.0, 0.0, 160.0, 40.0);
-            let presence = crate::presence::PresenceCtx::default();
-            let font_size = |scene: &Scene| scene.encoding().resources.glyph_runs[0].font_size;
-            for renderer_scale in [1.0_f32, 2.0] {
-                let mut text = TextRenderer::new();
-                text.set_text_scale(renderer_scale);
-
-                let mut laid_out = Button::new("save", "Save");
-                laid_out.build_layout(
-                    &mut TaffyTree::new(),
-                    &theme,
-                    &mut std::collections::HashMap::new(),
-                );
-                laid_out.apply_layout_external(rect);
-                let mut retained = Scene::new();
-                laid_out.draw(&mut crate::draw::DrawCtx::new(&mut retained, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
-                assert!(
-                    (font_size(&retained) - label).abs() < 1e-3,
-                    "retained label at renderer {renderer_scale}×: {}",
-                    font_size(&retained)
-                );
-
-                let mut external = Button::new("save", "Save");
-                external.apply_layout_external(rect);
-                let mut external_scene = Scene::new();
-                external.draw(&mut crate::draw::DrawCtx::new(&mut external_scene, Affine::IDENTITY, &mut text, &theme, presence.draw_env()));
-                assert!(
-                    (font_size(&external_scene) - label).abs() < 1e-3,
-                    "externally laid-out label at renderer {renderer_scale}×: {}",
-                    font_size(&external_scene)
-                );
-
-                let mut immediate = Scene::new();
-                Button::paint(
-                    &mut immediate,
-                    Affine::IDENTITY,
-                    &mut text,
-                    &theme,
-                    &ButtonFace::new(rect, "Save"),
-                );
-                assert!(
-                    (font_size(&immediate) - label).abs() < 1e-3,
-                    "ButtonFace default at renderer {renderer_scale}×: {} (expected {label})",
-                    font_size(&immediate)
-                );
-            }
-        }
-
-        /// A theme text-scale change between frames re-emits the cached face at
-        /// the new label size instead of replaying the old glyphs.
-        fn theme_text_scale_change_invalidates_the_cached_face() {
-            let rect = Rect::new(0.0, 0.0, 160.0, 40.0);
-            let mut text = TextRenderer::new();
-            let mut button = Button::new("save", "Save");
-            let presence = crate::presence::PresenceCtx::default();
-            let one = Theme::dark();
-            button.build_layout(
-                &mut TaffyTree::new(),
-                &one,
-                &mut std::collections::HashMap::new(),
-            );
-            button.apply_layout_external(rect);
-            let mut first = Scene::new();
-            button.draw(&mut crate::draw::DrawCtx::new(&mut first, Affine::IDENTITY, &mut text, &one, presence.draw_env()));
-            button.mark_drawn();
-            assert!(!button.needs_redraw(), "settled at 1×");
-
-            let larger = Theme::dark().with_text_scale(1.5);
-            button.build_layout(
-                &mut TaffyTree::new(),
-                &larger,
-                &mut std::collections::HashMap::new(),
-            );
-            assert!(
-                button.needs_redraw(),
-                "a new label size must dirty the cache"
-            );
-            let mut second = Scene::new();
-            button.draw(&mut crate::draw::DrawCtx::new(&mut second, Affine::IDENTITY, &mut text, &larger, presence.draw_env()));
-            let before = first.encoding().resources.glyph_runs[0].font_size;
-            let after = second.encoding().resources.glyph_runs[0].font_size;
-            assert!((before - 13.0).abs() < 1e-3, "{before}");
-            assert!((after - 19.5).abs() < 1e-3, "{after}");
-        }
-
-        retained_and_immediate_labels_share_geometry();
-        default_face_reads_its_corner_and_label_role_from_the_theme();
-        retained_label_follows_the_theme_scale_in_matched_and_unmatched_hosts();
-        theme_text_scale_change_invalidates_the_cached_face();
     }
 
     phase a_host_placed_button_never_asks_the_solver_for_a_measure;

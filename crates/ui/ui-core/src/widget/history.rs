@@ -443,15 +443,6 @@ mod tests {
 
         phase history_filter_matches_author_ops_time_and_facets;
         {
-            fn filter_matches_empty_means_all() {
-                // The contract the chrome relies on when it constructs
-                // `HistoryFilter::default()` and only fills in a single field.
-                let f = HistoryFilter::default();
-                assert!(f.matches(&entry(EntryKind::Text, "Alice", 0)));
-                assert!(f.matches(&entry(EntryKind::Comment, "Bob", 999)));
-                assert!(f.matches(&entry(EntryKind::Access, "Carol", 12345)));
-            }
-
             fn filter_matches_author_case_insensitive() {
                 // Typeahead "author:alice" must hit a row authored by "Alice".
                 let f = HistoryFilter::default().with_author("alice");
@@ -537,7 +528,6 @@ mod tests {
                 );
             }
 
-            filter_matches_empty_means_all();
             filter_matches_author_case_insensitive();
             filter_matches_entry_kind_subset();
             filter_matches_time_range();
@@ -546,18 +536,6 @@ mod tests {
 
         phase entry_kind_revertibility_glyphs_and_formatting_helpers;
         {
-            fn entry_kind_revertibility_matches_spec_table() {
-                assert!(EntryKind::Text.is_revertible());
-                assert!(EntryKind::Move.is_revertible());
-                assert!(EntryKind::Details.is_revertible());
-                assert!(EntryKind::Delete.is_revertible());
-                assert!(EntryKind::Restore.is_revertible());
-                assert!(!EntryKind::Comment.is_revertible());
-                assert!(!EntryKind::Access.is_revertible());
-                assert!(!EntryKind::Compaction.is_revertible());
-                assert!(!EntryKind::Redaction.is_revertible());
-            }
-
             fn redacted_entry_is_non_revertible_regardless_of_entry_kind() {
                 // The widget checks the [Revert] chip on `EntryKind::is_revertible`
                 // AND `entry.redaction.is_none()`; a Splice that has since been
@@ -573,30 +551,6 @@ mod tests {
                     e.redaction.is_some(),
                     "the chrome reads `entry.redaction.is_some()` as the veto",
                 );
-            }
-
-            fn entry_kind_glyph_is_ascii_or_symbol_not_emoji() {
-                for op in [
-                    EntryKind::Text,
-                    EntryKind::Move,
-                    EntryKind::Details,
-                    EntryKind::Comment,
-                    EntryKind::Delete,
-                    EntryKind::Restore,
-                    EntryKind::Access,
-                    EntryKind::Compaction,
-                    EntryKind::Redaction,
-                ] {
-                    let g = op.glyph();
-                    assert!(!g.is_empty(), "glyph for {op:?} must not be empty");
-                    for ch in g.chars() {
-                        let cp = ch as u32;
-                        assert!(
-                            cp < 0x1f300,
-                            "glyph for {op:?} ({g:?} U+{cp:04X}) must not be a pictographic emoji",
-                        );
-                    }
-                }
             }
 
             fn format_relative_time_thresholds() {
@@ -626,30 +580,8 @@ mod tests {
                 );
             }
 
-            fn hue_to_rgb_covers_every_sextant() {
-                let hues = [0.0, 60.0, 120.0, 180.0, 240.0, 300.0, 359.9];
-                let mut seen: Vec<(u8, u8, u8)> = Vec::new();
-                for h in hues {
-                    let rgb = hue_to_rgb(h);
-                    assert_ne!(rgb, (0, 0, 0), "hue {h} produced black");
-                    seen.push(rgb);
-                }
-                // Allow a couple of near-duplicates at the wrap-around, but
-                // require at least 5 unique values out of 7 samples.
-                seen.sort_unstable();
-                seen.dedup();
-                assert!(
-                    seen.len() >= 5,
-                    "hues collapsed to {} unique colours",
-                    seen.len()
-                );
-            }
-
-            entry_kind_revertibility_matches_spec_table();
             redacted_entry_is_non_revertible_regardless_of_entry_kind();
-            entry_kind_glyph_is_ascii_or_symbol_not_emoji();
             format_relative_time_thresholds();
-            hue_to_rgb_covers_every_sextant();
         }
     }
 

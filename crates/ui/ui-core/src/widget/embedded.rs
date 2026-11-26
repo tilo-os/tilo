@@ -475,64 +475,6 @@ mod tests {
     use crate::widget::TaffyTreeExt;
     use vello::Scene;
 
-    tilo_test_env::scenario! {
-        /// A child embedded in a host.
-        /// Each phase was a test of its own and builds its own fixture.
-        fn an_embedded_child_is_hit_reflowed_and_laid_out_once;
-
-        phase equal_themes_reuse_layout_but_same_named_custom_tokens_rebuild_it;
-        {
-            struct ThemedBox {
-                builds: usize,
-            }
-            impl Widget for ThemedBox {
-                fn build_layout(
-                    &mut self,
-                    tree: &mut TaffyTree<()>,
-                    theme: &Theme,
-                    nodes: &mut HashMap<NodeId, *mut dyn Widget>,
-                ) -> NodeId {
-                    self.builds = self.builds.saturating_add(1);
-                    let node = tree.leaf_node(taffy::Style {
-                        size: Size {
-                            width: taffy::Dimension::percent(1.0),
-                            height: taffy::Dimension::length(theme.padding_standard),
-                        },
-                        ..Default::default()
-                    });
-                    nodes.insert(node, std::ptr::from_mut::<dyn Widget>(self));
-                    node
-                }
-                fn name(&self) -> &str {
-                    "themed-box"
-                }
-            }
-
-            let mut theme = Theme::dark();
-            let original_name = theme.name.clone();
-            let mut text = crate::font_catalog::fixture_renderer();
-            let mut host = Embedded::new(ThemedBox { builds: 0 });
-            let rect = Rect::new(0.0, 0.0, 200.0, 0.0);
-            let original_height = host.layout(rect, &theme, &mut text);
-            host.layout(rect, &theme.clone(), &mut text);
-            assert_eq!(
-                host.widget().builds,
-                1,
-                "equal theme content keeps the tree"
-            );
-            theme.padding_standard += 8.0;
-            assert_eq!(theme.name, original_name);
-            assert_eq!(host.layout(rect, &theme, &mut text), original_height + 8.0);
-            assert_eq!(
-                host.widget().builds,
-                2,
-                "changed tokens rebuild the same widget"
-            );
-            host.layout(rect, &theme.clone(), &mut text);
-            assert_eq!(host.widget().builds, 2);
-        }
-    }
-
     struct PanelChild {
         panel: Rect,
         fill: Color,

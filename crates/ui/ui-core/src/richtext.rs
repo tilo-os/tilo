@@ -16,9 +16,6 @@ pub mod inline_emoji;
 mod paragraphs;
 #[cfg(any(test, feature = "test-support"))]
 pub mod text_layouts;
-#[cfg(test)]
-pub(crate) use paragraphs::take_prepared_paragraphs;
-
 /// Note a wrapped layout for the profiler: which text, at which width, onto how many rows.
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) fn note_text_layout(buffer: &Buffer, width: f32, bytes: usize) {

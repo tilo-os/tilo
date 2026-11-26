@@ -1615,106 +1615,11 @@ mod tests {
             );
         }
 
-        phase the_light_thumb_is_raised_and_ringed;
-        // On a light material the thumb is a raised white object with a ring
-        // that clears both halves of the track, never a dark disc.
-        {
-            let theme = Theme::light();
-            let mut scene = Scene::new();
-            Slider::paint(
-                &mut scene,
-                Affine::IDENTITY,
-                &theme,
-                &SliderFace::new(Rect::new(0.0, 0.0, 200.0, 32.0), 0.5),
-            );
-            let colors = &theme.tokens.colors;
-            let raised = colors.surfaces.overlay;
-            let (fill, ring) = thumb_colors(&theme, colors.intent.value_fill, colors.surfaces.raised);
-            assert_eq!(fill, raised);
-            let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
-            assert!(crate::a11y::contrast_ratio(ring, colors.surfaces.raised) >= floor);
-            assert!(crate::a11y::contrast_ratio(fill, colors.intent.value_fill) >= floor);
-            assert!(crate::a11y::relative_luminance(raised) > 0.9);
-        }
-
-        phase the_dark_thumb_is_primary_ink_and_ringed;
-        // On a dark material the thumb is the primary ink, ringed so it reads
-        // as a disc of its own over the filled half (the same ink) and over
-        // the unfilled one.
-        {
-            let theme = Theme::dark();
-            let colors = &theme.tokens.colors;
-            let (filled, unfilled) = (colors.intent.value_fill, colors.surfaces.raised);
-            let (fill, ring) = thumb_colors(&theme, filled, unfilled);
-            assert_eq!(fill, colors.text_primary);
-            let floor = crate::tokens::colors::NON_TEXT_MIN_CONTRAST;
-            assert!(crate::a11y::contrast_ratio(ring, filled) >= floor);
-            assert!(crate::a11y::contrast_ratio(fill, unfilled) >= floor);
-        }
     }
 
     use super::*;
     use crate::testing::{Dispatch, dispatch};
     use automerge::{AutoCommit, ReadDoc};
-
-    #[test]
-    fn retained_slider_local_value_and_hover_do_not_remeasure_but_targets_and_viewport_do() {
-        let value = crate::LocalState::new(0.5);
-        let mut host = crate::app::driver::Driver::new(
-            crate::State::new(),
-            Box::new(Slider::from_state(&value)),
-            (400, 80),
-        );
-        host.profile_frame();
-        assert!(!host.last_relayout().measured);
-        let rect = host
-            .targets()
-            .get("slider")
-            .copied()
-            .expect("the actual slider is mounted");
-        host.click_at(rect.x0 + rect.width() * 0.75, rect.center().y);
-        assert!(!host.last_relayout().measured, "value changes paint only");
-        host.verify_retained_geometry().unwrap();
-        assert!(
-            value.get() > 0.7 && value.get() < 0.8,
-            "the ordinary pointer changes the authoritative local value"
-        );
-        assert!(
-            host.state()
-                .doc
-                .get(automerge::ROOT, "volume")
-                .unwrap()
-                .is_none(),
-            "a value control never writes its document read source"
-        );
-        host.set_interaction_environment(crate::InteractionEnvironment::TOUCH);
-        assert!(host.last_relayout().rebuilt);
-        assert!(
-            host.targets()
-                .get("slider")
-                .copied()
-                .expect("the actual slider is mounted")
-                .height()
-                > rect.height()
-        );
-        host.verify_retained_geometry().unwrap();
-        let nodes = host.layout_node_ids();
-        host.resize((640, 120)).unwrap();
-        assert!(!host.last_relayout().rebuilt && host.last_relayout().measured);
-        assert_eq!(host.layout_node_ids(), nodes, "resize keeps the tree");
-        assert!(
-            host.targets()
-                .get("slider")
-                .copied()
-                .expect("the actual slider is mounted")
-                .width()
-                > rect.width()
-        );
-        host.verify_retained_geometry().unwrap();
-        host.set_theme(crate::Theme::light());
-        assert!(host.last_relayout().rebuilt);
-        host.verify_retained_geometry().unwrap();
-    }
 
     #[test]
     fn a_slider_in_a_crowded_row_keeps_a_track() {

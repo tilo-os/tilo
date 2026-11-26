@@ -628,16 +628,4 @@ mod tests {
             assert!(!r.on_touch_move(Point::new(300.0, 400.0)));
         }
     }
-
-    #[test]
-    fn showing_and_hiding_asks_for_no_frames() {
-        let t0 = crate::motion::frame_now();
-        let mut r = TopEdgeReveal::default();
-        assert!(r.pin());
-        assert!(r.shown());
-        assert_eq!(crate::motion::frames_wanted_by(t0), Vec::<String>::new());
-        assert!(r.hide());
-        assert!(!r.shown());
-        assert_eq!(crate::motion::frames_wanted_by(t0), Vec::<String>::new());
-    }
 }

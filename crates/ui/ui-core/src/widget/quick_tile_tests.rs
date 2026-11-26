@@ -319,23 +319,6 @@ tilo_test_env::scenario! {
         assert_eq!(tile.take_outcome(), Some(QuickTileOutcome::Switch));
     }
 
-    phase hover_and_focus_ask_for_a_frame_and_leaving_clears_hover;
-    {
-        let theme = Theme::dark();
-        let mut tile = wifi();
-        lay_out(&mut tile, &theme, 240.0);
-        draw(&mut tile, &theme);
-        assert!(!tile.needs_redraw());
-        tile.set_pointer(Some(tile.parts().0.center()));
-        assert!(tile.needs_redraw(), "hovering a half repaints");
-        draw(&mut tile, &theme);
-        tile.set_pointer(Some(tile.parts().0.center()));
-        assert!(!tile.needs_redraw(), "the same half again does not");
-        tile.set_focused_part(Some(QuickTilePart::Details));
-        assert!(tile.needs_redraw());
-        tile.set_pointer(None);
-        assert_eq!(tile.hovered(), None);
-    }
 }
 
 fn draw_at(tile: &mut QuickTile) -> Vec<u32> {

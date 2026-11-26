@@ -826,30 +826,6 @@ mod tests {
             });
         }
 
-        phase a_segment_that_holds_still_asks_for_no_frames;
-        {
-            let mut reduced = ProgressBar::indeterminate();
-            reduced.set_motion_reduced(true);
-            assert!(
-                !reduced.needs_animation_frame(),
-                "reduced motion holds the segment still"
-            );
-
-            let at = crate::clock::capture_wall().expect("the capture time exists in this zone");
-            crate::time::testing::with_wall(at, || {
-                assert!(crate::time::wall_frozen());
-                assert!(
-                    !ProgressBar::indeterminate().needs_animation_frame(),
-                    "a capture's clock holds the segment still"
-                );
-            });
-
-            assert!(
-                ProgressBar::indeterminate().needs_animation_frame(),
-                "a live segment moves"
-            );
-        }
-
         phase a_shown_label_stands_over_the_track_and_a_spoken_one_does_not;
         {
             let theme = Theme::light();

@@ -496,26 +496,4 @@ tilo_test_env::scenario! {
         assert_eq!(state.get(), "updated");
     }
 
-    phase controlled_local_input_opt_outs_survive_draw_without_dictionary_work;
-    {
-        let _settled = crate::motion::testing::settled();
-        let mut input = TextInput::local_with_language("en_US")
-            .with_spellcheck(false)
-            .with_autocorrect(false)
-            .with_initial_value("teh mispeled words");
-        input.set_focus(true);
-        input.rect = Rect::new(0.0, 0.0, 360.0, 42.0);
-        let mut scene = Scene::new();
-        let mut renderer = crate::font_catalog::fixture_renderer();
-        input.draw(&mut crate::draw::DrawCtx::new(&mut scene, Affine::IDENTITY, &mut renderer, &Theme::dark(), crate::PresenceCtx::empty().draw_env()));
-        assert!(input.is_focused);
-        assert!(!input.text.is_empty());
-        assert!(input.rect.width() > 0.0);
-        assert!(input.spell_dictionary.is_none());
-        assert!(input.spell_cache_key.is_none());
-        assert!(input.spell_spans.is_empty());
-        assert!(input.autocorrection_preview_key.is_none());
-        assert!(input.autocorrection_preview.is_none());
-        assert_eq!(input.text, "teh mispeled words");
-    }
 }

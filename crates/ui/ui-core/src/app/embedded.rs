@@ -234,16 +234,6 @@ impl EmbeddedApp {
         )
     }
 
-    /// `event`, in the region's own logical pixels, as the host hands it
-    /// input, and a frame for it: what a benchmark or test drives the app
-    /// with without a host's layout and focus.
-    #[cfg(any(test, feature = "test-support"))]
-    pub fn input_for_test(&mut self, event: WindowEvent) {
-        self.runs();
-        self.app.surface_input(&self.region, event, false);
-        self.wants_frame.set(true);
-    }
-
     /// The app shown, to drive it.
     /// When the app next wants to run with nothing waking it. Its widgets
     /// change their deadlines only as the app runs (a pump, a frame, an

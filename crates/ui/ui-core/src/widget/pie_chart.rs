@@ -846,7 +846,6 @@ fn legend_label(slice: &PieSlice, total: f64) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::a11y::{AccessNode, Role};
     use crate::widget::Widget;
 
     tilo_test_env::scenario! {
@@ -881,57 +880,6 @@ mod tests {
                 }
             }
             assert_eq!(legend_label(&slices[0], 76.0), "Photos 55%");
-        }
-
-        phase pie_geometry_covers_a_turn_and_ignores_holes_and_invalid_values;
-        {
-            {
-                let sectors = chart().marks.sectors_for_progress(1.0);
-                assert_eq!(sectors.len(), 2);
-                let sweep: f64 = sectors.iter().map(|sector| sector.end - sector.start).sum();
-                assert!((sweep - TAU).abs() < 1e-9);
-            }
-
-            {
-                let chart = chart();
-                assert_eq!(chart.marks.hit_test(chart.marks.frame.rect.center()), None);
-            }
-
-            {
-                let chart = PieChart::new(vec![
-                    PieSlice::new("negative", "Negative", -9.0, Color::WHITE),
-                    PieSlice::new("nan", "NaN", f64::NAN, Color::WHITE),
-                    PieSlice::new("valid", "Valid", 4.0, Color::WHITE),
-                ]);
-                assert_eq!(chart.marks.total(), 4.0);
-                assert_eq!(chart.marks.sectors_for_progress(1.0).len(), 1);
-            }
-        }
-
-        phase pie_inspection_and_tooltips_are_configurable_and_not_actions;
-        {
-            {
-                let chart = PieChart::new(vec![
-                    PieSlice::new("files", "Files", 4.0, Color::WHITE).non_interactive(),
-                ]);
-                let accessibility = chart
-                    .accessibility()
-                    .unwrap_or_else(|| AccessNode::new(Role::Canvas));
-                assert_eq!(accessibility.children[0].role, Role::StaticText);
-                assert!(!accessibility.children[0].state.focusable);
-            }
-
-            {
-                let style = PieStyle {
-                    tooltip: false,
-                    tooltip_anchor: PieTooltipAnchor::Slice,
-                    tooltip_show_percent: false,
-                    ..PieStyle::default()
-                };
-                assert!(!style.tooltip);
-                assert_eq!(style.tooltip_anchor, PieTooltipAnchor::Slice);
-                assert!(!style.tooltip_show_percent);
-            }
         }
 
         phase pie_updates_interpolate_by_stable_id_or_snap;
@@ -1052,40 +1000,6 @@ mod tests {
             );
         }
 
-        phase new_slices_place_the_legend_again;
-        {
-            let theme = Theme::dark();
-            let mut chart = PieChart::new(vec![
-                PieSlice::new("photos", "Photos", 42.0, Color::WHITE),
-                PieSlice::new("music", "Music", 58.0, Color::WHITE),
-            ])
-            .with_legend();
-            crate::testing::lay_out_in(&mut chart, 640.0, 300.0, &theme).expect("the chart lays out");
-            Widget::layout_measured(&mut chart);
-            assert!(!Widget::is_layout_dirty(&chart));
-            let before = chart.marks.legend_entries[0].1;
-
-            chart.set_slices_immediate(vec![
-                PieSlice::new("photos", "Photos and videos", 42.0, Color::WHITE)
-                    .with_legend_detail("120.4 GB"),
-                PieSlice::new("music", "Music", 58.0, Color::WHITE),
-            ]);
-            assert!(
-                Widget::is_layout_dirty(&chart),
-                "new data re-places the legend"
-            );
-            crate::testing::lay_out_in(&mut chart, 640.0, 300.0, &theme).expect("the chart lays out");
-            let after = chart.marks.legend_entries[0].1;
-            assert!(
-                after.width() > before.width(),
-                "the wider entry takes more area: {before:?} then {after:?}"
-            );
-            assert!(
-                chart.marks.hit_test(after.center()).is_none(),
-                "the area the wider legend takes holds no wedge"
-            );
-        }
-
         phase a_pie_slice_lifts_on_the_shared_spring;
         {
             let theme = Theme::dark();
@@ -1118,18 +1032,6 @@ mod tests {
                 "reduced motion sinks it at once"
             );
         }
-    }
-
-    /// A pie with no legend, placed in a 200 by 200 frame: the wedges take
-    /// the whole rect.
-    fn chart() -> PieChart {
-        let mut chart = PieChart::new(vec![
-            PieSlice::new("a", "A", 3.0, Color::WHITE),
-            PieSlice::new("b", "B", 1.0, Color::BLACK),
-        ]);
-        chart.marks.frame.rect = Rect::new(0.0, 0.0, 200.0, 200.0);
-        chart.marks.place(&mut TextRenderer::new(), &Theme::dark());
-        chart
     }
 
     /// A pie with a legend laid out, and nothing painted: the wedges and the

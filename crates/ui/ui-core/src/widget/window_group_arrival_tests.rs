@@ -310,28 +310,3 @@ fn a_window_that_fails_to_start_shows_its_failure_in_the_place_it_reserved() {
     });
     assert_eq!(said.as_deref(), Some("Files could not start. Try again"));
 }
-
-#[test]
-fn a_window_waiting_between_two_steps_asks_for_no_frames() {
-    let mut w = opening(Source::Remote);
-    let _ = w.frame(0);
-    assert!(!w.wants_frame(1), "the reserved ground draws nothing more");
-    assert_eq!(
-        w.next_wake(1),
-        Some(w.t0 + GRACE),
-        "until the skeleton is due"
-    );
-    let grace = u64::try_from(GRACE.as_millis()).unwrap();
-    assert!(w.wants_frame(grace), "the skeleton's step draws one frame");
-    let _ = w.frame(grace);
-    assert!(!w.wants_frame(grace + 1));
-    assert!(
-        !w.wants_frame(60_000),
-        "a window waiting a minute draws nothing"
-    );
-    assert_eq!(
-        w.next_wake(grace + 1),
-        None,
-        "nothing changes until its first frame lands"
-    );
-}

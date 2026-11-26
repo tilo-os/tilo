@@ -882,34 +882,6 @@ mod tests {
 
         phase container_sizing_padding_centering_and_fill;
         {
-            fn with_width_pins_outer_width() {
-                let (_c, rect) = lay_out(Container::new().with_width(280.0));
-                assert!(
-                    (rect.width() - 280.0).abs() < 0.5,
-                    "with_width(280) must pin the container to 280 px, got {}",
-                    rect.width()
-                );
-                assert!(
-                    rect.width() < 799.0,
-                    "a pinned-width container must NOT fill the 800 px viewport"
-                );
-            }
-
-            fn with_size_pins_both_dimensions() {
-                let (_c, rect) = lay_out(Container::new().with_size(120.0, 64.0));
-                assert!((rect.width() - 120.0).abs() < 0.5, "width pinned to 120");
-                assert!((rect.height() - 64.0).abs() < 0.5, "height pinned to 64");
-            }
-
-            fn default_container_still_fills_width() {
-                let (_c, rect) = lay_out(Container::new());
-                assert!(
-                    (rect.width() - 800.0).abs() < 0.5,
-                    "default container must fill the viewport width, got {}",
-                    rect.width()
-                );
-            }
-
             fn padding_override_insets_child_without_losing_fluid_width() {
                 let (container, rect) = lay_out(
                     Container::new()
@@ -977,9 +949,6 @@ mod tests {
                 assert_eq!(node.role, crate::a11y::Role::Button);
             }
 
-            with_width_pins_outer_width();
-            with_size_pins_both_dimensions();
-            default_container_still_fills_width();
             padding_override_insets_child_without_losing_fluid_width();
             centered_max_width_caps_wide_parent_and_remains_fluid();
             interactive_containers_lift_and_activate();

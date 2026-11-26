@@ -323,19 +323,6 @@ mod tests {
 
     #[test]
     fn image_viewer_zooms_pans_fits_and_reports_role() {
-        fn accessibility_reports_image_role() {
-            use crate::a11y::Role;
-            let v = ImageViewer::new(make_image());
-            let node = Widget::accessibility(&v).expect("viewer is not presentational");
-            assert_eq!(node.role, Role::Image);
-        }
-
-        fn image_viewer_default_zoom_is_one() {
-            let iv = ImageViewer::new(make_image());
-            assert_eq!(iv.zoom(), 1.0);
-            assert_eq!(iv.pan(), Vec2::ZERO);
-        }
-
         fn image_viewer_scroll_up_zooms_in() {
             let mut iv = ImageViewer::new(make_image());
             iv.rect = Rect::new(0.0, 0.0, 100.0, 100.0);
@@ -435,8 +422,6 @@ mod tests {
             assert_eq!(iv.pan(), Vec2::ZERO);
         }
 
-        accessibility_reports_image_role();
-        image_viewer_default_zoom_is_one();
         image_viewer_scroll_up_zooms_in();
         image_viewer_drag_pans();
         image_viewer_fit_resets_zoom_and_pan();

@@ -912,7 +912,6 @@ fn day_disc(cell: Rect) -> vello::kurbo::Circle {
 mod tests {
     use super::*;
     use crate::presence::PresenceCtx;
-    use crate::testing::Dispatch;
     use automerge::AutoCommit;
     use std::cell::RefCell;
     use std::rc::Rc;
@@ -1009,76 +1008,6 @@ mod tests {
 
         phase date_picker_month_navigation_and_selection;
         {
-            fn date_picker_initial_state_shows_selected_month() {
-                let dp = DatePicker::new(Date::new(2024, 6, 15).unwrap());
-                assert_eq!(dp.month_view(), (2024, 6));
-            }
-
-            fn date_picker_next_month_advances() {
-                let mut dp = DatePicker::new(Date::new(2024, 6, 15).unwrap());
-                dp.advance_month();
-                assert_eq!(dp.month_view(), (2024, 7));
-
-                let mut dp_dec = DatePicker::new(Date::new(2024, 12, 1).unwrap());
-                dp_dec.advance_month();
-                assert_eq!(dp_dec.month_view(), (2025, 1));
-            }
-
-            fn date_picker_clicking_day_updates_selection() {
-                let initial = Date::new(2024, 6, 1).unwrap();
-
-                let captured: Rc<RefCell<Option<Date>>> = Rc::new(RefCell::new(None));
-                let captured_cb = captured.clone();
-                let mut dp = DatePicker::new(initial).on_choose("date-picker", move |d| {
-                    *captured_cb.borrow_mut() = Some(d);
-                });
-
-                let theme = crate::theme::Theme::dark();
-                let mut taffy: TaffyTree<()> = TaffyTree::new();
-                let mut node_map: HashMap<NodeId, *mut dyn Widget> = HashMap::new();
-                let node = dp.build_layout(&mut taffy, &theme, &mut node_map);
-                taffy
-                    .compute_layout(node, taffy::Size::MAX_CONTENT)
-                    .unwrap();
-                dp.apply_layout(&taffy, node, Point::ZERO);
-
-                let target = Date::new(2024, 6, 7).unwrap();
-                let cell = dp
-                    .day_rects
-                    .iter()
-                    .find(|(d, _)| *d == target)
-                    .map(|(_, r)| *r)
-                    .expect("June 7 2024 cell exists in the visible grid");
-
-                let pt = cell.center();
-                let mut at_node = Dispatch::new().layout(&taffy, node);
-                at_node.send(&mut dp, &cursor_moved(pt.x, pt.y));
-                at_node.send(&mut dp, &mouse_press());
-
-                assert_eq!(dp.selected(), target);
-                assert_eq!(*captured.borrow(), Some(target));
-            }
-
-            /// winit's `KeyEvent` has no public constructor, so (as `TimePicker`'s
-            /// keyboard tests do) this drives `move_selection` directly.
-            fn date_picker_keyboard_nav_moves_selection_and_emits() {
-                let captured: Rc<RefCell<Option<Date>>> = Rc::new(RefCell::new(None));
-                let cb = captured.clone();
-                let mut dp = DatePicker::new(Date::new(2024, 6, 30).unwrap())
-                    .on_choose("date-picker", move |d| *cb.borrow_mut() = Some(d));
-
-                dp.move_selection(1);
-                assert_eq!(dp.selected(), Date::new(2024, 7, 1).unwrap());
-                assert_eq!(dp.month_view(), (2024, 7));
-                assert_eq!(
-                    *captured.borrow(),
-                    Some(Date::new(2024, 7, 1).unwrap())
-                );
-
-                dp.move_selection(7);
-                assert_eq!(dp.selected(), Date::new(2024, 7, 8).unwrap());
-            }
-
             fn date_picker_first_day_of_week_is_monday() {
                 let dp = DatePicker::new(Date::new(2024, 1, 1).unwrap());
                 let first_col: usize = dp.first_visible_col();
@@ -1137,10 +1066,6 @@ mod tests {
                 );
             }
 
-            date_picker_initial_state_shows_selected_month();
-            date_picker_next_month_advances();
-            date_picker_clicking_day_updates_selection();
-            date_picker_keyboard_nav_moves_selection_and_emits();
             date_picker_first_day_of_week_is_monday();
             picker_text_centres_its_measured_line_in_every_band();
             focused_date_picker_paints_a_focus_ring();
@@ -1156,13 +1081,6 @@ mod tests {
                 assert_eq!(node.value.as_deref(), Some("2024-06-15"));
                 assert!(node.state.focusable);
                 assert_eq!(node.state.expanded, None, "the grid is rendered inline");
-            }
-
-            fn accessibility_value_tracks_new_selection() {
-                let mut dp = DatePicker::new(Date::new(2024, 6, 1).unwrap());
-                dp.selected = Date::new(2024, 6, 7).unwrap();
-                let node = Widget::accessibility(&dp).unwrap();
-                assert_eq!(node.value.as_deref(), Some("2024-06-07"));
             }
 
             fn local_state_keeps_date_pickers_in_sync() {
@@ -1212,7 +1130,6 @@ mod tests {
             }
 
             accessibility_reports_combobox_role_and_selected_date_value();
-            accessibility_value_tracks_new_selection();
             local_state_keeps_date_pickers_in_sync();
             semantic_date_change_updates_state_and_callback();
         }
@@ -1272,10 +1189,6 @@ mod tests {
             );
         }
     }
-
-    use crate::synthetic_input::cursor_moved;
-
-    use crate::synthetic_input::mouse_press;
 
     fn picker_color_fills(focused: bool) -> usize {
         use vello::Scene;

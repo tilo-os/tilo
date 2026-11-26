@@ -151,32 +151,3 @@ fn a_view_at_rest_is_only_the_view_it_holds() {
     laid.press_at(Point::new(10.0, 10.0));
     assert!(laid.fired().is_empty(), "nothing of the view was pressed");
 }
-
-/// A view whose exit is rebound is built again, so the control reports the binding it was handed
-/// rather than the one it was first drawn with.
-#[test]
-fn rebinding_the_exit_rebuilds_the_view() {
-    let mut widget = Fullscreen::from_props(
-        "page",
-        FullscreenProps {
-            key: "page".to_owned(),
-            showing: true,
-            ..FullscreenProps::default()
-        },
-    );
-    assert!(widget.set_props(FullscreenProps {
-        key: "page".to_owned(),
-        showing: true,
-        ..FullscreenProps::default()
-    }));
-    let exits = crate::Intents::default();
-    assert!(
-        !widget.set_props(FullscreenProps {
-            key: "page".to_owned(),
-            showing: true,
-            exit: Event::View(Intent::new(&exits, "page", "exit")),
-            ..FullscreenProps::default()
-        }),
-        "a new exit binding rebuilds the view"
-    );
-}

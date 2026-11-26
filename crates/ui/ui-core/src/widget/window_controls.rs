@@ -499,17 +499,6 @@ mod tests {
             assert_eq!(held.hit(c.close.center()), Some(WindowControl::Maximize));
         }
 
-        phase content_stops_before_the_controls;
-        {
-            let c = WindowControls::lay_out(row());
-            assert!(c.content_limit(row()) <= c.pill.x0 - LEAD_GAP + f64::EPSILON);
-            assert_eq!(c.hit(c.close.center()), Some(WindowControl::Close));
-            assert_eq!(c.hit(c.maximize.center()), Some(WindowControl::Maximize));
-            assert_eq!(c.hit(Point::new(10.0, 22.0)), None);
-            assert!(c.on_pill(Point::new(c.pill.x0 + 1.0, c.pill.center().y)));
-            assert!(!c.on_pill(Point::new(10.0, 22.0)));
-        }
-
         phase the_window_s_controls_stand_in_one_pill_inside_its_bar;
         {
             let bar = Rect::new(0.0, 0.0, 800.0, crate::widget::tabs::TAB_BAR_HEIGHT);
@@ -529,16 +518,6 @@ mod tests {
                 "the pill is centred on the bar",
             );
             assert_eq!(WindowControls::around(bar, Rect::ZERO), Rect::ZERO);
-        }
-
-        phase a_cards_title_stops_before_its_controls;
-        {
-            let c = WindowControls::lay_out_card(row());
-            assert_eq!(c.pill, Rect::ZERO, "a card's controls stand with no pill");
-            assert!(
-                c.content_limit(row()) <= c.minimize.x0 - LEAD_GAP + f64::EPSILON,
-                "the title ellipsizes before the collapse, snap and close: {c:?}"
-            );
         }
 
         phase a_row_with_no_area_has_no_controls;

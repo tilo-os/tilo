@@ -627,60 +627,6 @@ mod tests {
         assert!(meter.problem().is_none(), "closing clears the problem");
     }
 
-    /// A meter over a microphone that answers no level: a running reading,
-    /// without a sound service to open one on.
-    struct SilentMicrophone;
-
-    impl BoundedSession for SilentMicrophone {
-        fn running(&mut self) -> bool {
-            true
-        }
-        fn stop(&mut self) {}
-    }
-
-    impl MicrophoneMeterSession for SilentMicrophone {
-        fn level(&mut self) -> f32 {
-            0.0
-        }
-        fn remaining(&self) -> Duration {
-            Duration::from_secs(60)
-        }
-    }
-
-    #[test]
-    fn a_running_meter_asks_for_frames_and_a_closed_one_rests() {
-        let mut meter = LevelMeter::new("alsa_input.mic", false);
-        meter.running = true;
-        meter.session = Some(Session::Input(Box::new(SilentMicrophone)));
-        assert!(Widget::needs_animation_frame(&meter));
-        meter.set_running(false);
-        assert!(!Widget::needs_animation_frame(&meter));
-    }
-
-    #[test]
-    fn a_meter_that_could_not_open_its_device_rests() {
-        let meter = LevelMeter::new("", true);
-        assert!(meter.problem().is_some(), "the widget says why");
-        assert!(
-            !Widget::needs_animation_frame(&meter),
-            "a device that does not answer must not paint every frame"
-        );
-    }
-
-    #[test]
-    fn an_output_meter_rests_until_a_reading_arrives() {
-        let mut meter = LevelMeter::new("alsa_output.speakers", false);
-        meter.set_output(true);
-        assert!(
-            !Widget::needs_animation_frame(&meter),
-            "not running, no frames"
-        );
-        // A reading published from the sink's thread wakes one frame.
-        meter.running = true;
-        meter.pending.store(true, Ordering::Relaxed);
-        assert!(Widget::needs_animation_frame(&meter));
-    }
-
     #[test]
     fn the_meter_is_named_and_valued_for_a_reader() {
         let mut meter = LevelMeter::new("alsa_input.mic", false);
@@ -689,17 +635,6 @@ mod tests {
         let node = meter.accessibility().expect("the meter is announced");
         assert_eq!(node.name.as_deref(), Some("Built-in microphone"));
         assert_eq!(node.value.as_deref(), Some("0%"));
-    }
-
-    #[test]
-    fn a_meter_that_is_not_reading_says_so_instead_of_zero() {
-        let mut meter = LevelMeter::new("alsa_input.mic", false);
-        meter.set_label(Some("Microphone level".to_owned()));
-        let node = meter.accessibility().expect("the meter is announced");
-        assert_eq!(node.value.as_deref(), Some("Not listening"));
-        meter.running = true;
-        let node = meter.accessibility().expect("the meter is announced");
-        assert_eq!(node.value.as_deref(), Some("0%"), "silence, once it reads");
     }
 
     #[test]

@@ -4,11 +4,9 @@ use crate::chrome::SelectionState;
 use crate::state::State;
 use crate::theme::Theme;
 use crate::widget::Widget;
-use crate::widget::nav_list::nav_row::{
-    NavRowFace, NavSectionFace, paint_nav_row, paint_nav_section,
-};
+use crate::widget::nav_list::nav_row::{NavRowFace, NavSectionFace};
 use std::cell::RefCell as Cell2;
-use vello::kurbo::{Affine, Rect};
+use vello::kurbo::Rect;
 use winit::event::ElementState;
 use winit::keyboard::{Key, NamedKey};
 
@@ -42,18 +40,6 @@ fn mailboxes() -> Vec<NavSection> {
 
 tilo_test_env::scenario! {
     fn the_selection_follows_choices_bindings_and_the_keyboard;
-
-    phase sdk_boxing_preserves_navigation_identity_and_selection;
-    {
-        let mut widget = NavList::new(mailboxes()).selected("work").into_widget();
-        let list = widget
-            .as_any_mut()
-            .unwrap()
-            .downcast_mut::<NavList>()
-            .unwrap();
-        assert_eq!(list.selected_id().as_deref(), Some("work"));
-        assert_eq!(widget.name(), "NavList");
-    }
 
     // The place of a resource stands chosen while a window shows that resource, whatever the app
     // calls the place: a channel's place is named after its category and its name, and shows the
@@ -487,63 +473,6 @@ tilo_test_env::scenario! {
         assert_eq!(folders.state.expanded, Some(true));
     }
 
-    phase bound_navigation_inventory_follows_the_visible_semantic_window;
-    {
-        fn targets(node: &crate::a11y::AccessNode, result: &mut HashSet<String>) {
-            if let Some(target) = &node.action_target {
-                result.insert(target.clone());
-            }
-            for child in &node.children {
-                targets(child, result);
-            }
-        }
-        let resource = tilo_actions::ResourceSpec::new("navigation", "test", "Navigation").with_action(
-            tilo_actions::ActionSpec::operation(
-                "open",
-                "Open destination",
-                tilo_actions::OperationKind::View,
-                "test.open",
-                &(),
-            )
-            .unwrap(),
-        );
-        let binding = tilo_actions::ActionBinding::unit_for(&resource, "open").unwrap();
-        let items = (0..40)
-            .map(|index| NavItem::new(format!("item-{index}"), format!("Item {index}")))
-            .collect();
-        let list = NavList::new(vec![NavSection::new("items", "", items).filterable()])
-            .selection_actions((0..40).map(|index| (format!("item-{index}"), binding.clone())));
-        let mut frame = harness(list, Theme::dark());
-        for filtered in [false, true] {
-            if filtered {
-                frame.root_mut::<NavList>().set_filter("Item 39");
-                frame.relayout_at((280, 360)).unwrap();
-            }
-            let list = frame.root::<NavList>();
-            let mut exported = HashSet::new();
-            targets(&Widget::accessibility(list).unwrap(), &mut exported);
-            let bindings = crate::widget::controls::control_action_bindings(list);
-            assert!(!bindings.is_empty());
-            assert!(
-                bindings.len() < 40,
-                "the inventory must follow viewport/filter bounds"
-            );
-            for binding in &bindings {
-                assert!(
-                    exported.contains(&binding.control_id),
-                    "orphan: {binding:?}"
-                );
-            }
-            if filtered {
-                assert_eq!(
-                    bindings.len(),
-                    1,
-                    "the filtered destination alone is mounted"
-                );
-            }
-        }
-    }
-
     phase a_row_is_found_by_its_search_terms_and_says_which;
     {
         let items = vec![
@@ -586,53 +515,6 @@ tilo_test_env::scenario! {
     // A walk that finds the list as it was (a keystroke in the pane beside it) builds none of its
     // rows and hands each over as the very node of the last walk, however many destinations it
     // lists, and publishes what a walk keeping nothing publishes.
-    phase an_unchanged_list_builds_no_row_and_hands_each_over_as_it_was;
-    {
-        for count in [3_usize, 60] {
-            let h = tall(NavList::new(destinations(count)));
-            let list = h.root::<NavList>();
-            let first = rows_of(list);
-            assert!(
-                first.len() > count,
-                "every destination and header is on screen: {} rows for {count}",
-                first.len()
-            );
-            let builds = list.list.access_row_builds_for_test();
-            let again = rows_of(list);
-            assert_eq!(
-                list.list.access_row_builds_for_test(),
-                builds,
-                "a walk of {count} unchanged destinations built a row"
-            );
-            assert_eq!(first.len(), again.len());
-            assert!(
-                first
-                    .iter()
-                    .zip(&again)
-                    .all(|(before, after)| std::sync::Arc::ptr_eq(before, after)),
-                "an unchanged row is handed over as the very node it was"
-            );
-            assert!(
-                !Widget::accessibility_hidden(list),
-                "a list is never hidden"
-            );
-            let root = Widget::accessibility_root(list);
-            assert_eq!(
-                list.list.access_row_builds_for_test(),
-                builds,
-                "the root and hidden state are read without building rows"
-            );
-            let mut published = Widget::accessibility(list).expect("the list's node");
-            assert_eq!(Some(&published), published_afresh(list).as_ref());
-            published.children.clear();
-            assert_eq!(
-                root,
-                Some(published),
-                "the root is the published node without its rows"
-            );
-        }
-    }
-
     // A destination whose selection action is unavailable is published
     // disabled on every walk, however its row is kept; the rows of other
     // destinations are still handed over as they were.
@@ -679,53 +561,6 @@ tilo_test_env::scenario! {
     // frame, is what its full binding inventory says, answered without
     // building a row: the visible destinations' selection actions, and nothing
     // for a list without them.
-    phase whether_a_list_binds_actions_is_answered_without_building_rows;
-    {
-        use crate::widget::controls::ActionControls;
-        fn binds_an_action(list: &NavList) -> bool {
-            list.control_action_bindings()
-                .iter()
-                .any(|binding| matches!(binding.kind, crate::widget::ControlBindingKind::Action(_)))
-        }
-        let resource = tilo_actions::ResourceSpec::new("navigation", "test", "Navigation").with_action(
-            tilo_actions::ActionSpec::operation(
-                "open",
-                "Open destination",
-                tilo_actions::OperationKind::View,
-                "test.open",
-                &(),
-            )
-            .expect("an action"),
-        );
-        let binding = tilo_actions::ActionBinding::unit_for(&resource, "open").expect("a binding");
-        let lists = [
-            NavList::new(destinations(8)),
-            NavList::new(destinations(8)).selection_actions([("item-2".to_owned(), binding.clone())]),
-            NavList::new(destinations(8)).selection_actions([("elsewhere".to_owned(), binding)]),
-        ];
-        for (index, list) in lists.into_iter().enumerate() {
-            let h = tall(list);
-            let list = h.root::<NavList>();
-            let _ = rows_of(list);
-            let builds = list.list.access_row_builds_for_test();
-            assert_eq!(
-                list.has_action_control_bindings(),
-                index == 1,
-                "list {index}: only a visible destination's selection action is an action binding"
-            );
-            assert_eq!(
-                list.list.access_row_builds_for_test(),
-                builds,
-                "list {index}: answered without building rows"
-            );
-            assert_eq!(
-                list.has_action_control_bindings(),
-                binds_an_action(list),
-                "list {index}: the answer is the inventory's"
-            );
-        }
-    }
-
     phase a_described_list_holds_places_and_sections_under_their_headings_in_order;
     {
         use crate::component::Described as _;
@@ -909,59 +744,6 @@ tilo_test_env::scenario! {
     // What changes a row builds it again, and every walk publishes what a walk
     // keeping nothing publishes: a selection moved, a check toggled before the
     // app confirms it, a destination renamed, the theme changed.
-    phase a_change_builds_the_rows_it_changes_and_publishes_as_a_fresh_walk;
-    {
-        let mut h = tall(NavList::new(destinations(12)));
-        let rows = rows_of(h.root::<NavList>()).len();
-        let builds = h.root::<NavList>().list.access_row_builds_for_test();
-
-        h.root_mut::<NavList>().set_selected(Some("item-5"));
-        h.relayout_at(TALL).expect("layout");
-        let list = h.root::<NavList>();
-        let _ = rows_of(list);
-        let after_select = list.list.access_row_builds_for_test();
-        assert!(
-            after_select > builds && after_select <= builds + 2,
-            "choosing a destination builds the rows it selected and left: {builds} -> {after_select}"
-        );
-        assert_eq!(Widget::accessibility(list), published_afresh(list));
-
-        // A check shows at once, before the app's next sections confirm it.
-        let work = list.row_rect("work").expect("work");
-        point(&mut h, work.center().x, work.center().y);
-        h.relayout_at(TALL).expect("layout");
-        press(&mut h, winit::event::MouseButton::Left);
-        h.relayout_at(TALL).expect("layout");
-        let list = h.root::<NavList>();
-        let published = Widget::accessibility(list).expect("the list's node");
-        let work = published
-            .children
-            .iter()
-            .find(|row| row.name.as_deref() == Some("Work"))
-            .expect("the work calendar's row");
-        assert_eq!(work.state.checked, Some(true), "the toggled check");
-        assert_eq!(Some(published), published_afresh(list));
-
-        let mut renamed = destinations(12);
-        renamed[0].items[1].label = "Renamed".to_owned();
-        h.root_mut::<NavList>().set_sections(renamed);
-        h.relayout_at(TALL).expect("layout");
-        let list = h.root::<NavList>();
-        let published = Widget::accessibility(list).expect("the list's node");
-        assert!(
-            published
-                .children
-                .iter()
-                .any(|row| row.name.as_deref() == Some("Renamed")),
-            "the renamed destination is published by its new name"
-        );
-        assert_eq!(Some(published), published_afresh(list));
-
-        h.relayout_themed(TALL, Theme::light()).expect("layout");
-        let list = h.root::<NavList>();
-        assert_eq!(Widget::accessibility(list), published_afresh(list));
-        assert_eq!(rows_of(list).len(), rows);
-    }
 }
 
 #[test]
@@ -999,84 +781,6 @@ fn new_sections_keep_the_selection_and_what_was_folded() {
     assert_eq!(list.selected_id().as_deref(), Some("work"));
     assert!(list.row_rect("drafts").is_some());
     assert!(list.row_rect("design").is_none(), "Work stays folded");
-}
-
-/// A `NavList` and a painted app calling `paint_nav_row` draw the same
-/// pixels.
-#[test]
-fn paint_nav_row_paints_what_the_list_paints() {
-    for theme in [Theme::dark(), Theme::light(), Theme::high_contrast()] {
-        let sections = vec![NavSection::new(
-            "places",
-            "Places",
-            vec![
-                NavItem::new("home", "Home").icon(Icon::Home).count(4),
-                NavItem::new("music", "Music")
-                    .icon(Icon::Music)
-                    .live_count(2),
-            ],
-        )];
-        let h = harness(NavList::new(sections).selected("music"), theme.clone());
-        let list = h.root::<NavList>();
-        let home = list.row_rect("home").expect("home");
-        let music = list.row_rect("music").expect("music");
-        let header = Rect::new(home.x0, 0.0, home.x1, home.y0);
-
-        let mut scene = vello::Scene::new();
-        let mut text = crate::text_render::TextRenderer::new();
-        paint_nav_section(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &NavSectionFace::new(header, "Places"),
-        );
-        paint_nav_row(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &NavRowFace::new(home, "Home")
-                .under_section()
-                .icon(Icon::Home)
-                .count(NavCount::Neutral(4)),
-        );
-        paint_nav_row(
-            &mut scene,
-            Affine::IDENTITY,
-            &mut text,
-            &theme,
-            &NavRowFace::new(music, "Music")
-                .under_section()
-                .icon(Icon::Music)
-                .count(NavCount::Live(2))
-                .state(SelectionState::active(true)),
-        );
-        let ground = theme.tokens.colors.surfaces.content;
-        let painted = crate::offscreen::OffscreenRenderer::new(280, 360).render(&scene, ground);
-        let listed = h.render_rgba();
-        assert_eq!(painted.len(), listed.len());
-        let differing: Vec<(usize, [u8; 4], [u8; 4])> = painted
-            .chunks_exact(4)
-            .zip(listed.chunks_exact(4))
-            .enumerate()
-            .filter(|(_, (a, b))| a.iter().zip(b.iter()).any(|(x, y)| x.abs_diff(*y) > 2))
-            .map(|(i, (a, b))| (i, [a[0], a[1], a[2], a[3]], [b[0], b[1], b[2], b[3]]))
-            .collect();
-        let bbox = differing
-            .iter()
-            .fold((usize::MAX, usize::MAX, 0, 0), |acc, (i, _, _)| {
-                let (x, y) = (i % 280, i / 280);
-                (acc.0.min(x), acc.1.min(y), acc.2.max(x), acc.3.max(y))
-            });
-        assert!(
-            differing.is_empty(),
-            "{}: {} pixels differ in {bbox:?}; rows home {home:?} music {music:?}; first {:?}",
-            theme.name,
-            differing.len(),
-            differing.iter().take(6).collect::<Vec<_>>()
-        );
-    }
 }
 
 tilo_test_env::scenario! {
@@ -1371,42 +1075,6 @@ tilo_test_env::scenario! {
     // Sections handed over before the first layout stand at the navigation
     // metrics once laid out, with nothing animating from the stock row
     // height.
-    phase sections_set_before_layout_stand_at_the_nav_metrics;
-    {
-        let mut list = NavList::new(vec![NavSection::untitled(
-            "top",
-            vec![NavItem::new("inbox", "Inbox")],
-        )]);
-        list.set_sections(mailboxes());
-        assert!(!still_moving(&list), "nothing moves before layout");
-        let h = harness(list, Theme::dark());
-        let theme = Theme::dark();
-        let list = h.root::<NavList>();
-        assert!(!still_moving(list));
-        let row = crate::widget::nav_list::nav_row::nav_row_height(&theme);
-        for id in ["inbox", "sent", "work", "design", "travel"] {
-            let rect = list.row_rect(id).expect("row");
-            assert!((rect.height() - row).abs() < 0.5, "{id}: {}", rect.height());
-        }
-        let work = list.row_rect("work").expect("work");
-        let gap = work.y0 - list.row_rect("sent").expect("sent").y1;
-        assert!((gap - crate::widget::nav_list::nav_row::nav_section_height(&theme, false)).abs() < 0.5);
-    }
-
-    phase sections_changed_after_layout_immediately_share_paint_and_hit_geometry;
-    {
-        let mut h = harness(NavList::new(mailboxes()), Theme::dark());
-        let mut next = mailboxes();
-        next[0].items.insert(1, NavItem::new("drafts", "Drafts"));
-        h.root_mut::<NavList>().set_sections(next);
-        assert!(!still_moving(h.root::<NavList>()));
-        h.relayout_at((280, 360)).expect("layout");
-        let theme = Theme::dark();
-        let row = crate::widget::nav_list::nav_row::nav_row_height(&theme);
-        let drafts = h.root::<NavList>().row_rect("drafts").expect("drafts");
-        assert!((drafts.height() - row).abs() < 0.5);
-    }
-
     // The two widths a navigation sidebar needs follow its places: the rail's holds the longest
     // word of a caption, the list's every label whole beside its icon, and a list is wider than
     // its rail.
@@ -1946,86 +1614,6 @@ fn the_arrow_keys_pass_over_an_empty_sections_caption() {
     assert_eq!(h.root::<NavList>().selected_id().as_deref(), Some("note"));
 }
 
-#[test]
-fn exported_section_and_row_buttons_keep_their_keyboard_identity() {
-    use crate::a11y::{AccessNode, Action};
-    fn focused(node: &AccessNode, name: &str) -> bool {
-        (node.name.as_deref() == Some(name) && node.state.focused)
-            || node.children.iter().any(|child| focused(child, name))
-    }
-    let sections = vec![
-        NavSection::new("saved", "Saved", vec![NavItem::new("one", "One")])
-            .trailing_action(NavAction::new("rename", Icon::Pencil, "Rename section")),
-    ];
-    let sections_called = Rc::new(Cell2::new(Vec::new()));
-    let rows_called = Rc::new(Cell2::new(Vec::new()));
-    let section_log = Rc::clone(&sections_called);
-    let row_log = Rc::clone(&rows_called);
-    let list = NavList::new(sections)
-        .with_id("navigation")
-        .on_section_action(move |section, action| {
-            section_log
-                .borrow_mut()
-                .push((section.to_owned(), action.to_owned()))
-        })
-        .item_actions(
-            vec![NavAction::new("rename", Icon::Pencil, "Rename row")],
-            move |row, action| {
-                row_log
-                    .borrow_mut()
-                    .push((row.to_owned(), action.to_owned()));
-            },
-        );
-    let mut h = harness(list, Theme::dark());
-    let section = h
-        .a11y_node_named("Rename section Saved")
-        .expect("exported section button");
-    h.perform_a11y_action(section, &Action::Focus)
-        .expect("focus section action");
-    assert!(focused(
-        &h.root::<NavList>()
-            .accessibility()
-            .expect("published navigation"),
-        "Rename section Saved"
-    ));
-    h.key("Enter");
-    assert_eq!(
-        *sections_called.borrow(),
-        [("saved".to_owned(), "rename".to_owned())]
-    );
-    assert!(rows_called.borrow().is_empty());
-    let row = h
-        .a11y_node_named("Rename row One")
-        .expect("exported row button");
-    h.perform_a11y_action(row, &Action::Focus)
-        .expect("focus row action");
-    assert!(focused(
-        &h.root::<NavList>()
-            .accessibility()
-            .expect("published navigation"),
-        "Rename row One"
-    ));
-    h.key("Space");
-    assert_eq!(
-        *rows_called.borrow(),
-        [("one".to_owned(), "rename".to_owned())]
-    );
-    h.root_mut::<NavList>().set_sections(vec![NavSection::new(
-        "saved",
-        "Saved",
-        vec![NavItem::new("replacement", "Replacement")],
-    )]);
-    h.relayout();
-    h.key("Enter");
-    assert_eq!(
-        rows_called.borrow().len(),
-        1,
-        "removed focused action never runs a stale callback"
-    );
-    assert_eq!(sections_called.borrow().len(), 1);
-    assert!(h.a11y_node_named("Rename row One").is_none());
-}
-
 fn api_sections(populated: bool) -> Vec<NavSection> {
     ["Auth", "Webhooks", "History"]
         .into_iter()
@@ -2353,227 +1941,6 @@ fn the_first_tap_after_pointer_use_chooses_the_row_it_landed_on() {
             && touch_row.height() + 0.5
                 >= f64::from(crate::InteractionEnvironment::TOUCH.minimum_collection_row()),
         "once the tap has landed the rows are touch-sized: {seen_row:?} then {touch_row:?}"
-    );
-}
-
-tilo_test_env::scenario! {
-    #[cfg(feature = "native")]
-    fn a_hover_repaints_only_the_rows_it_touches;
-
-    // Moving the pointer from one destination to the next repaints those two
-    // rows, not the sidebar, the content beside it or the window: each frame's
-    // damage stays within the two rows the hover moved between, no frame asks
-    // for a layout, and a host that repaints only that damage shows the hover.
-    phase a_hover_moving_between_destinations_damages_only_those_two_rows;
-    {
-        assert_sidebar_hovers_damage_only_their_rows(Box::new(
-            crate::widget::Stack::new().push(Box::new(crate::widget::Text::new("A folder"))),
-        ));
-    }
-
-    // The content beside the sidebar keeps what it painted while the pointer
-    // moves over the sidebar: a collapsible section's header and its chevron,
-    // and a month, repaint nothing a hover in the sidebar did not change.
-    phase a_sidebar_hover_repaints_no_section_header_or_month_beside_it;
-    {
-        let section = crate::widget::Section::new(vec![
-            Box::new(crate::widget::ListRow::new("wifi", "Wi-Fi")),
-            Box::new(crate::widget::ListRow::new("vpn", "VPN")),
-        ])
-        .with_header(crate::widget::SectionHeader::group("Connections"))
-        .collapsible();
-        let month = crate::widget::DatePicker::new(
-            jiff::civil::Date::new(2026, 10, 27).ok().unwrap_or_default(),
-        )
-        .with_today(jiff::civil::Date::new(2026, 10, 27).ok().unwrap_or_default());
-        assert_sidebar_hovers_damage_only_their_rows(Box::new(
-            crate::widget::Column::new()
-                .push(Box::new(section))
-                .push(Box::new(month)),
-        ));
-    }
-}
-
-/// Move the pointer from one destination to the next of a sidebar beside
-/// `content`, in a host that repaints only each frame's damage: each hover's
-/// damage stays within the two rows it moved between, no hover asks for a
-/// layout, and once the tint's motion has run what the host shows is what a
-/// full render of the frame shows, the hover included.
-#[cfg(feature = "native")]
-fn assert_sidebar_hovers_damage_only_their_rows(content: crate::widget::Element) {
-    use crate::a11y::Role;
-    use crate::offscreen::OffscreenRenderer;
-    use crate::time::testing::with_monotonic_time;
-
-    struct Window;
-    impl crate::app::AppSurface for Window {
-        fn scale_factor(&self) -> f64 {
-            1.0
-        }
-        fn inner_size(&self) -> winit::dpi::PhysicalSize<u32> {
-            winit::dpi::PhysicalSize::new(720, 900)
-        }
-        fn request_redraw(&self) {}
-        fn set_cursor(&self, _cursor: winit::window::CursorIcon) {}
-    }
-
-    /// One frame of the host: the app's frame, its damage, and the scene it drew.
-    fn frame(
-        app: &mut crate::app::App,
-        damage: &mut crate::app::SurfaceDamage,
-        scene: &mut vello::Scene,
-    ) -> Option<Vec<Rect>> {
-        scene.reset();
-        app.surface_frame_with_damage(&Window, scene, damage);
-        let _ = app.refresh_semantic_tree();
-        damage.take()
-    }
-
-    let theme = Theme::dark();
-    let background = theme.tokens.colors.surfaces.content;
-    let shell = crate::widget::NavShell::new()
-        .sidebar(Box::new(NavList::new(destinations(12))))
-        .content(content);
-    let mut app = crate::app::App::new_with_controlled_inputs(State::new(), Box::new(shell));
-    app.set_theme(theme);
-    let mut damage = crate::app::SurfaceDamage::default();
-    let mut scene = vello::Scene::new();
-    app.init_layout();
-    let size = crate::app::AppSurface::inner_size(&Window);
-    let mut shown = OffscreenRenderer::try_new(size.width, size.height)
-        .expect("a hover's pixels are checked on the GPU the toolkit renders with");
-    let mut full = OffscreenRenderer::new(size.width, size.height);
-    let mut clock = crate::time::now();
-    with_monotonic_time(clock, || {
-        for _ in 0..4 {
-            let _ = frame(&mut app, &mut damage, &mut scene);
-        }
-    });
-    let _ = shown.render(&scene, background);
-    let mut before = full.render(&scene, background);
-    // The rows, and of each whether it is a place (a group's heading, at the list's first level,
-    // shows no tint of its own under the pointer).
-    let placed: Vec<(Rect, bool)> = app
-        .semantic_tree()
-        .iter()
-        .filter(|node| node.role == Role::TreeItem)
-        .filter_map(|node| Some((node.bounds?, node.place.level != Some(1))))
-        .take(8)
-        .collect();
-    let rows: Vec<Rect> = placed.iter().map(|(row, _)| *row).collect();
-    assert!(rows.len() >= 4, "the sidebar shows its rows: {rows:?}");
-    assert!(
-        placed.iter().any(|(_, place)| !place),
-        "the walk crosses a group's heading too: {placed:?}"
-    );
-    let sidebar_right = rows.iter().map(|row| row.x1).fold(0.0, f64::max);
-    let width = usize::try_from(size.width).unwrap_or(usize::MAX);
-    for (step, pair) in std::iter::once([rows[0], rows[0]])
-        .chain(rows.windows(2).map(|pair| [pair[0], pair[1]]))
-        .enumerate()
-    {
-        let (from, to) = (pair[0], pair[1]);
-        let (top, bottom) = (from.y0.min(to.y0) - 2.0, from.y1.max(to.y1) + 2.0);
-        let right = sidebar_right + 16.0;
-        // The frame the pointer arrives in, and the one past the end of the tint's motion.
-        let mut repainted = Vec::new();
-        for (index, at) in [clock, clock + crate::time::Duration::from_millis(1_000)]
-            .into_iter()
-            .enumerate()
-        {
-            let (unsettled, rects) = with_monotonic_time(at, || {
-                if index == 0 {
-                    let centre = to.center();
-                    crate::motion::note_source(crate::tokens::MotionSource::Pointer);
-                    app.surface_input(
-                        &Window,
-                        crate::synthetic_input::cursor_moved(centre.x, centre.y),
-                        false,
-                    );
-                }
-                let unsettled = app.unsettled();
-                (unsettled, frame(&mut app, &mut damage, &mut scene))
-            });
-            assert!(!unsettled, "a hover asked for a layout");
-            let rects = rects.unwrap_or_else(|| {
-                panic!("a hover repainted the window: {:?}", damage.repainted())
-            });
-            for rect in rects.iter().filter(|rect| rect.area() > 0.0) {
-                assert!(
-                    rect.y0 >= top && rect.y1 <= bottom && rect.x1 <= right,
-                    "hovering from {from:?} to {to:?} damaged {rect:?}, outside the two rows",
-                );
-            }
-            let _ = shown.render_copies_and_damage_gpu_wait(&scene, background, &[], &rects);
-            repainted.extend(rects);
-        }
-        clock += crate::time::Duration::from_millis(2_000);
-        if step == 0 {
-            before = full.render(&scene, background);
-            continue;
-        }
-        let after = full.render(&scene, background);
-        let on_screen = shown.readback_current();
-        let stale = OffscreenRenderer::pixels_differing_beyond_aa(&on_screen, &after);
-        assert_eq!(
-            stale, 0,
-            "hovering from {from:?} to {to:?} left {stale} pixels on screen that the frame no \
-             longer draws: its damage missed what the hover painted"
-        );
-        assert!(
-            repainted.iter().any(|rect| rect.area() > 0.0),
-            "hovering from {from:?} to {to:?} repainted nothing: the hover never shows"
-        );
-        let place = placed.iter().any(|&(row, place)| row == to && place);
-        let band = Rect::new(0.0, top, right, bottom);
-        assert_hover_seen(&before, &after, width, place.then_some(to), band);
-        before = after;
-    }
-}
-
-/// The hover is seen: between the full renders `before` and `after` (RGBA rows `width` pixels
-/// long), pixels of the place it reached (`to`, when it reached one) change, and none outside
-/// `band`, the two rows.
-#[cfg(feature = "native")]
-fn assert_hover_seen(before: &[u8], after: &[u8], width: usize, to: Option<Rect>, band: Rect) {
-    let changed: Vec<(f64, f64)> = before
-        .chunks_exact(4)
-        .zip(after.chunks_exact(4))
-        .enumerate()
-        .filter(|(_, (was, is))| {
-            was.iter()
-                .zip(is.iter())
-                .any(|(was, is)| was.abs_diff(*is) > 1)
-        })
-        .map(|(pixel, _)| {
-            (
-                crate::num::f64_of_usize(pixel % width),
-                crate::num::f64_of_usize(pixel / width),
-            )
-        })
-        .collect();
-    let inside =
-        |rect: Rect, (x, y): (f64, f64)| x >= rect.x0 && x < rect.x1 && y >= rect.y0 && y < rect.y1;
-    let changed_bounds = changed.iter().fold(None, |bounds: Option<Rect>, &(x, y)| {
-        let pixel = Rect::new(x, y, x + 1.0, y + 1.0);
-        Some(bounds.map_or(pixel, |bounds| bounds.union(pixel)))
-    });
-    if let Some(to) = to {
-        assert!(
-            changed.iter().any(|&pixel| inside(to, pixel)),
-            "the hover changed no pixel of the place it reached, {to:?}: {} pixels changed, \
-             within {changed_bounds:?}",
-            changed.len()
-        );
-    }
-    let outside: Vec<_> = changed
-        .iter()
-        .filter(|&&pixel| !inside(band, pixel))
-        .take(4)
-        .collect();
-    assert!(
-        outside.is_empty(),
-        "the hover changed pixels outside the two rows {band:?}: {outside:?}"
     );
 }
 

@@ -66,11 +66,6 @@ impl<T: crate::motion::Animatable> FrameSpring<T> {
         self.motion.target()
     }
 
-    #[cfg(test)]
-    pub(super) fn velocity(&self) -> T {
-        self.motion.velocity(self.at)
-    }
-
     pub(super) fn is_settled(&self) -> bool {
         !self.motion.is_moving(self.at)
     }

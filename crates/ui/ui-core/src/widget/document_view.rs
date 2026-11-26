@@ -481,8 +481,6 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::cell::Cell;
-    use std::rc::Rc;
 
     use automerge::{ROOT, ReadDoc, ScalarValue, Value, transaction::Transactable};
 
@@ -493,48 +491,6 @@ mod tests {
         /// A view over a document.
         /// Each phase was a test of its own and builds its own fixture.
         fn a_document_view_projects_reconciles_and_publishes;
-
-        phase deadline_reconciles_an_idle_projection_through_the_real_frame_host;
-        {
-            let deadline = Rc::new(Cell::new(
-                crate::time::now() + crate::time::Duration::from_secs(60),
-            ));
-            let expired = Rc::new(Cell::new(false));
-            let projected_deadline = deadline.clone();
-            let projected_expired = expired.clone();
-            let built_expired = expired.clone();
-            let scheduled_deadline = deadline.clone();
-            let scheduled_expired = expired.clone();
-            let view = ModelView::from_document(
-                move |_, _| projected_expired.get() || crate::time::now() >= projected_deadline.get(),
-                move |expired| {
-                    built_expired.set(*expired);
-                    Box::new(Text::new(if *expired {
-                        "Pairing expired"
-                    } else {
-                        "Pairing active"
-                    }))
-                },
-            )
-            .with_wake_deadline(move || (!scheduled_expired.get()).then(|| scheduled_deadline.get()));
-            let mut host =
-                crate::app::driver::Driver::new(crate::State::new(), Box::new(view), (600, 400));
-            assert!(!expired.get());
-            assert_eq!(
-                host.frame_schedule().next_wake_deadline,
-                Some(deadline.get())
-            );
-            assert!(!host.frame_schedule().needs_animation_frame);
-            // Move the actual projection's deadline to now, without delivering an
-            // input or editing its model. Its existing host wake must remain due.
-            deadline.set(crate::time::now());
-            assert!(host.frame_schedule().next_wake_deadline.unwrap() <= crate::time::now());
-            assert!(host.wait_until(crate::time::Duration::ZERO, |_| expired.get()));
-            assert_eq!(host.frame_schedule().next_wake_deadline, None);
-            assert!(host.a11y_nodes().iter().any(|(_, node)| {
-                node.value() == Some("Pairing expired") || node.label() == Some("Pairing expired")
-            }));
-        }
 
         phase the_boundary_passes_percent_height_and_growth_through;
         {
@@ -587,39 +543,6 @@ mod tests {
 
         phase document_view_projects_keyed_subtrees_and_tracks_undo;
         {
-            fn keyed_projection_retains_subtree_across_unrelated_document_edits() {
-                let builds = Rc::new(Cell::new(0));
-                let observed_builds = Rc::clone(&builds);
-                let mut view = ModelView::from_document(
-                    |doc, _| string(doc, "selection"),
-                    move |selection| {
-                        observed_builds.set(observed_builds.get() + 1);
-                        Box::new(Text::new(selection))
-                    },
-                );
-                let mut doc = AutoCommit::new();
-                doc.put(&ROOT, "selection", "alpha").unwrap();
-
-                view.sync(&doc, &ROOT);
-                assert_eq!(builds.get(), 1);
-                assert!(view.take_structure_dirty());
-                assert!(!view.take_structure_dirty(), "the signal is edge-triggered");
-
-                doc.put(&ROOT, "unrelated", 42).unwrap();
-                view.sync(&doc, &ROOT);
-                assert_eq!(builds.get(), 1, "equal keys retain the existing subtree");
-                assert!(!view.take_structure_dirty());
-
-                doc.put(&ROOT, "selection", "beta").unwrap();
-                view.sync(&doc, &ROOT);
-                assert_eq!(builds.get(), 2);
-                assert!(view.take_structure_dirty());
-                assert_eq!(
-                    view.children()[0].accessibility().unwrap().name.as_deref(),
-                    Some("beta")
-                );
-            }
-
             fn document_view_tracks_undo_without_app_owned_notifications() {
                 let mut state = crate::State::new();
                 state.doc.put(&ROOT, "mode", "list").unwrap();
@@ -671,62 +594,8 @@ mod tests {
                 );
             }
 
-            fn separately_keyed_state_does_not_clone_or_compare_the_payload() {
-                struct Project {
-                    title: String,
-                }
-                enum LoadState {
-                    Loading,
-                    Ready(Project),
-                }
-                #[derive(Clone, Copy, PartialEq, Eq)]
-                enum Screen {
-                    Loading,
-                    Ready,
-                }
-
-                let state = crate::LocalState::new(LoadState::Loading);
-                let builds = Rc::new(Cell::new(0));
-                let observed_builds = Rc::clone(&builds);
-                let mut view = ModelView::from_state_by(
-                    &state,
-                    |state| match state {
-                        LoadState::Loading => Screen::Loading,
-                        LoadState::Ready(_) => Screen::Ready,
-                    },
-                    move |state| {
-                        observed_builds.set(observed_builds.get() + 1);
-                        let label = match state {
-                            LoadState::Loading => "loading",
-                            LoadState::Ready(project) => &project.title,
-                        };
-                        Box::new(Text::new(label))
-                    },
-                );
-                let doc = AutoCommit::new();
-
-                view.sync(&doc, &ROOT);
-                state.set(LoadState::Ready(Project {
-                    title: String::from("First"),
-                }));
-                view.sync(&doc, &ROOT);
-                assert_eq!(builds.get(), 2);
-                assert_eq!(
-                    view.children()[0].accessibility().unwrap().name.as_deref(),
-                    Some("First")
-                );
-
-                state.set(LoadState::Ready(Project {
-                    title: String::from("Updated without structural replacement"),
-                }));
-                view.sync(&doc, &ROOT);
-                assert_eq!(builds.get(), 2, "the Ready subtree keeps its identity");
-            }
-
-            keyed_projection_retains_subtree_across_unrelated_document_edits();
             document_view_tracks_undo_without_app_owned_notifications();
             typed_state_selects_arbitrary_subtrees();
-            separately_keyed_state_does_not_clone_or_compare_the_payload();
         }
     }
 

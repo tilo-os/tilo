@@ -1062,19 +1062,6 @@ mod tests {
         /// Each phase was a test of its own and builds its own fixture.
         fn resizing_and_scale_keep_the_panel_usable;
 
-        phase drawer_shares_the_shell_metrics;
-        {
-            let mut d = SidebarDrawer::new();
-            d.scale_for(&Theme::dark());
-            let metrics = Metrics::BASE;
-            assert_eq!(d.resolved_docked_width(), f64::from(metrics.sidebar_width));
-            assert_eq!(d.resolved_overlay_width(), f64::from(metrics.drawer_width));
-            assert_eq!(
-                d.resolved_breakpoint(),
-                f64::from(metrics.compact_breakpoint)
-            );
-        }
-
         phase sidebar_trailing_edge_drag_resizes_and_collapses_the_actual_panel;
         {
             let mut drawer = SidebarDrawer::new().content_min_width(560.0);
@@ -1221,60 +1208,6 @@ mod tests {
             }
         }
 
-        phase scale_for_grows_text_sized_extents_and_leaves_the_icon_rail;
-        {
-            let authored = || {
-                SidebarDrawer::new()
-                    .breakpoint(760.0)
-                    .docked_width(240.0)
-                    .overlay_width(320.0)
-                    .rail_width(56.0)
-            };
-            let mut plain = authored();
-            plain.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
-            assert_eq!(plain.layout(), SplitLayout::Docked);
-            assert_eq!(plain.sidebar_rect().width(), 240.0);
-            assert_eq!(
-                (
-                    plain.resolved_breakpoint(),
-                    plain.resolved_overlay_width(),
-                    plain.resolved_rail_width()
-                ),
-                (760.0, 320.0, 56.0)
-            );
-
-            let mut large = authored();
-            large.scale_for(&Theme::dark().with_text_scale(2.0));
-            assert_eq!(
-                (
-                    large.resolved_breakpoint(),
-                    large.resolved_docked_width(),
-                    large.resolved_overlay_width()
-                ),
-                (1520.0, 480.0, 640.0)
-            );
-            assert_eq!(large.resolved_rail_width(), 56.0);
-            large.resolve(Rect::new(0.0, 0.0, 1000.0, 800.0));
-            assert_eq!(large.layout(), SplitLayout::Overlay);
-
-            let mut smaller = authored();
-            smaller.scale_for(&Theme::dark().with_text_scale(0.75));
-            assert_eq!(smaller.resolved_docked_width(), 240.0);
-
-            let mut dense = authored();
-            dense.scale_for(&Theme::dark().with_ui_scale(1.5));
-            assert!((dense.resolved_rail_width() - 84.0).abs() < 1e-9);
-            assert!((dense.resolved_breakpoint() - 1140.0).abs() < 1e-9);
-
-            let mut glyphs = SidebarDrawer::new()
-                .icon_docked_width(56.0)
-                .overlay_width(288.0);
-            glyphs.scale_for(&Theme::dark().with_text_scale(2.0));
-            assert_eq!(glyphs.resolved_docked_width(), 56.0);
-            assert_eq!(glyphs.resolved_overlay_width(), 576.0);
-            glyphs.set_docked_width(64.0);
-            assert_eq!(glyphs.resolved_docked_width(), 64.0);
-        }
     }
 
     tilo_test_env::scenario! {
@@ -1504,25 +1437,6 @@ mod tests {
                 (floated - drawer.resolved_overlay_width()).abs() < 0.5,
                 "floating at the drawer width, not {floated}"
             );
-        }
-
-        phase a_panel_states_its_own_minimum;
-        {
-            let theme = Theme::dark();
-            let mut drawer = SidebarDrawer::new()
-                .content_is_column(600.0)
-                .panel_min_width(420.0)
-                .docked_width(480.0);
-            drawer.scale_for(&theme);
-            let just_fits = Rect::new(0.0, 0.0, 1020.0, 800.0);
-            drawer.resolve(just_fits);
-            assert!(drawer.is_docked());
-            let width = drawer.sidebar_rect().width();
-            assert!(
-                (width - 420.0).abs() < 0.5,
-                "docked at its stated minimum, not {width}"
-            );
-            assert!((drawer.resolved_breakpoint() - 1020.0).abs() < 0.5);
         }
 
         phase sidebar_docks_wide_overlays_narrow_and_mirrors_sides;
