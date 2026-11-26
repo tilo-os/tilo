@@ -829,6 +829,13 @@
           }
         },
         {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "volume",
           "doc": "The traded volume under the prices; off unless said.",
           "type": "bool"
@@ -1046,6 +1053,13 @@
           }
         },
         {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "x_title",
           "doc": "What the x axis measures, under it (\"Minute\", \"Distance\").",
           "type": {
@@ -1093,6 +1107,13 @@
         {
           "name": "title",
           "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
           "type": {
             "option": "text"
           }
@@ -1255,6 +1276,13 @@
         {
           "name": "title",
           "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
           "type": {
             "option": "text"
           }
@@ -1702,6 +1730,13 @@
         {
           "name": "title",
           "doc": "What it shows, over it and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
           "type": {
             "option": "text"
           }
@@ -2568,6 +2603,13 @@
           }
         },
         {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "kind",
           "doc": "How each distribution is drawn: `box` for its quartiles, `violin` for its shape, `both` for the two together unless said.",
           "type": {
@@ -3364,6 +3406,13 @@
           }
         },
         {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "direction",
           "doc": "How the stages stand: `funnel` narrowing by how many reach each unless said, `pyramid` widening.",
           "type": {
@@ -3767,6 +3816,13 @@
         {
           "name": "title",
           "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
           "type": {
             "option": "text"
           }
@@ -5728,6 +5784,13 @@
           }
         },
         {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "ring",
           "doc": "A ring rather than a full pie, with `total` read at its centre.",
           "type": "bool"
@@ -5772,6 +5835,13 @@
         {
           "name": "title",
           "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
           "type": {
             "option": "text"
           }
@@ -6542,6 +6612,13 @@
           "type": {
             "option": "text"
           }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
         }
       ],
       "semantics": {
@@ -6623,6 +6700,13 @@
         {
           "name": "title",
           "doc": "What it shows, at its head and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
           "type": {
             "option": "text"
           }
@@ -6777,6 +6861,13 @@
         {
           "name": "title",
           "doc": "What it shows, over it and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
           "type": {
             "option": "text"
           }
@@ -7832,8 +7923,15 @@
           }
         },
         {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
           "name": "total",
-          "doc": "What the whole is, read at its centre (\"128 hours\").",
+          "doc": "What the whole is, read at its centre (\"128 hours\"); without it the centre reads the sum of the parts, so the hole always says how large the whole is.",
           "type": {
             "option": "text"
           }
@@ -8820,6 +8918,13 @@
         {
           "name": "title",
           "doc": "What it shows, over it and as assistive technology announces it.",
+          "type": {
+            "option": "text"
+          }
+        },
+        {
+          "name": "empty",
+          "doc": "What it says while it has nothing to show, and why: \"No request has been answered yet\". Without it the chart says only that it has nothing to show.",
           "type": {
             "option": "text"
           }
