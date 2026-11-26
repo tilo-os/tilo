@@ -319,9 +319,7 @@ impl Loaded {
             records: Vec<serde::de::IgnoredAny>,
         }
         let mut bytes = Vec::new();
-        let read = Read::by_ref(&mut &*file)
-            .take(InvocationJournal::MAX_BYTES)
-            .read_to_end(&mut bytes);
+        let read = Read::take(file, InvocationJournal::MAX_BYTES).read_to_end(&mut bytes);
         let mut values = serde_json::Deserializer::from_slice(&bytes).into_iter::<Head>();
         read.is_ok()
             && matches!(values.next(), Some(Ok(head)) if head.version < VERSION && head.records.is_empty())

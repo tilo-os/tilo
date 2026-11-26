@@ -1745,7 +1745,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
             path.as_deref().and_then(|path| self.open_files.peer(path)),
         ) && self.peers_of(app_id).await?.contains(&peer)
         {
-            return Ok(self.already_open(peer));
+            return Ok(Self::already_open(peer));
         }
         let invocation = a
             .invocation_id
@@ -2113,7 +2113,7 @@ impl<H: ActionProvider + Send + Sync + 'static> McpServer<H> {
     /// The answer to opening a file instance `peer` already holds: that
     /// instance, as an `open` that started it would have answered. The file
     /// is not opened again, which could drop edits not yet saved.
-    fn already_open(&self, peer: u64) -> Value {
+    fn already_open(peer: u64) -> Value {
         let mut value = serde_json::Map::new();
         value.insert("update".into(), json!({"state": "succeeded"}));
         value.insert("peer_id".into(), peer.into());

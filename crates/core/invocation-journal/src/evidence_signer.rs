@@ -7,6 +7,8 @@
 //! as the device it is, wherever its person's store is kept. A certificate expired at the clock,
 //! one whose root took it back, or one confined to another workspace signs nothing.
 
+#[cfg(target_family = "wasm")]
+use std::rc::Rc;
 use std::sync::Arc;
 #[cfg(not(target_family = "wasm"))]
 use std::sync::LazyLock;
@@ -18,6 +20,13 @@ use parking_lot::Mutex;
 use parking_lot::RwLock;
 use tilo_user_identity::DeviceCert;
 
+/// What this process signs as, held where the platform can share it: threads share an `Arc`, a
+/// page's one thread an `Rc`.
+#[cfg(not(target_family = "wasm"))]
+type SharedHost = Arc<HostIdentity>;
+#[cfg(target_family = "wasm")]
+type SharedHost = Rc<HostIdentity>;
+
 /// One-shot fault injection. Admission signs on a blocking thread, so a test
 /// installs the hook from any thread.
 #[cfg(any(test, feature = "test-support"))]
@@ -26,17 +35,17 @@ pub static BEFORE_SIGN: Mutex<Option<Box<dyn FnOnce() + Send>>> = Mutex::new(Non
 /// What this process signs as: the certificate its device holds and the key it took, named by the
 /// host that serves the calls.
 #[cfg(not(target_family = "wasm"))]
-static HOST: LazyLock<RwLock<Option<Arc<HostIdentity>>>> = LazyLock::new(RwLock::default);
+static HOST: LazyLock<RwLock<Option<SharedHost>>> = LazyLock::new(RwLock::default);
 
 // A page has one thread, and its signer is a JavaScript object bound to it: what it signs as is
 // that thread's.
 #[cfg(target_family = "wasm")]
 thread_local! {
-    static HOST: std::cell::RefCell<Option<Arc<HostIdentity>>> = const { std::cell::RefCell::new(None) };
+    static HOST: std::cell::RefCell<Option<SharedHost>> = const { std::cell::RefCell::new(None) };
 }
 
 /// Name what this process signs as, or nobody.
-fn name_host(host: Option<Arc<HostIdentity>>) {
+fn name_host(host: Option<SharedHost>) {
     #[cfg(not(target_family = "wasm"))]
     {
         *HOST.write() = host;
@@ -46,7 +55,7 @@ fn name_host(host: Option<Arc<HostIdentity>>) {
 }
 
 /// What this process signs as, when a host named it.
-fn named_host() -> Option<Arc<HostIdentity>> {
+fn named_host() -> Option<SharedHost> {
     #[cfg(not(target_family = "wasm"))]
     {
         HOST.read().clone()
@@ -57,22 +66,59 @@ fn named_host() -> Option<Arc<HostIdentity>> {
     }
 }
 
+/// The workspaces a host opened, held as its platform can: threads share them behind a lock, a
+/// page's one thread keeps them in a cell.
+#[cfg(not(target_family = "wasm"))]
+type OpenedSet = RwLock<std::collections::BTreeSet<String>>;
+#[cfg(target_family = "wasm")]
+type OpenedSet = std::cell::RefCell<std::collections::BTreeSet<String>>;
+
 struct HostIdentity {
     certificate: DeviceCert,
     signer: Arc<dyn DeviceSigner>,
     /// The workspaces this host opened: the ones its receipts may be signed for. A workspace no
     /// host here opened has no signer of its own and fails closed.
-    opened: RwLock<std::collections::BTreeSet<String>>,
+    opened: OpenedSet,
+}
+
+impl HostIdentity {
+    /// This host opened `workspace`.
+    fn open(&self, workspace: &str) {
+        #[cfg(not(target_family = "wasm"))]
+        self.opened.write().insert(workspace.to_owned());
+        #[cfg(target_family = "wasm")]
+        self.opened.borrow_mut().insert(workspace.to_owned());
+    }
+
+    /// This host serves `workspace` no more.
+    fn close(&self, workspace: &str) {
+        #[cfg(not(target_family = "wasm"))]
+        self.opened.write().remove(workspace);
+        #[cfg(target_family = "wasm")]
+        self.opened.borrow_mut().remove(workspace);
+    }
+
+    /// Whether this host opened `workspace`.
+    fn has_opened(&self, workspace: &str) -> bool {
+        #[cfg(not(target_family = "wasm"))]
+        {
+            self.opened.read().contains(workspace)
+        }
+        #[cfg(target_family = "wasm")]
+        {
+            self.opened.borrow().contains(workspace)
+        }
+    }
 }
 
 /// Name what this process signs its receipts as: the host's device certificate and the key that
 /// certificate names. A host calls this as it opens the workspaces it serves; the last host to
 /// name one is the one that signs.
 pub fn serve_as(certificate: DeviceCert, signer: Arc<dyn DeviceSigner>) {
-    name_host(Some(Arc::new(HostIdentity {
+    name_host(Some(SharedHost::new(HostIdentity {
         certificate,
         signer,
-        opened: RwLock::default(),
+        opened: OpenedSet::default(),
     })));
 }
 
@@ -80,7 +126,7 @@ pub fn serve_as(certificate: DeviceCert, signer: Arc<dyn DeviceSigner>) {
 /// host calls it as it opens each workspace it serves.
 pub fn opened(workspace: &str) {
     if let Some(host) = named_host() {
-        host.opened.write().insert(workspace.to_owned());
+        host.open(workspace);
     }
 }
 
@@ -88,7 +134,7 @@ pub fn opened(workspace: &str) {
 /// the receipts of its calls are signed no longer.
 pub fn closed(workspace: &str) {
     if let Some(host) = named_host() {
-        host.opened.write().remove(workspace);
+        host.close(workspace);
     }
 }
 
@@ -115,7 +161,7 @@ pub fn sign(workspace: &str, bytes: &[u8]) -> Result<(DeviceCert, [u8; 64]), Str
     }
     let now = tilo_clock::try_unix_now_ns().ok_or("receipt signing clock is unavailable")?;
     let host = named_host().ok_or("no host names what signs this process's receipts")?;
-    if !host.opened.read().contains(workspace) {
+    if !host.has_opened(workspace) {
         return Err("no host opened the workspace this receipt is for".into());
     }
     tilo_user_identity::verify_device_cert_at(&host.certificate, now)

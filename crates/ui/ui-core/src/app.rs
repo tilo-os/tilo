@@ -1,4 +1,5 @@
 use crate::floating_surface::FloatingSurfaceWidgetExt as _;
+#[cfg(feature = "native")]
 use crate::gpu::RenderContext;
 #[cfg(feature = "native")]
 use crate::platform::resolve_app_id;

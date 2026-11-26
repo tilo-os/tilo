@@ -2998,6 +2998,10 @@ mod tests {
     /// Where the command line itself decides something (a viewport, a template, a profile, a
     /// platform), what it decided is checked.
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "each of the command line's decisions, each with its own expectations"
+    )]
     fn the_command_line_decides_viewport_template_profile_and_platform() {
         use tilo_app_builder::{PackageArch, PackagePlatform};
 

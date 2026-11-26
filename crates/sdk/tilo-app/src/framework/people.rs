@@ -460,7 +460,7 @@ impl std::fmt::Debug for People {
             .field("local", &self.local)
             .field("known", &tilo_resource::members::listed().len())
             .field("revision", &self.revision.get())
-            .finish()
+            .finish_non_exhaustive()
     }
 }
 
