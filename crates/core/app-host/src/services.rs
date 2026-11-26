@@ -7,7 +7,6 @@ mod published;
 pub use published::{Caller, PublishedResources, Reading, ResourceWatch};
 
 use std::sync::Arc;
-use tilo_desktop_model::WorkspaceId;
 
 pub use crate::collab_app_broker::{
     AudioOutputFuture, AudioOutputServices, AwaitingDocument, CertifiedPersonContext,
@@ -60,36 +59,6 @@ pub trait ShortcutLibraryServices: Send + Sync {
 }
 
 pub use tilo_broker_core::steps::ContinuationServices;
-
-/// What a workspace control session's calls answer.
-pub type ControlAnswer<'a, T> =
-    std::pin::Pin<Box<dyn std::future::Future<Output = Result<T, String>> + 'a>>;
-
-/// One open workspace control session, on the broker's `LocalSet`.
-pub trait WorkspaceControlSession {
-    /// The session's next event.
-    fn read(&self) -> ControlAnswer<'_, runtime_collab::WorkspaceControlEvent>;
-
-    /// Send the controlled device `input`.
-    fn send_input(&self, input: runtime_collab::WorkspaceControlInput) -> ControlAnswer<'_, ()>;
-
-    /// End the session.
-    fn close(&self) -> ControlAnswer<'_, ()>;
-}
-
-/// Asked before each step of a workspace control session; an error ends it.
-pub type ControlRevalidate = Arc<dyn Fn() -> Result<(), String> + Send + Sync>;
-
-/// Opens workspace control sessions; called on the broker `LocalSet`.
-pub trait WorkspaceControlServices: Send + Sync {
-    /// Opens the workspace control session of `workspace` with `target`.
-    fn open(
-        &self,
-        workspace: WorkspaceId,
-        target: [u8; 32],
-        revalidate: ControlRevalidate,
-    ) -> Result<std::rc::Rc<dyn WorkspaceControlSession>, String>;
-}
 
 /// Original Browser connection, minted only from certified launcher ownership.
 #[derive(Clone)]
@@ -600,7 +569,6 @@ pub struct ProcessServices {
     pub search_index: Option<Arc<dyn SearchIndexServices>>,
     /// The device content store content puts go to; without it that api is not offered.
     pub content_store: Option<Arc<dyn ContentStoreServices>>,
-    pub workspace_control: Option<Arc<dyn WorkspaceControlServices>>,
     /// The session's settings, which apps reach through their channel; without it apps have none beyond
     /// their own process.
     pub settings: Option<Arc<dyn settings_store::SettingsSource>>,
@@ -676,7 +644,6 @@ impl ProcessServices {
         "continuations",
         "search_index",
         "content_store",
-        "workspace_control",
         "settings",
         "display_control",
         "live_activities",

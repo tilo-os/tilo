@@ -834,36 +834,6 @@ pub(super) async fn delegate_browser_service_session_command(
     reply.encode().map_err(|_| refused())
 }
 
-impl JoinedChannel {
-    /// Open a workspace control session with `target`, for an editor of
-    /// this channel's workspace, checked again at every step.
-    pub(super) fn workspace_control(
-        &self,
-        target: [u8; 32],
-    ) -> Result<Rc<dyn crate::services::WorkspaceControlSession>, BrokerError> {
-        let route = self.route();
-        revalidate_workspace_control(&self.state, &route, &self.verified_identity)?;
-        let Some(workspace) = tilo_desktop_model::WorkspaceId::parse(&route.cluster_id) else {
-            return Err(BrokerError::failed(
-                "workspace control requires a workspace-scoped channel".into(),
-            ));
-        };
-        let Some(service) = self.state.services.workspace_control.as_ref() else {
-            return Err(BrokerError::failed("workspace control unsupported".into()));
-        };
-        let state = self.state.clone();
-        let identity = self.verified_identity.clone();
-        let revalidate: crate::services::ControlRevalidate = Arc::new(move || {
-            revalidate_workspace_control(&state, &route, &identity)
-                .map(|_| ())
-                .map_err(|error| error.to_string())
-        });
-        service
-            .open(workspace, target, revalidate)
-            .map_err(BrokerError::failed)
-    }
-}
-
 /// What the host is told each time an invocation is handed to `app` in
 /// `workspace`; nothing when no launcher hosts it.
 pub(super) fn invocation_delivery_notice(

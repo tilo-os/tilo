@@ -269,14 +269,6 @@ tilo_test_env::scenario! {
     }
 }
 
-#[test]
-fn workspace_control_requires_editor_authority() {
-    assert!(workspace_control_role_allowed(Role::Owner));
-    assert!(workspace_control_role_allowed(Role::Editor));
-    assert!(!workspace_control_role_allowed(Role::Commenter));
-    assert!(!workspace_control_role_allowed(Role::Viewer));
-}
-
 tilo_test_env::scenario! {
     fn a_foreign_device_is_held_to_the_workspace_cap;
 
@@ -544,7 +536,6 @@ tilo_test_env::scenario! {
         // is never an administrator.
         let scribe = delegate(&owner_root, "scribe", &tree).unwrap();
         assert_eq!(scribe.role, Role::Editor, "its owner's role, capped");
-        assert!(workspace_control_role_allowed(scribe.role));
         assert_eq!(
             answer(&scribe, &tree, &notes, ActionKind::Undoable),
             Answer::Allow
@@ -557,7 +548,6 @@ tilo_test_env::scenario! {
         // Bob's session holds Bob's role, whatever it is called.
         let reader = delegate(&bob_root, "reader", &tree).unwrap();
         assert_eq!(reader.role, Role::Commenter, "its person's role, capped");
-        assert!(!workspace_control_role_allowed(reader.role));
         assert_eq!(
             answer(&reader, &tree, &notes, ActionKind::Read),
             Answer::Allow
@@ -575,7 +565,6 @@ tilo_test_env::scenario! {
         );
         let bobs = delegate(&bob_root, "bobs-scribe", &tree).unwrap();
         assert_eq!(bobs.role, Role::Commenter, "capped by its person's role");
-        assert!(!workspace_control_role_allowed(bobs.role));
         assert_eq!(
             answer(&bobs, &tree, &notes, ActionKind::Undoable),
             Answer::Deny,

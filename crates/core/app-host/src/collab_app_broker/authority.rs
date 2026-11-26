@@ -65,24 +65,6 @@ pub(super) fn same_root_and_device(owner: &InvocationOwner) -> Option<([u8; 32],
     }
 }
 
-pub(super) fn revalidate_workspace_control(
-    state: &AppBrokerState,
-    route: &CrdtRoute,
-    identity: &AdmittedJoinIdentity,
-) -> Result<AdmittedJoinIdentity, BrokerError> {
-    let current = state.revalidate_admission(route, identity)?;
-    if !workspace_control_role_allowed(current.role) {
-        return Err(BrokerError::failed(
-            "workspace control requires current editor authority".into(),
-        ));
-    }
-    Ok(current)
-}
-
-pub(super) fn workspace_control_role_allowed(role: collab_types::Role) -> bool {
-    matches!(role, collab_types::Role::Owner | collab_types::Role::Editor)
-}
-
 impl AppBrokerState {
     /// The hosts of the workspaces this device takes part in but does not
     /// host, as the session gave them.

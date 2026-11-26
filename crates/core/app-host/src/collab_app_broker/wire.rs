@@ -1303,8 +1303,6 @@ pub(super) struct WireConnection {
     published: Cell<Option<Handle>>,
     next_handle: Cell<u64>,
     subscriptions: RefCell<HashMap<u64, (About, tokio::task::AbortHandle)>>,
-    /// The workspace control sessions subscriptions hold, for their input.
-    controls: RefCell<HashMap<u64, Rc<dyn crate::services::WorkspaceControlSession>>>,
     /// What ends each invocation subscription once its app asks for no more.
     invocation_ends: RefCell<HashMap<u64, InvocationFeedEnd>>,
     /// The broker's asks of the endpoint waiting for its answer.
@@ -1327,17 +1325,7 @@ impl Drop for WireConnection {
         for (_, (_, task)) in self.subscriptions.get_mut().drain() {
             task.abort();
         }
-        for (_, control) in self.controls.get_mut().drain() {
-            close_control(control);
-        }
     }
-}
-
-/// End a workspace control session the endpoint let go of.
-fn close_control(control: Rc<dyn crate::services::WorkspaceControlSession>) {
-    tokio::task::spawn_local(async move {
-        let _ = control.close().await;
-    });
 }
 
 /// What a connection reaches of the session's published resources: the
@@ -1374,7 +1362,6 @@ impl WireConnection {
             published: Cell::default(),
             next_handle: Cell::new(1),
             subscriptions: RefCell::default(),
-            controls: RefCell::default(),
             invocation_ends: RefCell::default(),
             asks: RefCell::default(),
             next_ask: Cell::new(1),
@@ -1502,7 +1489,6 @@ impl WireConnection {
     fn leave(&self, key: &str) {
         let left = self.records.borrow_mut().remove(key);
         let about = About::Record(key.to_owned());
-        let mut controls = self.controls.borrow_mut();
         let mut ends = self.invocation_ends.borrow_mut();
         self.subscriptions
             .borrow_mut()
@@ -1511,13 +1497,10 @@ impl WireConnection {
                 if !keep {
                     task.abort();
                     ends.remove(subscription);
-                    if let Some(control) = controls.remove(subscription) {
-                        close_control(control);
-                    }
                 }
                 keep
             });
-        drop((controls, ends));
+        drop(ends);
         drop(left);
     }
 
@@ -1682,21 +1665,9 @@ impl WireConnection {
                     .map(|session| session.invocation_call(invocation, call));
                 Box::pin(async move { answer?.await.map_err(Refusal::refusal) })
             }
-            Operation::ControlInput {
-                subscription,
-                input,
-            } => {
-                let control = self
-                    .controls
-                    .borrow()
-                    .get(&subscription)
-                    .cloned()
-                    .ok_or_else(|| format!("no workspace control session {subscription}"));
-                Box::pin(async move {
-                    control?.send_input(input).await?;
-                    Ok(Reply::Done)
-                })
-            }
+            Operation::ControlInput { .. } => Box::pin(std::future::ready(Err(
+                "workspace control unsupported".to_owned(),
+            ))),
             Operation::Settings { record, call } => {
                 let answer = self
                     .channel(&record)
@@ -1856,39 +1827,8 @@ impl WireConnection {
                         self.invocation_ends.borrow_mut().insert(id, end);
                         tokio::task::spawn_local(pump_pulled(stream, id, frames, Event::Invocation))
                     }
-                    Topic::WorkspaceControl { target_device } => {
-                        let control = session.workspace_control(target_device).map_err(failed)?;
-                        self.controls.borrow_mut().insert(id, Rc::clone(&control));
-                        tokio::task::spawn_local(async move {
-                            let reason = loop {
-                                match control.read().await {
-                                    Ok(event) => {
-                                        let closed = matches!(
-                                            event,
-                                            runtime_collab::WorkspaceControlEvent::Closed(_)
-                                        );
-                                        if frames
-                                            .send(HostFrame::Event {
-                                                subscription: id,
-                                                event: Event::WorkspaceControl(event),
-                                            })
-                                            .is_err()
-                                        {
-                                            return;
-                                        }
-                                        if closed {
-                                            break "the workspace control session closed"
-                                                .to_owned();
-                                        }
-                                    }
-                                    Err(error) => break error,
-                                }
-                            };
-                            let _ = frames.send(HostFrame::Ended {
-                                subscription: id,
-                                reason,
-                            });
-                        })
+                    Topic::WorkspaceControl { .. } => {
+                        return Err("workspace control unsupported".to_owned());
                     }
                     Topic::Content => {
                         let feed = session.subscribe_content().map_err(failed)?;
@@ -1977,9 +1917,6 @@ impl WireConnection {
                     end.finish();
                     self.subscriptions.borrow_mut().remove(&subscription);
                     return Ok(Reply::Done);
-                }
-                if let Some(control) = self.controls.borrow_mut().remove(&subscription) {
-                    close_control(control);
                 }
                 let (_, task) = self
                     .subscriptions
