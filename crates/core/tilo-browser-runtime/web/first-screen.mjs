@@ -846,6 +846,9 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
   };
   // Back to the start, forgetting the code under way.
   const toStart = keep => {
+    // Whether the person had a setup under way: the start then offers the next prompt. A screen
+    // newly shown to a first visit (`reveal`) makes nothing until they ask.
+    const underWay = asked || state.step === 'waiting' || state.step === 'expired' || Boolean(state.code);
     ++attempt;
     stop();
     following = null;
@@ -854,7 +857,13 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
     for (const kind of Object.keys(codes)) codes[kind].note = null;
     view.start();
     if (keep) save({step: 'start', code: null, polled: null, copied: false, manual: false});
-    if (!adoptOffer()) show('setup');
+    if (!adoptOffer()) {
+      show('setup');
+      // A code the page was making for them after a copy may not have finished before a reload:
+      // the start they come back to offers the next one to copy. A tab following another's step
+      // takes what that tab made, never a competing code.
+      if (keep && underWay) askForCode('setup');
+    }
   };
   // Bring the screen to the setup `next` (kept here before, or by another tab).
   const apply = next => {
@@ -1006,7 +1015,9 @@ export function createFirstScreen({view: drawn, clipboard, storage = null, now =
       const kind = kindOf(mode);
       if (closed) return Promise.resolve(false);
       if (!codes[kind].make && codes[kind].error) { reload(); return Promise.resolve(false); }
-      if (!codes[kind].made && codes[kind].error) return prepare(kind).then(() => false);
+      if (!codes[kind].made) {
+        return prepare(kind).then(() => (codes[kind].made ? copy(kind, mode) : false));
+      }
       return copy(kind, mode);
     },
     /** Show (or hide) the manual setup, with the setup code, followed. */

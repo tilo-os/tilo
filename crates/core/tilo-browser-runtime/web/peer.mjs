@@ -1144,6 +1144,11 @@ async function connect({
     /** Who is in the workspace, for its owner (`workspaces.rs`): `list()`,
      * `setRole`, `remove`, `cancelInvitation`. */
     get membership() { return membership; },
+    /** Approve the computer that asked with a ticket this tab's host serves: `root` is the
+     * person's root this page holds (an unlocked identity), and `asked` the question the host
+     * handed the page. Resolves to the `Approved` JSON the host checks with `check_approval`
+     * before it answers the computer. */
+    approveAsked: (root, asked) => peer.approveAsked(root, asked),
     /** The workspaces the host governs (`workspaces.rs`): `list()`,
      * `create(name)`, `enter(workspace)`; needs no workspace. */
     workspaces: governed,

@@ -467,6 +467,20 @@ test('a copied code that expires says so, and the retry copies the fresh one at 
   assert.deepEqual(last('waiting')[2], {text: setupPrompt(NEXT), copied: true});
 });
 
+test('a code that ran out with no fresh one yet: one press makes the prompt and copies it', async () => {
+  const stored = new Map();
+  const code = fakeCode({expiresAt: 600_000});
+  stored.set(SETUP, JSON.stringify({step: 'expired', code: {code: CODE, expiresAt: 600_000, follow: 'follow', kind: 'setup'}}));
+  const {screen, last, copied} = fixture({stored});
+  const fresh = maker(fakeCode({code: NEXT}));
+  screen.offerSetup(fresh.make, resumer(code), {ahead: false});
+  await settle();
+  assert.equal(fresh.made.length, 0, 'nothing is made ahead of the person asking');
+  assert.equal(await screen.retry('setup'), true);
+  assert.deepEqual(copied, [setupPrompt(NEXT)], 'the press copies the prompt it made');
+  assert.equal(last('waiting')[2].text, setupPrompt(NEXT));
+});
+
 test('the host saying the code expired shows it expired too', async () => {
   const {screen, names, state, tick} = fixture();
   const code = fakeCode();
@@ -1132,6 +1146,39 @@ test('Back in a second tab reaches the first, though the first redraws on its ow
   assert.equal(tabs.b.kept().step, 'start', 'the second tab stays at the start');
   assert.equal(tabs.a.kept().step, 'start', 'the first tab keeps the start the second saved');
   assert.ok(tabs.a.names().lastIndexOf('start') > tabs.a.names().lastIndexOf('waiting'), 'and is drawn back at the start');
+});
+
+test('back in a second tab offers the first its next prompt, though the code the first was making died with a reload', async () => {
+  const stored = new Map();
+  const code = fakeCode();
+  // The first tab copied `code`; the next code it started making after the copy never came,
+  // because the tab loaded again first.
+  const first = fixture({stored});
+  let making = 0;
+  first.screen.offerSetup(async () => {
+    making += 1;
+    return making === 1 ? code : new Promise(() => {});
+  }, resumer(code));
+  await settle();
+  await first.screen.copy();
+  await settle();
+  assert.equal(making, 2, 'the first tab had started making the next code');
+  // Loaded again: no code was kept for the start.
+  const next = fakeCode({code: NEXT});
+  const reloaded = fixture({stored});
+  reloaded.screen.offerSetup(maker(next).make, resumer(code, next));
+  await settle();
+  assert.equal(reloaded.last('waiting')[2].text, setupPrompt(CODE), 'it waits on the same code');
+  // The second tab goes back: it makes the prompt the start offers, and the first tab follows.
+  const second = fixture({stored});
+  second.screen.offerSetup(maker(fakeCode({code: NEXT})).make, resumer(code, next));
+  await settle();
+  second.screen.back();
+  await settle();
+  reloaded.screen.sync();
+  await settle();
+  assert.equal(reloaded.kept().step, 'start', 'the first tab keeps the start the second saved');
+  assert.equal(reloaded.last('offer')[2]?.text, setupPrompt(NEXT), 'the start offers the next prompt, ready to copy');
 });
 
 test('reloaded on the start, the kept prompt shows and copies before the page can follow codes, then is followed', async () => {
