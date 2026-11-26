@@ -463,6 +463,9 @@ EMBEDDED = re.compile(r'\b(include_str|include_bytes|include)!\(\s*"([^"\n]+)"\s
 # `include_str!(concat!("../examples/apps/", $name, "/", $file))`.
 EMBEDDED_DIR_PREFIX = re.compile(
     r'\b(include_str|include_bytes|include)!\(\s*concat!\(\s*"([^"\n]+/)"')
+# A published surface `tilo_resource::bindings!` binds to, by a path from the crate's manifest
+# directory: `surface = "../../desktop/session-core/workspace-activity-surface.json"`.
+BOUND_SURFACE = re.compile(r'\bsurface\s*=\s*"([^"\n]+)"')
 # Where a package carries the files it embeds from elsewhere in the repository.
 EMBEDDED_DIR = "published-files"
 
@@ -531,7 +534,22 @@ def carry_embedded(root: pathlib.Path, tree: pathlib.Path) -> list[str]:
             path = os.path.relpath(copy, source.parent).replace(os.sep, "/") + "/"
             return match.group(0).replace(f'"{match.group(2)}"', f'"{path}"', 1)
 
+        def carried_surface(match: re.Match) -> str:
+            # Read from the manifest's directory, which is ROOT, not from the source file's.
+            embedded = (root / match.group(1)).resolve()
+            if (embedded.is_relative_to(root) or not embedded.is_relative_to(tree)
+                    or not embedded.is_file()):
+                return match.group(0)
+            copy = root / EMBEDDED_DIR / stored(embedded.relative_to(tree))
+            copy.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(embedded, copy)
+            copied.append(str(embedded.relative_to(tree)))
+            path = copy.relative_to(root).as_posix()
+            return match.group(0).replace(f'"{match.group(1)}"', f'"{path}"', 1)
+
         new = EMBEDDED_DIR_PREFIX.sub(carried_dir, EMBEDDED.sub(carried, text))
+        if "bindings!" in new:
+            new = BOUND_SURFACE.sub(carried_surface, new)
         if new != text:
             source.write_text(new)
     return sorted(set(copied))

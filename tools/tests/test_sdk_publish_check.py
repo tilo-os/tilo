@@ -465,6 +465,27 @@ class EmbeddedTests(unittest.TestCase):
             self.assertIn("apps/none.bin", rewritten, "a missing file is left for the build to name")
             self.assertEqual(check.carry_embedded(crate, tree), [], "carried once")
 
+    def test_a_surface_bindings_name_from_the_manifest_directory_is_carried(self):
+        with tempfile.TemporaryDirectory() as directory:
+            tree = Path(directory)
+            crate = tree / "crates/ui/example"
+            (crate / "src/deep").mkdir(parents=True)
+            (tree / "crates/desktop/session").mkdir(parents=True)
+            (tree / "crates/desktop/session/activity-surface.json").write_text("{}\n")
+            (crate / "src/deep/wire.rs").write_text(
+                'tilo_resource::bindings!(\n    provider = "tilo.activity",\n'
+                '    surface = "../../desktop/session/activity-surface.json"\n);\n')
+            self.assertEqual(check.carry_embedded(crate, tree),
+                             ["crates/desktop/session/activity-surface.json"])
+            rewritten = (crate / "src/deep/wire.rs").read_text()
+            # From the manifest's directory, as the macro reads it, not from the source file's.
+            self.assertIn(
+                'surface = "published-files/crates/desktop/session/activity-surface.json"',
+                rewritten)
+            self.assertEqual(
+                (crate / "published-files/crates/desktop/session/activity-surface.json").read_text(),
+                "{}\n")
+
     def test_a_directory_a_concat_path_starts_with_is_carried_whole_under_names_cargo_keeps(self):
         with tempfile.TemporaryDirectory() as directory:
             tree = Path(directory)
