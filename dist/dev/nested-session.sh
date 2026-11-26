@@ -952,7 +952,14 @@ fi
 # belongs to the image and its wire is an older one; and a session with none shows the
 # computer's own Home in Files instead of the workspace.
 machine_files=0
-if [[ ${TILO_SESSION_MACHINE_FILES:-} == 1 && -n ${TILO_FS_BLOB_SOCKET:-} ]]; then
+if [[ ${TILO_SESSION_MACHINE_FILES:-} == 1 && -n ${TILO_FS_BLOB_SOCKET:-} \
+      && ! -f $TILO_IDENTITY_ROOT/device/cert.bin ]]; then
+    # No person is founded here yet: the session founds them as it starts, and the machine's
+    # daemon presents their identity, so it starts only after this session has. Waiting for it
+    # here would wait for the session itself: the session is handed the machine's workspace, as
+    # a device's first sign-in is, and reads it once the daemon serves it.
+    machine_files=1
+elif [[ ${TILO_SESSION_MACHINE_FILES:-} == 1 && -n ${TILO_FS_BLOB_SOCKET:-} ]]; then
     # The daemon is the machine's and starts beside this session, after the person's identity
     # is minted: wait for the socket it serves and the mount it publishes, as a login waits for
     # its unit. A machine that never serves them leaves this session its own to start.
