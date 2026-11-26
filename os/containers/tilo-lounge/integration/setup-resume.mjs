@@ -257,7 +257,7 @@ const copy = async (tab, id) => {
   return null;
 };
 const codeOf = prompt => prompt?.match(/(?:tilo|sh -s) login (tilo1[0-9a-f]+)/)?.[1]
-  ?? prompt?.match(/(?:tilo|sh -s) device add (\S+)/)?.[1] ?? null;
+  ?? prompt?.match(/(?:tilo|sh -s) device add ([^\s,]+)/)?.[1] ?? null;
 const steps = tab => tab.evaluate(`document.getElementById('first-screen-steps')?.innerText ?? ''`).catch(() => '');
 
 // The agent's computer, as agent-setup.mjs makes it: its own home, where the

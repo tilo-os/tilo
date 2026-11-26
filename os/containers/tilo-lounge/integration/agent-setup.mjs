@@ -276,8 +276,8 @@ const copied = async (tab, what, before) => {
 // What a prompt names: the ticket this tab's host served (`tilo1…`), and, from a host still
 // handing out login codes, the short code it names instead.
 const commandOf = prompt => {
-  const login = prompt.match(/(?:tilo|sh -s) login (\S+)/);
-  const add = prompt.match(/(?:tilo|sh -s) device add (\S+)/);
+  const login = prompt.match(/(?:tilo|sh -s) login ([^\s,]+)/);
+  const add = prompt.match(/(?:tilo|sh -s) device add ([^\s,]+)/);
   const text = login?.[1] ?? add?.[1];
   if (!text) return null;
   return {text, kind: add ? 'device add' : 'login',

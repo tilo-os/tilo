@@ -406,6 +406,10 @@ if (passkey) {
   // the passkey from the page's own search.
   const met = await until(`(() => {
     if (document.querySelector('#arrival-sign-in-open')?.offsetParent) return 'invite-only';
+    // A fresh guest is shown their recovery words once, as any new person is: kept, the page
+    // goes on arriving.
+    const keep = document.querySelector('[data-card="recovery-words"] button.tilo-entry-primary');
+    if (keep && !keep.dataset.pressed) { keep.dataset.pressed = '1'; keep.click(); }
     return document.documentElement.dataset.arrival === 'done' ? 'open' : false;
   })()`, 'the invite-only page offering a passkey, or the page arriving as a fresh guest');
   let back;

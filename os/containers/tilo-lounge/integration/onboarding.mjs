@@ -411,8 +411,8 @@ const copied = async (tab, before) => {
   await fail('the prompt never reached the clipboard');
 };
 const commandOf = prompt => {
-  const login = prompt.match(/(?:tilo|sh -s) login (\S+)/);
-  const add = prompt.match(/(?:tilo|sh -s) device add (\S+)/);
+  const login = prompt.match(/(?:tilo|sh -s) login ([^\s,]+)/);
+  const add = prompt.match(/(?:tilo|sh -s) device add ([^\s,]+)/);
   const text = login?.[1] ?? add?.[1];
   if (!text) return null;
   return {text, kind: add ? 'device add' : 'login',
