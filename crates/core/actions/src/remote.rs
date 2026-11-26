@@ -2985,27 +2985,9 @@ pub fn serve<H: ActionProvider + Clone + Send + 'static>(
             command,
             kind,
         } => store_answered(provider, caller, correlation, (command, kind)),
-        RemoteActionMessage::CatalogueResponse { .. }
-        | RemoteActionMessage::Receipt(_)
-        | RemoteActionMessage::Update { .. }
-        | RemoteActionMessage::CancelResponse { .. }
-        | RemoteActionMessage::ResourceReading { .. }
-        | RemoteActionMessage::RetiredFeedbackResponse { .. }
-        | RemoteActionMessage::ConfirmationResponse { .. }
-        | RemoteActionMessage::ContentPutResponse { .. }
-        | RemoteActionMessage::ContentGetResponse { .. }
-        | RemoteActionMessage::ContentLinkResponse { .. }
-        | RemoteActionMessage::ChangesResponse { .. }
-        | RemoteActionMessage::ChangedResponse { .. }
-        | RemoteActionMessage::SurfaceResponse { .. }
-        | RemoteActionMessage::CallCarryResponse { .. }
-        | RemoteActionMessage::CallReportResponse { .. }
-        | RemoteActionMessage::CallHeard(_)
-        | RemoteActionMessage::CallSaid(_)
-        | RemoteActionMessage::CallStatus(_)
-        | RemoteActionMessage::AudioOutputResponse { .. }
-        | RemoteActionMessage::StoreResponse { .. }
-        | RemoteActionMessage::CatalogueChanged { .. } => return None,
+        // An answer is never a request: `refuse` classified every message before this match and
+        // answered `None` for an answer, so none reaches here.
+        _ => return None,
     };
     // An abandoned answer still answers: the caller hears a refusal.
     let (completer, answered) = pending();
