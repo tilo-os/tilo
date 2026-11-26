@@ -84,6 +84,14 @@ const LOCK_FILE: &str = ".identity.lock";
 const MAX_RECORD_BYTES: u64 = 1024 * 1024;
 
 pub fn identity_dir_from_env() -> io::Result<PathBuf> {
+    // A daemon placed apart serves the profile it was named with: everything of that profile's,
+    // its person's identity store among them, lives under it, so the programs that reach that
+    // daemon resolve the store it made, whoever they run as.
+    if let Some(profile) = tilo_device_identity::login::daemon::named_profile()
+        .filter(|profile| profile.is_absolute())
+    {
+        return Ok(profile.join("identity"));
+    }
     // The person's identity sits in their Tilo profile, wherever this host
     // keeps it: `$XDG_CONFIG_HOME/tilo/identity` on Linux and macOS.
     if let Some(profile) = tilo_paths::profile_root().filter(|dir| dir.is_absolute()) {
@@ -160,8 +168,8 @@ impl Drop for ServedIdentityDir {
 pub fn served_identity_dir() -> Option<PathBuf> {
     SERVED_IDENTITY_DIR
         .lock()
-        .ok()
-        .and_then(|held| held.clone())
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone()
 }
 
 /// [`account_identity_dir`] for this process's Tilo profile, or the store this process serves
@@ -2938,5 +2946,35 @@ mod identity_record_vector_tests {
             hex::decode(SEED).unwrap()
         );
         signs_as_the_root(&super::load_from_path(primary).unwrap());
+    }
+
+    /// A daemon serves the account that signed in, not the one it runs as: the store it names is
+    /// the one every reader here reads, until the daemon that named it ends.
+    #[test]
+    fn the_store_a_host_serves_is_read_until_its_guard_ends() {
+        // Holds the environment other tests write their own store into, so they run apart.
+        let _env = tilo_test_env::ScopedEnv::new();
+        let first = tempfile::tempdir().unwrap();
+        let served = crate::store::serve_identity_dir(first.path());
+        assert_eq!(crate::store::served_identity_dir().as_deref(), Some(first.path()));
+        assert_eq!(
+            crate::store::account_identity_dir_from_env().unwrap(),
+            first.path()
+        );
+
+        let second = tempfile::tempdir().unwrap();
+        let scoped = crate::store::serve_identity_dir(second.path());
+        assert_eq!(
+            crate::store::account_identity_dir_from_env().unwrap(),
+            second.path()
+        );
+        drop(scoped);
+        assert_eq!(
+            crate::store::account_identity_dir_from_env().unwrap(),
+            first.path()
+        );
+
+        drop(served);
+        assert!(crate::store::served_identity_dir().is_none());
     }
 }
