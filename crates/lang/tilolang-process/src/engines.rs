@@ -312,9 +312,14 @@ fn start_placed(
             &named,
             op,
             move |state, detail| {
-                report(&link, &ran, state, detail);
-                if state.ended() {
+                // The process is let go of a job before the device hears it ended: the device
+                // holds it only for what still runs here.
+                let ended = state.ended();
+                if ended {
                     here().remove(&ran.job);
+                }
+                report(&link, &ran, state, detail);
+                if ended {
                     wake();
                 }
             },
@@ -322,13 +327,13 @@ fn start_placed(
         );
         if let Err(why) = started {
             // The device holds the process for the job until its record ends.
+            here().remove(&named);
             report(
                 &device.link,
                 &refused,
                 State::Failed,
                 &json!({ "why": why }),
             );
-            here().remove(&named);
             return Err(why);
         }
     }
@@ -385,9 +390,13 @@ impl Recorded {
 
     /// The work moved to `state` with the fields `detail`: the device's record of it says so.
     pub fn moved(&self, state: State, detail: &serde_json::Value) {
-        report(&self.link, &self.job, state, detail);
-        if state.ended() {
+        // The process is let go of the job before the device hears it ended.
+        let ended = state.ended();
+        if ended {
             here().remove(&self.job.job);
+        }
+        report(&self.link, &self.job, state, detail);
+        if ended {
             (self.wake)();
         }
     }
@@ -441,9 +450,12 @@ pub fn run(job: &EngineJob) {
     let moved = JobSink::new({
         let job = job.clone();
         move |state, detail| {
-            report(&link, &job, state, &detail);
-            if state.ended() {
+            let ended = state.ended();
+            if ended {
                 here().remove(&job.job);
+            }
+            report(&link, &job, state, &detail);
+            if ended {
                 wake();
             }
         }
