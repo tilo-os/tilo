@@ -550,40 +550,7 @@ impl crate::Session {
             return;
         };
         let field = self.compositor.focused_field();
-        // The settings sections publish these readings from the very types read here: one that
-        // does not read back is a bug in this build, never a person's doing.
-        let settings: OskSourceSettings = match self.read(SETTINGS) {
-            Some(reading) => serde_json::from_value(reading).unwrap_or_else(|error| {
-                tracing::error!(
-                    %error,
-                    "the keyboard's settings did not read as they are published"
-                );
-                OskSourceSettings::default()
-            }),
-            None => OskSourceSettings::default(),
-        };
-        let personal = self
-            .read(PERSONAL_WORDS)
-            .map(|reading| {
-                serde_json::from_value::<
-                        settings_sections::personal_dictionary::PersonalDictionary,
-                    >(reading)
-                    .unwrap_or_else(|error| {
-                        tracing::error!(
-                            %error,
-                            "the personal dictionary did not read as it is published"
-                        );
-                        settings_sections::personal_dictionary::PersonalDictionary::default()
-                    })
-            })
-            .map(|dictionary| {
-                dictionary
-                    .words
-                    .hints(typing_language(&settings))
-                    .map(str::to_owned)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let (settings, personal) = self.keyboard_words();
         let shown = Shown {
             visible: wanted,
             display: Some(screen.clone()),
@@ -628,6 +595,47 @@ impl crate::Session {
             self.keyboard_run = started;
         }
         self.serve_keyboard_view();
+    }
+
+    /// The keyboard's words: the settings section's reading and the person's own dictionary, as
+    /// the settings sections publish them. One that does not read back is a bug in this build,
+    /// never a person's doing, and says so rather than leaving the keyboard silent.
+    fn keyboard_words(&self) -> (OskSourceSettings, Vec<String>) {
+        // The settings sections publish these readings from the very types read here: one that
+        // does not read back is a bug in this build, never a person's doing.
+        let settings: OskSourceSettings = match self.read(SETTINGS) {
+            Some(reading) => serde_json::from_value(reading).unwrap_or_else(|error| {
+                tracing::error!(
+                    %error,
+                    "the keyboard's settings did not read as they are published"
+                );
+                OskSourceSettings::default()
+            }),
+            None => OskSourceSettings::default(),
+        };
+        let personal = self
+            .read(PERSONAL_WORDS)
+            .map(|reading| {
+                serde_json::from_value::<
+                        settings_sections::personal_dictionary::PersonalDictionary,
+                    >(reading)
+                    .unwrap_or_else(|error| {
+                        tracing::error!(
+                            %error,
+                            "the personal dictionary did not read as it is published"
+                        );
+                        settings_sections::personal_dictionary::PersonalDictionary::default()
+                    })
+            })
+            .map(|dictionary| {
+                dictionary
+                    .words
+                    .hints(typing_language(&settings))
+                    .map(str::to_owned)
+                    .collect()
+            })
+            .unwrap_or_default();
+        (settings, personal)
     }
 
     /// Run the view bound to the keyboard's part over `shown` : the on-screen keyboard's package,

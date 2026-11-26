@@ -601,7 +601,7 @@ mod tests {
 
     /// One write's request and its PCM, as an app's line hands them over.
     fn packet_of(sequence: u64, samples: Vec<i16>) -> (Request, Vec<i16>) {
-        let bytes = u32::try_from(samples.len() * 2).expect("a bounded packet");
+        let bytes = u32::try_from(samples.len().saturating_mul(2)).expect("a bounded packet");
         (
             Request::Write {
                 generation: 1,
@@ -656,7 +656,7 @@ mod tests {
             .control(
                 &key(1),
                 &*admitted(),
-                Request::Status { generation: 1 },
+                &Request::Status { generation: 1 },
                 Vec::new(),
             )
             .unwrap();
@@ -726,7 +726,7 @@ mod tests {
             .control(
                 &key(1),
                 &*admitted(),
-                Request::Pause {
+                &Request::Pause {
                     generation: 1,
                     paused: true,
                 },
@@ -743,7 +743,7 @@ mod tests {
             .control(
                 &key(1),
                 &*admitted(),
-                Request::Pause {
+                &Request::Pause {
                     generation: 1,
                     paused: false,
                 },
@@ -755,7 +755,7 @@ mod tests {
             .control(
                 &key(1),
                 &*admitted(),
-                Request::Volume {
+                &Request::Volume {
                     generation: 1,
                     percent: 50,
                 },
@@ -777,7 +777,7 @@ mod tests {
             .control(
                 &key(1),
                 &*admitted(),
-                Request::Flush { generation: 1 },
+                &Request::Flush { generation: 1 },
                 Vec::new(),
             )
             .unwrap();
@@ -786,7 +786,7 @@ mod tests {
             .control(
                 &key(1),
                 &*admitted(),
-                Request::Status { generation: 1 },
+                &Request::Status { generation: 1 },
                 Vec::new(),
             )
             .unwrap();
@@ -842,7 +842,7 @@ mod tests {
             .control(
                 &key(1),
                 &*admitted(),
-                Request::Close { generation: 1 },
+                &Request::Close { generation: 1 },
                 Vec::new(),
             )
             .unwrap();
@@ -854,7 +854,7 @@ mod tests {
                 .control(
                     &key(1),
                     &*admitted(),
-                    Request::Status { generation: 1 },
+                    &Request::Status { generation: 1 },
                     Vec::new(),
                 )
                 .is_err(),

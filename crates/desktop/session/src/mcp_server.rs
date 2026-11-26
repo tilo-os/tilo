@@ -1097,21 +1097,7 @@ enum ApiAsk {
     /// form, as the broker carries them, and `beside` the place the ask is in
     /// (the turn's conversation, or empty for the place in front). No
     /// `reads_only`: the broker decided the step.
-    Step {
-        actor: tilo_actions::Actor,
-        address: tilo_actions::ActionAddress,
-        slot: Option<String>,
-        /// The place the ask is in, by the resource that place shows: the conversation of the
-        /// turn an agent asks in, or empty for the place in front.
-        beside: String,
-        /// The run the step is one of, as its invocation names it.
-        run: Option<tilo_actions::WorkGroup>,
-        done: Box<
-            tilo_actions::remote::Completer<
-                Result<Option<tilo_actions::ActionOutput>, ActionCallError>,
-            >,
-        >,
-    },
+    Step(Box<StepAsked>),
     /// The packages the session runs itself, which a task's host loads to run programs against:
     /// each one's compiled module, its description embedded, the packages it uses first
     /// ([`task_hosts`] adds every installed app).
@@ -1125,6 +1111,23 @@ enum ApiAsk {
         resource: String,
         done: tilo_actions::remote::Completer<Option<Published>>,
     },
+}
+
+/// A step an agent's turn runs as the person, asked of the session's loop: `slot` is its
+/// arguments in their slot form, as the broker carries them, and `beside` the place the ask is
+/// in (the turn's conversation, or empty for the place in front). No `reads_only`: the broker
+/// decided the step.
+struct StepAsked {
+    actor: tilo_actions::Actor,
+    address: tilo_actions::ActionAddress,
+    slot: Option<String>,
+    /// The place the ask is in, by the resource that place shows.
+    beside: String,
+    /// The run the step is one of, as its invocation names it.
+    run: Option<tilo_actions::WorkGroup>,
+    done: tilo_actions::remote::Completer<
+        Result<Option<tilo_actions::ActionOutput>, ActionCallError>,
+    >,
 }
 
 /// The boundary between the server's connections and the session's own services.
@@ -1244,14 +1247,14 @@ impl crate::platform::steps::SessionSteps for SessionServices {
             Result<Option<tilo_actions::ActionOutput>, ActionCallError>,
         >,
     ) {
-        self.ask(ApiAsk::Step {
+        self.ask(ApiAsk::Step(Box::new(StepAsked {
             actor,
             address,
             slot,
             beside,
             run,
-            done: Box::new(done),
-        });
+            done,
+        })));
     }
 }
 
@@ -1651,49 +1654,57 @@ impl SessionServices {
                         done,
                     );
                 }
-                ApiAsk::Step {
-                    actor,
-                    address,
-                    slot,
-                    beside,
-                    run,
-                    done,
-                } => match arguments_of(slot.as_deref()) {
-                    // A step a service publishes runs there, on the record the service keeps —
-                    // Chat's `record-work` on a turn's summons is the session's Chat service's,
-                    // not the layout's. Every other step is the session's own services': the
-                    // layout, the windows and the notices. Any resource a service publishes,
-                    // at any depth: a note in a notebook the session keeps is the service's as
-                    // its notebook is.
-                    Ok(arguments)
-                        if tilo_actions::api::resolve(&services.borrow().resources(), &address)
-                            .is_some() =>
-                    {
-                        invoke_service_step(
-                            services,
-                            &actor,
-                            run.as_ref(),
-                            &address,
-                            &arguments,
-                            &beside,
-                            *done,
-                        );
-                    }
-                    // The system's `open` stands a place beside the conversation of the turn that
-                    // asked when it names none (`docs/designs/app-language/one-app-model.md` §3).
-                    Ok(arguments) => done.complete(
-                        surfaces
-                            .invoke_as(
-                                &actor,
+                ApiAsk::Step(step) => {
+                    let StepAsked {
+                        actor,
+                        address,
+                        slot,
+                        beside,
+                        run,
+                        done,
+                    } = *step;
+                    match arguments_of(slot.as_deref()) {
+                        // A step a service publishes runs there, on the record the service keeps —
+                        // Chat's `record-work` on a turn's summons is the session's Chat service's,
+                        // not the layout's. Every other step is the session's own services': the
+                        // layout, the windows and the notices. Any resource a service publishes,
+                        // at any depth: a note in a notebook the session keeps is the service's as
+                        // its notebook is.
+                        Ok(arguments)
+                            if tilo_actions::api::resolve(
+                                &services.borrow().resources(),
                                 &address,
-                                &with_turn_beside(&address, &arguments, &beside),
-                                look,
                             )
-                            .map(tilo_ui_base::host_operation::ResourceOperationStart::completed)
-                            .map_err(|error| ActionCallError::from_api(&error)),
-                    ),
-                    Err(why) => done.complete(Err(why)),
-                },
+                            .is_some() =>
+                        {
+                            invoke_service_step(
+                                services,
+                                &actor,
+                                run.as_ref(),
+                                &address,
+                                &arguments,
+                                &beside,
+                                done,
+                            );
+                        }
+                        // The system's `open` stands a place beside the conversation of the turn that
+                        // asked when it names none (`docs/designs/app-language/one-app-model.md` §3).
+                        Ok(arguments) => done.complete(
+                            surfaces
+                                .invoke_as(
+                                    &actor,
+                                    &address,
+                                    &with_turn_beside(&address, &arguments, &beside),
+                                    look,
+                                )
+                                .map(
+                                    tilo_ui_base::host_operation::ResourceOperationStart::completed,
+                                )
+                                .map_err(|error| ActionCallError::from_api(&error)),
+                        ),
+                        Err(why) => done.complete(Err(why)),
+                    }
+                }
                 ApiAsk::Apps(done) => {
                     done.complete(session_packages(services));
                 }
