@@ -305,7 +305,10 @@ use the device’s workspace content service when available.
 to let the assistant reply. To let it work on tasks, proposals and schedules, choose the
 option that lists Chat, Tasks, Assistant and Shortcuts. For other workspace apps, choose
 **Choose apps…**, select the apps the assistant may use and choose **Request selected apps**.
-Chat is required for replies. All optional apps start unchecked. The workspace supplies the
+Chat is required for replies. Starting a team of sub-agents also requires Assistant.
+**Other workspace names** lets the assistant list the workspaces you belong to from your
+private workspace. Reading their contents still requires permission in each workspace.
+All optional apps start unchecked. The workspace supplies the
 available choices. Each request covers this workspace for up to six days.
 
 In the browser where you created or restored your Tilo identity, choose

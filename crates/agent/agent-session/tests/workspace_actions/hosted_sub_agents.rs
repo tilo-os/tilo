@@ -706,6 +706,8 @@ async fn a_note_reaches_a_working_sub_agent_at_its_next_step_and_its_person_writ
 /// The lead still has its approved key, but that key cannot take another step as the child.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn retiring_a_working_child_ends_its_use_of_the_leads_grant() {
+    use tilo_action_policy::Answer::{Allow, Ask, Deny};
+
     team!(
         root, browser, actions, workspaces, workspace, page, person, served
     );
@@ -776,6 +778,60 @@ async fn retiring_a_working_child_ends_its_use_of_the_leads_grant() {
             .await
     );
 
+    let workspace_id = WorkspaceId::parse(&workspace).unwrap();
+    let (link, delegation) = served
+        .roster
+        .sessions
+        .live_roster(workspace_id, &running)
+        .unwrap();
+    let cert = link.engine().identity().device_cert.clone();
+    let app = tilo_action_policy::TreePath::workspace(&workspace).app(CHAT);
+    let chat = app.clone().kind("chat.workspace");
+    let can_read_chat = async |caller: &Caller| {
+        let policy = workspaces
+            .roster_action_policy(workspace_id, caller, (&cert, &delegation), Some((CHAT, "")))
+            .await?;
+        let access = policy.agent_member_access(caller)?;
+        Some(access.answer(
+            &chat,
+            tilo_action_policy::ActionKind::Read,
+            &tilo_action_policy::Context::at_time(tilo_clock::wall()),
+        ))
+    };
+    let bind = async |agent: &str, node: &tilo_action_policy::TreePath, answer: &str| {
+        on_roster(
+            &workspaces,
+            &workspace,
+            (None, &person),
+            WorkspaceAgents::SET_AGENT_BOUND.with(workspace_agents::SetAgentBound {
+                agent: Id::from_raw(agent.to_owned()),
+                bound: vec![ui::tilo_workspace_agent::Bound {
+                    node: node.to_string(),
+                    kinds: vec!["read".into()],
+                    answer: answer.into(),
+                }],
+            }),
+        )
+        .await
+        .unwrap();
+    };
+    for (lead_node, lead_answer, child_node, child_answer, expected) in [
+        (&app, "deny", &chat, "allow", Deny),
+        (&chat, "allow", &app, "deny", Deny),
+        (&app, "ask", &chat, "allow", Ask),
+        (&chat, "allow", &app, "ask", Ask),
+        (&chat, "deny", &chat, "allow", Deny),
+        (&chat, "allow", &chat, "allow", Allow),
+    ] {
+        bind(SCOUT, lead_node, lead_answer).await;
+        bind("reader", child_node, child_answer).await;
+        assert_eq!(
+            can_read_chat(&running).await,
+            Some(expected),
+            "lead {lead_answer}, child {child_answer}"
+        );
+    }
+    assert_eq!(can_read_chat(&as_child(child.created_at + 1)).await, None);
     on_roster(
         &workspaces,
         &workspace,
@@ -786,6 +842,8 @@ async fn retiring_a_working_child_ends_its_use_of_the_leads_grant() {
     .expect("the keeper retires the working child");
     assert!(workspaces.agent_may_act(&workspace, &signer, CHAT).await);
     assert!(!workspaces.agent_may_act(&workspace, &running, CHAT).await);
+    assert_eq!(can_read_chat(&running).await, None);
+    assert_eq!(can_read_chat(&signer).await, Some(Allow));
     hold.open();
     assert!(agents.draining().finish(Duration::from_secs(30)).await);
     assert_eq!(
@@ -943,6 +1001,181 @@ async fn asks_for_one(
     .await
 }
 
+/// Chat can answer a person's request for a child without permission to start one in Assistant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn asking_for_a_sub_agent_with_chat_alone_explains_the_missing_assistant_access() {
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
+    let ada = themselves(&root, &browser, &workspace);
+    let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = served
+        .approving_for(&workspace, &[SCOUT], &[CHAT])
+        .await
+        .scripted(plays(&asked, |_| says("I can answer Chat.")));
+
+    asks_for_one(
+        &actions,
+        &workspace,
+        &ada,
+        &thread,
+        ("Research", "Find the notes.", "notes-with-chat"),
+    )
+    .await
+    .expect("the person may ask through Chat");
+    agents.look(&workspace).await.unwrap();
+    let message = chat::cause::message_id(&MemberId::person(person), "notes-with-chat");
+    let reply = reply_of(&workspaces, &workspace, &message, SCOUT).await;
+    assert!(
+        reply.text.contains("Assistant") && reply.text.to_lowercase().contains("access"),
+        "the reply explains the access the person can grant: {}",
+        reply.text
+    );
+    assert!(
+        !roster(&workspaces, &workspace)
+            .await
+            .agents
+            .iter()
+            .any(Agent::is_sub)
+    );
+    assert!(
+        asked.lock().unwrap().is_empty(),
+        "a refusal needs no model call"
+    );
+
+    let greeting = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        (&root, &browser),
+        "Are you here?",
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    assert_eq!(
+        reply_of(&workspaces, &workspace, &greeting, SCOUT)
+            .await
+            .text,
+        "I can answer Chat."
+    );
+    page.peer.close();
+}
+
+/// A child may report work under its lead's grant. A queued report cannot start another
+/// model call once the keeper has replaced that grant with Chat alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queued_child_news_needs_assistant_access_after_a_grant_change() {
+    use tilo_server_protocol::agents::AgentGrantAction;
+
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
+    let asked = Arc::new(Mutex::new(Vec::new()));
+    let agents = served
+        .approving_for(
+            &workspace,
+            &[SCOUT],
+            &[CHAT, ui::tilo_workspace_agent::OWNER],
+        )
+        .await
+        .scripted(plays(&asked, |request| {
+            if of_sub_agent(request) {
+                says("My report is ready.")
+            } else {
+                says("I can answer Chat.")
+            }
+        }));
+    starts(
+        &workspaces,
+        &workspace,
+        &person,
+        ("Reader", "Find the notes."),
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    let child_chat =
+        chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent("reader")]);
+    let job = caused(&workspaces, &workspace, (child_chat.as_str(), "job"), 1).await;
+    let child = agents
+        .turns(&workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|turn| turn.cause == job[0].0.as_str())
+        .expect("the child's delivered job");
+    agents.answer(&workspace, &child).await.unwrap();
+    let thread = chat::Chat::direct_id([MemberId::person(person), MemberId::agent(SCOUT)]);
+    let news = caused(
+        &workspaces,
+        &workspace,
+        (thread.as_str(), chat::cause::NEWS),
+        1,
+    )
+    .await;
+    let (message, report) = &news[0];
+    assert_eq!(report.author, MemberId::agent("reader"));
+    assert!(
+        report
+            .cause
+            .as_ref()
+            .unwrap()
+            .key
+            .0
+            .starts_with("sub-agent:reader:")
+    );
+    let pending = agents
+        .turns(&workspace)
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|turn| turn.cause == message.as_str())
+        .expect("the lead may take its child's news with Assistant access");
+
+    let mut page = page;
+    member_grant_action(&mut page, AgentGrantAction::Revoke).await;
+    member_grant_action(&mut page, AgentGrantAction::RequestChat).await;
+    approve_member_grant(
+        &served,
+        &root,
+        WorkspaceId::parse(&workspace).unwrap(),
+        &[CHAT],
+    )
+    .await;
+    let calls = asked.lock().unwrap().len();
+    assert_eq!(calls, 1, "only the child has been asked");
+    assert!(
+        !agents
+            .turns(&workspace)
+            .await
+            .unwrap()
+            .iter()
+            .any(|turn| turn.cause == message.as_str())
+    );
+    agents.answer(&workspace, &pending).await.unwrap();
+    assert_eq!(
+        asked.lock().unwrap().len(),
+        calls,
+        "the previously eligible turn did not reach a model"
+    );
+    let greeting = write_to_agent(
+        &actions,
+        &workspaces,
+        &workspace,
+        (&root, &browser),
+        "Are you still here?",
+    )
+    .await;
+    agents.look(&workspace).await.unwrap();
+    assert_eq!(
+        reply_of(&workspaces, &workspace, &greeting, SCOUT)
+            .await
+            .text,
+        "I can answer Chat."
+    );
+    page.peer.close();
+}
+
 /// Its person asks for a sub-agent in their own thread with their agent, through the server's
 /// action service. The server starts it as that agent, with the words of the ask as its job and
 /// the cause's label as its name, and answers the ask itself: no model is asked. Looking again
@@ -955,18 +1188,20 @@ async fn its_person_asks_for_a_sub_agent_and_the_server_starts_it() {
     let ada = themselves(&root, &browser, &workspace);
     let thread = chat::Chat::direct_id([MemberId::person(person.clone()), MemberId::agent(SCOUT)]);
     let asked = Arc::new(Mutex::new(Vec::new()));
-    let agents = worked(
-        &served,
-        &workspace,
-        plays(&asked, |request| {
+    let agents = served
+        .approving_for(
+            &workspace,
+            &[SCOUT],
+            &[CHAT, ui::tilo_workspace_agent::OWNER],
+        )
+        .await
+        .scripted(plays(&asked, |request| {
             if of_sub_agent(request) {
                 says("The deck is not in Files.")
             } else {
                 says("Told.")
             }
-        }),
-    )
-    .await;
+        }));
 
     asks_for_one(
         &actions,

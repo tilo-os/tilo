@@ -322,6 +322,7 @@ mod tests {
             cause: message.to_owned(),
             program: None,
             look_grant: None,
+            team_news: false,
             request: message.to_owned(),
             history: Vec::new(),
             asked: message.to_owned(),

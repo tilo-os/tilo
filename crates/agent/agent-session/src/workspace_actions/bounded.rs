@@ -427,30 +427,17 @@ pub(super) fn bounded_access(
     policy: &super::ViewReadPolicy,
     who: &Bounded,
 ) -> Result<policy::MemberAccess, ActionCallError> {
-    let mut acting = who.caller.acting().clone();
     if who.caller.roster_created_at().is_some() {
-        // Keep the authenticated turn's session while preserving the device cap.
-        acting.foreign_device = policy.access.acting.foreign_device;
+        return policy
+            .agent_member_access(&who.caller)
+            .ok_or(ActionCallError::NotPermitted);
     }
-    let granted = agent_grants(policy, who);
     policy
         .access
         .clone()
-        .as_acting(acting)
-        .map(|access| access.granted(granted))
+        .as_acting(who.caller.acting().clone())
+        .map(|access| access.granted(who.caller.granted(&policy.agent_bound)))
         .ok_or(ActionCallError::NotPermitted)
-}
-
-fn agent_grants(policy: &super::ViewReadPolicy, who: &Bounded) -> Vec<policy::Grant> {
-    if let Some(agent) = who
-        .agent
-        .as_ref()
-        .filter(|_| who.caller.roster_created_at().is_some())
-    {
-        policy::roles::agent_bound(agent, who.person.as_str(), &policy.agent_bound)
-    } else {
-        who.caller.granted(&policy.agent_bound)
-    }
 }
 
 /// `who`'s permissions under `policy` ([`bounded_access`]).
@@ -824,8 +811,7 @@ impl Worker {
         }
         self.clock = self.clock.wrapping_add(1);
         let clock = self.clock;
-        let granted = agent_grants(&policy, who);
-        let device = if who.caller.roster_created_at().is_some() {
+        let (granted, device) = if who.caller.roster_created_at().is_some() {
             let (peer, _) = self
                 .shared
                 .agent_sessions
@@ -833,12 +819,12 @@ impl Worker {
                 .and_then(|sessions| sessions.live_roster(workspace_id, &who.caller))
                 .ok_or(ActionCallError::NotPermitted)?;
             let cert = &peer.engine().identity().device_cert;
-            Some(tilo_actions::InvokerDevice::certified(
-                cert.device_public_key,
-                &cert.device_label,
-            ))
+            let device =
+                tilo_actions::InvokerDevice::certified(cert.device_public_key, &cert.device_label);
+            // The current roster bounds are in policy.access, which is checked on every reuse.
+            (Vec::new(), Some(device))
         } else {
-            None
+            (who.caller.granted(&policy.agent_bound), None)
         };
         // Renew the same caller's replica in place as the workspace policy changes.
         let same = self

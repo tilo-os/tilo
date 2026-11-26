@@ -184,6 +184,8 @@ pub struct RemoteActionTarget {
 /// one provider a caller names without reading it from a catalogue page.
 pub const WORKSPACE_GOVERNANCE_PROVIDER: &str =
     tilo_action_policy::agent_answers::WORKSPACE_GOVERNANCE_APP;
+/// The native service that lists names of the person's other workspaces for their assistant.
+pub const OTHER_WORKSPACES_PROVIDER: &str = "tilo.other-workspaces";
 /// The resource kind of a workspace's governance resource.
 pub const WORKSPACE_GOVERNANCE_KIND: &str = "workspace.permissions";
 

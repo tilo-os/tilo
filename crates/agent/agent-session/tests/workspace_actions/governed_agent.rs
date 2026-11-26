@@ -307,6 +307,10 @@ async fn a_hosted_roster_turn() {
             .any(|app| app.id == "tilo.models" && !app.title.is_empty())
     );
     assert!(choices.iter().any(|app| app.id == SHEETS));
+    assert!(choices.iter().any(
+        |app| app.id == tilo_actions::remote::OTHER_WORKSPACES_PROVIDER
+            && app.title == "Other workspace names"
+    ));
     let choose = |apps: serde_json::Value| {
         request(
             AGENTS_PROVIDER,

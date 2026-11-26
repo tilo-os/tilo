@@ -49,6 +49,10 @@ fn grant_apps(catalogue: &tilo_agent_session::AppCatalogue) -> Vec<AgentGrantApp
         (PASSWORDS, "Passwords"),
         (person_models::PROVIDER, "Model account settings"),
         (person_connections::PROVIDER, "Connections"),
+        (
+            tilo_actions::remote::OTHER_WORKSPACES_PROVIDER,
+            "Other workspace names",
+        ),
     ]);
     let mut choices = Vec::new();
     for (id, label) in WORK_APPS

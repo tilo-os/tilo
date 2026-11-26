@@ -1158,8 +1158,7 @@ fn private_turn(chat: &chat::Chat, channel: &Id, person: &str, agent: &str) -> b
         && members.contains(&MemberId::agent(agent))
 }
 
-/// The turns `chat` 's conversations in `workspace` give, read from `part` 's messages
-/// ([`chat::summons::summonses`]).
+/// The next Chat turn on this device for each conversation and agent.
 fn turns<'a>(
     workspace: &str,
     chat: &chat::Chat,
@@ -1169,8 +1168,10 @@ fn turns<'a>(
     agent_instructions: &std::collections::HashMap<String, String>,
     learned_for: impl Fn(&str) -> Option<&'a Learned>,
 ) -> Vec<AgentTurn> {
-    chat::summons::summonses(chat, part)
-        .into_iter()
+    chat::summons::pending_summonses(chat, part)
+        .filter_map(|mut pending| {
+            pending.find(|summons| summons.may_run_on_device(workspace, part))
+        })
         .filter_map(|summons| {
             let message = part.messages.get(&summons.message)?;
             let address = summons.address();

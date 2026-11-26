@@ -1,8 +1,8 @@
 //! Which workspace observations a person's live assistant grant admits to their Chat.
 
 use super::*;
-use crate::hosted_mail_turn::{a_message_arrives, linked_inbox};
-use crate::hosted_secret_use::Hosted;
+use crate::workspace_actions::hosted_mail_turn::{a_message_arrives, linked_inbox};
+use crate::workspace_actions::hosted_secret_use::Hosted;
 use tilo_server_client::MemberApprover;
 use tilo_server_client::pairing::{answer_agent_grant, pending_agent_grants};
 use tilo_server_protocol::agents::{AgentGrantAction, AgentGrantStatus, GrantState};

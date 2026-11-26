@@ -214,6 +214,30 @@ async fn a_device_the_server_placed_for_a_window_is_never_the_one_the_assistant_
     }
 }
 
+/// Chat access alone does not reveal the names of other workspaces, including at a known address.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn chat_alone_does_not_list_the_persons_other_workspace_names() {
+    let mut served = Served::start(2).await;
+    let (own, own_page, _) = served.workspace(|_| Vec::new()).await;
+    let (shared, shared_page) = served.opened.pop().expect("a second workspace");
+    served.alive.approving_for(&own, &[SCOUT], &[CHAT]).await;
+    let calls = everything_then_the_list();
+    let shown = asked_by(
+        &served,
+        &own,
+        (&served.ada, &served.devices.1),
+        ("Which other workspaces am I in?", &calls),
+        None,
+    )
+    .await;
+    assert_eq!(shown.len(), 2, "both calls were answered: {shown:?}");
+    assert!(!shown[0].contains(NAMED), "{}", shown[0]);
+    assert!(listed_in(&shown[1]).is_empty(), "{}", shown[1]);
+    assert!(!shown[1].contains(&shared), "{}", shown[1]);
+    own_page.peer.close();
+    shared_page.peer.close();
+}
+
 /// A person's own assistant, in the workspace that is theirs alone, finds the list of their
 /// other workspaces among its tools and reads it: every other workspace they are a member of
 /// on the server, and not the one the turn is in. A turn that begins once somebody else is a
@@ -225,6 +249,14 @@ async fn a_persons_own_assistant_lists_their_other_workspaces_while_its_workspac
     let mut served = Served::start(2).await;
     let (own, own_page, _) = served.workspace(|_| Vec::new()).await;
     let (shared, shared_page) = served.opened.pop().expect("a second workspace");
+    served
+        .alive
+        .approving_for(
+            &own,
+            &[SCOUT],
+            &[CHAT, tilo_actions::remote::OTHER_WORKSPACES_PROVIDER],
+        )
+        .await;
     let hers = (&served.ada, &served.devices.1);
     let server = server_of(&served);
     let placed = server.environments();

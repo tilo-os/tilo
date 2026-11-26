@@ -31,6 +31,7 @@ use tilo_agent_session::workspace_actions::ViewReadPolicy;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::delegation::Delegation;
 use tilo_user_identity::DeviceCert;
+use tilo_workspace_agent::{Agent, WorkspaceAgents};
 
 use super::{GovernedWorkspace, Workspaces, system_time};
 use crate::auth::AuthenticatedPeer;
@@ -78,6 +79,14 @@ impl Workspaces {
         decision == Decision::Admit
     }
 
+    /// The workspace's current agents, folded from their one native resource.
+    pub(crate) async fn kept_agents(&self, workspace: &str) -> Option<WorkspaceAgents> {
+        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
+        self.read_resource::<WorkspaceAgents>(workspace, (tilo_workspace_agent::OWNER, &list))
+            .await
+            .ok()?
+    }
+
     /// Read the current hosted agent entry for `keeper`, the person who
     /// approved it. Where a requester is supplied, that exact certified person
     /// device must still be admitted to the workspace.
@@ -88,15 +97,7 @@ impl Workspaces {
         keeper: &[u8; 32],
         requester: Option<&DeviceCert>,
     ) -> Option<tilo_workspace_agent::Agent> {
-        let id = workspace.to_string();
-        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let agents = self
-            .read_resource::<tilo_workspace_agent::WorkspaceAgents>(
-                &id,
-                (tilo_workspace_agent::OWNER, &list),
-            )
-            .await
-            .ok()??;
+        let agents = self.kept_agents(&workspace.to_string()).await?;
         let entry = roster_entry(&agents, agent, keeper)?;
         if let Some(cert) = requester {
             if !self.roster_keeper_device(workspace, keeper, cert).await {
@@ -229,21 +230,16 @@ impl Workspaces {
         session: (&DeviceCert, &Delegation),
         inside: Option<(&str, &str)>,
     ) -> Option<ViewReadPolicy> {
-        let agent = caller.approved_agent()?;
-        let keeper = caller.user_public_key()?;
-        let created_at = caller.roster_created_at()?;
-        let entry = self
-            .hosted_roster_agent(workspace, agent, keeper, None)
-            .await?;
-        if entry.created_at != created_at {
-            return None;
-        }
+        let agents = self.kept_agents(&workspace.to_string()).await?;
         // Read without the workspace's lock, which is held across a commit's
         // writes: every call an agent makes reads this before it saves.
         let reading = self.reading(workspace).await?;
+        if reading.member {
+            return None;
+        }
         self.roster_policy_for(
             (&reading.replica.lock(), workspace, &reading.workspace),
-            &entry,
+            &agents,
             caller,
             session,
             inside,
@@ -257,29 +253,21 @@ impl Workspaces {
         session: (&DeviceCert, &Delegation),
         inside: Option<(&str, &str)>,
     ) -> Option<ViewReadPolicy> {
-        use tilo_workspace_agent::{KIND, OWNER, WorkspaceAgents};
+        use tilo_workspace_agent::{KIND, OWNER};
 
-        let agent = caller.approved_agent()?;
-        let keeper = caller.user_public_key()?;
-        let workspace = governed.workspace_id();
-        if caller.workspace() != Some(governed.workspace()) || governed.member.is_some() {
+        if governed.member.is_some() {
             return None;
         }
         let list = collab_types::workspace_document_id(KIND);
         let bytes = governed.readable_document(OWNER, &list).await.ok()??;
         let agents = super::actions::agents::read_resource_bytes::<WorkspaceAgents>(&bytes).ok()?;
-        let entry = roster_entry(&agents, agent, keeper)?;
-        if caller.roster_created_at() != Some(entry.created_at) {
-            return None;
-        }
-        let peer = governed.peer();
-        let now_ns = tilo_clock::unix_now_ns();
-        super::hosted_use::person_device_in(&peer, keeper, |device| {
-            self.inner.host.environments.of(device, now_ns).is_some()
-        })?;
         self.roster_policy_for(
-            (&peer, workspace, governed.workspace()),
-            entry,
+            (
+                &governed.peer(),
+                governed.workspace_id(),
+                governed.workspace(),
+            ),
+            &agents,
             caller,
             session,
             inside,
@@ -289,13 +277,23 @@ impl Workspaces {
     fn roster_policy_for(
         &self,
         (peer, workspace, name): (&super::StatePeer, WorkspaceId, &str),
-        entry: &tilo_workspace_agent::Agent,
+        agents: &WorkspaceAgents,
         caller: &Caller,
         session: (&DeviceCert, &Delegation),
         inside: Option<(&str, &str)>,
     ) -> Option<ViewReadPolicy> {
         let agent = caller.approved_agent()?;
         let keeper = caller.user_public_key()?;
+        let actor = caller.acting().agent_id()?;
+        let entry = roster_entry(agents, agent, keeper)?;
+        if caller.workspace() != Some(name) || caller.roster_created_at() != Some(entry.created_at)
+        {
+            return None;
+        }
+        let now_ns = tilo_clock::unix_now_ns();
+        super::hosted_use::person_device_in(peer, keeper, |device| {
+            self.inner.host.environments.of(device, now_ns).is_some()
+        })?;
         let (cert, delegation) = self.approved_agent(peer, workspace, agent, keeper)?;
         if caller.device_public_key() != Some(&cert.device_public_key)
             || session != (&cert, &delegation)
@@ -310,9 +308,29 @@ impl Workspaces {
             peer.check_document_read(cert.device_public_key, app, document, now)
                 .ok()?;
         }
-        let access = peer.permissions(cert.device_public_key, now).ok()?;
+        let person = caller.acting_for_person()?;
+        let mut grants =
+            tilo_action_policy::roles::agent_bound(agent, person, &entry.turn_rules(name));
+        if actor != agent {
+            let child = child_for_signer(
+                agents,
+                actor,
+                keeper,
+                agent,
+                caller.roster_created_at(),
+                caller.child_created_at(),
+            )?;
+            grants.extend(tilo_action_policy::roles::agent_bound(
+                actor,
+                person,
+                &child.turn_rules(name),
+            ));
+        }
+        let access = peer
+            .permissions(cert.device_public_key, now)
+            .ok()?
+            .granted(grants);
         let sandbox = peer.governance().governed_sandbox().ok()?;
-        let agent_bound = entry.turn_rules(name);
         Some(ViewReadPolicy {
             workspace: name.to_owned(),
             access,
@@ -321,7 +339,7 @@ impl Workspaces {
                 .duration_since(std::time::SystemTime::UNIX_EPOCH)
                 .ok()?
                 .as_secs(),
-            agent_bound,
+            agent_bound: Vec::new(),
         })
     }
 
@@ -407,6 +425,37 @@ impl Workspaces {
             "an agent's place on the workspace's roster changed with its grant");
         Ok(())
     }
+}
+
+/// The active child and the active signing lead of its keeper.
+pub(super) fn child_and_lead<'a>(
+    agents: &'a WorkspaceAgents,
+    actor: &str,
+    keeper: &str,
+) -> Option<(&'a Agent, &'a Agent)> {
+    let child = agents.get(&tilo_resource::Id::from_raw(actor.to_owned()))?;
+    if !child.is_active() || !child.is_sub() || !child.keeper.eq_ignore_ascii_case(keeper) {
+        return None;
+    }
+    let lead = agents.root_of(child);
+    (lead.is_active() && !lead.is_sub() && lead.keeper.eq_ignore_ascii_case(keeper))
+        .then_some((child, lead))
+}
+
+/// Check both entries against the original turn, including when the workspace is already locked.
+pub(super) fn child_for_signer<'a>(
+    agents: &'a WorkspaceAgents,
+    actor: &str,
+    keeper: &[u8; 32],
+    signer: &str,
+    lead_created_at: Option<i64>,
+    child_created_at: Option<i64>,
+) -> Option<&'a Agent> {
+    let (child, lead) = child_and_lead(agents, actor, &hex::encode(keeper))?;
+    (Some(child.created_at) == child_created_at
+        && lead.id.0 == signer
+        && Some(lead.created_at) == lead_created_at)
+        .then_some(child)
 }
 
 fn roster_entry<'a>(

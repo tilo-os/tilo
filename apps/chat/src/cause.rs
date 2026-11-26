@@ -36,6 +36,13 @@ pub const EVENT: &str = "event";
 pub const REMINDER: &str = "reminder";
 /// The kind of a cause that is news of work started for its person.
 pub const NEWS: &str = "news";
+/// An explicit Chat request to start a child.
+pub const TEAM_START: &str = "sub-agent";
+/// The native team's job and note delivered into a child's Chat.
+pub const TEAM_JOB: &str = "job";
+pub const TEAM_NOTE: &str = "note";
+/// The namespace used for native team deliveries, with a hash for exceptionally long keys.
+pub const TEAM_KEY_PREFIX: &str = "sub-agent:";
 /// The kind of a cause that is its person asking themselves, through the
 /// verb instead of the message field.
 pub const PERSON: &str = "person";
@@ -138,6 +145,33 @@ fn is_word(word: &str) -> bool {
 }
 
 impl Cause {
+    /// A child agent reporting its Assistant-owned job to its lead through Chat.
+    #[must_use]
+    pub fn team_news(&self, author: &MemberId) -> bool {
+        self.kind.0 == NEWS
+            && author
+                .agent_id()
+                .is_some_and(|agent| self.has_team_key(agent))
+    }
+
+    /// Team work uses the runner that can verify the roster and its Assistant grant.
+    #[must_use]
+    pub fn needs_team(&self, author: &MemberId, recipient: &str) -> bool {
+        match self.kind.0.as_str() {
+            TEAM_START => author == &self.person,
+            TEAM_JOB | TEAM_NOTE => author.agent_id().is_some() && self.has_team_key(recipient),
+            _ => self.team_news(author),
+        }
+    }
+
+    fn has_team_key(&self, agent: &str) -> bool {
+        self.key.0.strip_prefix(TEAM_KEY_PREFIX).is_some_and(|key| {
+            key.strip_prefix(agent)
+                .is_some_and(|tail| tail.starts_with(':'))
+                || key.len() == 40 && key.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+    }
+
     /// The cause `starting` gives, for the person `starter` starts the turn
     /// for.
     ///

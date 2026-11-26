@@ -426,6 +426,7 @@ async fn eligibility(
             }
         }
         Turn::Agent {
+            agent,
             signer,
             acts_for,
             app,
@@ -439,7 +440,7 @@ async fn eligibility(
                 return Err(Ineligible::CannotOpen);
             }
             let access = workspaces.agent_access(workspace, signer, acts_for).await?;
-            if !access.permits_app(app) {
+            if !access.permits_actor(agent, signer) || !access.permits_app(app) {
                 return Err(Ineligible::NotPermitted);
             }
             Ok(())
@@ -497,6 +498,11 @@ impl AgentAccess {
             Self::Device => true,
             Self::Hosted { scope, .. } => scope.permits_app(app),
         }
+    }
+
+    /// A child works on the job kept by Assistant, under its lead's permission for that app.
+    pub(crate) fn permits_actor(&self, actor: &str, signer: &str) -> bool {
+        actor == signer || self.permits_app(tilo_app_id::apps::ASSISTANT)
     }
 
     /// A delayed step from a former signing session may never use a replacement grant.

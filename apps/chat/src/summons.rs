@@ -69,6 +69,30 @@ impl Summons {
         conversation_address(&self.conversation)
     }
 
+    /// A device can answer its own Chat and ordinary automations. A look carrying
+    /// a server grant, a known look installation, or an Assistant team cause
+    /// needs the service that validates its authority.
+    #[must_use]
+    pub fn may_run_on_device(&self, workspace: &str, part: &ChatMessages) -> bool {
+        let Some(message) = part.messages.get(&self.message) else {
+            return false;
+        };
+        let Some(cause) = &message.cause else {
+            return true;
+        };
+        if cause.look_grant.is_some() || cause.needs_team(&message.author, &self.agent) {
+            return false;
+        }
+        cause.by_person()
+            || message.author.agent_id().is_none_or(|author| {
+                author
+                    != tilo_actions::remote::workspace_initiative::personal_event(
+                        workspace,
+                        &self.person,
+                    )
+            })
+    }
+
     /// The reply that answers it: the one its id and the agent's derive.
     #[must_use]
     pub fn reply(&self) -> Id {
@@ -737,6 +761,88 @@ mod tests {
             AgentWorkState::Done { did: String::new() },
         );
         assert_eq!(turn(&part), second);
+    }
+
+    #[test]
+    fn a_device_leaves_team_work_to_the_host_and_can_take_other_news() {
+        let chat = Chat::default();
+        let direct = Chat::direct_id([MemberId::person(ADA), MemberId::agent("scout")]);
+        let mut part = ChatMessages::default();
+        for (by, kind, key) in [
+            (MemberId::person(ADA), crate::cause::TEAM_START, "request"),
+            (
+                MemberId::agent("lead"),
+                crate::cause::TEAM_JOB,
+                "sub-agent:scout:job",
+            ),
+            (
+                MemberId::agent("lead"),
+                crate::cause::TEAM_NOTE,
+                "sub-agent:scout:note:1",
+            ),
+            (
+                MemberId::agent("reader"),
+                crate::cause::NEWS,
+                "sub-agent:reader:m1:0",
+            ),
+        ] {
+            let (id, message) = caused(&direct, by, ADA, (kind, key), 1);
+            part.messages.push(id, message);
+        }
+        let (ordinary, message) = caused(
+            &direct,
+            MemberId::agent("calendar"),
+            ADA,
+            (crate::cause::NEWS, "sub-agent:other:report"),
+            2,
+        );
+        part.messages.push(ordinary.clone(), message);
+        let available = pending_summonses(&chat, &part)
+            .flatten()
+            .filter(|summons| summons.may_run_on_device("workspace", &part))
+            .map(|summons| summons.message)
+            .collect::<Vec<_>>();
+        assert_eq!(available, [ordinary]);
+    }
+
+    #[test]
+    fn a_device_leaves_look_grants_to_their_service_and_runs_the_next_ordinary_event() {
+        use tilo_actions::remote::workspace_initiative::personal_event;
+        let chat = Chat::default();
+        let direct = Chat::direct_id([MemberId::person(ADA), MemberId::agent("scout")]);
+        let mut part = ChatMessages::default();
+        let (stamped, mut message) = caused(
+            &direct,
+            MemberId::agent("former-installation"),
+            ADA,
+            ("event", "one"),
+            1,
+        );
+        message.cause.as_mut().unwrap().look_grant = Some(ui::tilo_resource::Atom("ab".repeat(32)));
+        part.messages.push(stamped.clone(), message);
+        let (legacy, message) = caused(
+            &direct,
+            MemberId::agent(personal_event("workspace", ADA)),
+            ADA,
+            ("event", "two"),
+            2,
+        );
+        part.messages.push(legacy, message);
+        let (ordinary, message) = caused(
+            &direct,
+            MemberId::agent("ordinary-reminder"),
+            ADA,
+            ("reminder", "three"),
+            3,
+        );
+        part.messages.push(ordinary.clone(), message);
+        assert_eq!(summonses(&chat, &part)[0].message, stamped);
+        let next = pending_summonses(&chat, &part)
+            .next()
+            .unwrap()
+            .find(|summons| summons.may_run_on_device("workspace", &part))
+            .unwrap();
+        assert_eq!(next.message, ordinary);
     }
 
     /// Of two messages a person wrote the later one is their newest, whichever way the part

@@ -159,6 +159,70 @@ fn names_any(shown: &str, others: &[&str]) -> bool {
     others.iter().any(|other| shown.contains(other))
 }
 
+/// A Chat turn can discover and start a team only after its keeper grants Assistant.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_chat_turn_needs_the_assistant_grant_to_discover_and_start_a_team() {
+    team!(
+        root, browser, actions, workspaces, workspace, page, person, served
+    );
+    let mut page = page;
+    let ada = themselves(&root, &browser, &workspace);
+    let thread = direct(&person, SCOUT);
+    for (apps, words) in [
+        (&[CHAT][..], "Try to start a researcher."),
+        (&[CHAT, OWNER][..], "Start a researcher now."),
+    ] {
+        let permitted = apps.contains(&OWNER);
+        if permitted {
+            member_grant_action(
+                &mut page,
+                tilo_server_protocol::agents::AgentGrantAction::Revoke,
+            )
+            .await;
+        }
+        let asked = Arc::new(Mutex::new(Vec::new()));
+        let model = plays(&asked, |request| match tool_answers(request).len() {
+            0 => looks(),
+            1 => does(
+                2,
+                START,
+                &json!({"name": "Researcher", "job": "Find the memo."}),
+            ),
+            _ => says("Finished."),
+        });
+        let agents = served
+            .approving_for(&workspace, &[SCOUT], apps)
+            .await
+            .scripted(model);
+        let post = writes_in(
+            &actions,
+            &workspaces,
+            &workspace,
+            &ada,
+            (thread.as_str(), words),
+        )
+        .await;
+        agents.look(&workspace).await.unwrap();
+        assert_eq!(
+            reply_of(&workspaces, &workspace, &post, SCOUT).await.text,
+            "Finished."
+        );
+        let answers = tool_answers(asked.lock().unwrap().last().unwrap());
+        let [(listed, false), (started, failed)] = answers.as_slice() else {
+            panic!("the turn must list tools and attempt the exact team action: {answers:?}");
+        };
+        assert_eq!(listed.contains("sub-agents"), permitted, "{listed}");
+        assert_eq!(!failed, permitted, "{started}");
+        let children = sub_agents(&workspaces, &workspace, &person).await;
+        if permitted {
+            assert_eq!(children, ["researcher"]);
+        } else {
+            assert!(children.is_empty(), "{children:?}");
+        }
+    }
+    page.peer.close();
+}
+
 /// The person's own agent starts sub-agents from its own turn, through the turn's own tools.
 /// Past the number its person lets work at once the list refuses in its own words, and what
 /// it refused is not kept. The turn stops one and reads how its team stands. Nothing else is

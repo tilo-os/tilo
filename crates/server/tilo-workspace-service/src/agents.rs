@@ -64,10 +64,10 @@ use tilo_server_protocol::WorkspaceId;
 use tilo_workspace_agent::{Agent, WorkspaceAgents};
 use tracing::Instrument as _;
 
-use crate::workspaces::Workspaces;
 use crate::workspaces::person_model::{
     Interaction, ModelPermission, ModelRefusal, PersonModel, Spender,
 };
+use crate::workspaces::{Store, Workspaces};
 use events::{Authority, WorkspaceEvents};
 use initiative::Initiative;
 use tilo_actions::remote::workspace_events;
@@ -168,9 +168,7 @@ pub struct WorkspaceActionProvider {
     initiative: Option<Initiative>,
     /// What this service answers itself for the one turn it serves, beside the workspace's
     /// resources ([`TurnProvider`]).
-    own: Vec<Arc<dyn TurnProvider>>,
-    /// How the calls those took ended; `None` while it answers none of them.
-    ended: Option<turn_provider::Ended>,
+    own: Option<turn_provider::Providers>,
     /// What its own services answered, for a caller that follows an invocation.
     answered: OwnAnswers,
     /// What the person asked of the turn this serves, in their words: the purpose History
@@ -183,7 +181,7 @@ pub struct WorkspaceActionProvider {
 /// tools read how an invocation ended by observing it: without this an action that was carried
 /// out is told to the model as one still pending.
 #[derive(Clone, Default)]
-struct OwnAnswers(Arc<Mutex<VecDeque<(InvocationId, Caller, InvocationUpdate)>>>);
+struct OwnAnswers(Arc<Mutex<VecDeque<(Caller, InvocationState)>>>);
 
 impl OwnAnswers {
     /// The most answers kept. A turn's tools observe an invocation as soon as it is admitted,
@@ -209,11 +207,15 @@ impl OwnAnswers {
             },
             ReceiptStatus::Rejected { .. } | ReceiptStatus::Accepted => return,
         };
+        self.keep_state(caller.clone(), InvocationState::new(invocation, update));
+    }
+
+    fn keep_state(&self, caller: Caller, state: InvocationState) {
         let mut kept = self.0.lock_recover();
         if kept.len() >= Self::KEPT {
             kept.pop_front();
         }
-        kept.push_back((invocation, caller.clone(), update));
+        kept.push_back((caller, state));
     }
 
     /// How invocation `id` ended, for the `caller` that made it and nobody else.
@@ -222,8 +224,8 @@ impl OwnAnswers {
             .lock_recover()
             .iter()
             .rev()
-            .find(|(invocation, by, _)| invocation == id && by == caller)
-            .map(|(_, _, update)| InvocationState::new(*id, update.clone()))
+            .find(|(by, state)| state.invocation() == *id && by == caller)
+            .map(|(_, state)| state.clone())
     }
 }
 
@@ -234,8 +236,7 @@ impl WorkspaceActionProvider {
             actions: actions.into(),
             workspace,
             events: None,
-            own: Vec::new(),
-            ended: None,
+            own: None,
             initiative: None,
             answered: OwnAnswers::default(),
             purpose: None,
@@ -288,30 +289,11 @@ impl WorkspaceActionProvider {
             }
             _ => None,
         };
-        // One provider id is answered by every provider of the turn's own that holds a
-        // resource of it: their rows make one page.
-        let own: Vec<_> = self
-            .own
-            .iter()
-            .filter_map(|own| own.rows(caller, &query))
-            .collect();
-        if !own.is_empty()
-            && let Some(ended) = &self.ended
+        let mut offered = Vec::new();
+        if let Some(own) = &self.own
+            && let Some(page) = own.page(caller, &query, &mut offered).await?
         {
-            return ended
-                .page(own, query)
-                .await
-                .unwrap_or_else(|| Err(unavailable()));
-        }
-        // A listing of everything names the turn's own providers beside the workspace's, each
-        // once.
-        let mut offered: Vec<tilo_actions::remote::CatalogueProvider> = Vec::new();
-        if query.provider.is_none() {
-            for named in self.own.iter().flat_map(|own| own.providers(caller)) {
-                if offered.iter().all(|known| known.provider != named.provider) {
-                    offered.push(named);
-                }
-            }
+            return Ok(page);
         }
         match self
             .serve(
@@ -363,11 +345,15 @@ impl WorkspaceActionProvider {
     /// This service, answering `provider` as well for the turn it serves: named in what the
     /// turn's tools list, and called like the workspace's own actions.
     #[must_use]
-    fn answering(mut self, provider: Arc<dyn TurnProvider>) -> Self {
-        self.own.push(provider);
-        if self.ended.is_none() {
-            self.ended = Some(turn_provider::Ended::here());
-        }
+    fn answering(
+        mut self,
+        workspaces: &Workspaces,
+        app: &'static str,
+        provider: Arc<dyn TurnProvider>,
+    ) -> Self {
+        self.own
+            .get_or_insert_with(|| turn_provider::Providers::here(workspaces, self.workspace))
+            .add(app, provider);
         self
     }
 
@@ -475,10 +461,10 @@ impl ActionProvider for WorkspaceActionProvider {
                 });
             return answer;
         }
-        if let Some(own) = self.own.iter().find(|own| own.takes(&request.target))
-            && let Some(ended) = &self.ended
+        if let Some(own) = &self.own
+            && let Some(provider) = own.taking(&request.target)
         {
-            return ended.carry_out(Arc::clone(own), caller, request);
+            return own.carry_out(provider, caller, request, self.answered.clone());
         }
         self.serve(caller, RemoteActionMessage::Invoke(request))
             .map(|answer| match answer {
@@ -490,11 +476,9 @@ impl ActionProvider for WorkspaceActionProvider {
     fn observe(&self, caller: &Caller, id: &InvocationId) -> Option<InvocationState> {
         // What a provider of the turn's own took is no invocation of the workspace's: how it
         // ended is kept here.
-        self.ended
-            .as_ref()
-            .and_then(|ended| ended.of(id))
+        self.answered
+            .of(caller, id)
             .or_else(|| self.actions.observe(caller, id))
-            .or_else(|| self.answered.of(caller, id))
     }
 
     fn observed(&self, _caller: &Caller, id: &InvocationId, state: Option<&InvocationState>) {
@@ -706,6 +690,8 @@ pub struct Turn {
     pub program: Option<String>,
     /// The assistant's authority when the event gathered this look.
     pub look_grant: Option<String>,
+    /// The ask reports a child's Assistant-owned job to its lead.
+    pub team_news: bool,
     /// What the person asked, in words.
     pub request: String,
     /// Earlier messages kept in the conversation, before this request.
@@ -1277,6 +1263,14 @@ impl ServerAgents {
     /// the device that has it, and a claim stays until it goes unwritten for a minute, so the
     /// device that answered in a conversation answers what is written there next.
     async fn claim(&self, workspace: &str, turn: &Turn) -> Option<Arc<crate::work::Claim>> {
+        if turn.team_news
+            && !self
+                .access(workspace, &turn.agent)
+                .await
+                .is_ok_and(|access| access.permits_app(AGENTS_OWNER))
+        {
+            return None;
+        }
         if !initiative::may_take_look(
             &self.workspaces,
             self.initiative.as_ref(),
@@ -1367,12 +1361,16 @@ impl ServerAgents {
     /// [`Self::asks`] at `now_ms`.
     async fn asks_at(&self, workspace: &str, now_ms: i64) -> Result<Asks, String> {
         let mut chat_agents = BTreeMap::new();
+        let mut team_agents = BTreeSet::new();
         let mut task_agents = BTreeMap::new();
         for (id, agent) in self.agents(workspace).await? {
             let Ok(access) = self.access(workspace, &agent).await else {
                 continue;
             };
             if access.permits_app(CHAT) {
+                if access.permits_app(AGENTS_OWNER) {
+                    team_agents.insert(id.clone());
+                }
                 chat_agents.insert(id.clone(), agent.clone());
             }
             if access.permits_app(TASKS) {
@@ -1404,7 +1402,8 @@ impl ServerAgents {
             self.workspaces.note_waiting(workspace, Vec::new());
             Asks::default()
         } else {
-            self.chat_asks(workspace, &chat_agents, &routes).await?
+            self.chat_asks(workspace, &chat_agents, &team_agents, &routes)
+                .await?
         };
         if !task_agents.is_empty() {
             asks.turns.extend(
@@ -1434,6 +1433,9 @@ impl ServerAgents {
         if matches!(&access, crate::work::AgentAccess::Hosted { created_at, .. } if *created_at != signer.created_at)
         {
             return Err("the agent's signing session changed".into());
+        }
+        if !access.permits_actor(&agent.id.0, &signer.id.0) {
+            return Err("The child agent needs Assistant access to work on its job.".into());
         }
         Ok(access)
     }
@@ -1469,6 +1471,7 @@ impl ServerAgents {
         &self,
         workspace: &str,
         agents: &BTreeMap<String, Agent>,
+        team_agents: &BTreeSet<String>,
         routes: &[(String, String)],
     ) -> Result<Asks, String> {
         let mut asks = Asks::default();
@@ -1507,6 +1510,13 @@ impl ServerAgents {
                     let Some(message) = part.messages.get(&summons.message) else {
                         continue;
                     };
+                    let team_news = message
+                        .cause
+                        .as_ref()
+                        .is_some_and(|cause| cause.team_news(&message.author));
+                    if team_news && !team_agents.contains(&agent.id.0) {
+                        continue;
+                    }
                     let program = message
                         .cause
                         .as_ref()
@@ -1563,6 +1573,7 @@ impl ServerAgents {
                         cause: summons.message.to_string(),
                         program: program.map(str::to_owned),
                         look_grant: look_grant.map(str::to_owned),
+                        team_news,
                         request: told.request,
                         history: told.history,
                         asked: chat::summons::asked_words(message),
@@ -1589,6 +1600,7 @@ impl ServerAgents {
                     cause: summons.message.to_string(),
                     program: None,
                     look_grant: None,
+                    team_news: false,
                     request: String::new(),
                     history: Vec::new(),
                     asked: String::new(),
@@ -1670,6 +1682,7 @@ impl ServerAgents {
                 cause: ask.cause.clone(),
                 program: None,
                 look_grant: None,
+                team_news: false,
                 request,
                 history: Vec::new(),
                 asked: issue.title.clone(),
@@ -1772,6 +1785,7 @@ impl ServerAgents {
             agent: turn.agent.id.0.clone(),
             program: turn.program.clone(),
             look_grant: turn.look_grant.clone(),
+            team_news: turn.team_news,
         });
         if !authority.permits().await {
             return Err("the agent has no current grant for this request".into());
@@ -1780,8 +1794,13 @@ impl ServerAgents {
             let authority = Arc::clone(&authority);
             Box::pin(async move { authority.permits().await })
         });
+        let may_manage_team = self
+            .workspaces
+            .agent_may_act(workspace, &agent, AGENTS_OWNER)
+            .await;
         let mut scope = TurnScope {
             permission,
+            may_manage_team,
             provider: WorkspaceActionProvider::new(self.actions.clone(), workspace_id)
                 .offering(self.events.clone())
                 .offering_initiative(self.initiative.clone())
@@ -1791,13 +1810,17 @@ impl ServerAgents {
             workspace: workspace.to_owned(),
             workspace_id,
         };
-        team::join(&self.workspaces, turn, &mut scope).await;
+        if may_manage_team {
+            team::join(&self.workspaces, turn, &mut scope).await;
+        }
         across::join(&self.workspaces, self.placed.as_ref(), turn, &mut scope).await;
         // What the turn's tools reach beside the workspace's resources, each a provider of the
         // turn's own ([`TurnProvider`]): what its person's vault lets it use by reference.
         // Beside that, the services its person connected, by this server's own entry for a turn.
         let own = connections::of(self.as_asker(), turn, &scope.reply(turn), workspace_id).await;
-        scope.provider = scope.provider.answering(own);
+        scope.provider = scope
+            .provider
+            .answering(&self.workspaces, Store::CONNECTIONS.app, own);
         let uses = vault_uses::TurnUses::for_turn(self, turn, &scope.reply(turn)).await;
         let mail = mail::TurnMail::for_turn(self, turn, &scope.reply(turn)).await;
         // What its person's calendars hold, to read, under the bound their mail is under.
@@ -1805,25 +1828,32 @@ impl ServerAgents {
             calendars::TurnCalendars::for_turn(&self.workspaces, turn, &scope.reply(turn)).await;
         scope.provider = scope
             .provider
-            .answering(uses)
-            .answering(mail)
-            .answering(calendars);
+            .answering(&self.workspaces, Store::VAULT.app, uses)
+            .answering(&self.workspaces, Store::MAIL.app, mail)
+            .answering(&self.workspaces, Store::CALENDARS.app, calendars);
         // What connects a calendar its person tells it of: they are asked for its password
         // where no agent reads it.
         let connects =
             calendar_connect::TurnConnects::for_turn(self, turn, &scope.reply(turn)).await;
-        scope.provider = scope.provider.answering(connects);
+        scope.provider = scope
+            .provider
+            .answering(&self.workspaces, Store::CALENDARS.app, connects);
         // What signs a mail account in from its address alone: the same asking, for mail.
         let signs_in =
             mail_connect::TurnMailConnects::for_turn(self, turn, &scope.reply(turn)).await;
-        scope.provider = scope.provider.answering(signs_in);
+        scope.provider = scope
+            .provider
+            .answering(&self.workspaces, Store::MAIL.app, signs_in);
         // Its open of Browser, whose window this server places where it has a machine for one.
         let browser = turn_browser::TurnBrowser::for_turn(
             self.browsers.clone(),
             &self.workspaces,
             &scope.reply(turn),
         );
-        scope.provider = scope.provider.answering(browser);
+        scope.provider =
+            scope
+                .provider
+                .answering(&self.workspaces, tilo_app_id::apps::BROWSER, browser);
         // What it does at that window's page: where it has the window sent.
         let pages = turn_pages::TurnPages::for_turn(
             self.browsers.clone(),
@@ -1832,7 +1862,10 @@ impl ServerAgents {
             &scope.reply(turn),
         )
         .await;
-        scope.provider = scope.provider.answering(pages);
+        scope.provider =
+            scope
+                .provider
+                .answering(&self.workspaces, tilo_app_id::apps::BROWSER, pages);
         Ok(scope)
     }
 
@@ -1973,7 +2006,7 @@ impl ServerAgents {
         };
         let clock = tilo_clock::now();
         reply.taken().await;
-        self.sub_began(workspace, &turn).await;
+        self.sub_began(&scope, &turn).await;
         let from_starter = turn.line.as_ref().is_some_and(|line| line.from_starter);
         let day = today();
         // A sub-agent spends on the day of the person's own agent it works under.
@@ -2332,13 +2365,18 @@ struct TurnAuthority {
     agent: String,
     program: Option<String>,
     look_grant: Option<String>,
+    team_news: bool,
 }
 
 impl TurnAuthority {
     async fn permits(&self) -> bool {
         self.workspaces
-            .agent_may_act(&self.workspace, &self.caller, self.app)
+            .access_for_agent_caller(&self.workspace, &self.caller)
             .await
+            .is_some_and(|access| {
+                access.permits_app(self.app)
+                    && (!self.team_news || access.permits_app(AGENTS_OWNER))
+            })
             && initiative::may_take_look(
                 &self.workspaces,
                 self.initiative.as_ref(),
@@ -2356,6 +2394,7 @@ impl TurnAuthority {
 /// turn goes on with.
 struct TurnScope {
     permission: ModelPermission,
+    may_manage_team: bool,
     provider: WorkspaceActionProvider,
     /// The agent as its own approved key, working for the person who asked
     /// ([`ServerAgents::agent_caller`]).
@@ -2991,7 +3030,10 @@ async fn work(
         result_bytes: MOST_RESULT_BYTES,
         round_time: TURN_TIME,
         key: format!("{}:{}", turn.agent.id.0, turn.cause),
-        ..tilo_agent_turn::Asked::new(instructions::for_turn(turn), turn.request.clone())
+        ..tilo_agent_turn::Asked::new(
+            instructions::for_turn(turn, scope.may_manage_team),
+            turn.request.clone(),
+        )
     };
     let agent = turn.agent.id.0.clone();
     let usage = Arc::new(Mutex::new(TurnUsage::default()));

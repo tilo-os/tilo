@@ -20,7 +20,7 @@ pub(super) fn history(entries: &[Recalled]) -> Vec<Message> {
 /// What the agent is told before every ask: what every agent a host runs is told, and after it
 /// what its keeper told it about how to work for them ([`super::Agent::told`]), when they told it
 /// anything. Workspace Skills are reached through the turn's ordinary action tools.
-pub(super) fn for_turn(turn: &Turn) -> String {
+pub(super) fn for_turn(turn: &Turn, may_manage_team: bool) -> String {
     let told = turn.agent.told().map_or_else(String::new, |told| {
         format!(
             "\n\nWhat the person who keeps you told you about how to work for them. It holds \
@@ -61,6 +61,10 @@ pub(super) fn for_turn(turn: &Turn) -> String {
         "{every}{view}{skills}{}{}{}{told}",
         shares::told(turn),
         learned::told_how(turn),
-        sub_agents::told(turn)
+        if may_manage_team {
+            sub_agents::told(turn)
+        } else {
+            String::new()
+        }
     )
 }

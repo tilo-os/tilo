@@ -801,23 +801,29 @@ impl super::Workspaces {
         caller: &tilo_actions::remote::Caller,
         app: &str,
     ) -> bool {
-        let (Some(agent), Some(keeper)) = (caller.approved_agent(), caller.user_public_key())
-        else {
-            return false;
-        };
-        if caller.workspace() != Some(workspace)
-            || !self
-                .agent_access(workspace, agent, keeper)
-                .await
-                .is_ok_and(|access| access.matches_caller(caller) && access.permits_app(app))
-        {
-            return false;
+        self.access_for_agent_caller(workspace, caller)
+            .await
+            .is_some_and(|access| access.permits_app(app))
+    }
+
+    /// The live authority for this exact workspace, caller and child incarnation.
+    pub(crate) async fn access_for_agent_caller(
+        &self,
+        workspace: &str,
+        caller: &tilo_actions::remote::Caller,
+    ) -> Option<crate::work::AgentAccess> {
+        if caller.workspace() != Some(workspace) {
+            return None;
         }
-        let Some(actor) = caller.acting().agent_id() else {
-            return false;
-        };
-        actor == agent
-            || self
+        let agent = caller.approved_agent()?;
+        let keeper = caller.user_public_key()?;
+        let actor = caller.acting().agent_id()?;
+        let access = self.agent_access(workspace, agent, keeper).await.ok()?;
+        if !access.matches_caller(caller) || !access.permits_actor(actor, agent) {
+            return None;
+        }
+        if actor != agent
+            && !self
                 .child_of_signer(
                     workspace,
                     actor,
@@ -827,6 +833,10 @@ impl super::Workspaces {
                     caller.child_created_at(),
                 )
                 .await
+        {
+            return None;
+        }
+        Some(access)
     }
 
     /// A child may act only while the same child and its original signing lead remain active.
@@ -839,17 +849,17 @@ impl super::Workspaces {
         lead_created_at: Option<i64>,
         child_created_at: Option<i64>,
     ) -> bool {
-        let (Some(lead_created_at), Some(child_created_at)) = (lead_created_at, child_created_at)
-        else {
-            return false;
-        };
-        self.child_lead(workspace, actor, &hex::encode(keeper))
-            .await
-            .is_some_and(|(created_at, lead)| {
-                created_at == child_created_at
-                    && lead.id.0 == signer
-                    && lead.created_at == lead_created_at
-            })
+        self.kept_agents(workspace).await.is_some_and(|agents| {
+            super::agent_members::child_for_signer(
+                &agents,
+                actor,
+                keeper,
+                signer,
+                lead_created_at,
+                child_created_at,
+            )
+            .is_some()
+        })
     }
 
     /// This device runs `engine` from now on.

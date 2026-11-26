@@ -245,18 +245,9 @@ impl Workspaces {
         actor: &str,
         keeper: &str,
     ) -> Option<(i64, tilo_workspace_agent::Agent)> {
-        let list = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let roster = self
-            .read_resource::<WorkspaceAgents>(workspace, (tilo_workspace_agent::OWNER, &list))
-            .await
-            .ok()??;
-        let child = roster.get(&tilo_resource::Id::from_raw(actor.to_owned()))?;
-        if !child.is_active() || !child.is_sub() || !child.keeper.eq_ignore_ascii_case(keeper) {
-            return None;
-        }
-        let lead = roster.root_of(child);
-        (lead.is_active() && !lead.is_sub() && lead.keeper.eq_ignore_ascii_case(keeper))
-            .then(|| (child.created_at, lead.clone()))
+        let agents = self.kept_agents(workspace).await?;
+        let (child, lead) = super::super::agent_members::child_and_lead(&agents, actor, keeper)?;
+        Some((child.created_at, lead.clone()))
     }
 
     /// What `workspace`'s list of its agents calls the agent `agent`, when it names it: the name

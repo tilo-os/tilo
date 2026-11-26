@@ -96,11 +96,19 @@ pub(super) fn told(turn: &Turn) -> String {
     }
 }
 
+/// The native action both a model and a person's Chat team request use to start a child.
+pub(super) fn start_target() -> RemoteActionTarget {
+    RemoteActionTarget {
+        provider: PROVIDER.to_owned(),
+        address: tilo_actions::ActionAddress::new(TEAM, START),
+    }
+}
+
 /// Make `scope`'s service answer as well for the team of `turn`'s agent.
 pub(super) async fn join(workspaces: &Workspaces, turn: &Turn, scope: &mut TurnScope) {
     let team = TurnTeam::for_turn(workspaces, turn, scope).await;
     let service = &mut scope.provider;
-    *service = service.clone().answering(team);
+    *service = service.clone().answering(workspaces, OWNER, team);
 }
 
 /// What one turn does with the team of its agent.

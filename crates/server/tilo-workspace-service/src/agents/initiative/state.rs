@@ -25,12 +25,10 @@ impl Kept {
             .clone()
             .or_else(|| self.event.clone())
             .unwrap_or_else(|| {
-                let name = format!(
-                    "tilo.initiative/{}/{}",
-                    owner.workspace,
-                    hex::encode(owner.person)
-                );
-                Uuid::new_v5(&Uuid::NAMESPACE_URL, name.as_bytes()).to_string()
+                tilo_actions::remote::workspace_initiative::personal_event(
+                    &owner.workspace,
+                    &hex::encode(owner.person),
+                )
             })
     }
 

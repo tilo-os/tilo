@@ -6,27 +6,26 @@
 //! list everything, asked for its rows at every listing, and called like any other action.
 //!
 //! The tools read how a call ended from the service that took it, not from its receipt. So the
-//! service keeps how every call a provider took ended ([`Ended`]), and a provider keeps nothing
+//! service keeps how every call a provider took ended ([`OwnAnswers`]), and a provider keeps nothing
 //! of the kind itself.
 //!
 //! A provider is added where a turn's service is put together, and decides for itself whom it
 //! answers. For anything of a person's own, the turn's caller passes
 //! [`crate::workspaces::Workspaces::asked_turn`] first.
 
-use std::collections::VecDeque;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
+use tilo_actions::InvocationUpdate;
 use tilo_actions::remote::{
     ActionCallError, Caller, CataloguePage, CatalogueProvider, CatalogueQuery, CatalogueRow,
     InvocationReceipt, InvocationState, InvokeRequest, Pending, ReceiptStatus, RemoteActionTarget,
 };
-use tilo_actions::{InvocationId, InvocationUpdate};
-use tilo_lock::MutexRecover as _;
+use tilo_server_protocol::WorkspaceId;
 
-/// How many calls a turn's service remembers the end of: more than a turn's tools ask about.
-const KEPT: usize = 64;
+use super::OwnAnswers;
+use crate::workspaces::Workspaces;
 
 /// How a call ends, when it has: what the tools are told, or the provider's refusal.
 pub(super) type Ending =
@@ -61,63 +60,115 @@ pub(super) trait TurnProvider: Send + Sync {
     fn invoke(self: Arc<Self>, caller: Caller, request: InvokeRequest) -> Ending;
 }
 
-/// How the calls a turn's providers took ended, newest last: what the turn's tools observe.
+/// The app that owns a direct turn provider, including providers whose wire ID names
+/// another service or a particular window.
 #[derive(Clone)]
-pub(super) struct Ended {
-    /// Where the calls are carried out: a tool may call from outside any task.
-    runtime: tokio::runtime::Handle,
-    calls: Arc<Mutex<VecDeque<(InvocationId, InvocationState)>>>,
+pub(super) struct Provider {
+    app: &'static str,
+    service: Arc<dyn TurnProvider>,
 }
 
-impl Ended {
-    /// Nothing ended yet; calls are carried out on the runtime this is made on.
-    pub(super) fn here() -> Self {
+/// The direct providers registered for this turn.
+#[derive(Clone)]
+pub(super) struct Providers {
+    entries: Vec<Provider>,
+    workspaces: Workspaces,
+    workspace: String,
+    runtime: tokio::runtime::Handle,
+}
+
+impl Providers {
+    pub(super) fn here(workspaces: &Workspaces, workspace: WorkspaceId) -> Self {
         Self {
+            entries: Vec::new(),
+            workspaces: workspaces.clone(),
+            workspace: workspace.to_string(),
             runtime: tokio::runtime::Handle::current(),
-            calls: Arc::default(),
         }
     }
 
-    /// One page of the rows the turn's providers answered `query` with.
-    pub(super) fn page(
-        &self,
-        answers: Vec<Rows>,
-        query: CatalogueQuery,
-    ) -> Pending<Result<CataloguePage, ActionCallError>> {
-        let (completer, page) = tilo_actions::remote::pending();
-        self.runtime.spawn(async move {
-            let mut rows = Vec::new();
-            for answer in answers {
-                match answer.await {
-                    Some(Ok(more)) => rows.extend(more),
-                    Some(Err(error)) => return completer.complete(Err(error)),
-                    // A provider that gave its answer up lists nothing.
-                    None => {}
-                }
-            }
-            completer.complete(Ok(CataloguePage::from_rows("0".into(), rows, &query)));
-        });
-        page
+    pub(super) fn add(&mut self, app: &'static str, service: Arc<dyn TurnProvider>) {
+        self.entries.push(Provider { app, service });
     }
 
-    /// Let `provider` carry `request` out as `caller`. The receipt is answered when the call
-    /// ended, and how it ended is kept before that, so the tool that asks next is told.
+    /// List the providers and their actions under the caller's current signed grant.
+    /// Separate apps can contribute to a single wire provider, such as Mail and Calendar.
+    pub(super) async fn page(
+        &self,
+        caller: &Caller,
+        query: &CatalogueQuery,
+        offered: &mut Vec<CatalogueProvider>,
+    ) -> Result<Option<CataloguePage>, ActionCallError> {
+        let access = self
+            .workspaces
+            .access_for_agent_caller(&self.workspace, caller)
+            .await;
+        let mut rows = Vec::new();
+        let mut direct = false;
+        for entry in &self.entries {
+            let allowed = access
+                .as_ref()
+                .is_some_and(|access| access.permits_app(entry.app));
+            if let Some(wanted) = &query.provider {
+                if !allowed {
+                    // A direct provider that was withdrawn still owns its catalogue route.
+                    direct |= entry
+                        .service
+                        .providers(caller)
+                        .iter()
+                        .any(|named| named.provider == *wanted);
+                } else if let Some(answer) = entry.service.rows(caller, query) {
+                    direct = true;
+                    if let Some(more) = answer.await {
+                        rows.extend(more?);
+                    }
+                }
+            } else if allowed {
+                for named in entry.service.providers(caller) {
+                    if offered.iter().all(|known| known.provider != named.provider) {
+                        offered.push(named);
+                    }
+                }
+            }
+        }
+        Ok(direct.then(|| CataloguePage::from_rows("0".into(), rows, query)))
+    }
+
+    pub(super) fn taking(&self, target: &RemoteActionTarget) -> Option<&Provider> {
+        self.entries
+            .iter()
+            .find(|entry| entry.service.takes(target))
+    }
+
+    /// Recheck the owning app immediately before invoking the direct provider. A guessed
+    /// address is subject to the same grant as one obtained from the catalogue.
     pub(super) fn carry_out(
         &self,
-        provider: Arc<dyn TurnProvider>,
+        provider: &Provider,
         caller: &Caller,
         request: InvokeRequest,
+        answered: OwnAnswers,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         let (completer, answer) = tilo_actions::remote::pending();
-        let (kept, caller) = (self.clone(), caller.clone());
+        let (workspaces, workspace) = (self.workspaces.clone(), self.workspace.clone());
+        let (caller, provider) = (caller.clone(), provider.clone());
         self.runtime.spawn(async move {
             let invocation = request.invocation;
-            let untrusted = provider.carries_untrusted(&request.target);
-            let receipt = match provider.invoke(caller, request).await {
+            let untrusted = provider.service.carries_untrusted(&request.target);
+            let taken = if workspaces
+                .agent_may_act(&workspace, &caller, provider.app)
+                .await
+            {
+                provider.service.invoke(caller.clone(), request).await
+            } else {
+                Err(ActionCallError::NotPermitted)
+            };
+            let receipt = match taken {
                 Ok(update) => {
                     let state = InvocationState::new(invocation, update).with_untrusted(untrusted);
-                    kept.keep(invocation, state.clone());
-                    state.receipt()
+                    let receipt = state.receipt();
+                    answered.keep_state(caller, state);
+                    receipt
                 }
                 Err(error) => InvocationReceipt {
                     invocation,
@@ -127,22 +178,5 @@ impl Ended {
             completer.complete(Ok(receipt));
         });
         answer
-    }
-
-    fn keep(&self, invocation: InvocationId, state: InvocationState) {
-        let mut calls = self.calls.lock_recover();
-        if calls.len() == KEPT {
-            calls.pop_front();
-        }
-        calls.push_back((invocation, state));
-    }
-
-    /// How the call `id` names ended, when a provider of this turn took it.
-    pub(super) fn of(&self, id: &InvocationId) -> Option<InvocationState> {
-        self.calls
-            .lock_recover()
-            .iter()
-            .find(|(taken, _)| taken == id)
-            .map(|(_, state)| state.clone())
     }
 }

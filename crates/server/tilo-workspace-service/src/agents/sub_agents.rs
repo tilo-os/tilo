@@ -39,13 +39,7 @@ use super::{
 };
 use crate::workspaces::person_model::Interaction;
 
-/// The kind of the cause a sub-agent's job is written into its conversation with.
-pub(super) const JOB: &str = "job";
-/// The kind of the cause a note of its starter's is written with.
-pub(super) const NOTE: &str = "note";
-/// The kind of the cause a person asks an agent they keep for a sub-agent with, through Chat's
-/// `ask-agent`: the words of the ask are the job, the cause's label is the sub-agent's name.
-const START: &str = "sub-agent";
+use chat::cause::{TEAM_JOB as JOB, TEAM_NOTE as NOTE, TEAM_START as START};
 /// The kind of the cause that wakes an agent with its person's answer to a question the agent
 /// asked: the work it asked within goes on.
 const ANSWER: &str = "answer";
@@ -56,8 +50,6 @@ const TO: &str = "channel";
 const TOLD_CHARS: usize = 2_000;
 /// The longest label a cause carries, in bytes (Chat's own limit).
 const LABEL_BYTES: usize = 120;
-/// The longest key a cause carries, in bytes (Chat's own limit).
-const KEY_BYTES: usize = 200;
 
 /// Where a sub-agent's turn stands in its team.
 #[derive(Clone, Debug, PartialEq)]
@@ -80,11 +72,26 @@ struct Delivery {
     /// The agent whose words it is: the sub-agent's starter for its job, whoever gave a note.
     by: String,
     by_name: String,
+    /// The original recipient and its roster incarnation.
+    recipient: String,
+    created_at: i64,
     /// The sub-agent's conversation.
     conversation: String,
     kind: &'static str,
     key: String,
     text: String,
+}
+
+impl Delivery {
+    fn is_for(&self, agent: &Agent) -> bool {
+        agent.created_at == self.created_at
+            && agent.keeper == self.person
+            && agent.is_active()
+            && agent
+                .sub
+                .as_ref()
+                .is_some_and(|sub| sub.conversation == self.conversation)
+    }
 }
 
 /// What a look found this server owes a workspace's sub-agents beside their turns.
@@ -108,8 +115,6 @@ struct Start {
     id: String,
     name: String,
     job: String,
-    /// Whether the list holds it already: only the ask is left to answer.
-    held: bool,
 }
 
 /// What is known of one message in a sub-agent's conversation.
@@ -156,12 +161,16 @@ pub(super) fn conversation_id(message: &Message) -> &Id {
 /// The key of the cause `tail` of the sub-agent `agent` is written with: one key is one
 /// message however often it is asked, so a server that restarts writes nothing twice.
 fn key_of(agent: &str, tail: &str) -> String {
-    let plain = format!("sub-agent:{agent}:{tail}");
-    if plain.len() <= KEY_BYTES {
+    let plain = format!("{}{agent}:{tail}", chat::cause::TEAM_KEY_PREFIX);
+    if plain.len() <= chat::cause::MAX_KEY_BYTES {
         return plain;
     }
     let hash = blake3::hash(plain.as_bytes()).to_hex();
-    format!("sub-agent:{}", hash.get(..40).unwrap_or_default())
+    format!(
+        "{}{}",
+        chat::cause::TEAM_KEY_PREFIX,
+        hash.get(..40).unwrap_or_default()
+    )
 }
 
 /// `text` cut to `most` bytes at a character.
@@ -189,12 +198,10 @@ fn lead_turn(
 ) -> Option<tilo_action_policy::turn::Turn> {
     let lead = roster.get(&Id::from_raw(delivery.by.clone()))?;
     let above = lead.sub.as_ref()?;
-    let under = roster.agents.iter().find(|agent| {
-        agent
-            .sub
-            .as_ref()
-            .is_some_and(|sub| sub.conversation == delivery.conversation)
-    })?;
+    let under = roster.get(&Id::from_raw(delivery.recipient.clone()))?;
+    if !delivery.is_for(under) {
+        return None;
+    }
     let one_team = [lead, under]
         .iter()
         .all(|agent| agent.is_active() && agent.keeper == delivery.person)
@@ -278,9 +285,10 @@ impl Team {
             let Some(sub) = &agent.sub else {
                 continue;
             };
-            if worked.contains_key(&agent.id.0) {
-                team.here.insert(sub.conversation.clone(), agent.clone());
+            if !worked.contains_key(&agent.id.0) {
+                continue;
             }
+            team.here.insert(sub.conversation.clone(), agent.clone());
             let named = |id: &str| {
                 roster
                     .get(&Id::from_raw(id.to_owned()))
@@ -295,6 +303,8 @@ impl Team {
                         person: agent.keeper.clone(),
                         by: by.to_owned(),
                         by_name: named(by),
+                        recipient: agent.id.0.clone(),
+                        created_at: agent.created_at,
                         conversation: sub.conversation.clone(),
                         kind,
                         key,
@@ -364,6 +374,7 @@ impl Team {
                     cause: id.to_string(),
                     program: None,
                     look_grant: None,
+                    team_news: false,
                     request: told.request,
                     history: told.history,
                     asked: chat::summons::asked_words(message),
@@ -404,7 +415,6 @@ impl Team {
         let sub_agent = format!("sub-{}", cut(id, 12));
         Some(Start {
             by: by.id.0.clone(),
-            held: roster.get(&Id::from_raw(sub_agent.clone())).is_some(),
             id: sub_agent,
             name: name.chars().take(tilo_workspace_agent::MAX_NAME).collect(),
             job: job.to_owned(),
@@ -537,10 +547,37 @@ impl ServerAgents {
     /// Start the sub-agent its person asked `turn`'s agent for, and answer the ask in that
     /// agent's name: no model is asked, the words of the ask are the job as they stand.
     async fn answer_start(&self, workspace: &str, turn: &Turn, start: &Start) {
-        let started = if start.held {
+        let scope = match self.scope(workspace, turn).await {
+            Ok(scope) => scope,
+            Err(error) => {
+                tracing::debug!(%workspace, %error, "the child's starter has no current Chat grant");
+                return;
+            }
+        };
+        let reply = scope.reply(turn);
+        let started = if !scope.may_manage_team {
+            Err("Starting a child needs Assistant access. Change the assistant’s access in this Chat and approve it before asking again.".to_owned())
+        } else if self.holds_start(workspace, start).await {
             Ok(())
         } else {
-            self.start(workspace, turn, start).await
+            let args = Map::from_iter([
+                ("id".into(), json!(start.id)),
+                ("name".into(), json!(start.name)),
+                ("job".into(), json!(start.job)),
+            ]);
+            match super::invoke_at(
+                &reply.provider,
+                &reply.caller,
+                super::team::start_target(),
+                tilo_actions::remote::InvokeArgument::Json(args),
+            )
+            .await
+            {
+                Ok(_) => Ok(()),
+                // A concurrent look may already have applied the same request.
+                Err(_) if self.holds_start(workspace, start).await => Ok(()),
+                Err(error) => Err(error),
+            }
         };
         let outcome = match started {
             Ok(()) => Outcome::Answered(format!(
@@ -550,67 +587,27 @@ impl ServerAgents {
             )),
             Err(why) => Outcome::Failed(why),
         };
-        let answered = match self.scope(workspace, turn).await {
-            Ok(acting) => acting.reply(turn).finished(&outcome).await,
-            Err(error) => Err(error),
-        };
-        if let Err(error) = answered {
+        if let Err(error) = reply.finished(&outcome).await {
             tracing::warn!(%workspace, agent = %turn.agent.id.0, %error, "an ask for a sub-agent was not answered");
         }
     }
 
-    /// Apply `start-sub-agent` on the list as `turn`'s agent, for the person who asked: the
-    /// list's own rules decide (who keeps the agent, how deep, how many at once).
-    async fn start(&self, workspace: &str, turn: &Turn, start: &Start) -> Result<(), String> {
-        let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
-        let (by, person) = (turn.agent.id.0.clone(), turn.person.clone());
-        let sub_agent = tilo_workspace_agent::NewSubAgent {
-            name: start.name.clone(),
-            job: start.job.clone(),
-            id: Some(start.id.clone()),
-            ..tilo_workspace_agent::NewSubAgent::default()
-        };
-        let applied = self
-            .workspaces
-            .author_application(
-                workspace,
-                self.workspaces.governor(),
-                &tilo_agent_session::AppCatalogue::native(),
-                tilo_workspace_agent::OWNER,
-                &document,
-                |doc| {
-                    let mut starting =
-                        tilo_resource::Replica::<WorkspaceAgents>::from_doc(std::mem::take(doc))
-                            .as_agent_for(&by, &person)
-                            .in_app(tilo_workspace_agent::OWNER, "Assistant");
-                    // A replica stamps what it writes with a fixed day of its own unless told the time.
-                    starting.set_now_ms(tilo_clock::unix_now_ms_i64());
-                    let applied = starting
-                        .apply(WorkspaceAgents::START_SUB_AGENT.with(
-                            tilo_workspace_agent::workspace_agents::StartSubAgent { sub_agent },
-                        ))
-                        .map(drop)
-                        .map_err(|error| error.to_string());
-                    std::mem::swap(doc, starting.doc_mut());
-                    applied
-                },
-            )
-            .await
-            .map_err(|error| error.to_string());
-        match applied {
-            // Another look started it meanwhile: the list holds it, which is what was asked.
-            Err(_) if self.holds(workspace, &start.id).await => Ok(()),
-            other => other,
-        }
-    }
-
-    /// Whether `workspace`'s list of its agents holds the agent `id`.
-    async fn holds(&self, workspace: &str, id: &str) -> bool {
+    /// Whether an earlier attempt has already created this person's requested child.
+    async fn holds_start(&self, workspace: &str, start: &Start) -> bool {
         super::roster(&self.workspaces, workspace)
             .await
             .ok()
             .flatten()
-            .is_some_and(|roster| roster.get(&Id::from_raw(id.to_owned())).is_some())
+            .is_some_and(|roster| {
+                roster
+                    .get(&Id::from_raw(start.id.clone()))
+                    .is_some_and(|agent| {
+                        agent
+                            .sub
+                            .as_ref()
+                            .is_some_and(|sub| sub.started_by == start.by && sub.job == start.job)
+                    })
+            })
     }
 
     /// The turn `delivery` is written on when a lead gave it to one of its own team
@@ -644,10 +641,24 @@ impl ServerAgents {
             .and_then(|person| person.root())
             .ok_or("a sub-agent works for a person")?;
         let agents = self.agents(workspace).await?;
+        let child = agents
+            .get(&delivery.recipient)
+            .filter(|agent| delivery.is_for(agent))
+            .ok_or("the child no longer works here")?;
+        if !self.access(workspace, child).await?.permits_app(CHAT) {
+            return Err("Delivering the child's job or note needs Chat access.".to_owned());
+        }
         let by = agents
             .get(&delivery.by)
             .ok_or("the agent that gave it no longer works here")?;
         let caller = self.agent_caller(workspace_id, by, person).await?;
+        if !self
+            .workspaces
+            .agent_may_act(workspace, &caller, tilo_workspace_agent::OWNER)
+            .await
+        {
+            return Err("Sending a child's job or note needs Assistant access.".to_owned());
+        }
         let caller = match self.of_lead(workspace, delivery).await? {
             Some(turn) => caller.on_roster_turn(turn),
             None => caller,
@@ -675,7 +686,15 @@ impl ServerAgents {
     /// Say on its item how the sub-agent `agent` stands, as the sub-agent itself. The server
     /// that works it writes the item, as it writes what an agent spent: the list lets only a
     /// sub-agent's own runner say it, and no tool of a turn is asked for it.
-    async fn stands(&self, workspace: &str, agent: &Agent, stands: Stands, line: &str) {
+    async fn stands(&self, scope: &super::TurnScope, agent: &Agent, stands: Stands, line: &str) {
+        let workspace = scope.workspace.as_str();
+        if !self
+            .workspaces
+            .agent_may_act(workspace, &scope.agent, tilo_workspace_agent::OWNER)
+            .await
+        {
+            return;
+        }
         let document = collab_types::workspace_document_id(tilo_workspace_agent::KIND);
         let (id, keeper) = (agent.id.0.clone(), agent.keeper.clone());
         let item = tilo_resource::Id::from_raw(id.clone());
@@ -716,13 +735,12 @@ impl ServerAgents {
     }
 
     /// A turn of a sub-agent begins: its item says it works.
-    pub(super) async fn sub_began(&self, workspace: &str, turn: &Turn) {
+    pub(super) async fn sub_began(&self, scope: &super::TurnScope, turn: &Turn) {
         let Some(sub) = &turn.agent.sub else {
             return;
         };
         if sub.stands != Stands::Working || !sub.line.is_empty() {
-            self.stands(workspace, &turn.agent, Stands::Working, "")
-                .await;
+            self.stands(scope, &turn.agent, Stands::Working, "").await;
         }
     }
 
@@ -773,7 +791,7 @@ impl ServerAgents {
         outcome: &Outcome,
         from_starter: bool,
     ) {
-        if turn.agent.sub.is_none() {
+        if turn.agent.sub.is_none() || !(acting.permission)().await {
             return;
         }
         let (stands, said) = match outcome {
@@ -790,8 +808,7 @@ impl ServerAgents {
             Outcome::Failed(words) => (Stands::Failed, words.as_str()),
             Outcome::Cancelled => (Stands::Stopped, ""),
         };
-        self.stands(&acting.workspace, &turn.agent, stands, said)
-            .await;
+        self.stands(acting, &turn.agent, stands, said).await;
         let from_starter = from_starter || turn.line.as_ref().is_some_and(|line| line.from_starter);
         if !from_starter || stands == Stands::Stopped {
             return;
@@ -829,6 +846,13 @@ impl ServerAgents {
         turn: &Turn,
         (stands, said): (Stands, &str),
     ) -> Result<(), String> {
+        if !self
+            .workspaces
+            .agent_may_act(workspace, agent, tilo_workspace_agent::OWNER)
+            .await
+        {
+            return Err("Sending a child's result needs Assistant access.".to_owned());
+        }
         let (Some(sub), Some(line)) = (&turn.agent.sub, &turn.line) else {
             return Ok(());
         };
@@ -941,7 +965,7 @@ mod tests {
         );
         let long = "a".repeat(400);
         let key = key_of(&long, JOB);
-        assert!(key.len() <= KEY_BYTES, "{key}");
+        assert!(key.len() <= chat::cause::MAX_KEY_BYTES, "{key}");
         assert_eq!(key, key_of(&long, JOB), "the same every time it is made");
         assert_ne!(key, key_of(&long, "note:n1"));
         assert_eq!(cut("äöü", 3), "ä", "cut at a character");
@@ -1012,14 +1036,22 @@ mod tests {
                 .map(|sub| sub.conversation.clone())
                 .expect("a sub-agent's own conversation")
         };
-        let given = |by: &str, to: &str, person: &str| Delivery {
-            person: person.to_owned(),
-            by: by.to_owned(),
-            by_name: by.to_owned(),
-            conversation: to.to_owned(),
-            kind: JOB,
-            key: key_of("worker", JOB),
-            text: "Write the tests".to_owned(),
+        let given = |by: &str, to: &str, person: &str| {
+            let child = list
+                .agents
+                .iter()
+                .find(|agent| agent.sub.as_ref().is_some_and(|sub| sub.conversation == to));
+            Delivery {
+                person: person.to_owned(),
+                by: by.to_owned(),
+                by_name: by.to_owned(),
+                recipient: child.map(|agent| agent.id.0.clone()).unwrap_or_default(),
+                created_at: child.map_or(0, |agent| agent.created_at),
+                conversation: to.to_owned(),
+                kind: JOB,
+                key: key_of("worker", JOB),
+                text: "Build it".to_owned(),
+            }
         };
         let to_worker = given("lead", &own("worker"), "ada");
 

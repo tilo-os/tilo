@@ -17,6 +17,13 @@ use super::{ActionAddress, RemoteActionTarget};
 /// under.
 pub const PROVIDER: &str = "tilo.initiative";
 
+/// The original personal look's author, shared by its manual and scheduled Chat instructions.
+#[must_use]
+pub fn personal_event(workspace: &str, person: &str) -> String {
+    let name = format!("tilo.initiative/{workspace}/{person}");
+    uuid::Uuid::new_v5(&uuid::Uuid::NAMESPACE_URL, name.as_bytes()).to_string()
+}
+
 /// The resource the look-round's actions are of.
 pub const LOOK_ROUND: &str = "look-round";
 /// The kind of that resource.

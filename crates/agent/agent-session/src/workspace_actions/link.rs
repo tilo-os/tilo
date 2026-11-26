@@ -49,13 +49,28 @@ pub struct ViewReadPolicy {
     pub sandbox: Vec<collab_types::caps::CapOverride>,
     /// Host time used to evaluate capability expiry.
     pub unix_time: u64,
-    /// What the workspace's list of its agents bounds the agent asking to, when an agent asks
-    /// for the person ([`WorkspaceDocumentsLink::workspace_agent`]): empty follows the default.
+    /// A session-delegated agent's rules ([`WorkspaceDocumentsLink::workspace_agent`]).
+    /// For a roster turn, `access` already carries the signed device grants and each agent's
+    /// rules under that agent's own identity.
     #[serde(default)]
     pub agent_bound: Vec<ui::permissions::policy::Rule>,
 }
 
 impl ViewReadPolicy {
+    /// The verified roster device's access for this turn, including the people and agents
+    /// in the caller's chain. Each agent's grants decide its own part of the action.
+    #[must_use]
+    pub fn agent_member_access(&self, caller: &Caller) -> Option<ui::permissions::MemberAccess> {
+        if caller.approved_agent()? != self.access.acting.agent_id()?
+            || caller.workspace() != Some(self.workspace.as_str())
+        {
+            return None;
+        }
+        let mut acting = caller.acting().clone();
+        acting.foreign_device = self.access.acting.foreign_device;
+        self.access.clone().as_acting(acting)
+    }
+
     pub(crate) fn permissions(&self) -> ui::permissions::PermissionContext {
         ui::permissions::PermissionContext::new(
             ui::permissions::Acting::person(self.access.person_id().unwrap_or_default()),

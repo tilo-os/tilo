@@ -212,14 +212,14 @@ mod tests {
     const HERE: &str = "5f0c1c4e-6f0b-4c53-9d0a-0d1f6a1e2b01";
     const ELSEWHERE: &str = "5f0c1c4e-6f0b-4c53-9d0a-0d1f6a1e2b02";
 
-    /// A turn's open of Browser in the workspace `HERE`, on a server that places no windows.
-    fn on_a_server_with_no_machine() -> Arc<TurnBrowser> {
-        let workspace_id = WorkspaceId::parse(HERE).expect("a workspace id");
+    /// A turn's open of Browser in `workspace`, on a server that places no windows.
+    fn on_a_server_with_no_machine(workspace: &str) -> Arc<TurnBrowser> {
+        let workspace_id = WorkspaceId::parse(workspace).expect("a workspace id");
         let actions = WorkspaceActions::new(Arc::new(AppCatalogue::native));
         Arc::new(TurnBrowser {
             browsers: None,
             service: WorkspaceActionProvider::new(actions, workspace_id),
-            workspace: HERE.to_owned(),
+            workspace: workspace.to_owned(),
             workspace_id,
         })
     }
@@ -253,14 +253,14 @@ mod tests {
 
     /// Whether a turn's open of Browser takes a call of `target`.
     fn takes(target: &RemoteActionTarget) -> bool {
-        on_a_server_with_no_machine().takes(target)
+        on_a_server_with_no_machine(HERE).takes(target)
     }
 
     /// How an open of Browser addressed to the workspace `workspace` ends for a turn that works
     /// in `HERE`, on a server that places no windows.
     async fn opened_in(workspace: &str) -> Result<InvocationUpdate, ActionCallError> {
         let request = open_of(tilo_app_id::apps::BROWSER, workspace);
-        on_a_server_with_no_machine()
+        on_a_server_with_no_machine(HERE)
             .invoke(caller(), request)
             .await
     }
@@ -277,6 +277,43 @@ mod tests {
             NO_MACHINE.contains("no machine") && NO_MACHINE.contains("Nothing was opened"),
             "the words say why and that nothing was opened: {NO_MACHINE}"
         );
+    }
+
+    /// Naming the exact Browser address never bypasses the dispatcher when the signing
+    /// session is missing. The downstream provider would otherwise answer NO_MACHINE.
+    #[tokio::test]
+    async fn a_raw_browser_open_requires_the_turns_current_grant() {
+        let (key, governor) = crate::workspaces::fixtures::governor();
+        let scratch = tempfile::tempdir().unwrap();
+        let host = crate::workspaces::fixtures::test_host(scratch.path(), &key, &governor).await;
+        let workspace = host.workspaces().create("Browser").await.unwrap();
+        let browser = on_a_server_with_no_machine(&workspace.workspace);
+        let caller = Caller::delegated_agent(
+            "scout",
+            governor.user_public_key,
+            governor.device_public_key,
+        )
+        .in_workspace(&workspace.workspace)
+        .on_roster(1, governor.user_public_key);
+        let raw = open_of(tilo_app_id::apps::BROWSER, &workspace.workspace);
+        let mut providers =
+            super::super::turn_provider::Providers::here(host.workspaces(), workspace.workspace_id);
+        providers.add(tilo_app_id::apps::BROWSER, browser);
+        let provider = providers
+            .taking(&raw.target)
+            .expect("Browser handles this exact address");
+        let receipt = providers
+            .carry_out(provider, &caller, raw, super::super::OwnAnswers::default())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            receipt.status,
+            ReceiptStatus::Rejected {
+                error: ActionCallError::NotPermitted
+            }
+        );
+        host.shutdown().await;
     }
 
     #[tokio::test]

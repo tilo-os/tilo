@@ -60,8 +60,7 @@ use crate::environment::EnvironmentRegistry;
 use crate::workspaces::Workspaces;
 use crate::workspaces::hosted_use::HostedTurn;
 
-/// The provider a turn's tools find its person's other workspaces under.
-const PROVIDER: &str = "tilo.other-workspaces";
+use tilo_actions::remote::OTHER_WORKSPACES_PROVIDER as PROVIDER;
 /// The one resource it holds: the person's other workspaces.
 const MINE: &str = "workspaces";
 /// The read of them.
@@ -138,7 +137,9 @@ pub(super) async fn join(
         Err(Refusal::Unknown) => false,
     };
     let service = &mut scope.provider;
-    *service = service.clone().answering(Arc::new(own));
+    *service = service
+        .clone()
+        .answering(workspaces, PROVIDER, Arc::new(own));
 }
 
 impl TurnElsewhere {

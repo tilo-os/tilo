@@ -1,6 +1,6 @@
 //! Field edits offered by an installed app on resources in the workspace store.
 
-use tilo_action_policy::{ActionKind, TreePath, roles};
+use tilo_action_policy::{ActionKind, TreePath};
 use tilo_actions::remote::Caller;
 use tilo_agent_session::AgentSessions;
 use tilo_agent_session::workspace_actions::PackagedCall;
@@ -109,14 +109,7 @@ impl Workspaces {
             .await
             .ok_or_else(denied)?;
         let agent = caller.acting().agent_id().ok_or_else(denied)?;
-        let person = caller.acting_for_person().ok_or_else(denied)?;
-        let mut acting = caller.acting().clone();
-        acting.foreign_device = policy.access.acting.foreign_device;
-        let access = policy
-            .access
-            .as_acting(acting)
-            .ok_or_else(denied)?
-            .granted(roles::agent_bound(agent, person, &policy.agent_bound));
+        let access = policy.agent_member_access(caller).ok_or_else(denied)?;
         let node = TreePath::workspace(governed.workspace())
             .app(app)
             .kind(kind)
