@@ -113,7 +113,7 @@ async fn a_device_holds_one_key_per_app_and_purpose_answered_to_the_apps_own_pro
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let (workspace, workspace_id, service) = hosted(workspaces).await;
-    let records = Arc::new(tilo_actions::remote::invocation_record::Invocations::default());
+    let records = Arc::new(tilo_invocations::Invocations::default());
     records.keep_no_secrets(workspaces.secret_parameters());
     workspaces.serve_invocations(Arc::clone(&records));
     let own = AppProcess::OwnTilolang;

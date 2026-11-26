@@ -7,20 +7,31 @@
 //! hands a call on to another host records where it went ([`Invocations::record`] again), so
 //! following, cancelling and waiting reach the host that runs it with no map of its own.
 //!
-//! [`PROVIDER`]: super::workspace_invocations::PROVIDER
+//! [`PROVIDER`]: tilo_actions::remote::workspace_invocations::PROVIDER
+
+#![cfg_attr(
+    test,
+    allow(
+        clippy::string_slice,
+        clippy::unreachable,
+        reason = "in a test these are the assertion, not a hazard"
+    )
+)]
 
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, PoisonError};
 
-use super::secret_arguments::{SecretAnswers, SecretParameters, secret_arguments, without_secrets};
-use super::workspace_invocations::{CANCEL, Origin, PROVIDER, RETRY, Spend, UNDO};
-use super::{
+use tilo_actions::InvocationId;
+use tilo_actions::remote::secret_arguments::{
+    SecretAnswers, SecretParameters, secret_arguments, without_secrets,
+};
+use tilo_actions::remote::workspace_invocations::{CANCEL, Origin, PROVIDER, RETRY, Spend, UNDO};
+use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Completer,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, MAX_CATALOGUE_PAGE,
     MAX_REMOTE_WAIT, Pending, ReceiptStatus, RemoteActionTarget, ResourceWake, RunningTool,
     pending, settle_with,
 };
-use crate::InvocationId;
 
 /// Whether `caller` may write the resource an invocation was made from
 /// ([`Recorded::origin`]): what a provider's own grant check answers at the moment it is
@@ -39,8 +50,8 @@ pub const NO_HISTORY: &str = "the record it changed offers no history to take ba
 
 /// `state`, with what a secret answer said replaced by the word that it was given.
 fn given(mut state: InvocationState) -> InvocationState {
-    if let crate::InvocationUpdate::Succeeded { output, .. } = &mut state.update {
-        *output = crate::ActionOutput {
+    if let tilo_actions::InvocationUpdate::Succeeded { output, .. } = &mut state.update {
+        *output = tilo_actions::ActionOutput {
             value: Some(serde_json::json!({ "given": true })),
             resources: Vec::new(),
         };
@@ -87,7 +98,7 @@ pub struct Recorded {
     pub spend: Option<Spend>,
     /// What it changed was taken back, through its record's own history.
     pub undone: bool,
-    /// Its answer is a secret ([`crate::SECRET_ANSWER_TAG`]): the record keeps neither what it
+    /// Its answer is a secret ([`tilo_actions::SECRET_ANSWER_TAG`]): the record keeps neither what it
     /// was asked with nor what it answered, only that it was answered.
     pub secret: bool,
     route: Route,
@@ -109,9 +120,9 @@ struct RunState {
     /// How it stands: running until the session says how it ended.
     state: InvocationState,
     /// Resolves the stop its person asked for, so the session answers the tool cancelled.
-    stop: Option<crate::remote::Completer<Result<(), ActionCallError>>>,
+    stop: Option<tilo_actions::remote::Completer<Result<(), ActionCallError>>>,
     /// Readers waiting on it to move: told once it ended.
-    changed: Vec<crate::remote::Completer<()>>,
+    changed: Vec<tilo_actions::remote::Completer<()>>,
 }
 
 impl ToolRun {
@@ -121,7 +132,7 @@ impl ToolRun {
             inner: Mutex::new(RunState {
                 state: InvocationState::new(
                     invocation,
-                    crate::InvocationUpdate::Accepted { invocation },
+                    tilo_actions::InvocationUpdate::Accepted { invocation },
                 ),
                 stop: None,
                 changed: Vec::new(),
@@ -178,14 +189,14 @@ impl ToolRun {
         inner.state = InvocationState::new(
             invocation,
             if stopped {
-                crate::InvocationUpdate::Cancelled {
+                tilo_actions::InvocationUpdate::Cancelled {
                     invocation,
                     message: Some("its person stopped it".to_owned()),
                 }
             } else {
-                crate::InvocationUpdate::Succeeded {
+                tilo_actions::InvocationUpdate::Succeeded {
                     invocation,
-                    output: crate::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 }
             },
         );
@@ -281,7 +292,7 @@ impl Invocations {
         let _ = self.secrets.set(secrets);
     }
 
-    /// Decide whether a call's action answers a secret ([`crate::SECRET_ANSWER_TAG`]) by
+    /// Decide whether a call's action answers a secret ([`tilo_actions::SECRET_ANSWER_TAG`]) by
     /// `answers`, from now on: its declaration, as the device's dispatch reads it, keeps every
     /// record of the call from holding its answer, whoever asked and wherever it was dispatched.
     /// Named once, by the device's dispatch.
@@ -299,12 +310,15 @@ impl Invocations {
         });
         let (mut kept, taken) = without_secrets(request, &names);
         let mut sealed: Vec<String> = taken.keys().cloned().collect();
-        if super::person_vault::calls_by_address(request, super::person_vault::ADD)
-            && let Some(secrets) = self.secrets.get()
+        if tilo_actions::remote::person_vault::calls_by_address(
+            request,
+            tilo_actions::remote::person_vault::ADD,
+        ) && let Some(secrets) = self.secrets.get()
             && let InvokeArgument::Json(arguments) = &mut kept.argument
             && let Some(serde_json::Value::Object(inner)) = arguments.get_mut("arguments")
         {
-            let add = super::person_vault::target(super::person_vault::ADD);
+            let add =
+                tilo_actions::remote::person_vault::target(tilo_actions::remote::person_vault::ADD);
             let names = secrets(&add).unwrap_or_else(|| inner.keys().cloned().collect());
             for name in names {
                 if inner.remove(&name).is_some() {
@@ -397,7 +411,7 @@ impl Invocations {
     /// every record of it, its answer and its arguments alike.
     fn answers_a_secret(&self, request: &InvokeRequest) -> bool {
         self.answers.get().map_or_else(
-            || super::person_vault::answers_secret(request),
+            || tilo_actions::remote::person_vault::answers_secret(request),
             |answers| answers(request),
         )
     }
@@ -441,17 +455,19 @@ impl Invocations {
         let run = std::sync::Arc::new(ToolRun::started(id));
         let request = InvokeRequest {
             invocation: id,
-            target: super::agent_tools::target(super::agent_tools::CALL),
+            target: tilo_actions::remote::agent_tools::target(
+                tilo_actions::remote::agent_tools::CALL,
+            ),
             argument: InvokeArgument::None,
-            context: Some(crate::ActionContext {
-                group: Some(crate::WorkGroup {
+            context: Some(tilo_actions::ActionContext {
+                group: Some(tilo_actions::WorkGroup {
                     id: tool.to_owned(),
                     label: Some(tool.to_owned()),
                     kind: "agent-tool".to_owned(),
                     declared_id: None,
                     session: None,
                 }),
-                ..crate::ActionContext::default()
+                ..tilo_actions::ActionContext::default()
             }),
             confirmation: None,
             revision: None,
@@ -531,7 +547,7 @@ impl Invocations {
         for recorded in kept.by_id.values_mut() {
             let secret = recorded.secret
                 || answers.is_some_and(|answers| answers(&recorded.request))
-                || super::person_vault::answers_secret(&recorded.request);
+                || tilo_actions::remote::person_vault::answers_secret(&recorded.request);
             if secret {
                 recorded.secret = true;
                 recorded.request.argument = InvokeArgument::None;
@@ -540,7 +556,7 @@ impl Invocations {
         }
     }
 
-    /// Note that `id` answers a secret ([`crate::SECRET_ANSWER_TAG`]): its record forgets what
+    /// Note that `id` answers a secret ([`tilo_actions::SECRET_ANSWER_TAG`]): its record forgets what
     /// it was asked with, and keeps of its answer only that it was given. The secret reaches its
     /// caller in the receipt alone.
     pub fn keep_secret(&self, id: &InvocationId) {
@@ -645,7 +661,7 @@ impl Invocations {
                     Some(Ok(())) => Ok(InvocationReceipt {
                         invocation: asked,
                         status: ReceiptStatus::Completed {
-                            output: crate::ActionOutput::default(),
+                            output: tilo_actions::ActionOutput::default(),
                         },
                     }),
                     Some(Err(error)) => Err(error),
@@ -662,7 +678,7 @@ impl Invocations {
             stopped.map(|()| InvocationReceipt {
                 invocation,
                 status: ReceiptStatus::Completed {
-                    output: crate::ActionOutput::default(),
+                    output: tilo_actions::ActionOutput::default(),
                 },
             })
         }))
@@ -715,7 +731,7 @@ impl Invocations {
         asked: InvocationId,
     ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
         // A tool call is the session's, not an action with an address to ask again.
-        if recorded.request.target.provider == super::agent_tools::PROVIDER {
+        if recorded.request.target.provider == tilo_actions::remote::agent_tools::PROVIDER {
             return Pending::ready(Err(ActionCallError::Refused {
                 reason: "a tool call is not run again from its record: its agent asks it again"
                     .to_owned(),
@@ -757,13 +773,13 @@ impl Invocations {
             result.map(|_| InvocationReceipt {
                 invocation: asked,
                 status: ReceiptStatus::Completed {
-                    output: crate::ActionOutput {
+                    output: tilo_actions::ActionOutput {
                         value: Some(serde_json::json!({
                             "invocation": fresh.0.to_string(),
                             "address": format!("{PROVIDER}/{}", fresh.0),
                             "retries": original.0.to_string(),
                         })),
-                        ..crate::ActionOutput::default()
+                        ..tilo_actions::ActionOutput::default()
                     },
                 },
             })
@@ -944,7 +960,7 @@ pub fn take_back_run(
 
 /// Complete `done` with how taking back `receipt` went, once what it admitted ended: a host that
 /// only accepted the record's `undo` is followed at `provider`, for as long as it runs, until it
-/// says how it went ([`super::settle_with`]). A provider that cannot say how it stands leaves it
+/// says how it went ([`tilo_actions::remote::settle_with`]). A provider that cannot say how it stands leaves it
 /// running.
 fn followed(
     provider: Arc<dyn ActionProvider + Send + Sync>,
@@ -974,9 +990,9 @@ fn followed(
 /// the one whose history lies at `root` when `root` names a prefix, preferring a verb that
 /// names the invocation it takes.
 fn undo_action(
-    rows: &[super::CatalogueRow],
+    rows: &[tilo_actions::remote::CatalogueRow],
     root: Option<&str>,
-) -> Option<(String, crate::ActionAddress)> {
+) -> Option<(String, tilo_actions::ActionAddress)> {
     let mut fallback = None;
     for row in rows {
         let Some(action) = &row.action else {
@@ -1025,8 +1041,8 @@ fn already_taken_back() -> ActionCallError {
 fn origin_of(caller: &Caller, request: &InvokeRequest) -> Option<Origin> {
     if let InvokeArgument::Json(arguments) = &request.argument
         && let Some(from) = arguments
-            .get(crate::params::FROM_ARGUMENT)
-            .and_then(crate::params::MadeFrom::from_json)
+            .get(tilo_actions::params::FROM_ARGUMENT)
+            .and_then(tilo_actions::params::MadeFrom::from_json)
         && let Some(origin) = Origin::parse(&from.resource, Some(&from.kind))
     {
         return Some(origin);
@@ -1081,10 +1097,10 @@ mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use super::*;
-    use crate::remote::{
+    use tilo_actions::remote::{
         CataloguePage, CatalogueQuery, InvokeArgument, PendingPoll, RemoteActionTarget,
     };
-    use crate::{ActionOutput, InvocationUpdate};
+    use tilo_actions::{ActionOutput, InvocationUpdate};
 
     /// A host that runs every invocation until it is stopped, and whose record takes a run's
     /// writes back through its own history `undo`.
@@ -1116,32 +1132,33 @@ mod tests {
         ) -> Pending<Result<CataloguePage, ActionCallError>> {
             let mut page = CataloguePage::default();
             if query.provider.as_deref() == Some("terminal") {
-                page.rows.push(super::super::CatalogueRow::for_action(
-                    "terminal",
-                    "terminal",
-                    crate::ActionDescriptor {
-                        address: crate::ActionAddress::new("tl:terminal:", UNDO),
-                        semantic_identity: None,
-                        resource_kind: "terminal".into(),
-                        resource_label: "Terminal".into(),
-                        action_label: "Undo".into(),
-                        keywords: Vec::new(),
-                        did: None,
-                        icon: None,
-                        description: None,
-                        state: crate::ActionState::default(),
-                        locus: crate::ExecutionLocus::ClientLocal,
-                        kind: crate::OperationKind::Effect,
-                        contract: crate::ActionContract::default(),
-                        input: crate::InputSpec::None,
-                        params: vec![crate::ActionParam::optional(
-                            "invocation",
-                            crate::ParamType::Text,
-                            "The invocation whose changes are taken back.",
-                        )],
-                        view: None,
-                    },
-                ));
+                page.rows
+                    .push(tilo_actions::remote::CatalogueRow::for_action(
+                        "terminal",
+                        "terminal",
+                        tilo_actions::ActionDescriptor {
+                            address: tilo_actions::ActionAddress::new("tl:terminal:", UNDO),
+                            semantic_identity: None,
+                            resource_kind: "terminal".into(),
+                            resource_label: "Terminal".into(),
+                            action_label: "Undo".into(),
+                            keywords: Vec::new(),
+                            did: None,
+                            icon: None,
+                            description: None,
+                            state: tilo_actions::ActionState::default(),
+                            locus: tilo_actions::ExecutionLocus::ClientLocal,
+                            kind: tilo_actions::OperationKind::Effect,
+                            contract: tilo_actions::ActionContract::default(),
+                            input: tilo_actions::InputSpec::None,
+                            params: vec![tilo_actions::ActionParam::optional(
+                                "invocation",
+                                tilo_actions::ParamType::Text,
+                                "The invocation whose changes are taken back.",
+                            )],
+                            view: None,
+                        },
+                    ));
             }
             Pending::ready(Ok(page))
         }
@@ -1196,7 +1213,7 @@ mod tests {
             invocation: InvocationId::new(),
             target: RemoteActionTarget {
                 provider: "terminal".into(),
-                address: crate::ActionAddress::new("terminal", "run"),
+                address: tilo_actions::ActionAddress::new("terminal", "run"),
             },
             argument: InvokeArgument::Text("make".into()),
             context: None,
@@ -1215,7 +1232,7 @@ mod tests {
         request.invocation = InvocationId::new();
         request.target = RemoteActionTarget {
             provider: PROVIDER.into(),
-            address: crate::ActionAddress::new(id.0.to_string(), action),
+            address: tilo_actions::ActionAddress::new(id.0.to_string(), action),
         };
         request.argument = InvokeArgument::None;
         request
@@ -1357,21 +1374,30 @@ mod tests {
     fn a_call_is_recorded_without_what_its_action_declares_secret() {
         let invocations = Arc::new(Invocations::default());
         let params = [
-            crate::ActionParam::required("kind", crate::ParamType::Text, "kind"),
-            crate::ActionParam::required("title", crate::ParamType::Text, "title"),
-            crate::ActionParam::required("secret", crate::ParamType::Secret, "secret"),
-            crate::ActionParam::optional("notes", crate::ParamType::Secret, "notes"),
-            crate::ActionParam::optional("fields", crate::ParamType::Secret, "fields"),
+            tilo_actions::ActionParam::required("kind", tilo_actions::ParamType::Text, "kind"),
+            tilo_actions::ActionParam::required("title", tilo_actions::ParamType::Text, "title"),
+            tilo_actions::ActionParam::required(
+                "secret",
+                tilo_actions::ParamType::Secret,
+                "secret",
+            ),
+            tilo_actions::ActionParam::optional("notes", tilo_actions::ParamType::Secret, "notes"),
+            tilo_actions::ActionParam::optional(
+                "fields",
+                tilo_actions::ParamType::Secret,
+                "fields",
+            ),
         ];
-        let target = super::super::person_vault::target(super::super::person_vault::ADD);
+        let target =
+            tilo_actions::remote::person_vault::target(tilo_actions::remote::person_vault::ADD);
         let described = target.clone();
         // The registry's own `call` is described too: its address and arguments are no secrets.
         invocations.keep_no_secrets(Arc::new(move |asked: &RemoteActionTarget| {
-            if asked.provider == crate::remote::ACTIONS_PROVIDER {
+            if asked.provider == tilo_actions::remote::ACTIONS_PROVIDER {
                 return Some(Vec::new());
             }
             (*asked == described)
-                .then(|| super::super::secret_arguments::secret_parameters(&params))
+                .then(|| tilo_actions::remote::secret_arguments::secret_parameters(&params))
         }));
         let asked = Caller::local_person("ada").in_new_execution();
         let mut request = request();
@@ -1390,8 +1416,8 @@ mod tests {
         let mut called = request.clone();
         called.invocation = InvocationId::new();
         called.target = RemoteActionTarget {
-            provider: crate::remote::ACTIONS_PROVIDER.to_owned(),
-            address: crate::ActionAddress::new("actions", "call"),
+            provider: tilo_actions::remote::ACTIONS_PROVIDER.to_owned(),
+            address: tilo_actions::ActionAddress::new("actions", "call"),
         };
         let mut by_address = serde_json::Map::new();
         by_address.insert("address".into(), "tilo.vault/vault#add".into());
@@ -1437,7 +1463,10 @@ mod tests {
         invocations.record(&asked, &asked, &request, Some("w1"), (runs, asked.clone()));
         let kept = invocations.get(&asked, &id).unwrap();
         assert_eq!(kept.request.argument, InvokeArgument::None);
-        assert_eq!(kept.sealed, [super::super::secret_arguments::TEXT_ARGUMENT]);
+        assert_eq!(
+            kept.sealed,
+            [tilo_actions::remote::secret_arguments::TEXT_ARGUMENT]
+        );
         let listed = invocations
             .listed("w1")
             .iter()
@@ -1456,7 +1485,7 @@ mod tests {
     /// answered.
     #[test]
     fn a_vault_reveal_is_recorded_as_answering_a_secret() {
-        use super::super::{ACCOUNTS_PROVIDER, person_vault};
+        use tilo_actions::remote::{ACCOUNTS_PROVIDER, person_vault};
         let invocations = Arc::new(Invocations::default());
         let asked = Caller::local_person("ada").in_new_execution();
         let mut reveal = request();
@@ -1464,7 +1493,7 @@ mod tests {
         let mut credential = request();
         credential.target = RemoteActionTarget {
             provider: ACCOUNTS_PROVIDER.to_owned(),
-            address: crate::ActionAddress::new("accounts", "cloud-credential"),
+            address: tilo_actions::ActionAddress::new("accounts", "cloud-credential"),
         };
         let serde_json::Value::Object(signing_in) = serde_json::json!({
             "account": "files-1",
@@ -1475,7 +1504,7 @@ mod tests {
         let mut called = request();
         called.target = RemoteActionTarget {
             provider: "tilo.actions".to_owned(),
-            address: crate::ActionAddress::new("actions", "call"),
+            address: tilo_actions::ActionAddress::new("actions", "call"),
         };
         let serde_json::Value::Object(arguments) = serde_json::json!({
             "address": "tilo.workspace/workspace.permissions:w1/vault#reveal",
@@ -1768,7 +1797,7 @@ mod tests {
         get.invocation = InvocationId::new();
         get.target = RemoteActionTarget {
             provider: PROVIDER.into(),
-            address: crate::ActionAddress::new(id.0.to_string(), "get"),
+            address: tilo_actions::ActionAddress::new(id.0.to_string(), "get"),
         };
         assert!(
             invocations.answer(&asked, &request, &never).is_none(),

@@ -199,7 +199,7 @@ pub struct Server {
     here: Option<Arc<dyn session::Here>>,
     /// The device's record of the invocations it was asked for: where a call the account hands on
     /// to a workspace's host is followed.
-    invocations: Arc<tilo_actions::remote::invocation_record::Invocations>,
+    invocations: Arc<tilo_invocations::Invocations>,
 }
 
 /// How long a site seen serving its sign-in page is trusted to keep serving it.

@@ -32,7 +32,6 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
 };
-use tilo_actions::remote::invocation_record::Invocations;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, InvocationReceipt,
     InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus, RemoteActionMessage,
@@ -57,6 +56,7 @@ use tilo_app_host::{
 use tilo_desktop_model::WorkspaceId;
 use tilo_device_identity::login::Device;
 use tilo_identity::broker::{IdentityBrokerHandle, WorkspaceMembership};
+use tilo_invocations::Invocations;
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::page::PageNotice;
 use tilo_server_protocol::servers::person_workspace_id;
@@ -5419,8 +5419,7 @@ fn run_device_action(
     request: InvokeRequest,
     workspace: &str,
 ) -> Pending<Result<InvocationReceipt, ActionCallError>> {
-    let route: tilo_actions::remote::invocation_record::Route =
-        (Arc::new(tickets.clone()), caller.clone());
+    let route: tilo_invocations::Route = (Arc::new(tickets.clone()), caller.clone());
     invocations.record(caller, asked_by, &request, Some(workspace), route);
     if Tickets::answers_a_secret(&request) {
         invocations.keep_secret(&request.invocation);

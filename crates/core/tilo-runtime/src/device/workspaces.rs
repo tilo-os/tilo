@@ -18,11 +18,11 @@ use std::{
 };
 
 use ed25519_dalek::SigningKey;
-use tilo_actions::remote::invocation_record::Invocations;
 use tilo_app_host::services::WorkspaceGrants;
 use tilo_desktop_model::{Workspace, WorkspaceId};
 use tilo_identity::broker::WorkspaceMembership;
 use tilo_identity::identity_store::DeviceIdentity;
+use tilo_invocations::Invocations;
 use tilo_peer_state::StatePeer;
 use tilo_peer_state::actions::{ReadFuture, Workspaces as PeerWorkspaces};
 use tilo_session_client::device::Device as Entered;

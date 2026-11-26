@@ -251,7 +251,7 @@ pub trait Here: Send + Sync {
 
     /// The device's record of every invocation it was asked for, shared with the account: `None`
     /// for a host that keeps none, whose account keeps its own.
-    fn invocations(&self) -> Option<Arc<tilo_actions::remote::invocation_record::Invocations>> {
+    fn invocations(&self) -> Option<Arc<tilo_invocations::Invocations>> {
         None
     }
 

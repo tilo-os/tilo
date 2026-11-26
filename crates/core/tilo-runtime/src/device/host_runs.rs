@@ -15,8 +15,8 @@ use crate::personal_devices::Whose;
 use collab_types::WorkspaceId;
 use std::sync::{Arc, OnceLock};
 use tilo_actions::remote::Caller;
-use tilo_actions::remote::invocation_record::Invocations;
 use tilo_app_host::collab_broker::AppActionBroker;
+use tilo_invocations::Invocations;
 use tilo_user_identity::DeviceCert;
 
 /// The workspace a computer that founds its person's workspace answers: its keys' runs and

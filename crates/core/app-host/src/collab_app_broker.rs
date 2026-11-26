@@ -84,7 +84,6 @@ mod file_clipboard;
 mod files_listing;
 mod host_workers;
 mod invocations;
-use tilo_actions::remote::invocation_record;
 mod invoker;
 mod item_use;
 mod kept_document;
@@ -489,7 +488,7 @@ pub struct AppBrokerState {
     cancellation_requests: Mutex<std::collections::HashSet<u64>>,
     /// The device's record of the invocations it was asked for, where its embedder
     /// shares it: what `tilo.invocations` reads and lists here.
-    invocations: std::sync::OnceLock<Arc<invocation_record::Invocations>>,
+    invocations: std::sync::OnceLock<Arc<tilo_invocations::Invocations>>,
     /// The device's one record reader, where its embedder serves it: what an app or agent here
     /// reads a record outside its app through ([`Self::serve_records`]).
     records: std::sync::OnceLock<Arc<dyn tilo_actions::remote::ResourceReads>>,

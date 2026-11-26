@@ -1103,7 +1103,7 @@ async fn a_tilolang_process_of_the_apps_own_keeps_and_reads_back_only_what_it_ke
     let server = test_host(dir.path(), &key, &owner).await;
     let workspaces = server.workspaces();
     let (workspace, workspace_id, service) = hosted(workspaces).await;
-    let records = Arc::new(tilo_actions::remote::invocation_record::Invocations::default());
+    let records = Arc::new(tilo_invocations::Invocations::default());
     records.keep_no_secrets(workspaces.secret_parameters());
     workspaces.serve_invocations(Arc::clone(&records));
     let persons = kept(&service, workspace_id, &owner, (GATEWAY, OTHER)).await;

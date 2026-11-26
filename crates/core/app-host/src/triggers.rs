@@ -665,7 +665,7 @@ pub struct Runner {
     outside: outside::Outside,
     /// The device's record of the invocations it was asked for, when this runner fires a
     /// webhook on one: what it lists to find the ones this device has not posted yet.
-    invocations: Option<Arc<tilo_actions::remote::invocation_record::Invocations>>,
+    invocations: Option<Arc<tilo_invocations::Invocations>>,
     /// The invocations already fired, by workspace: a look that lists them again fires nothing.
     seen_invocations: BTreeMap<String, BTreeSet<String>>,
     /// The fingerprint of who was here each workspace was last seen, by workspace: a webhook
@@ -719,10 +719,7 @@ impl Runner {
     /// Fire the webhooks on the invocations this device was asked for, read through
     /// `invocations`.
     #[must_use]
-    pub fn watching_invocations(
-        mut self,
-        invocations: Arc<tilo_actions::remote::invocation_record::Invocations>,
-    ) -> Self {
+    pub fn watching_invocations(mut self, invocations: Arc<tilo_invocations::Invocations>) -> Self {
         self.invocations = Some(invocations);
         self
     }
@@ -1736,7 +1733,7 @@ fn wants_event(events: &[String], kind: &str) -> bool {
 }
 
 /// How an invocation stands, as a webhook's receiver reads it.
-fn phase_of(recorded: &tilo_actions::remote::invocation_record::Recorded) -> &'static str {
+fn phase_of(recorded: &tilo_invocations::Recorded) -> &'static str {
     match recorded.state.as_ref().map(|state| &state.update) {
         Some(tilo_actions::InvocationUpdate::Succeeded { .. }) => "succeeded",
         Some(tilo_actions::InvocationUpdate::Failed { .. }) => "failed",
@@ -1773,7 +1770,7 @@ pub async fn run_on_device(
 pub async fn run_on_device_watching_invocations(
     workspaces: Workspaces,
     broker: Arc<crate::collab_broker::AppActionBroker>,
-    invocations: Arc<tilo_actions::remote::invocation_record::Invocations>,
+    invocations: Arc<tilo_invocations::Invocations>,
 ) {
     Runner::new(workspaces, broker, Order::WORKSPACE)
         .watching_invocations(invocations)

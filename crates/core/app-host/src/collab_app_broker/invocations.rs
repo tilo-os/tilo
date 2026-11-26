@@ -1,7 +1,7 @@
 //! A workspace's invocations, newest first, as its dispatch lists them.
 //!
 //! The one source is the device's record of each invocation it was asked for
-//! (`tilo_actions::remote::invocation_record::Invocations`): who asked, the request, when it was
+//! (`tilo_invocations::Invocations`): who asked, the request, when it was
 //! asked and how it stands, asked again of the provider it runs at on every read. No listing is
 //! kept beside it, so a call that is still going, waiting for its person or ended shows as it is
 //! now.
@@ -18,7 +18,6 @@
 use std::sync::Arc;
 
 use tilo_action_policy::{ActionKind, TreePath};
-use tilo_actions::remote::invocation_record::{Invocations, Recorded};
 use tilo_actions::remote::workspace_invocations::{
     Invocation, InvocationBy, InvocationStatus, Invocations as Listed, InvocationsQuery, MOST,
     Origin,
@@ -27,6 +26,7 @@ use tilo_actions::remote::{
     ActionCallError, Caller, CataloguePage, CatalogueQuery, InvokeRequest, resource_parts,
 };
 use tilo_actions::{EffectReceiptStatus, InvocationUpdate};
+use tilo_invocations::{Invocations, Recorded};
 
 use super::AppBrokerState;
 use tilo_workspace_service::workspaces::app_invocations::with_questions;
@@ -252,7 +252,10 @@ fn described(recorded: &Recorded, addressed: Option<(&str, &str)>) -> Invocation
         spend: recorded.spend.clone(),
         step: None,
         by: by(&recorded.asked),
-        group: request.context.as_ref().and_then(|context| context.group.clone()),
+        group: request
+            .context
+            .as_ref()
+            .and_then(|context| context.group.clone()),
         title: title(request),
         status: if recorded.undone {
             InvocationStatus::Undone

@@ -18,13 +18,13 @@ use tilo_actions::remote::asked::{
     self, AskedFacts, AskedKeeping, AskedRecords as _, AskedStore, KeptAsk, Offer, RecordRef,
     Resolve,
 };
-use tilo_actions::remote::invocation_record::{Invocations, Route};
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueQuery, Confirmation,
     InvocationReceipt, InvocationState, InvokeArgument, InvokeRequest, Pending, ReceiptStatus,
     RemoteActionTarget,
 };
 use tilo_actions::{ActionOutput, InvocationId, InvocationUpdate};
+use tilo_invocations::{Invocations, Route};
 
 use super::{Admits, DeviceAsked, Run};
 use tilo_actions::remote::asked::AskedReads as _;

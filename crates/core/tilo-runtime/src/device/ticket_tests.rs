@@ -1903,7 +1903,7 @@ async fn a_secret_handed_once(
     args: &Value,
     field: &str,
     tickets: &Tickets,
-    invocations: &Arc<tilo_actions::remote::invocation_record::Invocations>,
+    invocations: &Arc<tilo_invocations::Invocations>,
     person: &tilo_actions::remote::Caller,
     someone_else: &tilo_actions::remote::Caller,
 ) {
@@ -2034,7 +2034,7 @@ async fn recovery_words_and_a_backup_are_handed_over_and_kept_nowhere() {
     // The device's one dispatch: its record of each invocation, and the person who asks: Ada,
     // whose root this computer keeps and whose call runs with it. Anyone else is answered no
     // secret of hers.
-    let invocations = Arc::new(tilo_actions::remote::invocation_record::Invocations::default());
+    let invocations = Arc::new(tilo_invocations::Invocations::default());
     let person = tilo_actions::remote::Caller::authenticated(ada, [8; 32]);
     let someone_else = tilo_actions::remote::Caller::authenticated([7; 32], [8; 32]);
     for (action, args, field) in [
@@ -2076,7 +2076,7 @@ struct RevokeAtRoot {
     rootless_key: [u8; 32],
     rootless: Tickets,
     rootless_store: Arc<tilo_actions::remote::asked::AskedStore>,
-    rootless_invocations: Arc<tilo_actions::remote::invocation_record::Invocations>,
+    rootless_invocations: Arc<tilo_invocations::Invocations>,
     rootless_asked: Arc<super::asked::DeviceAsked>,
     person: tilo_actions::remote::Caller,
     invocation: InvocationId,
@@ -2122,7 +2122,7 @@ impl RevokeAtRoot {
         key: [u8; 32],
     ) -> (
         Arc<tilo_actions::remote::asked::AskedStore>,
-        Arc<tilo_actions::remote::invocation_record::Invocations>,
+        Arc<tilo_invocations::Invocations>,
         Arc<super::asked::DeviceAsked>,
     ) {
         use tilo_actions::remote::asked::{AskedKeeping, AskedStore};
@@ -2130,7 +2130,7 @@ impl RevokeAtRoot {
         let keeping: Arc<dyn AskedKeeping> = copies.asked_keeping();
         let store = AskedStore::opened(None, Some(keeping), Vec::new()).unwrap();
         store.asks_on(&key);
-        let invocations: Arc<tilo_actions::remote::invocation_record::Invocations> = Arc::default();
+        let invocations: Arc<tilo_invocations::Invocations> = Arc::default();
         let asked = super::asked::DeviceAsked::new(
             Arc::clone(&store),
             Arc::clone(&invocations),
@@ -2572,7 +2572,7 @@ async fn the_first_app_launched_in_the_persons_workspace_founds_it_with_the_devi
         copies.action_service(),
     ));
     let keeping: Arc<dyn AskedKeeping> = copies.asked_keeping();
-    let invocations: Arc<tilo_actions::remote::invocation_record::Invocations> = Arc::default();
+    let invocations: Arc<tilo_invocations::Invocations> = Arc::default();
     let asked = super::asked::DeviceAsked::new(
         AskedStore::opened(None, Some(keeping), Vec::new()).unwrap(),
         invocations,

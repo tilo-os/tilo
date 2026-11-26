@@ -2026,9 +2026,8 @@ mod run_undo {
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
 
-    use tilo_actions::remote::{
-        ActionCallError, ActionProvider, Caller, invocation_record::NO_HISTORY, session_actions,
-    };
+    use tilo_actions::remote::{ActionCallError, ActionProvider, Caller, session_actions};
+    use tilo_invocations::NO_HISTORY;
     use tilo_lock::MutexRecover as _;
     use tilo_session_core::desktop::activity::{TaskRunDocument, TaskRunUndo};
 
@@ -2074,13 +2073,8 @@ mod run_undo {
             let mut taken = false;
             for (at, root) in candidates(app, record) {
                 let left = until.saturating_duration_since(Instant::now());
-                let pending = tilo_actions::remote::invocation_record::take_back_run(
-                    &route,
-                    &at,
-                    root.as_deref(),
-                    run,
-                    step,
-                );
+                let pending =
+                    tilo_invocations::take_back_run(&route, &at, root.as_deref(), run, step);
                 match pending.wait_timeout(left.max(ANSWER)) {
                     Ok(Some(Ok(()))) => {
                         taken = true;

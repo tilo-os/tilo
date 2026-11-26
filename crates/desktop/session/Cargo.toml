@@ -120,6 +120,7 @@ tilo-machine.workspace = true
 tilo-process = { path = "../../platform/tilo-process" }
 tilo-action-policy = { path = "../../core/action-policy" }
 tilo-actions = { path = "../../core/actions", features = ["answer-reads"] }
+tilo-invocations = { version = "0.1.0", path = "../../core/invocations" }
 # The directory of public workspaces a site serves: what joins list and
 # what a site's entry and directory answer.
 tilo-server-protocol = { path = "../../core/tilo-server-protocol" }

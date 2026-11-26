@@ -14946,6 +14946,7 @@ dependencies = [
  "tilo-endpoint-reachability",
  "tilo-files",
  "tilo-identity",
+ "tilo-invocations",
  "tilo-machine",
  "tilo-mcp",
  "tilo-neighbour-wire",
@@ -15122,6 +15123,7 @@ dependencies = [
  "tilo-identity",
  "tilo-identity-client",
  "tilo-invocation-journal",
+ "tilo-invocations",
  "tilo-key-group",
  "tilo-lock",
  "tilo-mcp",
@@ -17829,6 +17831,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "tilo-invocations"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "serde_json",
+ "tilo-action-policy",
+ "tilo-actions",
+ "tilo-clock",
+ "uuid",
+ "workspace-hack",
+]
+
+[[package]]
 name = "tilo-key-group"
 version = "0.1.0"
 dependencies = [
@@ -19643,6 +19658,7 @@ dependencies = [
  "tilo-host-search",
  "tilo-identity",
  "tilo-identity-client",
+ "tilo-invocations",
  "tilo-key-group",
  "tilo-live",
  "tilo-location",
@@ -20331,6 +20347,7 @@ dependencies = [
  "tilo-fs-protocol",
  "tilo-identity",
  "tilo-identity-client",
+ "tilo-invocations",
  "tilo-key-group",
  "tilo-keyboard-engine",
  "tilo-keyboard-map",
@@ -22049,6 +22066,7 @@ dependencies = [
  "tilo-history",
  "tilo-identity",
  "tilo-invocation-journal",
+ "tilo-invocations",
  "tilo-key-group",
  "tilo-lock",
  "tilo-model-gateway",

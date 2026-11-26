@@ -1340,11 +1340,11 @@ async fn a_model_call_writes_what_it_cost_into_the_invocations_record() {
     use std::sync::Arc;
 
     use tilo_actions::InvocationId;
-    use tilo_actions::remote::invocation_record::Invocations;
     use tilo_actions::remote::{
         ActionProvider, CataloguePage, CatalogueQuery, InvocationReceipt, InvocationState,
         InvokeRequest, Pending, settle_with,
     };
+    use tilo_invocations::Invocations;
 
     /// A provider that answers nothing: the record of the ask is what the test reads.
     struct Nothing;

@@ -1312,8 +1312,8 @@ struct WorkspacesInner {
     own_address: std::sync::OnceLock<tokio::task::AbortHandle>,
     /// The device's record of every invocation it was asked for, when this host serves one:
     /// what a model call it answers writes what it cost into
-    /// ([`Invocations::note_spend`](tilo_actions::remote::invocation_record::Invocations::note_spend)).
-    invocations: std::sync::OnceLock<Arc<tilo_actions::remote::invocation_record::Invocations>>,
+    /// ([`Invocations::note_spend`](tilo_invocations::Invocations::note_spend)).
+    invocations: std::sync::OnceLock<Arc<tilo_invocations::Invocations>>,
 }
 
 impl Drop for WorkspacesInner {

@@ -573,11 +573,8 @@ impl Workspaces {
     /// Share `records`, the device's record of the invocations it was asked for, with this
     /// host: what a model call it answers writes what it cost into, on the record of the
     /// invocation that made the call
-    /// ([`Invocations::note_spend`](tilo_actions::remote::invocation_record::Invocations::note_spend)).
-    pub fn serve_invocations(
-        &self,
-        records: Arc<tilo_actions::remote::invocation_record::Invocations>,
-    ) {
+    /// ([`Invocations::note_spend`](tilo_invocations::Invocations::note_spend)).
+    pub fn serve_invocations(&self, records: Arc<tilo_invocations::Invocations>) {
         let _ = self.inner.invocations.set(records);
     }
 }

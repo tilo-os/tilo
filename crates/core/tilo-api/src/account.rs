@@ -48,7 +48,6 @@ use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex, Weak};
 use tilo_actions::policy::roles::governance::RENAME;
 use tilo_actions::policy::{Answer, Asker, Invoked};
-use tilo_actions::remote::invocation_record::Invocations;
 use tilo_actions::remote::{
     ActionCallError, ActionProvider, Caller, CataloguePage, CatalogueProvider, CatalogueQuery,
     CatalogueResource, CatalogueRow, InvocationReceipt, InvocationState, InvokeArgument,
@@ -59,6 +58,7 @@ use tilo_actions::{
     ActionParam, ExecutionLocus, InputSpec, InvocationId, InvocationUpdate, OperationKind,
     ParamType, ResultSpec, RiskLevel,
 };
+use tilo_invocations::Invocations;
 use tilo_server_protocol::workspaces::{
     BRANCH_OWN_WORKSPACE, CREATE_OWN_WORKSPACE, CREATE_WEBHOOK, CreatedWorkspace, DELETE_WEBHOOK,
     DELETE_WORKSPACE, HOST_ACTIONS_PROVIDER, HOST_WORKSPACES_RESOURCE, LIST_WEBHOOKS, REVOKE_KEY,
