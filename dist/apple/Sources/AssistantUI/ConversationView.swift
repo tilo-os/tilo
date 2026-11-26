@@ -40,6 +40,9 @@ public struct ConversationView: View {
         // The reply its model is writing now: the newest piece, while an answer is being written.
         let written = conversation.isAnswering ? conversation.items.last?.id : nil
         let rows = conversation.rows(in: chat, wording)
+        let shown = model.shownItem.flatMap { item in
+            model.place == .chat(chat) ? rows.first { $0.id == "piece-\(item)" }?.id : nil
+        }
         let ready = chat == .main ? model.tasks(.readyForReview).count : 0
         // What came while the person was away stands at the top of the stretch that came since.
         let since = chat == .main ? model.sinceLeft : nil
@@ -119,7 +122,7 @@ public struct ConversationView: View {
                         if inSight, moreBelow { moreBelow = false }
                     }
                 }
-                .onAppear { rest(reader) }
+                .onAppear { if shown == nil { rest(reader) } }
                 // The height the conversation has changes when a bar or the keyboard comes or goes, and
                 // a scroll view does not tell its reader of every such step: a chat that is the first
                 // thing its window shows gets its bar's height in the pass that lays the window out, and
@@ -166,9 +169,10 @@ public struct ConversationView: View {
                     atEnd = true
                     reader.scrollTo("end", anchor: .bottom)
                 }
-                .onChange(of: model.shownItem) {
-                    guard let item = model.shownItem else { return }
-                    withAnimation(.easeOut(duration: 0.2)) { reader.scrollTo("piece-\(item)", anchor: .center) }
+                .onChange(of: shown, initial: true) {
+                    guard let shown else { return }
+                    atEnd = false
+                    withAnimation(.easeOut(duration: 0.2)) { reader.scrollTo(shown, anchor: .center) }
                     model.shownItem = nil
                 }
             }

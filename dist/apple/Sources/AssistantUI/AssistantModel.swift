@@ -72,6 +72,14 @@ public final class AssistantModel {
     public private(set) var look: Look?
     public private(set) var subAgents: [SubAgent] = []
     public private(set) var tasks: [AssistantTask] = []
+    private var proposalReview: ProposalReview?
+    @ObservationIgnored private var proposalRead = UUID()
+    @ObservationIgnored private var decidingProposal = false
+    public var proposals: [ProposedTask]? { proposalReview?.pending }
+    public var canLookNow: Bool { proposalReview?.canLookNow == true }
+    public var canAlwaysAllow: Bool { proposalReview?.canAlwaysAllow == true }
+    public var proposalPreferences: [ProposalPreference] { proposalReview?.preferences ?? [] }
+
     public private(set) var automations: [Automation] = []
     public private(set) var supervision = Supervision()
     public private(set) var conversations: [Chat: Conversation] = [:]
@@ -98,6 +106,8 @@ public final class AssistantModel {
     /// stands at its way in: the app was started by the address, or its page is still on its
     /// way in. It is taken once the device stands at its way in, and dropped once it is in.
     @ObservationIgnored private var handed: String?
+    /// A tapped push can reach the app before the signed-in conversation supplies its piece.
+    @ObservationIgnored private var pendingNotice: String?
     /// What the person was told while no device of theirs was looking. Nil: nothing to say of it.
     public private(set) var sinceLeft: SinceLeft?
 
@@ -217,6 +227,7 @@ public final class AssistantModel {
             conversation.apply(change)
             conversations[chat] = conversation
         }
+        resolveNotice()
     }
 
     /// Why a pairing ended without letting this device in: the way in says Tilo's own sentence
@@ -246,7 +257,20 @@ public final class AssistantModel {
             openReplies = [:]
         case .pairing, .confirming: break
         }
+        let previous = person
         session = stands
+        let changedWorkspace = if let from = previous?.workspaceRoute, let to = person?.workspaceRoute {
+            from != to
+        } else { false }
+        if let previous, previous.id != person?.id || changedWorkspace {
+            proposalReview = nil
+            proposalRead = UUID()
+
+            conversations.removeAll()
+            shownItem = nil
+            pendingNotice = nil
+        }
+        if person == nil { pendingNotice = nil } else { resolveNotice() }
         guard let words = handed else { return }
         switch stands {
         case .signedOut, .reset:
@@ -292,6 +316,7 @@ public final class AssistantModel {
         let before = conversation.items
         conversation.apply(change)
         conversations[chat] = conversation
+        let opened = resolveNotice(in: chat)
         // A turn that begins, or anything that comes after the person's message, ends the wait for one.
         switch change {
         case .answering(true): turnBegan(in: chat)
@@ -300,8 +325,10 @@ public final class AssistantModel {
         }
         guard known else { return }
         switch change {
-        case .added(let new): for item in new { told?(item, chat) }
+        case .added(let new): for item in new where item.id != opened { told?(item, chat) }
         case .changed(let item):
+            // The person already opened this push as the source published its piece.
+            guard item.id != opened else { return }
             // A piece that only now is a reminder, a brief or important was no news when its
             // words arrived: the person's Tilo said what it is a moment later. It is told now.
             // A piece that had something to tell before is settled: an answered question is
@@ -378,6 +405,51 @@ public final class AssistantModel {
         return result
     }
 
+    /// Read the current workspace on entry to Tasks and after its assistant has acted.
+    public func refreshProposals() async throws {
+        guard let person else { proposalReview = nil; return }
+        let request = UUID()
+        proposalRead = request
+        do {
+            let review = try await source.proposalReview(for: person)
+            guard request == proposalRead else { return }
+            proposalReview = review
+        } catch {
+            if request == proposalRead { proposalReview = nil }
+            throw error
+        }
+    }
+
+    public func review(_ proposal: ProposedTask, accept: Bool) async throws {
+        guard let person, proposal.person == person.id, proposal.workspace == person.workspaceRoute,
+              proposals?.contains(proposal) == true else { throw SourceProblem.signedOut }
+        try await decide { try await source.review(proposal, accept: accept, for: person) }
+    }
+
+    public func alwaysAllow(_ proposal: ProposedTask) async throws {
+        guard let person, canAlwaysAllow, !proposal.isEvent, proposals?.contains(proposal) == true else { throw SourceProblem.signedOut }
+        try await decide { try await source.alwaysAllow(proposal, for: person) }
+    }
+
+    public func changePreference(_ preference: ProposalPreference, suggestAgain: Bool) async throws {
+        guard let person, proposalPreferences.contains(preference), suggestAgain ? preference.quiet : preference.always else {
+            throw SourceProblem.signedOut
+        }
+        try await decide { try await source.changePreference(preference, suggestAgain: suggestAgain, for: person) }
+    }
+
+    public func lookNow() async throws {
+        guard let person, canLookNow else { throw SourceProblem.signedOut }
+        try await decide { try await source.lookNow(for: person) }
+    }
+
+    private func decide(_ apply: () async throws -> Void) async throws {
+        guard !decidingProposal else { throw SourceProblem.refused("A request is already in progress") }
+        decidingProposal = true
+        defer { decidingProposal = false }
+        try await apply()
+    }
+
     public func tasks(_ state: AssistantTask.State) -> [AssistantTask] {
         tasks.filter { $0.state == state }
     }
@@ -401,8 +473,28 @@ public final class AssistantModel {
 
     /// Bring a piece of a conversation into view.
     public func show(_ item: Item.ID, in chat: Chat = .main) {
+        pendingNotice = nil
         open(chat)
         shownItem = item
+    }
+
+    func openNotice(named name: String) {
+        guard session == nil || person != nil else { return }
+        pendingNotice = name
+        resolveNotice()
+    }
+
+    @discardableResult
+    private func resolveNotice(in changed: Chat? = nil) -> Item.ID? {
+        guard let name = pendingNotice, person != nil else { return nil }
+        for chat in changed.map({ [$0] }) ?? Array(conversations.keys) {
+            if let item = conversations[chat]?.items.last(where: { $0.toldAs == name }) {
+                show(item.id, in: chat)
+                saw(item.id, in: chat)
+                return item.id
+            }
+        }
+        return nil
     }
 
     public func showTasks(_ tab: PanelTab = .active) {
@@ -567,16 +659,12 @@ public final class AssistantModel {
         Task { await self.call { try await self.source.stop(subAgent) } }
     }
 
-    public func addTask(_ title: String) {
-        Task { await self.call { try await self.source.addTask(title) } }
+    public func addTask(_ draft: Draft) async -> Bool {
+        await call { try await self.source.addTask(draft.text, delivery: draft.delivery) }
     }
 
     public func setOn(_ on: Bool, for automation: Automation.ID) {
         Task { await self.call { try await self.source.setOn(on, for: automation) } }
-    }
-
-    public func setAssistantOn(_ on: Bool) {
-        Task { await self.call { try await self.source.setAssistantOn(on) } }
     }
 
     public func loadModels() {

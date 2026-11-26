@@ -61,6 +61,7 @@ final class TasksFollowTests: XCTestCase {
     private static let page = #"""
     <!doctype html><html data-arrival="load"><title>Tilo</title><span id="status"></span><div id="semantics"></div>
     <script>
+      \#(testDeviceHandoff)
       const root = document.documentElement;
       // A write by another device or by the workspace's server, as the workspace's feed tells of it.
       window.feed = []; window.held = false;
@@ -140,12 +141,10 @@ final class TasksFollowTests: XCTestCase {
           noSuch();
         },
       });
-      window.enter = () => {
+      window.enter = async () => {
         // Tilo's page hands the entry of its device to the app's own script, which stands in the
         // document to take it (Tilo's page calls it by its name).
-        const taker = Object.getOwnPropertyNames(globalThis).map(name => { try { return globalThis[name]; } catch { return null; } })
-          .find(one => one && typeof one === 'object' && typeof one.device === 'function' && typeof one.name === 'string');
-        taker.device(device);
+        await giveDevice(device);
         root.dataset.arrival = 'done';
         root.dataset.entry = 'open';
         globalThis.tiloMount = {

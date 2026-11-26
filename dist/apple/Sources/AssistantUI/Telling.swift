@@ -1,3 +1,4 @@
+import AssistantClosed
 import AssistantCore
 import SwiftUI
 import UserNotifications
@@ -6,7 +7,7 @@ import UserNotifications
 /// system, with the answer it offers as the system's own button, and their answer back.
 ///
 /// It tells while the app runs. Telling a person whose app is closed is a push from their host
-/// through Apple's service, under the same categories and with the same fields.
+/// through Apple's service. A push names its piece with this device's opaque name.
 @MainActor
 public final class Teller: NSObject {
     /// Whether the person is looking at this conversation right now: what they see is not told again.
@@ -113,18 +114,6 @@ public final class Teller: NSObject {
         center.setNotificationCategories(Set(categories.values))
     }
 
-    private func took(_ action: String, _ fields: [String: String]) {
-        guard let item = fields["item"], let chat = Teller.chat(fields["chat"]) else { return }
-        if action.hasPrefix(NoticePlan.offerAction) {
-            model.press(Offer.ID(String(action.dropFirst(NoticePlan.offerAction.count))), of: Item.ID(item), in: chat)
-        } else if action == NoticePlan.answerAction, let question = fields["question"], let choice = fields["choice"] {
-            model.answer(Question.ID(question), with: Choice.ID(choice))
-        } else if action == NoticePlan.openAction || action == UNNotificationDefaultActionIdentifier {
-            model.show(Item.ID(item), in: chat)
-            model.saw(Item.ID(item), in: chat)
-        }
-    }
-
     /// The name the system keeps a piece's notice under. Where a push may tell of the piece
     /// while the app is closed, it is the name the push gives it: the two are then one notice,
     /// each takes the other's place, and nothing is shown twice.
@@ -137,11 +126,51 @@ public final class Teller: NSObject {
         }
     }
 
-    static func chat(_ name: String?) -> Chat? {
+    nonisolated static func chat(_ name: String?) -> Chat? {
         guard let name else { return nil }
         if name == "main" { return .main }
         guard name.hasPrefix("sub-agent:") else { return nil }
         return .subAgent(SubAgent.ID(String(name.dropFirst("sub-agent:".count))))
+    }
+}
+
+/// What the person chose in a system notification. A remote notification can only open
+/// a piece whose device-specific name the signed-in workspace supplies.
+enum NoticeTap: Sendable {
+    case push(String)
+    case open(Item.ID, Chat)
+    case offer(Offer.ID, Item.ID, Chat)
+    case answer(Question.ID, Choice.ID)
+
+    init?(_ action: String, fields: [AnyHashable: Any], pushed: Bool) {
+        let opens = action == NoticePlan.openAction || action == UNNotificationDefaultActionIdentifier
+        if pushed {
+            guard opens, let push = ClosedPush(fields), !push.isGone else { return nil }
+            self = .push(push.name)
+            return
+        }
+        guard let item = fields["item"] as? String, let chat = Teller.chat(fields["chat"] as? String) else { return nil }
+        if action.hasPrefix(NoticePlan.offerAction) {
+            self = .offer(Offer.ID(String(action.dropFirst(NoticePlan.offerAction.count))), Item.ID(item), chat)
+        } else if action == NoticePlan.answerAction, let question = fields["question"] as? String, let choice = fields["choice"] as? String {
+            self = .answer(Question.ID(question), Choice.ID(choice))
+        } else if opens {
+            self = .open(Item.ID(item), chat)
+        } else {
+            return nil
+        }
+    }
+
+    @MainActor
+    func take(in model: AssistantModel) {
+        switch self {
+        case .push(let name): model.openNotice(named: name)
+        case .open(let item, let chat):
+            model.show(item, in: chat)
+            model.saw(item, in: chat)
+        case .offer(let offer, let item, let chat): model.press(offer, of: item, in: chat)
+        case .answer(let question, let choice): model.answer(question, with: choice)
+        }
     }
 }
 
@@ -169,13 +198,10 @@ extension Teller: UNUserNotificationCenterDelegate {
         withCompletionHandler completionHandler: @escaping () -> Void
     ) {
         let taken = Taken(completionHandler)
-        let action = response.actionIdentifier
-        var fields: [String: String] = [:]
-        for (key, value) in response.notification.request.content.userInfo {
-            if let key = key as? String, let value = value as? String { fields[key] = value }
-        }
+        let request = response.notification.request
+        let tap = NoticeTap(response.actionIdentifier, fields: request.content.userInfo, pushed: request.trigger is UNPushNotificationTrigger)
         DispatchQueue.main.async {
-            MainActor.assumeIsolated { self.took(action, fields) }
+            MainActor.assumeIsolated { tap?.take(in: self.model) }
             taken.tell()
         }
     }

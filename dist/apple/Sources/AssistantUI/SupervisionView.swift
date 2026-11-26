@@ -1,8 +1,7 @@
 import AssistantCore
 import SwiftUI
 
-/// The assistant view: on or paused, its model, what it used today, what it can reach and sign
-/// in to, what is important, what it has learned, where it works. For looking, with a few switches.
+/// The assistant's workspace roster status, model, usage, connections and learned facts.
 public struct SupervisionView: View {
     @Environment(AssistantModel.self) private var model
     @Environment(\.wording) private var wording
@@ -22,20 +21,14 @@ public struct SupervisionView: View {
         let facts = model.supervision
         ScrollView {
             VStack(alignment: .leading, spacing: 10) {
-                // At the largest text sizes Pause stands under the line it belongs to, not squeezed beside it.
-                let large = textSize.isAccessibilitySize
-                let head = large ? AnyLayout(VStackLayout(alignment: .leading, spacing: 4)) : AnyLayout(HStackLayout(spacing: 6))
-                head {
+                if let state = facts.state {
                     HStack(spacing: 6) {
-                        Circle().fill(facts.isOn ? Token.on : Token.ink3).frame(width: 8, height: 8)
-                        Text((facts.isOn ? AssistantWords.assistantOn : AssistantWords.assistantPaused).said)
+                        Circle().fill(state == .active ? Token.on : Token.ink3).frame(width: 8, height: 8)
+                        Text((state == .active ? AssistantWords.assistantActive : AssistantWords.assistantRetired).said)
                             .font(.title15).foregroundStyle(Token.ink)
                     }
-                    if !large { Spacer(minLength: 0) }
-                    Button((facts.isOn ? AssistantWords.pause : AssistantWords.resume).said) { model.setAssistantOn(!facts.isOn) }
-                        .buttonStyle(LinkStyle()).font(.tilo(13, .medium, relativeTo: .callout))
+                    .padding(.vertical, 4)
                 }
-                .padding(.vertical, 4)
 
                 VStack(spacing: 0) {
                     FactLine(key: .model, line: wording.model(facts)) {

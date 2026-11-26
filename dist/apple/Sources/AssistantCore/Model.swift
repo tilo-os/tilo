@@ -16,11 +16,14 @@ public struct Person: Identifiable, Hashable, Sendable {
     public var name: String
     /// The workspace the assistant lives in, as the sidebar's foot names it.
     public var workspace: String
+    /// The workspace route from the signed-in source. Workspace names can change or coincide.
+    public var workspaceRoute: String?
 
-    public init(id: ID, name: String, workspace: String) {
+    public init(id: ID, name: String, workspace: String, workspaceRoute: String? = nil) {
         self.id = id
         self.name = name
         self.workspace = workspace
+        self.workspaceRoute = workspaceRoute
     }
 
     /// The letters in their picture: the first of the first and of the last word.
@@ -683,6 +686,68 @@ public struct SubAgent: Identifiable, Equatable, Sendable {
 
 // MARK: - Tasks, scheduled things and events
 
+/// Work or an event waiting for this person's decision in this workspace.
+public struct ProposedTask: Identifiable, Equatable, Sendable {
+    public typealias ID = Identifier<ProposedTask>
+    public let id: ID
+    public let person: Person.ID
+    public let workspace: String
+    public let kind: String
+    public let title: String
+    public let why: String
+    public let eventWhen: String?
+    public let eventInstruction: String?
+    public let eventCondition: String?
+    public var isEvent: Bool { eventWhen != nil }
+
+    public init(id: ID, person: Person.ID, workspace: String, kind: String, title: String, why: String,
+                eventWhen: String? = nil, eventInstruction: String? = nil, eventCondition: String? = nil) {
+        self.id = id
+        self.person = person
+        self.workspace = workspace
+        self.kind = kind
+        self.title = title
+        self.why = why
+        self.eventWhen = eventWhen
+        self.eventInstruction = eventInstruction
+        self.eventCondition = eventCondition
+    }
+}
+
+/// A kind of work this person has approved in advance or no longer wants suggested.
+public struct ProposalPreference: Identifiable, Equatable, Sendable {
+    public let person: Person.ID
+    public let workspace: String
+    public let kind: String
+    public let always: Bool
+    public let quiet: Bool
+    public var id: String { kind }
+
+    public init(person: Person.ID, workspace: String, kind: String, always: Bool, quiet: Bool) {
+        self.person = person
+        self.workspace = workspace
+        self.kind = kind
+        self.always = always
+        self.quiet = quiet
+    }
+}
+
+/// The person's waiting proposals and the decisions offered by their host.
+public struct ProposalReview: Equatable, Sendable {
+    public let pending: [ProposedTask]
+    public let canLookNow: Bool
+    public let canAlwaysAllow: Bool
+    public let preferences: [ProposalPreference]
+
+    public init(pending: [ProposedTask], canLookNow: Bool, canAlwaysAllow: Bool, preferences: [ProposalPreference]) {
+        self.pending = pending
+        self.canLookNow = canLookNow
+        self.canAlwaysAllow = canAlwaysAllow
+        self.preferences = preferences
+    }
+}
+
+
 /// A piece of work, however many sub-agents it takes.
 public struct AssistantTask: Identifiable, Equatable, Sendable {
     public typealias ID = Identifier<AssistantTask>
@@ -766,9 +831,14 @@ public struct Automation: Identifiable, Equatable, Sendable {
 
 // MARK: - Supervision
 
-/// What the assistant view shows: for looking, with a few switches.
+/// What the assistant view shows about the person's assistant.
 public struct Supervision: Equatable, Sendable {
-    public var isOn: Bool
+    public enum State: String, Sendable {
+        case active, retired
+    }
+
+    /// The assistant's state in the workspace roster, when known.
+    public var state: State?
     /// The model of the main chat. Nil while the person has linked no provider.
     public var model: String?
     public var usage: Usage
@@ -786,11 +856,11 @@ public struct Supervision: Equatable, Sendable {
     public var places: [Place]
     public var workspaces: [String]
 
-    public init(isOn: Bool = true, model: String? = nil, usage: Usage = Usage(), connections: [Connection] = [],
+    public init(state: State? = nil, model: String? = nil, usage: Usage = Usage(), connections: [Connection] = [],
                 logins: [Login] = [], manager: ManagerLogins? = nil, importance: [String] = [],
                 situations: [Situation] = [], learned: [Learned] = [], learnedCount: Int? = nil,
                 places: [Place] = [], workspaces: [String] = []) {
-        self.isOn = isOn
+        self.state = state
         self.model = model
         self.usage = usage
         self.connections = connections

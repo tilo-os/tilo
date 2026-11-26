@@ -20,7 +20,7 @@ import WebKit
 //   {"do": "send", "kind": "conversation", "id": "c_chat", "name": "chat", "text": "…"}
 //   {"do": "add-device"}  {"do": "stop-pairing"}   the answer to what the page asks before it pairs
 //   {"do": "agents", "action": "read"}    the workspace's agents as its server says them; also
-//                                         "create-agent" and "set-agent-on-host" with "argument"
+//                                         "ensure-personal-assistant"
 //   {"do": "person", "provider": "tilo.models", "resource": "models", "action": "list"}
 //                                         one of the person's own providers; with "argument", and
 //                                         with "field" and "file" for what a protected field holds
@@ -345,7 +345,7 @@ if CommandLine.arguments.contains("--forget") {
     guard case .kept(let name) = store else { stop("--forget takes a store that is kept") }
     Task { @MainActor in
         do {
-            try await WKWebsiteDataStore.remove(forIdentifier: name)
+            try await TiloEngine.forget(store: name)
             say(["forgot": true])
         } catch {
             say(["forgot": false, "why": .string("\(error.localizedDescription) \((error as NSError).domain) \((error as NSError).code)")])

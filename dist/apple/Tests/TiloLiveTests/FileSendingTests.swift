@@ -57,6 +57,7 @@ final class FileSendingTests: XCTestCase {
     private static let page = #"""
     <!doctype html><html data-arrival="load"><title>Tilo</title><span id="status"></span><div id="semantics"></div>
     <script>
+      \#(testDeviceHandoff)
       const root = document.documentElement;
       const ADA = 'ad'.repeat(32);
       window.messages = [];
@@ -109,7 +110,7 @@ final class FileSendingTests: XCTestCase {
         },
       });
       const noSuch = () => { throw Object.assign(new Error('No such action is offered'), {code: 'unknown_action'}); };
-      window.enter = () => {
+      window.enter = async () => {
         const device = Object.freeze({
           person: ADA, workspace: 'ws-1',
           catalogue: async () => ({actions: []}), status: async invocation => ({invocation, state: 'succeeded'}),
@@ -119,9 +120,7 @@ final class FileSendingTests: XCTestCase {
         });
         // Tilo's page hands the entry of its device to the app's own script, which stands in the
         // document to take it.
-        const taker = Object.getOwnPropertyNames(globalThis).map(name => { try { return globalThis[name]; } catch { return null; } })
-          .find(one => one && typeof one === 'object' && typeof one.device === 'function' && typeof one.name === 'string');
-        taker.device(device);
+        await giveDevice(device);
         root.dataset.arrival = 'done';
         root.dataset.entry = 'open';
         globalThis.tiloMount = {

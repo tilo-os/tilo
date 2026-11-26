@@ -51,10 +51,11 @@ final class FollowsTests: XCTestCase {
     private static let page = #"""
     <!doctype html><html data-arrival="load"><title>Tilo</title><span id="status">Loading Tilo…</span><div id="semantics"></div>
     <script>
+      \#(testDeviceHandoff)
       const root = document.documentElement;
       window.feed = []; window.asks = []; window.fails = 0;
       window.write = (app, document, kept) => { if (!kept) window.feed.push({app, document}); window.woke?.(); };
-      window.enter = () => {
+      window.enter = async () => {
         const device = {
           person: 'ad'.repeat(32), workspace: 'ws-1',
           catalogue: async () => ({actions: []}), status: async invocation => ({invocation, state: 'succeeded'}),
@@ -78,9 +79,7 @@ final class FollowsTests: XCTestCase {
         };
         // Tilo's page hands the entry of its device to the app's own script, which stands in the
         // document to take it (Tilo's page calls it by its name).
-        const taker = Object.getOwnPropertyNames(globalThis).map(name => { try { return globalThis[name]; } catch { return null; } })
-          .find(one => one && typeof one === 'object' && typeof one.device === 'function' && typeof one.name === 'string');
-        taker.device(Object.freeze(device));
+        await giveDevice(Object.freeze(device));
         document.getElementById('status').textContent = '';
         location.hash = '#/w/ws-1/so.tilo.chat';
         root.dataset.arrival = 'done';

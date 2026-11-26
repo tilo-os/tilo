@@ -1460,6 +1460,9 @@ impl Chained for ChatMessages {
         };
         match &action.operation {
             ChatMessagesAction::Post(chat_messages::Post {
+                message: NewMessage { id: Some(id), .. },
+            }) => Some(id.clone()),
+            ChatMessagesAction::Post(chat_messages::Post {
                 message:
                     NewMessage {
                         id: None,

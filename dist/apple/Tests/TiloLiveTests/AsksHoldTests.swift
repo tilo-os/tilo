@@ -65,8 +65,7 @@ final class AsksHoldTests: XCTestCase {
     /// the workspace's agents, her providers and what it told her.
     ///
     /// `window.plan` says how the next asks of one kind are answered, taken from the front: of
-    /// her server `'chat read'`, `'chat create-agent'`, `'chat answer-for'` (the ask that has
-    /// the server answer for an agent), `'tilo.models list'` and so on, `'own'` (which workspace
+    /// her server `'chat read'`, `'chat ensure-personal-assistant'`, `'tilo.models list'` and so on, `'own'` (which workspace
     /// is her own); of the page `'messages'` and `'send'`. An ask the plan says nothing of is
     /// answered as usual.
     ///   `{late: ms}`    as usual, that much later
@@ -79,6 +78,7 @@ final class AsksHoldTests: XCTestCase {
     private static let page = #"""
     <!doctype html><html data-arrival="load"><title>Tilo</title><span id="status"></span><div id="semantics"></div>
     <script>
+      \#(testDeviceHandoff)
       const root = document.documentElement;
       const ADA = 'ad'.repeat(32);
       const DIRECT = 'direct:[{"person":"' + ADA + '"},{"agent":"assistant"}]';
@@ -115,7 +115,7 @@ final class AsksHoldTests: XCTestCase {
       window.kept = (id, more = {}) => ({id, name: id, keeper: {person: ADA}, mcp_client: null, sub: null,
         state: {$variant: 'active'}, created_at: 1794900000000, ...more});
       const device = Object.freeze({
-        person: ADA, workspace: 'ws-1',
+        person: ADA, get workspace() { return window.admittedTo ?? (location.hash.includes('/w/own-7/') ? 'own-7' : 'ws-1'); },
         catalogue: async () => ({actions: []}), status: async invocation => ({invocation, state: 'succeeded'}),
         ownWorkspace: async () => {
           window.asks.push('own');
@@ -125,7 +125,7 @@ final class AsksHoldTests: XCTestCase {
           return how === 'empty' ? {} : {id: 'own-7', name: 'Mine', origin: 'https://tilo.example:8443'};
         },
         invoke: (target, argument) => {
-          const action = target.address.action.startsWith('set-agent-') ? 'answer-for' : target.address.action;
+          const action = target.address.action;
           // What is asked of the workspace's tracker is no ask of Chat: this server keeps no tracker.
           const kind = (target.provider.startsWith('tilo.') ? target.provider : target.provider.includes(':so.tilo.tasks:') ? 'tasks' : 'chat') + ' ' + action;
           window.asks.push(kind);
@@ -134,17 +134,10 @@ final class AsksHoldTests: XCTestCase {
               case 'chat read':
                 if (!window.agents) noSuch();
                 return done({agents: window.agents});
-              case 'chat create-agent':
-                window.agents.push(window.kept(argument.name.toLowerCase(), {name: argument.name, created_at: 1794900009000 + window.agents.length}));
-                return done(null);
-              case 'chat answer-for': {
-                // Which agent, and the mark the app sets on it, kept as it was said.
-                const {agent, ...marks} = argument;
-                Object.assign(window.agents.find(one => one.id === agent), marks, {answeredFor: Object.values(marks).includes(true)});
-                return done(null);
-              }
-              case 'chat retire-agent':
-                window.agents.find(one => one.id === argument.agent).state = {$variant: 'retired'};
+              case 'chat ensure-personal-assistant':
+                if (!window.agents.some(one => one.id === 'assistant')) {
+                  window.agents.push(window.kept('assistant', {name: 'Assistant', created_at: 1794900009000 + window.agents.length}));
+                }
                 return done(null);
               case 'tilo.models list':
                 return done(window.linked
@@ -194,12 +187,10 @@ final class AsksHoldTests: XCTestCase {
         },
       });
       window.leave = () => { root.dataset.entry = ''; root.dataset.arrival = 'load'; };
-      window.enter = () => {
+      window.enter = async () => {
         // Tilo's page hands the entry of its device to the app's own script, which stands in the
         // document to take it (Tilo's page calls it by its name).
-        const taker = Object.getOwnPropertyNames(globalThis).map(name => { try { return globalThis[name]; } catch { return null; } })
-          .find(one => one && typeof one === 'object' && typeof one.device === 'function' && typeof one.name === 'string');
-        taker.device(device);
+        await giveDevice(device);
         root.dataset.arrival = 'done';
         root.dataset.entry = 'open';
         globalThis.tiloMount = {
@@ -289,9 +280,9 @@ final class AsksHoldTests: XCTestCase {
         Int(try await page("return String(window.asks.filter(one => one === kind).length)", ["kind": kind])) ?? -1
     }
 
-    /// The workspace's agents that are active, each with whether her server was told to answer for it.
+    /// The workspace's agents that are active, by ID.
     private func agentsKept() async throws -> String {
-        try await page("return JSON.stringify(window.agents.filter(one => one.state.$variant === 'active').map(one => [one.id, one.answeredFor ?? false]))")
+        try await page("return JSON.stringify(window.agents.filter(one => one.state.$variant === 'active').map(one => one.id))")
     }
 
     private static let assistant = TiloSource.MainChat.agent(id: "assistant", name: "Assistant")
@@ -343,14 +334,14 @@ final class AsksHoldTests: XCTestCase {
         try await start()
         let late = "[{late: 1200}]"
         try await enter("""
-            window.agents = []; window.plan = {'chat read': \(late), 'chat create-agent': \(late), 'chat answer-for': \(late),
+            window.agents = []; window.plan = {'chat read': \(late), 'chat ensure-personal-assistant': \(late),
               'tilo.models list': \(late), 'tilo.telling list': \(late)}
             """)
         try await until("nothing more stands in the way") { self.setups.last == .ready }
         XCTAssertFalse(saidNoAssistant, "a sentence was said on the way")
         let kept = try await agentsKept()
-        XCTAssertEqual(kept, #"[["assistant",true]]"#)
-        let made = try await asked("chat create-agent")
+        XCTAssertEqual(kept, #"["assistant"]"#)
+        let made = try await asked("chat ensure-personal-assistant")
         XCTAssertEqual(made, 1)
         // What her server tells her is followed all the same.
         try await inPage(Self.reminderComes)
@@ -362,16 +353,16 @@ final class AsksHoldTests: XCTestCase {
     func testAnAssistantMadeWhileThePageStartsOverIsMadeOnceAndNoSentenceIsSaid() async throws {
         try await start()
         // Her server makes it, and its answer comes after the page started over.
-        try await enter("window.agents = []; window.plan = {'chat create-agent': [{late: 700}]}")
-        try await until("her server is asked to make it") { ((try? await self.asked("chat create-agent")) ?? 0) == 1 }
+        try await enter("window.agents = []; window.plan = {'chat ensure-personal-assistant': [{late: 700}]}")
+        try await until("her server is asked to make it") { ((try? await self.asked("chat ensure-personal-assistant")) ?? 0) == 1 }
         try await startOver()
         try await until("nothing more stands in the way") { self.setups.last == .ready }
         try await Task.sleep(for: .milliseconds(600))
         XCTAssertEqual(setups.last, .ready)
         XCTAssertFalse(saidNoAssistant, "a sentence was said on the way")
         let kept = try await agentsKept()
-        XCTAssertEqual(kept, #"[["assistant",true]]"#)
-        let made = try await asked("chat create-agent")
+        XCTAssertEqual(kept, #"["assistant"]"#)
+        let made = try await asked("chat ensure-personal-assistant")
         XCTAssertEqual(made, 1)
     }
 
@@ -381,7 +372,7 @@ final class AsksHoldTests: XCTestCase {
         try await until("nothing more stands in the way") { self.setups.last == .ready }
         XCTAssertFalse(saidNoAssistant, "a sentence was said on the way")
         let kept = try await agentsKept()
-        XCTAssertEqual(kept, #"[["assistant",true]]"#)
+        XCTAssertEqual(kept, #"["assistant"]"#)
     }
 
     // MARK: The provider and the model
@@ -543,7 +534,7 @@ final class AsksHoldTests: XCTestCase {
         try await signedIn()
         try await until("nothing more stands in the way") { self.setups.last == .ready }
         let kept = try await agentsKept()
-        XCTAssertEqual(kept, #"[["assistant",true]]"#)
+        XCTAssertEqual(kept, #"["assistant"]"#)
     }
 
     func testAnAnswerThatNeverComesOnTheWayInDoesNotKeepHerFromHearingWhatHerServerTellsHer() async throws {
@@ -560,7 +551,7 @@ final class AsksHoldTests: XCTestCase {
         try await enter("window.agents = [kept('reed', {name: 'Reed'})]; window.plan = {'chat read': ['lost']}")
         try await until("nothing more stands in the way") { self.setups.last == .ready }
         XCTAssertFalse(saidNoAssistant, "one unanswered ask was said to her")
-        let made = try await asked("chat create-agent")
+        let made = try await asked("chat ensure-personal-assistant")
         XCTAssertEqual(made, 0)
     }
 
@@ -569,18 +560,18 @@ final class AsksHoldTests: XCTestCase {
         try await enter("window.agents = [kept('reed', {name: 'Reed'})]; window.plan = {'chat read': ['empty']}")
         try await until("nothing more stands in the way") { self.setups.last == .ready }
         XCTAssertFalse(saidNoAssistant, "one answer with nothing in it was said to her")
-        let made = try await asked("chat create-agent")
+        let made = try await asked("chat ensure-personal-assistant")
         XCTAssertEqual(made, 0)
     }
 
-    func testTwoUnansweredAsksToHaveHerServerAnswerForTheAssistantDoNotEndItsSettingUp() async throws {
+    func testAnUnansweredSetupWriteIsRecoveredFromTheCommittedRoster() async throws {
         try await start()
-        try await enter("window.agents = []; window.plan = {'chat answer-for': ['lost', 'lost']}")
+        try await enter("window.agents = []; window.plan = {'chat ensure-personal-assistant': ['unanswered']}")
         try await until("nothing more stands in the way") { self.setups.last == .ready }
-        XCTAssertFalse(saidNoAssistant, "two unanswered asks were said to her")
+        XCTAssertFalse(saidNoAssistant, "the committed write was treated as a failure")
         let kept = try await agentsKept()
-        XCTAssertEqual(kept, #"[["assistant",true]]"#)
-        let made = try await asked("chat create-agent")
+        XCTAssertEqual(kept, #"["assistant"]"#)
+        let made = try await asked("chat ensure-personal-assistant")
         XCTAssertEqual(made, 1)
     }
 
@@ -591,7 +582,7 @@ final class AsksHoldTests: XCTestCase {
         try await enter("window.agents = [kept('reed', {name: 'Reed'})]; window.plan = {'chat read': ['never']}")
         try await until("nothing more stands in the way") { self.setups.last == .ready }
         XCTAssertFalse(saidNoAssistant, "one ask that was never answered was said to her")
-        let made = try await asked("chat create-agent")
+        let made = try await asked("chat ensure-personal-assistant")
         XCTAssertEqual(made, 0)
     }
 
@@ -607,7 +598,7 @@ final class AsksHoldTests: XCTestCase {
         // Her own press asks again: her server answers, and her assistant is found.
         try await source.makeAssistant()
         try await until("nothing more stands in the way") { self.setups.last == .ready }
-        let made = try await asked("chat create-agent")
+        let made = try await asked("chat ensure-personal-assistant")
         XCTAssertEqual(made, 0)
     }
 
@@ -856,7 +847,7 @@ final class AsksHoldTests: XCTestCase {
         let asks = try await asked("own")
         XCTAssertEqual(asks, 1, "the ask was ended before her server answered, and made a second time")
         let kept = try await agentsKept()
-        XCTAssertEqual(kept, #"[["assistant",true]]"#)
+        XCTAssertEqual(kept, #"["assistant"]"#)
     }
 
     /// As Tilo's page after thirty seconds without an answer of her server: it says so itself.
@@ -865,7 +856,7 @@ final class AsksHoldTests: XCTestCase {
         try await enter("window.agents = [kept('reed', {name: 'Reed'})]; window.plan = {'chat read': ['gave-up']}")
         try await until("nothing more stands in the way") { self.setups.last == .ready }
         XCTAssertFalse(saidNoAssistant, "the page's word that no answer came was said to her as her server's refusal")
-        let made = try await asked("chat create-agent")
+        let made = try await asked("chat ensure-personal-assistant")
         XCTAssertEqual(made, 0)
     }
 
@@ -907,7 +898,7 @@ final class AsksHoldTests: XCTestCase {
         // her conversation with it is read.
         try await until("nothing more stands in the way") { self.setups.last == .ready }
         try await until("her conversation with her assistant is read") { self.held.count == 2 }
-        let made = try await asked("chat create-agent")
+        let made = try await asked("chat ensure-personal-assistant")
         XCTAssertEqual(made, 0)
     }
 
@@ -925,7 +916,7 @@ final class AsksHoldTests: XCTestCase {
                        "the sentence gave way to the line of the setting up before her server answered")
         let asks = try await asked("chat read")
         XCTAssertEqual(asks, 13, "twelve asks that went unanswered and the one her server answered")
-        let made = try await asked("chat create-agent")
+        let made = try await asked("chat ensure-personal-assistant")
         XCTAssertEqual(made, 0)
     }
 
@@ -1001,7 +992,7 @@ final class AsksHoldTests: XCTestCase {
         let asks = try await asked("own")
         XCTAssertEqual(asks, 1, "her server was asked a second time for what it was already making")
         let kept = try await agentsKept()
-        XCTAssertEqual(kept, #"[["assistant",true]]"#)
+        XCTAssertEqual(kept, #"["assistant"]"#)
         try await until("her name is known") {
             if case .signedIn(let person) = self.sessions.last { person.name == "Ada Lovelace" } else { false }
         }

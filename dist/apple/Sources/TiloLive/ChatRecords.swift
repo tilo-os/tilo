@@ -45,7 +45,7 @@ public enum ChatConversation {
     public static func direct(_ members: [ChatMember]) -> String {
         let order = ChatMember.Kind.allCases
         let place = { (member: ChatMember) in member.kind.flatMap(order.firstIndex(of:)) ?? -1 }
-        let sorted = members.sorted { place($0) == place($1) ? $0.id < $1.id : place($0) < place($1) }
+        let sorted = Set(members).sorted { place($0) == place($1) ? $0.id < $1.id : place($0) < place($1) }
         return "direct:[" + sorted.map(\.spelled).joined(separator: ",") + "]"
     }
 }
@@ -73,14 +73,14 @@ public struct ChatMessage: Sendable, Equatable, Identifiable {
     /// Chat's own name for the field that says which conversation a message is in.
     static let place = drawn[0]
 
-    public init?(id: String, fields: JSON) {
+    public init?(id: String, fields: JSON, milliseconds: Bool = false) {
         guard let conversation = fields["channel"]?.string, let author = ChatMember(fields["author"]),
-              let seconds = fields["ts"]?.number, let text = fields["text"]?.string
+              let stamp = fields["ts"]?.number, let text = fields["text"]?.string
         else { return nil }
         self.id = id
         self.conversation = conversation
         self.author = author
-        at = Date(timeIntervalSince1970: seconds)
+        at = Date(timeIntervalSince1970: milliseconds ? stamp / 1000 : stamp)
         self.text = text
         self.fields = fields
     }
@@ -142,7 +142,7 @@ extension TiloEngine {
     /// Nil while the page has not published it: a device that just got in holds nothing yet.
     public func chatMessagesResource() async throws -> String? {
         if let known = found["chat.messages"] { return known }
-        let listed = try await actions()
+        let listed = try await actions(ofKind: "chat.messages")
         guard let read = listed.first(where: {
             $0["resource_kind"]?.string == "chat.messages" && $0["address"]?["action"]?.string == "read"
         }), let resource = read["address"]?["resource"]?.string
@@ -179,18 +179,26 @@ extension TiloEngine {
         try await invoke("post", on: resource, message)
     }
 
+    // The hosted chain lists {id, value}. A window from an older site
+    // publishes the same item's full resource address beside its fields.
+    private func messageItem(_ row: JSON) -> String? {
+        if let item = row["item"]?.string { return item }
+        guard let id = row["id"]?.string, !id.isEmpty else { return nil }
+        return "chat.messages/messages/\(id)"
+    }
+
     /// The newest messages' items, oldest first, at most `count` (Chat answers 200 at most).
     /// Empty while Chat's messages have not reached this device.
     public func chatLatest(_ count: Int = 50) async throws -> [String] {
         guard let resource = try await chatMessagesResource() else { return [] }
         let page = try await read(resource, ["pageSize": .number(Double(min(max(count, 1), 200)))])
-        let items = (page["messages"]?.array ?? []).compactMap { $0["item"]?.string }
+        let items = (page["messages"]?.array ?? []).compactMap { messageItem($0) }
         return items.reversed()
     }
 
     /// One message whole. Nil when Chat no longer has it.
     public func chatMessage(_ item: String) async throws -> ChatMessage? {
-        ChatMessage(id: item, fields: try await read(item))
+        ChatMessage(id: item, fields: try await read(item), milliseconds: hosted)
     }
 
     /// The newest messages of one conversation, oldest first, at most `count`, in one read of
@@ -221,7 +229,7 @@ extension TiloEngine {
             }
         }
         let read = (page["messages"]?.array ?? []).compactMap { row in
-            row["item"]?.string.flatMap { ChatMessage(id: $0, fields: row) }
+            messageItem(row).flatMap { ChatMessage(id: $0, fields: row["value"] ?? row, milliseconds: hosted) }
         }
         return read.reversed()
     }
@@ -232,7 +240,43 @@ extension TiloEngine {
     /// what the message carries beside its words, each as Chat names it: a file by its name,
     /// by what the workspace keeps its content under and by its size.
     @discardableResult
-    public func chatSend(_ text: String, to recipient: ChatRecipient, carrying attached: [JSON] = []) async throws -> String {
+    public func chatSend(_ text: String, to recipient: ChatRecipient, carrying attached: [JSON] = [],
+                         delivery: UUID = UUID()) async throws -> String {
+        if hosted {
+            guard let identity = try await whose() else { throw Problem.notOpen }
+            let channel: String
+            switch recipient.kind {
+            case .conversation:
+                channel = recipient.id
+            case .person, .agent:
+                let other = ChatMember(recipient.kind == .agent ? .agent : .person, id: recipient.id)
+                channel = ChatConversation.direct([ChatMember(.person, id: identity.person), other])
+            }
+            let id = delivery.uuidString.lowercased()
+            do {
+                try await whenPublished {
+                    guard let resource = try await self.chatMessagesResource() else {
+                        throw Problem.refused(code: "unknown_action", reason: "Chat has not published its messages")
+                    }
+                    try await self.invoke("post", on: resource, ["id": .string(id), ChatMessage.place: .string(channel),
+                                                                "text": .string(text), "attachments": .array(attached)],
+                                          invocation: delivery)
+                }
+            } catch let problem as Problem {
+                // A lost receipt can follow a committed write. Verify its body and
+                // authenticated author in this workspace before acknowledging it.
+                switch problem {
+                case .noAnswer, .refused(code: "unavailable", reason: _): break
+                default: throw problem
+                }
+                guard let here = try? await whose(), here.workspace == identity.workspace, here.person == identity.person,
+                      let posted = try? await chatMessage("chat.messages/messages/\(id)"),
+                      posted.conversation == channel, posted.author == ChatMember(.person, id: identity.person),
+                      posted.text == text, posted.fields["attachments"]?.array ?? [] == attached
+                else { throw problem }
+            }
+            return id
+        }
         let answer = try await whenPublished {
             try await self.invoke("send", on: "chat.workspace",
                                   ["to": [recipient.json], "attached": .array(attached), "text": .string(text)])
@@ -260,8 +304,8 @@ extension TiloEngine {
 
 extension TiloEngine {
     /// Ask the workspace's server about the agents the workspace keeps (Assistant's
-    /// `tilo.workspace.agent`), as the person on this device: `read`, `create-agent`,
-    /// `set-agent-on-host`, `retire-agent` or `stop-sub-agent`, and with `agent` the read of
+    /// `tilo.workspace.agent`), as the person on this device: `read`,
+    /// `ensure-personal-assistant` or `stop-sub-agent`, and with `agent` the read of
     /// that one agent. The page a native app opens shows Chat alone, which keeps no agents, so
     /// this is where the workspace's agents are read from, and nothing else of Assistant's
     /// document is asked through the device's entry.
@@ -274,14 +318,6 @@ extension TiloEngine {
         let answer = try await ask("return globalThis.__tiloLive.agents(given, action, argument, item)",
                                    ["given": pass, "action": action, "argument": JSON.object(arguments).any,
                                     "item": agent.map { $0 as Any } ?? NSNull()])
-        switch answer["state"]?.string {
-        case "succeeded":
-            return answer["value"] ?? .null
-        case "failed":
-            throw Problem.refused(code: answer["error"]?["code"]?.string ?? "failed",
-                                  reason: answer["error"]?["message"]?.string ?? "")
-        default:
-            throw Problem.noAnswer
-        }
+        return try deviceOutput(answer)
     }
 }

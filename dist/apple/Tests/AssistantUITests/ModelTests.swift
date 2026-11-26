@@ -2,6 +2,7 @@ import AssistantCore
 import AssistantDrawing
 @testable import AssistantUI
 import SwiftUI
+import UserNotifications
 import XCTest
 
 /// Wait until something holds, a little while at most.
@@ -447,6 +448,97 @@ final class LookTests: XCTestCase {
         // Told of while the app is closed, the push and the app's own notice are one notice.
         item.toldAs = "rf-qsLfA_59buuS5z2pKfA"
         XCTAssertEqual(Teller.request(item), "rf-qsLfA_59buuS5z2pKfA")
+    }
+
+    func testTappingAClosedPushBeforeStartupOpensTheSyncedPieceAndAcknowledgesItOnce() async throws {
+        let chat = Chat.subAgent("usage-drop")
+        var content = Drawing.content()
+        var item = Drawing.reminder
+        item.content = .message(Message(.assistant, "Call Jonas."))
+        content.subAgentChats["usage-drop"] = [item]
+        let source = Recording(MemorySource(content))
+        let model = AssistantModel(source: source)
+        var announcements: [Item.ID] = []
+        model.told = { item, _ in announcements.append(item.id) }
+        let fields = ["told": "opaque", "item": "wrong", "chat": "main"]
+        let tap = try XCTUnwrap(NoticeTap(UNNotificationDefaultActionIdentifier, fields: fields, pushed: true))
+        tap.take(in: model)
+        model.start()
+        try await until { model.conversation(chat).isLoaded }
+        XCTAssertNil(model.shownItem)
+        XCTAssertTrue(source.calls("seen").isEmpty)
+        item.content = Drawing.reminder.content
+        item.toldAs = "opaque"
+        source.inner.change(item, in: chat)
+        try await until { !source.calls("seen").isEmpty }
+        XCTAssertEqual(model.place, .chat(chat))
+        XCTAssertEqual(model.shownItem, item.id)
+        XCTAssertEqual(announcements, [], "the tapped push must not alert again when its reminder syncs")
+        item.raised += 1
+        source.inner.change(item, in: chat)
+        try await until { model.conversation(chat).items.last?.raised == item.raised }
+        XCTAssertEqual(source.calls("seen"), ["seen(\(item.id), \(chat))"])
+    }
+
+    func testAPendingPushExpiresAtSignOutAndAPushCannotInvokeAnOfferOrUseLocalFields() async throws {
+        let source = Recording(Drawing.source())
+        let model = AssistantModel(source: source)
+        model.start()
+        try await until { model.person != nil && model.conversation(.main).isLoaded }
+        let fields: [String: Any] = ["told": "opaque", "item": "wrong", "chat": "main", "choice": "yes", "question": "q"]
+        XCTAssertNil(NoticeTap(NoticePlan.answerAction, fields: fields, pushed: true))
+        XCTAssertNil(NoticeTap(NoticePlan.offerAction + "approve", fields: fields, pushed: true))
+        XCTAssertNil(NoticeTap(NoticePlan.openAction, fields: ["told": "opaque", "gone": 1], pushed: true))
+        XCTAssertNil(NoticeTap(NoticePlan.openAction, fields: ["item": "wrong", "chat": "main"], pushed: true))
+        let tap = try XCTUnwrap(NoticeTap(NoticePlan.openAction, fields: fields, pushed: true))
+        tap.take(in: model)
+        source.inner.set(.signedOut)
+        try await until { model.session == .signedOut }
+        tap.take(in: model)
+        source.inner.set(.signedIn(Person(id: "other", name: "Other", workspace: "Other")))
+        try await until { model.person?.id == "other" }
+        var item = Drawing.reminder
+        item.toldAs = "opaque"
+        source.inner.post(item)
+        try await until { model.conversation(.main).items.last?.toldAs == "opaque" }
+        XCTAssertNil(model.shownItem)
+        XCTAssertTrue(source.calls("seen").isEmpty)
+        tap.take(in: model)
+        try await until { source.calls("seen").count == 1 }
+        XCTAssertEqual(model.shownItem, item.id)
+
+        let local = try XCTUnwrap(NoticeTap(NoticePlan.openAction, fields: fields, pushed: false))
+        local.take(in: model)
+        try await until { source.calls("seen").count == 2 }
+        XCTAssertEqual(model.shownItem, "wrong")
+    }
+
+    func testAColdTapFindsTheFirstSnapshotAndTheSameTapCannotOpenACachedPieceAfterSwitchingWorkspaces() async throws {
+        var content = Drawing.content()
+        var person = Drawing.person
+        person.workspaceRoute = "/w/first"
+        content.session = .signedIn(person)
+        var item = Drawing.reminder
+        item.toldAs = "first-workspace"
+        content.main = [item]
+        let source = Recording(MemorySource(content))
+        let model = AssistantModel(source: source)
+        let tap = try XCTUnwrap(NoticeTap(NoticePlan.openAction, fields: ["told": "first-workspace"], pushed: true))
+        tap.take(in: model)
+        model.start()
+        try await until { source.calls("seen").count == 1 }
+        XCTAssertEqual(model.shownItem, item.id)
+
+        var other = person
+        other.workspaceRoute = "/w/second"
+        source.inner.set(.signedIn(other))
+        try await until { model.person == other }
+        tap.take(in: model)
+        item.toldAs = "second-workspace"
+        source.inner.post(item)
+        try await until { model.conversation(.main).items.last?.toldAs == "second-workspace" }
+        XCTAssertNil(model.shownItem)
+        XCTAssertEqual(source.calls("seen").count, 1)
     }
 
     func testALiveActivitysPressLeadsToWhatItWasAbout() throws {

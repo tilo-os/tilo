@@ -282,16 +282,12 @@ What keeps it the app's alone:
   holds it. No text under a name that only ever holds a secret crosses to the app either, and
   the page keeps nothing of such a call (`actions.once`).
 
-**The assistant's source** (`TiloSource`, `Sources/AssistantTilo`) is `AssistantSource` on all
-of this: the app as a device of its person. The conversation, a question that waits and what
-was learned are what Chat keeps, read through the page's mount at the
-page's word of a change. The sub-agents are the workspace's agents, which Assistant keeps
-(`tilo.workspace.agent`), and the page shows Chat alone: they, the assistant's day and the
-places it works come from her server through the device's entry, read when the device gets
-in and again when the workspace says Assistant changed what it keeps. A page whose read of
-Chat's messages names a conversation and the
-fields it wants answers each conversation whole in one read; an older page is read message by
-message. Chat names who wrote a message by their kind (`{"person": …}`, `{"agent": …}`) and
+**The assistant’s source.** Inside Tilo, open Chat and choose **Set up personal assistant**
+in Direct Messages. The Assistant app manages the assistant and opens that same conversation.
+On Mac and iPhone, Tilo Assistant presents the conversation in SwiftUI. As a paired device,
+it discovers and calls the workspace’s signed actions through `TiloSource`. Chat owns the
+messages, Assistant owns the workspace agent roster, and Tasks owns the issues. On a hosted
+page the client reads Chat’s message chain and posts directly to the same conversation. Chat names who wrote a message by their kind (`{"person": …}`, `{"agent": …}`) and
 spells the conversation of a person and an agent from the two (`ChatMember`,
 `ChatConversation.direct`); a page from before that says bare ids, and both are read. While
 an agent is at work on a message of a conversation the source says so, and
@@ -302,8 +298,8 @@ on a clock: `link(provider:key:model:)` carries a provider's key from the protec
 the server, and `setUpEvent` sets up what comes at a time. A secret goes to the vault, and
 the question is answered with the item's reference: the conversation holds nothing else of
 it. Where the page says which workspace is the person's own, the app goes there, because
-that is where the assistant lives. What Tilo cannot do from an app yet is refused with a
-sentence: tasks, files, pausing the assistant, a password manager.
+that is where the assistant lives. Tasks come from the workspace tracker; attached files
+use the device’s workspace content service when available.
 
 **A service by its address.** The person gives their assistant a service's address. Their
 server looks at it and asks them in their conversation whether to connect it: a question that
@@ -327,8 +323,9 @@ the workspace's server, as the person on this device, which agents the workspace
 `TiloEngine.askAgents`). The assistant is the
 active agent the person keeps that no outside client connects as and that is nobody's
 sub-agent, the earliest made. Where the server answers that the person keeps none, the app
-makes one through that same resource, with its own `create-agent` and then the action
-that has the server answer for it, as Tilo's own Assistant window does. Only the server's
+calls the same `ensure-personal-assistant` action as Tilo's Assistant. It creates one
+assistant for the signed-in person with its initial instruction. Tilo assigns each turn to
+an eligible device. Only the server's
 word makes one: a page that just got in may not have handed its device's entry over yet. On
 a page that hands an app no way to its server, nothing says which agents the workspace keeps
 and the page publishes none of them: the main chat says so, and nothing is made. No setting
@@ -435,6 +432,15 @@ The assistant's window as a SwiftUI app, built after one accepted drawing: a sid
 one main chat and the sub-agents, the conversation with its message field, the Tasks panel, a
 sub-agent's window, the assistant view, and the way in before a device is paired.
 
+**Proactive checks.** In your private assistant conversation, ask “What can you do for me
+today?” or “Check this workspace every day at 09:00.” The schedule runs on the workspace
+host's clock while your app is closed. It checks arriving mail, changed workspace documents
+and open or due tasks. A scheduled check asks the model only when something is new and
+there is budget left. Proposed tasks appear in the workspace's shared Tasks tracker, where
+the tracker controls who can read them. In your assistant conversation you can change the
+schedule, lower the daily limit or pause the checks. Your device's notification settings control which resulting
+notifications interrupt you.
+
 **One interface.** The views read and call `AssistantSource` (`Sources/AssistantCore`) and
 nothing else: a conversation as a live stream of pieces (a message, a one-line report, a
 question with its answers, a secret it needs, a service that wants a sign-in, an event it set
@@ -513,9 +519,13 @@ itself. The Mac's window is not one the system restores, so nothing of it is wri
 its next start; on an iPhone the field is covered from the moment the app leaves the front,
 which is when the system keeps a picture of the window.
 
-**The way in.** Before a device is paired the window offers to scan a code or paste a link.
-While a device where the person is signed in asks about a code, the window shows that code
-large (`Session.confirming`), so the two are compared before anyone approves.
+**The way in.** “Get a pairing link” opens the configured Tilo site's desktop entry in the
+system browser. On a first visit, once the site admits you, keep your recovery words and choose
+“Skip for now” to open your workspace. If you already have an identity, open your workspace in
+the browser that holds it. Choose “Pair a new device” on the workspace home page and leave that
+page open. Choose “Open in Tilo Assistant” on the same device, scan the code on a phone, or paste
+the link into the app. Compare the code shown in Assistant (`Session.confirming`) with the one
+shown in the browser and approve the device there if they match.
 
 **A pairing that ends.** A pairing can end before the device is anybody's: its site refuses
 the link, the page stops after the person pressed its button, or the device is let in and its

@@ -462,12 +462,12 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
 
     public func tasks() -> AsyncStream<[AssistantTask]> { taskList.stream() }
 
-    public func addTask(_ title: String) async throws {
+    public func addTask(_ title: String, delivery: UUID) async throws {
         try signedIn()
         let title = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !title.isEmpty else { return }
-        let task = AssistantTask(id: AssistantTask.ID(nextName("task")), title: title, state: .upNext)
-        taskList.change { $0.append(task) }
+        let task = AssistantTask(id: .init(delivery.uuidString), title: title, state: .upNext)
+        taskList.change { if !$0.contains(where: { $0.id == task.id }) { $0.append(task) } }
     }
 
     public func automations() -> AsyncStream<[Automation]> { automationList.stream() }
@@ -485,11 +485,6 @@ public final class MemorySource: AssistantSource, @unchecked Sendable {
     // MARK: Supervision
 
     public func supervision() -> AsyncStream<Supervision> { supervisionNow.stream() }
-
-    public func setAssistantOn(_ on: Bool) async throws {
-        try signedIn()
-        supervisionNow.change { $0.isOn = on }
-    }
 
     public func models() async throws -> [ModelChoice] {
         try signedIn()

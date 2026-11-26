@@ -148,13 +148,30 @@ extension TiloEngine {
     ///   page that hands a native app no way to its host.
     @discardableResult
     public func ask(_ provider: PersonProvider, _ action: String, of resource: String, _ arguments: [String: JSON] = [:],
-                    protected: (field: String, value: Protected)? = nil) async throws -> JSON {
+                    protected: (field: String, value: Protected)? = nil,
+                    forDevice scope: (person: String, workspace: String)? = nil) async throws -> JSON {
         let secret = protected?.value.handOver()
         var passed: [String: Any] = ["given": pass, "provider": provider.rawValue, "resource": resource, "action": action,
                                      "argument": JSON.object(arguments).any, "hidden": NSNull()]
+        passed["scope"] = scope.map { ["person": $0.person, "workspace": $0.workspace] as Any } ?? NSNull()
         if let protected, let secret { passed["hidden"] = ["field": protected.field, "value": secret] }
-        let answer = try await ask("return globalThis.__tiloLive.person(given, provider, resource, action, argument, hidden)",
+        let answer = try await ask("return globalThis.__tiloLive.person(given, provider, resource, action, argument, hidden, scope)",
                                    passed, hiding: secret)
+        return try deviceOutput(answer)
+    }
+
+    /// The certified person's action addresses and parameter names for one host provider.
+    public func personActions(_ provider: PersonProvider,
+                              forDevice scope: (person: String, workspace: String)) async throws -> [JSON] {
+        let answer = try await ask("return globalThis.__tiloLive.personActions(given, provider, scope)", [
+            "given": pass, "provider": provider.rawValue, "scope": ["person": scope.person, "workspace": scope.workspace],
+        ])
+        guard let rows = answer.array else { throw Problem.noAnswer }
+        return rows
+    }
+
+    /// The signed device action result shared by person and workspace providers.
+    func deviceOutput(_ answer: JSON) throws -> JSON {
         switch answer["state"]?.string {
         case "succeeded":
             return answer["value"] ?? .null
@@ -162,7 +179,6 @@ extension TiloEngine {
             throw Problem.refused(code: answer["error"]?["code"]?.string ?? "failed",
                                   reason: answer["error"]?["message"]?.string ?? "")
         default:
-            // Accepted and still running, or nothing said: none of these providers works that way.
             throw Problem.noAnswer
         }
     }
@@ -269,15 +285,5 @@ extension TiloEngine {
         guard let item = VaultItem(try await ask(.vault, "add", of: "vault", arguments, protected: (field: "secret", value: secret)))
         else { throw Problem.noAnswer }
         return item
-    }
-
-    /// When and where an item was handed to something that signs in.
-    public func vaultUses(of reference: String) async throws -> [JSON] {
-        try await ask(.vault, "uses", of: "vault", ["item": .string(reference)])["uses"]?.array ?? []
-    }
-
-    /// Forget an item.
-    public func forgetInVault(_ reference: String) async throws {
-        try await ask(.vault, "remove", of: "vault", ["item": .string(reference)])
     }
 }

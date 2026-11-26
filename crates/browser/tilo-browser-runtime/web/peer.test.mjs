@@ -217,6 +217,29 @@ test('an action asked once is answered by the host, and nothing of it is kept in
   const asked = sent.length;
   await assert.rejects(peer.actions.once({provider: 'tilo.vault'}, argument), TypeError);
   assert.equal(sent.length, asked);
+  // A step of a put into the workspace's content store and a link to content it keeps are asked
+  // the same way, as this page's person: each as what it is, under a number of the page's own.
+  const last = () => {
+    const [[kind, {correlation, ...body}]] = Object.entries(sent.at(-1).asked);
+    assert.ok(Number.isSafeInteger(correlation));
+    return {workspace: sent.at(-1).workspace, person: sent.at(-1).person, kind, body};
+  };
+  answers.push({ContentPutResponse: {correlation: 1, result: {Ok: {begun: {upload: 3}}}}});
+  assert.deepEqual(await peer.actions.contentPut({begin: {size: 5}}), {begun: {upload: 3}});
+  assert.deepEqual(last(), {workspace: WORKSPACE, person: 'bb'.repeat(32), kind: 'ContentPutRequest', body: {step: {begin: {size: 5}}}});
+  answers.push({ContentPutResponse: {correlation: 2, result: {Ok: {appended: {written: 5}}}}});
+  assert.deepEqual(await peer.actions.contentPut({append: {upload: 3, offset: 0, bytes: '48656c6c6f'}}), {appended: {written: 5}});
+  assert.deepEqual(last().body, {step: {append: {upload: 3, offset: 0, bytes: '48656c6c6f'}}});
+  const link = {name: 'plan.pdf', files: [{path: 'plan.pdf', hash: 'ab'.repeat(32)}], zip: false};
+  answers.push({ContentLinkResponse: {correlation: 3, result: {Ok: {path: '/api/content/token/plan.pdf', expires_in_secs: 120}}}});
+  assert.deepEqual(await peer.actions.contentLink(link), {path: '/api/content/token/plan.pdf', expires_in_secs: 120});
+  assert.deepEqual(last(), {workspace: WORKSPACE, person: 'bb'.repeat(32), kind: 'ContentLinkRequest', body: {link}});
+  // A file too large is refused in the server's own words, and silence is said so.
+  const large = 'one file is at most 33554432 bytes here, and this one is 33554433';
+  answers.push({ContentPutResponse: {correlation: 4, result: {Err: {code: 'invalid_request', message: large}}}});
+  await assert.rejects(peer.actions.contentPut({begin: {size: 33554433}}), {code: 'invalid_request', message: large});
+  answers.push({});
+  await assert.rejects(peer.actions.contentLink(link), {code: 'unavailable'});
 });
 
 test('httpsPost posts bodies to the host origin', async () => {

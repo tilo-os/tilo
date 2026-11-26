@@ -123,6 +123,7 @@ public enum EngineScript {
       // its root element (`data-entry`, `data-arrival`, `data-pairing-code`) and in its status line.
       const root = document.documentElement;
       let mount;
+      let device;
       let said = '';
       // What the page asks before it pairs a device (web/entry-page.mjs, `pairingAgree`): a card
       // of its own that says whose device this becomes, which server adds it and what follows,
@@ -162,7 +163,7 @@ public enum EngineScript {
           // certificate. Said only while the page shows them.
           details: (data.failure && !document.getElementById('arrival-failure-details')?.hidden
             ? document.getElementById('arrival-failure-text')?.textContent ?? '' : '').slice(0, 2000),
-          route: location.pathname + location.hash.split('?')[0], mounted: Boolean(mount), ask: asking(),
+          route: location.pathname + location.hash.split('?')[0], mounted: Boolean(mount || device?.workspaceRecord), hosted: !mount && Boolean(device?.workspaceRecord), ask: asking(),
         };
         const text = JSON.stringify(now);
         if (text === said) return;
@@ -339,20 +340,43 @@ public enum EngineScript {
       // it is in (web/native-host.mjs): its asks of the workspace's host as the person on this
       // device. It is kept in this script's own scope and on no global, and only the first of
       // a document is taken, so nothing that runs later puts another in its place.
-      let device;
+      let pendingDevice;
+      let approvedDevice;
       Object.defineProperty(globalThis, 'tiloNativeHost', {value: Object.freeze({
+        // Keep this admitted page running as the app's certified device.
+        keepsDevice: true,
         // What this device is called where its person lets it in: the app's name for it.
         name: %DEVICE%,%SIMULATOR_SAYS%
-        device(entry) { if (!device && entry && typeof entry.invoke === 'function') device = entry; },
+        confirmDevice(nonce) {
+          if (device || pendingDevice || typeof nonce !== 'string') return Promise.resolve(false);
+          return new Promise(resolve => {
+            const timer = setTimeout(() => { pendingDevice = undefined; resolve(false); }, 3000);
+            pendingDevice = {nonce, confirm() { clearTimeout(timer); approvedDevice = nonce; pendingDevice = undefined; resolve(true); }};
+          });
+        },
+        device(entry, nonce) {
+          if (device || typeof entry?.invoke !== 'function') return false;
+          if (!approvedDevice || approvedDevice !== nonce) return false;
+          approvedDevice = undefined;
+          device = entry;
+          if (entry.workspaceRecord && !mount) queueMicrotask(watch);
+          return true;
+        },
       })});
       // The pass is this engine's own: the engine made it and hands it in with every ask of
       // the person's providers. It stands here, in no function a page's script could print.
       const pass = %PASS%;
       const providers = new Set(%PROVIDERS%);
-      const agentActions = new Set(['read', 'create-agent', 'set-agent-on-host', 'retire-agent', 'stop-sub-agent']);
+      const agentActions = new Set(['read', 'ensure-personal-assistant', 'stop-sub-agent']);
       // An app's own document of the workspace, as the workspace's server names what it offers
       // of one: the app and nothing after it. Under any longer name the server offers nothing of it.
-      const ownDocument = app => `record:${app}:`;
+      const ownDocument = app => device.workspaceRecord ? device.workspaceRecord(app) : `record:${app}:`;
+      // Every row comes from the Chat record the host opened for this device.
+      // A named resource is resolved again by the host immediately before it runs.
+      async function chatRows(query) {
+        const provider = await ownDocument('so.tilo.chat');
+        return (await device.catalogue({provider, ...query})).rows ?? [];
+      }
       // The chain the workspace's tracker keeps its issues in (Tasks' `tasks.issues`), as every
       // device of the workspace names it, and what is asked of it for the app.
       const issues = 'chain:derived:issues@derived:default@tab:0000000000000000';
@@ -382,19 +406,26 @@ public enum EngineScript {
         JSON.stringify({error: {code: 'unknown_action', reason: `no action addressed by (${provider}, ${action})`}});
       const noDevice = () =>
         JSON.stringify({error: {code: 'unavailable', reason: 'This page hands a native app no way to its person\'s own providers'}});
+      const inScope = scope => device && scope && scope.person === device.person && scope.workspace === device.workspace;
+      const changedDevice = () => JSON.stringify({error: {code: 'wrong_device', reason: 'Your account or workspace changed'}});
+
       // The steps of putting one file into the workspace this page is in (`put` below).
       const putSteps = new Set(['offered', 'begin', 'append', 'finish']);
 
       Object.defineProperty(globalThis, '__tiloLive', {value: Object.freeze({
         seen,
+        confirmDevice(given, nonce) {
+          if (holds(given) && pendingDevice?.nonce === nonce) pendingDevice.confirm();
+        },
         // The app expects what the page holds to change within `ms`.
         expect(ms) { expect(ms); return true; },
         // One of the person's own providers on their host, asked for the app's own code alone:
         // with this engine's pass, and of the providers the engine names. `hidden` is a field
         // of the argument and what the person typed into a protected field for it.
-        async person(given, provider, resource, action, argument, hidden) {
+        async person(given, provider, resource, action, argument, hidden, scope) {
           if (!holds(given) || !providers.has(provider)) return unknown(provider, action);
           if (!device) return noDevice();
+          if (scope && !inScope(scope)) return changedDevice();
           const secret = hidden && typeof hidden.value === 'string' ? hidden.value : '';
           try {
             const plain = argument && Object.keys(argument).length ? argument : null;
@@ -403,6 +434,16 @@ public enum EngineScript {
             return JSON.stringify({ok: without({state: answer?.state ?? null, value: answer?.output?.value ?? null,
               error: answer?.error ?? null}, secret)});
           } catch (error) { return JSON.stringify({error: without(failure(error), secret)}); }
+        },
+        async personActions(given, provider, scope) {
+          if (!holds(given) || !providers.has(provider)) return unknown(provider, 'catalogue');
+          if (!inScope(scope)) return changedDevice();
+          try {
+            const {rows} = await device.catalogue({provider, max_results: 64});
+            return JSON.stringify({ok: rows.filter(row => row.provider === provider).map(({action}) => ({
+              resource: action.address.resource, action: action.address.action, params: (action.params ?? []).map(p => p.name),
+            }))});
+          } catch (error) { return JSON.stringify({error: failure(error)}); }
         },
         // Whose device this is and the workspace it stands in, as the page's session says it.
         whose(given) {
@@ -480,15 +521,14 @@ public enum EngineScript {
         },
         // The agents the workspace keeps (Assistant's `tilo.workspace.agent`), asked of the
         // workspace's server as the person on this device: their read, one agent's read, the
-        // two actions that make a person's assistant, the one that takes back a second one made
-        // in the same moment, and the one that stops a sub-agent. Nothing else of Assistant's
+        // action that sets up a person's assistant, and the one that stops a sub-agent. Nothing else of Assistant's
         // document is asked this way.
         async agents(given, action, argument, item) {
           const named = item === null || item === undefined || (typeof item === 'string' && /^[A-Za-z0-9._-]{1,128}$/.test(item));
           if (!holds(given) || !agentActions.has(action) || !named || (item && action !== 'read')) return unknown('tilo.workspace.agent', action);
           if (!device) return noDevice();
-          const provider = ownDocument('so.tilo.assistant');
           try {
+            const provider = await ownDocument('so.tilo.assistant');
             const answer = await device.invoke({provider, address: {resource: item ? `tilo.workspace.agent/agents/${item}` : 'tilo.workspace.agent', action}},
               argument && Object.keys(argument).length ? argument : null);
             return JSON.stringify({ok: without({state: answer?.state ?? null, value: answer?.output?.value ?? null,
@@ -499,23 +539,43 @@ public enum EngineScript {
         // page does not hold: it shows Chat. They are asked of the workspace's server as the
         // person on this device: the read of the tracker's issues and the action that files one,
         // and nothing else of Tasks.
-        async tasks(given, action, argument) {
+        async tasks(given, action, argument, invocation) {
           if (!holds(given) || !issueActions.has(action)) return unknown('tasks.issues', action);
           if (!device) return noDevice();
           try {
-            const answer = await device.invoke({provider: ownDocument('so.tilo.tasks'), address: {resource: issues, action}},
-              argument && Object.keys(argument).length ? argument : null);
+            const answer = await device.invoke({provider: await ownDocument('so.tilo.tasks'), address: {resource: issues, action}},
+              argument && Object.keys(argument).length ? argument : null, {invocation: invocation ?? undefined});
             return JSON.stringify({ok: without({state: answer?.state ?? null, value: answer?.output?.value ?? null,
               error: answer?.error ?? null}, '')});
           } catch (error) { return JSON.stringify({error: failure(error)}); }
         },
-        actions(resource, id) {
+        async actions(resource, id, given, kind) {
+          if (!id && !mount && device?.workspaceRecord) {
+            if (!holds(given)) return unknown('so.tilo.chat', 'list');
+            try {
+              const rows = await chatRows({parent_resource: resource ?? undefined, resource_name: kind ?? undefined});
+              return JSON.stringify({ok: rows.flatMap(row => row.action ? [row.action] : [])});
+            } catch (error) { return JSON.stringify({error: failure(error)}); }
+          }
           const from = live(id);
           if (!from) return JSON.stringify({error: {code: 'not-open', reason: 'The page is not in'}});
           try { return JSON.stringify({ok: from.actions(resource ?? undefined)}); }
           catch (error) { return JSON.stringify({error: failure(error)}); }
         },
-        async invoke(resource, action, args, confirm, id) {
+        async invoke(resource, action, args, confirm, id, given, invocation) {
+          if (!id && !mount && device?.workspaceRecord) {
+            if (!holds(given)) return unknown(resource, action);
+            try {
+              const row = (await chatRows({target: {resource, action}})).find(row =>
+                row.action?.address?.resource === resource && row.action.address.action === action);
+              if (!row) return unknown(resource, action);
+              const answer = await device.invoke({provider: row.provider, address: row.action.address}, args, {confirmation: confirm, invocation: invocation ?? undefined});
+              if (answer.state !== 'succeeded') return JSON.stringify({error: {
+                code: answer.error?.code ?? answer.state, reason: answer.error?.message ?? 'The workspace did not complete the action'}});
+              if (action !== 'read') changed();
+              return JSON.stringify({ok: answer});
+            } catch (error) { return JSON.stringify({error: failure(error)}); }
+          }
           const from = live(id);
           if (!from) return JSON.stringify({error: {code: 'not-open', reason: 'The page is not in'}});
           try {
@@ -530,6 +590,8 @@ public enum EngineScript {
         // one message, `{app, view: {message, conversation}}`) as the live thing `id`
         // and bring it to the front. One that is mounted already only comes to the front.
         async show(id, what) {
+          if (!mount && device?.workspaceRecord) return JSON.stringify({error: {code: 'unknown_action',
+            reason: 'This workspace page does not offer an embedded view of this resource'}});
           if (!mount) return JSON.stringify({error: {code: 'not-open', reason: 'The page is not in'}});
           try {
             if (!lives.has(id)) {

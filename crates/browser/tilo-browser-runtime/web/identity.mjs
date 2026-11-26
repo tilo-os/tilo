@@ -440,3 +440,9 @@ export async function installNode({origin, devicePublicKey, installToken, identi
   onProgress({phase: 'installing'});
   return installNodeCertificate({origin, certificate, sessionCertificate, installToken, fetch});
 }
+
+/** Start the person's owner-approved device pairing from their admitted workspace page. */
+export async function pairWorkspaceDevice(options) {
+  const pairing = await import('./workspace-pairing.mjs');
+  return pairing.pairWorkspaceDevice(options);
+}

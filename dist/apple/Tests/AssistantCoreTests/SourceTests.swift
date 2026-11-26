@@ -39,6 +39,17 @@ final class SourceTests: XCTestCase {
         }
     }
 
+    func testRetryKeepsTheDraftsDeliveryIdAndEditingStartsAnotherMessage() {
+        let original = Draft(text: "Hello")
+        var retry = original
+        XCTAssertEqual(original.delivery, retry.delivery)
+        retry.text = "Hello"
+        XCTAssertEqual(original.delivery, retry.delivery)
+        retry.text += " again"
+        XCTAssertNotEqual(original.delivery, retry.delivery)
+        XCTAssertNotEqual(original.delivery, Draft(text: "Hello").delivery)
+    }
+
     func testASourceStartsEmptyAndSignedOut() async {
         let source = MemorySource()
         let session = await first(source.session())
@@ -140,11 +151,10 @@ final class SourceTests: XCTestCase {
             func startSubAgent(job: String) async throws {}
             func stop(_ subAgent: SubAgent.ID) async throws {}
             func tasks() -> AsyncStream<[AssistantTask]> { AsyncStream { $0.finish() } }
-            func addTask(_ title: String) async throws {}
+            func addTask(_ title: String, delivery: UUID) async throws {}
             func automations() -> AsyncStream<[Automation]> { AsyncStream { $0.finish() } }
             func setOn(_ on: Bool, for automation: Automation.ID) async throws {}
             func supervision() -> AsyncStream<Supervision> { AsyncStream { $0.finish() } }
-            func setAssistantOn(_ on: Bool) async throws {}
             func models() async throws -> [ModelChoice] { [] }
             func choose(_ model: ModelChoice.ID, for work: [WorkKind]) async throws {}
             func forget(_ learned: Supervision.Learned.ID) async throws {}
@@ -191,11 +201,10 @@ final class SourceTests: XCTestCase {
             func startSubAgent(job: String) async throws {}
             func stop(_ subAgent: SubAgent.ID) async throws {}
             func tasks() -> AsyncStream<[AssistantTask]> { inner.tasks() }
-            func addTask(_ title: String) async throws {}
+            func addTask(_ title: String, delivery: UUID) async throws {}
             func automations() -> AsyncStream<[Automation]> { inner.automations() }
             func setOn(_ on: Bool, for automation: Automation.ID) async throws {}
             func supervision() -> AsyncStream<Supervision> { inner.supervision() }
-            func setAssistantOn(_ on: Bool) async throws {}
             func models() async throws -> [ModelChoice] { [] }
             func choose(_ model: ModelChoice.ID, for work: [WorkKind]) async throws {}
             func forget(_ learned: Supervision.Learned.ID) async throws {}
@@ -208,7 +217,7 @@ final class SourceTests: XCTestCase {
         let source = MemorySource()
         await refused({ try await source.send(Draft(text: "hello"), to: .main) }, .signedOut)
         await refused({ try await source.startSubAgent(job: "look") }, .signedOut)
-        await refused({ try await source.setAssistantOn(false) }, .signedOut)
+        await refused({ try await source.setOn(false, for: "investor-writes") }, .signedOut)
         XCTAssertEqual(source.items(), [])
     }
 
@@ -438,16 +447,13 @@ final class SourceTests: XCTestCase {
         await refused { try await source.setOn(false, for: "nothing") }
     }
 
-    func testTheAssistantIsPausedItsModelChosenAndAFactForgotten() async throws {
+    func testTheAssistantModelIsChosenAndAFactForgotten() async throws {
         let source = Drawing.source()
-        try await source.setAssistantOn(false)
-        var facts = try await now(source.supervision())
-        XCTAssertFalse(facts.isOn)
         let models = try await source.models()
         XCTAssertEqual(models.map(\.name), ["Claude Opus 5.5", "Gemini 3 Pro"])
         try await source.choose(models[1].id, for: .request)
         try await source.choose(models[0].id, for: .subtask)
-        facts = try await now(source.supervision())
+        var facts = try await now(source.supervision())
         XCTAssertEqual(facts.model, "Gemini 3 Pro", "the view names the model that answers in the main chat")
         await refused { try await source.choose("someone-elses", for: .request) }
         try await source.forget("dima")

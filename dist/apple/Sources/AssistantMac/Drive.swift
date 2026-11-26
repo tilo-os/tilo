@@ -103,7 +103,7 @@ final class AssistantDrive {
                     try? FileManager.default.removeItem(at: library.appendingPathComponent("Preferences/\(suite(store)).plist"))
                 }
                 do {
-                    try await WKWebsiteDataStore.remove(forIdentifier: store)
+                    try await TiloEngine.forget(store: store)
                     say(["forgot": true])
                 } catch {
                     say(["forgot": false, "why": .string(error.localizedDescription)])

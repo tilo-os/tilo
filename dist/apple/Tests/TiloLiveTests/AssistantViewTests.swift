@@ -79,7 +79,7 @@ final class AssistantViewTests: XCTestCase {
     /// The device gets in, where the workspace keeps `agents`: its server says them to the
     /// person's device, and the page's own Chat holds the same ones.
     private func enter(_ agents: String) async throws {
-        try await inPage("window.byKind = true; window.agents = window.pageAgents = \(agents); location.hash = '#/w/ws-1/so.tilo.chat'; enter(true)")
+        try await inPage("window.observeAgents = true; window.byKind = true; window.agents = window.pageAgents = \(agents); location.hash = '#/w/ws-1/so.tilo.chat'; enter(true)")
         try await until("the app is signed in") { if case .signedIn = self.sessions.last { true } else { false } }
         try await until("the conversation is told") { !self.changes.isEmpty }
     }
@@ -113,10 +113,10 @@ final class AssistantViewTests: XCTestCase {
         XCTAssertEqual(usage?.spentTodayMicros, 0, "what was spent the day before is shown as today's")
         XCTAssertEqual(wording.spent(try XCTUnwrap(usage)), Wording.Line(first: "0 $", second: "Of 10 $ a day"))
         // The new day's first charge is the day's.
-        try await inPage("window.agents[0].spent = {day: '2026-11-18', cost_micros: 40000}; touch()")
+        try await inPage("window.agents[0].spent = {day: '2026-11-18', cost_micros: 40000}; changeRoster()")
         try await until("the new day's first charge") { self.usage?.spentTodayMicros == 40_000 }
         // A server whose own day turned before this device's counts on its day: that is its today.
-        try await inPage("window.agents[0].spent = {day: '2026-11-19', cost_micros: 70000}; touch()")
+        try await inPage("window.agents[0].spent = {day: '2026-11-19', cost_micros: 70000}; changeRoster()")
         try await until("a count dated ahead of this device") { self.usage?.spentTodayMicros == 70_000 }
     }
 
@@ -139,7 +139,7 @@ final class AssistantViewTests: XCTestCase {
         XCTAssertEqual(wording.messages(try XCTUnwrap(usage)), "42")
         XCTAssertEqual(wording.tokens(try XCTUnwrap(usage)), "1.8M")
         // The counts follow what her server writes while the app is open.
-        try await inPage("window.agents[0].spent = {day: '2026-11-17', cost_micros: 3200000, messages: 43, tokens: 1850000}; touch()")
+        try await inPage("window.agents[0].spent = {day: '2026-11-17', cost_micros: 3200000, messages: 43, tokens: 1850000}; changeRoster()")
         try await until("the next message to be counted") { self.usage?.messagesToday == 43 }
         XCTAssertEqual(usage?.tokensToday, 1_850_000)
         XCTAssertEqual(usage?.spentTodayMicros, 3_200_000)
@@ -156,31 +156,20 @@ final class AssistantViewTests: XCTestCase {
     /// The line of the assistant view that says where the assistant works, as it was last told.
     private var places: Wording.Line? { supervisions.last.map { wording.places($0) } }
 
-    /// A sub-agent of Ada's as the workspace keeps one: who started it and how it stands.
-    private static func sub(_ id: String, _ stands: String) -> String {
-        "kept('\(id)', {\(TiloSource.answeredByServer): true, sub: {started_by: 'reed', role: 'Researcher', stands: {$variant: '\(stands)'}}})"
-    }
-
-    func testWhereItWorksSaysTheServerThatWorksTheAssistantAndTheSubAgentsAtWorkThere() async throws {
+    func testPlacementFollowsAvailableDevicesAndRetiringTheAgentClearsThePlace() async throws {
         try await start(at: "2026-11-17T12:00:00Z")
-        try await enter("[kept('reed', {name: 'Reed', \(TiloSource.answeredByServer): true})]")
-        try await until("where the assistant works") { self.places == Wording.Line(first: "Your Tilo server, always") }
-        // Two sub-agents her server works itself, one of them done: one is at work there.
-        try await inPage("window.agents.push(\(Self.sub("look-up", "working")), \(Self.sub("old", "done"))); touch()")
-        try await until("the sub-agent at work") { self.places == Wording.Line(first: "Your Tilo server, always, with 1 sub-agent at work") }
-        try await inPage("window.agents.push(\(Self.sub("asks", "needs_person"))); touch()")
-        try await until("two at work") { self.places == Wording.Line(first: "Your Tilo server, always, with 2 sub-agents at work") }
-    }
-
-    func testAnAssistantNoServerAnswersForIsSaidOnItsPersonsOwnDevicesAndOneThatIsRetiredNowhere() async throws {
-        try await start(at: "2026-11-17T12:00:00Z")
-        try await enter("[kept('reed', {name: 'Reed'})]")
+        // Legacy host hints do not describe which device will claim a turn.
+        try await enter("[kept('reed', {name: 'Reed', on_host: true})]")
         try await until("where the assistant works") {
-            self.places == Wording.Line(first: "Your own devices, only while Tilo is open on one")
+            self.supervisions.last?.state == .active && self.places == Wording.Line(first: "Your workspace, on an available device")
         }
         // Retired, it works nowhere, and the line says nothing of a place.
-        try await inPage("window.agents[0].state = {$variant: 'retired'}; touch()")
-        try await until("no place") { self.places == Wording.Line(first: "Nothing yet") }
+        try await inPage("window.agents[0].state = {$variant: 'retired'}; changeRoster()")
+        try await until("the retired assistant has no place") {
+            self.supervisions.last?.state == .retired && self.places == Wording.Line(first: "Nothing yet")
+        }
+        try await inPage("window.agents = []; changeRoster()")
+        try await until("the absent assistant has no reported state") { self.supervisions.last?.state == nil }
     }
 }
 #endif

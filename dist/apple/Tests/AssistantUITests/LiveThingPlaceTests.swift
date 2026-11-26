@@ -9,26 +9,28 @@ import XCTest
 /// The card a live thing stands in, drawn and read pixel by pixel. Nothing is taken from a screen.
 @MainActor
 final class LiveThingPlaceTests: XCTestCase {
-    /// A thing that does not say its own height, drawn by a source's view sixty points high: the
-    /// card is as high as what is drawn in it, filled whole in the cards' tone, and cut round.
+    /// The source chooses the inline artifact's height below the Stage control. The entire
+    /// card shares the cards' tone and has rounded corners.
     ///
     /// Tolerance: 1 of 255 for each of red, green and blue.
     func testTheCardIsAsHighAsWhatIsDrawnInItAndFilledInTheCardsTone() async throws {
         let model = AssistantModel(source: Drawing.source())
         await model.prime()
         let thing = LiveThing(id: "document", title: "Word Processor", reference: "shared:document")
-        let view = AssistantRoot(model: model) {
-            HStack(spacing: 0) {
-                LiveThingPlace(thing: thing).frame(width: 300)
-                // The cards' tone, to hold the card's against.
-                Rectangle().fill(Token.raised).frame(width: 40, height: 40)
+        func view(height: CGFloat) -> some View {
+            AssistantRoot(model: model) {
+                HStack(spacing: 0) {
+                    LiveThingPlace(thing: thing).frame(width: 300)
+                    // A colour sample for the card that does not determine the row's height.
+                    Rectangle().fill(Token.raised).frame(width: 40, height: 8)
+                }
+                .padding(20)
+                .background(Token.content)
             }
-            .padding(20)
-            .background(Token.content)
+            .environment(\.liveThingView, { _ in AnyView(Color.clear.frame(height: height)) })
+            .environment(\.colorScheme, .dark)
         }
-        .environment(\.liveThingView, { _ in AnyView(Color.clear.frame(height: 60)) })
-        .environment(\.colorScheme, .dark)
-        let hosting = NSHostingView(rootView: view)
+        let hosting = NSHostingView(rootView: view(height: 0))
         let window = HeldWindow.make(NSRect(x: 0, y: 0, width: 380, height: 500), [.borderless])
         window.contentView = hosting
         defer {
@@ -36,8 +38,12 @@ final class LiveThingPlaceTests: XCTestCase {
             window.close()
         }
         await Drive(window).settle(300)
+        XCTAssertTrue(Drive(window).has("Open in Stage ⤢", role: "AXButton"))
+        let heightWithToolbar = hosting.fittingSize.height
+        hosting.rootView = view(height: 60)
+        await Drive(window).settle(200)
         let size = hosting.fittingSize
-        XCTAssertEqual(size.height - 40, 60, accuracy: 0.5, "the card is \(size.height - 40) points high around a thing of 60")
+        XCTAssertEqual(size.height - heightWithToolbar, 60, accuracy: 0.5, "the artifact takes its source's full height below the toolbar")
         window.setContentSize(size)
         hosting.frame = CGRect(origin: .zero, size: size)
         await Drive(window).settle(200)

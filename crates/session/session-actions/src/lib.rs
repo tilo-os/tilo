@@ -635,10 +635,64 @@ pub async fn ask<H: ActionProvider + Clone + Send + Sync + 'static>(
 ) -> Result<String, String> {
     let message: RemoteActionMessage =
         serde_json::from_str(message).map_err(|error| error.to_string())?;
+    ask_message(provider, caller, message).await
+}
+
+async fn ask_message<H: ActionProvider + Clone + Send + Sync + 'static>(
+    provider: &H,
+    caller: &Caller,
+    message: RemoteActionMessage,
+) -> Result<String, String> {
     let answer = serve(provider, caller, message)
         .ok_or_else(|| "that is not a request".to_owned())?
         .await
         .ok_or_else(|| "the answer was abandoned".to_owned())?;
+    serde_json::to_string(&answer).map_err(|error| error.to_string())
+}
+
+/// Ask the workspace as the authenticated device. Uploads and download links
+/// use the stateful session operations, which keep the upload between steps.
+///
+/// # Errors
+/// Returns the decode error for a malformed request or an abandoned session's answer.
+pub async fn ask_device(
+    actions: &SessionActions,
+    caller: &Caller,
+    message: &str,
+) -> Result<String, String> {
+    use tilo_actions::remote::ContentPutStep;
+    let request = serde_json::from_str(message).map_err(|error| error.to_string())?;
+    let abandoned = || "the answer was abandoned".to_owned();
+    let answer = match request {
+        RemoteActionMessage::ContentPutRequest { correlation, step } => {
+            let result = match step {
+                // Chat's limit on a single attachment.
+                ContentPutStep::Begin { size } if size > 32 * 1024 * 1024 => {
+                    Err(ActionCallError::InvalidRequest {
+                        reason: "An attachment is at most 32 MiB".to_owned(),
+                    })
+                }
+                ContentPutStep::Begin { .. }
+                | ContentPutStep::Append { .. }
+                | ContentPutStep::Finish { .. } => {
+                    actions.put_step(step).await.ok_or_else(abandoned)?
+                }
+                _ => Err(ActionCallError::UnknownAction),
+            };
+            RemoteActionMessage::ContentPutResponse {
+                correlation,
+                result,
+            }
+        }
+        RemoteActionMessage::ContentLinkRequest { correlation, link } => {
+            let result = actions.content_link(link).await.ok_or_else(abandoned)?;
+            RemoteActionMessage::ContentLinkResponse {
+                correlation,
+                result,
+            }
+        }
+        other => return ask_message(actions, caller, other).await,
+    };
     serde_json::to_string(&answer).map_err(|error| error.to_string())
 }
 
@@ -1663,6 +1717,15 @@ mod tests {
                         });
                     }
                 }
+                RemoteActionMessage::ContentLinkRequest { correlation, link } => {
+                    self.say(RemoteActionMessage::ContentLinkResponse {
+                        correlation,
+                        result: Ok(ContentLink {
+                            path: format!("/api/content/test/{}", link.name),
+                            expires_in_secs: 120,
+                        }),
+                    });
+                }
                 RemoteActionMessage::Observe {
                     correlation,
                     invocation,
@@ -1831,6 +1894,54 @@ mod tests {
             .expect("the device answers")
             .expect("the device takes it");
         assert_eq!(receipt.status, ReceiptStatus::Accepted, "{receipt:?}");
+    }
+
+    #[tokio::test]
+    async fn a_page_uploads_an_attachment_and_asks_for_a_link_through_its_session() {
+        let device = Device::new(InvocationId::new(), false);
+        let actions = SessionActions::new(
+            Arc::clone(&device) as Arc<dyn RemoteSession>,
+            WorkspaceId::from_u128(1),
+            DEVICE,
+        );
+        async fn put(actions: &SessionActions, step: serde_json::Value) -> serde_json::Value {
+            let request =
+                serde_json::json!({"ContentPutRequest": {"correlation": 17, "step": step}});
+            let answer = ask_device(actions, &caller(), &request.to_string())
+                .await
+                .unwrap();
+            let answer: serde_json::Value = serde_json::from_str(&answer).unwrap();
+            assert_eq!(answer["ContentPutResponse"]["correlation"], 17);
+            answer["ContentPutResponse"]["result"].clone()
+        }
+        let denied = put(&actions, serde_json::json!({"begin": {"size": 33_554_433}})).await;
+        assert!(denied["Err"].is_object());
+        assert!(device.uploads.lock_recover().is_empty());
+        let begun = put(&actions, serde_json::json!({"begin": {"size": 2}})).await;
+        let id = begun["Ok"]["begun"]["upload"].as_u64().unwrap();
+        let written = put(
+            &actions,
+            serde_json::json!({"append": {"upload": id, "offset": 0, "bytes": "abcd"}}),
+        )
+        .await;
+        assert_eq!(written["Ok"]["appended"]["written"], 2);
+        let kept = put(&actions, serde_json::json!({"finish": {"upload": id}})).await;
+        assert_eq!(
+            kept["Ok"]["finished"]["content"],
+            format!("tilo.content:{id}")
+        );
+        let request = serde_json::json!({"ContentLinkRequest": {"correlation": 19, "link": {
+            "name": "a.txt", "files": [{"path": "a.txt", "hash": "ab".repeat(32)}], "zip": false
+        }}});
+        let linked = ask_device(&actions, &caller(), &request.to_string())
+            .await
+            .unwrap();
+        let answer: serde_json::Value = serde_json::from_str(&linked).unwrap();
+        assert_eq!(answer["ContentLinkResponse"]["correlation"], 19);
+        assert_eq!(
+            answer["ContentLinkResponse"]["result"]["Ok"]["path"],
+            "/api/content/test/a.txt"
+        );
     }
 
     /// A write the device answered accepted (still being saved) after its caller stopped

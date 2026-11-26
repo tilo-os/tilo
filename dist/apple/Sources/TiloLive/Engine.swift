@@ -32,6 +32,14 @@ public final class TiloEngine: NSObject {
         case keepsNothing
     }
 
+    /// Remove a device's named store from a fresh process, before any page has been opened.
+    public static func forget(store id: UUID) async throws {
+        // Creating a data store initializes WebKit's run loop. Its static removal API
+        // dispatches to that loop even when this is the process's first WebKit operation.
+        _ = WKWebsiteDataStore.nonPersistent()
+        try await WKWebsiteDataStore.remove(forIdentifier: id)
+    }
+
     /// Where this device stands with the person's Tilo.
     public enum State: Equatable, Sendable {
         /// Nothing is opened.
@@ -101,6 +109,8 @@ public final class TiloEngine: NSObject {
     /// providers with. It stands in the script's own scope and here, and nowhere a page's
     /// script, or the app, can read it.
     let pass: String
+    /// The current site hands this device the server's action catalogue.
+    private(set) var hosted = false
     /// What was asked of the page and is not answered yet. A page that is loaded again under
     /// an ask never answers it, so these end when the page they were asked of is put away.
     private var asked: [UUID: CheckedContinuation<String?, Never>] = [:]
@@ -421,10 +431,13 @@ public final class TiloEngine: NSObject {
     /// its address (`resource`, `action`), its kind and its typed parameters. `resource`
     /// narrows to one resource and what stands under it.
     /// `live` names a live thing that is shown (`show`): its own actions are listed, not Chat's.
-    public func actions(under resource: String? = nil, in live: String? = nil) async throws -> [JSON] {
-        let answer = try await ask("return globalThis.__tiloLive.actions(resource, live)",
-                                   ["resource": resource.map { $0 as Any } ?? NSNull(), "live": live.map { $0 as Any } ?? NSNull()])
-        return answer.array ?? []
+    public func actions(under resource: String? = nil, in live: String? = nil, ofKind kind: String? = nil) async throws -> [JSON] {
+        let answer = try await ask("return globalThis.__tiloLive.actions(resource, live, given, kind)",
+                                   ["given": pass, "kind": kind.map { $0 as Any } ?? NSNull(), "resource": resource.map { $0 as Any } ?? NSNull(),
+                                    "live": live.map { $0 as Any } ?? NSNull()])
+        let actions = answer.array ?? []
+        guard let kind else { return actions }
+        return actions.filter { $0["resource_kind"]?.string == kind }
     }
 
     /// Invoke one published action with typed arguments. Returns what it answered
@@ -433,9 +446,10 @@ public final class TiloEngine: NSObject {
     /// the arguments do not bind, or it wants a confirmation that `confirm` does not give.
     @discardableResult
     public func invoke(_ action: String, on resource: String, _ arguments: [String: JSON] = [:],
-                       confirm: Bool = false, in live: String? = nil) async throws -> JSON {
-        try await ask("return globalThis.__tiloLive.invoke(resource, action, args, confirm, live)",
-                      ["resource": resource, "action": action, "args": JSON.object(arguments).any, "confirm": confirm,
+                       confirm: Bool = false, in live: String? = nil, invocation: UUID? = nil) async throws -> JSON {
+        try await ask("return globalThis.__tiloLive.invoke(resource, action, args, confirm, live, given, invocation)",
+                      ["given": pass, "invocation": invocation.map { $0.uuidString.lowercased() as Any } ?? NSNull(),
+                       "resource": resource, "action": action, "args": JSON.object(arguments).any, "confirm": confirm,
                        "live": live.map { $0 as Any } ?? NSNull()])
     }
 
@@ -630,6 +644,12 @@ public final class TiloEngine: NSObject {
               let said = message.body as? [String: Any], let kind = said["kind"] as? String
         else { return }
         switch kind {
+        case "device-challenge":
+            guard let nonce = said["nonce"] as? String, UUID(uuidString: nonce) != nil else { return }
+            view.callAsyncJavaScript(
+                "if (location.origin === origin && window.top === window) globalThis.__tiloLive?.confirmDevice(given, nonce)",
+                arguments: ["origin": settings.origin, "given": pass, "nonce": nonce], in: message.frameInfo, in: .page,
+                completionHandler: nil)
         case "changed":
             for listener in changeListeners.values { listener.yield() }
             let waiting = changeWaiters
@@ -644,6 +664,7 @@ public final class TiloEngine: NSObject {
             let size = CGSize(width: min(width, 4096), height: min(height, 4096))
             for listener in sizeListeners.values { listener.yield((id, size)) }
         case "state":
+            hosted = said["hosted"] as? Bool ?? false
             let details = said["details"] as? String ?? ""
             let under = said["status"] as? String ?? ""
             let came = !details.isEmpty && (detailsSaid?.under != under || detailsSaid?.text != details)

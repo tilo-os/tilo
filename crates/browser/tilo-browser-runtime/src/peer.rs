@@ -2139,7 +2139,7 @@ impl WasmPeer {
             .ok_or_else(|| js_error("this page holds no session with a host"))?;
         let caller =
             tilo_actions::remote::Caller::local_person(person.to_owned()).in_workspace(workspace);
-        tilo_session_actions::ask(&api, &caller, message)
+        tilo_session_actions::ask_device(&api, &caller, message)
             .await
             .map_err(|error| js_error(&error))
     }

@@ -18,6 +18,7 @@
  */
 import {AdmissionError} from './admission.mjs';
 import {refusalCopy, entryLinkTarget, localeMessages, localeMessagesSoon, localized, refusedByHost, startArrival, stoppedInside, visitorLocale} from './arrival.mjs';
+import {handToNativeHost} from './native-host.mjs';
 import {servedVersion} from './bundle-update.mjs';
 import {mountWaitList} from './wait-list.mjs';
 import {boot, grammar} from './entry.mjs';
@@ -618,7 +619,27 @@ export async function startEntryPage({mode}) {
     // handed over (`url`), until the person is done or skips, then opens the
     // person's own workspace — or, where the host keeps none, the page it
     // held. `page` is `{url, workspace, entry, peer}`.
-    holdFirstScreen: page => holdFirstScreen(page),
+    holdFirstScreen: async page => {
+      // Native clients keep this admitted peer. A browser continues to the
+      // HTML workspace normally, including the first visit's setup screen.
+      if (!embed && globalThis.tiloNativeHost?.keepsDevice === true &&
+          await handToNativeHost({peer: page.peer, ownWorkspace: () => ensureOwnWorkspace(page.peer)})) {
+        const root = document.documentElement.dataset;
+        root.arrival = 'done';
+        root.entry = 'open';
+        const state = snapshot => {
+          root.connection = snapshot?.health?.transport?.phase ?? '';
+          if (snapshot?.phase === 'failed') {
+            root.refusal = snapshot.errorCode ?? 'unanswered';
+            status.textContent = snapshot.error ?? '';
+          }
+        };
+        page.peer.onStatus(state);
+        state(page.peer.getSnapshot());
+        return true;
+      }
+      return holdFirstScreen(page);
+    },
     // An embed always shows the workspace the embedding site names.
     chosenWorkspace: () => (embed ? null : remembering(() => chosenWorkspace())),
     onScope: next => {

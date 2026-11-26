@@ -35,6 +35,24 @@ final class EngineTests: XCTestCase {
         for task in listening { task.cancel() }
     }
 
+    func testHeadlessClientsCanForgetANamedStoreBeforeOpeningAnyPage() throws {
+        let products = Bundle(for: Self.self).bundleURL.deletingLastPathComponent()
+        for (name, options) in [("AssistantMac", ["--drive"]), ("TiloLiveProbe", ["--site", Self.site])] {
+            let process = Process()
+            process.executableURL = products.appendingPathComponent(name)
+            process.arguments = options + ["--store", UUID().uuidString, "--forget"]
+            let output = Pipe()
+            process.standardOutput = output
+            try process.run()
+            process.waitUntilExit()
+            XCTAssertEqual(process.terminationReason, .exit, name)
+            XCTAssertEqual(process.terminationStatus, 0, name)
+            let data = output.fileHandleForReading.readDataToEndOfFile()
+            let reply = try JSONSerialization.jsonObject(with: data) as? [String: Bool]
+            XCTAssertEqual(reply?["forgot"], true, name)
+        }
+    }
+
     /// As Tilo's page: `entry-page.mjs` writes its step on the root element and its words into
     /// the status line, names its mount `tiloMount` once it is in, and the mount describes
     /// what it shows in an element of its own. A refusal reads `code: reason`.
@@ -42,6 +60,7 @@ final class EngineTests: XCTestCase {
     <!doctype html><html data-arrival="load"><title>Tilo</title><span id="status">Loading Tilo…</span>
     <div id="semantics"></div>
     <script>
+      \#(testDeviceHandoff)
       const root = document.documentElement;
       window.frames = 0;
       requestAnimationFrame(() => { window.frames += 1; });
@@ -116,7 +135,7 @@ final class EngineTests: XCTestCase {
       // its document the entry of its device (web/native-host.mjs). What its host answers
       // here is deliberately careless: it says a key where none belongs and repeats a secret.
       window.asked = [];
-      window.handOver = () => globalThis.tiloNativeHost?.device(Object.freeze({
+      window.handOver = () => giveDevice(Object.freeze({
         person: 'ad'.repeat(32), workspace: 'ws-1',
         catalogue: async () => ({actions: []}),
         status: async invocation => ({invocation, state: 'succeeded'}),
@@ -467,7 +486,7 @@ final class EngineTests: XCTestCase {
     // MARK: The person's own providers
 
     private func enterAsADevice() async throws {
-        try await run("location.hash = '#/w/ws-1/so.tilo.chat'; handOver(); enter()")
+        try await run("location.hash = '#/w/ws-1/so.tilo.chat'; await handOver(); enter()")
         try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
     }
 
@@ -870,6 +889,88 @@ final class EngineTests: XCTestCase {
         }
     }
 
+    func testAdmittedDeviceReadsAndPostsToTheAgentsChatWithoutAMountedWindow() async throws {
+        try await run(#"""
+        location.hash = '#/w/ws-1/so.tilo.chat';
+        const provider = 'record:so.tilo.chat:';
+        const messages = 'chain:derived:messages@derived:default@tab:0000000000000000';
+        const offered = verb => ({provider, action: {resource_kind: 'chat.messages',
+          address: {resource: messages, action: verb}, params: ['fields', 'where'].map(name => ({name}))}});
+        window.sent = [];
+        const nonce = crypto.randomUUID();
+        if (tiloNativeHost.device({invoke: () => {}})) throw new Error('unconfirmed legacy handoff');
+        const confirmed = tiloNativeHost.confirmDevice(nonce);
+        __tiloLive.confirmDevice('wrong pass', nonce);
+        webkit.messageHandlers.tiloLive.postMessage({kind: 'device-challenge', nonce});
+        if (!await confirmed) throw new Error('the native application did not confirm the handoff');
+        const entry = {
+          person: 'ada', workspace: 'ws-1',
+          workspaceRecord: async app => {
+            if (app !== 'so.tilo.chat') throw new Error('wrong app');
+            return provider;
+          },
+          catalogue: async query => {
+            if (query.provider !== provider) throw new Error('wrong provider');
+            if (query.target?.action === 'read' && query.target.resource.startsWith('chat.messages/messages/')) {
+              return {rows: [{provider, action: {address: query.target}}]};
+            }
+            return {rows: ['read', 'post'].map(offered).filter(row =>
+              query.target ? row.action.address.action === query.target.action && messages === query.target.resource :
+              query.resource_name === 'chat.messages')};
+          },
+          invoke: async (target, args, options) => {
+            if (target.provider !== provider) throw new Error('wrong provider');
+            if (target.address.resource !== messages) {
+              if (!window.canReadItem) throw new Error('unavailable: The connection was lost');
+              const id = target.address.resource.split('/').pop();
+              const row = sent.find(row => row.id === id);
+              return {state: 'succeeded', output: {value: {...row, author: {person: 'ada'}, ts: 1794900000123}}};
+            }
+            if (target.address.action === 'post') {
+              if (options.invocation !== args.id) throw new Error('the retry would use another invocation');
+              if (!sent.some(row => row.id === args.id)) sent.push(args);
+              if (window.loseReceipt) throw new Error('unavailable: Lost receipt');
+            }
+            const value = {messages: sent.map(row => ({id: row.id, value: {channel: row.channel,
+              author: {person: 'ada'}, ts: 1794900000123, text: row.text}}))};
+            return {state: 'succeeded', output: {value}};
+          }
+        };
+        if (tiloNativeHost.device(entry, 'wrong challenge')) throw new Error('unconfirmed handoff');
+        if (!tiloNativeHost.device(entry, nonce)) throw new Error('admitted device lost');
+        document.documentElement.dataset.entry = 'open';
+        """#)
+        try await until("the engine holds the admitted device") { if case .open = self.engine.state { true } else { false } }
+        let id = try await engine.chatSend("Hello", to: ChatRecipient(.agent, id: "scout", name: "Scout"))
+        let latest = try await engine.chatLatest()
+        XCTAssertEqual(latest, ["chat.messages/messages/" + id])
+        let read = try await engine.chatConversation(#"direct:[{"person":"ada"},{"agent":"scout"}]"#)
+        XCTAssertEqual(read?.first?.id, "chat.messages/messages/" + id)
+        XCTAssertEqual(read?.first?.text, "Hello")
+        XCTAssertEqual(read?.first?.at, Date(timeIntervalSince1970: 1_794_900_000.123))
+        let channel = try await said("return sent[0].channel")
+        XCTAssertEqual(channel, #"direct:[{"person":"ada"},{"agent":"scout"}]"#)
+        let unauthorised = try await said("return await __tiloLive.invoke('chat.workspace', 'send', {}, false, null, '')")
+        XCTAssertTrue(unauthorised.contains("unknown_action"))
+        let count = try await said("return String(sent.length)")
+        XCTAssertEqual(count, "1")
+        let delivery = UUID()
+        let recipient = ChatRecipient(.agent, id: "scout", name: "Scout")
+        try await run("window.loseReceipt = true")
+        do {
+            _ = try await engine.chatSend("Again", to: recipient, delivery: delivery)
+            XCTFail("An unreadable outcome was acknowledged")
+        } catch TiloEngine.Problem.refused(let code, _) {
+            XCTAssertEqual(code, "unavailable")
+        }
+        try await run("window.canReadItem = true")
+        let retried = try await engine.chatSend("Again", to: recipient, delivery: delivery)
+        XCTAssertEqual(retried, delivery.uuidString.lowercased())
+        let posted = try await said("return String(sent.filter(row => row.text === 'Again').length)")
+        XCTAssertEqual(posted, "1")
+
+    }
+
     func testASendWaitsForChatToOfferItAtThePagesNextWord() async throws {
         try await run("location.hash = '#/w/ws-1/so.tilo.chat'; enter()")
         try await until("the engine is in") { if case .open = self.engine.state { true } else { false } }
@@ -1024,7 +1125,7 @@ final class EngineTests: XCTestCase {
         _ = try? await engine.askAgents("read", agent: "scout")
         // Whatever record the page says it shows, the server is asked for the workspace's own.
         try await run("globalThis.tiloMount.state = () => ({record: 'uuid:1f0e'})")
-        _ = try? await engine.askAgents("create-agent", ["name": "Assistant"])
+        _ = try? await engine.askAgents("ensure-personal-assistant")
         _ = try? await engine.askAgents("stop-sub-agent", ["agent": "scout"])
         let targets = try await said("return JSON.stringify(window.asked.map(one => [one.target.provider, one.target.address.resource, one.target.address.action, one.argument]))")
         // Assistant's own document of the workspace, as its server names it: the app and nothing after it.
@@ -1032,12 +1133,12 @@ final class EngineTests: XCTestCase {
         XCTAssertEqual(JSON(text: targets), [
             [assistant, "tilo.workspace.agent", "read", .null],
             [assistant, "tilo.workspace.agent/agents/scout", "read", .null],
-            [assistant, "tilo.workspace.agent", "create-agent", ["name": "Assistant"]],
+            [assistant, "tilo.workspace.agent", "ensure-personal-assistant", .null],
             [assistant, "tilo.workspace.agent", "stop-sub-agent", ["agent": "scout"]],
         ])
         // Any other action, an action on one agent, a name that is none, and a script without
         // the engine's pass: the server is not asked at all.
-        let cases: [(String, String?)] = [("rename-agent", nil), ("create-agent", "scout"), ("read", "../chat.workspace")]
+        let cases: [(String, String?)] = [("rename-agent", nil), ("ensure-personal-assistant", "scout"), ("retire-agent", nil), ("set-agent-on-host", nil), ("read", "../chat.workspace")]
         for (action, agent) in cases {
             do {
                 try await engine.askAgents(action, agent: agent)

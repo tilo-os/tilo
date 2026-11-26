@@ -133,14 +133,18 @@ public struct WayIn: View {
         #endif
     }
 
-    /// The ways to pair: a phone scans or pastes, a Mac pastes. The first is the window's main
-    /// button unless going on is.
+    /// Open the person's Tilo in the browser, or take a link they already have.
     @ViewBuilder private func pairButtons(isMain: Bool) -> some View {
+        let site = model.source.devicePairingSite
+        if let site {
+            Link(AssistantWords.getPairingLink.said, destination: site)
+                .buttonStyle(WayButton(isMain: isMain))
+        }
         #if os(iOS)
-        Button(AssistantWords.scanCode.said) { scans = true }.buttonStyle(WayButton(isMain: isMain))
+        Button(AssistantWords.scanCode.said) { scans = true }.buttonStyle(WayButton(isMain: isMain && site == nil))
         Button(AssistantWords.pasteLink.said, action: paste).buttonStyle(WayButton())
         #else
-        Button(AssistantWords.pasteLink.said, action: paste).buttonStyle(WayButton(isMain: isMain))
+        Button(AssistantWords.pasteLink.said, action: paste).buttonStyle(WayButton(isMain: isMain && site == nil))
             .keyboardShortcut("v")
         #endif
     }

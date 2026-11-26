@@ -51,7 +51,15 @@ public struct SitePolicy: Equatable, Sendable {
         // It is the app's own page, as the one-app entry's route is, and the entry hands
         // every admitted browser to it.
         let pathParts = url.path(percentEncoded: true).split(separator: "/", omittingEmptySubsequences: false)
-        if pathParts.count == 4, pathParts[0].isEmpty, pathParts[1] == "w", pathParts[3] == only { return true }
+        if (4...5).contains(pathParts.count), pathParts[0].isEmpty, pathParts[1] == "w", !pathParts[2].isEmpty {
+            // PageAddress spells a native app by its short name. Older one-app
+            // builds also recognized the fully qualified app on its own site.
+            let app = pathParts[3]
+            let workspace = pathParts[2].utf8
+            let plain = workspace.allSatisfy { (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || $0 == 45 }
+            let named = !app.isEmpty && (app == only || "so.tilo." + app == only)
+            if plain && named && (pathParts.count == 4 || ![".", ".."].contains(pathParts[4])) { return true }
+        }
         guard url.path(percentEncoded: true) == "/app/", let fragment = url.fragment(percentEncoded: true),
               let route = fragment.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: false).first
         else { return false }

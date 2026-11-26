@@ -228,7 +228,7 @@ export async function boot({mode, window = globalThis, status, deps, onStep = ()
     // the entry keeps the browser on its first screen, holding the page it
     // would have handed over, until the person is done or skips
     // (`deps.holdFirstScreen`).
-    if (deps.holdFirstScreen?.({url, workspace: route.target.scope.workspace, entry, peer})) return null;
+    if (await deps.holdFirstScreen?.({url, workspace: route.target.scope.workspace, entry, peer})) return null;
     window.location.replace(url);
     return null;
   }

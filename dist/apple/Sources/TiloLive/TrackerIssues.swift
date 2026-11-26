@@ -14,24 +14,17 @@ extension TiloEngine {
     ///   page that hands a native app no way to its workspace's server, `unknown_action` for a
     ///   server that keeps no tracker or offers no such thing.
     @discardableResult
-    public func askTracker(_ action: String, _ arguments: [String: JSON] = [:]) async throws -> JSON {
-        let answer = try await ask("return globalThis.__tiloLive.tasks(given, action, argument)",
-                                   ["given": pass, "action": action, "argument": JSON.object(arguments).any])
-        switch answer["state"]?.string {
-        case "succeeded":
-            return answer["value"] ?? .null
-        case "failed":
-            throw Problem.refused(code: answer["error"]?["code"]?.string ?? "failed",
-                                  reason: answer["error"]?["message"]?.string ?? "")
-        default:
-            throw Problem.noAnswer
-        }
+    public func askTracker(_ action: String, _ arguments: [String: JSON] = [:], delivery: UUID? = nil) async throws -> JSON {
+        let answer = try await ask("return globalThis.__tiloLive.tasks(given, action, argument, invocation)",
+                                   ["given": pass, "action": action, "argument": JSON.object(arguments).any,
+                                    "invocation": delivery.map { $0.uuidString.lowercased() as Any } ?? NSNull()])
+        return try deviceOutput(answer)
     }
 
     /// File an issue and give it to one agent, as the person: Tasks' own `create`. Tasks keeps
     /// who gave it, and the workspace's server starts the agent's work on it with no device on.
-    public func giveIssue(_ title: String, to agent: String) async throws {
-        try await askTracker("create", ["title": .string(title), "assignee": .string("agent:\(agent)")])
+    public func giveIssue(_ title: String, to agent: String, delivery: UUID) async throws {
+        try await askTracker("create", ["title": .string(title), "assignee": .string("agent:\(agent)")], delivery: delivery)
     }
 
     /// The issues that are given to one agent, in the tracker's own order: a row each, with its

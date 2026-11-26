@@ -112,6 +112,18 @@ public struct Composer: View {
                 if let problem = listening.problem {
                     Text(problem).font(.small12).foregroundStyle(Token.ink3).lineLimit(2)
                 }
+                if chat == .main, model.setup == .ready, text.wrappedValue.isEmpty,
+                   files.isEmpty, model.drafts[chat]?.answers == nil, !listening.isOn {
+                    Menu(AssistantWords.askAboutLookRound.said) {
+                        ForEach([AssistantWords.askLookRoundSettings, .askLookRoundOn,
+                                 .askLookRoundSchedule, .askLookRoundOff], id: \.self) { prompt in
+                            Button(prompt.said) { model.begin(prompt.said) }
+                        }
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .font(.small12)
+                }
                 Spacer(minLength: 0)
                 #if os(macOS)
                 // The drawing shows how to send while something is being typed.

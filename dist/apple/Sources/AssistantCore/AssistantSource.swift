@@ -18,6 +18,9 @@ import Foundation
 public protocol AssistantSource: Sendable {
     // MARK: The way in
 
+    /// The site's browser entry, where the person can open their workspace and pair this device.
+    @MainActor var devicePairingSite: URL? { get }
+
     /// Where this device stands: signed out, pairing, or signed in as someone.
     func session() -> AsyncStream<Session>
 
@@ -159,8 +162,16 @@ public protocol AssistantSource: Sendable {
     /// Every task of the assistant. The views sort them by where they stand.
     func tasks() -> AsyncStream<[AssistantTask]>
 
+    /// Waiting work the assistant proposed in the certified person's workspace.
+    func proposalReview(for person: Person) async throws -> ProposalReview?
+    func review(_ proposal: ProposedTask, accept: Bool, for person: Person) async throws
+    func alwaysAllow(_ proposal: ProposedTask, for person: Person) async throws
+    func changePreference(_ preference: ProposalPreference, suggestAgain: Bool, for person: Person) async throws
+    func lookNow(for person: Person) async throws
+
+
     /// Give the assistant a task.
-    func addTask(_ title: String) async throws
+    func addTask(_ title: String, delivery: UUID) async throws
 
     /// What comes at a time and what happens when something else does, in the order to show.
     func automations() -> AsyncStream<[Automation]>
@@ -171,9 +182,6 @@ public protocol AssistantSource: Sendable {
     // MARK: Supervision
 
     func supervision() -> AsyncStream<Supervision>
-
-    /// Pause the assistant, or let it go on.
-    func setAssistantOn(_ on: Bool) async throws
 
     /// The models the person can choose from, of the providers they linked.
     func models() async throws -> [ModelChoice]
@@ -212,6 +220,26 @@ public protocol AssistantSource: Sendable {
 }
 
 extension AssistantSource {
+    /// One submission from a caller without an editable task draft.
+    public func addTask(_ title: String) async throws { try await addTask(title, delivery: UUID()) }
+
+    @MainActor public var devicePairingSite: URL? { nil }
+
+    public func proposalReview(for person: Person) async throws -> ProposalReview? { nil }
+    public func review(_ proposal: ProposedTask, accept: Bool, for person: Person) async throws {
+        throw SourceProblem.refused("This workspace does not offer proposals")
+    }
+    public func alwaysAllow(_ proposal: ProposedTask, for person: Person) async throws {
+        throw SourceProblem.refused("This workspace does not offer advance approval")
+    }
+    public func changePreference(_ preference: ProposalPreference, suggestAgain: Bool, for person: Person) async throws {
+        throw SourceProblem.refused("This workspace does not offer proposal preferences")
+    }
+    public func lookNow(for person: Person) async throws {
+        throw SourceProblem.refused("This workspace does not offer an immediate look")
+    }
+
+
     public func register(_ address: PushAddress) async {}
     public func unregister() async {}
 
@@ -273,11 +301,18 @@ public enum ConversationChange: Equatable, Sendable {
 /// What the person wrote and attached, before it is sent.
 public struct Draft: Equatable, Sendable {
     /// Markdown, as typed.
-    public var text: String
-    public var files: [File]
+    public var text: String { didSet { if text != oldValue { delivery = UUID() } } }
+    public var files: [File] { didSet { if files != oldValue { delivery = UUID() } } }
     /// The message of the conversation these words answer, where the person chose one. It is
     /// kept here and nowhere else until the words are sent.
-    public var answers: Answered?
+    public var answers: Answered? { didSet { if answers != oldValue { delivery = UUID() } } }
+    /// A retry of the same draft names its original Chat message and action.
+    public private(set) var delivery = UUID()
+
+    public static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.text == rhs.text && lhs.files == rhs.files && lhs.answers == rhs.answers
+    }
+
 
     public init(text: String, files: [File] = [], answers: Answered? = nil) {
         self.text = text

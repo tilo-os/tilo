@@ -70,6 +70,18 @@ fn a_full_part_rolls_posts_over_and_changes_land_where_the_message_is() {
     assert_eq!(workspace.messages().part_of(&Id::from_raw(&later)), Some(1));
     assert_eq!(workspace.part_numbers(), vec![0, 1]);
 
+    // A device retrying a named post still finds the original in the full part.
+    let mut retry = crate::demo::post("c_general", "mine, to edit later", None);
+    retry.arguments.insert("id".into(), mine.clone().into());
+    let refusal = workspace
+        .apply_part_as(&MemberId::person(crate::model::ME), retry)
+        .expect_err("the same message cannot also be written to part 1");
+    assert!(
+        refusal
+            .to_string()
+            .contains("a message with that id is already here")
+    );
+
     // A reaction, an edit and a reply to messages of the full part go to it.
     assert_eq!(
         workspace

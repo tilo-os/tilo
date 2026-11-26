@@ -61,6 +61,7 @@ final class TasksPanelTests: XCTestCase {
     private static let page = #"""
     <!doctype html><html data-arrival="load"><title>Tilo</title><span id="status"></span><div id="semantics"></div>
     <script>
+      \#(testDeviceHandoff)
       const root = document.documentElement;
       const ADA = 'ad'.repeat(32);
       const DIRECT = 'direct:[{"person":"' + ADA + '"},{"agent":"assistant"}]';
@@ -71,6 +72,7 @@ final class TasksPanelTests: XCTestCase {
       const said = value => ({state: 'completed', output: {value}});
       const done = value => ({invocation: 'i', state: 'succeeded', output: {value, resources: []}});
       const noSuch = () => { throw Object.assign(new Error('No such action is offered'), {code: 'unknown_action'}); };
+      window.creates = [];
       window.messages = []; window.told = []; window.asks = []; window.tellingAsks = 0; window.issues = [];
       // An issue as the tracker keeps one: given to the assistant by her, unless `more` says otherwise.
       window.issue = (id, title, status, more = {}) => ({id, title, status, number: 0, assignee: 'agent:assistant',
@@ -86,11 +88,14 @@ final class TasksPanelTests: XCTestCase {
         window.logMoved?.();
       };
       const device = Object.freeze({
-        person: ADA, workspace: 'ws-1',
-        catalogue: async () => ({actions: []}), status: async invocation => ({invocation, state: 'succeeded'}),
+        get person() { return window.certifiedPerson ?? ADA; },
+        get workspace() { return window.certifiedWorkspace ?? 'ws-1'; },
+        catalogue: async query => window.initiativeCatalogue?.(query) ?? {actions: []},
+        status: async invocation => ({invocation, state: 'succeeded'}),
         ownWorkspace: async () => ({id: 'own-7', name: 'Mine', origin: 'https://tilo.example:8443'}),
-        invoke: async (target, argument) => {
+        invoke: async (target, argument, options) => {
           const {resource, action} = target.address;
+          if (target.provider === 'tilo.initiative' && window.initiative) return window.initiative(resource, action, argument);
           if (target.provider === 'tilo.telling' && action === 'list') {
             window.tellingAsks += 1;
             // An ask that waits is held until her server's log moves.
@@ -117,19 +122,25 @@ final class TasksPanelTests: XCTestCase {
           }
           if (action === 'create') {
             if (window.refuses) return {invocation: 'i', state: 'failed', error: {code: 'invalid_argument', message: window.refuses}};
+            const receipt = options?.invocation;
+            const applied = window.creates.includes(receipt);
+            window.creates.push(receipt);
+            if (receipt && applied) return done(null);
             // Tasks keeps who gave it: the person whose device asked.
             window.issues.push(window.issue('i-new-' + window.issues.length, argument.title, 'todo', {assignee: argument.assignee ?? null}));
+            if (window.loseReceipt) {
+              window.loseReceipt = false;
+              return {invocation: receipt, state: 'accepted'};
+            }
             return done(null);
           }
           noSuch();
         },
       });
-      window.enter = () => {
+      window.enter = async () => {
         // Tilo's page hands the entry of its device to the app's own script, which stands in the
         // document to take it (Tilo's page calls it by its name).
-        const taker = Object.getOwnPropertyNames(globalThis).map(name => { try { return globalThis[name]; } catch { return null; } })
-          .find(one => one && typeof one === 'object' && typeof one.device === 'function' && typeof one.name === 'string');
-        taker.device(device);
+        await giveDevice(device);
         root.dataset.arrival = 'done';
         root.dataset.entry = 'open';
         globalThis.tiloMount = {
@@ -196,6 +207,192 @@ final class TasksPanelTests: XCTestCase {
     /// What one tab or group of the panel lists now: each task's name, and the line under it.
     private func shown(_ state: AssistantTask.State) -> [String] {
         (lists.last ?? []).filter { $0.state == state }.map { task in task.note.map { "\(task.title): \($0)" } ?? task.title }
+    }
+
+    // MARK: Proposed work
+
+    private func enterWithProposals() async throws -> Person {
+        try await start()
+        try await enter("""
+            const proposed = (id, title, extra) => ({
+              id, title, kind: 'follow-up', why: 'The signed contract arrived.',
+              state: 'proposed', proposedAtMs: 1794800000000, ...extra
+            });
+            window.proposals = [
+              proposed('file', 'File the contract', {task: {issue: 'i-file', number: 17}}),
+              proposed('renew', 'Review renewals', {event: {name: 'Review renewals', when: 'every 7 days',
+                onlyIf: 'a contract renewed', instruction: 'Summarize the changes'}}),
+              proposed('old', 'Previously decided', {state: 'accepted'})
+            ];
+            window.writes = [];
+            window.offersLook = true;
+            window.offersAlways = true;
+            window.preferences = [{kind: 'invoice', declined: 2, quiet: true, always: false}];
+            const offered = (resource, action, params = []) =>
+              ({provider: 'tilo.initiative', action: {address: {resource, action}, params}});
+            window.initiativeCatalogue = query => ({rows: query.provider !== 'tilo.initiative' ? [] : [
+              offered('proposals', 'accept', window.offersAlways ? [{name: 'always'}] : []),
+              offered('proposals', 'ask-first'), offered('proposals', 'propose-again'),
+              ...(window.offersLook ? [offered('look-round', 'look-now')] : [])
+            ]});
+            const list = () => done({proposals: window.proposals, ...(window.preferences.length ? {kinds: window.preferences} : {})});
+            window.initiative = (resource, action, argument) => {
+              if (resource === 'proposals' && action === 'list') return list();
+              window.writes.push([resource, action, argument ?? {}]);
+              if (window.decisionDenied) return {state: 'failed', error: {code: 'permission_denied', message: window.decisionDenied}};
+              if (resource === 'look-round' && action === 'look-now') {
+                return done({on: false, when: 'every 1800 seconds', dayLimitMicros: 200000,
+                  spentTodayMicros: 0, day: '2026-11-25', looks: []});
+              }
+              if (resource !== 'proposals') noSuch();
+              if (action === 'ask-first' || action === 'propose-again') {
+                const preference = window.preferences.find(row => row.kind === argument?.kind);
+                if (!preference) noSuch();
+                if (action === 'ask-first') preference.always = false;
+                else { preference.declined = 0; preference.quiet = false; }
+                window.preferences = window.preferences.filter(row => row.always || row.declined > 0);
+                return list();
+              }
+              if (!['accept', 'decline'].includes(action)) noSuch();
+              const proposal = window.proposals.find(row => row.id === argument?.proposal);
+              if (!proposal) noSuch();
+              if (proposal.state === 'accepted' && action === 'accept') return done(proposal);
+              proposal.state = action === 'accept' ? 'accepted' : 'declined';
+              if (argument.always) window.preferences.push({kind: proposal.kind, declined: 0, quiet: false, always: true});
+              if (window.loseDecision) return {invocation: 'unanswered', state: 'accepted'};
+              return done(proposal);
+            }
+            """)
+        try await wayInIsOver()
+        guard case .signedIn(let person) = sessions.last else { throw SourceProblem.signedOut }
+        return person
+    }
+
+    func testWaitingProposalsAreReviewedAndLookNowDoesNotEnableASchedule() async throws {
+        let person = try await enterWithProposals()
+        let offered = try await source.proposalReview(for: person)
+        let review = try XCTUnwrap(offered)
+        XCTAssertTrue(review.canLookNow)
+        XCTAssertEqual(review.pending.map(\.title), ["File the contract", "Review renewals"])
+        let task = try XCTUnwrap(review.pending.first)
+        let event = try XCTUnwrap(review.pending.last)
+        XCTAssertFalse(task.isEvent)
+        XCTAssertTrue(event.isEvent)
+        XCTAssertEqual(event.why, "The signed contract arrived.")
+        XCTAssertEqual(event.eventWhen, "every 7 days")
+        XCTAssertEqual(event.eventInstruction, "Summarize the changes")
+        XCTAssertEqual(event.eventCondition, "a contract renewed")
+        try await source.review(task, accept: true, for: person)
+        try await source.review(event, accept: false, for: person)
+        try await source.lookNow(for: person)
+        let writes = try await page("return JSON.stringify(window.writes)")
+        XCTAssertEqual(JSON(text: writes), [
+            ["proposals", "accept", ["proposal": "file"]],
+            ["proposals", "decline", ["proposal": "renew"]],
+            ["look-round", "look-now", [:]],
+        ])
+        try await inPage("window.offersLook = false; window.offersAlways = false")
+        let after = try await source.proposalReview(for: person)
+        XCTAssertEqual(after?.pending, [])
+        XCTAssertEqual(after?.canLookNow, false)
+        XCTAssertEqual(after?.canAlwaysAllow, false, "an older accept action offers no standing permission")
+    }
+
+    func testStandingPermissionCanBeRevokedAndAMutedKindCanBeSuggestedAgain() async throws {
+        let person = try await enterWithProposals()
+        let before = try await source.proposalReview(for: person)
+        XCTAssertEqual(before?.canAlwaysAllow, true)
+        let task = try XCTUnwrap(before?.pending.first)
+        XCTAssertEqual(task.kind, "follow-up")
+        let muted = try XCTUnwrap(before?.preferences.first { $0.kind == "invoice" && $0.quiet })
+        try await source.alwaysAllow(task, for: person)
+        let afterApproval = try await source.proposalReview(for: person)
+        let standing = try XCTUnwrap(afterApproval?.preferences.first { $0.kind == "follow-up" && $0.always })
+        // The name of the invoice kind alone grants no authority in a different workspace.
+        try await inPage("window.certifiedWorkspace = 'ws-2'")
+        do {
+            try await source.changePreference(muted, suggestAgain: true, for: person)
+            XCTFail("a preference change was sent to a different workspace")
+        } catch SourceProblem.refused {
+        } catch SourceProblem.signedOut {}
+        try await inPage("delete window.certifiedWorkspace")
+        try await source.changePreference(standing, suggestAgain: false, for: person)
+        try await source.changePreference(muted, suggestAgain: true, for: person)
+        let after = try await source.proposalReview(for: person)
+        let preferences = try XCTUnwrap(after?.preferences)
+        XCTAssertFalse(preferences.contains { $0.kind == "follow-up" && $0.always })
+        XCTAssertFalse(preferences.contains { $0.kind == "invoice" && $0.quiet })
+        let writes = try await page("return JSON.stringify(window.writes)")
+        XCTAssertEqual(JSON(text: writes), [
+            ["proposals", "accept", ["proposal": "file", "always": true]],
+            ["proposals", "ask-first", ["kind": "follow-up"]],
+            ["proposals", "propose-again", ["kind": "invoice"]],
+        ])
+    }
+
+    func testAnApprovalOnAnotherDeviceDoesNotImplyAStandingPermission() async throws {
+        let person = try await enterWithProposals()
+        let before = try await source.proposalReview(for: person)
+        let task = try XCTUnwrap(before?.pending.first)
+        try await inPage("window.proposals[0].state = 'accepted'")
+        do {
+            try await source.alwaysAllow(task, for: person)
+            XCTFail("one earlier decision cannot grant future permission")
+        } catch SourceProblem.refused {}
+        let after = try await source.proposalReview(for: person)
+        let preferences = try XCTUnwrap(after?.preferences)
+        XCTAssertFalse(preferences.contains { $0.kind == task.kind && $0.always })
+        let writes = try await page("return JSON.stringify(window.writes)")
+        XCTAssertEqual(JSON(text: writes), [["proposals", "accept", ["proposal": "file", "always": true]]])
+    }
+
+    func testARefusedProposalStaysPendingAndALostReceiptIsReconciledByReading() async throws {
+        let person = try await enterWithProposals()
+        let offered = try await source.proposalReview(for: person)
+        let proposal = try XCTUnwrap(offered?.pending.first)
+        try await inPage("window.decisionDenied = 'You cannot start this work'")
+        do {
+            try await source.review(proposal, accept: true, for: person)
+            XCTFail("the host refused the decision")
+        } catch let error as SourceProblem {
+            XCTAssertEqual(error, .refused("You cannot start this work"))
+        }
+        let refused = try await source.proposalReview(for: person)
+        XCTAssertEqual(refused?.pending.first?.id, proposal.id)
+        try await inPage("window.decisionDenied = null; window.loseDecision = true")
+        do {
+            try await source.review(proposal, accept: false, for: person)
+            XCTFail("the host applied the decision but did not confirm it")
+        } catch SourceProblem.unreachable {}
+        let after = try await source.proposalReview(for: person)
+        XCTAssertEqual(after?.pending.map(\.title), ["Review renewals"])
+        let writes = try await page("return JSON.stringify(window.writes)")
+        XCTAssertEqual(JSON(text: writes), [
+            ["proposals", "accept", ["proposal": "file"]],
+            ["proposals", "decline", ["proposal": "file"]],
+        ])
+    }
+
+    func testAProposalFromAnotherPersonOrWorkspaceCannotBeDecided() async throws {
+        let person = try await enterWithProposals()
+        let offered = try await source.proposalReview(for: person)
+        let proposal = try XCTUnwrap(offered?.pending.first)
+        for changed in ["window.certifiedPerson = 'be'.repeat(32)", "window.certifiedWorkspace = 'ws-2'"] {
+            try await inPage(changed)
+            do {
+                try await source.review(proposal, accept: true, for: person)
+                XCTFail("a decision reached a different account or workspace")
+            } catch SourceProblem.signedOut {
+                // The app has since paired with a different identity.
+            } catch SourceProblem.refused {
+                // The peer refused to act on a stale selection.
+            }
+            try await inPage("delete window.certifiedPerson; delete window.certifiedWorkspace")
+        }
+        let writes = try await page("return JSON.stringify(window.writes)")
+        XCTAssertEqual(JSON(text: writes), [])
+        let after = try await source.proposalReview(for: person)
+        XCTAssertEqual(after?.pending.first?.id, proposal.id)
     }
 
     // MARK: The list
@@ -313,6 +510,24 @@ final class TasksPanelTests: XCTestCase {
         try await source.addTask("  \n ")
         let after = try await trackerAsks()
         XCTAssertEqual(after.filter { $0.hasPrefix("create") }.count, 1)
+    }
+
+    func testRetryingATaskDraftUsesItsOriginalInvocation() async throws {
+        try await start()
+        try await enter("window.loseReceipt = true")
+        try await wayInIsOver()
+        let draft = Draft(text: "Plan the offsite")
+        do {
+            try await source.addTask(draft.text, delivery: draft.delivery)
+            XCTFail("the create receipt was lost")
+        } catch TiloEngine.Problem.noAnswer {}
+        try await source.addTask(draft.text, delivery: draft.delivery)
+        let another = Draft(text: draft.text)
+        try await source.addTask(another.text, delivery: another.delivery)
+        let calls = try await page("return JSON.stringify(window.creates)")
+        XCTAssertEqual(JSON(text: calls), .array([draft, draft, another].map { .string($0.delivery.uuidString.lowercased()) }))
+        let count = try await page("return String(window.issues.length)")
+        XCTAssertEqual(count, "2")
     }
 
     func testATaskHerServerDoesNotTakeIsRefusedInItsOwnWordsAndNothingIsListed() async throws {

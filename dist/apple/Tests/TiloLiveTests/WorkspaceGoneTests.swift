@@ -516,7 +516,7 @@ final class WorkspaceGoneTests: XCTestCase {
         }
         // An open page its server turned away names the refusal on its root, whatever the refusal is.
         let entry = try String(contentsOf: web.appendingPathComponent("entry-page.mjs"), encoding: .utf8)
-        XCTAssertTrue(entry.contains("document.documentElement.dataset.refusal = code;"), "an open page no longer names its server's refusal on its root")
+        XCTAssertTrue(entry.contains("root.refusal = snapshot.errorCode ?? 'unanswered';"), "an open page no longer names its server's refusal on its root")
         // A join that stopped otherwise than by a refusal is named `failed`, and what became of the workspace is asked after that.
         XCTAssertTrue(entry.contains("? 'refused' : 'failed';"), "the page no longer names a join that stopped without a refusal `failed`")
         // What says nothing of a site that answered and stopped the page's join is the failure screen's own names.

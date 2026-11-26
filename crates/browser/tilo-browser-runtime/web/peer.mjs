@@ -988,11 +988,39 @@ async function connect({
       return status(id);
     }
 
+    /** What the workspace's server answered one request about the content it keeps. */
+    async function contentAsk(request, response, body) {
+      correlation += 1;
+      const result = (await ask({[request]: {correlation, ...body}}))[response]?.result;
+      if (result?.Ok) return result.Ok;
+      if (!result?.Err) throw new ActionsError('unavailable', 'the workspace\'s server did not answer');
+      throw failure(result.Err);
+    }
+
+    /**
+     * One step of an upload into the content store of this page's workspace (`ContentPutStep`:
+     * `{begin: {size}}`, `{append: {upload, offset, bytes}}` with the bytes as hex,
+     * `{finish: {upload}}`): what the server answered it (`{begun: {upload}}`,
+     * `{appended: {written}}`, `{finished: {content}}`). The server takes it where this page's
+     * person may change what the workspace keeps. Nothing of a step is kept in this page.
+     */
+    const contentPut = step => contentAsk('ContentPutRequest', 'ContentPutResponse', {step});
+
+    /**
+     * A link the site serves content of the workspace's store at for a short time:
+     * `link` is a `ContentLinkAsk` (`{name, files: [{path, hash}], zip}`), the answer a
+     * `ContentLink` (`{path, expires_in_secs}`). The server mints it where this page's person may
+     * read the workspace.
+     */
+    const contentLink = link => contentAsk('ContentLinkRequest', 'ContentLinkResponse', {link});
+
     return {
       catalogue,
       invoke,
       once,
       observe,
+      contentPut,
+      contentLink,
       changes,
       landed,
       status,

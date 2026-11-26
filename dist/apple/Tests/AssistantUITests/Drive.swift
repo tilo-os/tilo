@@ -444,6 +444,10 @@ final class Recording: AssistantSource, @unchecked Sendable {
     func answer(_ question: Question.ID, with choice: Choice.ID) async throws {
         note("answer(\(question), \(choice))"); try await inner.answer(question, with: choice)
     }
+    func seen(_ item: Item.ID, in chat: Chat) async {
+        note("seen(\(item), \(chat))")
+        await inner.seen(item, in: chat)
+    }
     func stopSharing(_ thing: LiveThing.ID) async throws { note("stopSharing(\(thing))"); try await inner.stopSharing(thing) }
     func keep(_ secret: Secret, for request: SecretRequest.ID) async throws {
         // The call is written down as anything that writes calls down would see it; what was
@@ -467,11 +471,10 @@ final class Recording: AssistantSource, @unchecked Sendable {
     func joinApproved() -> AsyncStream<Date?> { inner.joinApproved() }
     func pageLook() -> AsyncStream<Look?> { inner.pageLook() }
     func goOn() async { note("goOn()"); await inner.goOn() }
-    func addTask(_ title: String) async throws { note("addTask(\(String(reflecting: title)))"); try await inner.addTask(title) }
+    func addTask(_ title: String, delivery: UUID) async throws { note("addTask(\(String(reflecting: title)))"); try await inner.addTask(title, delivery: delivery) }
     func automations() -> AsyncStream<[Automation]> { inner.automations() }
     func setOn(_ on: Bool, for automation: Automation.ID) async throws { note("setOn(\(on), \(automation))"); try await inner.setOn(on, for: automation) }
     func supervision() -> AsyncStream<Supervision> { inner.supervision() }
-    func setAssistantOn(_ on: Bool) async throws { note("setAssistantOn(\(on))"); try await inner.setAssistantOn(on) }
     func models() async throws -> [ModelChoice] { note("models()"); return try await inner.models() }
     func providers() async throws -> [ProviderChoice] { note("providers()"); return try await inner.providers() }
     func choose(_ model: ModelChoice.ID, for work: [WorkKind]) async throws {

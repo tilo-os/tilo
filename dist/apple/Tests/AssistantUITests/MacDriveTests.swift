@@ -306,13 +306,13 @@ final class MacDriveTests: XCTestCase {
 
     // MARK: The assistant view
 
-    func testTheAssistantViewOpensPausesAndLeadsBackToTheChat() async throws {
+    func testTheAssistantViewShowsItsStatusAndLeadsBackToTheChat() async throws {
         let run = try await Started.app()
         defer { run.end() }
         let drive = run.drive
         drive.press(AssistantWords.assistantView.said, role: "AXButton")
         await drive.until("the assistant view") { run.model.place == .assistantView }
-        await drive.until("its first line") { drive.shows(AssistantWords.assistantOn.said) }
+        await drive.until("its first line") { drive.shows(AssistantWords.assistantActive.said) }
         for words in ["Claude Opus 5.5", AssistantWords.messagesToday.said, Wording().tokens(1_800_000), AssistantWords.connections.said,
                       AssistantWords.hasLearned.said, AssistantWords.whereItWorks.said, AssistantWords.workspaces.said] {
             XCTAssertTrue(drive.shows(words), "the assistant view says nothing of “\(words)”")
@@ -320,16 +320,17 @@ final class MacDriveTests: XCTestCase {
         XCTAssertFalse(drive.has(AssistantWords.tasks.said, role: "AXHeading"))
         drive.picture("mac-driven-assistant-view")
 
-        drive.press(AssistantWords.pause.said, role: "AXButton")
-        await drive.until("the pause at the source") { run.source.calls("setAssistantOn") == ["setAssistantOn(false)"] }
-        await drive.until("the view to say it is paused") { drive.shows(AssistantWords.assistantPaused.said) }
-        XCTAssertTrue(drive.has(AssistantWords.resume.said, role: "AXButton"))
-
         // A line's Open shows all of it; Escape puts it away.
-        let opens = drive.nodes(AssistantWords.open.said, role: "AXButton").sorted { $0.frame.maxY > $1.frame.maxY }
-        XCTAssertEqual(opens.count, 5)
-        drive.press(opens.first)
-        await drive.until("the logins") { run.window.heldSheets.count == 1 }
+        let rows = drive.tree()
+        XCTAssertEqual(rows.filter { $0.isButton && $0.name == AssistantWords.open.said }.count, 5)
+        let logins = try XCTUnwrap(rows.firstIndex { $0.name == AssistantWords.logins.said })
+        let open = try XCTUnwrap(rows[logins...].first(where: \.isButton))
+        XCTAssertEqual(open.name, AssistantWords.open.said)
+        drive.press(open)
+        // AppKit can request the same sheet twice from the offscreen window.
+        await drive.until("the logins") {
+            Set(run.window.heldSheets.map(ObjectIdentifier.init)).count == 1
+        }
         await drive.settle(300)
         let sheet = try XCTUnwrap(run.window.heldSheets.first)
         XCTAssertTrue(drive.has(AssistantWords.logins.said, role: "AXHeading", in: sheet.contentView), drive.said(of: sheet.contentView))
@@ -487,7 +488,7 @@ final class MacDriveTests: XCTestCase {
 
     // MARK: The item in the menu bar
 
-    func testTheMenuBarItemOffersTheWindowWhatWaitsAPauseAndQuit() async throws {
+    func testTheMenuBarItemOpensTheWindowAndWaitingTasks() async throws {
         let run = try await Started.app()
         defer { run.end() }
         typealias W = AssistantWords
@@ -497,7 +498,7 @@ final class MacDriveTests: XCTestCase {
             return menu.items.map(said)
         }
         XCTAssertEqual(lines(), [W.openApp.said, "-", W.counted(3, one: .waitsOne, many: .waitsMany), "Find the Q3 board deck",
-                                 "Reply to Maya at Northwind", "Board deck for Friday: first draft", "-", W.pauseAssistant.said, "-",
+                                 "Reply to Maya at Northwind", "Board deck for Friday: first draft", "-",
                                  W.signOut.said, "-", "\(W.quit.said) ⌘Q"])
         XCTAssertNil(menu.items[2].action, "how many things wait is said, not pressed")
         XCTAssertEqual(menu.items.last?.action, #selector(NSApplication.terminate(_:)))
@@ -521,19 +522,13 @@ final class MacDriveTests: XCTestCase {
         XCTAssertTrue(run.model.showsPanel)
         XCTAssertEqual(run.model.panelTab, .active)
 
-        // The pause, and the line that lets it go on again.
-        menu.performActionForItem(at: 7)
-        await run.drive.until("the pause at the source") { run.source.calls("setAssistantOn") == ["setAssistantOn(false)"] }
-        await run.drive.until("the line to change") { lines().contains(W.resumeAssistant.said) }
-        XCTAssertFalse(lines().contains(W.pauseAssistant.said))
-
         // Answered, a thing no longer waits.
         run.model.answer("maya-reply", with: "send")
         await run.drive.until("two things to wait") { run.model.waiting == 3 }
         XCTAssertEqual(lines()[2], W.counted(3, one: .waitsOne, many: .waitsMany), "the task stays ready for review until the assistant says otherwise")
     }
 
-    func testBeforeADeviceIsPairedTheMenuBarItemOffersNoPause() async throws {
+    func testBeforePairingTheMenuBarOffersTheWindowAndQuit() async throws {
         let run = try await Started.app(MemorySource.Content())
         defer { run.end() }
         typealias W = AssistantWords

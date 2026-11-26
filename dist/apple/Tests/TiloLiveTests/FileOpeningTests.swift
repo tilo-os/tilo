@@ -71,6 +71,7 @@ final class FileOpeningTests: XCTestCase {
     private static let page = #"""
     <!doctype html><html data-arrival="load"><title>Tilo</title><span id="status"></span><div id="semantics"></div>
     <script>
+      \#(testDeviceHandoff)
       const root = document.documentElement;
       const ADA = 'ad'.repeat(32);
       window.kept = letter => letter.repeat(64);
@@ -90,7 +91,7 @@ final class FileOpeningTests: XCTestCase {
         window.links.push([content, name]);
         return {path: window.linkPath ?? `/api/content/tok-${window.links.length}/${encodeURIComponent(name)}`, expiresInSecs: 120};
       };
-      window.enter = () => {
+      window.enter = async () => {
         const device = Object.freeze({
           person: ADA, workspace: 'ws-1',
           catalogue: async () => ({actions: []}), status: async invocation => ({invocation, state: 'succeeded'}),
@@ -100,9 +101,7 @@ final class FileOpeningTests: XCTestCase {
         });
         // Tilo's page hands the entry of its device to the app's own script, which stands in the
         // document to take it.
-        const taker = Object.getOwnPropertyNames(globalThis).map(name => { try { return globalThis[name]; } catch { return null; } })
-          .find(one => one && typeof one === 'object' && typeof one.device === 'function' && typeof one.name === 'string');
-        taker.device(device);
+        await giveDevice(device);
         root.dataset.arrival = 'done';
         root.dataset.entry = 'open';
         // Chat's own name for the field that says which conversation a message is in: the read says it.

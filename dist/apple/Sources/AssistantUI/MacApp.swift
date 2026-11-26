@@ -259,7 +259,7 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
         }
     }
 
-    /// The menu-bar item's lines: the window, what waits for the person, a pause, and Quit.
+    /// The menu-bar item opens the window and waiting tasks, signs out and quits.
     private func fill(status menu: NSMenu) {
         typealias W = AssistantWords
         menu.removeAllItems()
@@ -268,11 +268,6 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
         add(model.waiting == 0 ? W.waitsNone.said : W.counted(model.waiting, one: .waitsOne, many: .waitsMany), nil, to: menu)
         for task in (model.tasks(.needsInput) + model.tasks(.readyForReview)).prefix(8) {
             add(task.title, #selector(openWaiting(_:)), to: menu, target: self).representedObject = task.item?.value
-        }
-        if model.person != nil {
-            menu.addItem(.separator())
-            add((model.supervision.isOn ? W.pauseAssistant : W.resumeAssistant).said, #selector(pauseOrResume(_:)),
-                to: menu, target: self)
         }
         if model.session != .signedOut {
             menu.addItem(.separator())
@@ -335,10 +330,6 @@ public final class MacApp: NSObject, NSApplicationDelegate, NSWindowDelegate, NS
         window?.makeKeyAndOrderFront(nil)
         // Only an app that stands in the Dock comes forward; a check never does.
         if NSApp.activationPolicy() == .regular { NSApp.activate(ignoringOtherApps: true) }
-    }
-
-    @objc public func pauseOrResume(_ sender: Any?) {
-        model.setAssistantOn(!model.supervision.isOn)
     }
 
     @objc public func signOut(_ sender: Any?) {

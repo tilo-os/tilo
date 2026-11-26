@@ -55,7 +55,7 @@ final class SaidTests: XCTestCase {
         let person = try place(said, "the person") { $0.role == "AXMenuButton" && $0.name == "Xaver E, Personal" }
         XCTAssertEqual([sidebar, view, search, main, agents, agent, person], [sidebar, view, search, main, agents, agent, person].sorted())
         XCTAssertLessThan(person, middle, "the person closes the sidebar, before the conversation begins")
-        XCTAssertEqual(said.filter { $0.role == "AXMenuButton" }.count, 1, "the person's menu is one thing with one name")
+        XCTAssertEqual(said.filter { $0.role == "AXMenuButton" }.map(\.name), ["Xaver E, Personal", W.askAboutLookRound.said])
         XCTAssertTrue(said[main].isSelected)
 
         // Inside the middle: the bar's two buttons, the conversation oldest first, then the field and what stands under it.
@@ -122,7 +122,7 @@ final class SaidTests: XCTestCase {
         XCTAssertLessThan(row, toggle)
 
         drive.press(W.assistantView.said, role: "AXButton")
-        await drive.until("the assistant view") { drive.shows(W.assistantOn.said) }
+        await drive.until("the assistant view") { drive.shows(W.assistantActive.said) }
         said = drive.tree()
         drive.keep("mac-assistant-view")
         checkLabels(said)

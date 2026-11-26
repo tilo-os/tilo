@@ -7,9 +7,8 @@ import SwiftUI
 public struct TasksPanel: View {
     private let close: () -> Void
     @Environment(AssistantModel.self) private var model
-    @Environment(\.wording) private var wording
     @State private var adds = false
-    @State private var title = ""
+    @State private var draft = Draft(text: "")
     @FocusState private var writes: Bool
 
     public init(close: @escaping () -> Void) {
@@ -59,15 +58,18 @@ public struct TasksPanel: View {
             }
 
             if adds {
-                TextField(AssistantWords.addTaskField.said, text: $title)
+                TextField(AssistantWords.addTaskField.said, text: $draft.text)
                     .textFieldStyle(.plain).font(.body14).focused($writes)
                     .padding(.horizontal, 10).padding(.vertical, 7)
                     .background(Token.raised, in: RoundedRectangle(cornerRadius: Measure.rowRadius))
                     .onSubmit {
-                        model.addTask(title)
-                        title = ""
-                        adds = false
-                        model.panelTab = .upNext
+                        let sent = draft
+                        Task {
+                            guard await model.addTask(sent), draft.delivery == sent.delivery else { return }
+                            draft = Draft(text: "")
+                            adds = false
+                            model.panelTab = .upNext
+                        }
                     }
             }
 
@@ -103,7 +105,10 @@ public struct TasksPanel: View {
         let groups: [(AssistantWords, AssistantTask.State, Sign)] = [
             (.readyForReview, .readyForReview, .check), (.needsInput, .needsInput, .ask), (.inProgress, .inProgress, .run),
         ]
-        if groups.allSatisfy({ model.tasks($0.1).isEmpty }) { Empty(words: .nothingActive) }
+        ProposalSection().id(model.person)
+        if model.proposals?.isEmpty != false, groups.allSatisfy({ model.tasks($0.1).isEmpty }) {
+            Empty(words: .nothingActive)
+        }
         ForEach(groups, id: \.0) { name, state, sign in
             let tasks = model.tasks(state)
             if !tasks.isEmpty {
@@ -132,6 +137,150 @@ public struct TasksPanel: View {
         if !events.isEmpty {
             SectionHead(name: AssistantWords.events.said, count: events.count)
             ForEach(events) { AutomationRow(automation: $0, isLast: $0.id == events.last?.id) }
+        }
+    }
+}
+
+/// Decisions apply to one suggestion in the person's current workspace.
+private struct ProposalSection: View {
+    @Environment(\.scenePhase) private var phase
+    @Environment(AssistantModel.self) private var model
+    @State private var submitting = false
+    @State private var status: String?
+    @State private var readError: String?
+    @State private var confirming: ProposedTask?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if readError == nil, let proposals = model.proposals {
+                if !proposals.isEmpty {
+                    SectionHead(name: AssistantWords.proposals.said, count: proposals.count)
+                    ForEach(proposals) { proposal in row(proposal) }
+                }
+                ForEach(model.proposalPreferences) { preference in
+                    if preference.always { preferenceRow(preference, suggestAgain: false) }
+                    if preference.quiet { preferenceRow(preference, suggestAgain: true) }
+                }
+                if model.canLookNow {
+                    Button(AssistantWords.lookNow.said) {
+                        perform(acknowledged: .lookRequested) { try await model.lookNow() }
+                    }
+                    .buttonStyle(LinkStyle())
+                }
+            }
+            if let status { Text(status).font(.small125).foregroundStyle(Token.ink2) }
+            if let readError { Text(readError).font(.small125).foregroundStyle(Token.ink2) }
+            if model.proposals != nil || readError != nil || status != nil {
+                Button(AssistantWords.refreshProposals.said) {
+                    status = nil
+                    Task { await refresh() }
+                }
+                .buttonStyle(LinkStyle())
+            }
+        }
+        .disabled(submitting)
+        .task { if model.person != nil { await refresh() } }
+        .onChange(of: phase) { _, now in
+            if now == .active { Task { await refresh() } }
+        }
+        .onChange(of: model.isWriting(.main)) { was, now in
+            if was && !now { Task { await refresh() } }
+        }
+    }
+
+    private func row(_ proposal: ProposedTask) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(proposal.title).font(.body14).foregroundStyle(Token.ink)
+            if !proposal.why.isEmpty {
+                Text(proposal.why).font(.small12).foregroundStyle(Token.ink2)
+            }
+            if let when = proposal.eventWhen { detail(.proposedWhen, when) }
+            if let condition = proposal.eventCondition { detail(.proposedCondition, condition) }
+            if let instruction = proposal.eventInstruction { detail(.proposedInstruction, instruction) }
+            if confirming == proposal, canAllow(proposal) {
+                Text(AssistantWords.alwaysAllowDetail.said(["kind": proposal.kind]))
+                    .font(.small125).foregroundStyle(Token.ink)
+                Flow(spacing: 12, lineSpacing: 6) {
+                    Button(AssistantWords.confirmAlwaysAllow.said) {
+                        confirming = nil
+                        perform { try await model.alwaysAllow(proposal) }
+                    }
+                    Button(AssistantWords.cancel.said) { confirming = nil }
+                }
+                .buttonStyle(LinkStyle())
+            } else {
+                Flow(spacing: 12, lineSpacing: 6) {
+                    Button((proposal.isEvent ? AssistantWords.setUpEvent : .startTask).said) {
+                        perform { try await model.review(proposal, accept: true) }
+                    }
+                    Button(AssistantWords.declineProposal.said) {
+                        perform { try await model.review(proposal, accept: false) }
+                    }
+                    if canAllow(proposal) {
+                        Button(AssistantWords.alwaysAllow.said(["kind": proposal.kind])) { confirming = proposal }
+                    }
+                }
+                .buttonStyle(LinkStyle())
+            }
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func canAllow(_ proposal: ProposedTask) -> Bool {
+        model.canAlwaysAllow && !proposal.isEvent
+    }
+
+    private func preferenceRow(_ preference: ProposalPreference, suggestAgain: Bool) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text((suggestAgain ? AssistantWords.kindQuiet : .kindAlwaysAllowed).said(["kind": preference.kind]))
+                .font(.small125).foregroundStyle(Token.ink2)
+            Button((suggestAgain ? AssistantWords.suggestAgain : .askMeFirst).said) {
+                perform { try await model.changePreference(preference, suggestAgain: suggestAgain) }
+            }
+            .buttonStyle(LinkStyle())
+        }
+        .accessibilityElement(children: .contain)
+    }
+
+    private func detail(_ label: AssistantWords, _ value: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(label.said).font(.small12).foregroundStyle(Token.ink3)
+            Text(value).font(.body14).foregroundStyle(Token.ink)
+        }
+        .accessibilityElement(children: .combine)
+    }
+
+    private func refresh() async {
+        do {
+            try await model.refreshProposals()
+            readError = nil
+        } catch SourceProblem.refused(let why) {
+            readError = why
+        } catch SourceProblem.signedOut {
+            readError = AssistantWords.suggestionsSignedOut.said
+        } catch {
+            readError = AssistantWords.notReachable.said
+        }
+    }
+
+    private func perform(acknowledged: AssistantWords? = nil, _ action: @escaping @MainActor () async throws -> Void) {
+        guard !submitting else { return }
+        submitting = true
+        status = nil
+        Task { @MainActor in
+            defer { submitting = false }
+            do {
+                try await action()
+                status = acknowledged?.said
+            } catch SourceProblem.refused(let why) {
+                status = why
+            } catch SourceProblem.signedOut {
+                status = AssistantWords.suggestionsSignedOut.said
+                return
+            } catch {
+                status = AssistantWords.proposalUnconfirmed.said
+            }
+            await refresh()
         }
     }
 }

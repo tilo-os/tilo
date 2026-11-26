@@ -303,12 +303,13 @@ suites = ["tools/ci/test_native_store_autoclear.py"]
 
 [[group]]
 name = "os-workflows"
-inputs = ["os/", ".forgejo/workflows/", "tools/ci/publish/"]
+inputs = ["os/", ".forgejo/workflows/", "tools/ci/publish/", "tools/release/tilo-sh.sh", "tools/release/tilo_sh_receipts.py"]
 suites = [
   "os/tests/test_ci_fast_images.py",
   "os/containers/tilo-server/test-contract.sh",
   "os/containers/tilo-lounge/test-entrypoint.sh",
   "os/containers/tilo-sh/test-native-env.sh",
+  "tools/release/test_tilo_sh_receipts.py",
   "os/tests/rpm_snapshot_invariants.sh",
   "os/tests/test_rpm_snapshot_fingerprint.py",
   "os/tests/test_kernel_build_environment.py",
@@ -625,6 +626,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/first-screen.test.mjs",
   "crates/browser/tilo-browser-runtime/web/startup-order.test.mjs",
   "crates/browser/tilo-browser-runtime/web/workspaces.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/workspace-pairing.test.mjs",
   "crates/browser/tilo-browser-runtime/web/session-refusal.test.mjs",
   "crates/browser/tilo-browser-runtime/web/changes.test.mjs",
   "crates/browser/tilo-browser-runtime/web/device-key.test.mjs",
@@ -633,6 +635,7 @@ suites = [
   "crates/browser/tilo-browser-runtime/web/identity-actions.test.mjs",
   "crates/browser/tilo-browser-runtime/web/profile-photos.test.mjs",
   "crates/browser/tilo-browser-runtime/web/peer.test.mjs",
+  "crates/browser/tilo-browser-runtime/web/native-host.test.mjs",
   "crates/browser/tilo-browser-runtime/web/site-host.test.mjs",
   "crates/browser/tilo-browser-runtime/web/scrub.test.mjs",
   "crates/browser/tilo-browser-runtime/web/reconnect.test.mjs",

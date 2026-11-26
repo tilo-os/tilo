@@ -113,9 +113,9 @@ const PAIR_POLL_MS = 3000;
  * never lands mid-sentence or mid-drag. `searchChord` is how this page
  * opens search, said in the ask so the person can find it later.
  * `pairing` is the server side of pairing: `link(invite)`, `pending()` and
- * `answer(digest, approved)`. `showPairLink({link, expiresAt, copy})` shows
+ * `answer(digest, approved)`. `showPairLink({link, expiresAt, copy, cancel})` shows
  * a new pairing link (`copy()` puts it on the clipboard, resolving whether
- * it could); `askPairing(request, decide)` asks the person about a device
+ * it could, and `cancel()` withdraws it); `askPairing(request, decide)` asks the person about a device
  * that answered it, and `decide(approved)` answers, resolving to
  * `{approved, label}`. Both return `{close()}`, called once the link is
  * spent or expired.
@@ -201,6 +201,7 @@ export function createIdentityActions({
   // An answer spends the invite, approved or not: the host takes no second
   // request naming it.
   const decide = request => async approved => {
+    if (!invites.has(request.invite)) throw new IdentityError('expired', 'This pairing link has expired.');
     await pairing.answer(request.digest, approved);
     invites.spend(request.invite);
     shown.delete(request.invite);
@@ -251,6 +252,13 @@ export function createIdentityActions({
   };
   const controller = {
     actions,
+    /** A workspace session ended: withdraw this page's invitations and their unanswered asks. */
+    withdrawInvites() {
+      for (const id of shown.keys()) { invites.spend(id); closeInvite(id); }
+      stopPairing?.();
+      stopPairing = null;
+      void pairing?.close?.();
+    },
     /** Show the actions in `mount`'s desktop. */
     async attach(target) {
       mount = target;
@@ -330,7 +338,8 @@ export function createIdentityActions({
             throw new IdentityError('no-workspace', 'Join a workspace before pairing a device to it');
           }
           // The sheet's Copy is a click, a gesture the clipboard honours.
-          shown.set(invite.id, showPairLink({link, expiresAt: invite.expiresAt, copy: () => tryCopy(link)}));
+          shown.set(invite.id, showPairLink({link, expiresAt: invite.expiresAt, copy: () => tryCopy(link),
+            cancel: () => { invites.spend(invite.id); closeInvite(invite.id); }}));
           stopPairing ??= every(() => { void askPending(); }, PAIR_POLL_MS);
           await askPending();
         } else if (id === REVOKE_DEVICE && typeof value?.key === 'string') {

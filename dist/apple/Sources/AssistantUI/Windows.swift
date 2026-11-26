@@ -385,6 +385,9 @@ public struct PhoneRoot: View {
                 }
                 .tint(Token.ink)
                 .onChange(of: model.place) { if path.last != model.place { path = [model.place] } }
+                .onChange(of: model.shownItem, initial: true) {
+                    if model.shownItem != nil, path.last != model.place { path = [model.place] }
+                }
                 .sheet(isPresented: $model.showsPanel) {
                     TasksPanel { model.showsPanel = false }
                         .padding(.top, 8)

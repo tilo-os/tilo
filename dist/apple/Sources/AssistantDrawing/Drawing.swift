@@ -197,7 +197,7 @@ public enum Drawing {
 
     public static var supervision: Supervision {
         Supervision(
-            isOn: true, model: "Claude Opus 5.5",
+            state: .active, model: "Claude Opus 5.5",
             usage: Supervision.Usage(messagesToday: 42, tokensToday: 1_800_000, spentTodayMicros: 3_120_000,
                                      dailyLimitMicros: 10_000_000),
             connections: [
