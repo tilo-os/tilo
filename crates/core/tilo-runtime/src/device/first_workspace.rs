@@ -21,9 +21,10 @@ pub(crate) const FOUNDED: &str = "workspace-of-";
 pub(crate) const FOUNDED_NAME: &str = "Home";
 
 /// What the daemon does for its person once their workspace is here: what its start does for a
-/// person whose workspace it already holds.
+/// person whose workspace it already holds. It answers whether it did it: not while this device
+/// keeps no copy of their workspace yet, which leaves it to be done when the copy arrives.
 pub(crate) type Settling = Arc<
-    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>>
+    dyn Fn() -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send>>
         + Send
         + Sync,
 >;
@@ -135,9 +136,22 @@ impl FirstWorkspace {
         let (Some(_), Some(settling)) = (self.get(), self.settling.get().cloned()) else {
             return Ok(());
         };
-        // A settling that failed is not kept as done: the next caller tries it again, and hears
-        // the same refusal until one of them lists this device.
-        self.settled.get_or_try_init(|| settling()).await.cloned()
+        // A settling that failed, or found no copy of the workspace here to list this device in,
+        // is not kept as done: the next caller tries it again. Only a refusal is answered.
+        let settled = self
+            .settled
+            .get_or_try_init(|| async {
+                match settling().await {
+                    Ok(true) => Ok(()),
+                    Ok(false) => Err(None),
+                    Err(error) => Err(Some(error)),
+                }
+            })
+            .await;
+        match settled {
+            Ok(()) | Err(None) => Ok(()),
+            Err(Some(error)) => Err(error),
+        }
     }
 
     /// [`Self::settle`], from a caller that does not run on the runtime.

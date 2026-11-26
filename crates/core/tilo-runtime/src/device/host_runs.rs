@@ -84,14 +84,20 @@ pub(super) fn settling(
         );
         Box::pin(async move {
             let (Some(workspaces), Some(asked)) = (workspaces, asked) else {
-                return Ok(());
+                return Ok(true);
             };
+            // A workspace known here by its name whose copy has not arrived keeps no record to
+            // list this device in: the arrival settles it.
+            let own = super::first_workspace::own_workspace(&cert.user_public_key);
+            if !workspaces.keeps_now(own) {
+                return Ok(false);
+            }
             // Their workspaces, listed now that theirs is held: what this device offers their
             // keys, and what their own tilo reads.
             drop(workspaces.workspaces());
             super::first_workspace::hold_person(workspaces.copies(), &cert).await?;
             asked.serve_at_root((*tickets).clone());
-            Ok(())
+            Ok(true)
         })
     })
 }
