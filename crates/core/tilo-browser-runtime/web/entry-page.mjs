@@ -898,7 +898,12 @@ export async function startEntryPage({mode}) {
     // or restarting) is asked again on the reconnect screen, with backoff,
     // the tries counted across the reloads: nothing the host refused.
     if (!admitted && hostUnreachable(error)) {
-      console.warn('admission: the host did not answer yet, trying again', error?.message);
+      // Where the session stood when it gave up, in its own words: whether it reached the
+      // host at all, and what it last said, so a log tells a host that never answered from
+      // one that answered and never let the page in.
+      console.warn('admission: the host did not answer yet, trying again', error?.message,
+        JSON.stringify({code: error?.code ?? null, phase: error?.phase ?? null, connected: error?.connected ?? null,
+          sessionError: error?.sessionError ?? null, sessionErrorCode: error?.sessionErrorCode ?? null}));
       const {attempt, since} = retryUnreachable();
       const origin = failingHost(error) ?? location.origin;
       await reconnect.wait({error, attempt, since, origin, build: PAGE_BUILD,
