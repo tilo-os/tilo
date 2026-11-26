@@ -1,11 +1,10 @@
 //! The signed keeper's permission for their personal assistant to work on the workspace host.
 //! A conversation shows what the host currently allows and sends only the keeper's chosen request.
 
-use tilo_actions::remote::{InvokeArgument, RemoteActionTarget};
-use tilo_actions::{ActionAddress, InvocationUpdate, MemberId};
+use tilo_actions::remote::InvokeArgument;
+use tilo_actions::{InvocationUpdate, MemberId};
 use tilo_server_protocol::agents::{
-    AGENT_RESOURCE_PREFIX, AGENTS_PROVIDER, AgentGrantStatus, GRANT_STATUS_ACTION, GrantState,
-    REQUEST_ASSISTANT_WORK_GRANT_ACTION, REQUEST_CHAT_GRANT_ACTION, REVOKE_ACTION,
+    AgentGrantAction, AgentGrantReceipt, AgentGrantStatus, GrantState,
 };
 use ui::prelude::*;
 use ui::widget::arrange::Stack;
@@ -16,7 +15,7 @@ use crate::Chat;
 #[derive(Clone)]
 struct Request {
     call: InvocationCall,
-    changed: bool,
+    action: AgentGrantAction,
 }
 
 impl PartialEq for Request {
@@ -34,26 +33,23 @@ struct Access {
     request: LocalState<Request>,
     notice: LocalState<String>,
     managing: LocalState<bool>,
+    comparison_code: LocalState<Option<String>>,
 }
 
-fn call(remote: &RemoteActions, agent: &str, action: &str) -> Request {
-    let target = RemoteActionTarget {
-        provider: AGENTS_PROVIDER.to_owned(),
-        address: ActionAddress::new(format!("{AGENT_RESOURCE_PREFIX}{agent}"), action),
-    };
+fn call(remote: &RemoteActions, agent: &str, action: AgentGrantAction) -> Request {
     Request {
-        call: remote.invoke(target, InvokeArgument::None, None),
-        changed: action != GRANT_STATUS_ACTION,
+        call: remote.invoke(action.target(agent), InvokeArgument::None, None),
+        action,
     }
 }
 
 impl Access {
-    fn ask(&self, action: &str) {
+    fn ask(&self, action: AgentGrantAction) {
         if self.selected.get().as_deref() != Some(self.agent.as_str())
             || ui::invocation_scope::delivered_invocation().is_some()
             || ui::invocation_scope::current_invoker()
                 .is_some_and(|who| who.acting.direct_person() != self.keeper.person_id())
-            || self.request.get().changed
+            || self.request.get().action != AgentGrantAction::Status
         {
             return;
         }
@@ -61,7 +57,7 @@ impl Access {
         self.request.set(call(&self.remote, &self.agent, action));
     }
 
-    fn button(&self, id: &'static str, label: &'static str, action: &'static str) -> Element {
+    fn button(&self, id: &'static str, label: &'static str, action: AgentGrantAction) -> Element {
         let access = self.clone();
         Button::new(id, label)
             .on_effect(move || access.ask(action))
@@ -96,27 +92,26 @@ impl Access {
                 controls = controls.push(self.button(
                     "chat-assistant-grant-refresh",
                     "chat-assistant-grant-refresh",
-                    GRANT_STATUS_ACTION,
+                    AgentGrantAction::Status,
                 ));
-                if status.state == GrantState::Approved {
-                    controls = controls.push(self.button(
-                        "chat-assistant-grant-revoke",
-                        "chat-assistant-grant-revoke",
-                        REVOKE_ACTION,
-                    ));
-                }
+                let withdraw = if status.state == GrantState::Pending {
+                    "chat-assistant-grant-withdraw"
+                } else {
+                    "chat-assistant-grant-revoke"
+                };
+                controls = controls.push(self.button(withdraw, withdraw, AgentGrantAction::Revoke));
             }
             _ => {
                 controls = controls
                     .push(self.button(
                         "chat-assistant-grant-request",
                         "chat-assistant-grant-request",
-                        REQUEST_CHAT_GRANT_ACTION,
+                        AgentGrantAction::RequestChat,
                     ))
                     .push(self.button(
                         "chat-assistant-grant-work",
                         "chat-assistant-grant-work",
-                        REQUEST_ASSISTANT_WORK_GRANT_ACTION,
+                        AgentGrantAction::RequestWork,
                     ));
             }
         }
@@ -126,6 +121,15 @@ impl Access {
                 .with_live(ui::a11y::Politeness::Polite)
                 .into_widget(),
         );
+        if status.state == GrantState::Pending
+            && let Some(code) = self.comparison_code.get()
+        {
+            panel = panel.push(
+                Text::with_args("chat-assistant-grant-code", &[("code", code.into())])
+                    .with_id("chat-assistant-grant-code")
+                    .into_widget(),
+            );
+        }
         if matches!(status.state, GrantState::Pending | GrantState::Approved) {
             let apps = if status.apps.is_empty() {
                 crate::i18n::t("chat-assistant-grant-all-apps")
@@ -190,13 +194,14 @@ pub(super) fn view(cx: &ViewCx<Chat>, selected: &LocalState<Option<String>>) -> 
             keeper: keeper.clone(),
             agent: agent.clone(),
             selected: selection.clone(),
-            request: cx.local(call(&remote, agent, GRANT_STATUS_ACTION)),
+            request: cx.local(call(&remote, agent, AgentGrantAction::Status)),
             notice: cx.local(String::new()),
             managing: cx.local(false),
+            comparison_code: cx.local(None),
         };
         cx.switch(&access.request.clone(), move |cx, request| {
             let access = access.clone();
-            let changed = request.changed;
+            let action = request.action;
             cx.switch(&request.call.state(), move |cx, arrival| {
                 let result = match arrival {
                     Arrival::Ready(InvocationUpdate::Succeeded { output, .. }) => {
@@ -211,14 +216,32 @@ pub(super) fn view(cx: &ViewCx<Chat>, selected: &LocalState<Option<String>>) -> 
                     Arrival::Failed(error) => Err(error.to_string()),
                     _ => return ui::widget::optional(None),
                 };
-                if changed {
-                    if let Err(why) = result {
-                        access.notice.set(why);
+                if action != AgentGrantAction::Status {
+                    match result {
+                        Err(why) => access.notice.set(why),
+                        Ok(_) if action == AgentGrantAction::Revoke => {
+                            access.comparison_code.set(None)
+                        }
+                        Ok(value) => {
+                            let receipt = value.and_then(|value| {
+                                serde_json::from_value::<AgentGrantReceipt>(value.clone()).ok()
+                            });
+                            access.comparison_code.set(
+                                receipt
+                                    .filter(|receipt| {
+                                        receipt.grant == access.agent
+                                            && !receipt.pairing_code.is_empty()
+                                    })
+                                    .map(|receipt| receipt.pairing_code),
+                            );
+                        }
                     }
                     access.managing.set(false);
-                    access
-                        .request
-                        .set(call(&access.remote, &access.agent, GRANT_STATUS_ACTION));
+                    access.request.set(call(
+                        &access.remote,
+                        &access.agent,
+                        AgentGrantAction::Status,
+                    ));
                     return ui::widget::optional(None);
                 }
                 let Some(status) = result.ok().flatten().and_then(|value| {
@@ -226,6 +249,9 @@ pub(super) fn view(cx: &ViewCx<Chat>, selected: &LocalState<Option<String>>) -> 
                 }) else {
                     return ui::widget::optional(None);
                 };
+                if status.state != GrantState::Pending {
+                    access.comparison_code.set(None);
+                }
                 let access = access.clone();
                 cx.switch(&access.managing.clone(), move |_, managing| {
                     access.status(&status, *managing)

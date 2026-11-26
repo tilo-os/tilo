@@ -18,6 +18,9 @@ const REFRESH: &str = "chat-assistant-grant-refresh";
 const WORK: &str = "chat-assistant-grant-work";
 const MANAGE: &str = "chat-assistant-grant-manage";
 const REVOKE: &str = "chat-assistant-grant-revoke";
+const WITHDRAW: &str = "chat-assistant-grant-withdraw";
+const CODE: &str = "chat-assistant-grant-code";
+const APPROVAL_CODE: &str = "012345";
 
 fn wait_for(app: &mut TestApp<ChatShell>, control: &str) {
     assert!(
@@ -37,9 +40,18 @@ fn open_agent(app: &mut TestApp<ChatShell>, agent: &str) {
 
 fn grants_offered(app: &mut TestApp<ChatShell>) -> bool {
     let targets = app.harness().targets();
-    [REQUEST, REFRESH, WORK, MANAGE, REVOKE]
+    [REQUEST, REFRESH, WORK, MANAGE, REVOKE, WITHDRAW, CODE]
         .iter()
         .any(|control| targets.contains_key(*control))
+}
+
+fn shows_approval_code(app: &mut TestApp<ChatShell>) -> bool {
+    app.harness().a11y_nodes().iter().any(|(_, node)| {
+        [node.label(), node.value(), node.description()]
+            .into_iter()
+            .flatten()
+            .any(|text| text.contains(APPROVAL_CODE))
+    })
 }
 
 fn chat_for(person: &Caller) -> TestApp<ChatShell> {
@@ -92,7 +104,8 @@ fn grant_host(person: &Caller, status: &Arc<Mutex<(&'static str, bool)>>) -> Arc
                     Some(json!({}))
                 } else {
                     *current = ("pending", false);
-                    Some(json!({"grant": "first-chat", "pairingCode": "123456"}))
+                    let agent = request.target.address.resource.strip_prefix("agent:").unwrap();
+                    Some(json!({"grant": agent, "pairingCode": APPROVAL_CODE}))
                 }
             }
             _ => None,
@@ -143,10 +156,12 @@ fn the_person_requests_and_retries_execution_access_from_their_own_assistant_dm(
     );
     app.harness().click_named(REQUEST).unwrap();
     wait_for(&mut app, REFRESH);
+    assert!(shows_approval_code(&mut app));
 
     *status.lock().unwrap() = ("denied", false);
     app.harness().click_named(REFRESH).unwrap();
     wait_for(&mut app, REQUEST);
+    assert!(!shows_approval_code(&mut app));
     app.harness().click_named(REQUEST).unwrap();
     wait_for(&mut app, REFRESH);
 
@@ -158,6 +173,7 @@ fn the_person_requests_and_retries_execution_access_from_their_own_assistant_dm(
     app.harness().click_named(REFRESH).unwrap();
     wait_for(&mut app, MANAGE);
     assert!(!app.harness().targets().contains_key(REQUEST));
+    assert!(!shows_approval_code(&mut app));
 
     let calls = host.asked();
     let grants: Vec<_> = calls
@@ -178,6 +194,49 @@ fn the_person_requests_and_retries_execution_access_from_their_own_assistant_dm(
         2,
         "each request requires the keeper's click"
     );
+}
+
+#[test]
+fn only_the_requesting_chat_shows_the_approval_code_and_the_person_can_withdraw() {
+    let person = Caller::authenticated([7; 32], [8; 32]).in_workspace(WORKSPACE);
+    let status = Arc::new(Mutex::new(("missing", false)));
+    let host = grant_host(&person, &status);
+    let _served = ui::RemoteActions::enter(host.clone(), person.clone());
+    let mut app = chat_for(&person);
+    let mine = personal_agent(&mut app, person.acting().person_id().unwrap());
+    open_agent(&mut app, &mine);
+    wait_for(&mut app, REQUEST);
+    app.harness().click_named(REQUEST).unwrap();
+    wait_for(&mut app, CODE);
+    assert!(shows_approval_code(&mut app));
+    app.harness().click_named(WITHDRAW).unwrap();
+    wait_for(&mut app, REQUEST);
+    assert!(!app.harness().targets().contains_key(CODE));
+    assert!(!shows_approval_code(&mut app));
+    assert_eq!(*status.lock().unwrap(), ("revoked", false));
+
+    let calls = host.asked();
+    let revoke = calls
+        .iter()
+        .position(|call| call.target.address.action == "revoke")
+        .unwrap();
+    let agent = format!("agent:{mine}");
+    assert_eq!(calls[revoke].target.address.resource, agent);
+    assert!(calls[revoke + 1..].iter().any(|call| {
+        call.target.address.resource == agent && call.target.address.action == "grant-status"
+    }));
+
+    app.harness().click_named(REQUEST).unwrap();
+    wait_for(&mut app, CODE);
+    app.call_on("chat.workspace/channels/c_chat", "open-channel", json!({}))
+        .unwrap();
+    app.settle();
+    assert!(!grants_offered(&mut app));
+    assert!(!shows_approval_code(&mut app));
+    open_agent(&mut app, &mine);
+    wait_for(&mut app, WITHDRAW);
+    assert!(!app.harness().targets().contains_key(CODE));
+    assert!(!shows_approval_code(&mut app));
 }
 
 #[test]

@@ -11,10 +11,7 @@ use tilo_actions::remote::{
 use tilo_actions::{ActionKind, ExecutionLocus, OperationKind, ResultSpec, RetryPolicy};
 use tilo_agent_session::AgentSupervisor;
 use tilo_server_protocol::WorkspaceId;
-use tilo_server_protocol::agents::{
-    AGENT_RESOURCE_PREFIX, AGENTS_PROVIDER, GRANT_STATUS_ACTION, GrantState,
-    REQUEST_ASSISTANT_WORK_GRANT_ACTION, REQUEST_CHAT_GRANT_ACTION, REVOKE_ACTION,
-};
+use tilo_server_protocol::agents::{AGENTS_PROVIDER, AgentGrantAction, GrantState};
 use tilo_user_identity::DeviceCert;
 
 use super::{RosterProvisioning, personal_entry};
@@ -103,12 +100,12 @@ fn grant_page(
     entry: &tilo_workspace_agent::Agent,
     state: GrantState,
 ) -> CataloguePage {
-    let resource = format!("{AGENT_RESOURCE_PREFIX}{}", entry.id.0);
-    let row = |action: &str, label: &str, description: &str, kind: ActionKind| {
+    let row = |action: AgentGrantAction, label: &str, description: &str, kind: ActionKind| {
+        let target = action.target(&entry.id.0);
         let offer = Offer {
-            resource: &resource,
+            resource: &target.address.resource,
             resource_kind: "agent.grant",
-            action,
+            action: &target.address.action,
             label,
             description: Some(description),
             kind,
@@ -128,13 +125,13 @@ fn grant_page(
             schema: grant_result(action),
         };
         CatalogueRow::for_action(
-            AGENTS_PROVIDER,
+            &target.provider,
             AGENTS_PROVIDER,
             offered.descriptor(ExecutionLocus::ServerPreferred),
         )
     };
     let mut rows = vec![row(
-        GRANT_STATUS_ACTION,
+        AgentGrantAction::Status,
         "Read assistant access",
         "Read the Chat signing session's readiness, approved apps and expiry.",
         ActionKind::Read,
@@ -142,15 +139,15 @@ fn grant_page(
     match state {
         GrantState::Approved | GrantState::Pending => {
             rows.push(row(
-                REVOKE_ACTION,
+                AgentGrantAction::Revoke,
                 "Revoke assistant access",
                 "Withdraw this assistant's signing grant in this workspace.",
                 ActionKind::Outside,
             ));
         }
         GrantState::Missing | GrantState::Denied | GrantState::Expired | GrantState::Revoked => {
-            rows.push(row(REQUEST_CHAT_GRANT_ACTION, "Request Chat access", "Ask your approving device to allow this assistant to reply in Chat in this workspace.", ActionKind::Outside));
-            rows.push(row(REQUEST_ASSISTANT_WORK_GRANT_ACTION, "Request assistant work access", "Ask your approving device to allow Chat, Tasks, Assistant and Shortcuts in this workspace.", ActionKind::Outside));
+            rows.push(row(AgentGrantAction::RequestChat, "Request Chat access", "Ask your approving device to allow this assistant to reply in Chat in this workspace.", ActionKind::Outside));
+            rows.push(row(AgentGrantAction::RequestWork, "Request assistant work access", "Ask your approving device to allow Chat, Tasks, Assistant and Shortcuts in this workspace.", ActionKind::Outside));
         }
     }
     let revision = blake3::hash(&serde_json::to_vec(&rows).unwrap_or_default())
@@ -160,9 +157,9 @@ fn grant_page(
 }
 
 /// The return value of each published grant action, available to clients browsing its contract.
-fn grant_result(action: &str) -> serde_json::Value {
+fn grant_result(action: AgentGrantAction) -> serde_json::Value {
     match action {
-        GRANT_STATUS_ACTION => json!({
+        AgentGrantAction::Status => json!({
             "type": "object",
             "properties": {
                 "state": {"enum": [GrantState::Missing, GrantState::Pending, GrantState::Approved,
@@ -173,8 +170,8 @@ fn grant_result(action: &str) -> serde_json::Value {
             },
             "required": ["state", "ready", "apps", "expiresAtMs"]
         }),
-        REVOKE_ACTION => json!({"type": "object", "maxProperties": 0}),
-        _ => json!({
+        AgentGrantAction::Revoke => json!({"type": "object", "maxProperties": 0}),
+        AgentGrantAction::RequestChat | AgentGrantAction::RequestWork => json!({
             "type": "object",
             "properties": {"grant": {"type": "string"}, "pairingCode": {"type": "string"}},
             "required": ["grant", "pairingCode"]

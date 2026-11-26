@@ -13,11 +13,11 @@
 //!
 //! | Resource | Action | Argument | Answer |
 //! |---|---|---|---|
-//! | [`SUPERVISOR_RESOURCE`] | [`REQUEST_GRANT_ACTION`] | [`RosterGrantRequest`] JSON | `{grant, pairingCode}` |
+//! | [`SUPERVISOR_RESOURCE`] | [`REQUEST_GRANT_ACTION`] | [`RosterGrantRequest`] JSON | [`AgentGrantReceipt`] |
 //! | `agent:<id>` | [`REVOKE_ACTION`] | none | `{}` |
 //! | `agent:<id>` | [`GRANT_STATUS_ACTION`] | none | [`AgentGrantStatus`] |
-//! | `agent:<id>` | [`REQUEST_CHAT_GRANT_ACTION`] | none | `{grant, pairingCode}` |
-//! | `agent:<id>` | [`REQUEST_ASSISTANT_WORK_GRANT_ACTION`] | none | `{grant, pairingCode}` |
+//! | `agent:<id>` | [`REQUEST_CHAT_GRANT_ACTION`] | none | [`AgentGrantReceipt`] |
+//! | `agent:<id>` | [`REQUEST_ASSISTANT_WORK_GRANT_ACTION`] | none | [`AgentGrantReceipt`] |
 //!
 //! A grant is approved on a root-holding device in one step: the host queues a certification
 //! request for a fresh agent key carrying the [`crate::delegation::DelegateProposal`], and the
@@ -41,6 +41,49 @@ pub const GRANT_STATUS_ACTION: &str = "grant-status";
 pub const REQUEST_CHAT_GRANT_ACTION: &str = "request-chat-grant";
 /// Ask to allow Chat, Tasks, Assistant and Shortcuts in the keeper's workspace.
 pub const REQUEST_ASSISTANT_WORK_GRANT_ACTION: &str = "request-assistant-work-grant";
+
+/// The workspace host's operations on one personal assistant's signing permission.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentGrantAction {
+    Status,
+    RequestChat,
+    RequestWork,
+    Revoke,
+}
+
+impl AgentGrantAction {
+    /// The action word its catalogue publishes.
+    #[must_use]
+    pub const fn id(self) -> &'static str {
+        match self {
+            Self::Status => GRANT_STATUS_ACTION,
+            Self::RequestChat => REQUEST_CHAT_GRANT_ACTION,
+            Self::RequestWork => REQUEST_ASSISTANT_WORK_GRANT_ACTION,
+            Self::Revoke => REVOKE_ACTION,
+        }
+    }
+
+    /// The signed action for `agent` in the caller's workspace.
+    #[must_use]
+    pub fn target(self, agent: &str) -> tilo_actions::remote::RemoteActionTarget {
+        tilo_actions::remote::RemoteActionTarget {
+            provider: AGENTS_PROVIDER.into(),
+            address: tilo_actions::ActionAddress::new(
+                format!("{AGENT_RESOURCE_PREFIX}{agent}"),
+                self.id(),
+            ),
+        }
+    }
+}
+
+/// What a grant request returns to its originating device for comparison with the approver.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentGrantReceipt {
+    /// The roster agent the host prepared this signing request for.
+    pub grant: String,
+    pub pairing_code: String,
+}
 
 /// A grant as the host asks it of the approver: the roster entry's name, colour, workspaces,
 /// apps and lifetime.

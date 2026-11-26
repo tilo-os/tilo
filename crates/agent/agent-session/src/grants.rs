@@ -24,8 +24,8 @@ use tilo_actions::remote::{
 use tilo_lock::MutexRecover as _;
 use tilo_server_protocol::WorkspaceId;
 use tilo_server_protocol::agents::{
-    AgentGrantStatus, GrantRequest, GrantState, REQUEST_ASSISTANT_WORK_GRANT_ACTION,
-    REQUEST_CHAT_GRANT_ACTION, parse_color_hex,
+    AgentGrantReceipt, AgentGrantStatus, GrantRequest, GrantState,
+    REQUEST_ASSISTANT_WORK_GRANT_ACTION, REQUEST_CHAT_GRANT_ACTION, parse_color_hex,
 };
 use tilo_server_protocol::delegation::{
     Delegate, DelegateProposal, DelegateScope, Delegation, MAX_DELEGATE_TEXT_BYTES,
@@ -485,7 +485,10 @@ impl AgentSupervisor {
                 )
                 .map_err(refused)?;
             Ok(ActionOutput {
-                value: Some(serde_json::json!({"grant": agent, "pairingCode": pairing_code})),
+                value: Some(serde_json::json!(AgentGrantReceipt {
+                    grant: agent.to_owned(),
+                    pairing_code
+                })),
                 resources: Vec::new(),
             })
         })
