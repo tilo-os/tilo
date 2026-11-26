@@ -433,10 +433,9 @@ impl Peer {
     /// Start `app` through the session's daemon, as a person's window starts: the launch the
     /// installed package names, with its sandbox and grants.
     ///
-    /// A development loop starts one instance, so it asks for a plain start (`presentation:
-    /// false`) at the daemon's native endpoint. The presentation start first brings a running
-    /// window forward, which the daemon asks of itself over a second connection that the first
-    /// launch of a session has not yet admitted.
+    /// It asks for the app's default presentation, which is what a developer starts a loop to
+    /// see: the app's window, drawn. A start that showed no window would run the app as an
+    /// instance beside the desktop, with nothing to look at and no frame to time.
     pub(crate) fn start_app(&self, _bin: &Path, app: &str) -> Result<(), String> {
         let socket = self
             .control
@@ -456,7 +455,7 @@ impl Peer {
                 "native": runtime_portal::native::LAUNCH,
                 "app_id": app,
                 "workspace": workspace,
-                "presentation": false,
+                "presentation": true,
             }),
         )?;
         match answer.get("error").and_then(serde_json::Value::as_str) {
