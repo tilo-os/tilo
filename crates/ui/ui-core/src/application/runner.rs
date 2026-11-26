@@ -305,13 +305,23 @@ impl NativeProcessEnvironment {
                 .filter(|value| !value.is_empty())
                 .map(PathBuf::from)
         }
+        fn trimmed(value: Option<&String>) -> Option<String> {
+            value
+                .map(|value| value.trim().to_owned())
+                .filter(|value| !value.is_empty())
+        }
+        // The workspace a window is in, and how it takes part there, are the launcher's: one in
+        // another process writes them to the environment, and a process that is its own launcher
+        // installs them with the connection it hands its window
+        // ([`crate::launch::hand_connection`]).
+        let launched = crate::process::environment();
         Self {
             package_id: string("TILO_PACKAGE_ID"),
             surface: path(crate::app_surface::SURFACE_FILE_ENV),
             surface_hash: string(crate::app_surface::SURFACE_HASH_ENV),
             quick_app_id: string("QUICK_APP_ID"),
-            workspace_id: string("TILO_WORKSPACE_ID"),
-            participation: string("TILO_PARTICIPATION"),
+            workspace_id: trimmed(launched.identity.workspace_id.as_ref()),
+            participation: trimmed(launched.identity.participation.as_ref()),
             continuity_instance: string("TILO_CONTINUITY_INSTANCE"),
             documents: None,
             xdg_data_home: path("XDG_DATA_HOME"),

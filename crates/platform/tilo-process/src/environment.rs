@@ -48,6 +48,8 @@ pub struct ProcessIdentity {
     pub account_name: Option<String>,
     pub continuity_resume: Option<ContinuationMetadata>,
     pub continuity_instance: Option<String>,
+    /// How the launcher admitted the process to its workspace: `author` or `read-only`.
+    pub participation: Option<String>,
     /// The launcher configured a collaboration service for this process, so
     /// its absence is a failure rather than a standalone launch.
     pub collab_service_configured: bool,
