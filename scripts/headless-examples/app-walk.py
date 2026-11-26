@@ -349,9 +349,14 @@ class MachineFiles:
     #: How long the machine may take to start its daemon: the session mints an identity first.
     START_WITHIN = 300.0
 
-    def __init__(self, state: Path, out: Path):
+    def __init__(self, state: Path, out: Path, apps: str = "",
+                 tapps: list[Path] | tuple = ()):
         self.state = state
         self.out = out
+        #: The session's apps and the walk's tilolang packages, which the daemon serves from
+        #: its own store.
+        self.apps = apps
+        self.tapps = list(tapps)
         self.account = real_apps.session_account()
         self.proc: subprocess.Popen | None = None
         self.log = None
@@ -600,9 +605,14 @@ class MachineDaemon:
     #: shell's link is handed out.
     START_WITHIN = 120.0
     LINK_WITHIN = 180.0
-    def __init__(self, state: Path, out: Path):
+    def __init__(self, state: Path, out: Path, apps: str = "",
+                 tapps: list[Path] | tuple = ()):
         self.state = state
         self.out = out
+        #: The session's apps and the walk's tilolang packages, which the daemon serves from
+        #: its own store.
+        self.apps = apps
+        self.tapps = list(tapps)
         self.account = real_apps.session_account()
         self.proc: subprocess.Popen | None = None
         self.log = None
@@ -642,24 +652,23 @@ class MachineDaemon:
         self.PROFILE.chmod(0o700)
         logs = self.out / "logs"
         logs.mkdir(parents=True, exist_ok=True)
+        system, publishers = self._own_store()
         env = {**os.environ,
                # The unit's own environment, over the walk's identity root.
                "HOME": str(self.PROFILE),
                "TILO_IDENTITY_ROOT": str(self.state / "identity"),
-               # The session's system store, runtimes and trusted publishers are the image's
-               # (/usr/share/tilo-apps and the rest on a device): the daemon serves the person's
-               # apps from them, and with none it lists no app installed.
-               "TILO_APPS_SYSTEM_DIR": str(self.state / "system"),
-               # The person's apps are the daemon's own store on a device, where each
-               # `workspace/apps#install` lands; the walk installs them into the session's
-               # store (`nested-session.sh`), so that store is the daemon's here. Without it
-               # the daemon reads an empty one of its own and offers none of them.
-               "TILO_APPS_DATA_DIR": str(self.state / "apps"),
-               "TILO_RUNTIME_BUNDLE_DIR": str(self.state / "runtimes"),
-               "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE":
-                   str(self.state / "keys/runtime-publishers.txt"),
+               # The image's system store, which every account reads (/usr/share/tilo-apps on
+               # a device), and the publishers the image trusts.
+               "TILO_APPS_SYSTEM_DIR": str(system),
+               "TILO_LAUNCHER_TRUSTED_PUBLISHERS_FILE": str(publishers),
                "XDG_RUNTIME_DIR": str(self.RUNTIME),
                "RUST_LOG": os.environ.get("RUST_LOG", "warn,tilo_runtime=info")}
+        # The daemon's runtimes and the person's apps are its own store's, in its profile's data
+        # directory (the XDG_DATA_HOME its profile sets), as on a device: it never reads the
+        # person's private state, which a process it starts in a sandbox of its own could not
+        # reach.
+        for name in ("TILO_APPS_DATA_DIR", "TILO_RUNTIME_BUNDLE_DIR", "XDG_DATA_HOME"):
+            env.pop(name, None)
         self.log = (logs / "machine-daemon.log").open("w")
         self.proc = subprocess.Popen([str(BUILD / "bin/tilo-runtime"),
                                       "--profile", str(self.PROFILE)],
@@ -668,6 +677,52 @@ class MachineDaemon:
         until("the machine's device daemon",
               lambda: self.NATIVE.exists()
               or (self.proc.poll() is not None and self._died()), self.START_WITHIN, 0.1)
+
+    #: Where the daemon keeps what a device's image ships beside it: the system store (the
+    #: image's /usr/share/tilo-apps) and the publishers it trusts, outside its profile, which
+    #: each start begins anew.
+    IMAGE = Path("/var/lib/tilo/walk-image")
+
+    def _own_store(self) -> tuple[Path, Path]:
+        """Put what the session prepared into the daemon's own directories, as a device's image
+        and the daemon's own installs put them: the runtimes and installed apps in its
+        profile's data directory, the system store and the trusted publishers in a directory of
+        the image's, each the daemon's account's. The session prepared them in
+        the person's state, which is the person's alone (0700); a device's daemon reads none
+        of it. The session's apps and the walk's packages are installed first, so the store
+        holds every app the person has. Answers the system store and the publishers file."""
+        # Everything the session will run installed first, as its own start installs it, so the
+        # copy below holds every app the person has, not only those an earlier step prepared.
+        argv = [str(real_apps.SESSION), "--no-build", "--prepare-only", "--headless",
+                "--apps", self.apps, "--state", str(self.state)]
+        for tapp in self.tapps:
+            argv += ["--install-tapp", str(tapp)]
+        run(argv, cwd=real_apps.REPO)
+        data = self.PROFILE / "data"
+        runtimes, apps = data / "tilo-runtime", data / "tilo-apps"
+        if self.IMAGE.exists():
+            shutil.rmtree(self.IMAGE)
+        system, publishers = self.IMAGE / "system", self.IMAGE / "keys/runtime-publishers.txt"
+        for source, target in ((self.state / "runtimes", runtimes),
+                               (self.state / "apps", apps),
+                               (self.state / "system", system)):
+            if source.is_dir():
+                shutil.copytree(source, target, symlinks=True)
+            else:
+                target.mkdir(parents=True, exist_ok=True)
+        publishers.parent.mkdir(parents=True, exist_ok=True)
+        if (self.state / "keys/runtime-publishers.txt").is_file():
+            shutil.copyfile(self.state / "keys/runtime-publishers.txt", publishers)
+        else:
+            publishers.touch()
+        for root in (data, self.IMAGE):
+            for path in [root, *root.rglob("*")]:
+                os.chown(path, 0, 0, follow_symlinks=False)
+                if not path.is_symlink():
+                    path.chmod(path.stat().st_mode | (0o555 if path.is_dir() else 0o444))
+        # The profile's directories are the daemon's alone, as it makes them itself.
+        data.chmod(0o700)
+        return system, publishers
 
     def _died(self):
         said = self.log_path().read_text(errors="replace") if self.log_path().is_file() else ""
@@ -3263,7 +3318,7 @@ class Walk:
             tapps = self.tapps()
             began = time.monotonic()
             machine = MachineFiles(self.state, self.out)
-            daemon = MachineDaemon(self.state, self.out)
+            daemon = MachineDaemon(self.state, self.out, apps_of(spec, self.variant), tapps)
             env = {**first_device_env(self.state, spec), **daemon.start()}
             trouble = lambda: machine.failure() or daemon.failure()  # noqa: E731
             # The person signs in before the machine's files daemon asks the device anything:
@@ -4016,7 +4071,7 @@ def main() -> int:
                 tapps = [build_tapp(package, out / "build" / variant, state) for package in packages]
                 session = Session(state)
                 machine = MachineFiles(state, out)
-                daemon = MachineDaemon(state, out)
+                daemon = MachineDaemon(state, out, apps, tapps)
                 env = {**first_device_env(state, first), **daemon.start()}
                 trouble = lambda: machine.failure() or daemon.failure()  # noqa: E731
                 # The person signs in before the machine's files daemon asks the device
