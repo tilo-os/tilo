@@ -91,7 +91,7 @@ fn edit(
         key.verifying_key().to_bytes().to_vec(),
     ));
     let before = doc.get_heads();
-    doc.put(ROOT, "by agent", true).unwrap();
+    doc.put(ROOT, "by agent", cert.device_label.as_str()).unwrap();
     let invocation = InvocationId::new();
     let mut request = InvokeRequest {
         invocation,
@@ -655,14 +655,18 @@ fn one_agent_on_two_devices_is_one_agent_in_permissions_and_in_history() {
     }
 
     // The certificate's grant bounds where the agent acts: a key granted another workspace alone
-    // acts in none here, whether or not its redemption was taken.
+    // is not listed here, and acts in none.
+    assert!(!admitted, "a key granted another workspace is not listed here");
     assert!(
         peer.permissions(elsewhere.1.device_public_key, now)
             .is_err(),
-        "a grant for another workspace reaches none here (redeemed: {admitted})"
+        "a grant for another workspace reaches none here"
     );
 
     // History: what either key writes as that agent is taken as that agent's.
+    let seeded = AutoCommit::load(&peer.document("test.app", "tab:1").unwrap())
+        .unwrap()
+        .get_heads();
     for (key, cert) in [&laptop, &phone] {
         let mut own = peer.clone();
         let message = edit(&mut own, (key, cert), now);
@@ -680,7 +684,7 @@ fn one_agent_on_two_devices_is_one_agent_in_permissions_and_in_history() {
     }
     let mut doc = AutoCommit::load(&peer.document("test.app", "tab:1").unwrap()).unwrap();
     let invokers: Vec<_> = doc
-        .get_changes(&[])
+        .get_changes(&seeded)
         .into_iter()
         .filter_map(|change| change.message().map(str::to_owned))
         .filter_map(|message| tilo_actions::ActionContext::from_change_message(&message))

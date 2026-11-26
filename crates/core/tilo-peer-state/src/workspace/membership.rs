@@ -1255,6 +1255,19 @@ fn identities(
                 "device {device} is listed under another person than its writer's"
             )));
         }
+        // An agent's key is listed only where its certificate's grant reaches: listed anywhere
+        // else, it would hold the workspace's keys with no access to read what they open.
+        if identity
+            .device_cert
+            .capabilities
+            .agent
+            .as_ref()
+            .is_some_and(|scope| !scope.reaches(&held.workspace))
+        {
+            return Err(MembershipRefusal::Refused(format!(
+                "device {device} is an agent's key its certificate does not grant this workspace"
+            )));
+        }
         if wanted.role_of(&person).is_none() && !invited.contains_key(&person) {
             return Err(MembershipRefusal::Refused(format!(
                 "device {device} is not of a member"
