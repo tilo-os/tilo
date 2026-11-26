@@ -168,6 +168,12 @@ pub trait Publication {
     fn update(&self);
     /// Whether documents are still being read off the frame.
     fn pending(&self) -> bool;
+    /// Whether the store moved since what is published was last brought up to date: a write
+    /// the window's own actions made tells the frame nothing else, and what is published, the
+    /// label and availability each action offers on its target among it, must follow it.
+    fn behind(&self) -> bool {
+        false
+    }
     /// Bring what is published up to date, waiting for the documents being read off the frame:
     /// for an embedder with no frame to take them in on, which reads what is published once it
     /// covers the document. Whether what is published changed.
@@ -2837,7 +2843,11 @@ impl Instance {
             }
             self.send_bound(Level::Root);
             self.send_bound(Level::Detail);
-        } else if let Some(publication) = self.publication.as_ref().filter(|p| p.pending()) {
+        } else if let Some(publication) = self
+            .publication
+            .as_ref()
+            .filter(|p| p.pending() || p.behind())
+        {
             publication.update();
         }
         self.poll_views();
@@ -2855,11 +2865,18 @@ impl Instance {
     }
 
     /// Whether a frame has work the window has not seen: a change no sync has sent it yet
-    /// (`moved`), a write the declared effects owe ([`Self::settle_owed`]), or work under way off the
-    /// frame ([`Self::pending`]). A window that owes one syncs before it rests.
+    /// (`moved`), a write the declared effects owe ([`Self::settle_owed`]), work under way off the
+    /// frame ([`Self::pending`]), or a write what is published has not taken in yet (one the
+    /// window's own actions made). A window that owes one syncs before it rests.
     #[must_use]
     pub fn owes_a_frame(&self) -> bool {
-        self.moved || self.settle_owed() || self.pending()
+        self.moved
+            || self.settle_owed()
+            || self.pending()
+            || self
+                .publication
+                .as_ref()
+                .is_some_and(|publication| publication.behind())
     }
 
     /// Whether the declared effects owe a settlement a frame would take in: only a live window

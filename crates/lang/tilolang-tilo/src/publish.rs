@@ -1995,6 +1995,19 @@ impl Publications {
         self.visited
     }
 
+    /// Whether what is published is behind what [`Self::update`] would read from `host`: the
+    /// store moved since the last update took in what moved (a write the window made itself, a
+    /// task checked off at its palette or an invocation it ran, as much as one another device
+    /// made), the words it is published in read in another language now, or the packages
+    /// loaded changed. What it offers of each action is behind with it until the next update.
+    #[must_use]
+    pub fn behind(&self, host: &crate::host::Host) -> bool {
+        self.fresh
+            || self.watch.moved()
+            || host.runtime().words().revision() != self.words
+            || host.package_ids() != self.packages
+    }
+
     /// How many updates have seen a change in the workspace, whether or not it changed what a
     /// document is published as: what an action's availability, and only it, reads besides.
     #[must_use]

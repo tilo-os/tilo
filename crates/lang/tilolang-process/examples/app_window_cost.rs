@@ -56,6 +56,10 @@ impl Publication for Published {
         // Nothing is read off the frame: the store answers every read as it is made.
         false
     }
+
+    fn behind(&self) -> bool {
+        self.publications.borrow().behind(&self.host)
+    }
 }
 
 /// Shares the toolkit's locale/format globals; `now` is pinned below so the instance's runtime

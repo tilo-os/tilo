@@ -2290,40 +2290,6 @@ fn texts(node: &tilo_app_window::UiNode, out: &mut Vec<String>) {
     }
 }
 
-/// Whether a box a row of the window shows is checked: the box the open task's row draws, bound
-/// to the field the app keeps it in.
-fn a_checked_row_box(session: &mut Session) -> bool {
-    fn boxes(node: &tilo_app_window::UiNode, out: &mut Vec<String>) {
-        if node.kind == "ui.Checkbox" {
-            out.push(node.key.clone());
-        }
-        for child in &node.children {
-            boxes(child, out);
-        }
-    }
-    let mut keys = Vec::new();
-    {
-        let view = session.hosted().view().expect("the window is connected");
-        for list in view.lists() {
-            if list.starts_with(tilo_app_window::shell::DETAIL) {
-                continue;
-            }
-            let rows = view.rows_of(&list).expect("the list's rows");
-            let rows = rows.borrow();
-            for key in rows.rendered() {
-                boxes(rows.row(&key).expect("a rendered row"), &mut keys);
-            }
-        }
-    }
-    let view = session.hosted().view().expect("the window is connected");
-    keys.iter().any(|key| {
-        matches!(
-            view.bound_value(key),
-            Some(tilo_app_window::Value::Bool(true))
-        )
-    })
-}
-
 /// The accessible nodes of the window, each with the widget that draws it.
 fn accessible(session: &mut Session) -> Vec<ui::a11y::AccessNode> {
     let snapshot = session.window.harness().inspection();
@@ -2591,17 +2557,57 @@ fn a_chosen_action_runs_at_the_app_and_the_task_offers_its_own() {
     assert_eq!(complete.1.as_deref(), Some("Ctrl+enter"));
 
     assert!(
-        !a_checked_row_box(&mut session),
+        !the_opened_tasks_box_is_checked(&mut session),
         "the task starts unchecked"
     );
-    // Running it there checks the task off at the app: the row the window holds for it, on the
-    // same document the palette wrote, shows its box checked.
+    // Running it there checks the task off at the app: the task's page, opened beside the list
+    // and on the same document the palette wrote, shows its box checked. (Today lists what is
+    // left to do, so the finished task leaves the list itself.)
     choose(&mut session, "Complete");
     assert!(
-        a_checked_row_box(&mut session),
-        "the task the palette ran Complete on shows checked: it is done in the workspace {}",
-        task_in_workspace(&session, "Water the plants", true)
+        task_in_workspace(&session, "Water the plants", true),
+        "Complete marked the task done in the workspace"
     );
+    assert!(
+        the_opened_tasks_box_is_checked(&mut session),
+        "the task the palette ran Complete on shows checked"
+    );
+    // And what the window offers of the task follows it: a finished task is opened again, never
+    // finished a second time, at the same key.
+    let actions = offered(&mut session);
+    let reopen = actions
+        .iter()
+        .find(|(label, _)| label == "Reopen")
+        .unwrap_or_else(|| panic!("the finished task offers Reopen: {actions:?}"));
+    assert_eq!(reopen.1.as_deref(), Some("Ctrl+enter"));
+    assert!(
+        !actions.iter().any(|(label, _)| label == "Complete"),
+        "the finished task is no longer offered Complete: {actions:?}"
+    );
+}
+
+/// Whether the page of the task the window has open, beside its list, shows the task's box
+/// checked.
+fn the_opened_tasks_box_is_checked(session: &mut Session) -> bool {
+    fn boxes(node: &tilo_app_window::UiNode, out: &mut Vec<String>) {
+        if node.kind == "ui.Checkbox" && node.key.starts_with(tilo_app_window::shell::DETAIL) {
+            out.push(node.key.clone());
+        }
+        for child in &node.children {
+            boxes(child, out);
+        }
+    }
+    let view = session.hosted().view().expect("the window is connected");
+    let mut keys = Vec::new();
+    if let Some(shown) = view.composed() {
+        boxes(shown, &mut keys);
+    }
+    keys.iter().any(|key| {
+        matches!(
+            view.bound_value(key),
+            Some(tilo_app_window::Value::Bool(true))
+        )
+    })
 }
 
 /// The window's command palette as captured, when shots are asked for with

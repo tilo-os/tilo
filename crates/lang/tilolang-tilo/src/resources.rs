@@ -519,6 +519,12 @@ impl Watch {
     pub fn peek(&self) -> Moved {
         self.0.borrow().clone()
     }
+
+    /// Whether anything moved since the last take, without copying what.
+    #[must_use]
+    pub fn moved(&self) -> bool {
+        !self.0.borrow().is_empty()
+    }
 }
 
 /// What was read of one resource's history: all of it, or one of its ends.

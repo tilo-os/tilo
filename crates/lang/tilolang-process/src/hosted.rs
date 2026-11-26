@@ -425,6 +425,10 @@ impl Publication for Held {
         false
     }
 
+    fn behind(&self) -> bool {
+        self.0.publications.borrow().behind(&self.0.host)
+    }
+
     fn settle(&self) -> bool {
         self.0.update();
         false
