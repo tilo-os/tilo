@@ -128,8 +128,10 @@ fn a_members_device_takes_what_its_role_lets_it() {
         let collab_types::store::wire::Reply::Resource(Some(task)) = read else {
             panic!("a viewer reads the task: {read:?}");
         };
+        let title = task.scalar("title");
+        let status = task.scalar("status");
         assert_eq!(
-            task.scalar("title"),
+            title,
             collab_types::store::Value::from("First"),
             "the viewer reads the task's fields"
         );
@@ -153,6 +155,29 @@ fn a_members_device_takes_what_its_role_lets_it() {
         assert!(
             refused(&created),
             "a commenter creates no issue: {created:?}"
+        );
+        // The owner's task is as it was: nothing the refusals asked reached it.
+        let read = host
+            .daemon()
+            .workspaces()
+            .read_store_as(
+                &workspace,
+                &viewer.person(),
+                &collab_types::store::wire::Command::Get {
+                    kind: "tl.so.tilo.tasks.Task".to_owned(),
+                    id: issue.clone(),
+                },
+            )
+            .await
+            .expect("the viewer's copy answers a read");
+        let collab_types::store::wire::Reply::Resource(Some(task)) = read else {
+            panic!("the owner's task reads back: {read:?}");
+        };
+        assert_eq!(task.scalar("title"), title, "the task's title is unchanged");
+        assert_eq!(
+            task.scalar("status"),
+            status,
+            "the task's status is unchanged"
         );
         // A comment on a task is the system's discussion, not Tasks' own: Discussion's `comment`,
         // made from the task it is about, which puts it in that task's thread. Discussion keeps
