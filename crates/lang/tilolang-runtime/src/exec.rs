@@ -1985,7 +1985,7 @@ impl Core {
                 txn,
                 action: action.clone(),
                 primary,
-                invoker: ctx.invoker.clone(),
+                invoker: ctx.invoker,
                 suggestions: Vec::new(),
                 queued: Vec::new(),
                 scenario: meta.scenario,

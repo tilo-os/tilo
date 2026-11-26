@@ -358,6 +358,10 @@ pub trait DeliveryHost<O>: Send + Sync {
 ///
 /// # Errors
 /// Why the invocation was not delivered.
+#[expect(
+    clippy::too_many_lines,
+    reason = "the wait's every way of waking is one loop, read in the order it decides"
+)]
 pub async fn deliver_or_launch<E: Send, O: Sync, T: Send>(
     publishers: &Publishers<E>,
     launcher: Option<&dyn LauncherServices>,
