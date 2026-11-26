@@ -164,8 +164,10 @@ fn a_write_under_the_oldest_of_many_issues_lands() {
                         made[0]
                             .as_str()
                             .and_then(|task| task.strip_prefix("tl:so.tilo.tasks:"))
-                            .map(|id| format!("so.tilo.tasks/{id}"))
-                            .unwrap_or_else(|| panic!("a task the workspace keeps: {}", made[0]))
+                            .map_or_else(
+                                || panic!("a task the workspace keeps: {}", made[0]),
+                                |id| format!("so.tilo.tasks/{id}"),
+                            )
                     );
                 }
             }
