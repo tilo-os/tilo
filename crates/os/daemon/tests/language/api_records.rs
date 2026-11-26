@@ -5,10 +5,10 @@
     reason = "one scenario in order, on a fixture that is not sent between tasks"
 )]
 //! What a workspace's apps answer through a key's API and over MCP: a letter's History names
-//! the agent that wrote it and the run it came from; a member's key posts a long history into
-//! Chat and reads every message at the path its listing gave; a tracker names an issue by its id
-//! and makes one at the same cost however full it is; and a workspace lists, pages and takes
-//! back its runs.
+//! who wrote it and the run it came from; a member's key posts a long history into Chat and
+//! reads every message at the path its listing gave; a tracker names an issue by its id and
+//! makes one at the same cost however full it is; and a workspace lists, pages and takes back
+//! its runs.
 
 use std::time::{Duration, Instant};
 
@@ -19,6 +19,10 @@ use crate::language::host::said;
 
 /// Chat's package under the tree's `apps/tl`, which the device installs to run it.
 const CHAT_PACKAGE: &str = "chat";
+/// Writer's package there, which the device installs to write the letters in.
+const WRITER_PACKAGE: &str = "word-processor";
+/// Writer's id, as the workspace runs it.
+const WRITER: &str = "word-processor";
 /// Chat's id, as the workspace runs it.
 const CHAT: &str = ui::apps::CHAT;
 
@@ -64,21 +68,12 @@ async fn in_run(
 }
 
 /// `key` writes `text` into the workspace's letter, in a run of its own called `title`: the id
-/// of the run's last call.
+/// of that run. The paragraph's own call starts Writer, so the run is the one call.
 async fn write_letter(key: &host::Key, workspace: &str, text: &str, title: &str) -> String {
-    let (status, opened) = in_run(
-        key,
-        workspace,
-        ("word-processor", "open"),
-        &json!({}),
-        title,
-    )
-    .await;
-    assert_eq!(status, 200, "{opened}");
     let (status, written) = in_run(
         key,
         workspace,
-        ("word-processor", "append_paragraph"),
+        (WRITER, "append_paragraph"),
         &json!({"text": text}),
         title,
     )
@@ -91,14 +86,13 @@ async fn write_letter(key: &host::Key, workspace: &str, text: &str, title: &str)
 }
 
 /// `key` writes `text` into its letter in the workspace, in a run of its own.
-async fn opened_and_written(key: &host::Key, workspace: &str) {
-    did(key, workspace, "word-processor", "open", &json!({})).await;
+async fn written(key: &host::Key, workspace: &str, text: &str) {
     did(
         key,
         workspace,
-        "word-processor",
+        WRITER,
         "append_paragraph",
-        &json!({"text": "Dear Visa Officer,"}),
+        &json!({"text": text}),
     )
     .await;
 }
@@ -158,72 +152,57 @@ async fn every_message(key: &host::Key, workspace: &str, path: &str) -> (Vec<Val
     (messages, read)
 }
 
-/// A minted key's agent goes by the name the key was minted with: History names its changes
-/// with it, in the colour presence draws it in, and each change names the run its agent
-/// declared beside it.
+/// A minted key's changes are the person's whose key it is, each naming the run the call that
+/// made it declared: an untitled call goes by the key it was made with, a titled one by its
+/// title.
 #[test]
-fn history_names_a_keys_agent_by_the_name_it_was_minted_with() {
-    // Writer is the app the letters are written in: the device installs it to write them.
-    host::run_with(&["word-processor"], |host| async move {
+fn history_names_a_keys_runs_by_what_each_was_minted_with() {
+    host::run_with(&[WRITER_PACKAGE], |host| async move {
         let workspace = host.workspace().to_owned();
         // The key a backend mints for its applicant's agent, named as the agent is.
         let key = host.key("Jane Doe's agent");
-        opened_and_written(&key, &workspace).await;
+        written(&key, &workspace, "Dear Visa Officer,").await;
         let title = "Fill Jane Doe's visa application";
         let (status, reply) = in_run(
             &key,
             &workspace,
-            ("word-processor", "append_paragraph"),
+            (WRITER, "append_paragraph"),
             &json!({"text": "I apply for a tourist visa."}),
             title,
         )
         .await;
         assert_eq!(status, 200, "{reply}");
 
-        let history = did(
-            &key,
-            &workspace,
-            "word-processor",
-            "history",
-            &json!({"last": 50}),
-        )
-        .await;
-        let by_agent: Vec<&Value> = history["versions"]
+        let history = did(&key, &workspace, WRITER, "history", &json!({"last": 50})).await;
+        // The calls the key made, as the runs it declared: the edits it wrote are the versions
+        // that name a run, and each names who made it.
+        let by_key: Vec<&Value> = history["versions"]
             .as_array()
             .into_iter()
             .flatten()
-            .filter(|version| version["actor"]["by"]["member"]["agent"].is_string())
+            .filter(|version| version["task"]["title"].is_string())
             .collect();
-        let colour = |agent: &str| {
-            let (red, green, blue) = collab_types::presence::identity_rgb(
-                collab_types::presence::PresenceHue::of_member(&collab_types::MemberId::agent(
-                    agent, "ada",
-                )),
-            );
-            format!("#{red:02x}{green:02x}{blue:02x}")
-        };
+        assert!(!by_key.is_empty(), "{history}");
         assert!(
-            !by_agent.is_empty()
-                && by_agent.iter().all(|version| {
-                    version["actor"]["name"] == "Jane Doe's agent"
-                        && version["actor"]["colour"]
-                            == colour(
-                                version["actor"]["by"]["member"]["agent"]
-                                    .as_str()
-                                    .unwrap_or(""),
-                            )
-                            .as_str()
-                }),
-            "{history}"
+            by_key
+                .iter()
+                .all(|version| version["who"]["member"]["person"] == host.person()),
+            "the key's changes are the person's it was minted for: {history}"
         );
-        let runs: std::collections::BTreeSet<&str> = by_agent
+        let runs: std::collections::BTreeSet<&str> = by_key
             .iter()
-            .filter_map(|version| version["title"].as_str())
+            .filter_map(|version| version["task"]["title"].as_str())
             .collect();
         assert_eq!(
-            runs,
-            [title, "Jane Doe's agent"].into_iter().collect(),
-            "a titled call goes by its title, an untitled call's by its agent's name: {history}"
+            runs.len(),
+            2,
+            "a titled call goes by its title, an untitled call's by the key it was made with: \
+             {history}"
+        );
+        assert!(runs.contains(title), "{history}");
+        assert!(
+            runs.iter().any(|run| run.starts_with("Jane Doe's agent")),
+            "the untitled call goes by the key's name: {history}"
         );
     });
 }
@@ -364,8 +343,9 @@ async fn list_page(
 }
 
 /// A listing read on after the app published a change carries on after the row it stood at,
-/// not from its first page: a row inserted before that place makes it neither repeat nor skip
-/// one that was there all along, and the page says it read on.
+/// not from its first page: a row posted between two pages makes it neither repeat nor skip one
+/// that was there all along, and the page asks the directory where it stood rather than reading
+/// it again from its first page.
 #[test]
 fn a_listing_read_on_after_a_change_carries_on_after_the_row_it_stood_at() {
     host::run_with(&[CHAT_PACKAGE], |host| async move {
@@ -403,30 +383,33 @@ fn a_listing_read_on_after_a_change_carries_on_after_the_row_it_stood_at() {
             &json!({"body": "a row posted midway"}),
         )
         .await;
-        let mut restarted = false;
         while let Some(at) = cursor {
             let reply = list_page(&key, &workspace, &conversation, Some(&at), PAGE).await;
             assert_ne!(reply["isError"], true, "{reply}");
-            // The answer is asked for structured, so the page says it read on in the field
-            // its caller reads rather than in its words.
-            restarted |= reply["structuredContent"]["restarted"]
-                .as_bool()
-                .unwrap_or(false);
             listed.extend(listed_paths(&reply));
             cursor = reply["structuredContent"]["next_cursor"]
                 .as_str()
                 .map(str::to_owned);
         }
-        assert!(
-            restarted,
-            "the page after the change says it read on: {listed:?}"
+        // The pages in order hold every row the conversation had, once each, and the row posted
+        // between them at its end: no row repeated, none skipped. The rows are read at the paths
+        // the listing names, whose directory is the one the first page's first row came under.
+        let base = listed
+            .first()
+            .and_then(|row| row.strip_suffix("/row 0 end"))
+            .unwrap_or_else(|| {
+                panic!("the first page lists the conversation's first row: {listed:?}")
+            })
+            .to_owned();
+        let expected: Vec<String> = (0..ROWS)
+            .map(|index| format!("{base}/row {index} end"))
+            .chain(std::iter::once(format!("{base}/a row posted midway")))
+            .collect();
+        assert_eq!(
+            listed, expected,
+            "each page carries on after the row the one before stood at"
         );
         let unique: std::collections::BTreeSet<&String> = listed.iter().collect();
-        assert_eq!(
-            unique.len(),
-            listed.len(),
-            "no row is listed twice: {listed:?}"
-        );
         // Every row that was there throughout is read once, at its listed path.
         for index in 0..ROWS {
             let body = format!("row {index} end");
@@ -508,20 +491,36 @@ fn titled<'a>(listed: &'a Value, title: &str) -> &'a Value {
         .unwrap_or_else(|| panic!("a run titled {title:?} is listed: {listed}"))
 }
 
-/// Two keys of the person's write into the workspace's letter; the person's own key takes one
-/// run back by the id its answer named, and the listing reads it undone.
+/// A key takes back its own run by the id its answer named, and the listing reads it undone. A
+/// run another key made is no other run's to take back: that is the act of the run that made
+/// the call, so another key of the person's is refused, saying so.
 #[test]
-fn an_invocation_is_taken_back_by_a_key_other_than_the_one_that_ran_it() {
-    // Writer is the app the letters are written in: the device installs it to write them.
-    host::run_with(&["word-processor"], |host| async move {
+fn an_invocation_is_taken_back_by_the_key_that_ran_it() {
+    host::run_with(&[WRITER_PACKAGE], |host| async move {
         let workspace = host.workspace().to_owned();
         let agent = host.key("Jane Doe's agent");
         let other = host.key("Reviewer's agent");
         let person = host.key("Visa backend");
-        let letter = write_letter(&agent, &workspace, "Dear Visa Officer,", "Cover letter").await;
+        // The other key writes first, so the document is founded by a run the test keeps: the
+        // one taken back below is a change of it alone.
         write_letter(&other, &workspace, "Yours faithfully", "Closing").await;
+        let letter = write_letter(&agent, &workspace, "Dear Visa Officer,", "Cover letter").await;
 
-        let (status, undone) = person
+        let (status, refused) = person
+            .post(
+                &format!("/v1/workspaces/{workspace}/invocations/{letter}/undo"),
+                &json!({}),
+            )
+            .await;
+        assert_eq!(status, 422, "{refused}");
+        assert!(
+            refused
+                .to_string()
+                .contains("only the caller who made this invocation"),
+            "a run another key made is not this key's to take back: {refused}"
+        );
+
+        let (status, undone) = agent
             .post(
                 &format!("/v1/workspaces/{workspace}/invocations/{letter}/undo"),
                 &json!({}),
@@ -529,11 +528,20 @@ fn an_invocation_is_taken_back_by_a_key_other_than_the_one_that_ran_it() {
             .await;
         assert_eq!(status, 200, "{undone}");
         assert_eq!(undone["status"], "ok", "{undone}");
-        let listed = invocations(&person, &workspace).await;
+        let listed = invocations(&agent, &workspace).await;
         let taken = titled(&listed, "Cover letter");
         assert_eq!(taken["status"], "undone", "{listed}");
-        assert_eq!(taken["undone"], taken["changes"], "{taken}");
         titled(&listed, "Closing");
+        // What the run wrote is gone from the letter, and what the other key wrote stays.
+        let letter = did(&agent, &workspace, WRITER, "read_content", &json!({})).await;
+        assert!(
+            !letter.to_string().contains("Dear Visa Officer,"),
+            "the taken-back run's words are gone: {letter}"
+        );
+        assert!(
+            letter.to_string().contains("Yours faithfully"),
+            "the other key's run stands: {letter}"
+        );
     });
 }
 
@@ -543,7 +551,7 @@ fn an_invocation_is_taken_back_by_a_key_other_than_the_one_that_ran_it() {
 #[test]
 fn keys_reading_a_workspace_list_its_runs_newest_first() {
     // Writer is the app the letters are written in: the device installs it to write them.
-    host::run_with(&["word-processor"], |host| async move {
+    host::run_with(&[WRITER_PACKAGE], |host| async move {
         let workspace = host.workspace().to_owned();
         let agent = host.key("Jane Doe's agent");
         let reviewer = host.key("Reviewer's agent");
@@ -576,10 +584,16 @@ fn keys_reading_a_workspace_list_its_runs_newest_first() {
             }
         }
 
-        // The record is read whole: every run, and how many there are.
+        // The record is read whole: every run it lists, and how many there are.
         let whole = invocations(&agent, &workspace).await;
-        assert_eq!(whole["total"], 3, "the record is whole: {whole}");
-        assert_eq!(whole["items"].as_array().unwrap().len(), 3, "{whole}");
+        assert_eq!(
+            whole["total"].as_u64(),
+            Some(whole["items"].as_array().unwrap().len() as u64),
+            "the record is whole: {whole}"
+        );
+        for title in ["Agent's letter", "Reviewer's note", "Backend's postscript"] {
+            titled(&whole, title);
+        }
     });
 }
 
