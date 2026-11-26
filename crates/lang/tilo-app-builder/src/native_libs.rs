@@ -10,11 +10,8 @@
 //! another machine, so what this one lacks must not stop a build that works.
 
 use std::ffi::{OsStr, OsString};
-use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
-
-use anyhow::{Result, bail};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Library {
@@ -129,56 +126,6 @@ pub fn thin_runtime_available() -> bool {
         }
         missing.is_empty()
     })
-}
-
-/// The directories fonts are installed in: the XDG base directories and
-/// fontconfig's defaults, and on macOS and Windows the system's own font
-/// folders (`/System/Library/Fonts`, the Windows font folder), which no XDG
-/// directory names. On Linux the XDG data directories already name the
-/// system font trees.
-fn font_dirs() -> Vec<PathBuf> {
-    let system = if cfg!(any(target_os = "macos", windows)) {
-        tilo_paths::system_font_dirs()
-    } else {
-        Vec::new()
-    };
-    tilo_paths::xdg::data_home()
-        .into_iter()
-        .chain(tilo_paths::xdg::data_dirs())
-        .map(|dir| dir.join("fonts"))
-        .chain(tilo_paths::home().map(|home| home.join(".fonts")))
-        .chain(system)
-        .collect()
-}
-
-fn holds_a_font(dir: &Path, depth: usize) -> bool {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return false;
-    };
-    entries.flatten().any(|entry| {
-        let path = entry.path();
-        if path.is_dir() {
-            return depth
-                .checked_sub(1)
-                .is_some_and(|depth| holds_a_font(&path, depth));
-        }
-        path.extension()
-            .and_then(OsStr::to_str)
-            .is_some_and(|ext| matches!(ext.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc"))
-    })
-}
-
-/// Fails when this machine has no font at all, as a bare container has none:
-/// every test that lays out text would stop in the text shaper instead.
-pub fn require_fonts() -> Result<()> {
-    if font_dirs().iter().any(|dir| holds_a_font(dir, 4)) {
-        return Ok(());
-    }
-    bail!(
-        "no fonts are installed, and an app's tests lay out text; install one:\n  \
-         Fedora:        sudo dnf install google-noto-sans-fonts\n  \
-         Debian/Ubuntu: sudo apt install fonts-noto-core"
-    )
 }
 
 #[cfg(test)]

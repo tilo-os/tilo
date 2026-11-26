@@ -2431,16 +2431,14 @@ fn check_contract(path: &Path, stages: &mut Vec<Value>) -> Result<()> {
     Ok(())
 }
 
+/// The fonts stage of `check`: the app's tests set text in Tilo's font catalog, which the
+/// command found or fetched before it started ([`tilolang_cli::fonts::ensure`]), with the
+/// machine's own fonts only behind it, so a machine with none still checks its apps.
 fn check_runtime_fonts(stages: &mut Vec<Value>) -> Result<()> {
     println!("[check] runtime fonts");
-    if let Err(error) = tilo_app_builder::native_libs::require_fonts() {
-        stages.push(json!({"stage": "fonts", "passed": false}));
-        return Err(error.context(failed(
-            "runtime fonts preflight failed",
-            json!({"stages": stages}),
-        )));
-    }
-    stages.push(json!({"stage": "fonts", "passed": true}));
+    let catalog = tilolang_cli::fonts::ensure()?;
+    println!("Tilo's fonts: {}", catalog.display());
+    stages.push(json!({"stage": "fonts", "passed": true, "catalog": catalog}));
     Ok(())
 }
 

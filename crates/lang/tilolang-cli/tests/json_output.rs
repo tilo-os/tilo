@@ -461,7 +461,7 @@ tilo_test_env::scenario! {
 
 #[cfg(all(unix, not(target_os = "macos")))]
 #[test]
-fn missing_fonts_are_reported_before_any_cargo_quality_command() {
+fn a_machine_without_fonts_checks_its_apps_in_tilos_catalog() {
     use std::os::unix::fs::PermissionsExt;
 
     let dir = tempfile::tempdir().unwrap();
@@ -496,21 +496,23 @@ fn missing_fonts_are_reported_before_any_cargo_quality_command() {
         .env("CARGO_GUARD_MARKER", &marker)
         .output_locked()
         .unwrap();
+    // No font in any directory the machine's fonts live in: the app's tests set text in Tilo's
+    // catalog, so the fonts stage passes and the check goes on to Cargo, which the guard stops.
     assert!(!output.status.success(), "{output:?}");
     let report = document(&output);
-    assert_eq!(report["ok"], false);
+    let progress = String::from_utf8_lossy(&output.stderr);
     assert!(
-        report.to_string().contains("google-noto-sans-fonts"),
+        progress.contains("Tilo's fonts: "),
+        "the fonts stage named no catalog: {progress}"
+    );
+    assert!(
+        report["error"]
+            .as_str()
+            .is_some_and(|error| error.starts_with("Rust formatting failed")),
         "{report}"
     );
     assert!(
-        report
-            .to_string()
-            .contains("runtime fonts preflight failed"),
-        "{report}"
-    );
-    assert!(
-        !marker.exists(),
-        "Cargo ran before the missing-font diagnosis"
+        marker.exists(),
+        "the check stopped before Cargo on a machine without fonts: {report}"
     );
 }
