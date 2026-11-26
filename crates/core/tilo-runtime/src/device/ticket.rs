@@ -419,15 +419,24 @@ fn catalogue_of(query: &CatalogueQuery, keep: impl Fn(&str) -> bool) -> Catalogu
         ))),
     ];
     // A device before its person's services run takes no update turn, and is asked nothing of
-    // its machine.
+    // its machine: each resource is listed where one of its actions is kept.
     let update_rows = if keep(PREPARE) {
-        update_rows.into_iter().chain(server_rows()).collect()
+        update_rows
+    } else {
+        Vec::new()
+    };
+    let server_rows = if tilo_server::operations::ACTIONS
+        .iter()
+        .any(|action| keep(action))
+    {
+        server_rows()
     } else {
         Vec::new()
     };
     let rows = rows
         .into_iter()
         .chain(update_rows)
+        .chain(server_rows)
         .filter(|row| {
             row.action
                 .as_ref()

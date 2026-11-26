@@ -91,6 +91,33 @@ pub struct Registered {
     pub placed_for: Option<[u8; 32]>,
 }
 
+impl Registered {
+    /// The kind this provider declares the action `target` names as: the action it publishes at
+    /// that address, or else the one its catalogue lists there for `caller`. `None` when it
+    /// declares no such action.
+    async fn declared_kind(
+        &self,
+        caller: &Caller,
+        target: &RemoteActionTarget,
+    ) -> Option<tilo_actions::ActionKind> {
+        if let Some((_, action)) = locate(&self.published, &target.address) {
+            return Some(action.contract.kind);
+        }
+        let query = CatalogueQuery {
+            provider: Some(target.provider.clone()),
+            target: Some(target.address.clone()),
+            max_results: 1,
+            ..CatalogueQuery::default()
+        };
+        let page = self.answers.query(caller, query).await?.ok()?;
+        page.rows
+            .into_iter()
+            .filter_map(|row| row.action)
+            .find(|action| action.address == target.address)
+            .map(|action| action.contract.kind)
+    }
+}
+
 /// How many invocations from other devices a registered provider took are remembered for routing
 /// their observations; the oldest are let go beyond it, and their provider is asked no more.
 const TAKEN_KEPT: usize = 4096;
@@ -705,20 +732,21 @@ impl Providers {
         let placing_host = self.0.placing_host.get() == Some(&device);
         runtime.spawn(async move {
             let address = &request.target.address;
-            if placed.is_none()
-                && !placing_host
-                && let Err(refused) = permits(
+            if placed.is_none() && !placing_host {
+                let declared = registered.declared_kind(&caller, &request.target).await;
+                if let Err(refused) = permits(
                     (&workspaces, &surfaces),
+                    declared,
                     device,
                     &workspace,
                     &app,
-                    &address.resource,
-                    &address.action,
+                    (&address.resource, &address.action),
                 )
                 .await
-            {
-                completer.complete(Err(refused));
-                return;
+                {
+                    completer.complete(Err(refused));
+                    return;
+                }
             }
             providers.take(
                 request.invocation,
@@ -790,19 +818,20 @@ fn record_of(served: &BTreeMap<Arc<str>, Registered>, provider: &str) -> Option<
 }
 
 /// Whether `workspace`'s grants let `device` run `action` on `resource` of the application `app`
-/// now, judged at the kind `app` declares the action as (`surfaces` names what this device knows
-/// of the declarations); the refusal its caller reads when they do not. An action `app` declares
-/// no kind for is refused: nothing says what it is able to do.
+/// now, judged at the kind the action is declared as: by the provider that answers it
+/// (`declared`) and by `app`'s surface in the workspace's store (`surfaces` names what this
+/// device knows of those), the greater where both declare it. The refusal its caller reads when
+/// they do not. An action declared nowhere is refused: nothing says what it is able to do.
 async fn permits(
     (workspaces, surfaces): (
         &super::device_actions::WorkspacesMap,
         &collab_types::app_surface::Surfaces,
     ),
+    declared: Option<tilo_actions::ActionKind>,
     device: [u8; 32],
     workspace: &str,
     app: &str,
-    resource: &str,
-    action: &str,
+    (resource, action): (&str, &str),
 ) -> Result<(), ActionCallError> {
     let kept = workspaces.lock().await.get(workspace).cloned();
     let Some(kept) = kept else {
@@ -811,7 +840,7 @@ async fn permits(
         });
     };
     let mut kept = kept.lock().await;
-    let Some(kind) = kept.call_kind(surfaces, app, action) else {
+    let Some(kind) = declared.max(kept.call_kind(surfaces, app, action)) else {
         return Err(ActionCallError::Refused {
             reason: format!("{app} declares no action {resource}#{action}"),
         });
