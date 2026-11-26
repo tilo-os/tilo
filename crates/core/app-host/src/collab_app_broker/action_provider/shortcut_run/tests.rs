@@ -1721,3 +1721,53 @@ async fn a_saved_approval_stops_admitting_once_edited_revoked_or_its_saver_left(
         refused_for(step(&api, &caller, call()).await, why);
     }
 }
+
+/// Nobody is at a screen when a trigger fires, so a shortcut runs unattended only on the proof
+/// of who saved it that its own record carries: one whose record names no such device starts
+/// nothing, and the refusal says which shortcut and why.
+#[tokio::test(flavor = "current_thread")]
+async fn a_triggered_run_with_no_proven_maker_is_refused_by_name() {
+    let saver = Saver::new();
+    let fixture = saved_by(
+        &saver,
+        vec![relay("relay", std::collections::BTreeMap::new())],
+    );
+    let workspace = fixture.caller.workspace().unwrap().to_owned();
+    {
+        let mut tree = fixture.tree.write();
+        let row = tree.desktop.workspaces[0]
+            .shortcuts
+            .iter_mut()
+            .find(|held| held.id() == "relay")
+            .expect("the fixture kept it");
+        let mut unsigned = row.decode().expect("the fixture's shortcut decodes");
+        unsigned.saved_proof = None;
+        *row = tilo_automation::SavedShortcut::encode(&unsigned);
+    }
+    let caller = fixture.as_saver(&saver);
+    let run = tilo_automation::AutomationInvocationId(fixture.request.invocation.0);
+    match fixture.state.start_triggered_shortcut_run(
+        &caller,
+        &workspace,
+        "relay",
+        &notes_opened(),
+        run,
+        serde_json::Map::new(),
+    ) {
+        Err(ActionCallError::Refused { reason }) => {
+            assert!(
+                reason.contains("relay"),
+                "the refusal does not name the shortcut: {reason}"
+            );
+            assert!(
+                reason.contains("does not say which device of its person saved it"),
+                "the refusal does not say why: {reason}"
+            );
+        }
+        other => panic!("a shortcut with no proven maker was not refused: {other:?}"),
+    }
+    assert!(
+        fixture.state.shortcut_run_report(run, "relay").is_none(),
+        "a run nothing proved who saved it started"
+    );
+}

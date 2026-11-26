@@ -230,13 +230,20 @@ impl AppBrokerState {
             .ok_or(ActionCallError::NotPermitted)?;
         // An agent that saved it with its own key runs it as itself, for its person; a device's
         // proof runs it as the person.
-        let runs_as_saver = tilo_peer_state::workspace::proven(
+        let name = &shortcut.name;
+        let Some(saver) = tilo_peer_state::workspace::proven(
             workspace,
             &shortcut,
             &revocations,
             tilo_clock::unix_now_ns(),
-        )
-        .is_some_and(|saver| match &saver.agent {
+        ) else {
+            return Err(ActionCallError::Refused {
+                reason: format!(
+                    "\u{201c}{name}\u{201d} does not say which device of its person saved it, so it does not run unattended"
+                ),
+            });
+        };
+        let runs_as_saver = match &saver.agent {
             Some(agent) => {
                 caller.acting().member_id()
                     == Some(&tilo_action_policy::MemberId::agent(
@@ -246,9 +253,11 @@ impl AppBrokerState {
                     && caller.acting_for_person() == Some(saver.person.as_str())
             }
             None => actor.actor().person_id() == Some(saver.person.as_str()),
-        });
+        };
         if !runs_as_saver {
-            return Err(ActionCallError::NotPermitted);
+            return Err(ActionCallError::Refused {
+                reason: format!("\u{201c}{name}\u{201d} runs only as the person who saved it"),
+            });
         }
         if !shortcut.triggers.contains(trigger) {
             return Err(ActionCallError::Refused {

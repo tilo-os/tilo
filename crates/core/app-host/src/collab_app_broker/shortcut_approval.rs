@@ -264,12 +264,21 @@ impl AppBrokerState {
             .as_ref()
             .and_then(|membership| membership.workspace_revocations(workspace))
             .ok_or(ActionCallError::NotPermitted)?;
+        let name = &shortcut.name;
         let saver = tilo_peer_state::workspace::proven(workspace, shortcut, &revocations, now)
-            .ok_or(ActionCallError::NotPermitted)?;
+            .ok_or_else(|| ActionCallError::Refused {
+                reason: format!(
+                    "\u{201c}{name}\u{201d} does not say which device of its person saved it, so it does not run unattended"
+                ),
+            })?;
         let root = hex::decode(&saver.person)
             .ok()
             .and_then(|root| <[u8; 32]>::try_from(root).ok())
-            .ok_or(ActionCallError::NotPermitted)?;
+            .ok_or_else(|| ActionCallError::Refused {
+                reason: format!(
+                    "\u{201c}{name}\u{201d} was saved by someone this host cannot name, so it does not run unattended"
+                ),
+            })?;
         // The key that signed it, as its proof certifies it: an agent's grant beside the
         // agent's name, else the device's own certificate.
         let certificate = shortcut
@@ -291,7 +300,11 @@ impl AppBrokerState {
             .filter(|certificate| {
                 certificate.user_public_key == root && certificate.device_public_key == saver.key
             })
-            .ok_or(ActionCallError::NotPermitted)?;
+            .ok_or_else(|| ActionCallError::Refused {
+                reason: format!(
+                    "\u{201c}{name}\u{201d} does not carry the certificate of the device that saved it, so it does not run unattended"
+                ),
+            })?;
         let approval = ShortcutApproval {
             workspace: workspace.to_owned(),
             shortcut: shortcut.clone(),
